@@ -455,6 +455,93 @@ class RequirementsTest(unittest.TestCase):
         self.assertIn("Final requirements · 2 of 6", out.read_text())
 
 
+CLAUDE_MD_FAR = CLAUDE_MD.replace("  - Final: 2026-09-20 12:00", "  - Final: 2026-09-20 12:00\n  - Exam retake: 2026-09-30")
+
+WEEK_TRACKER = """# Tracker 2026-09-17
+
+Coordinator: coordinator. Board: board-7.
+
+## Lanes
+
+| item | owner | state | since | due | checklist |
+|---|---|---|---|---|---|
+| Fix A | Robin | open | 2026-09-17 | 2026-09-18 | x |
+| Fix B | Robin | waiting | 2026-09-17 | 2026-09-18 | x |
+| Fix C | worker | open | 2026-09-17 | 2026-09-18 15:00 | x |
+| Docs pass | Robin | open | 2026-09-17 | 2026-09-19 | x |
+| Refactor | worker | running 09:30 | 2026-09-17 | 2026-09-18 | x |
+| Exam | Robin | open | 2026-09-17 | 2026-09-26 | x |
+| Stale fix | Robin | open | 2026-09-14 | 2026-09-15 | x |
+| Cost analysis | Robin | open | 2026-09-17 | Final | x |
+| Wider cleanup | Robin | open | 2026-09-17 |  | x |
+| Shipped | Robin | done 08:00 | 2026-09-17 | 2026-09-18 | x |
+
+## Log
+"""
+
+
+class WeekByDayTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.cfg = rb.parse_coordinator(CLAUDE_MD_FAR, today=NOW2.date())
+        self.page = rb.render(WEEK_TRACKER, "", self.cfg, NOW2)
+        self.week = _strip_html(self.page, "week")
+
+    def test_week_axis_caps_at_seven_days(self) -> None:
+        end = datetime.fromisoformat(re.search(r'data-axis-end="([^"]+)"', self.week).group(1))
+        self.assertLessEqual(end, datetime(2026, 9, 24, tzinfo=CT))
+        self.assertLessEqual(self.week.count('class="tick"'), 7)
+
+    def test_far_deadline_is_edge_marker(self) -> None:
+        self.assertNotIn('class="dline" data-deadline-name="Exam retake"', self.week)
+        self.assertIn('class="dline" data-deadline-name="Final"', self.week)
+        later = re.search(r'<div class="callout later">(.*?)</div>', self.week)
+        self.assertIsNotNone(later)
+        self.assertIn("Exam retake Wed 30", later.group(1))
+
+    def test_same_day_lanes_group(self) -> None:
+        row = re.search(r'<div class="row group-row"><div class="name">([^<]*)</div><div class="track"><div class="bar[^"]*" data-group="2026-09-18" data-count="3"(.*?)</div></div></div>', self.week)
+        self.assertIsNotNone(row)
+        self.assertEqual(row.group(1), "Fri 18 · 3 lanes")
+        self.assertEqual(row.group(2).count('class="member"'), 3)
+        for item in ("Fix A", "Fix B", "Fix C"):
+            self.assertNotRegex(self.week, rf'class="bar[^"]*"[^>]*data-item="{item}"')
+            self.assertRegex(row.group(2), rf'class="member" data-item="{item}"')
+        self.assertIn("3 due", row.group(2))
+
+    def test_single_day_lane_and_running_keep_bars(self) -> None:
+        self.assertRegex(self.week, r'class="bar open[^"]*"[^>]*data-item="Docs pass"')
+        self.assertRegex(self.week, r'class="bar running[^"]*"[^>]*data-item="Refactor"')
+        self.assertNotIn("Shipped", self.week)
+
+    def test_overdue_and_later_rows(self) -> None:
+        self.assertRegex(self.week, r'data-group="overdue" data-count="1"')
+        self.assertRegex(self.week, r'data-group="later" data-count="1"')
+        self.assertRegex(self.week, r'<div class="name">Overdue · 1 lane</div>')
+        self.assertRegex(self.week, r'<div class="name">Later · 1 lane</div>')
+        order = [self.week.index(k) for k in ('data-group="overdue"', 'data-item="Refactor"', 'data-group="2026-09-18"', 'data-item="Docs pass"', 'data-group="later"', 'data-summary="Final"')]
+        self.assertEqual(order, sorted(order))
+
+    def test_deadline_summaries_unchanged(self) -> None:
+        self.assertRegex(self.week, r'data-summary="Final" data-count="2"')
+
+
+    def test_callouts_have_their_own_rows(self) -> None:
+        self.assertNotRegex(self.page, r'<div class="dline"[^>]*><span>')
+        self.assertNotIn("top:-16px", self.page)
+        overlay = re.search(r'<div class="overlay">(.*?)<div class="nowline" hidden></div></div>', self.week, re.S).group(1)
+        self.assertNotIn("later", overlay)
+        callouts = re.search(r'<div class="callouts">(.*?)</div>\n</div>', self.week, re.S)
+        self.assertIsNotNone(callouts)
+        rows = re.findall(r'<div class="callout( later)?"[^>]*>(.*?)</div>', callouts.group(1))
+        self.assertEqual([(bool(later), text) for later, text in rows], [(False, '<span style="left:50.00%">Final</span>'), (True, "Exam retake Wed 30 →")])
+        self.assertLess(self.week.index('<div class="rows">'), self.week.index('<div class="callouts">'))
+
+    def test_callout_near_right_edge_is_anchored_right(self) -> None:
+        cfg = rb.parse_coordinator(CLAUDE_MD.replace("  - Final: 2026-09-20 12:00", "  - Final: 2026-09-23 12:00"), today=NOW2.date())
+        week = _strip_html(rb.render(WEEK_TRACKER, "", cfg, NOW2), "week")
+        self.assertRegex(week, r'<div class="callout"><span class="right" style="right:[0-9.]+%">Final</span></div>')
+
+
 class CliTest(unittest.TestCase):
     def test_writes_board_beside_tracker(self) -> None:
         root = Path(tempfile.mkdtemp())
