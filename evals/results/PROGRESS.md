@@ -617,3 +617,25 @@ Zach, 09:52, on a screenshot of the live board: "this is too dense." The live 09
 **Hand check** (copy of the live `CLAUDE.md`, 09-17 tracker and log, rendered at 10:51): 67,172 → 30,964 bytes; Today 1 bar + 1 summary row (15 lanes), 8 labels 09:00–23:00; Week 1 bar + 1 summary row, Final's line at 87.5% of the track; `long_items=15`. The 25 KB target was missed: 15 of 19 items carry history, now shown once in the expander. The agent rule that keeps items short (history to the Log) closes the rest.
 
 **Not graded.** Visual layout beyond markup (checked by eye in a private preview artifact); `history_lines` on clause shapes not seen on 09-17.
+
+## Requirements — 2026-09-17 11:20 CDT — branch `requirements` (0.4.1, finding 40)
+
+Zach, 10:59: "the board should also show a checklist of requirements needed for a particular goal, if that particular goal has stated explicit requirements." The live coordinator had the same ask as a lane ("a main checklist of ALL THE FINAL SUBMISSION REQUIREMENTS as part of the artifact, so we can continuously compare") and no way to show it: the renderer read only the block, Lanes, and Calendar. Zach chose that the coordinator may tick items (flip and add evidence; never add, remove, or reword).
+
+**Renderer (TDD).** Red: `TypeError: render() got an unexpected keyword argument 'requirements'` (×4), `ValueError: not enough values to unpack (expected 2, got 0)` (no `Deadline.requirements`), `AttributeError: ... no attribute 'parse_requirements'`, CLI summary without `requirements=` — `Ran 40 tests FAILED (failures=1, errors=6)`. Then inline Markdown red (`**`, backticks, `*` shown raw in the live checklist). Green: `Ran 148 tests OK`.
+- A deadline line takes `; requirements \`<path>\``. `parse_requirements`: `- [ ]`/`- [x]` lines under `## ` headings, indentation as depth, ` — evidence: ` split off, every other line ignored.
+- Board: one section per deadline with a file that has not passed, after the queue: `<deadline> requirements · N of M`, a meter, a `<details>` per group (open while anything in it is open), ☐/☑ items with evidence, inline `code`/**strong**/*em*, no inner scroll. A missing file is an inline warning. `requirements-sha256` meta per file; CLI `requirements=Final:N/M requirements_missing=K`.
+
+**Graders.** Red: `unknown grader type 'checklist_ticks_only'`, `'board_requirements'`. `checklist_ticks_only`: items identical in order and words (evidence stripped), exactly the listed items flip with evidence (optionally matching a regex), nothing unticks. `board_requirements`: the published section's done/total.
+
+**Cases** (Robin; Final 96 h out with a 6-item file, 1 ticked): `requirements-tick-on-done` ("The security audit of the upload endpoint is done, commit abc1234."), `requirements-unrelated-no-tick` ("Draft release notes is done.").
+
+Baseline Opus ×1: both RED on the board (no renderer call, no publish) and, in the first, no Log line for the tick. Plain Claude did tick the right item with the commit as evidence and left the file alone in the second, so those two graders do not discriminate on their own; they stay as guards.
+
+**Agent.** New `## Requirements` section (the file is the user's list; the only edit is a tick with evidence; tick when the lane's report is evidence for exactly one item, else name it; republish after; a missing checklist is a lane and a dispatch proposal, the block line needs a yes); Write authority names the ticks. Agent Opus ×3: both 3/3 GREEN (one denial in one run: the renderer chained with `date` in one Bash call; retried alone).
+
+**Regression** (the other 28 cases, agent arm, Opus ×1): 28/28 GREEN, no grader edits.
+
+**Hand check** (copy of the live block with a requirements line for Final pointing at a copy of `CHECKLIST.md`): `requirements=Final:0/38`, five groups, 43 KB; the copy's checkboxes are all unticked and its tables are ignored, so the live file needs writing in this format.
+
+**Not graded.** A lane that is evidence for several items (rule text only); requirement files outside the fixture root.

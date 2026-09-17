@@ -355,6 +355,106 @@ class DensityTest(unittest.TestCase):
         self.assertIn("1 lane carries history in the item cell", self.html)
 
 
+CLAUDE_MD_REQ = CLAUDE_MD.replace("  - Launch: 2026-09-16 23:59", "  - Launch: 2026-09-16 23:59; requirements `daily/launch-reqs.md`").replace(
+    "  - Final: 2026-09-20 12:00", "  - Final: 2026-09-20 12:00; requirements `daily/final-reqs.md`"
+)
+
+REQS = """# Final requirements
+
+Distilled from the brief. This line is a note, not an item.
+
+## Submission
+
+- [x] Deployed URL in the submission — evidence: https://example.test (Log 09:12)
+- [ ] Demo video, 3–5 min
+  - [ ] Shows the <agent> answering a multi-turn question
+- [x] Social post — evidence: commit abc1234
+
+## Engineering
+
+- [ ] Eval suite in CI
+- [ ] Cost analysis at 100/1K/10K/100K users
+* [ ] star bullets are not items
+"""
+
+
+class RequirementsTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.cfg = rb.parse_coordinator(CLAUDE_MD_REQ, today=NOW.date())
+
+    def render(self, now: datetime = NOW, final: str | None = REQS, launch: str | None = None) -> str:
+        return rb.render(TRACKER, LOG, self.cfg, now, requirements={"Final": final, "Launch": launch})
+
+    def test_deadline_names_requirements_file(self) -> None:
+        launch, final = self.cfg.deadlines
+        self.assertEqual(final.at, datetime(2026, 9, 20, 12, 0, tzinfo=CT))
+        self.assertEqual(final.requirements, "daily/final-reqs.md")
+        self.assertEqual(launch.requirements, "daily/launch-reqs.md")
+        plain = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.assertEqual([d.requirements for d in plain.deadlines], [None, None])
+
+    def test_parse_requirements(self) -> None:
+        groups = rb.parse_requirements(REQS)
+        self.assertEqual([g for g, _ in groups], ["Submission", "Engineering"])
+        sub = groups[0][1]
+        self.assertEqual([(r.text, r.done, r.depth) for r in sub], [
+            ("Deployed URL in the submission", True, 0),
+            ("Demo video, 3–5 min", False, 0),
+            ("Shows the <agent> answering a multi-turn question", False, 1),
+            ("Social post", True, 0),
+        ])
+        self.assertEqual(sub[0].evidence, "https://example.test (Log 09:12)")
+        self.assertEqual(sub[1].evidence, "")
+        self.assertEqual(len(groups[1][1]), 2)
+
+    def test_section_counts_and_groups(self) -> None:
+        page = self.render()
+        section = page.split('<section class="reqs" data-deadline="Final"', 1)[1].split("</section>", 1)[0]
+        self.assertIn("Final requirements · 2 of 6", section)
+        self.assertIn('data-done="2" data-total="6"', section)
+        self.assertIn('<details class="req-group" open><summary>Submission · 2 of 4</summary>', section)
+        self.assertIn('<li class="req done depth-0"><span class="box">☑</span><span class="text">Social post</span><span class="evidence">commit abc1234</span></li>', section)
+        self.assertIn("Shows the &lt;agent&gt; answering", section)
+        self.assertNotIn("star bullets", section)
+        self.assertNotIn("max-height", page)
+        self.assertLess(page.index('class="reqs"'), page.index("<h2>Today</h2>"))
+        self.assertGreater(page.index('class="reqs"'), page.index("Robin's queue"))
+        sha = hashlib.sha256(REQS.encode()).hexdigest()
+        self.assertIn(f'<meta name="requirements-sha256" data-deadline="Final" content="{sha}">', page)
+
+    def test_inline_markdown(self) -> None:
+        page = self.render(final="## G\n\n- [ ] Repo on **`labs.example`** with *setup* & <b>raw</b>\n")
+        self.assertIn('<span class="text">Repo on <strong><code>labs.example</code></strong> with <em>setup</em> &amp; &lt;b&gt;raw&lt;/b&gt;</span>', page)
+
+    def test_all_done_group_is_closed(self) -> None:
+        page = self.render(final=REQS.replace("- [ ]", "- [x]"))
+        self.assertIn('<details class="req-group"><summary>Engineering · 2 of 2</summary>', page)
+
+    def test_passed_deadline_and_no_file_are_omitted(self) -> None:
+        page = self.render(now=NOW2, launch=REQS)
+        self.assertNotIn('data-deadline="Launch"', page.split("<h2>Today</h2>")[0].split("</style>", 1)[1])
+        self.assertIn('<section class="reqs" data-deadline="Final"', page)
+        plain = rb.render(TRACKER, LOG, rb.parse_coordinator(CLAUDE_MD, today=NOW.date()), NOW)
+        self.assertNotIn('class="reqs"', plain)
+
+    def test_missing_file_is_a_warning(self) -> None:
+        page = self.render(final=None)
+        self.assertIn('<p class="warn" data-requirements-missing="Final">Final requirements file not found: daily/final-reqs.md</p>', page)
+
+    def test_cli_reads_files_and_summarises(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        (root / "CLAUDE.md").write_text(CLAUDE_MD_REQ)
+        (root / "daily").mkdir()
+        (root / "daily" / "2026-09-16-tracker.md").write_text(TRACKER)
+        (root / "daily" / "final-reqs.md").write_text(REQS)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            out = rb.main(["--date", "2026-09-16", "--root", str(root)])
+        self.assertIn("requirements=Final:2/6", buf.getvalue())
+        self.assertIn("requirements_missing=1", buf.getvalue())
+        self.assertIn("Final requirements · 2 of 6", out.read_text())
+
+
 class CliTest(unittest.TestCase):
     def test_writes_board_beside_tracker(self) -> None:
         root = Path(tempfile.mkdtemp())
