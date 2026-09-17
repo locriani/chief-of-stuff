@@ -1,11 +1,14 @@
 """Unit tests for scripts/render_board.py: the board is a render of the tracker, and every bar cites a field."""
 
+import contextlib
 import hashlib
+import io
 import re
 import sys
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
+from html import escape as html_escape
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -14,6 +17,15 @@ import render_board as rb  # noqa: E402
 
 CT = ZoneInfo("America/Chicago")
 NOW = datetime(2026, 9, 16, 14, 30, tzinfo=CT)
+NOW2 = datetime(2026, 9, 17, 9, 52, tzinfo=CT)  # the day after Launch: the nearest deadline is days away
+
+# Shaped like a live lane whose item cell accumulated its history (anonymised).
+LONG_ITEM = (
+    "Service architecture refactor (SOLID / clean architecture): rules engine → rule evaluation → service surface; "
+    "record fetch tools → service tools; bullets 0–2b landed in the worktree, uncommitted; the worker left the registry at 07:46; "
+    "coordinator reassigned the lane twice overnight; plan approved 01:20 (relayed, not verbatim); remaining: bullets 3–6, docs pass, "
+    "eval rerun, merge to main after review; blocked on nothing but an owner"
+)
 
 CLAUDE_MD = """# Workspace
 
@@ -48,6 +60,8 @@ Coordinator: coordinator. Board: board-7.
 | Draft release notes | Robin | done 11:15 | 09:00 |  | Checklist: Draft release notes |
 | Short row | Robin |
 | Long | Robin | open | 09:00 | 10:00 | x | extra | cells |
+| Ship docs site | Robin | open | 2026-09-16 | 2026-09-18 15:00 | Checklist: Ship docs site |
+| LONG_ITEM | worker-9a | waiting | 2026-09-16 |  | Checklist: refactor |
 
 ## Decisions
 
@@ -61,7 +75,7 @@ Coordinator: coordinator. Board: board-7.
 
 - 09:00 opened the day
 - 11:15 release notes done
-"""
+""".replace("LONG_ITEM", LONG_ITEM)
 
 LOG = """# 2026-09-16
 
@@ -221,6 +235,120 @@ class RenderTest(unittest.TestCase):
         self.assertIn("2 cells", self.html)
 
 
+def _strip_html(page: str, kind: str) -> str:
+    start = page.index(f'data-strip="{kind}"')
+    end = page.find('data-strip="week"', start + 1) if kind == "day" else page.index("<h2>Lanes", start)
+    return page[start:end]
+
+
+class ShortNameTest(unittest.TestCase):
+    def test_short_name(self) -> None:
+        cases = {
+            "Service architecture refactor (SOLID / clean architecture): rules engine → rule evaluation": "Service architecture refactor",
+            "Fix 5 (FIXES-REQUIRED.md): statement describes cutoffs by recorded sex": "Fix 5 (FIXES-REQUIRED.md)",
+            "13 static-analysis errors in fix 4 launch code (Grant.php, launch.php, GrantTest.php), out of TB17": "13 static-analysis errors in fix 4 launch code",
+            "Stored, not sent (Robin 20:49 Wed): ARCHITECTURE.md point 2, no finding for some patients": "Stored, not sent (Robin 20:49 Wed)",
+            "Fix: login bug": "Fix: login bug",
+            "AI cost analysis": "AI cost analysis",
+            "a" * 30 + " " + "b" * 30 + " " + "c" * 30: "a" * 30 + "…",
+            "": "",
+        }
+        for item, want in cases.items():
+            self.assertEqual(rb.short_name(item), want, item)
+            self.assertLessEqual(len(rb.short_name(item)), 49)
+
+
+class HistoryLinesTest(unittest.TestCase):
+    def test_history_lines(self) -> None:
+        item = (
+            "Service refactor (SOLID / clean): engine → surface; tools → surface. Absorbs fix 2. "
+            "Bullet 0 accepted 00:19 (45-case snapshot; uncommitted); 2b accepted 04:37 (rule, 258 passed + 3 xfail); "
+            "Stored (Robin 20:49 Wed) for later; 08:20: worker-9a not in the registry; worktree intact"
+        )
+        self.assertEqual(
+            rb.history_lines(item),
+            [
+                ("", "engine → surface"),
+                ("", "tools → surface"),
+                ("", "Absorbs fix 2"),
+                ("00:19", "Bullet 0 accepted (45-case snapshot; uncommitted)"),
+                ("04:37", "2b accepted (rule, 258 passed + 3 xfail)"),
+                ("", "Stored (Robin 20:49 Wed) for later"),
+                ("08:20", "worker-9a not in the registry"),
+                ("", "worktree intact"),
+            ],
+        )
+        self.assertEqual(rb.history_lines("AI cost analysis"), [])
+
+
+class DensityTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.html = rb.render(TRACKER, LOG, self.cfg, NOW)
+        self.html2 = rb.render(TRACKER, LOG, self.cfg, NOW2)
+
+    def test_day_axis_ends_today_with_few_ticks(self) -> None:
+        for page, now in ((self.html, NOW), (self.html2, NOW2)):
+            day = _strip_html(page, "day")
+            end = datetime.fromisoformat(re.search(r'data-axis-end="([^"]+)"', day).group(1))
+            self.assertLessEqual(end, datetime(now.year, now.month, now.day, tzinfo=CT) + timedelta(days=1))
+            self.assertLessEqual(day.count('class="tick"'), 9)
+            self.assertGreaterEqual(day.count('class="tick"'), 3)
+
+    def test_overlay_is_track_relative(self) -> None:
+        for kind in ("day", "week"):
+            strip = _strip_html(self.html, kind)
+            overlay = re.search(r'<div class="overlay">(.*?)<div class="nowline" hidden></div></div>', strip, re.S)
+            self.assertIsNotNone(overlay, kind)
+            self.assertIn('class="dline"', overlay.group(1), kind)
+            self.assertEqual(strip.count('class="dline"'), overlay.group(1).count('class="dline"'), kind)
+        self.assertIn('class="band"', re.search(r'<div class="overlay">(.*?)<div class="nowline"', _strip_html(self.html, "day"), re.S).group(1))
+        self.assertNotIn("scaleX", self.html)
+        self.assertNotIn("margin-left:34%", self.html)
+        self.assertNotIn("*66", self.html)
+
+    def test_today_folds_unscheduled(self) -> None:
+        day = _strip_html(self.html, "day")
+        self.assertRegex(day, r'class="bar[^"]*"[^>]*data-item="Write eval README"')
+        self.assertRegex(day, r'class="bar running[^"]*"[^>]*data-item="Security audit"')
+        self.assertRegex(day, r'class="member"[^>]*data-item="Review deploy config"')
+        self.assertNotRegex(day, r'class="bar[^"]*"[^>]*data-item="Review deploy config"')
+        self.assertRegex(day, r'data-summary="today"[^>]*data-count="4"')
+        self.assertNotIn("Draft release notes", day)
+        self.assertNotIn("Draft release notes", _strip_html(self.html, "week"))
+
+    def test_week_folds_deadline_due(self) -> None:
+        week = _strip_html(self.html2, "week")
+        self.assertRegex(week, r'class="bar[^"]*"[^>]*data-item="Ship docs site"')
+        final = re.search(r'<div class="bar[^"]*summary[^"]*"[^>]*data-summary="Final"[^>]*>', week)
+        self.assertIsNotNone(final)
+        self.assertIn('data-end="2026-09-20T12:00:00-05:00"', final.group(0))
+        self.assertRegex(week, r'class="member"[^>]*data-item="Review deploy config"')
+        self.assertNotRegex(week, r'class="bar[^"]*"[^>]*data-item="Review deploy config"')
+
+    def test_item_text_bounded(self) -> None:
+        esc = html_escape(LONG_ITEM)
+        self.assertLessEqual(self.html.count(esc), 2)
+        visible = re.sub(r"<[^>]+>", "", self.html.split("</style>", 1)[1].split("<script>", 1)[0])
+        self.assertEqual(visible.count(esc), 0)
+        self.assertEqual(visible.count("the worker left the registry"), 1)
+        self.assertLess(len(self.html), 16_000)
+
+    def test_history_is_one_line_per_clause(self) -> None:
+        body = re.search(r"<details><summary>Service architecture refactor</summary>(.*?)</details>", self.html, re.S).group(1)
+        self.assertIn('<ul class="hist">', body)
+        self.assertIn("<li><time>01:20</time><span>plan approved (relayed, not verbatim)</span></li>", body)
+        self.assertIn("<li><time>07:46</time><span>the worker left the registry</span></li>", body)
+        self.assertIn("<li><time></time><span>record fetch tools → service tools</span></li>", body)
+
+    def test_table_rows_carry_state(self) -> None:
+        self.assertRegex(self.html, r'<tr data-state="done"><td>Draft release notes')
+        self.assertIn("<details><summary>Service architecture refactor</summary>", self.html)
+
+    def test_long_item_count(self) -> None:
+        self.assertIn("1 lane carries history in the item cell", self.html)
+
+
 class CliTest(unittest.TestCase):
     def test_writes_board_beside_tracker(self) -> None:
         root = Path(tempfile.mkdtemp())
@@ -232,6 +360,16 @@ class CliTest(unittest.TestCase):
         self.assertEqual(out, root / "daily" / "2026-09-16-board.html")
         self.assertTrue(out.exists())
         self.assertIn('name="tracker-sha256"', out.read_text())
+
+    def test_summary_line_counts_long_items(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        (root / "CLAUDE.md").write_text(CLAUDE_MD)
+        (root / "daily").mkdir()
+        (root / "daily" / "2026-09-16-tracker.md").write_text(TRACKER)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rb.main(["--date", "2026-09-16", "--root", str(root)])
+        self.assertIn("long_items=1", buf.getvalue())
 
     def test_missing_tracker_is_an_error(self) -> None:
         root = Path(tempfile.mkdtemp())

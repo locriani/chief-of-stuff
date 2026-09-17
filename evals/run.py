@@ -497,19 +497,19 @@ def _board_url_fixed(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
     return True, f"one url {url}, in the header"
 
 
-BAR = re.compile(r'<[^>]*class="[^"]*\bbar\b[^"]*"[^>]*>')
+CITED = re.compile(r'<[^>]*\bdata-item="[^"]*"[^>]*>')
 ATTR = re.compile(r'data-([a-z-]+)="([^"]*)"')
 
 
 def _board_bars(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
-    """Bars cite their sources: each listed bar has the given data-*-src (and label); every end source is a known kind."""
+    """Bars cite their sources: each listed lane (its own bar, or a member folded into a summary row) has the given data-*-src (and label); every end source is a known kind."""
     html_text, note = _last_published_html(rec)
     if html_text is None:
         return False, note
     bars = {}
-    for tag in BAR.findall(html_text):
+    for tag in CITED.findall(html_text):
         attrs = dict(ATTR.findall(tag))
-        if "item" in attrs:
+        if "end-src" in attrs:
             bars.setdefault(attrs["item"], attrs)
     problems = [f"{item!r}: end src {a.get('end-src')!r}" for item, a in bars.items() if a.get("end-src") not in ("due", "state", "deadline")]
     for want in g.get("bars", []):

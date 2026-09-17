@@ -56,7 +56,7 @@
         "Security audit",
         "Draft release notes"
       ],
-      "html_match": "class=\"bar done[^>]*data-item=\"Security audit\""
+      "html_match": "<tr data-state=\"done\"><td>(<details><summary>)?Security audit"
     },
     {
       "name": "board matches the final tracker",

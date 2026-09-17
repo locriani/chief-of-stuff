@@ -200,5 +200,16 @@ class BoardGraderTest(unittest.TestCase):
         self.assertFalse(ok)
 
 
+    def test_board_bars_counts_folded_members(self) -> None:
+        folded = self.html.replace(
+            '<div class="bar open open-end" data-item="Notes"',
+            '<div class="bar open-end summary" data-summary="today" data-count="1"><span class="member" data-item="Notes"',
+        ).replace('data-label="no estimate"></div>', 'data-label="no estimate"></span></div>')
+        self.assertIn('class="member" data-item="Notes"', folded)
+        (self.store / "publish-1.html").write_text(folded)
+        g = {"type": "board_bars", "bars": [{"item": "Notes", "start_src": "since", "end_src": "deadline", "label": "no estimate"}]}
+        ok, detail = self.grade(g)
+        self.assertTrue(ok, detail)
+
 if __name__ == "__main__":
     unittest.main()

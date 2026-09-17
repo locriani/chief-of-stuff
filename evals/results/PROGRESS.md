@@ -573,3 +573,24 @@ Zach: "plan out rules for a task list / gantt chart artifact that the chief-of-s
 **Regression** (18 existing cases, agent arm, Opus ×1): 18/18 GREEN, no grader edits.
 
 **Not graded.** The live Artifact tool's read-before-publish step in a new session (the mock has no such rule); the week strip's look beyond the deadline-line and bar-source attributes.
+
+## Board density — 2026-09-17 10:55 CDT — branch `board-density` (0.3.1; gauntlet-56 finding 29, renderer half; recorded as 32 after C1)
+
+Zach, 09:52, on a screenshot of the live board: "this is too dense." The live 09-17 tracker (19 lanes, items up to 1,366 chars) rendered a 67 KB page: the Today axis ran from now to Final, 3.5 days away, so about 80 hourly labels collided; deadline lines and calendar bands sat at a row-width percentage plus `margin-left:34%`, so Final was drawn off the chart; every lane got a bar in both charts, done lanes included; each item's text was written about five times per lane per chart. Zach chose "schedule only" for the charts, then (10:49, on the expanded history) "is too dense" again and chose a structured expander.
+
+**Renderer (TDD).** Red: `AttributeError: module 'render_board' has no attribute 'short_name'`; `15 not less than or equal to 9` (day ticks); `9 not less than or equal to 3` (item text copies); `unexpectedly None : day` (no `.overlay`); member, summary-row, `data-state`, and `long_items=1` assertions — `Ran 30 tests FAILED (failures=8, errors=1)`. Second red for the expander: `no attribute 'history_lines'`, `'<ul class="hist">' not found`, `3 not less than or equal to 2` — `Ran 32 tests FAILED (failures=2, errors=1)`. Green: `Ran 124 tests OK` (whole suite).
+- Today chart: running lanes and lanes whose cited end falls by the axis end get a bar; every other active lane folds into one hatched summary row. The axis ends at the nearest deadline or midnight, whichever is first; the tick step is the smallest of 1/2/3/4/6 h that keeps 9 labels or fewer.
+- Week chart: running lanes and lanes with a concrete `due` get a bar; the rest fold into one row per deadline, ending on its line.
+- Folded lanes keep their citations as hidden `.member` spans (`data-item`, `data-start-src`, `data-end-src`, `data-label`). Done lanes appear only in the Lanes table.
+- Bands, deadline lines, and the now-line sit in one track-relative `.overlay`; the `scaleX` hack, per-element `margin-left`, and the JS `*66` are gone.
+- `short_name`: cut at the first `": "` (when 12+ chars remain), then at `" ("` past 48 chars, then a 48-char word-boundary cap. Used in chart names, the queue, and the table summary.
+- `history_lines`: the rest of a long item, one line per clause (split on `; ` and `. ` outside parentheses), the first `HH:MM` outside parentheses pulled into a time column. The Lanes table shows it in a `<details>` scroll box.
+- `long_items` (items over 80 chars) in the CLI summary and the board meta line.
+
+**Grader.** `test_mock_board` red: `False is not true : no bar for 'Notes'` (a lane cited only as a folded member). `_board_bars` now reads any tag carrying `data-item` and `data-end-src`. Case `board-republish-on-lane-change`: `html_match` moved from `class="bar done…"` to the table row `<tr data-state="done"><td>…Security audit`.
+
+**Evals.** Agent arm Opus ×3 on the four `board-*` cases (before the expander): 4/4 GREEN, 3/3 each. After the expander, Opus ×1: 4/4 GREEN.
+
+**Hand check** (copy of the live `CLAUDE.md`, 09-17 tracker and log, rendered at 10:51): 67,172 → 30,964 bytes; Today 1 bar + 1 summary row (15 lanes), 8 labels 09:00–23:00; Week 1 bar + 1 summary row, Final's line at 87.5% of the track; `long_items=15`. The 25 KB target was missed: 15 of 19 items carry history, now shown once in the expander. The agent rule that keeps items short (history to the Log) closes the rest.
+
+**Not graded.** Visual layout beyond markup (checked by eye in a private preview artifact); `history_lines` on clause shapes not seen on 09-17.
