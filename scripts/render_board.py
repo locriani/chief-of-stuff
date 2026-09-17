@@ -24,6 +24,7 @@ Writes `<log dir>/<date>-board.html` beside the tracker and prints its path and 
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import html
 import re
@@ -39,6 +40,8 @@ BULLET = re.compile(r"^(\s*)-\s*([^:]+?):\s*(.*?)\s*$")
 CAL_LIST = re.compile(r"^\s*-\s*(\d{1,2}:\d{2})\s*[–—-]\s*(\d{1,2}:\d{2})\s*(?:[A-Z]{2,5}\s+)?(.+?)\s*$")
 TIME_RANGE = re.compile(r"^(\d{1,2}:\d{2})\s*[–—-]\s*(\d{1,2}:\d{2})$")
 NO_ESTIMATE = "no estimate"
+LOGO = Path(__file__).resolve().parent.parent / "assets" / "logo.webp"
+FONTS = "https://fonts.googleapis.com/css2?family=Alegreya+Sans:wght@400;500;600&family=Cormorant+SC:wght@600&display=swap"
 SHORT_NAME = 48
 LONG_ITEM = 80
 CLAUSE_TIME = re.compile(r"(?:^|\s)(?:at\s+)?(\d{1,2}:\d{2}):?(?=\s|$|[,;)])")
@@ -419,6 +422,13 @@ def week_bar(lane: Lane, cfg: Config, now: datetime) -> Bar:
 # --- rendering -----------------------------------------------------------------------------------
 
 
+def logo_tag() -> str:
+    """The brand mark, inlined: the board is one file and the artifact host serves no other asset."""
+    if not LOGO.is_file():
+        return ""
+    return f'<img class="logo" alt="Chief of Stuff" src="data:image/webp;base64,{base64.b64encode(LOGO.read_bytes()).decode()}">'
+
+
 def _iso(dt: datetime) -> str:
     return dt.isoformat(timespec="seconds")
 
@@ -673,20 +683,24 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
     tzname = now.strftime("%Z")
 
     return f"""<title>Board {today.isoformat()}</title>
+<link rel="stylesheet" href="{FONTS}">
 <meta name="tracker-sha256" content="{sha}">{req_meta}
 <style>
-:root{{--bg:#faf9f6;--fg:#1f1f1f;--muted:#6b6b6b;--line:#d9d6cf;--band:rgba(70,110,200,.14);--open:#8fb0e8;--running:#3f7ad6;--done:#b9b5ab;--dl:#c8361f;--now:#1f9d55;--zach:#e0a13a}}
-@media (prefers-color-scheme:dark){{:root:not([data-theme="light"]){{--bg:#141414;--fg:#ececec;--muted:#9a9a9a;--line:#333;--band:rgba(120,160,240,.18);--open:#3b5a8c;--running:#5d93ea;--done:#4a4a4a}}}}
-:root[data-theme="dark"]{{--bg:#141414;--fg:#ececec;--muted:#9a9a9a;--line:#333;--band:rgba(120,160,240,.18);--open:#3b5a8c;--running:#5d93ea;--done:#4a4a4a}}
-body{{background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,sans-serif;padding:16px 16px 48px;max-width:1100px;margin:0 auto}}
-h1{{font-size:20px;margin:0 0 4px}} h2{{font-size:15px;margin:28px 0 8px;border-bottom:1px solid var(--line);padding-bottom:4px}}
-.meta{{color:var(--muted);font-size:13px}} .clock{{font-family:ui-monospace,monospace;font-size:15px;margin:6px 0}}
-table{{border-collapse:collapse;width:100%;max-width:100%}} td,th{{text-align:left;padding:4px 8px;border-bottom:1px solid var(--line);vertical-align:top}} th{{color:var(--muted);font-weight:500;font-size:12px}}
+:root{{--bg:#f4efe1;--surface:#fbf8ef;--fg:#2f2630;--muted:#6e6470;--line:#ddd3bd;--brass:#a7843e;--band:rgba(111,99,180,.14);--open:#9daa72;--running:#6f63b4;--done:#bdb3a2;--dl:#c9533a;--now:#4f6b3a;--bar-ink:#fbf8ef}}
+@media (prefers-color-scheme:dark){{:root:not([data-theme="light"]){{--bg:#1e1a20;--surface:#29232b;--fg:#efe8d6;--muted:#a89fa8;--line:#3d3440;--brass:#c9a45c;--band:rgba(154,143,218,.18);--open:#6f7f48;--running:#9a8fda;--done:#5a5058;--dl:#f0775a;--now:#9dbb6e;--bar-ink:#1e1a20}}}}
+:root[data-theme="dark"]{{--bg:#1e1a20;--surface:#29232b;--fg:#efe8d6;--muted:#a89fa8;--line:#3d3440;--brass:#c9a45c;--band:rgba(154,143,218,.18);--open:#6f7f48;--running:#9a8fda;--done:#5a5058;--dl:#f0775a;--now:#9dbb6e;--bar-ink:#1e1a20}}
+body{{background:var(--bg);color:var(--fg);font:14px/1.5 "Alegreya Sans","Gill Sans",system-ui,sans-serif;padding:16px 16px 48px;max-width:1100px;margin:0 auto}}
+h1{{font-family:"Cormorant SC","Cormorant Garamond",Georgia,serif;font-size:26px;font-weight:600;letter-spacing:.04em;margin:0 0 2px}}
+h2{{font-family:"Cormorant SC","Cormorant Garamond",Georgia,serif;font-size:19px;font-weight:600;letter-spacing:.05em;margin:28px 0 8px;border-bottom:1px solid var(--brass);padding-bottom:4px}}
+.header{{display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:4px}} .header .logo{{width:260px;max-width:100%;border:1px solid var(--brass);border-radius:4px;display:block}}
+.head-text{{flex:1 1 260px;min-width:0}}
+.meta{{color:var(--muted);font-size:13px}} .clock{{font-family:ui-monospace,monospace;font-size:14px;font-variant-numeric:tabular-nums;margin:6px 0}}
+table{{border-collapse:collapse;width:100%;max-width:100%}} td,th{{text-align:left;padding:4px 8px;border-bottom:1px solid var(--line);vertical-align:top}} th{{color:var(--muted);font-weight:600;font-size:12px;letter-spacing:.04em;text-transform:uppercase}}
 .muted{{color:var(--muted)}} .warn{{color:var(--dl);font-size:12px}}
 .strip{{position:relative;margin:8px 0 4px;--name-w:30%}} .axis{{position:relative;height:18px;margin-left:var(--name-w);font-size:11px;color:var(--muted)}} .tick{{position:absolute;transform:translateX(-50%);white-space:nowrap}}
 .rows{{position:relative}} .row{{display:flex;align-items:center;height:26px}} .name{{width:var(--name-w);flex:none;padding-right:8px;box-sizing:border-box;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}} .track{{position:relative;flex:1;height:18px;border-left:1px solid var(--line)}}
 .summary-row .name{{color:var(--muted)}}
-.bar{{position:absolute;top:0;height:18px;border-radius:3px;background:var(--open);color:#fff;font-size:11px;line-height:18px;padding:0 6px;overflow:hidden;white-space:nowrap;box-sizing:border-box}}
+.bar{{position:absolute;top:0;height:18px;border-radius:3px;background:var(--open);color:var(--bar-ink);font-size:11px;line-height:18px;padding:0 6px;overflow:hidden;white-space:nowrap;box-sizing:border-box}}
 .bar.running{{background:var(--running)}} .bar.open-end{{background:repeating-linear-gradient(135deg,var(--open),var(--open) 6px,transparent 6px,transparent 10px);color:var(--fg)}} .bar.clamped{{border-right:3px solid var(--dl)}} .bar.clamped-left{{border-left:3px solid var(--dl)}} .group-row .name{{font-weight:600}} .bar em{{font-style:normal;opacity:.85}} .member{{display:none}}
 .overlay{{position:absolute;top:0;bottom:0;left:var(--name-w);right:0;pointer-events:none}}
 .band{{position:absolute;top:0;bottom:0;background:var(--band)}}
@@ -696,7 +710,7 @@ table{{border-collapse:collapse;width:100%;max-width:100%}} td,th{{text-align:le
 .nowline{{position:absolute;top:0;bottom:0;border-left:2px solid var(--now)}}
 details summary{{cursor:pointer}} details[open] summary{{margin-bottom:4px}}
 .reqs h2{{display:flex;gap:8px;align-items:baseline}} .meter{{height:4px;background:var(--line);border-radius:2px;margin:-4px 0 8px;overflow:hidden}} .meter span{{display:block;height:100%;background:var(--now)}}
-.req-group{{margin:6px 0}} .req-group summary{{font-weight:600;font-size:13px}} .req-group ul{{list-style:none;margin:4px 0 8px;padding:0;display:grid;gap:3px}}
+.req-group{{margin:6px 0}} .req-group summary{{font-family:"Cormorant SC","Cormorant Garamond",Georgia,serif;font-weight:600;font-size:15px;letter-spacing:.04em}} .req-group ul{{list-style:none;margin:4px 0 8px;padding:6px 8px;background:var(--surface);border-radius:4px;display:grid;gap:3px}}
 .req{{display:grid;grid-template-columns:1.4em 1fr;column-gap:6px;font-size:13px}} .req.depth-1{{margin-left:1.6em}} .req.depth-2{{margin-left:3.2em}} .req.done .text{{color:var(--muted)}}
 .req code{{font-family:ui-monospace,monospace;font-size:12px}} .req .evidence{{grid-column:2;color:var(--muted);font-size:12px}} .req .box{{font-variant-numeric:tabular-nums}}
 .hist{{list-style:none;margin:4px 0 2px;padding:0 0 0 10px;border-left:2px solid var(--line);font-size:12px;line-height:1.5;color:var(--muted);display:grid;gap:3px}}
@@ -704,9 +718,11 @@ details summary{{cursor:pointer}} details[open] summary{{margin-bottom:4px}}
 @media (max-width:520px){{.strip{{--name-w:36%}}}}
 </style>
 <div class="board" data-rendered-at="{_iso(now)}" data-tz="{_esc(cfg.tz)}" data-deadline="{_iso(nearest.at)}" data-deadline-name="{_esc(nearest.name)}">
-<h1>Board {today.isoformat()}</h1>
+<div class="header">{logo_tag()}<div class="head-text">
+<h1>Board · {now.strftime('%a %d %b')}</h1>
 <div class="clock" id="clock">Now — {_esc(tzname)} · {_esc(nearest.name)} ({nearest.at.strftime('%H:%M')} {_esc(tzname)})</div>
 <div class="meta">tracker as of {now.strftime('%H:%M')} {_esc(tzname)} <span id="ago"></span> · kept by chief-of-stuff · board {_esc(url or 'not yet published')}{long_note}</div>
+</div></div>
 
 <h2>{_esc(cfg.user)}'s queue</h2>
 <table><tr><th>item</th><th>due</th><th>state</th></tr>

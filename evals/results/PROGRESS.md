@@ -655,3 +655,20 @@ After 0.4.1 the live block gained two PCCAT deadlines (09-26, 10-01) and the coo
 **Evals.** Agent arm Opus ×1 on `board-*` and `requirements-*`: 6/6 GREEN before the callout fix and 6/6 GREEN after.
 
 **Hand check** (copies of the live block, 09-17 tracker and log, and FINAL-REQUIREMENTS.md, 12:28): Week 7 labels Thu 17–Wed 23; 7 rows (2 running, "Final gap audit", "Fri 18 · 10 lanes", "Sat 19 · 5 lanes", 19 lanes → Final, 1 lane → PCCAT 1st attempt Sat 26); Final's line at 50%; marker "PCCAT 1st attempt Sat 26 · PCCAT 2nd attempt (if needed) Thu 01 →"; requirements "Final · 53 of 79".
+
+## Brand — 2026-09-17 12:50 CDT — branch `brand` (0.4.3)
+
+Zach, 12:25: "please incorporate this logo and color scheme", with an oil painting of a walnut-and-brass clipboard reading CHIEF OF STUFF in a wildflower meadow. The board had a generic palette and the system font.
+
+**Asset.** `assets/chief-of-stuff.jpeg` (the source, 1408×768, 262 KB) and `assets/logo.webp` (520×284, 21 KB, `cwebp -resize 520 0 -q 62`). The renderer inlines the webp as a data URI: one file, no second request. A missing asset drops the image and nothing else.
+
+**Renderer (TDD).** Red: `AttributeError: module 'render_board' has no attribute 'LOGO'`; `'<h1>Board · Wed 16 Sep</h1>' not found`; `'--bg:#f4efe1' not found in '--bg:#faf9f6;…'`; no Google Fonts link — `Ran 54 tests FAILED (failures=4, errors=1)`. Green: `Ran 161 tests OK`.
+- Palette from the painting, as tokens on bare `:root` with both dark blocks: paper `#f4efe1` / walnut night `#1e1a20`, walnut ink, brass `#a7843e`, sage (open bars), lavender-violet (running), poppy (deadlines, warnings), leaf green (now-line, requirement meter), `--bar-ink` for text on solid bars.
+- Type: Cormorant SC for `h1`, `h2`, and requirement group summaries; Alegreya Sans for text; `ui-monospace` with tabular figures for the clock. One Google Fonts link; every family ends in a generic fallback, which a test pins.
+- Header: the logo left, then `Board · Thu 17 Sep`, the clock, and the meta line; it wraps to one column on a narrow screen. The `<title>` still reads `Board <date>`, so the artifact keeps its name.
+
+**Test expectations changed.** `test_item_text_bounded` now strips the data URI before measuring and allows 18 KB: the cap is about item text, and the brand CSS plus the font link add about 400 bytes. `test_palette_tokens` allows `--name-w` to be defined on `.strip`, since it is a layout local, not a theme colour.
+
+**Evals.** Agent arm Opus ×1 on `board-*` and `requirements-*`: 5/6 GREEN, `board-on-open-the-day` RED on `board matches the final tracker` ("published board is stale: tracker edited after the last publish"). Not the brand: that case has no board URL anywhere, so the agent publishes, then writes `Board: <url>` into the tracker header, and the Board rule stopped there — the published board is one edit stale. The transcript shows publish, then two Edits. Rerunning the case on the unchanged text: 3/3 GREEN, so it bit about one run in four. Recorded as finding 41 and fixed here: the rule now says to render and publish again after writing the URL. Rerun with the fixed rule: 3/3 GREEN.
+
+**Hand check** (live copies, 12:47): 112 KB, of which the logo is about 29 KB of base64; header, palette, and headings as designed; Week, Today, and requirements unchanged in structure.
