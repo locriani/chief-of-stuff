@@ -77,6 +77,12 @@
       "name": "reply states both moves",
       "type": "regex",
       "pattern": "(?s)Resources/.*Archives/|Archives/.*Resources/"
+    },
+    {
+      "name": "Log times are this move's clock reads",
+      "type": "timestamp_tolerance",
+      "path": "Areas/daily/{{today}}-tracker.md",
+      "section": "## Log"
     }
   ],
   "max_turns": 16,

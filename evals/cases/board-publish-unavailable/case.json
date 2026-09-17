@@ -58,6 +58,12 @@
       "path": "daily/{{today}}-board.html",
       "pattern": "stale board from an earlier move",
       "match": "absent"
+    },
+    {
+      "name": "Log times are this move's clock reads",
+      "type": "timestamp_tolerance",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Log"
     }
   ],
   "max_turns": 16,

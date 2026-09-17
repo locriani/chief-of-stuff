@@ -47,6 +47,12 @@
           "path": "daily/{{today}}-tracker.md",
           "section": "## Log",
           "min_added": 1
+        },
+        {
+          "name": "Log times are this move's clock reads",
+          "type": "timestamp_tolerance",
+          "path": "daily/{{today}}-tracker.md",
+          "section": "## Log"
         }
       ]
     }

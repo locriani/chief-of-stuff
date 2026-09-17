@@ -69,6 +69,12 @@
       "type": "board_url_fixed",
       "tracker": "daily/{{today}}-tracker.md",
       "expect": "board-known"
+    },
+    {
+      "name": "Log times are this move's clock reads",
+      "type": "timestamp_tolerance",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Log"
     }
   ],
   "max_turns": 16,
