@@ -451,6 +451,37 @@ def _lanes(n: int) -> str:
     return f"{n} {'lane' if n == 1 else 'lanes'}"
 
 
+LEGEND = [
+    ("key bar running", "running"),
+    ("key bar open", "open"),
+    ("key bar orphaned", "orphaned"),
+    ("key bar done", "done"),
+    ("key bar open-end", "no estimate"),
+    ("key bar summary", "folded rows"),
+    ("key band", "calendar event"),
+    ("key nowline", "now"),
+    ("key dline", "deadline"),
+]
+
+
+def legend() -> str:
+    return '<div class="legend">' + "".join(f'<span class="item"><span class="{cls}"></span> {label}</span>' for cls, label in LEGEND) + "</div>\n"
+
+
+def grid_marks(axis_a: datetime, axis_b: datetime, kind: str) -> list[tuple[datetime, bool]]:
+    """Every hour on the day strip (a full line every two), every day on the week strip (a half line at midday)."""
+    step = timedelta(hours=1) if kind == "day" else timedelta(days=1)
+    marks, at, i = [], axis_a, 0
+    last = axis_b if kind == "day" else axis_b - step
+    while at <= last:
+        marks.append((at, i % 2 == 0 if kind == "day" else True))
+        if kind == "week":
+            marks.append((at + step / 2, False))
+        at += step
+        i += 1
+    return marks
+
+
 def _strip(rows: list[Bar | Summary], axis_a: datetime, axis_b: datetime, events: list[Event], deadlines: list[Deadline], ticks: list[tuple[datetime, str]], kind: str) -> str:
     out = [f'<div class="strip" data-strip="{kind}" data-axis-start="{_iso(axis_a)}" data-axis-end="{_iso(axis_b)}">']
     out.append('<div class="axis">')
@@ -483,6 +514,8 @@ def _strip(rows: list[Bar | Summary], axis_a: datetime, axis_b: datetime, events
             + "</div></div></div>"
         )
     out.append('<div class="overlay">')
+    for at, major in grid_marks(axis_a, axis_b, kind):
+        out.append(f'<div class="grid{"" if major else " half"}" style="left:{_pct(at, axis_a, axis_b):.2f}%"></div>')
     for ev in events:
         left, right = _pct(ev.start, axis_a, axis_b), _pct(ev.end, axis_a, axis_b)
         out.append(f'<div class="band" data-band="{_esc(ev.title)}" style="left:{left:.2f}%;width:{max(right - left, 0.3):.2f}%"></div>')
@@ -667,9 +700,21 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
         return "\n".join(rows) or '<tr><td colspan="5" class="muted">none</td></tr>'
 
     queue = [lane for lane in active if lane.owner.strip().lower() == cfg.user.lower()]
+    unassigned = [lane for lane in active if lane.owner.strip().lower() in ("unassigned", "")]
+    unassigned_rows = "\n".join(f"<tr><td>{_esc(short_name(l.item))}</td><td>{_esc(l.due)}</td><td>{_esc(l.state)}</td></tr>" for l in unassigned)
+    unassigned_html = f"""<h2>Unassigned · {len(unassigned)}</h2>
+<table><tr><th>item</th><th>due</th><th>state</th></tr>
+{unassigned_rows}
+</table>
+""" if unassigned else ""
     queue_rows = "\n".join(f"<tr><td>{_esc(short_name(l.item))}</td><td>{_esc(l.due)}</td><td>{_esc(l.state)}</td></tr>" for l in queue) or '<tr><td colspan="3" class="muted">nothing waiting on you</td></tr>'
     running = [l for l in active if l.kind == "running"]
-    waiting = [l for l in active if l.kind != "running"]
+    orphaned = [l for l in active if l.kind == "orphaned"]
+    waiting = [l for l in active if l.kind not in ("running", "orphaned")]
+    def group_head(label: str, group: list[Lane]) -> str:
+        return f'<tr class="group"><th colspan="5">{_esc(label)} · {len(group)}</th></tr>'
+
+    orphan_group = f'\n{group_head("orphaned", orphaned)[:-10]} · nobody owns these</th></tr>\n{lane_rows(orphaned)}' if orphaned else ""
     requirements = requirements or {}
     req_decks = [d for d in cfg.deadlines if d.requirements and d.at >= now]
     req_html = "\n".join(requirements_section(d, requirements.get(d.name)) for d in req_decks)
@@ -679,6 +724,7 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
         if requirements.get(d.name) is not None
     )
     long_items = sum(1 for lane in lanes if len(lane.item) > LONG_ITEM)
+    orphan_note = f" · {sum(1 for l in active if l.kind == 'orphaned')} orphaned" if any(l.kind == "orphaned" for l in active) else ""
     long_note = f" · {long_items} {'lane carries' if long_items == 1 else 'lanes carry'} history in the item cell" if long_items else ""
     tzname = now.strftime("%Z")
 
@@ -696,14 +742,20 @@ h2{{font-family:"Cormorant SC","Cormorant Garamond",Georgia,serif;font-size:19px
 .head-text{{flex:1 1 260px;min-width:0}}
 .meta{{color:var(--muted);font-size:13px}} .clock{{font-family:ui-monospace,monospace;font-size:14px;font-variant-numeric:tabular-nums;margin:6px 0}}
 table{{border-collapse:collapse;width:100%;max-width:100%}} td,th{{text-align:left;padding:4px 8px;border-bottom:1px solid var(--line);vertical-align:top}} th{{color:var(--muted);font-weight:600;font-size:12px;letter-spacing:.04em;text-transform:uppercase}}
+tr.group th{{background:color-mix(in srgb,var(--brass) 18%,transparent);color:var(--fg);font-family:"Cormorant SC","Cormorant Garamond",Georgia,serif;font-weight:600;font-size:14px;letter-spacing:.12em;text-transform:uppercase;border-top:2px solid var(--brass);padding:6px 8px}}
 .muted{{color:var(--muted)}} .warn{{color:var(--dl);font-size:12px}}
 .strip{{position:relative;margin:8px 0 4px;--name-w:30%}} .axis{{position:relative;height:18px;margin-left:var(--name-w);font-size:11px;color:var(--muted)}} .tick{{position:absolute;transform:translateX(-50%);white-space:nowrap}}
 .rows{{position:relative}} .row{{display:flex;align-items:center;height:26px}} .name{{width:var(--name-w);flex:none;padding-right:8px;box-sizing:border-box;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}} .track{{position:relative;flex:1;height:18px;border-left:1px solid var(--line)}}
 .summary-row .name{{color:var(--muted)}}
 .bar{{position:absolute;top:0;height:18px;border-radius:3px;background:var(--open);color:var(--bar-ink);font-size:11px;line-height:18px;padding:0 6px;overflow:hidden;white-space:nowrap;box-sizing:border-box}}
-.bar.running{{background:var(--running)}} .bar.open-end{{background:repeating-linear-gradient(135deg,var(--open),var(--open) 6px,transparent 6px,transparent 10px);color:var(--fg)}} .bar.clamped{{border-right:3px solid var(--dl)}} .bar.clamped-left{{border-left:3px solid var(--dl)}} .group-row .name{{font-weight:600}} .bar em{{font-style:normal;opacity:.85}} .member{{display:none}}
+.bar.running{{background:var(--running)}} .bar.orphaned{{outline:2px dashed var(--dl);outline-offset:-2px}} .bar.open-end{{background:repeating-linear-gradient(135deg,var(--open),var(--open) 6px,transparent 6px,transparent 10px);color:var(--fg)}} .bar.clamped{{border-right:3px solid var(--dl)}} .bar.clamped-left{{border-left:3px solid var(--dl)}} .group-row .name{{font-weight:600}} .bar em{{font-style:normal;opacity:.85}} .member{{display:none}}
 .overlay{{position:absolute;top:0;bottom:0;left:var(--name-w);right:0;pointer-events:none}}
 .band{{position:absolute;top:0;bottom:0;background:var(--band)}}
+.grid{{position:absolute;top:0;bottom:0;border-left:1px solid var(--line)}} .grid.half{{border-left:1px dotted var(--line);opacity:.6}}
+.legend{{display:flex;flex-wrap:wrap;gap:4px 14px;margin:6px 0 2px;font-size:12px;color:var(--muted)}} .legend .item{{display:inline-flex;align-items:center;gap:5px}}
+.key{{display:inline-block;width:18px;height:10px;border-radius:2px}} .key.bar{{position:static;background:var(--open);padding:0}}
+.key.bar.running{{background:var(--running)}} .key.bar.done{{background:var(--done)}} .key.bar.summary{{background:var(--open);opacity:.55}}
+.key.band{{background:var(--band);border:1px solid var(--line)}} .key.nowline{{width:0;height:12px;border-left:2px solid var(--now);border-radius:0}} .key.dline{{width:0;height:12px;border-left:2px dashed var(--dl);border-radius:0}}
 .dline{{position:absolute;top:0;bottom:0;border-left:2px dashed var(--dl);transform:translateX(-1px)}}
 .callouts{{margin-left:var(--name-w);margin-top:2px}} .callout{{position:relative;height:16px;font-size:11px;line-height:16px;color:var(--dl);white-space:nowrap}}
 .callout span{{position:absolute;top:0;padding-left:4px}} .callout span.right{{padding:0 4px 0 0}} .callout.later{{text-align:right}}
@@ -724,15 +776,15 @@ details summary{{cursor:pointer}} details[open] summary{{margin-bottom:4px}}
 <div class="meta">tracker as of {now.strftime('%H:%M')} {_esc(tzname)} <span id="ago"></span> · kept by chief-of-stuff · board {_esc(url or 'not yet published')}{long_note}</div>
 </div></div>
 
-<h2>{_esc(cfg.user)}'s queue</h2>
+{unassigned_html}<h2>{_esc(cfg.user)}'s queue</h2>
 <table><tr><th>item</th><th>due</th><th>state</th></tr>
 {queue_rows}
 </table>
 {req_html}
 
 <h2>Today</h2>
-<div class="meta">{len(day_bars)} scheduled · {len(day_folded)} folded into one row (no estimate or due after today) · bands are calendar events · green line is now</div>
-{_strip(day_bars + day_summaries, axis_a, axis_b, day_events, [nearest], day_ticks, "day")}
+<div class="meta">{len(day_bars)} scheduled · {len(day_folded)} folded into one row (no estimate or due after today) · bands are calendar events · green line is now{orphan_note}</div>
+{legend()}{_strip(day_bars + day_summaries, axis_a, axis_b, day_events, [nearest], day_ticks, "day")}
 
 <h2>Week</h2>
 <div class="meta">{len(week_bars)} bars · {len(week_groups)} rows grouped by due day · the rest folded into one row per deadline · dashed lines are deadlines</div>
@@ -740,11 +792,11 @@ details summary{{cursor:pointer}} details[open] summary{{margin-bottom:4px}}
 
 <h2>Lanes</h2>
 <table><tr><th>item</th><th>owner</th><th>state</th><th>since</th><th>due</th></tr>
-<tr><th colspan="5">running</th></tr>
-{lane_rows(running)}
-<tr><th colspan="5">open · waiting</th></tr>
+{group_head("running", running)}
+{lane_rows(running)}{orphan_group}
+{group_head("open · waiting", waiting)}
 {lane_rows(waiting)}
-<tr><th colspan="5">done</th></tr>
+{group_head("done", done)}
 {lane_rows(done)}
 </table>
 </div>

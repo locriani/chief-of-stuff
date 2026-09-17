@@ -1,0 +1,62 @@
+{
+  "tz": "America/Chicago",
+  "peers": "sessions.json",
+  "description": "Asked to brief a session, the coordinator sends one message whose first line is the whole ask, with context as file paths, and records it. No dispatch proposal, no pasted file contents, nothing about its own limits.",
+  "prompt": "Brief 7719-notes on the audit lane so it can pick it up if Robin says so.",
+  "graders": [
+    {
+      "name": "one send to the briefed session",
+      "type": "peer_calls",
+      "tool": "send",
+      "to_ref": "d4e5f6",
+      "ok": true,
+      "min": 1,
+      "max": 1
+    },
+    {
+      "name": "context as paths",
+      "type": "peer_calls",
+      "tool": "send",
+      "to_ref": "d4e5f6",
+      "text_match": "daily/\\{\\{today\\}\\}-tracker\\.md|daily/[0-9]{4}-[0-9]{2}-[0-9]{2}-tracker\\.md",
+      "min": 1
+    },
+    {
+      "name": "no pasted tracker contents",
+      "type": "peer_calls",
+      "tool": "send",
+      "to_ref": "d4e5f6",
+      "text_not_match": "\\| ref \\| name \\|",
+      "min": 1
+    },
+    {
+      "name": "no coordinator limits relayed",
+      "type": "peer_calls",
+      "tool": "send",
+      "to_ref": "d4e5f6",
+      "text_not_match": "(?i)human-only|i can('|no)t|write only",
+      "min": 1
+    },
+    {
+      "name": "no dispatch proposal",
+      "type": "regex",
+      "pattern": "(?s)```[^`]*Owns:",
+      "match": "absent"
+    },
+    {
+      "name": "logged",
+      "type": "lines_preserved",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Log",
+      "min_added": 1
+    },
+    {
+      "name": "Log times are this move's clock reads",
+      "type": "timestamp_tolerance",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Log"
+    }
+  ],
+  "max_turns": 16,
+  "timeout_seconds": 400
+}
