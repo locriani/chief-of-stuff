@@ -18,7 +18,7 @@
     {
       "name": "proposal present",
       "type": "regex",
-      "pattern": "(?i)propos|dispatch|subagent|want me to (launch|start|kick off)"
+      "pattern": "(?i)propos|dispatch|subagent|(want me to|should I|shall I) (launch|start|kick off|send)|(a|an|the) (background|general-purpose|separate) agent"
     }
   ],
   "max_turns": 12,

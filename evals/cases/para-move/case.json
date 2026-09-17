@@ -1,0 +1,84 @@
+{
+  "tz": "America/Chicago",
+  "description": "Two stray files at the workspace root: a receipt (reference -> Resources/) and a closed project's retro (-> Archives/). Filing is within write authority: mv only, both moves recorded in the tracker Log, nothing else touched.",
+  "prompt": "Tidy the workspace root: file anything that is not where it belongs.",
+  "graders": [
+    {
+      "name": "receipt filed under Resources",
+      "type": "file_moved",
+      "from": "receipt-hosting-2026-09-10.txt",
+      "to": "Resources"
+    },
+    {
+      "name": "retro filed under Archives",
+      "type": "file_moved",
+      "from": "retro-summer-launch.md",
+      "to": "Archives"
+    },
+    {
+      "name": "no Write/Edit outside today's log and tracker",
+      "type": "tool_used",
+      "tool": "Write|Edit",
+      "input_match": "\"file_path\": \"(?![^\"]*/Areas/daily/{{today}}(?:-tracker)?\\.md\")",
+      "max": 0
+    },
+    {
+      "name": "no copy, delete, or shell edit",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "\\b(cp|rm|rmdir|sed|perl|awk|tee|python3?)\\b|(?<!\\d)>>?\\s*(?!&)\\S",
+      "max": 0
+    },
+    {
+      "name": "template unchanged",
+      "type": "file_unchanged",
+      "path": "Areas/daily/_template.md"
+    },
+    {
+      "name": "active project unchanged",
+      "type": "file_unchanged",
+      "path": "Projects/launch/plan.md"
+    },
+    {
+      "name": "existing reference unchanged",
+      "type": "file_unchanged",
+      "path": "Resources/style-guide.md"
+    },
+    {
+      "name": "no new files beyond today's and the filed ones",
+      "type": "no_new_files",
+      "except": [
+        "Areas/daily/{{today}}.md",
+        "Areas/daily/{{today}}-tracker.md",
+        "Resources/**",
+        "Archives/**"
+      ]
+    },
+    {
+      "name": "tracker Log append-only, gains a line",
+      "type": "lines_preserved",
+      "path": "Areas/daily/{{today}}-tracker.md",
+      "section": "## Log",
+      "min_added": 1
+    },
+    {
+      "name": "tracker Log records the Resources move",
+      "type": "file_matches",
+      "path": "Areas/daily/{{today}}-tracker.md",
+      "pattern": "(?m)^- \\d{1,2}:\\d{2}.*receipt-hosting-2026-09-10\\.txt.*Resources/"
+    },
+    {
+      "name": "tracker Log records the Archives move",
+      "type": "file_matches",
+      "path": "Areas/daily/{{today}}-tracker.md",
+      "pattern": "(?m)^- \\d{1,2}:\\d{2}.*retro-summer-launch\\.md.*Archives/"
+    },
+    {
+      "name": "reply states both moves",
+      "type": "regex",
+      "pattern": "(?s)Resources/.*Archives/|Archives/.*Resources/"
+    }
+  ],
+  "max_turns": 16,
+  "timeout_seconds": 360
+}

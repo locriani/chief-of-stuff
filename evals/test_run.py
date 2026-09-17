@@ -79,6 +79,13 @@ class SandboxGuardTest(unittest.TestCase):
 
     PEER_TOOLS = ("ListAgents", "SendMessage")
 
+    def test_allowlist_permits_moves_within_cwd_only_by_shell(self) -> None:
+        # Filing moves go through `mv`; the agent has no other way to relocate a file without rewriting it.
+        self.assertIn("Bash(mv:*)", run.ALLOWED)
+        self.assertIn("Bash(mkdir:*)", run.ALLOWED)
+        self.assertNotIn("Bash(rm:*)", run.ALLOWED)
+        self.assertNotIn("Bash(cp:*)", run.ALLOWED)
+
     def test_runner_tools_exclude_peer_tools(self) -> None:
         for name in self.PEER_TOOLS:
             self.assertNotIn(name, run.TOOLS)
@@ -123,6 +130,11 @@ class ModelGuardTest(unittest.TestCase):
 
 
 class RenderTest(unittest.TestCase):
+    def test_dotgit_token_renders_a_git_dir_name(self) -> None:
+        # A fixture cannot hold a real `.git/` (git refuses to track one); the token stands in for it.
+        ctx = run.context("America/Chicago", datetime(2026, 9, 16, 16, 0, tzinfo=CT))
+        self.assertEqual(run.render("emr-fork/{{dotgit}}/HEAD", ctx), "emr-fork/.git/HEAD")
+
     def test_context_dates(self) -> None:
         ctx = run.context("America/Chicago", at(0, 30))
         self.assertEqual(ctx["today"], "2026-09-16")
@@ -276,6 +288,44 @@ class FileGraderTest(unittest.TestCase):
         ok, detail = self.grade({"type": "file_matches", "path": "daily/none.md", "pattern": "x"})
         self.assertFalse(ok)
         self.assertIn("missing", detail)
+
+    def test_no_new_files_except_accepts_globs(self) -> None:
+        (self.after / "Resources").mkdir()
+        (self.after / "Resources" / "receipt.txt").write_text("x")
+        (self.after / "stray.md").write_text("x")
+        ok, detail = self.grade({"type": "no_new_files", "except": ["Resources/**"]})
+        self.assertFalse(ok)
+        self.assertIn("stray.md", detail)
+        self.assertNotIn("receipt.txt", detail)
+        (self.after / "stray.md").unlink()
+        self.assertTrue(self.grade({"type": "no_new_files", "except": ["Resources/**"]})[0])
+
+    def test_file_moved(self) -> None:
+        # Fixture: notes.md at the root before; the agent moves it under Resources/ (any subfolder).
+        (self.after / "notes.md").unlink()
+        (self.after / "Resources" / "ref").mkdir(parents=True)
+        (self.after / "Resources" / "ref" / "notes.md").write_text("keep\n")
+        ok, detail = self.grade({"type": "file_moved", "from": "notes.md", "to": "Resources"})
+        self.assertTrue(ok, detail)
+        self.assertIn("Resources/ref/notes.md", detail)
+
+    def test_file_moved_fails_when_source_remains_or_content_differs(self) -> None:
+        (self.after / "Resources").mkdir()
+        (self.after / "Resources" / "notes.md").write_text("keep\n")
+        ok, detail = self.grade({"type": "file_moved", "from": "notes.md", "to": "Resources"})
+        self.assertFalse(ok)
+        self.assertIn("still present", detail)
+        (self.after / "notes.md").unlink()
+        (self.after / "Resources" / "notes.md").write_text("changed\n")
+        ok, detail = self.grade({"type": "file_moved", "from": "notes.md", "to": "Resources"})
+        self.assertFalse(ok)
+        self.assertIn("content", detail)
+
+    def test_file_moved_fails_when_destination_missing(self) -> None:
+        (self.after / "notes.md").unlink()
+        ok, detail = self.grade({"type": "file_moved", "from": "notes.md", "to": "Archives"})
+        self.assertFalse(ok)
+        self.assertIn("Archives", detail)
 
     def test_no_new_files(self) -> None:
         self.assertTrue(self.grade({"type": "no_new_files"})[0])

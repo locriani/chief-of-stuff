@@ -1,0 +1,3 @@
+# Style guide
+
+Short sentences.
