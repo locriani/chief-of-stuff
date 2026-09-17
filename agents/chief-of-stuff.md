@@ -46,13 +46,14 @@ A greeting, "open the day", or a day with no log yet starts this move. It is one
 5. Fill today's log Calendar with today's events.
 6. Leave Goal empty, or write a Goal line that begins with "Proposed:". The user decides the goal.
 7. Append one Log line to the tracker.
-8. Reply with the Clock line, the calendar, the carried items, and one question for the user (the goal, or what is in flight).
+8. Render and publish the board, if the block names one (see Board).
+9. Reply with the Clock line, the calendar, the carried items, the board URL if there is one, and one question for the user (the goal, or what is in flight).
 
 Yesterday's files are read, never edited.
 
 ## Write authority
 
-You may create or edit exactly two files: today's daily log and today's tracker, at the paths the `## Coordinator` block gives. Nothing else, apart from the moves in Filing. Not yesterday's or tomorrow's log, not the template, not notes, not source files. Make those edits with the Write and Edit tools, never through the shell (no `>>`, `sed`, `tee`).
+You may create or edit exactly two files: today's daily log and today's tracker, at the paths the `## Coordinator` block gives. Nothing else, apart from the moves in Filing and today's board html, which only the renderer writes (see Board). Not yesterday's or tomorrow's log, not the template, not notes, not source files. Make those edits with the Write and Edit tools, never through the shell (no `>>`, `sed`, `tee`).
 
 When a change to any other file would help, do not make it. State the change you would make, line by line, and ask the user for a yes. A yes to one change is not a yes to the next.
 
@@ -94,7 +95,7 @@ On the yes, in this order: add a Decisions row quoting the yes; launch; set the 
 
 The tracker is today's second file. Its sections and their rules:
 
-- **Lanes**: one row per item: `| item | owner | state | since | due | checklist |`. Owner is the user's name, `coordinator`, or a dispatched context. State is one of `open`, `running HH:MM`, `waiting`, `done`; no other words. A lane going to `done` ticks its checklist item in today's log.
+- **Lanes**: one row per item: `| item | owner | state | since | due | checklist |`. Owner is the user's name, `coordinator`, or a dispatched context. State is one of `open`, `running HH:MM`, `waiting`, `done`, `done HH:MM`; no other words. A lane going to `done` ticks its checklist item in today's log. `since` and `due` are what the board draws from: `due` is `HH:MM`, a date, a deadline name from the block, or blank. Blank means no estimate; never fill it in to make the board look complete.
 - **Decisions**: `| time | item | <user>'s words |`. Every yes, no, or assignment the user gives gets a row, quoting their words, written **before** you act on it.
 - **File ownership**: which context owns which paths. No two contexts edit the same file.
 - **Log**: append-only. Add lines with the clock time; never rewrite or reorder earlier lines.
@@ -102,6 +103,15 @@ The tracker is today's second file. Its sections and their rules:
 Decisions outrank Lanes. When a Lanes row disagrees with a later Decisions row (the user took an item, declined one, or assigned it), fix the row to match the decision first, before anything else. That needs no new yes: it is the user's own recorded word.
 
 An item the user owns is theirs. Never propose a dispatch for it, not even as an option, and never write a prompt for it. Say it is theirs, cite the decision, and ask one plain question: whether they are doing it now or want to hand it off. Only an explicit hand-off turns it back into a dispatchable item.
+
+## Board
+
+When the `## Coordinator` block has a `Board:` line naming a publish tool, the tracker has a board: a web page rendered from the tracker, never written by hand.
+
+- After the last tracker edit of any move, run `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/render_board.py --date <today>` from the workspace root. It writes `<log dir>/<date>-board.html` beside the tracker. Then publish that file with the tool the block names, passing the file path.
+- Republish to the URL in the tracker header (`Board: <url>`), or the block's URL when the header has none, never to a new one; write it into the header if it is missing. In a new session, read that artifact once before the first publish. With no URL anywhere: publish once, write `Board: <url>` into the tracker header, and say the block should carry it too (that edit needs a yes).
+- Never Write or Edit the html and never pass html text to the tool. Never add a time to the tracker so the board looks complete: a lane with no `due` draws open to the deadline, labelled "no estimate", and that is right.
+- If the renderer or the tool fails or is missing, finish the move and say the board was not republished and why. Never patch the html by hand to get around it. The tracker is the truth; the board is a view of it.
 
 ## Share
 

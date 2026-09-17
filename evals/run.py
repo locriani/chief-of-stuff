@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import hashlib
 import json
 import os
 import re
@@ -39,12 +40,16 @@ DEFAULT_MODEL = "opus"
 # project CLAUDE.md, which is the config channel under test, so it is not used.
 TOOLS = ["Bash", "Read", "Glob", "Grep", "Write", "Edit", "Agent"]
 # `mv`/`mkdir` are for filing moves (PARA); no `cp` or `rm`, so a "move" cannot become a copy or a delete.
-ALLOWED = ["Bash(date:*)", "Bash(TZ=*)", "Bash(mv:*)", "Bash(mkdir:*)", "Read", "Glob", "Grep", "Write(./**)", "Edit(./**)"]
+BOARD_RENDERER = PLUGIN_ROOT / "scripts" / "render_board.py"
+# The board renderer is the one script the agent may run: html comes from code, never from the agent.
+ALLOWED = ["Bash(date:*)", "Bash(TZ=*)", "Bash(mv:*)", "Bash(mkdir:*)", f"Bash(python3 {BOARD_RENDERER}:*)", "Read", "Glob", "Grep", "Write(./**)", "Edit(./**)"]
 DISALLOWED = ["Bash(railway:*)", "Bash(git commit:*)", "Bash(git add:*)", "Bash(git push:*)"]
 # These reach real Claude sessions on this machine. No eval run may expose them.
 PEER_TOOLS = ("ListAgents", "SendMessage")
 MOCK_CALENDAR = EVALS / "mock_calendar.py"
 CALENDAR_TOOL = "mcp__calendar__list_events"
+MOCK_BOARD = EVALS / "mock_board.py"
+BOARD_TOOL = "mcp__board__publish"
 
 # `{{name}}`, or `{{now+Nh}}` / `{{now-Nh|local}}` / `{{now+Nh|hhmm}}` for times relative to render time.
 TOKEN = re.compile(r"\{\{\s*([a-z_]+)(?:([+-]\d+)h)?(?:\|([a-z]+))?\s*\}\}")
@@ -91,7 +96,7 @@ def parse_stream(events: list[dict[str, Any]]) -> Stream:
     return s
 
 
-def check_arm(init: dict[str, Any], arm: str, agent_flag_used: bool = False, needs_calendar: bool = False, model: str | None = None) -> tuple[bool, str]:
+def check_arm(init: dict[str, Any], arm: str, agent_flag_used: bool = False, needs_calendar: bool = False, model: str | None = None, needs_board: bool = False) -> tuple[bool, str]:
     """Confirm the session loaded what the arm claims, so a silent fallback cannot pass."""
     exposed = [t for t in PEER_TOOLS if t in init.get("tools", [])]
     if exposed:
@@ -102,6 +107,10 @@ def check_arm(init: dict[str, Any], arm: str, agent_flag_used: bool = False, nee
         servers = {m.get("name"): m.get("status") for m in init.get("mcp_servers", [])}
         if servers.get("calendar") != "connected":
             return False, f"mock calendar not connected: {servers}"
+    if needs_board:
+        servers = {m.get("name"): m.get("status") for m in init.get("mcp_servers", [])}
+        if servers.get("board") != "connected":
+            return False, f"mock board not connected: {servers}"
     agents = init.get("agents", [])
     present = any(a == AGENT or a.endswith(":" + AGENT) for a in agents)
     if arm == "agent":
@@ -180,6 +189,10 @@ class RunRecord:
     mock_calls: list[dict[str, Any]] = field(default_factory=list)
     before_dir: Path | None = None
 
+    @property
+    def publishes(self) -> list[dict[str, Any]]:
+        return [c for c in self.mock_calls if c.get("tool") == "publish"]
+
 
 def grade(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
     kind = g.get("type")
@@ -195,6 +208,8 @@ def grade(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
         return _duration_stated(g, rec)
     if kind in FILE_GRADERS:
         return FILE_GRADERS[kind](g, rec)
+    if kind in BOARD_GRADERS:
+        return BOARD_GRADERS[kind](g, rec)
     raise ValueError(f"unknown grader type {kind!r}")
 
 
@@ -405,6 +420,135 @@ def load_cases(patterns: list[str]) -> list[Case]:
     return cases
 
 
+def _last_published_html(rec: RunRecord) -> tuple[str | None, str]:
+    pubs = rec.publishes
+    if not pubs:
+        return None, "no publish in this turn"
+    stored = Path(pubs[-1].get("stored", ""))
+    if not stored.is_file():
+        return None, f"stored copy missing: {stored}"
+    return stored.read_text(), f"{len(pubs)} publish(es), last {pubs[-1].get('url')}"
+
+
+def _board_published(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
+    """At least `min` publishes; the last html names every lane in `lanes`, the `deadline` instant, and matches `html_match`."""
+    want = g.get("min", 1)
+    html_text, note = _last_published_html(rec)
+    if len(rec.publishes) < want:
+        return False, f"{len(rec.publishes)} publish(es); want >= {want}"
+    if html_text is None:
+        return False, note
+    problems = [f"lane not on board: {lane!r}" for lane in g.get("lanes", []) if _esc_html(lane) not in html_text]
+    if "deadline" in g and g["deadline"] not in html_text:
+        problems.append(f"deadline {g['deadline']} not on board")
+    if "html_match" in g and not re.search(g["html_match"], html_text):
+        problems.append(f"/{g['html_match']}/ not in board")
+    return (not problems), ("; ".join(problems) if problems else note)
+
+
+def _esc_html(text: str) -> str:
+    import html as _html
+    return _html.escape(text, quote=True)
+
+
+META = re.compile(r'<meta name="tracker-sha256" content="([0-9a-f]{64})">')
+
+
+def _board_matches_tracker(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
+    """sha256 of the final tracker == the meta in the last published html == the meta in the html on disk."""
+    tracker = _read(rec.fixture_dir, g["tracker"])
+    if tracker is None:
+        return False, f"{g['tracker']} missing"
+    want = hashlib.sha256(tracker.encode()).hexdigest()
+    published, note = _last_published_html(rec)
+    if published is None:
+        return False, note
+    m = META.search(published)
+    if not m:
+        return False, "published html has no tracker-sha256 meta (not produced by the renderer?)"
+    if m.group(1) != want:
+        return False, "published board is stale: tracker edited after the last publish"
+    on_disk = _read(rec.fixture_dir, g["html"]) if "html" in g else None
+    if "html" in g:
+        if on_disk is None:
+            return False, f"{g['html']} missing on disk"
+        d = META.search(on_disk)
+        if not d or d.group(1) != want:
+            return False, f"{g['html']} on disk does not match the tracker"
+    return True, f"board sha {want[:12]} matches the tracker"
+
+
+def _board_url_fixed(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
+    """Every publish went to one URL, the tracker header carries it, and it equals `expect` if given."""
+    urls = sorted({p.get("url") for p in rec.publishes})
+    if not urls:
+        return False, "no publish"
+    if len(urls) > 1:
+        return False, f"published to more than one url: {urls}"
+    url = urls[0]
+    if "expect" in g and url != g["expect"]:
+        return False, f"published to {url}, want {g['expect']}"
+    tracker = _read(rec.fixture_dir, g["tracker"]) or ""
+    head = tracker.split("## Lanes", 1)[0]
+    m = re.search(r"Board:\s*(\S+)", head)
+    header = m.group(1).rstrip(".,;") if m else None
+    if header != url:
+        return False, f"tracker header Board: {header!r}, published to {url!r}"
+    return True, f"one url {url}, in the header"
+
+
+BAR = re.compile(r'<[^>]*class="[^"]*\bbar\b[^"]*"[^>]*>')
+ATTR = re.compile(r'data-([a-z-]+)="([^"]*)"')
+
+
+def _board_bars(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
+    """Bars cite their sources: each listed bar has the given data-*-src (and label); every end source is a known kind."""
+    html_text, note = _last_published_html(rec)
+    if html_text is None:
+        return False, note
+    bars = {}
+    for tag in BAR.findall(html_text):
+        attrs = dict(ATTR.findall(tag))
+        if "item" in attrs:
+            bars.setdefault(attrs["item"], attrs)
+    problems = [f"{item!r}: end src {a.get('end-src')!r}" for item, a in bars.items() if a.get("end-src") not in ("due", "state", "deadline")]
+    for want in g.get("bars", []):
+        a = bars.get(_esc_html(want["item"]))
+        if a is None:
+            problems.append(f"no bar for {want['item']!r}")
+            continue
+        for key in ("start_src", "end_src", "label"):
+            if key in want and a.get(key.replace("_", "-")) != want[key]:
+                problems.append(f"{want['item']!r}: {key} {a.get(key.replace('_', '-'))!r}, want {want[key]!r}")
+    for name in g.get("deadline_lines", []):
+        if f'data-deadline-name="{_esc_html(name)}"' not in html_text:
+            problems.append(f"no deadline line for {name!r}")
+    return (not problems), ("; ".join(problems) if problems else f"{len(bars)} bar(s) cite their sources")
+
+
+BOARD_GRADERS = {
+    "board_published": _board_published,
+    "board_matches_tracker": _board_matches_tracker,
+    "board_url_fixed": _board_url_fixed,
+    "board_bars": _board_bars,
+}
+
+
+def board_mcp_config(log: Path, store: Path, root: Path, tz: str, known_url: str | None) -> dict[str, Any]:
+    args = [str(MOCK_BOARD.resolve()), "--log", str(log), "--store", str(store), "--root", str(root), "--tz", tz]
+    if known_url:
+        args += ["--known-url", known_url]
+    return {"mcpServers": {"board": {"type": "stdio", "command": sys.executable, "args": args}}}
+
+
+def merge_mcp(*configs: dict[str, Any] | None) -> dict[str, Any] | None:
+    servers: dict[str, Any] = {}
+    for c in configs:
+        if c:
+            servers.update(c.get("mcpServers", {}))
+    return {"mcpServers": servers} if servers else None
+
+
 def calendar_mcp_config(events: Path, log: Path, tz: str) -> dict[str, Any]:
     args = [str(MOCK_CALENDAR.resolve()), "--events", str(events), "--log", str(log), "--tz", tz]
     return {"mcpServers": {"calendar": {"type": "stdio", "command": sys.executable, "args": args}}}
@@ -413,7 +557,7 @@ def calendar_mcp_config(events: Path, log: Path, tz: str) -> dict[str, Any]:
 def command(case: Case, arm: str, model: str, prompt: str | None, mcp_config: dict[str, Any] | None = None) -> list[str]:
     """A `prompt` of None means a multi-turn case: user turns arrive as stream-json on stdin."""
     mcp_config = mcp_config or {"mcpServers": {}}
-    allowed = ALLOWED + ([CALENDAR_TOOL] if "calendar" in mcp_config["mcpServers"] else [])
+    allowed = ALLOWED + ([CALENDAR_TOOL] if "calendar" in mcp_config["mcpServers"] else []) + ([BOARD_TOOL] if "board" in mcp_config["mcpServers"] else [])
     cmd = [
         "claude", "-p", *([prompt] if prompt is not None else []),
         "--model", model,
@@ -616,6 +760,11 @@ def run_one(case: Case, arm: str, model: str, out: Path) -> tuple[list[tuple[str
             events.write_text(render((case.root / spec["calendar"]).read_text(), ctx))
             calls_log.touch()
             mcp_config = calendar_mcp_config(events, calls_log, tz)
+        if spec.get("board"):
+            # The board publisher logs into the same calls file as the calendar, tagged `"tool": "publish"`.
+            (out / "calendar").mkdir(parents=True, exist_ok=True)
+            calls_log.touch()
+            mcp_config = merge_mcp(mcp_config, board_mcp_config(calls_log, out / "board", work, tz, spec["board"].get("url")))
         if "turns" in spec:
             return run_turns(spec, arm, model, out, work, env, mcp_config, calls_log, tz)
         cmd = command(case, arm, model, spec["prompt"], mcp_config=mcp_config)
@@ -641,7 +790,7 @@ def run_one(case: Case, arm: str, model: str, out: Path) -> tuple[list[tuple[str
     }
     if proc.returncode != 0 or stream.result is None:
         return [], f"claude exit {proc.returncode}: {proc.stderr.strip()[:200]}", meta
-    ok, detail = check_arm(stream.init, arm, agent_flag_used="--agent" in cmd and arm != "agent", needs_calendar="calendar" in spec, model=model)
+    ok, detail = check_arm(stream.init, arm, agent_flag_used="--agent" in cmd and arm != "agent", needs_calendar="calendar" in spec, model=model, needs_board=bool(spec.get("board")))
     if not ok:
         return [], f"arm check: {detail}", meta
     mock_calls = [json.loads(l) for l in calls_log.read_text().splitlines() if l.strip()] if calls_log.exists() else []
@@ -675,7 +824,7 @@ def run_turns(spec: dict[str, Any], arm: str, model: str, out: Path, work: Path,
     }
     if not streams or streams[0].result is None:
         return [], "claude produced no result for turn 1", meta
-    ok, detail = check_arm(streams[0].init, arm, agent_flag_used="--agent" in cmd and arm != "agent", needs_calendar="calendar" in spec, model=model)
+    ok, detail = check_arm(streams[0].init, arm, agent_flag_used="--agent" in cmd and arm != "agent", needs_calendar="calendar" in spec, model=model, needs_board=bool(spec.get("board")))
     if not ok:
         return [], f"arm check: {detail}", meta
     calls = [json.loads(l) for l in calls_log.read_text().splitlines() if l.strip()] if calls_log.exists() else []

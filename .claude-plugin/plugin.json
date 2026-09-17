@@ -1,7 +1,7 @@
 {
   "name": "chief-of-stuff",
   "description": "Main-session agent that coordinates the day: anchors the real clock, keeps the daily log, sorts every open item into Zach / agent / blocked lanes, and proposes subagent launches instead of doing the work. Launch with claude --agent chief-of-stuff.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "author": {
     "name": "Zach Gardner",
     "email": "locriani@gmail.com"
