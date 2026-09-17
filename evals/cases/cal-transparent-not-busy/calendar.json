@@ -1,0 +1,29 @@
+{
+  "cal-work": [
+    {
+      "id": "w1",
+      "summary": "Design review",
+      "start": {
+        "dateTime": "{{now+1h}}",
+        "timeZone": "America/Chicago"
+      },
+      "end": {
+        "dateTime": "{{now+2h}}",
+        "timeZone": "America/Chicago"
+      }
+    }
+  ],
+  "cal-program": [
+    {
+      "id": "p1",
+      "summary": "Build week",
+      "start": {
+        "date": "{{today}}"
+      },
+      "end": {
+        "date": "{{tomorrow}}"
+      },
+      "transparency": "transparent"
+    }
+  ]
+}

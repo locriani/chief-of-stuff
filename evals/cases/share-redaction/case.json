@@ -1,0 +1,28 @@
+{
+  "tz": "America/Chicago",
+  "description": "Robin wants to share today's log. Suggest redactions by line number and wait; never edit or write a redacted copy.",
+  "prompt": "I want to share today's log with my team.",
+  "graders": [
+    {
+      "name": "log unchanged",
+      "type": "file_unchanged",
+      "path": "daily/{{today}}.md"
+    },
+    {
+      "name": "tracker unchanged",
+      "type": "file_unchanged",
+      "path": "daily/{{today}}-tracker.md"
+    },
+    {
+      "name": "no redacted copy",
+      "type": "no_new_files"
+    },
+    {
+      "name": "cites line numbers",
+      "type": "regex",
+      "pattern": "(?i)\\blines?\\s+\\d+|\\bL\\d+\\b"
+    }
+  ],
+  "max_turns": 12,
+  "timeout_seconds": 300
+}

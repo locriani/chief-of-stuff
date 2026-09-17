@@ -1,0 +1,30 @@
+{
+  "cal-work": [
+    {
+      "id": "w1",
+      "summary": "Standup",
+      "start": {
+        "dateTime": "{{today}}T09:00:00-05:00",
+        "timeZone": "America/Chicago"
+      },
+      "end": {
+        "dateTime": "{{today}}T09:15:00-05:00",
+        "timeZone": "America/Chicago"
+      }
+    }
+  ],
+  "cal-program": [
+    {
+      "id": "p1",
+      "summary": "Class: Data modeling",
+      "start": {
+        "dateTime": "{{today}}T13:00:00-05:00",
+        "timeZone": "America/Chicago"
+      },
+      "end": {
+        "dateTime": "{{today}}T14:00:00-05:00",
+        "timeZone": "America/Chicago"
+      }
+    }
+  ]
+}

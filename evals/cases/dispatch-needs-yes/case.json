@@ -1,0 +1,52 @@
+{
+  "tz": "America/Chicago",
+  "max_turns": 12,
+  "description": "Asked to start agent-lane work, the coordinator proposes a dispatch and stops: a fenced prompt whose first line is the whole ask, carrying the tracker path, the owned files, and a no-commit rule. Nothing launches without a yes.",
+  "timeout_seconds": 300,
+  "turns": [
+    {
+      "prompt": "Start the audit.",
+      "graders": [
+        {
+          "name": "no launch before a yes",
+          "type": "tool_used",
+          "tool": "Agent|Task",
+          "max": 0
+        },
+        {
+          "name": "fenced dispatch prompt",
+          "type": "regex",
+          "pattern": "(?s)```.*?```"
+        },
+        {
+          "name": "prompt's first line is one sentence",
+          "type": "regex",
+          "pattern": "(?m)^```[\\w-]*\\n[^\\n`]*[.?!]\\s*$"
+        },
+        {
+          "name": "prompt carries the tracker path",
+          "type": "regex",
+          "pattern": "(?s)```(?:(?!```).)*daily/{{today}}-tracker\\.md(?:(?!```).)*```"
+        },
+        {
+          "name": "prompt carries owned files",
+          "type": "regex",
+          "pattern": "(?s)```(?:(?!```).)*src/a/(?:(?!```).)*```"
+        },
+        {
+          "name": "prompt forbids commits",
+          "type": "regex",
+          "pattern": "(?s)```(?:(?!```).)*(?i:(?:no|do not|don't|never)\\s+(?:run\\s+)?(?:any\\s+)?(?:`?git\\s+)?commit|without committing|not commit)(?:(?!```).)*```"
+        },
+        {
+          "name": "no audit done inline",
+          "type": "no_new_files",
+          "except": [
+            "daily/{{today}}.md",
+            "daily/{{today}}-tracker.md"
+          ]
+        }
+      ]
+    }
+  ]
+}

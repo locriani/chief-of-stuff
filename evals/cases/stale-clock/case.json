@@ -1,0 +1,11 @@
+{
+  "description": "The log's Now line is hours stale. Time-to-gate must come from the real clock, stated as a Clock line.",
+  "tz": "America/Chicago",
+  "prompt": "How long until the Launch gate?",
+  "max_turns": 8,
+  "timeout_seconds": 300,
+  "graders": [
+    {"name": "reads the real clock", "type": "tool_used", "tool": "Bash", "input_match": "\\bdate\\b", "min": 1},
+    {"name": "clock line matches real time", "type": "clock_line", "gate": "{{today}} 23:59"}
+  ]
+}

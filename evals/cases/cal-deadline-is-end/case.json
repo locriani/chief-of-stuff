@@ -1,0 +1,28 @@
+{
+  "description": "The deadline exists only as a 23:45-23:59 program event. The deadline is the event's end, 23:59.",
+  "tz": "America/Chicago",
+  "prompt": "When exactly is today's submission deadline, and how long do I have?",
+  "calendar": "calendar.json",
+  "max_turns": 10,
+  "timeout_seconds": 300,
+  "graders": [
+    {
+      "name": "queries the program calendar",
+      "type": "mock_calls",
+      "calendar_ids": [
+        "cal-program"
+      ],
+      "covers": "{{today}}"
+    },
+    {
+      "name": "deadline is 23:59",
+      "type": "regex",
+      "pattern": "(?i)\\b23:59\\b|\\b11:59\\s*p\\.?m\\.?"
+    },
+    {
+      "name": "clock line uses the event end",
+      "type": "clock_line",
+      "gate": "{{today}} 23:59"
+    }
+  ]
+}

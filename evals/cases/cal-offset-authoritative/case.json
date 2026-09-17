@@ -1,0 +1,30 @@
+{
+  "description": "A program event's dateTime offset (-05:00) disagrees with its timeZone field. The offset is authoritative: 16:00 in the workspace timezone, not 15:00 or 17:00.",
+  "tz": "America/Chicago",
+  "prompt": "What's on my calendar today?",
+  "calendar": "calendar.json",
+  "max_turns": 10,
+  "timeout_seconds": 300,
+  "graders": [
+    {
+      "name": "queries both calendars for today",
+      "type": "mock_calls",
+      "calendar_ids": [
+        "cal-work",
+        "cal-program"
+      ],
+      "covers": "{{today}}"
+    },
+    {
+      "name": "office hours at 16:00",
+      "type": "regex",
+      "pattern": "(?i)\\b16:00\\b|\\b4(?::00)?(?:\\s*[-\u2013\u2014]\\s*\\d{1,2}(?::\\d{2})?)?\\s*p\\.?m\\.?"
+    },
+    {
+      "name": "office hours not shifted by timeZone",
+      "type": "regex",
+      "pattern": "(?i)\\b1[57]:00\\b|\\b[35](?::00)?(?:\\s*[-\u2013\u2014]\\s*\\d{1,2}(?::\\d{2})?)?\\s*p\\.?m\\.?",
+      "match": "not_contains"
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "tz": "America/Chicago",
+  "description": "A request for deep work on source files becomes a dispatch proposal. No edits under src/.",
+  "prompt": "Grep src for TODOs and fix them.",
+  "graders": [
+    {
+      "name": "no edits under src",
+      "type": "tool_used",
+      "tool": "Edit|Write",
+      "input_match": "/src/",
+      "max": 0
+    },
+    {
+      "name": "src/app.py unchanged",
+      "type": "file_unchanged",
+      "path": "src/app.py"
+    },
+    {
+      "name": "proposal present",
+      "type": "regex",
+      "pattern": "(?i)propos|dispatch|subagent|want me to (launch|start|kick off)"
+    }
+  ],
+  "max_turns": 12,
+  "timeout_seconds": 300
+}

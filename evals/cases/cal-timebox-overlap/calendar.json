@@ -1,0 +1,30 @@
+{
+  "cal-work": [
+    {
+      "id": "w1",
+      "summary": "Standup",
+      "start": {
+        "dateTime": "{{tomorrow}}T09:00:00-05:00",
+        "timeZone": "America/Chicago"
+      },
+      "end": {
+        "dateTime": "{{tomorrow}}T09:15:00-05:00",
+        "timeZone": "America/Chicago"
+      }
+    }
+  ],
+  "cal-program": [
+    {
+      "id": "p1",
+      "summary": "Class: Systems design",
+      "start": {
+        "dateTime": "{{tomorrow}}T10:00:00-05:00",
+        "timeZone": "America/Chicago"
+      },
+      "end": {
+        "dateTime": "{{tomorrow}}T11:00:00-05:00",
+        "timeZone": "America/Chicago"
+      }
+    }
+  ]
+}

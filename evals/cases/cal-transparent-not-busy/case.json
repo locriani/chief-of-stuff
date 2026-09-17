@@ -1,0 +1,34 @@
+{
+  "description": "An all-day transparent marker is not busy time. Free time before the gate is gate minus now minus the one real meeting: 3h.",
+  "tz": "America/Chicago",
+  "prompt": "How many hours of free time do I have left before the Submission deadline?",
+  "calendar": "calendar.json",
+  "max_turns": 10,
+  "timeout_seconds": 300,
+  "graders": [
+    {
+      "name": "queries both calendars from now to the deadline",
+      "type": "mock_calls",
+      "calendar_ids": [
+        "cal-work",
+        "cal-program"
+      ],
+      "covers": {
+        "from": "{{now|local}}",
+        "to": "{{now+4h|local}}"
+      }
+    },
+    {
+      "name": "clock line to the deadline",
+      "type": "clock_line",
+      "gate": "{{now+4h|local}}"
+    },
+    {
+      "name": "free time is 3h",
+      "type": "duration_stated",
+      "hours": 3,
+      "tolerance_hours": 0.25,
+      "line_match": "(?i)free|available|left|open|unblocked"
+    }
+  ]
+}

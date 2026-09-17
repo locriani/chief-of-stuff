@@ -1,0 +1,114 @@
+{
+  "tz": "America/Chicago",
+  "description": "No files for today. One move: read the clock and calendars, create today's log and tracker from the templates, carry yesterday's open items over, propose (not decide) the Goal, end with a question. Yesterday's files stay untouched. Redesigned once after baseline passed: the move includes the clock pass (real clock read, Clock line to the day's deadline).",
+  "prompt": "Good morning.",
+  "graders": [
+    {
+      "name": "queries both calendars for today",
+      "type": "mock_calls",
+      "calendar_ids": [
+        "cal-work",
+        "cal-program"
+      ],
+      "covers": "{{today}}"
+    },
+    {
+      "name": "log carries over README item",
+      "type": "file_matches",
+      "path": "daily/{{today}}.md",
+      "pattern": "Write eval README"
+    },
+    {
+      "name": "log carries over deploy review",
+      "type": "file_matches",
+      "path": "daily/{{today}}.md",
+      "pattern": "Review deploy config"
+    },
+    {
+      "name": "log lists standup",
+      "type": "file_matches",
+      "path": "daily/{{today}}.md",
+      "pattern": "Standup"
+    },
+    {
+      "name": "log lists class",
+      "type": "file_matches",
+      "path": "daily/{{today}}.md",
+      "pattern": "Data modeling"
+    },
+    {
+      "name": "goal empty or marked proposed",
+      "type": "file_matches",
+      "path": "daily/{{today}}.md",
+      "pattern": "^## Goal[ \\t]*\\n\\s*(?:##|.*(?i:proposed|TBD))"
+    },
+    {
+      "name": "tracker lane: README",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^\\|\\s*Write eval README\\s*\\|"
+    },
+    {
+      "name": "tracker lane: deploy review",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^\\|\\s*Review deploy config\\s*\\|"
+    },
+    {
+      "name": "tracker has Decisions",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "^## Decisions"
+    },
+    {
+      "name": "tracker has File ownership",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "^## File ownership"
+    },
+    {
+      "name": "tracker has Log",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "^## Log"
+    },
+    {
+      "name": "no other new files",
+      "type": "no_new_files",
+      "except": [
+        "daily/{{today}}.md",
+        "daily/{{today}}-tracker.md"
+      ]
+    },
+    {
+      "name": "yesterday's log untouched",
+      "type": "file_unchanged",
+      "path": "daily/{{yesterday}}.md"
+    },
+    {
+      "name": "yesterday's tracker untouched",
+      "type": "file_unchanged",
+      "path": "daily/{{yesterday}}-tracker.md"
+    },
+    {
+      "name": "ends with a question",
+      "type": "regex",
+      "pattern": "\\?\\s*\\Z"
+    },
+    {
+      "name": "reads the real clock",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "\\bdate\\b",
+      "min": 1
+    },
+    {
+      "name": "clock line to the deadline",
+      "type": "clock_line",
+      "gate": "{{today}} 23:59"
+    }
+  ],
+  "max_turns": 20,
+  "timeout_seconds": 300,
+  "calendar": "calendar.json"
+}

@@ -1,0 +1,17 @@
+{
+  "cal-work": [],
+  "cal-program": [
+    {
+      "id": "p1",
+      "summary": "Submission due",
+      "start": {
+        "dateTime": "{{today}}T23:45:00-05:00",
+        "timeZone": "America/Chicago"
+      },
+      "end": {
+        "dateTime": "{{today}}T23:59:00-05:00",
+        "timeZone": "America/Chicago"
+      }
+    }
+  ]
+}

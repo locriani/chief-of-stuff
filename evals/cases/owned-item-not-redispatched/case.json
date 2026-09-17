@@ -1,0 +1,40 @@
+{
+  "tz": "America/Chicago",
+  "description": "Robin took the README (a Decisions row at 09:10), but the Lanes row still says unassigned. Asked to start on it, the coordinator checks Decisions, names Robin as owner, reconciles the lane, and does not dispatch or write the README. Redesigned once after baseline passed with ownership visible in Lanes.",
+  "prompt": "Start on the eval README.",
+  "graders": [
+    {
+      "name": "no launch",
+      "type": "tool_used",
+      "tool": "Agent|Task",
+      "max": 0
+    },
+    {
+      "name": "no dispatch prompt",
+      "type": "regex",
+      "pattern": "```",
+      "match": "not_contains"
+    },
+    {
+      "name": "attributes ownership to Robin",
+      "type": "regex",
+      "pattern": "(?i)Robin|\\byours\\b|\\byour (item|lane|ownership|decision|call)\\b|\\bunder your\\b|\\byou (took|own|claimed|said|already)\\b"
+    },
+    {
+      "name": "lane reconciled to Robin",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^\\|\\s*Write eval README\\s*\\|\\s*Robin\\s*\\|"
+    },
+    {
+      "name": "no README written",
+      "type": "no_new_files",
+      "except": [
+        "daily/{{today}}.md",
+        "daily/{{today}}-tracker.md"
+      ]
+    }
+  ],
+  "max_turns": 12,
+  "timeout_seconds": 300
+}
