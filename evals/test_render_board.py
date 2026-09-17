@@ -341,6 +341,12 @@ class DensityTest(unittest.TestCase):
         self.assertIn("<li><time>07:46</time><span>the worker left the registry</span></li>", body)
         self.assertIn("<li><time></time><span>record fetch tools → service tools</span></li>", body)
 
+    def test_history_expands_fully(self) -> None:
+        hist_css = " ".join(re.findall(r"\.hist[^{]*\{[^}]*\}", self.html))
+        self.assertIn(".hist{", hist_css)
+        self.assertNotIn("max-height", hist_css)
+        self.assertNotIn("overflow", hist_css)
+
     def test_table_rows_carry_state(self) -> None:
         self.assertRegex(self.html, r'<tr data-state="done"><td>Draft release notes')
         self.assertIn("<details><summary>Service architecture refactor</summary>", self.html)
