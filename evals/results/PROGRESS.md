@@ -584,7 +584,7 @@ Zach, 09:52, on a screenshot of the live board: "this is too dense." The live 09
 - Folded lanes keep their citations as hidden `.member` spans (`data-item`, `data-start-src`, `data-end-src`, `data-label`). Done lanes appear only in the Lanes table.
 - Bands, deadline lines, and the now-line sit in one track-relative `.overlay`; the `scaleX` hack, per-element `margin-left`, and the JS `*66` are gone.
 - `short_name`: cut at the first `": "` (when 12+ chars remain), then at `" ("` past 48 chars, then a 48-char word-boundary cap. Used in chart names, the queue, and the table summary.
-- `history_lines`: the rest of a long item, one line per clause (split on `; ` and `. ` outside parentheses), the first `HH:MM` outside parentheses pulled into a time column. The Lanes table shows it in a `<details>` scroll box.
+- `history_lines`: the rest of a long item, one line per clause (split on `; ` and `. ` outside parentheses), the first `HH:MM` outside parentheses pulled into a time column. The Lanes table shows it in a `<details>` that opens to full height (Zach, 10:53: "expanding the elements should fully expand and not have a scroll in a scroll"; red `'max-height' unexpectedly found`, green `Ran 125 tests OK`).
 - `long_items` (items over 80 chars) in the CLI summary and the board meta line.
 
 **Grader.** `test_mock_board` red: `False is not true : no bar for 'Notes'` (a lane cited only as a folded member). `_board_bars` now reads any tag carrying `data-item` and `data-end-src`. Case `board-republish-on-lane-change`: `html_match` moved from `class="bar done…"` to the table row `<tr data-state="done"><td>…Security audit`.

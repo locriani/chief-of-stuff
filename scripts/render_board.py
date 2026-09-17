@@ -566,7 +566,7 @@ table{{border-collapse:collapse;width:100%;max-width:100%}} td,th{{text-align:le
 .dline{{position:absolute;top:0;bottom:0;border-left:2px dashed var(--dl);transform:translateX(-1px)}} .dline span{{position:absolute;top:-16px;left:4px;font-size:11px;color:var(--dl);white-space:nowrap}}
 .nowline{{position:absolute;top:0;bottom:0;border-left:2px solid var(--now)}}
 details summary{{cursor:pointer}} details[open] summary{{margin-bottom:4px}}
-.hist{{list-style:none;margin:4px 0 2px;padding:0 0 0 10px;border-left:2px solid var(--line);max-height:12.5em;overflow:auto;font-size:12px;line-height:1.5;color:var(--muted);display:grid;gap:3px}}
+.hist{{list-style:none;margin:4px 0 2px;padding:0 0 0 10px;border-left:2px solid var(--line);font-size:12px;line-height:1.5;color:var(--muted);display:grid;gap:3px}}
 .hist li{{display:grid;grid-template-columns:3em 1fr;gap:8px}} .hist time{{font-family:ui-monospace,monospace;font-variant-numeric:tabular-nums;color:var(--fg)}}
 @media (max-width:520px){{.strip{{--name-w:36%}}}}
 </style>
