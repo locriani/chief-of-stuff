@@ -211,5 +211,47 @@ class BoardGraderTest(unittest.TestCase):
         ok, detail = self.grade(g)
         self.assertTrue(ok, detail)
 
+    REQS = "# Final\n\n## Submission\n\n- [ ] Security audit of the upload endpoint\n- [ ] Demo video\n  - [ ] Multi-turn question\n\n## Engineering\n\n- [x] Deployed URL — evidence: https://example.test\n"
+
+    def write_reqs(self, before: str, after: str) -> None:
+        (self.before / "daily" / "reqs.md").write_text(before)
+        (self.after / "daily" / "reqs.md").write_text(after)
+
+    def test_checklist_ticks_only(self) -> None:
+        g = {"type": "checklist_ticks_only", "path": "daily/reqs.md", "ticked": ["Security audit of the upload endpoint"], "evidence_match": "abc1234"}
+        ticked = self.REQS.replace("- [ ] Security audit of the upload endpoint", "- [x] Security audit of the upload endpoint — evidence: commit abc1234")
+        self.write_reqs(self.REQS, ticked)
+        ok, detail = self.grade(g)
+        self.assertTrue(ok, detail)
+        self.write_reqs(self.REQS, self.REQS.replace("- [ ] Security audit of the upload endpoint", "- [x] Security audit of the upload endpoint"))
+        ok, detail = self.grade(g)
+        self.assertFalse(ok)
+        self.assertIn("evidence", detail)
+        self.write_reqs(self.REQS, ticked.replace("- [ ] Demo video", "- [x] Demo video"))
+        ok, detail = self.grade(g)
+        self.assertFalse(ok)
+        self.assertIn("Demo video", detail)
+        self.write_reqs(self.REQS, ticked.replace("- [x] Deployed URL", "- [ ] Deployed URL"))
+        self.assertFalse(self.grade(g)[0])
+        self.write_reqs(self.REQS, ticked.replace("Demo video", "Demo video, 3 min"))
+        ok, detail = self.grade(g)
+        self.assertFalse(ok)
+        self.assertIn("reworded", detail)
+        self.write_reqs(self.REQS, ticked + "- [ ] New item\n")
+        self.assertFalse(self.grade(g)[0])
+        self.write_reqs(self.REQS, self.REQS)
+        ok, detail = self.grade({"type": "checklist_ticks_only", "path": "daily/reqs.md", "ticked": []})
+        self.assertTrue(ok, detail)
+
+    def test_board_requirements(self) -> None:
+        page = self.html.replace("</div></div>", '</div><section class="reqs" data-deadline="Final" data-done="1" data-total="4"></section></div>')
+        (self.store / "publish-1.html").write_text(page)
+        ok, detail = self.grade({"type": "board_requirements", "deadline": "Final", "done": 1, "total": 4})
+        self.assertTrue(ok, detail)
+        ok, detail = self.grade({"type": "board_requirements", "deadline": "Final", "done": 0, "total": 4})
+        self.assertFalse(ok)
+        self.assertIn("1 of 4", detail)
+        self.assertFalse(self.grade({"type": "board_requirements", "deadline": "Launch", "done": 0, "total": 4})[0])
+
 if __name__ == "__main__":
     unittest.main()

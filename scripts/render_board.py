@@ -10,6 +10,10 @@ other active lane folds into one summary row. Week: running lanes and lanes with
 a bar; the rest fold into one row per deadline. Folded lanes keep their citations as `.member`
 spans. Done lanes and full item text appear only in the Lanes table.
 
+A deadline line may name a requirements file (`- Final: 2026-09-20 12:00; requirements `path``): checkbox
+lines under `## ` headings, evidence after ` — evidence: `. The board shows it, with a done count, for
+every deadline that has not passed.
+
     python3 render_board.py --date 2026-09-16 [--root <workspace>]
 
 Writes `<log dir>/<date>-board.html` beside the tracker and prints its path and one summary line.
@@ -36,6 +40,8 @@ NO_ESTIMATE = "no estimate"
 SHORT_NAME = 48
 LONG_ITEM = 80
 CLAUSE_TIME = re.compile(r"(?:^|\s)(?:at\s+)?(\d{1,2}:\d{2}):?(?=\s|$|[,;)])")
+REQ_LINE = re.compile(r"^(\s*)- \[([ xX])\]\s+(.*?)\s*$")
+EVIDENCE = " — evidence: "
 TICK_STEPS_H = (1, 2, 3, 4, 6)
 MAX_TICKS = 9
 
@@ -48,6 +54,15 @@ class ConfigError(Exception):
 class Deadline:
     name: str
     at: datetime
+    requirements: str | None = None
+
+
+@dataclass(frozen=True)
+class Req:
+    text: str
+    done: bool
+    evidence: str
+    depth: int
 
 
 @dataclass(frozen=True)
@@ -219,9 +234,11 @@ def parse_coordinator(text: str, today: date) -> Config:
     zone = ZoneInfo(tz)
     deadlines = []
     for name, value in nested.get("Deadlines", []):
-        m = DATE.match(_unquote(value))
+        when, *options = [part.strip() for part in value.split(";")]
+        m = DATE.match(_unquote(when))
         if m:
-            deadlines.append(Deadline(name, datetime(int(m[1]), int(m[2]), int(m[3]), int(m[4] or 23), int(m[5] or 59), tzinfo=zone)))
+            reqs = next((r.group(1) for o in options if (r := re.match(r"(?i)requirements\s+`?([^`]+?)`?\s*$", o))), None)
+            deadlines.append(Deadline(name, datetime(int(m[1]), int(m[2]), int(m[3]), int(m[4] or 23), int(m[5] or 59), tzinfo=zone), reqs))
     tracker = re.search(r"`([^`]+)`", top["Tracker"])
     board_tool = board_url = None
     if "Board" in top:
@@ -240,6 +257,23 @@ def parse_coordinator(text: str, today: date) -> Config:
         board_tool=board_tool,
         board_url=board_url,
     )
+
+
+def parse_requirements(text: str) -> list[tuple[str, list[Req]]]:
+    """Checkbox lines grouped under `## ` headings; indentation gives depth; anything else is a note and ignored."""
+    groups: list[tuple[str, list[Req]]] = []
+    for line in text.splitlines():
+        if line.startswith("## "):
+            groups.append((line[3:].strip(), []))
+            continue
+        m = REQ_LINE.match(line)
+        if not m:
+            continue
+        if not groups:
+            groups.append(("Requirements", []))
+        body, _, evidence = m.group(3).partition(EVIDENCE)
+        groups[-1][1].append(Req(body.strip(), m.group(2) != " ", evidence.strip(), len(m.group(1).expandtabs(2)) // 2))
+    return [(name, reqs) for name, reqs in groups if reqs]
 
 
 def _cells(line: str) -> list[str]:
@@ -481,7 +515,38 @@ def _tick_step(span: timedelta) -> timedelta:
     return timedelta(hours=TICK_STEPS_H[-1])
 
 
-def render(tracker_text: str, log_text: str, cfg: Config, now: datetime) -> str:
+def _inline(text: str) -> str:
+    """Escape, then render the three inline Markdown marks requirement lists use: `code`, **strong**, *em*."""
+    out = _esc(text)
+    out = re.sub(r"`([^`]+)`", r"<code>\1</code>", out)
+    out = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", out)
+    return re.sub(r"(?<![*\w])\*(?!\s)(.+?)(?<!\s)\*(?![*\w])", r"<em>\1</em>", out)
+
+
+def requirements_section(d: Deadline, text: str | None) -> str:
+    if text is None:
+        return f'<p class="warn" data-requirements-missing="{_esc(d.name)}">{_esc(d.name)} requirements file not found: {_esc(d.requirements or "")}</p>'
+    groups = parse_requirements(text)
+    items = [r for _, reqs in groups for r in reqs]
+    done, total = sum(r.done for r in items), len(items)
+    out = [
+        f'<section class="reqs" data-deadline="{_esc(d.name)}" data-done="{done}" data-total="{total}">',
+        f"<h2>{_esc(d.name)} requirements · {done} of {total}</h2>",
+        f'<div class="meter"><span style="width:{(done / total * 100) if total else 0:.1f}%"></span></div>',
+    ]
+    for name, reqs in groups:
+        g_done = sum(r.done for r in reqs)
+        opened = " open" if g_done < len(reqs) else ""
+        out.append(f'<details class="req-group"{opened}><summary>{_esc(name)} · {g_done} of {len(reqs)}</summary><ul>')
+        for r in reqs:
+            evidence = f'<span class="evidence">{_inline(r.evidence)}</span>' if r.evidence else ""
+            out.append(f'<li class="req {"done" if r.done else "open"} depth-{r.depth}"><span class="box">{"☑" if r.done else "☐"}</span><span class="text">{_inline(r.text)}</span>{evidence}</li>')
+        out.append("</ul></details>")
+    out.append("</section>")
+    return "\n".join(out)
+
+
+def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, requirements: dict[str, str | None] | None = None) -> str:
     sha = hashlib.sha256(tracker_text.encode()).hexdigest()
     tracker = parse_tracker(tracker_text)
     today, zone = now.date(), cfg.zone
@@ -541,12 +606,20 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime) -> str:
     queue_rows = "\n".join(f"<tr><td>{_esc(short_name(l.item))}</td><td>{_esc(l.due)}</td><td>{_esc(l.state)}</td></tr>" for l in queue) or '<tr><td colspan="3" class="muted">nothing waiting on you</td></tr>'
     running = [l for l in active if l.kind == "running"]
     waiting = [l for l in active if l.kind != "running"]
+    requirements = requirements or {}
+    req_decks = [d for d in cfg.deadlines if d.requirements and d.at >= now]
+    req_html = "\n".join(requirements_section(d, requirements.get(d.name)) for d in req_decks)
+    req_meta = "".join(
+        f'\n<meta name="requirements-sha256" data-deadline="{_esc(d.name)}" content="{hashlib.sha256(requirements[d.name].encode()).hexdigest()}">'
+        for d in req_decks
+        if requirements.get(d.name) is not None
+    )
     long_items = sum(1 for lane in lanes if len(lane.item) > LONG_ITEM)
     long_note = f" · {long_items} {'lane carries' if long_items == 1 else 'lanes carry'} history in the item cell" if long_items else ""
     tzname = now.strftime("%Z")
 
     return f"""<title>Board {today.isoformat()}</title>
-<meta name="tracker-sha256" content="{sha}">
+<meta name="tracker-sha256" content="{sha}">{req_meta}
 <style>
 :root{{--bg:#faf9f6;--fg:#1f1f1f;--muted:#6b6b6b;--line:#d9d6cf;--band:rgba(70,110,200,.14);--open:#8fb0e8;--running:#3f7ad6;--done:#b9b5ab;--dl:#c8361f;--now:#1f9d55;--zach:#e0a13a}}
 @media (prefers-color-scheme:dark){{:root:not([data-theme="light"]){{--bg:#141414;--fg:#ececec;--muted:#9a9a9a;--line:#333;--band:rgba(120,160,240,.18);--open:#3b5a8c;--running:#5d93ea;--done:#4a4a4a}}}}
@@ -566,6 +639,10 @@ table{{border-collapse:collapse;width:100%;max-width:100%}} td,th{{text-align:le
 .dline{{position:absolute;top:0;bottom:0;border-left:2px dashed var(--dl);transform:translateX(-1px)}} .dline span{{position:absolute;top:-16px;left:4px;font-size:11px;color:var(--dl);white-space:nowrap}}
 .nowline{{position:absolute;top:0;bottom:0;border-left:2px solid var(--now)}}
 details summary{{cursor:pointer}} details[open] summary{{margin-bottom:4px}}
+.reqs h2{{display:flex;gap:8px;align-items:baseline}} .meter{{height:4px;background:var(--line);border-radius:2px;margin:-4px 0 8px;overflow:hidden}} .meter span{{display:block;height:100%;background:var(--now)}}
+.req-group{{margin:6px 0}} .req-group summary{{font-weight:600;font-size:13px}} .req-group ul{{list-style:none;margin:4px 0 8px;padding:0;display:grid;gap:3px}}
+.req{{display:grid;grid-template-columns:1.4em 1fr;column-gap:6px;font-size:13px}} .req.depth-1{{margin-left:1.6em}} .req.depth-2{{margin-left:3.2em}} .req.done .text{{color:var(--muted)}}
+.req code{{font-family:ui-monospace,monospace;font-size:12px}} .req .evidence{{grid-column:2;color:var(--muted);font-size:12px}} .req .box{{font-variant-numeric:tabular-nums}}
 .hist{{list-style:none;margin:4px 0 2px;padding:0 0 0 10px;border-left:2px solid var(--line);font-size:12px;line-height:1.5;color:var(--muted);display:grid;gap:3px}}
 .hist li{{display:grid;grid-template-columns:3em 1fr;gap:8px}} .hist time{{font-family:ui-monospace,monospace;font-variant-numeric:tabular-nums;color:var(--fg)}}
 @media (max-width:520px){{.strip{{--name-w:36%}}}}
@@ -579,6 +656,7 @@ details summary{{cursor:pointer}} details[open] summary{{margin-bottom:4px}}
 <table><tr><th>item</th><th>due</th><th>state</th></tr>
 {queue_rows}
 </table>
+{req_html}
 
 <h2>Today</h2>
 <div class="meta">{len(day_bars)} scheduled · {len(day_folded)} folded into one row (no estimate or due after today) · bands are calendar events · green line is now</div>
@@ -645,7 +723,8 @@ def main(argv: list[str] | None = None) -> Path:
     log_text = log.read_text() if log.is_file() else ""
     tracker_text = tracker.read_text()
     out = tracker.with_name(f"{day}-board.html")
-    page = render(tracker_text, log_text, cfg, now)
+    req_texts = {d.name: ((root / d.requirements).read_text() if (root / d.requirements).is_file() else None) for d in cfg.deadlines if d.requirements}
+    page = render(tracker_text, log_text, cfg, now, requirements=req_texts)
     out.write_text(page)
     parsed = parse_tracker(tracker_text)
     bars = [day_bar(lane, cfg, now) for lane in parsed.lanes]
@@ -653,7 +732,9 @@ def main(argv: list[str] | None = None) -> Path:
     warnings = sum(1 for lane in parsed.lanes if lane.warning)
     long_items = sum(1 for lane in parsed.lanes if len(lane.item) > LONG_ITEM)
     print(out)
-    print(f"lanes={len(parsed.lanes)} no_estimate={no_est} warnings={warnings} long_items={long_items} tracker_sha256={hashlib.sha256(tracker_text.encode()).hexdigest()[:12]}")
+    req_counts = ",".join(f"{name}:{sum(r.done for _, rs in parse_requirements(t) for r in rs)}/{sum(len(rs) for _, rs in parse_requirements(t))}" for name, t in req_texts.items() if t is not None)
+    missing = sum(1 for t in req_texts.values() if t is None)
+    print(f"lanes={len(parsed.lanes)} no_estimate={no_est} warnings={warnings} long_items={long_items} requirements={req_counts or 'none'} requirements_missing={missing} tracker_sha256={hashlib.sha256(tracker_text.encode()).hexdigest()[:12]}")
     return out
 
 

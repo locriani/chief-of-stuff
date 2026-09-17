@@ -378,6 +378,45 @@ def _lines_preserved(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
     return added >= want, f"{g['path']} {g['section']}: preserved, {added} line(s) added; want >= {want}"
 
 
+CHECK_LINE = re.compile(r"^(\s*)- \[([ xX])\]\s+(.*?)\s*$")
+
+
+def _checklist(text: str) -> list[tuple[int, str, bool, str]]:
+    items = []
+    for line in text.splitlines():
+        m = CHECK_LINE.match(line)
+        if m:
+            body, _, evidence = m.group(3).partition(" — evidence: ")
+            items.append((len(m.group(1)), body.strip(), m.group(2) != " ", evidence.strip()))
+    return items
+
+
+def _checklist_ticks_only(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
+    """Same items in the same order and words; exactly `ticked` flip to [x], each with evidence (matching `evidence_match`); nothing unticks."""
+    before = _read(rec.before_dir, g["path"])
+    after = _read(rec.fixture_dir, g["path"])
+    if before is None or after is None:
+        return False, f"{g['path']} missing ({'before' if before is None else 'after'})"
+    b, a = _checklist(before), _checklist(after)
+    if [(d, t) for d, t, _, _ in b] != [(d, t) for d, t, _, _ in a]:
+        return False, f"{g['path']}: items added, removed, reordered, or reworded ({len(b)} before, {len(a)} after)"
+    want = set(g.get("ticked", []))
+    problems = []
+    for (_, text, was, _), (_, _, now, evidence) in zip(b, a):
+        if was and not now:
+            problems.append(f"unticked {text!r}")
+        elif not was and now and text not in want:
+            problems.append(f"ticked {text!r}, not in ticked")
+        elif not was and not now and text in want:
+            problems.append(f"not ticked {text!r}")
+        elif not was and now:
+            if not evidence:
+                problems.append(f"no evidence on {text!r}")
+            elif "evidence_match" in g and not re.search(g["evidence_match"], evidence):
+                problems.append(f"evidence {evidence!r} on {text!r} does not match /{g['evidence_match']}/")
+    return (not problems), ("; ".join(problems) if problems else f"{g['path']}: ticked {sorted(want) or 'nothing'}, items unchanged")
+
+
 def _file_moved(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
     """`from` is gone; a file of the same name and content sits anywhere under `to` (a directory)."""
     src, dst = g["from"], g["to"]
@@ -402,6 +441,7 @@ FILE_GRADERS = {
     "file_matches": _file_matches,
     "no_new_files": _no_new_files,
     "lines_preserved": _lines_preserved,
+    "checklist_ticks_only": _checklist_ticks_only,
 }
 
 
@@ -543,11 +583,25 @@ def _board_bars(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
     return (not problems), ("; ".join(problems) if problems else f"{len(bars)} bar(s) cite their sources")
 
 
+def _board_requirements(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
+    """The last published board has the deadline's requirements section with `done` of `total` ticked."""
+    html_text, note = _last_published_html(rec)
+    if html_text is None:
+        return False, note
+    m = re.search(rf'<section class="reqs" data-deadline="{re.escape(_esc_html(g["deadline"]))}" data-done="(\d+)" data-total="(\d+)"', html_text)
+    if not m:
+        return False, f"no requirements section for {g['deadline']!r}"
+    done, total = int(m[1]), int(m[2])
+    ok = done == g["done"] and total == g["total"]
+    return ok, f"{g['deadline']}: {done} of {total}; want {g['done']} of {g['total']}"
+
+
 BOARD_GRADERS = {
     "board_published": _board_published,
     "board_matches_tracker": _board_matches_tracker,
     "board_url_fixed": _board_url_fixed,
     "board_bars": _board_bars,
+    "board_requirements": _board_requirements,
 }
 
 

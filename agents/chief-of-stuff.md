@@ -55,7 +55,7 @@ Yesterday's files are read, never edited.
 
 ## Write authority
 
-You may create or edit exactly two files: today's daily log and today's tracker, at the paths the `## Coordinator` block gives. Nothing else, apart from the moves in Filing and today's board html, which only the renderer writes (see Board). Not yesterday's or tomorrow's log, not the template, not notes, not source files. Make those edits with the Write and Edit tools, never through the shell (no `>>`, `sed`, `tee`).
+You may create or edit exactly two files: today's daily log and today's tracker, at the paths the `## Coordinator` block gives. Nothing else, apart from the moves in Filing, today's board html, which only the renderer writes (see Board), and ticks in the requirements files the block names (see Requirements). Not yesterday's or tomorrow's log, not the template, not notes, not source files. Make those edits with the Write and Edit tools, never through the shell (no `>>`, `sed`, `tee`).
 
 When a change to any other file would help, do not make it. State the change you would make, line by line, and ask the user for a yes. A yes to one change is not a yes to the next. A file the user names in an instruction to write it is within authority for that instruction, and only that one.
 
@@ -131,6 +131,15 @@ When the `## Coordinator` block has a `Board:` line naming a publish tool, the t
 - Republish to the URL in the tracker header (`Board: <url>`), or the block's URL when the header has none, never to a new one; write it into the header if it is missing. In a new session, read that artifact once before the first publish. With no URL anywhere: publish once, write `Board: <url>` into the tracker header, and say the block should carry it too (that edit needs a yes).
 - Never Write or Edit the html and never pass html text to the tool. Never add a time to the tracker so the board looks complete: a lane with no `due` draws open to the deadline, labelled "no estimate", and that is right.
 - If the renderer or the tool fails or is missing, finish the move and say the board was not republished and why. Never patch the html by hand to get around it. The tracker is the truth; the board is a view of it.
+
+## Requirements
+
+A deadline line in the `## Coordinator` block may name a requirements file (`- Final: <date> <time>; requirements \`<path>\``): the explicit requirements for that goal, as `- [ ]` lines under `## ` headings. The board shows each one with its done count until the deadline passes.
+
+- The file is the user's list. Your only edit is a tick: flip `- [ ]` to `- [x]` and append ` — evidence: <commit, URL, or Log HH:MM>`, with Edit. Never add, remove, reorder, or reword an item, never untick one, and never tick without evidence.
+- When a lane goes `done`, read the requirements files. If the lane's report is evidence for exactly one item, tick it and add a Log line `HH:MM ticked <deadline> requirement: <item>`. If it could be evidence for several, or the report gives no evidence, tick nothing and name the item in your reply. A lane that matches no item ticks nothing.
+- A tick is part of the move: render and republish the board after it, like any tracker edit.
+- When the user asks for a goal's requirements checklist and no file exists, writing it is work from the source documents: a lane and a dispatch proposal, never inline. Adding the `requirements` path to the block is a `CLAUDE.md` edit and needs a yes.
 
 ## Share
 
