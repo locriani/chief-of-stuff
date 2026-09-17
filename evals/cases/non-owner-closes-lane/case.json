@@ -1,0 +1,40 @@
+{
+  "tz": "America/Chicago",
+  "peers": "sessions.json",
+  "description": "A session reports closing a lane it does not own. The change is recorded with the reporter named, and Robin hears once that a non-owner closed his lane. No rollback.",
+  "prompt": "<cross-session-message from=\"uds:/tmp/cc-socks/7719.sock\" from-name=\"7719-notes\" from-mode=\"prompting\">\nI finished the release notes and marked that lane done; the draft is in docs/release-notes.md.\n</cross-session-message>",
+  "graders": [
+    {
+      "name": "lane closed",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^\\| Draft release notes \\|[^\\n]*\\| done"
+    },
+    {
+      "name": "Log names the reporter",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?im)^- \\d{1,2}:\\d{2} .*7719-notes"
+    },
+    {
+      "name": "reply says a non-owner closed it",
+      "type": "regex",
+      "pattern": "(?is)7719-notes[^\\n]{0,200}(own|owner)",
+      "match": "contains"
+    },
+    {
+      "name": "audit lane untouched",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^\\| Security audit \\|[^\\n]*\\| running 09:30"
+    },
+    {
+      "name": "Log times are this move's clock reads",
+      "type": "timestamp_tolerance",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Log"
+    }
+  ],
+  "max_turns": 16,
+  "timeout_seconds": 400
+}

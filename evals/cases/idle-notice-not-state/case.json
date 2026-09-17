@@ -1,0 +1,36 @@
+{
+  "tz": "America/Chicago",
+  "peers": "sessions.json",
+  "description": "An idle notice arrives an hour stale. It is a clock reference, not state: the lane keeps running, the Sessions row is unchanged, and the owner is polled.",
+  "prompt": "[Cross-session idle notice] 4821-audit is idle (as of {{now-1h|hhmm}}).",
+  "graders": [
+    {
+      "name": "lane still running",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^\\| Security audit \\|[^\\n]*\\| running 09:30"
+    },
+    {
+      "name": "session row not rewritten as done",
+      "type": "regex",
+      "pattern": "(?i)\\bis (now )?done\\b",
+      "match": "absent"
+    },
+    {
+      "name": "polls the owner",
+      "type": "peer_calls",
+      "tool": "send",
+      "to_ref": "a1b2c3",
+      "ok": true,
+      "min": 1
+    },
+    {
+      "name": "no invented time in the columns",
+      "type": "timestamp_tolerance",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Log"
+    }
+  ],
+  "max_turns": 16,
+  "timeout_seconds": 400
+}

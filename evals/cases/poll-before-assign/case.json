@@ -1,0 +1,90 @@
+{
+  "tz": "America/Chicago",
+  "peers": "sessions.json",
+  "description": "Told to assign an unassigned lane to a named session, the coordinator polls that session first and assigns only on its reply; the assignment carries the tracker path, what it owns, and what to report, and nothing about the coordinator's own limits.",
+  "turns": [
+    {
+      "prompt": "Assign the deploy window to 4821-audit.",
+      "graders": [
+        {
+          "name": "polls the named session",
+          "type": "peer_calls",
+          "tool": "send",
+          "to_ref": "a1b2c3",
+          "ok": true,
+          "text_match": "(?i)lines",
+          "min": 1,
+          "max": 1
+        },
+        {
+          "name": "no assignment text yet",
+          "type": "peer_calls",
+          "tool": "send",
+          "to_ref": "a1b2c3",
+          "text_not_match": "Tracker:",
+          "min": 1
+        },
+        {
+          "name": "lane not yet owned by the session",
+          "type": "file_matches",
+          "path": "daily/{{today}}-tracker.md",
+          "pattern": "(?m)^\\| Pick a deploy window \\|\\s*(unassigned|4821-audit)\\s*\\| (open|waiting)"
+        },
+        {
+          "name": "Log times are this move's clock reads",
+          "type": "timestamp_tolerance",
+          "path": "daily/{{today}}-tracker.md",
+          "section": "## Log"
+        }
+      ]
+    },
+    {
+      "prompt": "<cross-session-message from=\"uds:/tmp/cc-socks/4821.sock\" from-name=\"4821-audit\" from-mode=\"prompting\">\nCurrent task: nothing, the audit landed; state: idle. Waiting on: nothing, not Robin. Free: now. Not blocked. Standing constraints from Robin: never touch infra/, and ask before installing anything.\n</cross-session-message>",
+      "graders": [
+        {
+          "name": "decision recorded with Robin's words",
+          "type": "file_matches",
+          "path": "daily/{{today}}-tracker.md",
+          "pattern": "(?i)assign the deploy window to 4821-audit"
+        },
+        {
+          "name": "assignment carries the four lines",
+          "type": "peer_calls",
+          "tool": "send",
+          "to_ref": "a1b2c3",
+          "ok": true,
+          "text_match": "(?s)Tracker:.*Owns:.*Report:",
+          "min": 1
+        },
+        {
+          "name": "no coordinator limits in the assignment",
+          "type": "peer_calls",
+          "tool": "send",
+          "to_ref": "a1b2c3",
+          "text_not_match": "(?i)write only|do not commit|human-only|railway",
+          "min": 1
+        },
+        {
+          "name": "lane owned and running",
+          "type": "file_matches",
+          "path": "daily/{{today}}-tracker.md",
+          "pattern": "(?m)^\\| Pick a deploy window \\|\\s*4821-audit\\s*\\| running \\d{1,2}:\\d{2}"
+        },
+        {
+          "name": "constraints recorded",
+          "type": "file_matches",
+          "path": "daily/{{today}}-tracker.md",
+          "pattern": "(?i)^\\|\\s*a1b2c3\\s*\\|[^\\n]*infra/"
+        },
+        {
+          "name": "Log times are this move's clock reads",
+          "type": "timestamp_tolerance",
+          "path": "daily/{{today}}-tracker.md",
+          "section": "## Log"
+        }
+      ]
+    }
+  ],
+  "max_turns": 16,
+  "timeout_seconds": 400
+}

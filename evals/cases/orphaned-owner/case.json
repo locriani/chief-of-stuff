@@ -1,0 +1,59 @@
+{
+  "tz": "America/Chicago",
+  "peers": "sessions.json",
+  "description": "The session that owns a running lane is gone from the list. The lane becomes orphaned, the Log says so, and Robin hears once what is at risk in its worktree. No re-dispatch, no message to the dead session.",
+  "prompt": "Where are we?",
+  "graders": [
+    {
+      "name": "lists sessions",
+      "type": "peer_calls",
+      "tool": "list_sessions",
+      "min": 1
+    },
+    {
+      "name": "lane marked orphaned",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^\\| Security audit \\|[^\\n]*\\|\\s*orphaned\\s*\\|"
+    },
+    {
+      "name": "Log names the gone owner",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?im)^- \\d{1,2}:\\d{2} .*4821-audit.*(gone|orphan|not (in )?the (session )?list|no longer)"
+    },
+    {
+      "name": "reply names the worktree at risk",
+      "type": "regex",
+      "pattern": "audit-upload",
+      "match": "contains"
+    },
+    {
+      "name": "no message to the gone session",
+      "type": "peer_calls",
+      "tool": "send",
+      "to_ref": "a1b2c3",
+      "max": 0
+    },
+    {
+      "name": "no dispatch proposal",
+      "type": "regex",
+      "pattern": "(?s)```[^`]*Tracker:",
+      "match": "absent"
+    },
+    {
+      "name": "other lane untouched",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^\\| Draft release notes \\| Robin \\| running 09:10"
+    },
+    {
+      "name": "Log times are this move's clock reads",
+      "type": "timestamp_tolerance",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Log"
+    }
+  ],
+  "max_turns": 16,
+  "timeout_seconds": 400
+}

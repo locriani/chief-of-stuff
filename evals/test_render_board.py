@@ -335,7 +335,7 @@ class DensityTest(unittest.TestCase):
         visible = re.sub(r"<[^>]+>", "", self.html.split("</style>", 1)[1].split("<script>", 1)[0])
         self.assertEqual(visible.count(esc), 0)
         self.assertEqual(visible.count("the worker left the registry"), 1)
-        self.assertLess(len(self.html), 18_000)  # the page without the logo asset; the brand CSS and font link add ~400 bytes
+        self.assertLess(len(self.html), 21_000)  # the page without the logo asset; brand CSS, gridlines and the legend add ~1 KB
 
     def test_history_is_one_line_per_clause(self) -> None:
         body = re.search(r"<details><summary>Service architecture refactor</summary>(.*?)</details>", self.html, re.S).group(1)
@@ -599,6 +599,124 @@ class BrandTest(unittest.TestCase):
         self.assertIn("<title>Board 2026-09-16</title>", self.html)
         header = self.html.split('<div class="header">', 1)[1].split("</header>", 1)[0] if '</header>' in self.html else self.html.split('<div class="header">', 1)[1]
         self.assertLess(header.index('class="logo"'), header.index("<h1>"))
+
+
+class OrphanAndUnassignedTest(unittest.TestCase):
+    TRACKER = TRACKER.replace(
+        "| Security audit | subagent | running 10:30 |  |  | Checklist: Security audit |",
+        "| Security audit | 4821-audit | orphaned | 09:00 | 17:00 | Checklist: Security audit |\n| Pick a deploy window | unassigned | open | 09:00 |  | Checklist: deploy window |",
+    )
+
+    def setUp(self) -> None:
+        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.html = rb.render(self.TRACKER, LOG, self.cfg, NOW)
+
+    def test_orphaned_is_an_active_kind(self) -> None:
+        lane = next(l for l in rb.parse_tracker(self.TRACKER).lanes if l.item == "Security audit")
+        self.assertEqual(lane.kind, "orphaned")
+        day = _strip_html(self.html, "day")
+        self.assertRegex(day, r'class="bar orphaned[^"]*"[^>]*data-item="Security audit"')
+        self.assertIn(".bar.orphaned{", self.html)
+
+    def test_orphaned_has_its_own_table_group(self) -> None:
+        table = self.html.split("<h2>Lanes</h2>", 1)[1]
+        self.assertIn('<tr class="group"><th colspan="5">orphaned · 1 · nobody owns these</th></tr>', table)
+        self.assertLess(table.index("nobody owns these"), table.index("Security audit"))
+        self.assertLess(table.index("Security audit"), table.index("open · waiting"))
+        self.assertIn("1 orphaned", self.html)
+
+    def test_unassigned_lanes_sit_above_the_queue(self) -> None:
+        self.assertIn("<h2>Unassigned · 1</h2>", self.html)
+        unassigned = self.html.split("<h2>Unassigned · 1</h2>", 1)[1].split("<h2", 1)[0]
+        self.assertIn("Pick a deploy window", unassigned)
+        queue = self.html.split("Robin's queue", 1)[1].split("<h2", 1)[0]
+        self.assertNotIn("Pick a deploy window", queue)
+        self.assertLess(self.html.index("Unassigned · 1"), self.html.index("Robin&#x27;s queue") if "Robin&#x27;s queue" in self.html else self.html.index("Robin's queue"))
+
+    def test_no_unassigned_section_when_none(self) -> None:
+        self.assertNotIn("Unassigned ·", rb.render(TRACKER, LOG, self.cfg, NOW))
+
+
+class GridlinesTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.cfg = rb.parse_coordinator(CLAUDE_MD_FAR, today=NOW2.date())
+        self.page = rb.render(WEEK_TRACKER, "", self.cfg, NOW2)
+
+    def grids(self, kind: str) -> list[tuple[str, float]]:
+        strip = _strip_html(self.page, kind)
+        return [(("half" if "half" in cls else "full"), float(pct)) for cls, pct in re.findall(r'<div class="grid( half)?" style="left:([0-9.]+)%"></div>', strip)]
+
+    def test_week_grid_at_day_and_half_day(self) -> None:
+        grid = self.grids("week")
+        # 7 day columns: a full line on each boundary, a half line at each midday.
+        self.assertEqual([k for k, _ in grid].count("full"), 7)
+        self.assertEqual([k for k, _ in grid].count("half"), 7)
+        self.assertEqual([round(p, 2) for k, p in grid if k == "full"][:3], [0.0, 14.29, 28.57])
+        self.assertEqual(round(next(p for k, p in grid if k == "half"), 2), 7.14)
+
+    def test_day_grid_every_hour_with_two_hour_majors(self) -> None:
+        grid = self.grids("day")
+        day = _strip_html(self.page, "day")
+        start = datetime.fromisoformat(re.search(r'data-axis-start="([^"]+)"', day).group(1))
+        end = datetime.fromisoformat(re.search(r'data-axis-end="([^"]+)"', day).group(1))
+        hours = int((end - start).total_seconds() // 3600)
+        self.assertEqual(len(grid), hours + 1)
+        self.assertEqual([k for k, _ in grid].count("full"), hours // 2 + 1)
+        self.assertEqual([k for _, k in [(0, k) for k, _ in grid]][:4], ["full", "half", "full", "half"])
+
+    def test_grid_sits_under_the_bars(self) -> None:
+        week = _strip_html(self.page, "week")
+        overlay = re.search(r'<div class="overlay">(.*?)<div class="nowline" hidden></div></div>', week, re.S).group(1)
+        self.assertIn('<div class="grid"', overlay)
+        self.assertLess(overlay.index('class="grid"'), overlay.index('class="dline"'))
+        self.assertIn(".grid{", self.page)
+        self.assertIn(".grid.half{", self.page)
+
+
+class LegendTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.html = rb.render(OrphanAndUnassignedTest.TRACKER, LOG, self.cfg, NOW)
+        self.legend = re.search(r'<div class="legend">(.*?)</div>\n', self.html, re.S).group(1)
+
+    def test_legend_names_every_mark(self) -> None:
+        for cls, label in [
+            ("key bar running", "running"),
+            ("key bar open", "open"),
+            ("key bar orphaned", "orphaned"),
+            ("key bar done", "done"),
+            ("key bar open-end", "no estimate"),
+            ("key bar summary", "folded rows"),
+            ("key band", "calendar event"),
+            ("key nowline", "now"),
+            ("key dline", "deadline"),
+        ]:
+            self.assertRegex(self.legend, rf'<span class="{re.escape(cls)}"></span>\s*{re.escape(label)}', cls)
+
+    def test_legend_sits_before_the_first_chart(self) -> None:
+        self.assertLess(self.html.index('class="legend"'), self.html.index('data-strip="day"'))
+        self.assertGreater(self.html.index('class="legend"'), self.html.index("<h2>Today</h2>"))
+        self.assertEqual(self.html.count('class="legend"'), 1)
+
+
+class LaneGroupHeaderTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.html = rb.render(OrphanAndUnassignedTest.TRACKER, LOG, self.cfg, NOW)
+        self.table = self.html.split("<h2>Lanes</h2>", 1)[1]
+
+    def test_group_rows_are_marked_and_counted(self) -> None:
+        heads = re.findall(r'<tr class="group"><th colspan="5">([^<]*)</th></tr>', self.table)
+        self.assertEqual(heads, ["running · 0", "orphaned · 1 · nobody owns these", "open · waiting · 7", "done · 1"])
+
+    def test_group_rows_look_like_headers(self) -> None:
+        self.assertIn("tr.group th{", self.html)
+        css = re.search(r"tr\.group th\{([^}]*)\}", self.html).group(1)
+        for prop in ("text-transform:uppercase", "letter-spacing", "background:", "font-weight:"):
+            self.assertIn(prop, css, prop)
+
+    def test_empty_group_says_none(self) -> None:
+        self.assertRegex(self.table, r'<tr class="group"><th colspan="5">running · 0</th></tr>\s*<tr><td colspan="5" class="muted">none</td></tr>')
 
 
 class CliTest(unittest.TestCase):
