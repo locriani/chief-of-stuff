@@ -7,7 +7,9 @@ instant, and the deadline instants, and draws its own clock and now-lines client
 
 The charts draw the schedule only. Today: running lanes and lanes that end today get a bar; every
 other active lane folds into one summary row. Week: running lanes and lanes with a concrete due get
-a bar; the rest fold into one row per deadline. Folded lanes keep their citations as `.member`
+a bar, grouped into one row per due day when several share it (overdue and past-the-week lanes get one row
+each); the rest fold into one row per deadline. The Week axis spans at most 7 days; later deadlines are an
+edge marker. Folded lanes keep their citations as `.member`
 spans. Done lanes and full item text appear only in the Lanes table.
 
 A deadline line may name a requirements file (`- Final: 2026-09-20 12:00; requirements `path``): checkbox
@@ -43,6 +45,7 @@ CLAUSE_TIME = re.compile(r"(?:^|\s)(?:at\s+)?(\d{1,2}:\d{2}):?(?=\s|$|[,;)])")
 REQ_LINE = re.compile(r"^(\s*)- \[([ xX])\]\s+(.*?)\s*$")
 EVIDENCE = " — evidence: "
 TICK_STEPS_H = (1, 2, 3, 4, 6)
+WEEK_DAYS = 7
 MAX_TICKS = 9
 
 
@@ -138,6 +141,8 @@ class Summary:
     start: datetime
     end: datetime
     members: tuple[Bar, ...]
+    name: str = ""
+    attr: str = "summary"
 
 
 def short_name(item: str) -> str:
@@ -432,30 +437,37 @@ def _member(b: Bar) -> str:
     return f'<span class="member" data-item="{_esc(b.item)}" data-start-src="{b.start_src}" data-end-src="{b.end_src}"{label}></span>'
 
 
-def _strip(bars: list[Bar], summaries: list[Summary], axis_a: datetime, axis_b: datetime, events: list[Event], deadlines: list[Deadline], ticks: list[tuple[datetime, str]], kind: str) -> str:
+def _lanes(n: int) -> str:
+    return f"{n} {'lane' if n == 1 else 'lanes'}"
+
+
+def _strip(rows: list[Bar | Summary], axis_a: datetime, axis_b: datetime, events: list[Event], deadlines: list[Deadline], ticks: list[tuple[datetime, str]], kind: str) -> str:
     out = [f'<div class="strip" data-strip="{kind}" data-axis-start="{_iso(axis_a)}" data-axis-end="{_iso(axis_b)}">']
     out.append('<div class="axis">')
     for at, label in ticks:
         out.append(f'<span class="tick" style="left:{_pct(at, axis_a, axis_b):.2f}%">{_esc(label)}</span>')
     out.append("</div>")
     out.append('<div class="rows">')
-    for b in bars:
-        left, right = _pct(b.start, axis_a, axis_b), _pct(b.end, axis_a, axis_b)
-        classes = f"bar {b.kind}" + (" open-end" if b.end_src == "deadline" else "") + (" clamped" if b.end > axis_b else "")
-        label = f' data-label="{_esc(b.label)}"' if b.label else ""
-        text = f"<em>{_esc(b.label)}</em>" if b.label else ""
-        out.append(
-            f'<div class="row"><div class="name">{_esc(short_name(b.item))}</div><div class="track">'
-            f'<div class="{classes}" data-item="{_esc(b.item)}" data-start="{_iso(b.start)}" data-end="{_iso(b.end)}" '
-            f'data-start-src="{b.start_src}" data-end-src="{b.end_src}"{label} style="left:{left:.2f}%;width:{max(right - left, 0.6):.2f}%">{text}</div></div></div>'
-        )
-    for sm in summaries:
-        left, right = _pct(sm.start, axis_a, axis_b), _pct(sm.end, axis_a, axis_b)
-        clamped = " clamped" if sm.end > axis_b else ""
+    for row in rows:
+        left, right = _pct(row.start, axis_a, axis_b), _pct(row.end, axis_a, axis_b)
+        edge = (" clamped" if row.end > axis_b else "") + (" clamped-left" if row.end < axis_a else "")
+        if isinstance(row, Bar):
+            b = row
+            classes = f"bar {b.kind}" + (" open-end" if b.end_src == "deadline" else "") + edge
+            label = f' data-label="{_esc(b.label)}"' if b.label else ""
+            text = f"<em>{_esc(b.label)}</em>" if b.label else ""
+            out.append(
+                f'<div class="row"><div class="name">{_esc(short_name(b.item))}</div><div class="track">'
+                f'<div class="{classes}" data-item="{_esc(b.item)}" data-start="{_iso(b.start)}" data-end="{_iso(b.end)}" '
+                f'data-start-src="{b.start_src}" data-end-src="{b.end_src}"{label} style="left:{left:.2f}%;width:{max(right - left, 0.6):.2f}%">{text}</div></div></div>'
+            )
+            continue
+        sm = row
         names = " · ".join(short_name(m.item) for m in sm.members)
+        hatch = " open-end" if sm.attr == "summary" else ""
         out.append(
-            f'<div class="row summary-row"><div class="name">{len(sm.members)} {"lane" if len(sm.members) == 1 else "lanes"}</div><div class="track">'
-            f'<div class="bar open-end summary{clamped}" data-summary="{_esc(sm.key)}" data-count="{len(sm.members)}" data-start="{_iso(sm.start)}" data-end="{_iso(sm.end)}" '
+            f'<div class="row {sm.attr}-row"><div class="name">{_esc(sm.name or _lanes(len(sm.members)))}</div><div class="track">'
+            f'<div class="bar{hatch} {sm.attr}{edge}" data-{sm.attr}="{_esc(sm.key)}" data-count="{len(sm.members)}" data-start="{_iso(sm.start)}" data-end="{_iso(sm.end)}" '
             f'style="left:{left:.2f}%;width:{max(right - left, 0.6):.2f}%" title="{_esc(names)}"><em>{_esc(sm.label)}</em>'
             + "".join(_member(m) for m in sm.members)
             + "</div></div></div>"
@@ -464,11 +476,23 @@ def _strip(bars: list[Bar], summaries: list[Summary], axis_a: datetime, axis_b: 
     for ev in events:
         left, right = _pct(ev.start, axis_a, axis_b), _pct(ev.end, axis_a, axis_b)
         out.append(f'<div class="band" data-band="{_esc(ev.title)}" style="left:{left:.2f}%;width:{max(right - left, 0.3):.2f}%"></div>')
-    for d in deadlines:
-        if axis_a <= d.at <= axis_b:
-            out.append(f'<div class="dline" data-deadline-name="{_esc(d.name)}" style="left:{_pct(d.at, axis_a, axis_b):.2f}%"><span>{_esc(d.name)}</span></div>')
+    drawn = [d for d in deadlines if axis_a <= d.at <= axis_b]
+    for d in drawn:
+        out.append(f'<div class="dline" data-deadline-name="{_esc(d.name)}" style="left:{_pct(d.at, axis_a, axis_b):.2f}%"></div>')
     out.append('<div class="nowline" hidden></div></div>')
-    out.append("</div></div>")
+    out.append("</div>")
+    # Deadline labels sit below the rows, one line each, so they never share a line with each other or the axis.
+    callouts = []
+    for d in drawn:
+        pct = _pct(d.at, axis_a, axis_b)
+        span = f'<span class="right" style="right:{100 - pct:.2f}%">' if pct > 70 else f'<span style="left:{pct:.2f}%">'
+        callouts.append(f'<div class="callout">{span}{_esc(d.name)}</span></div>')
+    beyond = [d for d in deadlines if d.at > axis_b]
+    if beyond:
+        callouts.append(f'<div class="callout later">{_esc(" · ".join(f"{d.name} {d.at:%a %d}" for d in beyond))} →</div>')
+    if callouts:
+        out.append('<div class="callouts">' + "".join(callouts) + "</div>")
+    out.append("</div>")
     return "\n".join(out)
 
 
@@ -491,20 +515,49 @@ def today_rows(active: list[Lane], cfg: Config, now: datetime, axis_b: datetime)
     return own, folded
 
 
-def week_rows(active: list[Lane], cfg: Config, now: datetime, week_a: datetime) -> tuple[list[Bar], list[Summary]]:
-    """Own bars: running lanes and lanes with a concrete due. The rest fold into one row per deadline."""
-    own: list[Bar] = []
+def week_axis_end(cfg: Config, week_a: datetime) -> datetime:
+    last = max([d.at for d in cfg.deadlines] + [week_a])
+    day_after_last = datetime.combine(last.date() + timedelta(days=1), time(0, 0), tzinfo=week_a.tzinfo)
+    return max(min(week_a + timedelta(days=WEEK_DAYS), day_after_last), week_a + timedelta(days=1))
+
+
+def week_rows(active: list[Lane], cfg: Config, now: datetime, week_a: datetime, week_b: datetime) -> list[Bar | Summary]:
+    """Running lanes get a bar. Lanes with a concrete due group by due day (a lone lane keeps its bar); overdue and
+    past-the-axis lanes get one row each. The rest fold into one row per deadline. Returned in drawing order."""
+    keyed: list[tuple[tuple, Bar | Summary]] = []
+    days: dict[date, list[Bar]] = {}
+    overdue: list[Bar] = []
+    later: list[Bar] = []
     groups: dict[Deadline, list[Bar]] = {}
     instants = {d.at for d in cfg.deadlines}
     for lane in active:
         b = week_bar(lane, cfg, now)
         named = any(d.name.lower() == lane.due.strip().lower() for d in cfg.deadlines)
-        if (lane.kind == "running" and lane.state_time) or (b.end_src == "due" and not named and b.end not in instants):
-            own.append(b)
+        if lane.kind == "running" and lane.state_time:
+            keyed.append(((1, b.start), b))
+        elif b.end_src == "due" and not named and b.end not in instants:
+            if b.end < week_a:
+                overdue.append(b)
+            elif b.end >= week_b:
+                later.append(b)
+            else:
+                days.setdefault(b.end.date(), []).append(b)
         else:
             groups.setdefault(_deadline_for(lane, b, cfg, now), []).append(b)
-    summaries = [Summary(d.name, f"→ {d.name}", week_a, d.at, tuple(groups[d])) for d in sorted(groups, key=lambda d: d.at)]
-    return own, summaries
+    if overdue:
+        keyed.append(((0,), Summary("overdue", f"due {min(b.end for b in overdue):%a %d}", week_a, max(b.end for b in overdue), tuple(overdue), f"Overdue · {_lanes(len(overdue))}", "group")))
+    for day, bars in days.items():
+        if len(bars) == 1:
+            keyed.append(((2, bars[0].end), bars[0]))
+            continue
+        end = max(b.end for b in bars)
+        keyed.append(((2, end), Summary(day.isoformat(), f"{len(bars)} due", max(week_a, min(b.start for b in bars)), end, tuple(bars), f"{day:%a %d} · {_lanes(len(bars))}", "group")))
+    if later:
+        keyed.append(((3,), Summary("later", f"due {min(b.end for b in later):%a %d}", week_a, max(b.end for b in later), tuple(later), f"Later · {_lanes(len(later))}", "group")))
+    for d, bars in groups.items():
+        label = f"→ {d.name}" + (f" {d.at:%a %d}" if d.at > week_b else "")
+        keyed.append(((4, d.at), Summary(d.name, label, week_a, d.at, tuple(bars))))
+    return [row for _, row in sorted(keyed, key=lambda kr: kr[0])]
 
 
 def _tick_step(span: timedelta) -> timedelta:
@@ -576,11 +629,12 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
     day_events = [e for e in events if e.end > axis_a and e.start < axis_b]
     day_summaries = [Summary("today", "no estimate or due after today", axis_a, axis_b, tuple(day_folded))] if day_folded else []
 
-    # Week strip: today to the last deadline, one column per day.
+    # Week strip: today to the day after the last deadline, at most 7 days, one column per day.
     week_a = datetime.combine(today, time(0, 0), tzinfo=zone)
-    week_bars, week_summaries = week_rows(active, cfg, now, week_a)
-    last = max([d.at for d in cfg.deadlines] + [week_a + timedelta(days=1)])
-    week_b = datetime.combine(last.date() + timedelta(days=1), time(0, 0), tzinfo=zone)
+    week_b = week_axis_end(cfg, week_a)
+    week = week_rows(active, cfg, now, week_a, week_b)
+    week_bars = [r for r in week if isinstance(r, Bar)]
+    week_groups = [r for r in week if isinstance(r, Summary) and r.attr == "group"]
     week_ticks = []
     t = week_a
     while t < week_b:
@@ -633,10 +687,12 @@ table{{border-collapse:collapse;width:100%;max-width:100%}} td,th{{text-align:le
 .rows{{position:relative}} .row{{display:flex;align-items:center;height:26px}} .name{{width:var(--name-w);flex:none;padding-right:8px;box-sizing:border-box;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}} .track{{position:relative;flex:1;height:18px;border-left:1px solid var(--line)}}
 .summary-row .name{{color:var(--muted)}}
 .bar{{position:absolute;top:0;height:18px;border-radius:3px;background:var(--open);color:#fff;font-size:11px;line-height:18px;padding:0 6px;overflow:hidden;white-space:nowrap;box-sizing:border-box}}
-.bar.running{{background:var(--running)}} .bar.open-end{{background:repeating-linear-gradient(135deg,var(--open),var(--open) 6px,transparent 6px,transparent 10px);color:var(--fg)}} .bar.clamped{{border-right:3px solid var(--dl)}} .bar em{{font-style:normal;opacity:.85}} .member{{display:none}}
+.bar.running{{background:var(--running)}} .bar.open-end{{background:repeating-linear-gradient(135deg,var(--open),var(--open) 6px,transparent 6px,transparent 10px);color:var(--fg)}} .bar.clamped{{border-right:3px solid var(--dl)}} .bar.clamped-left{{border-left:3px solid var(--dl)}} .group-row .name{{font-weight:600}} .bar em{{font-style:normal;opacity:.85}} .member{{display:none}}
 .overlay{{position:absolute;top:0;bottom:0;left:var(--name-w);right:0;pointer-events:none}}
 .band{{position:absolute;top:0;bottom:0;background:var(--band)}}
-.dline{{position:absolute;top:0;bottom:0;border-left:2px dashed var(--dl);transform:translateX(-1px)}} .dline span{{position:absolute;top:-16px;left:4px;font-size:11px;color:var(--dl);white-space:nowrap}}
+.dline{{position:absolute;top:0;bottom:0;border-left:2px dashed var(--dl);transform:translateX(-1px)}}
+.callouts{{margin-left:var(--name-w);margin-top:2px}} .callout{{position:relative;height:16px;font-size:11px;line-height:16px;color:var(--dl);white-space:nowrap}}
+.callout span{{position:absolute;top:0;padding-left:4px}} .callout span.right{{padding:0 4px 0 0}} .callout.later{{text-align:right}}
 .nowline{{position:absolute;top:0;bottom:0;border-left:2px solid var(--now)}}
 details summary{{cursor:pointer}} details[open] summary{{margin-bottom:4px}}
 .reqs h2{{display:flex;gap:8px;align-items:baseline}} .meter{{height:4px;background:var(--line);border-radius:2px;margin:-4px 0 8px;overflow:hidden}} .meter span{{display:block;height:100%;background:var(--now)}}
@@ -660,11 +716,11 @@ details summary{{cursor:pointer}} details[open] summary{{margin-bottom:4px}}
 
 <h2>Today</h2>
 <div class="meta">{len(day_bars)} scheduled · {len(day_folded)} folded into one row (no estimate or due after today) · bands are calendar events · green line is now</div>
-{_strip(day_bars, day_summaries, axis_a, axis_b, day_events, [nearest], day_ticks, "day")}
+{_strip(day_bars + day_summaries, axis_a, axis_b, day_events, [nearest], day_ticks, "day")}
 
 <h2>Week</h2>
-<div class="meta">{len(week_bars)} scheduled · the rest folded into one row per deadline · dashed lines are deadlines</div>
-{_strip(week_bars, week_summaries, week_a, week_b, [], list(cfg.deadlines), week_ticks, "week")}
+<div class="meta">{len(week_bars)} bars · {len(week_groups)} rows grouped by due day · the rest folded into one row per deadline · dashed lines are deadlines</div>
+{_strip(week, week_a, week_b, [], list(cfg.deadlines), week_ticks, "week")}
 
 <h2>Lanes</h2>
 <table><tr><th>item</th><th>owner</th><th>state</th><th>since</th><th>due</th></tr>

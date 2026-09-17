@@ -639,3 +639,19 @@ Baseline Opus ×1: both RED on the board (no renderer call, no publish) and, in 
 **Hand check** (copy of the live block with a requirements line for Final pointing at a copy of `CHECKLIST.md`): `requirements=Final:0/38`, five groups, 43 KB; the copy's checkboxes are all unticked and its tables are ignored, so the live file needs writing in this format.
 
 **Not graded.** A lane that is evidence for several items (rule text only); requirement files outside the fixture root.
+
+## Week by day — 2026-09-17 12:30 CDT — branch `week-by-day` (0.4.2)
+
+After 0.4.1 the live block gained two PCCAT deadlines (09-26, 10-01) and the coordinator gave most of 47 lanes concrete due dates. Under B5's rule the Week axis ran to the last deadline (15 day labels, Final's line at 23%, PCCAT on the right edge) and every concretely-due lane drew its own bar: 19 bars plus 2 summary rows. Zach picked "Week chart by day": at most 7 days, later deadlines as an edge marker, lanes sharing a due day grouped, running lanes keep bars.
+
+**Renderer (TDD).** Red: `datetime(2026, 10, 1 …) not less than or equal to datetime(2026, 9, 24 …)` (axis), `'class="dline" data-deadline-name="Exam retake"' unexpectedly found` (far deadline drawn), `unexpectedly None` (no day-group row), `'data-group="overdue" data-count="1"' not found` — `Ran 47 tests FAILED (failures=4)`; the single-lane and deadline-summary tests passed before the change and stay as guards. Green: `Ran 154 tests OK`.
+- Week axis: today to the earlier of today + 7 days and the day after the last deadline.
+- Deadlines past the axis: no dashed line; one `.later` marker at the right edge naming each with its day.
+- Rows in drawing order: `Overdue · N` (clamped left), running lanes, then by due day (a lone lane keeps its bar; two or more become `Fri 18 · N lanes` with members as `.member` citations), `Later · N` (clamped right), then one folded row per deadline (a deadline past the axis carries its day in the label).
+- `_strip` takes rows in order (bars and summary/group rows); Today unchanged.
+
+**Callout rows** (Zach, 12:26, on the preview: "these overlap. you'll need separate rows for those call out headings, or perhaps those call out deadlines should be at the bottom instead in their own row"). Deadline labels and the past-the-week marker sat at `top:-16px` over the day labels and each other. Red: `Regex matched: '<div class="dline" data-deadline-name="Final" style="left:50.00%"><span>'`; right-edge anchor not found — `Ran 8 tests FAILED (failures=2)`. Now `.dline` is a bare line; a `.callouts` block below the rows holds one line per drawn deadline (label at its x, anchored right past 70%) and one right-aligned line for deadlines past the axis. Green: `Ran 156 tests OK`.
+
+**Evals.** Agent arm Opus ×1 on `board-*` and `requirements-*`: 6/6 GREEN before the callout fix and 6/6 GREEN after.
+
+**Hand check** (copies of the live block, 09-17 tracker and log, and FINAL-REQUIREMENTS.md, 12:28): Week 7 labels Thu 17–Wed 23; 7 rows (2 running, "Final gap audit", "Fri 18 · 10 lanes", "Sat 19 · 5 lanes", 19 lanes → Final, 1 lane → PCCAT 1st attempt Sat 26); Final's line at 50%; marker "PCCAT 1st attempt Sat 26 · PCCAT 2nd attempt (if needed) Thu 01 →"; requirements "Final · 53 of 79".
