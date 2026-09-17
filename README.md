@@ -16,3 +16,11 @@ claude --agent chief-of-stuff
 claude plugin marketplace add ~/Developer/chief-of-stuff
 claude plugin install chief-of-stuff@chief-of-stuff
 ```
+
+## Brand
+
+`assets/chief-of-stuff.jpeg` is the source painting (1408×768). `assets/logo.webp` is the board's
+header mark, derived with `cwebp -resize 520 0 -q 62 assets/chief-of-stuff.jpeg -o assets/logo.webp`
+(21 KB), and inlined as a data URI by the renderer: the board is one file, and the artifact host
+serves nothing beside it. The board's palette is sampled from the painting — paper, walnut ink,
+brass, sage, lavender, poppy — with Cormorant SC for headings and Alegreya Sans for text.

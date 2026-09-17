@@ -1,5 +1,6 @@
 """Unit tests for scripts/render_board.py: the board is a render of the tracker, and every bar cites a field."""
 
+import base64
 import contextlib
 import hashlib
 import io
@@ -328,11 +329,13 @@ class DensityTest(unittest.TestCase):
 
     def test_item_text_bounded(self) -> None:
         esc = html_escape(LONG_ITEM)
+        # The size cap is about item text, not the inlined logo asset.
+        self.html = re.sub(r"data:image/webp;base64,[A-Za-z0-9+/=]+", "", self.html)
         self.assertLessEqual(self.html.count(esc), 2)
         visible = re.sub(r"<[^>]+>", "", self.html.split("</style>", 1)[1].split("<script>", 1)[0])
         self.assertEqual(visible.count(esc), 0)
         self.assertEqual(visible.count("the worker left the registry"), 1)
-        self.assertLess(len(self.html), 16_000)
+        self.assertLess(len(self.html), 18_000)  # the page without the logo asset; the brand CSS and font link add ~400 bytes
 
     def test_history_is_one_line_per_clause(self) -> None:
         body = re.search(r"<details><summary>Service architecture refactor</summary>(.*?)</details>", self.html, re.S).group(1)
@@ -540,6 +543,62 @@ class WeekByDayTest(unittest.TestCase):
         cfg = rb.parse_coordinator(CLAUDE_MD.replace("  - Final: 2026-09-20 12:00", "  - Final: 2026-09-23 12:00"), today=NOW2.date())
         week = _strip_html(rb.render(WEEK_TRACKER, "", cfg, NOW2), "week")
         self.assertRegex(week, r'<div class="callout"><span class="right" style="right:[0-9.]+%">Final</span></div>')
+
+
+LIGHT = {"--bg": "#F4EFE1", "--surface": "#FBF8EF", "--fg": "#2F2630", "--muted": "#6E6470", "--line": "#DDD3BD", "--brass": "#A7843E", "--open": "#9DAA72", "--running": "#6F63B4", "--done": "#BDB3A2", "--dl": "#C9533A", "--now": "#4F6B3A", "--bar-ink": "#FBF8EF"}
+DARK = {"--bg": "#1E1A20", "--surface": "#29232B", "--fg": "#EFE8D6", "--muted": "#A89FA8", "--line": "#3D3440", "--brass": "#C9A45C", "--open": "#6F7F48", "--running": "#9A8FDA", "--done": "#5A5058", "--dl": "#F0775A", "--now": "#9DBB6E", "--bar-ink": "#1E1A20"}
+
+
+class BrandTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.html = rb.render(TRACKER, LOG, self.cfg, NOW)
+        self.css = self.html.split("<style>", 1)[1].split("</style>", 1)[0]
+
+    def test_logo_inlined(self) -> None:
+        m = re.search(r'<img class="logo" alt="Chief of Stuff" src="data:image/webp;base64,([A-Za-z0-9+/=]+)"', self.html)
+        self.assertIsNotNone(m)
+        self.assertEqual(base64.b64decode(m.group(1)), rb.LOGO.read_bytes())
+
+    def test_logo_missing_renders_without_image(self) -> None:
+        keep = rb.LOGO
+        try:
+            rb.LOGO = Path(tempfile.mkdtemp()) / "gone.webp"
+            page = rb.render(TRACKER, LOG, self.cfg, NOW)
+        finally:
+            rb.LOGO = keep
+        self.assertNotIn('<img class="logo"', page)
+        self.assertIn("<h1>", page)
+
+    def test_palette_tokens(self) -> None:
+        root = re.search(r"^:root\{(.*?)\}", self.css, re.M | re.S).group(1)
+        for name, hex_ in LIGHT.items():
+            self.assertIn(f"{name}:{hex_.lower()}", root.lower(), name)
+        for block in (r'@media \(prefers-color-scheme:dark\)\{:root:not\(\[data-theme="light"\]\)\{(.*?)\}\}', r':root\[data-theme="dark"\]\{(.*?)\}'):
+            body = re.search(block, self.css, re.S).group(1).lower()
+            for name, hex_ in DARK.items():
+                self.assertIn(f"{name}:{hex_.lower()}", body, f"{name} in {block[:30]}")
+        used = set(re.findall(r"var\((--[a-z-]+)\)", self.css))
+        theme = set(re.findall(r"(--[a-z-]+):", root))
+        defined = theme | set(re.findall(r"(--[a-z-]+):", self.css))  # --name-w is a local, set on .strip
+        self.assertTrue(used <= defined, used - defined)
+        self.assertTrue(set(LIGHT) <= theme, set(LIGHT) - theme)
+
+    def test_fonts_with_fallbacks(self) -> None:
+        link = re.search(r'<link rel="stylesheet" href="(https://fonts\.googleapis\.com/css2\?[^"]+)">', self.html)
+        self.assertIsNotNone(link)
+        self.assertIn("Cormorant+SC", link.group(1))
+        self.assertIn("Alegreya+Sans", link.group(1))
+        families = re.findall(r"font(?:-family)?:([^;}]+)", self.css)
+        self.assertTrue(families)
+        for f in families:
+            self.assertRegex(f.strip(), r"(serif|sans-serif|monospace)$", f)
+
+    def test_header(self) -> None:
+        self.assertIn("<h1>Board · Wed 16 Sep</h1>", self.html)
+        self.assertIn("<title>Board 2026-09-16</title>", self.html)
+        header = self.html.split('<div class="header">', 1)[1].split("</header>", 1)[0] if '</header>' in self.html else self.html.split('<div class="header">', 1)[1]
+        self.assertLess(header.index('class="logo"'), header.index("<h1>"))
 
 
 class CliTest(unittest.TestCase):
