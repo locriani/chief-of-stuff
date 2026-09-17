@@ -2,7 +2,7 @@ __pycache__/
 *.pyc
 .DS_Store
 # Eval run output: transcripts and temp fixture dirs.
-evals/results/
+evals/results/*
 # Per-machine session state. Not .claude-plugin/, which is the tracked manifest.
 .claude/
 # Keep the build record; run transcripts stay ignored.

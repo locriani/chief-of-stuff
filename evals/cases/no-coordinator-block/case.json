@@ -1,0 +1,44 @@
+{
+  "tz": "America/Chicago",
+  "description": "The workspace CLAUDE.md has no `## Coordinator` block. Say so, state what would be inferred (timezone from the clock, log dir from the files present), propose the block line by line, create nothing, and ask.",
+  "prompt": "Good morning.",
+  "graders": [
+    {
+      "name": "no Write/Edit",
+      "type": "tool_used",
+      "tool": "Write|Edit",
+      "max": 0
+    },
+    {
+      "name": "no new files",
+      "type": "no_new_files"
+    },
+    {
+      "name": "yesterday's log unchanged",
+      "type": "file_unchanged",
+      "path": "daily/{{yesterday}}.md"
+    },
+    {
+      "name": "names the missing block",
+      "type": "regex",
+      "pattern": "## Coordinator"
+    },
+    {
+      "name": "proposes a timezone line",
+      "type": "regex",
+      "pattern": "(?i)timezone"
+    },
+    {
+      "name": "proposes the log dir it found",
+      "type": "regex",
+      "pattern": "daily/"
+    },
+    {
+      "name": "ends with one question",
+      "type": "regex",
+      "pattern": "\\?\\s*$"
+    }
+  ],
+  "max_turns": 12,
+  "timeout_seconds": 300
+}

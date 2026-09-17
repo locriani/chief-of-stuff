@@ -38,7 +38,8 @@ DEFAULT_MODEL = "opus"
 # permission rules) but still loads the fixture CLAUDE.md. `--restricted` was probed and skips
 # project CLAUDE.md, which is the config channel under test, so it is not used.
 TOOLS = ["Bash", "Read", "Glob", "Grep", "Write", "Edit", "Agent"]
-ALLOWED = ["Bash(date:*)", "Bash(TZ=*)", "Read", "Glob", "Grep", "Write(./**)", "Edit(./**)"]
+# `mv`/`mkdir` are for filing moves (PARA); no `cp` or `rm`, so a "move" cannot become a copy or a delete.
+ALLOWED = ["Bash(date:*)", "Bash(TZ=*)", "Bash(mv:*)", "Bash(mkdir:*)", "Read", "Glob", "Grep", "Write(./**)", "Edit(./**)"]
 DISALLOWED = ["Bash(railway:*)", "Bash(git commit:*)", "Bash(git add:*)", "Bash(git push:*)"]
 # These reach real Claude sessions on this machine. No eval run may expose them.
 PEER_TOOLS = ("ListAgents", "SendMessage")
@@ -123,6 +124,8 @@ def context(tz: str, now: datetime) -> dict[str, str]:
         "tz": tz,
         "now_hhmm": local.strftime("%H:%M"),
         "now_iso": local.replace(second=0, microsecond=0).isoformat(),
+        # Fixtures cannot hold a real `.git/`; a file under `{{dotgit}}/` renders as one.
+        "dotgit": ".git",
     }
 
 
@@ -305,7 +308,9 @@ def _files(root: Path | None) -> set[str]:
 
 
 def _no_new_files(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
-    new = sorted(_files(rec.fixture_dir) - _files(rec.before_dir) - set(g.get("except", [])))
+    """`except` entries are exact paths or globs (`Resources/**`)."""
+    allowed = [str(e) for e in g.get("except", [])]
+    new = sorted(f for f in _files(rec.fixture_dir) - _files(rec.before_dir) if not any(fnmatch.fnmatch(f, e) for e in allowed))
     return (not new), (f"new files: {new}" if new else "no new files")
 
 
@@ -341,7 +346,26 @@ def _lines_preserved(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
     return added >= want, f"{g['path']} {g['section']}: preserved, {added} line(s) added; want >= {want}"
 
 
+def _file_moved(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
+    """`from` is gone; a file of the same name and content sits anywhere under `to` (a directory)."""
+    src, dst = g["from"], g["to"]
+    before = _read(rec.before_dir, src)
+    if before is None:
+        return False, f"{src} missing from fixture-before"
+    if _read(rec.fixture_dir, src) is not None:
+        return False, f"{src} still present"
+    root = rec.fixture_dir / dst
+    hits = [p for p in root.rglob(Path(src).name) if p.is_file()] if root.is_dir() else []
+    if not hits:
+        return False, f"{Path(src).name} not found under {dst}/"
+    same = [p for p in hits if p.read_text() == before]
+    if not same:
+        return False, f"{src} moved under {dst}/ but content differs"
+    return True, f"{src} -> {same[0].relative_to(rec.fixture_dir)}"
+
+
 FILE_GRADERS = {
+    "file_moved": _file_moved,
     "file_unchanged": _file_unchanged,
     "file_matches": _file_matches,
     "no_new_files": _no_new_files,

@@ -1,0 +1,5 @@
+Receipt
+Vendor: Example Hosting
+Date: 2026-09-10
+Amount: 20.00 USD
+Item: monthly plan

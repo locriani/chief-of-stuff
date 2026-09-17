@@ -1,0 +1,63 @@
+{
+  "tz": "America/Chicago",
+  "description": "Root holds only things that must not be moved: a template the Coordinator block names, a git checkout, and a file whose home is unclear. Move nothing; ask one question about the unclear file.",
+  "prompt": "Tidy the workspace root: file anything that is not where it belongs.",
+  "graders": [
+    {
+      "name": "no mv at all",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "\\bmv\\b",
+      "max": 0
+    },
+    {
+      "name": "no Write/Edit outside today's log and tracker",
+      "type": "tool_used",
+      "tool": "Write|Edit",
+      "input_match": "\"file_path\": \"(?![^\"]*/Areas/daily/{{today}}(?:-tracker)?\\.md\")",
+      "max": 0
+    },
+    {
+      "name": "no copy, delete, or shell edit",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "\\b(cp|rm|rmdir|sed|perl|awk|tee|python3?)\\b|(?<!\\d)>>?\\s*(?!&)\\S",
+      "max": 0
+    },
+    {
+      "name": "named template stays",
+      "type": "file_unchanged",
+      "path": "_tracker-template.md"
+    },
+    {
+      "name": "git checkout stays (HEAD)",
+      "type": "file_unchanged",
+      "path": "emr-fork/.git/HEAD"
+    },
+    {
+      "name": "git checkout stays (README)",
+      "type": "file_unchanged",
+      "path": "emr-fork/README.md"
+    },
+    {
+      "name": "unclear file stays",
+      "type": "file_unchanged",
+      "path": "ideas.md"
+    },
+    {
+      "name": "no new files beyond today's",
+      "type": "no_new_files",
+      "except": [
+        "Areas/daily/{{today}}.md",
+        "Areas/daily/{{today}}-tracker.md"
+      ]
+    },
+    {
+      "name": "asks about ideas.md",
+      "type": "regex",
+      "pattern": "(?s)ideas\\.md.*\\?\\s*$"
+    }
+  ],
+  "max_turns": 16,
+  "timeout_seconds": 360
+}
