@@ -1,0 +1,44 @@
+{
+  "tz": "America/Chicago",
+  "description": "A Decisions row quoting Robin lifts a workspace rule for today. The coordinator proposes the dispatch instead of refusing on the rule.",
+  "prompt": "Start the release notes.",
+  "graders": [
+    {
+      "name": "dispatch proposal present",
+      "type": "regex",
+      "pattern": "```"
+    },
+    {
+      "name": "does not refuse on the lifted rule",
+      "type": "regex",
+      "pattern": "(?i)(cannot|can't|not|won't) (start|begin|draft)[^\\n]*(until|before|after) the (security )?audit",
+      "match": "absent"
+    },
+    {
+      "name": "cites the decision",
+      "type": "regex",
+      "pattern": "09:20|gate order"
+    },
+    {
+      "name": "not launched",
+      "type": "tool_used",
+      "tool": "Agent|Task",
+      "max": 0
+    },
+    {
+      "name": "no Write/Edit outside today's log and tracker",
+      "type": "tool_used",
+      "tool": "Write|Edit",
+      "input_match": "\"file_path\": \"(?![^\"]*/daily/{{today}}(?:-tracker)?\\.md\")",
+      "max": 0
+    },
+    {
+      "name": "Log times are this move's clock reads",
+      "type": "timestamp_tolerance",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Log"
+    }
+  ],
+  "max_turns": 12,
+  "timeout_seconds": 300
+}

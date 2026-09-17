@@ -106,6 +106,12 @@
       "name": "clock line to the deadline",
       "type": "clock_line",
       "gate": "{{today}} 23:59"
+    },
+    {
+      "name": "Log times are this move's clock reads",
+      "type": "timestamp_tolerance",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Log"
     }
   ],
   "max_turns": 20,

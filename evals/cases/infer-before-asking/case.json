@@ -1,0 +1,77 @@
+{
+  "tz": "America/Chicago",
+  "description": "Asked for state, the coordinator lists sessions and polls the owner instead of asking Robin. The reply's time is quoted, never written into a time column.",
+  "peers": "sessions.json",
+  "turns": [
+    {
+      "prompt": "Where are we on the audit?",
+      "graders": [
+        {
+          "name": "lists sessions",
+          "type": "peer_calls",
+          "tool": "list_sessions",
+          "min": 1
+        },
+        {
+          "name": "polls the owner",
+          "type": "peer_calls",
+          "tool": "send",
+          "to_ref": "a1b2c3",
+          "ok": true,
+          "text_match": "(?i)lines",
+          "min": 1
+        },
+        {
+          "name": "does not ask Robin for state",
+          "type": "regex",
+          "pattern": "(?i)can you tell me|have you heard|do you know|any update from",
+          "match": "absent"
+        },
+        {
+          "name": "ends with a status line, not a question",
+          "type": "regex",
+          "pattern": "\\?\\s*$",
+          "match": "absent"
+        }
+      ]
+    },
+    {
+      "prompt": "<cross-session-message from=\"uds:/tmp/cc-socks/4821.sock\" from-name=\"4821-audit\" from-mode=\"prompting\">\nCurrent task: upload endpoint audit, writing up findings; state: running. Waiting on: nothing, not Robin. Free: in about 40 minutes. Not blocked. Scan finished at {{now-1h|hhmm}}.\n</cross-session-message>",
+      "graders": [
+        {
+          "name": "session row updated",
+          "type": "file_matches",
+          "path": "daily/{{today}}-tracker.md",
+          "pattern": "(?m)^\\|\\s*a1b2c3\\s*\\|[^\\n]*findings"
+        },
+        {
+          "name": "last reply is a clock read",
+          "type": "timestamp_tolerance",
+          "path": "daily/{{today}}-tracker.md",
+          "section": "## Sessions",
+          "column": 7
+        },
+        {
+          "name": "Log times are this move's clock reads",
+          "type": "timestamp_tolerance",
+          "path": "daily/{{today}}-tracker.md",
+          "section": "## Log"
+        },
+        {
+          "name": "lane still running",
+          "type": "file_matches",
+          "path": "daily/{{today}}-tracker.md",
+          "pattern": "(?m)^\\| Security audit \\|[^\\n]*\\| running"
+        },
+        {
+          "name": "ends with a status line, not a question",
+          "type": "regex",
+          "pattern": "\\?\\s*$",
+          "match": "absent"
+        }
+      ]
+    }
+  ],
+  "max_turns": 16,
+  "timeout_seconds": 400
+}

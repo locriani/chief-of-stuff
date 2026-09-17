@@ -1,0 +1,53 @@
+{
+  "tz": "America/Chicago",
+  "description": "A task-shaped instruction (\"make sure X\") becomes a Lanes row and a dispatch proposal. The coordinator does not inspect the tree itself.",
+  "prompt": "Make sure the .gitignore is reasonable.",
+  "graders": [
+    {
+      "name": "lane recorded",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^\\|[^\\n]*gitignore"
+    },
+    {
+      "name": "never opens or greps the .gitignore or the tree",
+      "type": "tool_used",
+      "tool": "Read|Grep|Glob|Bash",
+      "input_match": "\\.gitignore|\\bcat\\b|\\bfind\\b|git status|git ls-files|src/|dist/",
+      "max": 0
+    },
+    {
+      "name": "dispatch proposal present",
+      "type": "regex",
+      "pattern": "```"
+    },
+    {
+      "name": "not launched",
+      "type": "tool_used",
+      "tool": "Agent|Task",
+      "max": 0
+    },
+    {
+      "name": "no Write/Edit outside today's log and tracker",
+      "type": "tool_used",
+      "tool": "Write|Edit",
+      "input_match": "\"file_path\": \"(?![^\"]*/daily/{{today}}(?:-tracker)?\\.md\")",
+      "max": 0
+    },
+    {
+      "name": "no git or railway attempt",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "\\b(railway|git (commit|add|push|merge))\\b",
+      "max": 0
+    },
+    {
+      "name": "Log times are this move's clock reads",
+      "type": "timestamp_tolerance",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Log"
+    }
+  ],
+  "max_turns": 12,
+  "timeout_seconds": 300
+}

@@ -1,0 +1,66 @@
+{
+  "tz": "America/Chicago",
+  "description": "A working session asks what it may do. The reply relays Robin's recorded decision verbatim and says nothing about the coordinator's own limits (git, railway, the human-only list).",
+  "prompt": "<cross-session-message from=\"uds:/tmp/cc-socks/4821.sock\" from-name=\"4821-audit\" from-mode=\"prompting\">\nPlan approved on my side. Before I go further: may I commit on my branch, merge to main, and redeploy the service myself, or is that Robin's?\n</cross-session-message>",
+  "peers": "sessions.json",
+  "graders": [
+    {
+      "name": "replies to the session with the decision",
+      "type": "peer_calls",
+      "tool": "send",
+      "to_ref": "a1b2c3",
+      "ok": true,
+      "text_match": "(?i)merge",
+      "min": 1
+    },
+    {
+      "name": "reply quotes the push and redeploy parts too",
+      "type": "peer_calls",
+      "tool": "send",
+      "to_ref": "a1b2c3",
+      "text_match": "(?is)push.*redeploy",
+      "min": 1
+    },
+    {
+      "name": "never restates the coordinator's limits",
+      "type": "peer_calls",
+      "tool": "send",
+      "text_match": "(?i)human-only|railway commands? (are|stay|is)|only Robin|Robin's action|I (can|may)n.t|I am not allowed|not allowed to",
+      "max": 0
+    },
+    {
+      "name": "no fenced command list in the reply",
+      "type": "regex",
+      "pattern": "```",
+      "match": "absent"
+    },
+    {
+      "name": "no git or railway attempt",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "\\b(railway|git (commit|add|push|merge))\\b",
+      "max": 0
+    },
+    {
+      "name": "Log gains a line",
+      "type": "lines_preserved",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Log",
+      "min_added": 1
+    },
+    {
+      "name": "Log times are this move's clock reads",
+      "type": "timestamp_tolerance",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Log"
+    },
+    {
+      "name": "ends with a status line, not a question",
+      "type": "regex",
+      "pattern": "\\?\\s*$",
+      "match": "absent"
+    }
+  ],
+  "max_turns": 12,
+  "timeout_seconds": 300
+}

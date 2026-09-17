@@ -25,8 +25,9 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from datetime import time as dtime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 EVALS = Path(__file__).resolve().parent
@@ -50,6 +51,9 @@ MOCK_CALENDAR = EVALS / "mock_calendar.py"
 CALENDAR_TOOL = "mcp__calendar__list_events"
 MOCK_BOARD = EVALS / "mock_board.py"
 BOARD_TOOL = "mcp__board__publish"
+# The peers mock stands in for ListAgents/SendMessage, which stay out of every run (PEER_TOOLS guard).
+MOCK_PEERS = EVALS / "mock_peers.py"
+PEER_MOCK_TOOLS = ["mcp__peers__list_sessions", "mcp__peers__send"]
 
 # `{{name}}`, or `{{now+Nh}}` / `{{now-Nh|local}}` / `{{now+Nh|hhmm}}` for times relative to render time.
 TOKEN = re.compile(r"\{\{\s*([a-z_]+)(?:([+-]\d+)h)?(?:\|([a-z]+))?\s*\}\}")
@@ -96,7 +100,7 @@ def parse_stream(events: list[dict[str, Any]]) -> Stream:
     return s
 
 
-def check_arm(init: dict[str, Any], arm: str, agent_flag_used: bool = False, needs_calendar: bool = False, model: str | None = None, needs_board: bool = False) -> tuple[bool, str]:
+def check_arm(init: dict[str, Any], arm: str, agent_flag_used: bool = False, needs_calendar: bool = False, model: str | None = None, needs_board: bool = False, needs_peers: bool = False) -> tuple[bool, str]:
     """Confirm the session loaded what the arm claims, so a silent fallback cannot pass."""
     exposed = [t for t in PEER_TOOLS if t in init.get("tools", [])]
     if exposed:
@@ -111,6 +115,10 @@ def check_arm(init: dict[str, Any], arm: str, agent_flag_used: bool = False, nee
         servers = {m.get("name"): m.get("status") for m in init.get("mcp_servers", [])}
         if servers.get("board") != "connected":
             return False, f"mock board not connected: {servers}"
+    if needs_peers:
+        servers = {m.get("name"): m.get("status") for m in init.get("mcp_servers", [])}
+        if servers.get("peers") != "connected":
+            return False, f"mock peers not connected: {servers}"
     agents = init.get("agents", [])
     present = any(a == AGENT or a.endswith(":" + AGENT) for a in agents)
     if arm == "agent":
@@ -193,6 +201,10 @@ class RunRecord:
     def publishes(self) -> list[dict[str, Any]]:
         return [c for c in self.mock_calls if c.get("tool") == "publish"]
 
+    @property
+    def peer_calls(self) -> list[dict[str, Any]]:
+        return [c for c in self.mock_calls if c.get("tool") in ("list_sessions", "send")]
+
 
 def grade(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
     kind = g.get("type")
@@ -210,6 +222,8 @@ def grade(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
         return FILE_GRADERS[kind](g, rec)
     if kind in BOARD_GRADERS:
         return BOARD_GRADERS[kind](g, rec)
+    if kind in COORDINATION_GRADERS:
+        return COORDINATION_GRADERS[kind](g, rec)
     raise ValueError(f"unknown grader type {kind!r}")
 
 
@@ -312,6 +326,9 @@ def _file_matches(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
     text = _read(rec.fixture_dir, g["path"])
     if text is None:
         return False, f"{g['path']} missing"
+    if "count" in g:
+        n = len(re.findall(g["pattern"], text, re.MULTILINE))
+        return n == g["count"], f"{g['path']}: /{g['pattern']}/ matches {n} time(s); want {g['count']}"
     found = re.search(g["pattern"], text, re.MULTILINE) is not None
     mode = g.get("match", "contains")
     ok = found if mode == "contains" else not found
@@ -534,6 +551,84 @@ BOARD_GRADERS = {
 }
 
 
+def _peer_calls(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
+    """Count this turn's calls to the peers mock that match every filter given."""
+    calls = [c for c in rec.peer_calls if c.get("tool") == g["tool"]]
+    if "to_ref" in g:
+        calls = [c for c in calls if c.get("to_ref") == g["to_ref"]]
+    if "ok" in g:
+        calls = [c for c in calls if bool(c.get("ok")) == bool(g["ok"])]
+    if "text_match" in g:
+        calls = [c for c in calls if re.search(g["text_match"], c.get("text", ""))]
+    if "text_not_match" in g:
+        calls = [c for c in calls if not re.search(g["text_not_match"], c.get("text", ""))]
+    lo, hi = g.get("min", 0), g.get("max")
+    ok = len(calls) >= lo and (hi is None or len(calls) <= hi)
+    bound = f"min {lo}" + (f", max {hi}" if hi is not None else "")
+    return ok, f"{len(calls)} call(s) match; want {bound}"
+
+
+TIME_CELL = re.compile(r"^(\d{1,2}):(\d{2})$")
+LEADING_TIME = re.compile(r"^-\s*(\d{1,2}):(\d{2})\b")
+
+
+def _timestamp_tolerance(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
+    """Every time written into `section` during this turn is the move's own clock read: within [t_start-tol, t_end+tol].
+
+    Leading mode (default): each line added since `before_dir` must start `- HH:MM`. Column mode (`column`, 1-based):
+    the cell of each added or changed table row; a blank cell passes, a non-time cell (a date, a word) is ignored.
+    Times quoted elsewhere on the line are ignored by design.
+    """
+    before = set(_section(_read(rec.before_dir, g["path"]) or "", g["section"]) or [])
+    after = _section(_read(rec.fixture_dir, g["path"]) or "", g["section"])
+    if after is None:
+        return False, f"{g['path']}: section {g['section']!r} missing"
+    tol = timedelta(minutes=g.get("tolerance_minutes", 1))
+    lo, hi = rec.t_start - tol, rec.t_end + tol
+    zone = ZoneInfo(rec.tz)
+    day = rec.t_start.astimezone(zone).date()
+    bad, checked = [], 0
+    for line in after:
+        if line in before:
+            continue
+        if "column" in g:
+            if not line.startswith("|"):
+                continue
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            idx = g["column"] - 1
+            cell = cells[idx] if idx < len(cells) else ""
+            m = TIME_CELL.match(cell)
+            if not cell or not m:
+                continue
+        else:
+            m = LEADING_TIME.match(line)
+            if not m:
+                bad.append(f"no leading time: {line[:60]!r}")
+                continue
+        at = datetime.combine(day, dtime(int(m[1]), int(m[2])), tzinfo=zone)
+        checked += 1
+        if not (lo <= at <= hi):
+            bad.append(f"{m[1]}:{m[2]} outside {lo:%H:%M}-{hi:%H:%M}: {line[:60]!r}")
+    return (not bad), ("; ".join(bad) if bad else f"{checked} written time(s) within the move")
+
+
+def _reply_lines(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
+    n = len([l for l in rec.stream.last_text.splitlines() if l.strip()])
+    return n <= g["max"], f"{n} non-empty line(s); want <= {g['max']}"
+
+
+COORDINATION_GRADERS = {
+    "peer_calls": _peer_calls,
+    "timestamp_tolerance": _timestamp_tolerance,
+    "reply_lines": _reply_lines,
+}
+
+
+def peers_mcp_config(sessions: Path, log: Path, tz: str) -> dict[str, Any]:
+    args = [str(MOCK_PEERS.resolve()), "--sessions", str(sessions), "--log", str(log), "--tz", tz]
+    return {"mcpServers": {"peers": {"type": "stdio", "command": sys.executable, "args": args}}}
+
+
 def board_mcp_config(log: Path, store: Path, root: Path, tz: str, known_url: str | None) -> dict[str, Any]:
     args = [str(MOCK_BOARD.resolve()), "--log", str(log), "--store", str(store), "--root", str(root), "--tz", tz]
     if known_url:
@@ -557,7 +652,7 @@ def calendar_mcp_config(events: Path, log: Path, tz: str) -> dict[str, Any]:
 def command(case: Case, arm: str, model: str, prompt: str | None, mcp_config: dict[str, Any] | None = None) -> list[str]:
     """A `prompt` of None means a multi-turn case: user turns arrive as stream-json on stdin."""
     mcp_config = mcp_config or {"mcpServers": {}}
-    allowed = ALLOWED + ([CALENDAR_TOOL] if "calendar" in mcp_config["mcpServers"] else []) + ([BOARD_TOOL] if "board" in mcp_config["mcpServers"] else [])
+    allowed = ALLOWED + ([CALENDAR_TOOL] if "calendar" in mcp_config["mcpServers"] else []) + ([BOARD_TOOL] if "board" in mcp_config["mcpServers"] else []) + (PEER_MOCK_TOOLS if "peers" in mcp_config["mcpServers"] else [])
     cmd = [
         "claude", "-p", *([prompt] if prompt is not None else []),
         "--model", model,
@@ -610,6 +705,7 @@ def drive_turns(
     timeout: float,
     snapshot: Callable[[int], None],
     wait_seconds: float = 180,
+    before_turn: Callable[[int], None] | None = None,
     close_grace: float = 60,
 ) -> list[Turn]:
     """Feed each prompt as a stream-json user message; a turn ends at its `result` event.
@@ -637,6 +733,8 @@ def drive_turns(
         for n, prompt in enumerate(prompts, start=1):
             if prompt is None and turns and has_notification(turns[-1].events):
                 continue
+            if before_turn is not None:
+                before_turn(n)
             t_start = datetime.now().astimezone()
             if prompt is not None:
                 proc.stdin.write(json.dumps({"type": "user", "message": {"role": "user", "content": prompt}}) + "\n")
@@ -765,8 +863,15 @@ def run_one(case: Case, arm: str, model: str, out: Path) -> tuple[list[tuple[str
             (out / "calendar").mkdir(parents=True, exist_ok=True)
             calls_log.touch()
             mcp_config = merge_mcp(mcp_config, board_mcp_config(calls_log, out / "board", work, tz, spec["board"].get("url")))
+        if "peers" in spec:
+            # Sessions file lives in the results dir; per-turn `peers` keys rewrite it before that turn.
+            (out / "calendar").mkdir(parents=True, exist_ok=True)
+            calls_log.touch()
+            sessions = out / "peers-sessions.json"
+            sessions.write_text(render((case.root / spec["peers"]).read_text(), ctx))
+            mcp_config = merge_mcp(mcp_config, peers_mcp_config(sessions, calls_log, tz))
         if "turns" in spec:
-            return run_turns(spec, arm, model, out, work, env, mcp_config, calls_log, tz)
+            return run_turns(spec, arm, model, out, work, env, mcp_config, calls_log, tz, case_root=case.root, ctx=ctx)
         cmd = command(case, arm, model, spec["prompt"], mcp_config=mcp_config)
         (out / "command.json").write_text(json.dumps(cmd, indent=1))
         t_start = datetime.now(ZoneInfo(tz))
@@ -790,7 +895,7 @@ def run_one(case: Case, arm: str, model: str, out: Path) -> tuple[list[tuple[str
     }
     if proc.returncode != 0 or stream.result is None:
         return [], f"claude exit {proc.returncode}: {proc.stderr.strip()[:200]}", meta
-    ok, detail = check_arm(stream.init, arm, agent_flag_used="--agent" in cmd and arm != "agent", needs_calendar="calendar" in spec, model=model, needs_board=bool(spec.get("board")))
+    ok, detail = check_arm(stream.init, arm, agent_flag_used="--agent" in cmd and arm != "agent", needs_calendar="calendar" in spec, model=model, needs_board=bool(spec.get("board")), needs_peers="peers" in spec)
     if not ok:
         return [], f"arm check: {detail}", meta
     mock_calls = [json.loads(l) for l in calls_log.read_text().splitlines() if l.strip()] if calls_log.exists() else []
@@ -802,7 +907,7 @@ def run_one(case: Case, arm: str, model: str, out: Path) -> tuple[list[tuple[str
     return results, None, meta
 
 
-def run_turns(spec: dict[str, Any], arm: str, model: str, out: Path, work: Path, env: dict[str, str], mcp_config: dict[str, Any] | None, calls_log: Path, tz: str) -> tuple[list[tuple[str, bool, str]], str | None, dict[str, Any]]:
+def run_turns(spec: dict[str, Any], arm: str, model: str, out: Path, work: Path, env: dict[str, str], mcp_config: dict[str, Any] | None, calls_log: Path, tz: str, case_root: Path = Path("."), ctx: dict[str, str] | None = None) -> tuple[list[tuple[str, bool, str]], str | None, dict[str, Any]]:
     """Multi-turn case: one stream-json process, graders scoped to each turn, fixture snapshot per turn."""
     cmd = command(Case("", Path(), spec), arm, model, None, mcp_config=mcp_config)
     (out / "command.json").write_text(json.dumps(cmd, indent=1))
@@ -811,7 +916,12 @@ def run_turns(spec: dict[str, Any], arm: str, model: str, out: Path, work: Path,
         shutil.copytree(work, out / f"fixture-turn{n}", dirs_exist_ok=True)
 
     try:
-        turns = drive_turns(cmd, [t.get("prompt") for t in spec["turns"]], work, env, spec.get("timeout_seconds", 300), snapshot, wait_seconds=spec.get("wait_seconds", 180))
+        def before_turn(n: int) -> None:
+            turn_spec = spec["turns"][n - 1]
+            if "peers" in turn_spec:
+                (out / "peers-sessions.json").write_text(render((case_root / turn_spec["peers"]).read_text(), ctx))
+
+        turns = drive_turns(cmd, [t.get("prompt") for t in spec["turns"]], work, env, spec.get("timeout_seconds", 300), snapshot, wait_seconds=spec.get("wait_seconds", 180), before_turn=before_turn)
     except TimeoutError as exc:
         return [], f"timeout: {exc}", {}
     shutil.copytree(work, out / "fixture", dirs_exist_ok=True)
@@ -824,7 +934,7 @@ def run_turns(spec: dict[str, Any], arm: str, model: str, out: Path, work: Path,
     }
     if not streams or streams[0].result is None:
         return [], "claude produced no result for turn 1", meta
-    ok, detail = check_arm(streams[0].init, arm, agent_flag_used="--agent" in cmd and arm != "agent", needs_calendar="calendar" in spec, model=model, needs_board=bool(spec.get("board")))
+    ok, detail = check_arm(streams[0].init, arm, agent_flag_used="--agent" in cmd and arm != "agent", needs_calendar="calendar" in spec, model=model, needs_board=bool(spec.get("board")), needs_peers="peers" in spec)
     if not ok:
         return [], f"arm check: {detail}", meta
     calls = [json.loads(l) for l in calls_log.read_text().splitlines() if l.strip()] if calls_log.exists() else []
