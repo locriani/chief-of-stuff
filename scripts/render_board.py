@@ -5,6 +5,11 @@ The board is a view of the tracker and nothing else: every bar start and end cit
 `## Coordinator` block, labelled "no estimate". The page carries the tracker's sha256, the render
 instant, and the deadline instants, and draws its own clock and now-lines client-side.
 
+The charts draw the schedule only. Today: running lanes and lanes that end today get a bar; every
+other active lane folds into one summary row. Week: running lanes and lanes with a concrete due get
+a bar; the rest fold into one row per deadline. Folded lanes keep their citations as `.member`
+spans. Done lanes and full item text appear only in the Lanes table.
+
     python3 render_board.py --date 2026-09-16 [--root <workspace>]
 
 Writes `<log dir>/<date>-board.html` beside the tracker and prints its path and one summary line.
@@ -28,6 +33,11 @@ BULLET = re.compile(r"^(\s*)-\s*([^:]+?):\s*(.*?)\s*$")
 CAL_LIST = re.compile(r"^\s*-\s*(\d{1,2}:\d{2})\s*[–—-]\s*(\d{1,2}:\d{2})\s*(?:[A-Z]{2,5}\s+)?(.+?)\s*$")
 TIME_RANGE = re.compile(r"^(\d{1,2}:\d{2})\s*[–—-]\s*(\d{1,2}:\d{2})$")
 NO_ESTIMATE = "no estimate"
+SHORT_NAME = 48
+LONG_ITEM = 80
+CLAUSE_TIME = re.compile(r"(?:^|\s)(?:at\s+)?(\d{1,2}:\d{2}):?(?=\s|$|[,;)])")
+TICK_STEPS_H = (1, 2, 3, 4, 6)
+MAX_TICKS = 9
 
 
 class ConfigError(Exception):
@@ -104,6 +114,65 @@ class Bar:
     start_src: str
     end_src: str
     label: str | None
+
+
+@dataclass(frozen=True)
+class Summary:
+    key: str
+    label: str
+    start: datetime
+    end: datetime
+    members: tuple[Bar, ...]
+
+
+def short_name(item: str) -> str:
+    """The item up to its first ": " (when that leaves a real name), then up to " (" if still long, capped on a word boundary."""
+    name = item.strip()
+    head = name.split(": ", 1)[0]
+    if head != name and len(head) >= 12:
+        name = head
+    if len(name) > SHORT_NAME and " (" in name:
+        name = name.split(" (", 1)[0]
+    if len(name) > SHORT_NAME:
+        cut = name[:SHORT_NAME]
+        space = cut.rfind(" ")
+        name = (cut[:space] if space > SHORT_NAME // 2 else cut).rstrip(" ,;:–—-") + "…"
+    return name
+
+
+def _depth0_split(text: str) -> list[str]:
+    """Split on "; " and ". " outside parentheses."""
+    parts, depth, start, i = [], 0, 0, 0
+    while i < len(text):
+        c = text[i]
+        depth += c == "("
+        depth -= c == ")" and depth > 0
+        if depth == 0 and c in ";." and text[i + 1 : i + 2] == " ":
+            parts.append(text[start:i])
+            start = i + 2
+            i += 1
+        i += 1
+    parts.append(text[start:])
+    return [p.strip().rstrip(".").strip() for p in parts if p.strip().rstrip(".").strip()]
+
+
+def history_lines(item: str) -> list[tuple[str, str]]:
+    """What an item cell carries past its short name, one (time, text) per clause; the first HH:MM outside parentheses is pulled out."""
+    full, short = item.strip(), short_name(item)
+    if short == full:
+        return []
+    rest = full[len(short) :] if not short.endswith("…") and full.startswith(short) else full
+    lines = []
+    for clause in _depth0_split(rest.lstrip(": ").strip()):
+        when = ""
+        for m in CLAUSE_TIME.finditer(clause):
+            if clause[: m.start()].count("(") == clause[: m.start()].count(")"):
+                when = m.group(1)
+                clause = (clause[: m.start()] + " " + clause[m.end() :]).strip()
+                clause = re.sub(r"\s{2,}", " ", clause).strip(" ,:")
+                break
+        lines.append((when, clause))
+    return lines
 
 
 # --- parsing -------------------------------------------------------------------------------------
@@ -324,33 +393,92 @@ def _pct(dt: datetime, a: datetime, b: datetime) -> float:
     return max(0.0, min(100.0, (dt - a).total_seconds() / span * 100.0))
 
 
-def _strip(bars: list[Bar], axis_a: datetime, axis_b: datetime, events: list[Event], deadlines: list[Deadline], ticks: list[tuple[datetime, str]], kind: str) -> str:
+def _member(b: Bar) -> str:
+    label = f' data-label="{_esc(b.label)}"' if b.label else ""
+    return f'<span class="member" data-item="{_esc(b.item)}" data-start-src="{b.start_src}" data-end-src="{b.end_src}"{label}></span>'
+
+
+def _strip(bars: list[Bar], summaries: list[Summary], axis_a: datetime, axis_b: datetime, events: list[Event], deadlines: list[Deadline], ticks: list[tuple[datetime, str]], kind: str) -> str:
     out = [f'<div class="strip" data-strip="{kind}" data-axis-start="{_iso(axis_a)}" data-axis-end="{_iso(axis_b)}">']
     out.append('<div class="axis">')
     for at, label in ticks:
         out.append(f'<span class="tick" style="left:{_pct(at, axis_a, axis_b):.2f}%">{_esc(label)}</span>')
     out.append("</div>")
     out.append('<div class="rows">')
-    for ev in events:
-        left, right = _pct(ev.start, axis_a, axis_b), _pct(ev.end, axis_a, axis_b)
-        out.append(f'<div class="band" data-band="{_esc(ev.title)}" style="left:{left:.2f}%;width:{max(right - left, 0.3):.2f}%" title="{_esc(ev.title)}"></div>')
-    for d in deadlines:
-        if axis_a <= d.at <= axis_b:
-            out.append(f'<div class="dline" data-deadline-name="{_esc(d.name)}" style="left:{_pct(d.at, axis_a, axis_b):.2f}%"><span>{_esc(d.name)}</span></div>')
-    out.append('<div class="nowline" hidden></div>')
     for b in bars:
         left, right = _pct(b.start, axis_a, axis_b), _pct(b.end, axis_a, axis_b)
         classes = f"bar {b.kind}" + (" open-end" if b.end_src == "deadline" else "") + (" clamped" if b.end > axis_b else "")
         label = f' data-label="{_esc(b.label)}"' if b.label else ""
-        text = _esc(b.item) + (f' <em>{_esc(b.label)}</em>' if b.label else "")
+        text = f"<em>{_esc(b.label)}</em>" if b.label else ""
         out.append(
-            f'<div class="row"><div class="name">{_esc(b.item)}</div><div class="track">'
+            f'<div class="row"><div class="name">{_esc(short_name(b.item))}</div><div class="track">'
             f'<div class="{classes}" data-item="{_esc(b.item)}" data-start="{_iso(b.start)}" data-end="{_iso(b.end)}" '
-            f'data-start-src="{b.start_src}" data-end-src="{b.end_src}"{label} style="left:{left:.2f}%;width:{max(right - left, 0.6):.2f}%" '
-            f'title="{_esc(b.item)}: {_esc(b.start_src)} → {_esc(b.end_src)}">{text}</div></div></div>'
+            f'data-start-src="{b.start_src}" data-end-src="{b.end_src}"{label} style="left:{left:.2f}%;width:{max(right - left, 0.6):.2f}%">{text}</div></div></div>'
         )
+    for sm in summaries:
+        left, right = _pct(sm.start, axis_a, axis_b), _pct(sm.end, axis_a, axis_b)
+        clamped = " clamped" if sm.end > axis_b else ""
+        names = " · ".join(short_name(m.item) for m in sm.members)
+        out.append(
+            f'<div class="row summary-row"><div class="name">{len(sm.members)} {"lane" if len(sm.members) == 1 else "lanes"}</div><div class="track">'
+            f'<div class="bar open-end summary{clamped}" data-summary="{_esc(sm.key)}" data-count="{len(sm.members)}" data-start="{_iso(sm.start)}" data-end="{_iso(sm.end)}" '
+            f'style="left:{left:.2f}%;width:{max(right - left, 0.6):.2f}%" title="{_esc(names)}"><em>{_esc(sm.label)}</em>'
+            + "".join(_member(m) for m in sm.members)
+            + "</div></div></div>"
+        )
+    out.append('<div class="overlay">')
+    for ev in events:
+        left, right = _pct(ev.start, axis_a, axis_b), _pct(ev.end, axis_a, axis_b)
+        out.append(f'<div class="band" data-band="{_esc(ev.title)}" style="left:{left:.2f}%;width:{max(right - left, 0.3):.2f}%"></div>')
+    for d in deadlines:
+        if axis_a <= d.at <= axis_b:
+            out.append(f'<div class="dline" data-deadline-name="{_esc(d.name)}" style="left:{_pct(d.at, axis_a, axis_b):.2f}%"><span>{_esc(d.name)}</span></div>')
+    out.append('<div class="nowline" hidden></div></div>')
     out.append("</div></div>")
     return "\n".join(out)
+
+
+def _deadline_for(lane: Lane, bar: Bar, cfg: Config, now: datetime) -> Deadline:
+    for d in cfg.deadlines:
+        if d.name.lower() == lane.due.strip().lower() or d.at == bar.end:
+            return d
+    return nearest_deadline(cfg, now)
+
+
+def today_rows(active: list[Lane], cfg: Config, now: datetime, axis_b: datetime) -> tuple[list[Bar], list[Bar]]:
+    """Own bars: running lanes and lanes whose cited end falls by the axis end. Everything else folds."""
+    own, folded = [], []
+    for lane in active:
+        b = day_bar(lane, cfg, now)
+        if (lane.kind == "running" and lane.state_time) or (b.end_src != "deadline" and b.end <= axis_b):
+            own.append(b)
+        else:
+            folded.append(b)
+    return own, folded
+
+
+def week_rows(active: list[Lane], cfg: Config, now: datetime, week_a: datetime) -> tuple[list[Bar], list[Summary]]:
+    """Own bars: running lanes and lanes with a concrete due. The rest fold into one row per deadline."""
+    own: list[Bar] = []
+    groups: dict[Deadline, list[Bar]] = {}
+    instants = {d.at for d in cfg.deadlines}
+    for lane in active:
+        b = week_bar(lane, cfg, now)
+        named = any(d.name.lower() == lane.due.strip().lower() for d in cfg.deadlines)
+        if (lane.kind == "running" and lane.state_time) or (b.end_src == "due" and not named and b.end not in instants):
+            own.append(b)
+        else:
+            groups.setdefault(_deadline_for(lane, b, cfg, now), []).append(b)
+    summaries = [Summary(d.name, f"→ {d.name}", week_a, d.at, tuple(groups[d])) for d in sorted(groups, key=lambda d: d.at)]
+    return own, summaries
+
+
+def _tick_step(span: timedelta) -> timedelta:
+    hours = span.total_seconds() / 3600
+    for step in TICK_STEPS_H:
+        if int(hours // step) + 1 <= MAX_TICKS:
+            return timedelta(hours=step)
+    return timedelta(hours=TICK_STEPS_H[-1])
 
 
 def render(tracker_text: str, log_text: str, cfg: Config, now: datetime) -> str:
@@ -364,21 +492,28 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime) -> str:
     nearest = nearest_deadline(cfg, now)
     url = tracker.board_url or cfg.board_url
 
-    # Day strip: earliest cited start today (carried bars sit at the axis start) to the nearest deadline, 3 h at least.
-    day_bars = [day_bar(lane, cfg, now) for lane in active] + [day_bar(lane, cfg, now) for lane in done]
-    cited = [b.start for b in day_bars if b.start_src != "carried"]
-    axis_a = min(cited + [now - timedelta(hours=1)]).replace(minute=0, second=0, microsecond=0)
-    axis_b = max(nearest.at, axis_a + timedelta(hours=3))
+    # Day strip: ends at the nearest deadline or midnight, whichever is first; starts at the earliest of now-1h,
+    # today's first calendar event, and the drawn bars' cited starts (carried bars sit at the axis start).
+    day_start = datetime.combine(today, time(0, 0), tzinfo=zone)
+    midnight = day_start + timedelta(days=1)
+    axis_b = min(nearest.at, midnight) if nearest.at >= now else midnight
+    day_bars, day_folded = today_rows(active, cfg, now, axis_b)
+    cited = [b.start for b in day_bars if b.start_src != "carried" and b.start >= day_start]
+    firsts = [e.start for e in events if e.start >= day_start]
+    axis_a = max(day_start, min(cited + firsts + [now - timedelta(hours=1)]).replace(minute=0, second=0, microsecond=0))
+    axis_b = max(axis_b, axis_a + timedelta(hours=3))
+    step = _tick_step(axis_b - axis_a)
     day_ticks = []
     t = axis_a
     while t <= axis_b:
         day_ticks.append((t, t.strftime("%H:%M")))
-        t += timedelta(hours=1)
+        t += step
     day_events = [e for e in events if e.end > axis_a and e.start < axis_b]
+    day_summaries = [Summary("today", "no estimate or due after today", axis_a, axis_b, tuple(day_folded))] if day_folded else []
 
     # Week strip: today to the last deadline, one column per day.
-    week_bars = [week_bar(lane, cfg, now) for lane in active] + [week_bar(lane, cfg, now) for lane in done]
     week_a = datetime.combine(today, time(0, 0), tzinfo=zone)
+    week_bars, week_summaries = week_rows(active, cfg, now, week_a)
     last = max([d.at for d in cfg.deadlines] + [week_a + timedelta(days=1)])
     week_b = datetime.combine(last.date() + timedelta(days=1), time(0, 0), tzinfo=zone)
     week_ticks = []
@@ -387,18 +522,27 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime) -> str:
         week_ticks.append((t, t.strftime("%a %d")))
         t += timedelta(days=1)
 
+    def item_cell(item: str) -> str:
+        short = short_name(item)
+        if short == item.strip():
+            return _esc(item)
+        lines = history_lines(item) or [("", item)]
+        body = "".join(f"<li><time>{_esc(t)}</time><span>{_esc(text)}</span></li>" for t, text in lines)
+        return f'<details><summary>{_esc(short)}</summary><ul class="hist">{body}</ul></details>'
+
     def lane_rows(group: list[Lane]) -> str:
         rows = []
         for lane in group:
             warn = f' <span class="warn">{_esc(lane.warning)}</span>' if lane.warning else ""
-            rows.append(f"<tr><td>{_esc(lane.item)}{warn}</td><td>{_esc(lane.owner)}</td><td>{_esc(lane.state)}</td><td>{_esc(lane.since)}</td><td>{_esc(lane.due)}</td></tr>")
+            rows.append(f'<tr data-state="{_esc(lane.kind)}"><td>{item_cell(lane.item)}{warn}</td><td>{_esc(lane.owner)}</td><td>{_esc(lane.state)}</td><td>{_esc(lane.since)}</td><td>{_esc(lane.due)}</td></tr>')
         return "\n".join(rows) or '<tr><td colspan="5" class="muted">none</td></tr>'
 
     queue = [lane for lane in active if lane.owner.strip().lower() == cfg.user.lower()]
-    queue_rows = "\n".join(f"<tr><td>{_esc(l.item)}</td><td>{_esc(l.due)}</td><td>{_esc(l.state)}</td></tr>" for l in queue) or '<tr><td colspan="3" class="muted">nothing waiting on you</td></tr>'
+    queue_rows = "\n".join(f"<tr><td>{_esc(short_name(l.item))}</td><td>{_esc(l.due)}</td><td>{_esc(l.state)}</td></tr>" for l in queue) or '<tr><td colspan="3" class="muted">nothing waiting on you</td></tr>'
     running = [l for l in active if l.kind == "running"]
     waiting = [l for l in active if l.kind != "running"]
-    no_est = sum(1 for b in day_bars if b.label == NO_ESTIMATE)
+    long_items = sum(1 for lane in lanes if len(lane.item) > LONG_ITEM)
+    long_note = f" · {long_items} {'lane carries' if long_items == 1 else 'lanes carry'} history in the item cell" if long_items else ""
     tzname = now.strftime("%Z")
 
     return f"""<title>Board {today.isoformat()}</title>
@@ -412,20 +556,24 @@ h1{{font-size:20px;margin:0 0 4px}} h2{{font-size:15px;margin:28px 0 8px;border-
 .meta{{color:var(--muted);font-size:13px}} .clock{{font-family:ui-monospace,monospace;font-size:15px;margin:6px 0}}
 table{{border-collapse:collapse;width:100%;max-width:100%}} td,th{{text-align:left;padding:4px 8px;border-bottom:1px solid var(--line);vertical-align:top}} th{{color:var(--muted);font-weight:500;font-size:12px}}
 .muted{{color:var(--muted)}} .warn{{color:var(--dl);font-size:12px}}
-.strip{{position:relative;margin:8px 0 4px}} .axis{{position:relative;height:18px;margin-left:34%;font-size:11px;color:var(--muted)}} .tick{{position:absolute;transform:translateX(-50%);white-space:nowrap}}
-.rows{{position:relative}} .row{{display:flex;align-items:center;height:26px}} .name{{width:34%;padding-right:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}} .track{{position:relative;flex:1;height:18px;border-left:1px solid var(--line)}}
+.strip{{position:relative;margin:8px 0 4px;--name-w:30%}} .axis{{position:relative;height:18px;margin-left:var(--name-w);font-size:11px;color:var(--muted)}} .tick{{position:absolute;transform:translateX(-50%);white-space:nowrap}}
+.rows{{position:relative}} .row{{display:flex;align-items:center;height:26px}} .name{{width:var(--name-w);flex:none;padding-right:8px;box-sizing:border-box;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}} .track{{position:relative;flex:1;height:18px;border-left:1px solid var(--line)}}
+.summary-row .name{{color:var(--muted)}}
 .bar{{position:absolute;top:0;height:18px;border-radius:3px;background:var(--open);color:#fff;font-size:11px;line-height:18px;padding:0 6px;overflow:hidden;white-space:nowrap;box-sizing:border-box}}
-.bar.running{{background:var(--running)}} .bar.done{{background:var(--done)}} .bar.open-end{{background:repeating-linear-gradient(135deg,var(--open),var(--open) 6px,transparent 6px,transparent 10px);color:var(--fg)}} .bar.clamped{{border-right:3px solid var(--dl)}} .bar em{{font-style:normal;opacity:.8;margin-left:6px}}
-.band{{position:absolute;top:18px;bottom:0;left:0;background:var(--band);margin-left:34%;box-sizing:border-box;transform:scaleX(.66);transform-origin:left}}
-.band,.dline,.nowline{{pointer-events:none}}
-.dline{{position:absolute;top:0;bottom:0;border-left:2px dashed var(--dl);margin-left:34%;transform:translateX(-1px)}} .dline span{{position:absolute;top:-2px;left:4px;font-size:11px;color:var(--dl);white-space:nowrap}}
-.nowline{{position:absolute;top:0;bottom:0;border-left:2px solid var(--now);margin-left:34%}}
-@media (max-width:520px){{.name{{width:40%}} .axis,.band,.dline,.nowline{{margin-left:40%}} .band{{transform:scaleX(.6)}}}}
+.bar.running{{background:var(--running)}} .bar.open-end{{background:repeating-linear-gradient(135deg,var(--open),var(--open) 6px,transparent 6px,transparent 10px);color:var(--fg)}} .bar.clamped{{border-right:3px solid var(--dl)}} .bar em{{font-style:normal;opacity:.85}} .member{{display:none}}
+.overlay{{position:absolute;top:0;bottom:0;left:var(--name-w);right:0;pointer-events:none}}
+.band{{position:absolute;top:0;bottom:0;background:var(--band)}}
+.dline{{position:absolute;top:0;bottom:0;border-left:2px dashed var(--dl);transform:translateX(-1px)}} .dline span{{position:absolute;top:-16px;left:4px;font-size:11px;color:var(--dl);white-space:nowrap}}
+.nowline{{position:absolute;top:0;bottom:0;border-left:2px solid var(--now)}}
+details summary{{cursor:pointer}} details[open] summary{{margin-bottom:4px}}
+.hist{{list-style:none;margin:4px 0 2px;padding:0 0 0 10px;border-left:2px solid var(--line);max-height:12.5em;overflow:auto;font-size:12px;line-height:1.5;color:var(--muted);display:grid;gap:3px}}
+.hist li{{display:grid;grid-template-columns:3em 1fr;gap:8px}} .hist time{{font-family:ui-monospace,monospace;font-variant-numeric:tabular-nums;color:var(--fg)}}
+@media (max-width:520px){{.strip{{--name-w:36%}}}}
 </style>
 <div class="board" data-rendered-at="{_iso(now)}" data-tz="{_esc(cfg.tz)}" data-deadline="{_iso(nearest.at)}" data-deadline-name="{_esc(nearest.name)}">
 <h1>Board {today.isoformat()}</h1>
 <div class="clock" id="clock">Now — {_esc(tzname)} · {_esc(nearest.name)} ({nearest.at.strftime('%H:%M')} {_esc(tzname)})</div>
-<div class="meta">tracker as of {now.strftime('%H:%M')} {_esc(tzname)} <span id="ago"></span> · kept by chief-of-stuff · board {_esc(url or 'not yet published')}</div>
+<div class="meta">tracker as of {now.strftime('%H:%M')} {_esc(tzname)} <span id="ago"></span> · kept by chief-of-stuff · board {_esc(url or 'not yet published')}{long_note}</div>
 
 <h2>{_esc(cfg.user)}'s queue</h2>
 <table><tr><th>item</th><th>due</th><th>state</th></tr>
@@ -433,12 +581,12 @@ table{{border-collapse:collapse;width:100%;max-width:100%}} td,th{{text-align:le
 </table>
 
 <h2>Today</h2>
-<div class="meta">{len(day_bars)} lanes · {no_est} with no estimate (hatched to {_esc(nearest.name)}) · bands are calendar events · green line is now</div>
-{_strip(day_bars, axis_a, axis_b, day_events, [nearest], day_ticks, "day")}
+<div class="meta">{len(day_bars)} scheduled · {len(day_folded)} folded into one row (no estimate or due after today) · bands are calendar events · green line is now</div>
+{_strip(day_bars, day_summaries, axis_a, axis_b, day_events, [nearest], day_ticks, "day")}
 
 <h2>Week</h2>
-<div class="meta">to the last deadline in the Coordinator block · dashed lines are deadlines</div>
-{_strip(week_bars, week_a, week_b, [], list(cfg.deadlines), week_ticks, "week")}
+<div class="meta">{len(week_bars)} scheduled · the rest folded into one row per deadline · dashed lines are deadlines</div>
+{_strip(week_bars, week_summaries, week_a, week_b, [], list(cfg.deadlines), week_ticks, "week")}
 
 <h2>Lanes</h2>
 <table><tr><th>item</th><th>owner</th><th>state</th><th>since</th><th>due</th></tr>
@@ -463,7 +611,7 @@ table{{border-collapse:collapse;width:100%;max-width:100%}} td,th{{text-align:le
     document.querySelectorAll('.strip').forEach(function(s){{
       var a=new Date(s.dataset.axisStart),b=new Date(s.dataset.axisEnd),line=s.querySelector('.nowline');
       if(now<a||now>b){{line.hidden=true;return;}}
-      line.hidden=false;line.style.left=((now-a)/(b-a)*66)+'%';
+      line.hidden=false;line.style.left=((now-a)/(b-a)*100)+'%';
     }});
   }}
   tick();setInterval(tick,30000);
@@ -503,8 +651,9 @@ def main(argv: list[str] | None = None) -> Path:
     bars = [day_bar(lane, cfg, now) for lane in parsed.lanes]
     no_est = sum(1 for b in bars if b.label == NO_ESTIMATE)
     warnings = sum(1 for lane in parsed.lanes if lane.warning)
+    long_items = sum(1 for lane in parsed.lanes if len(lane.item) > LONG_ITEM)
     print(out)
-    print(f"lanes={len(parsed.lanes)} no_estimate={no_est} warnings={warnings} tracker_sha256={hashlib.sha256(tracker_text.encode()).hexdigest()[:12]}")
+    print(f"lanes={len(parsed.lanes)} no_estimate={no_est} warnings={warnings} long_items={long_items} tracker_sha256={hashlib.sha256(tracker_text.encode()).hexdigest()[:12]}")
     return out
 
 
