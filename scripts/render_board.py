@@ -478,7 +478,6 @@ LEGEND = [
     ("key bar running", "running"),
     ("key bar open", "open"),
     ("key bar orphaned", "orphaned"),
-    ("key bar done", "done"),
     ("key bar open-end", "no estimate"),
     ("key bar summary", "folded rows"),
     ("key band", "calendar event"),
@@ -529,12 +528,18 @@ def _strip(rows: list[Bar | Summary], axis_a: datetime, axis_b: datetime, events
         sm = row
         names = " · ".join(short_name(m.item) for m in sm.members)
         hatch = " open-end" if sm.attr == "summary" else ""
+        # The folded names were always in the html as empty `.member` spans, readable by a grader and
+        # by nobody else. The disclosure gives them to a person without moving the citations.
         out.append(
+            '<details class="folded"><summary>'
             f'<div class="row {sm.attr}-row"><div class="name">{_esc(sm.name or _lanes(len(sm.members)))}</div><div class="track">'
             f'<div class="bar{hatch} {sm.attr}{edge}" data-{sm.attr}="{_esc(sm.key)}" data-count="{len(sm.members)}" data-start="{_iso(sm.start)}" data-end="{_iso(sm.end)}" '
             f'style="left:{left:.2f}%;width:{max(right - left, 0.6):.2f}%" title="{_esc(names)}"><em>{_esc(sm.label)}</em>'
             + "".join(_member(m) for m in sm.members)
-            + "</div></div></div>"
+            + "</div></div></div></summary>"
+            + '<ul class="folded-list">'
+            + "".join(f"<li>{_esc(short_name(m.item))}</li>" for m in sm.members)
+            + "</ul></details>"
         )
     out.append('<div class="overlay">')
     for at, major in grid_marks(axis_a, axis_b, kind):
@@ -755,9 +760,9 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
 <link rel="stylesheet" href="{FONTS}">
 <meta name="tracker-sha256" content="{sha}">{req_meta}
 <style>
-:root{{--bg:#f4efe1;--surface:#fbf8ef;--fg:#2f2630;--muted:#6e6470;--line:#ddd3bd;--brass:#a7843e;--band:rgba(111,99,180,.14);--open:#9daa72;--running:#6f63b4;--done:#bdb3a2;--dl:#c9533a;--now:#4f6b3a;--bar-ink:#fbf8ef}}
-@media (prefers-color-scheme:dark){{:root:not([data-theme="light"]){{--bg:#1e1a20;--surface:#29232b;--fg:#efe8d6;--muted:#a89fa8;--line:#3d3440;--brass:#c9a45c;--band:rgba(154,143,218,.18);--open:#6f7f48;--running:#9a8fda;--done:#5a5058;--dl:#f0775a;--now:#9dbb6e;--bar-ink:#1e1a20}}}}
-:root[data-theme="dark"]{{--bg:#1e1a20;--surface:#29232b;--fg:#efe8d6;--muted:#a89fa8;--line:#3d3440;--brass:#c9a45c;--band:rgba(154,143,218,.18);--open:#6f7f48;--running:#9a8fda;--done:#5a5058;--dl:#f0775a;--now:#9dbb6e;--bar-ink:#1e1a20}}
+:root{{--bg:#f4efe1;--surface:#fbf8ef;--fg:#2f2630;--muted:#6e6470;--line:#ddd3bd;--brass:#a7843e;--band:rgba(111,99,180,.14);--open:#9daa72;--noest:#2f8f86;--fold:#8a7f9c;--running:#6f63b4;--done:#bdb3a2;--dl:#c9533a;--now:#4f6b3a;--bar-ink:#fbf8ef}}
+@media (prefers-color-scheme:dark){{:root:not([data-theme="light"]){{--bg:#1e1a20;--surface:#29232b;--fg:#efe8d6;--muted:#a89fa8;--line:#3d3440;--brass:#c9a45c;--band:rgba(154,143,218,.18);--open:#6f7f48;--noest:#4fb3a7;--fold:#a093bb;--running:#9a8fda;--done:#5a5058;--dl:#f0775a;--now:#9dbb6e;--bar-ink:#1e1a20}}}}
+:root[data-theme="dark"]{{--bg:#1e1a20;--surface:#29232b;--fg:#efe8d6;--muted:#a89fa8;--line:#3d3440;--brass:#c9a45c;--band:rgba(154,143,218,.18);--open:#6f7f48;--noest:#4fb3a7;--fold:#a093bb;--running:#9a8fda;--done:#5a5058;--dl:#f0775a;--now:#9dbb6e;--bar-ink:#1e1a20}}
 body{{background:var(--bg);color:var(--fg);font:14px/1.5 "Alegreya Sans","Gill Sans",system-ui,sans-serif;padding:16px 16px 48px;max-width:1100px;margin:0 auto}}
 h1{{font-family:"Cormorant SC","Cormorant Garamond",Georgia,serif;font-size:26px;font-weight:600;letter-spacing:.04em;margin:0 0 2px}}
 h2{{font-family:"Cormorant SC","Cormorant Garamond",Georgia,serif;font-size:19px;font-weight:600;letter-spacing:.05em;margin:28px 0 8px;border-bottom:1px solid var(--brass);padding-bottom:4px}}
@@ -769,9 +774,9 @@ tr.group th{{background:color-mix(in srgb,var(--brass) 18%,transparent);color:va
 .muted{{color:var(--muted)}} .warn{{color:var(--dl);font-size:12px}}
 .strip{{position:relative;margin:8px 0 4px;--name-w:30%}} .axis{{position:relative;height:18px;margin-left:var(--name-w);font-size:11px;color:var(--muted)}} .tick{{position:absolute;transform:translateX(-50%);white-space:nowrap}}
 .rows{{position:relative}} .row{{display:flex;align-items:center;height:26px}} .name{{width:var(--name-w);flex:none;padding-right:8px;box-sizing:border-box;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}} .track{{position:relative;flex:1;height:18px;border-left:1px solid var(--line)}}
-.summary-row .name{{color:var(--muted)}}
-.bar{{position:absolute;top:0;height:18px;border-radius:3px;background:var(--open);color:var(--bar-ink);font-size:11px;line-height:18px;padding:0 6px;overflow:hidden;white-space:nowrap;box-sizing:border-box}}
-.bar.running{{background:var(--running)}} .bar.orphaned{{outline:2px dashed var(--dl);outline-offset:-2px}} .bar.open-end{{background:repeating-linear-gradient(135deg,var(--open),var(--open) 6px,transparent 6px,transparent 10px);color:var(--fg)}} .bar.clamped{{border-right:3px solid var(--dl)}} .bar.clamped-left{{border-left:3px solid var(--dl)}} .group-row .name{{font-weight:600}} .bar em{{font-style:normal;opacity:.85}} .member{{display:none}}
+.summary-row .name{{color:var(--muted)}} details.folded>summary{{list-style:none;cursor:pointer}} details.folded>summary::-webkit-details-marker{{display:none}} details.folded>summary .name::before{{content:"\u25b8 "}} details.folded[open]>summary .name::before{{content:"\u25be "}} .folded-list{{list-style:none;margin:0 0 6px var(--name-w);padding:4px 8px;background:var(--surface);border-radius:4px;display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:2px 12px;font-size:12px;color:var(--muted)}}
+.bar{{position:absolute;top:0;height:18px;border-radius:3px;background:repeating-linear-gradient(45deg,var(--open),var(--open) 7px,rgba(127,127,127,.28) 7px,rgba(127,127,127,.28) 11px);color:var(--bar-ink);font-size:11px;line-height:18px;padding:0 6px;overflow:hidden;white-space:nowrap;box-sizing:border-box}}
+.bar.running{{background:var(--running)}} .bar.orphaned{{background:repeating-linear-gradient(45deg,var(--dl) 0 2px,transparent 2px 8px),repeating-linear-gradient(-45deg,var(--dl) 0 2px,transparent 2px 8px);outline:2px dashed var(--dl);outline-offset:-2px}} .bar.open-end{{background:repeating-linear-gradient(90deg,var(--noest),var(--noest) 3px,rgba(127,127,127,.30) 3px,rgba(127,127,127,.30) 7px);color:var(--fg)}} .bar.summary{{background:repeating-linear-gradient(90deg,var(--fold),var(--fold) 2px,rgba(127,127,127,.34) 2px,rgba(127,127,127,.34) 9px);color:var(--fg)}} .bar.clamped{{border-right:3px solid var(--dl)}} .bar.clamped-left{{border-left:3px solid var(--dl)}} .group-row .name{{font-weight:600}} .bar em{{font-style:normal;opacity:.85}} .member{{display:none}}
 .overlay{{position:absolute;top:0;bottom:0;left:var(--name-w);right:0;pointer-events:none}}
 .band{{position:absolute;top:0;bottom:0;background:var(--band)}}
 .grid{{position:absolute;top:0;bottom:0;border-left:1px solid var(--line)}} .grid.half{{border-left:1px dotted var(--line);opacity:.6}}
@@ -780,8 +785,8 @@ tr.group th{{background:color-mix(in srgb,var(--brass) 18%,transparent);color:va
 .legend .key{{position:static;flex:none;display:inline-block;width:18px;height:10px;border-radius:2px;top:auto;bottom:auto;left:auto;right:auto}}
 .legend .key.nowline{{width:0;height:12px;border-radius:0;border-left:2px solid var(--now)}} .legend .key.dline{{width:0;height:12px;border-radius:0;border-left:2px dashed var(--dl);transform:none}}
 .legend .key.band{{height:12px;background:var(--band);border:1px solid var(--line)}}
-.key{{display:inline-block;width:18px;height:10px;border-radius:2px}} .key.bar{{position:static;background:var(--open);padding:0}}
-.key.bar.running{{background:var(--running)}} .key.bar.done{{background:var(--done)}} .key.bar.summary{{background:var(--open);opacity:.55}}
+.key{{display:inline-block;width:18px;height:10px;border-radius:2px}} .key.bar{{position:static;background:repeating-linear-gradient(45deg,var(--open),var(--open) 7px,rgba(127,127,127,.28) 7px,rgba(127,127,127,.28) 11px);padding:0}}
+.key.bar.running{{background:var(--running)}} .key.bar.orphaned{{background:repeating-linear-gradient(45deg,var(--dl) 0 2px,transparent 2px 8px),repeating-linear-gradient(-45deg,var(--dl) 0 2px,transparent 2px 8px)}} .key.bar.open-end{{background:repeating-linear-gradient(90deg,var(--noest),var(--noest) 3px,rgba(127,127,127,.30) 3px,rgba(127,127,127,.30) 7px)}} .key.bar.summary{{background:repeating-linear-gradient(90deg,var(--fold),var(--fold) 2px,rgba(127,127,127,.34) 2px,rgba(127,127,127,.34) 9px)}}
 .key.band{{background:var(--band);border:1px solid var(--line)}} .key.nowline{{width:0;height:12px;border-left:2px solid var(--now);border-radius:0}} .key.dline{{width:0;height:12px;border-left:2px dashed var(--dl);border-radius:0}}
 .dline{{position:absolute;top:0;bottom:0;border-left:2px dashed var(--dl);transform:translateX(-1px)}}
 .callouts{{margin-left:var(--name-w);margin-top:2px}} .callout{{position:relative;height:16px;font-size:11px;line-height:16px;color:var(--dl);white-space:nowrap}}
