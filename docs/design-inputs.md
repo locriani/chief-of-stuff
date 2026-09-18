@@ -193,3 +193,31 @@ The fix is the discipline `audit_lanes.git()` already applies to a read-only git
 **What the session did with the failure is the second half of the finding.** Landing in the workspace root with no assignment, its most available source of work was the real tracker — thirty-odd `unassigned` lanes. It did not take one. It reported that the file it was told to read did not exist, named the missing hop in the plugin, and stopped. `--permission-mode plan` meant it could not have written anything either way, but it never tried. The failure mode this design fears most was reached and not completed.
 
 **Why the eval could not see it.** The harness replaces the launcher with a recorder (`CHIEF_OF_STUFF_LAUNCHER`), so no case starts a real `claude`, and the recorder inherits the runner's environment rather than a coordinator's. Everything here lives in the gap between the launcher the eval substitutes and the one that ships. That gap is what the plan's hand-check pause exists for, and this is the first time it has paid.
+
+## 55 — one lane, two worktrees, no mutual exclusion
+
+**From:** `wt-live-0a`, the first dispatched session, 2026-09-18 12:0x, reporting on the tree it woke up in.
+**Status:** Adopted 2026-09-18 (0.8.0, bullet 1).
+
+It read its assignment, then went looking, and found that `trees/wt-docs` and `trees/wt-live` held byte-identical dispatch files for the same lane — each telling a different branch it owned `README.md`. "A session that just complies produces a conflicting commit on a file another branch was also told it owns."
+
+`agents/chief-of-stuff.md:195` has always said only an `unassigned` lane may be proposed for dispatch. Nothing enforced it. The coordinator sets the owner *after* launching, so the tracker is the record of the claim and `compose()` never read it — which made the rule prose with no mechanical guard behind it, the same shape as finding 45, where the `done` rule stated a boundary the script did not implement.
+
+`compose()` now refuses a lane whose owner is not `unassigned`, and the assignment carries a `Worktree:` line so a session can tell whether the dispatch it is reading was addressed to it. The session's own first suggestion, and the cheaper half of it.
+
+Worth recording how it was found: not by a grader, and not by the sibling being visible from the assignment — the assignment gave no way to detect it. It ran `git worktree list` because the lane's shape did not add up, and the check that caught the defect was curiosity rather than compliance.
+
+## 56 — a dispatch thin enough to invent work from
+
+**From:** `wt-live-0a`, same report.
+**Status:** open. Bullet 3 for the content; the header sentence is bullet 2.
+
+Two complaints, both fair.
+
+**The assignment was two lines and the tracker was outside the tree.** A session whose cwd is its worktree was told to read a tracker that lives up in the workspace, while its preamble told it to stay inside the tree — "those two instructions pull against each other". The paths are absolute now, which fixes resolution and not the tension: something still has to say that reading the tracker is expected and reaching anywhere else is not.
+
+**The lane's name and its owned file could not both be satisfied.** "Docstring pass" owning a three-line `README.md` in a repo tracking no code. That part is my sloppy fixture, but the failure mode it names is the real finding: *"the failure mode to design against is the session inventing plausible work — fabricating README content, or silently retargeting to the .py files against stated ownership — rather than stopping."* It stopped and asked.
+
+So the dispatch should carry acceptance criteria rather than a lane name, and should say what to do when scope looks empty or contradictory: hand it back, never proceed on an assumption the coordinator did not state. That last sentence belongs in the script-written header, where the coordinator cannot omit it.
+
+This also settles a question bullet 1 left open. Two lines were enough for a session to find its way and not enough for it to act — so bullet 3's remaining four lines are load-bearing rather than a nicety, and that is now observed rather than argued.

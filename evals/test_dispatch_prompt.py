@@ -64,13 +64,46 @@ class ComposeTest(unittest.TestCase):
 
     def test_it_names_the_tracker_path_from_the_coordinator_block(self):
         body = dp.compose(self.root, "2026-09-18", "Security audit")
-        self.assertIn("Tracker: daily/2026-09-18-tracker.md", body)
+        self.assertIn(f"Tracker: {self.root.resolve()}/daily/2026-09-18-tracker.md", body)
+
+
+    def test_the_tracker_path_resolves_from_the_worktree_not_the_workspace(self):
+        """The file is read by a session whose cwd is its tree, not the root the path is written against.
+
+        A relative tracker path sent the first real spawn hunting: ls, cat, then out of its own tree
+        looking for a file that was never reachable from where it stood.
+        """
+        body = dp.compose(self.root, "2026-09-18", "Security audit")
+        line = [x for x in body.splitlines() if x.startswith("Tracker: ")][0]
+        named = Path(line.removeprefix("Tracker: "))
+        self.assertTrue(named.is_absolute(), f"{named} does not resolve from a worktree")
+        self.assertTrue(named.exists(), f"{named} is not there")
+
+    def test_it_still_says_which_workspace_the_lane_lives_in(self):
+        body = dp.compose(self.root, "2026-09-18", "Security audit")
+        self.assertIn(f"Workspace: {self.root.resolve()}", body)
 
     def test_a_lane_that_is_not_a_row_is_refused(self):
         """The one variable argument, and the reason an expansion cannot become a payload."""
         for absent in ("Upload handler fix", "$(whoami)", "`id`", ""):
             with self.assertRaises(dp.RefusedError, msg=absent):
                 dp.compose(self.root, "2026-09-18", absent)
+
+
+    def test_a_lane_that_already_has_an_owner_is_refused(self):
+        """Two trees were handed the same lane and the same file. The rule said unassigned; nothing checked.
+
+        Found by the first dispatched session, which noticed a sibling worktree holding a
+        byte-identical assignment and stopped rather than committing over it.
+        """
+        with self.assertRaises(dp.RefusedError) as e:
+            dp.compose(self.root, "2026-09-18", "Draft release notes")
+        self.assertIn("Robin", str(e.exception))
+
+    def test_the_assignment_says_which_tree_it_was_written_for(self):
+        """So a session can tell whether the dispatch it is reading was addressed to it."""
+        body = dp.compose(self.root, "2026-09-18", "Security audit", worktree=Path("/tmp/trees/wt-audit"))
+        self.assertIn("Worktree: /tmp/trees/wt-audit", body)
 
     def test_the_refusal_says_what_it_looked_for(self):
         with self.assertRaises(dp.RefusedError) as e:

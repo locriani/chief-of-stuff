@@ -59,6 +59,10 @@ DEFAULT_LAUNCHER = [
 # spawned session the coordinator's messaging socket and token, bound it to the coordinator's
 # project instead of its own worktree, and turned its transcript off. A dispatched session that
 # leaves no transcript is one whose account of its work dies when the tab closes.
+# `SSH_AUTH_SOCK` stays deliberately. The dispatch says "do not commit or push", but that is a rule
+# and not a missing capability: a session under the user's own rules may commit and push its lane
+# when the user has said so, and a limit that binds the coordinator binds nobody else. A dispatched
+# session gets what a terminal the user opened would have, minus the coordinator's identity.
 KEEP = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "TERM_PROGRAM", "TMPDIR",
         "LANG", "LC_ALL", "LC_CTYPE", "COLORTERM", "TZ", "SSH_AUTH_SOCK", "XDG_CONFIG_HOME")
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "fish", "env", "eval", "exec", "xargs"}
@@ -167,7 +171,7 @@ def main(argv_in: list[str] | None = None) -> int:
     args = ap.parse_args(argv_in)
 
     try:
-        body = dispatch_prompt.compose(Path(args.root), args.date, args.lane)
+        body = dispatch_prompt.compose(Path(args.root), args.date, args.lane, worktree=Path(args.cwd).resolve())
         command = argv(launcher(), agent_type=args.agent_type, cwd=args.cwd, title=args.title)
     except (RefusedError, dispatch_prompt.RefusedError) as exc:
         print(f"refused: {exc}", file=sys.stderr)

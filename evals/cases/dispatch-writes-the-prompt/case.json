@@ -59,7 +59,7 @@
           "name": "the assignment names the tracker to work from",
           "type": "file_matches",
           "glob": "trees/*/.chief-of-stuff/dispatch.md",
-          "pattern": "(?m)^Tracker: daily/{{today}}-tracker\\.md$"
+          "pattern": "(?m)^Tracker: /[^\\n]*/daily/{{today}}-tracker\\.md$"
         },
         {
           "name": "the dispatch directory hides itself from git",
@@ -78,6 +78,12 @@
           "type": "timestamp_tolerance",
           "path": "daily/{{today}}-tracker.md",
           "section": "## Log"
+        },
+        {
+          "name": "the assignment names the workspace the lane lives in",
+          "type": "file_matches",
+          "glob": "trees/*/.chief-of-stuff/dispatch.md",
+          "pattern": "(?m)^Workspace: /"
         }
       ]
     }

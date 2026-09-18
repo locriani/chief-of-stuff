@@ -32,7 +32,10 @@ def _config(root: Path):
         raise RefusedError(f"cannot read the ## Coordinator block: {exc}") from None
 
 
-def compose(root: Path, day: str | None, lane: str) -> str:
+UNASSIGNED = "unassigned"
+
+
+def compose(root: Path, day: str | None, lane: str, worktree: Path | None = None) -> str:
     """The assignment for `lane`, read back off disk. A lane that is not a row is refused."""
     cfg = _config(root)
     relative = cfg.tracker_path(day or datetime.now(cfg.zone).date().isoformat())
@@ -44,4 +47,19 @@ def compose(root: Path, day: str | None, lane: str) -> str:
     rows = [row for row in parse_tracker(text).lanes if row.item.strip() == wanted]
     if not wanted or not rows:
         raise RefusedError(f"no Lanes row {lane!r} in {relative}; a dispatch names a lane that is already there")
-    return f"Lane: {rows[0].item.strip()}\nTracker: {relative}\n"
+    owner = rows[0].owner.strip()
+    # The rule has always said only an `unassigned` lane may be dispatched; nothing enforced it, and
+    # two worktrees were handed the same lane and the same file to edit.
+    if owner.lower() != UNASSIGNED:
+        raise RefusedError(
+            f"lane {rows[0].item.strip()!r} is already {owner}'s, not {UNASSIGNED}; it is not a lane to dispatch")
+    # Absolute, because this file is read by a session whose cwd is its own worktree rather than the
+    # root the tracker path is written against. The first real spawn went hunting for a relative path
+    # that was never reachable from where it stood, and a session that hunts reads things nobody
+    # pointed it at.
+    lines = [f"Lane: {rows[0].item.strip()}"]
+    if worktree is not None:
+        # So a session can tell whether the assignment it is reading was addressed to it.
+        lines.append(f"Worktree: {worktree}")
+    lines += [f"Workspace: {root.resolve()}", f"Tracker: {(root / relative).resolve()}"]
+    return "\n".join(lines) + "\n"
