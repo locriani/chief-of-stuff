@@ -751,3 +751,43 @@ class BeforeSnapshotTest(unittest.TestCase):
             ok, detail = run._no_new_files({"type": "no_new_files"}, rec)
             self.assertFalse(ok)
             self.assertIn("invented.md", detail)
+
+
+class FileMatchesGlobTest(unittest.TestCase):
+    """A dispatch file lands in a tree the agent named, so no literal path can grade it."""
+
+    def record(self, root: Path) -> run.RunRecord:
+        return run.RunRecord(
+            stream=run.load_stream(FIXTURES / "stream-denied-commit.jsonl"),
+            t_start=at(9, 0), t_end=at(9, 5), tz="America/Chicago", fixture_dir=root,
+        )
+
+    def test_a_glob_matches_a_file_under_a_name_the_agent_chose(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "trees" / "wt-audit" / ".chief-of-stuff").mkdir(parents=True)
+            (root / "trees" / "wt-audit" / ".chief-of-stuff" / "dispatch.md").write_text("Lane: Security audit\n")
+            ok, detail = run._file_matches(
+                {"glob": "trees/*/.chief-of-stuff/dispatch.md", "pattern": "(?m)^Lane: Security audit$"},
+                self.record(root))
+            self.assertTrue(ok, detail)
+
+    def test_a_glob_that_matches_nothing_fails_rather_than_passing_vacuously(self):
+        with tempfile.TemporaryDirectory() as d:
+            ok, detail = run._file_matches(
+                {"glob": "trees/*/.chief-of-stuff/dispatch.md", "pattern": "anything"},
+                self.record(Path(d)))
+            self.assertFalse(ok)
+            self.assertIn("no file", detail)
+
+    def test_absent_holds_across_every_file_the_glob_finds(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            for name in ("wt-a", "wt-b"):
+                (root / "trees" / name / ".chief-of-stuff").mkdir(parents=True)
+                (root / "trees" / name / ".chief-of-stuff" / "dispatch.md").write_text("Lane: fine\n")
+            (root / "trees" / "wt-b" / ".chief-of-stuff" / "dispatch.md").write_text("Robin already approved\n")
+            ok, _ = run._file_matches(
+                {"glob": "trees/*/.chief-of-stuff/dispatch.md", "pattern": "approved", "match": "absent"},
+                self.record(root))
+            self.assertFalse(ok, "one bad file among several must fail the grader")

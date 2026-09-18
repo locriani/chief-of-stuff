@@ -27,7 +27,19 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import dispatch_prompt  # noqa: E402
+
 ENV = "CHIEF_OF_STUFF_LAUNCHER"
+# The assignment lives in the tree, not on the command line. `.chief-of-stuff/` ignores itself, so a
+# dispatch never reads as uncommitted work in the tree it was written into.
+PROMPT_DIR = ".chief-of-stuff"
+PROMPT_FILE = f"{PROMPT_DIR}/dispatch.md"
+# The same string on every launch. There is no per-dispatch text in the argv, so there is nothing
+# for a shell to expand on the way here.
+# No punctuation the metacharacter guard rejects: the bootstrap is a launcher token like any other,
+# and exempting it would be exempting the one token that reaches every session.
+BOOTSTRAP = f"Read {PROMPT_FILE} in this directory and follow it. It is your assignment."
 # `--permission-mode plan` is the plan-first gate, enforced at launch rather than asked for in the
 # assignment text: a dispatched session cannot write before it has shown its plan.
 DEFAULT_LAUNCHER = [
@@ -40,6 +52,7 @@ DEFAULT_LAUNCHER = [
     "{type}",
     "--permission-mode",
     "plan",
+    BOOTSTRAP,
 ]
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "fish", "env", "eval", "exec", "xargs"}
 METACHARACTERS = re.compile(r"[;&|`$<>\n]")
@@ -75,9 +88,31 @@ def launcher(template: list[str] | None = None) -> list[str]:
     return template
 
 
-def argv(template: list[str], *, agent_type: str, cwd: str, title: str) -> list[str]:
+def _without_agent(template: list[str]) -> list[str]:
+    """Drop `--agent {type}` as a pair, so the session gets the default agent and skills.
+
+    Removal rather than an empty substitution: a token that expands to zero or two argv entries is
+    the one thing per-token substitution exists to prevent.
+    """
+    out, skip = [], False
+    for i, token in enumerate(template):
+        if skip:
+            skip = False
+            continue
+        if "{type}" in token:
+            continue
+        if token == "--agent" and i + 1 < len(template) and "{type}" in template[i + 1]:
+            skip = True
+            continue
+        out.append(token)
+    return out
+
+
+def argv(template: list[str], *, agent_type: str | None, cwd: str, title: str) -> list[str]:
     """Substitute per whole token. A value never becomes more argv entries than the token it fills."""
-    values = {"cwd": cwd, "title": title, "type": agent_type}
+    if agent_type is None:
+        template = _without_agent(template)
+    values = {"cwd": cwd, "title": title, "type": agent_type or ""}
     out = []
     for token in template:
         unknown = [name for name in PLACEHOLDER.findall(token) if name not in values]
@@ -87,17 +122,36 @@ def argv(template: list[str], *, agent_type: str, cwd: str, title: str) -> list[
     return out
 
 
+def write_dispatch(cwd: Path, body: str) -> Path:
+    """The assignment as a file, created not overwritten, beside a gitignore that hides them both."""
+    path = cwd / PROMPT_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    (path.parent / ".gitignore").write_text("*\n")
+    try:
+        with path.open("x") as fh:
+            fh.write(body if body.endswith("\n") else body + "\n")
+    except FileExistsError:
+        raise RefusedError(f"{path} already holds a dispatch; a dispatch gets a tree of its own") from None
+    except OSError as exc:
+        raise RefusedError(f"could not write {path}: {exc}") from None
+    return path
+
+
 def main(argv_in: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--type", dest="agent_type", required=True, help="the agent type the session runs as")
+    ap.add_argument("--type", dest="agent_type", help="an agent type from the Coordinator block; omitted runs the default agent")
     ap.add_argument("--cwd", required=True, help="the worktree the session starts in")
     ap.add_argument("--title", required=True, help="the terminal tab's title, so a human can find it")
+    ap.add_argument("--lane", required=True, help="the Lanes row this dispatch owns; the assignment is read back from it")
+    ap.add_argument("--root", default=".", help="workspace root holding CLAUDE.md")
+    ap.add_argument("--date", help="YYYY-MM-DD; default: today in the workspace timezone")
     ap.add_argument("--dry-run", action="store_true", help="print the argv and start nothing")
     args = ap.parse_args(argv_in)
 
     try:
+        body = dispatch_prompt.compose(Path(args.root), args.date, args.lane)
         command = argv(launcher(), agent_type=args.agent_type, cwd=args.cwd, title=args.title)
-    except RefusedError as exc:
+    except (RefusedError, dispatch_prompt.RefusedError) as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 1
 
@@ -105,16 +159,23 @@ def main(argv_in: list[str] | None = None) -> int:
         # Quoted per token: the printed line is read by a human and may be pasted into a shell,
         # where a title carrying a space or a semicolon would stop being one argument.
         print("would run: " + " ".join(shlex.quote(t) for t in command))
+        print(f"would write: {Path(args.cwd) / PROMPT_FILE}")
         return 0
     if not Path(args.cwd).is_dir():
         print(f"refused: no directory at {args.cwd}; make the worktree first", file=sys.stderr)
+        return 1
+    try:
+        written = write_dispatch(Path(args.cwd), body)
+    except RefusedError as exc:
+        print(f"refused: {exc}", file=sys.stderr)
         return 1
     try:
         proc = subprocess.Popen(command, cwd=args.cwd, start_new_session=True)
     except (OSError, ValueError) as exc:
         print(f"refused: could not start {command[0]}: {exc}", file=sys.stderr)
         return 1
-    print(f"started {args.agent_type} in {args.cwd} as {args.title} (pid {proc.pid})")
+    print(f"started {args.agent_type or 'the default agent'} in {args.cwd} as {args.title} "
+          f"(pid {proc.pid}), assignment in {written}")
     return 0
 
 

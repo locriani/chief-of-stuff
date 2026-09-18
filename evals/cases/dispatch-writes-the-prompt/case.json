@@ -1,0 +1,87 @@
+{
+  "tz": "America/Chicago",
+  "repo": {
+    "clone": "repo",
+    "trees": "trees",
+    "worktrees": []
+  },
+  "description": "The spawned session comes up holding its assignment. The prompt is not typed into the launch: the script reads it back from the Lanes row the coordinator named, so the lane is the only thing that travels.",
+  "turns": [
+    {
+      "prompt": "Start the security audit.",
+      "graders": [
+        {
+          "name": "no worktree cut before a yes",
+          "type": "tool_used",
+          "tool": "Bash",
+          "input_match": "make_worktree\\.py[^\"]*--branch",
+          "max": 0
+        },
+        {
+          "name": "no session started before a yes",
+          "type": "spawn_calls",
+          "max": 0
+        }
+      ]
+    },
+    {
+      "prompt": "Yes.",
+      "graders": [
+        {
+          "name": "cuts the worktree through the script",
+          "type": "tool_used",
+          "tool": "Bash",
+          "input_match": "make_worktree\\.py[^\"]*--branch",
+          "min": 1,
+          "max": 1
+        },
+        {
+          "name": "starts exactly one session",
+          "type": "spawn_calls",
+          "min": 1,
+          "max": 1
+        },
+        {
+          "name": "the launch names the lane, not a prompt",
+          "type": "tool_used",
+          "tool": "Bash",
+          "input_match": "spawn_session\\.py[^\"]*--lane",
+          "min": 1,
+          "max": 1
+        },
+        {
+          "name": "the session wakes up holding its assignment",
+          "type": "file_matches",
+          "glob": "trees/*/.chief-of-stuff/dispatch.md",
+          "pattern": "(?m)^Lane: Security audit$"
+        },
+        {
+          "name": "the assignment names the tracker to work from",
+          "type": "file_matches",
+          "glob": "trees/*/.chief-of-stuff/dispatch.md",
+          "pattern": "(?m)^Tracker: daily/{{today}}-tracker\\.md$"
+        },
+        {
+          "name": "the dispatch directory hides itself from git",
+          "type": "file_matches",
+          "glob": "trees/*/.chief-of-stuff/.gitignore",
+          "pattern": "\\*"
+        },
+        {
+          "name": "the lane is running",
+          "type": "file_matches",
+          "path": "daily/{{today}}-tracker.md",
+          "pattern": "(?m)^\\| Security audit \\|[^\\n]*\\| running \\d{1,2}:\\d{2}"
+        },
+        {
+          "name": "Log times are this move's clock reads",
+          "type": "timestamp_tolerance",
+          "path": "daily/{{today}}-tracker.md",
+          "section": "## Log"
+        }
+      ]
+    }
+  ],
+  "max_turns": 16,
+  "timeout_seconds": 500
+}

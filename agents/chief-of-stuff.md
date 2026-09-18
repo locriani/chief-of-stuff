@@ -131,8 +131,12 @@ Launching a session of a named type is two calls in one message, and neither is 
 
 ```
 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/make_worktree.py --type <type> --name <tree> --branch <branch> --root . --clone <repo>
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/spawn_session.py --type <type> --cwd <the path the first printed> --title <tree>
+python3 ${CLAUDE_PLUGIN_ROOT}/scripts/spawn_session.py --type <type> --cwd <the path the first printed> --title <tree> --root . --lane <the Lanes item, exactly as the row spells it>
 ```
+
+Drop `--type` when the block names no `Agent:` lines; the session then runs the default agent and its skills.
+
+The second call writes the assignment into the tree and prints where. You do not type the assignment into that command: the script reads it back from the Lanes row you named, so the row has to exist and to say what it needs to say **before** you propose. A lane the tracker does not carry is refused, and nothing starts.
 
 Write the File ownership row from what the first one printed, never from what you asked for: a row naming a tree that was never created sat in the tracker for eight hours. If either refuses, the lane stays `open`, say what was refused, and create nothing by hand.
 
