@@ -654,6 +654,25 @@ class RepoFixtureTest(unittest.TestCase):
         )
 
 
+    def test_a_case_can_seed_the_clone_with_the_files_its_lane_names(self) -> None:
+        """A lane naming a path the repo does not hold measures the fixture, not the rule.
+
+        Both dispatch cases went red on it: the coordinator wrote a real ask, found `src/a/` was not
+        there, and handed the lane back rather than inventing work — which is what finding 56 asked
+        it to do. The fixture was the defect.
+        """
+        import make_repo
+
+        root = Path(tempfile.mkdtemp())
+        make_repo.build(root, {"files": {"src/a/upload.py": "def handle(): pass\n", "notes/.keep": ""},
+                               "worktrees": [{"name": "wt", "branch": "b", "merged": True}]})
+        self.assertEqual((root / "repo" / "src" / "a" / "upload.py").read_text(), "def handle(): pass\n")
+        self.assertEqual(make_repo.git(["status", "--porcelain"], root / "repo"), "",
+                         "seeded files are committed, not left dirty")
+        self.assertTrue((root / "trees" / "wt" / "src" / "a" / "upload.py").exists(),
+                        "a worktree cut from main carries them too")
+
+
 if __name__ == "__main__":
     unittest.main()
 

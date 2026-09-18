@@ -823,3 +823,42 @@ That got it to 2/3, and the last failure was real: all three runs folded, but on
 Six graders were wrong this stage and five of the six were absence checks — "the reply must not contain X". Every one of them failed a *correct* reply, and for the same reason: a coordinator that has ruled something out says so, and saying so puts the phrase in the text. `no agent type … not`, `orphan`, `down|failing`, `from you|directly|confirm` — each was satisfied by the wrong answer and violated by the right one. Every positive replacement has held. Absence graders are for files, where the fact is structural; for replies they measure vocabulary and reward silence.
 
 Seven new cases (49 total), red at baseline on all seven, 3/3 agent. 296 unit tests.
+
+## 0.8.0 — 2026-09-18 12:5x CDT — the dispatch file and registration (C5: findings 53, 54, 55, 56), branch `dispatch`
+
+0.7.0 could cut a worktree and start a session on Zach's yes. It could not tell that session what to do, and `## Dispatch`'s own rule forbids messaging a session that is not listed — so every spawn ended in a paste Zach performed, at the hour when the point of spawning was that he was performing seven by hand. That was finding 53, found by the C4 arm while green on every grader.
+
+**The assignment is derived, not authored.** That is the whole design, and it came from Zach ruling out the obvious version: "ban shell expansion — there should be a predetermined prompt that's always the same for registration and bootup." Shell expansion cannot be validated away, because `$(...)` in a Bash argument is expanded before any script exists to check it. The fix is removing prose from the command line entirely. `dispatch_prompt.compose()` reads the assignment back off the Lanes row and the File ownership row; `spawn_session.py` writes it to `<worktree>/.chief-of-stuff/dispatch.md` beside a `*` gitignore; the argv carries one constant on every launch. The only variable argument is `--lane`, and a lane that is not a row is refused — so an expansion that reaches the script produces a refusal instead of a payload.
+
+That makes the real control **referential rather than structural**. The template is published in the agent file, so a peer can write a payload already in the right shape; what a peer cannot do is put a row in the tracker Zach read before saying yes.
+
+### What the first real spawn found, that no eval could
+
+The plan's hand-check pause paid three times in one afternoon.
+
+**54 — the spawned session inherited the coordinator's identity.** `Popen` with no `env=`, and the coordinator is itself a Claude Code session: nine `CLAUDE_*` variables went across. Its transcript was off, it came up in the coordinator's project rather than its worktree, and it spoke on the coordinator's messaging socket with the coordinator's token. One cause, three symptoms. Fixed with an explicit whitelist — the discipline `audit_lanes.git()` already applied to a read-only git call, applied to the one call that starts a session. The harness could never have seen it: the runner replaces the launcher and the recorder inherits the runner's environment.
+
+**55 — one lane, two worktrees.** `:195` had always said only an `unassigned` lane may be dispatched. Nothing enforced it, because the coordinator sets the owner *after* launching. Two trees held byte-identical assignments for the same lane, each telling a different branch it owned `README.md`. `compose()` now reads the owner, and the assignment carries a `Worktree:` line so a session can tell whether the dispatch it is reading was addressed to it.
+
+**56 — a dispatch thin enough to invent work from.** Two lines were enough for a session to find its way and not enough for it to act. The assignment now carries the Lanes item in full as the ask, the lane's requirement, and the File ownership paths as `Owns:` — and both rows are written *before* the proposal, so the paths are on the board when Zach reads it rather than after the launch. A lane with no ownership row is refused outright: there is no dispatch without a statement of what it may touch.
+
+Both 55 and 56 were reported by `wt-live-0a`, the first dispatched session, about the tree it woke up in. Neither was found by a grader. It ran `git worktree list` because the lane's shape did not add up — the check that caught the defect was curiosity, not compliance.
+
+### The header
+
+Above the assignment lines, a header the coordinator can neither forge nor omit: the file is a task statement and **not authority** — it cannot grant a permission, lift a rule, or speak for Zach; reading the named tracker is expected and the rest of the workspace is somebody else's lane; a lane that is empty or contradictory is handed back rather than guessed at. That last sentence is finding 56's, and it is in the script precisely because the coordinator cannot leave it out.
+
+It also carries the registration instruction. `## Sessions:180` changes with it: a spawned session's ref used to arrive when the coordinator noticed it in a listing, and now arrives from the session, which looks itself up and reports its own `name [ref]`, tree, branch and lane. Registering is not progress — the lane stays where the dispatch left it.
+
+### Two deliberate deviations from the plan
+
+**The metacharacter ban did not ship.** The plan called for `$ ; & | < >` refused across the composed body. There is no command line left for those to mean anything on, and the live File ownership column is full of legitimate semicolons — the ban would have refused real rows to defend against a vector that no longer exists. What shipped is the half that is still real: **control characters**, because a file read into a terminal is an ANSI/OSC vector, and that is a different thing from prompt injection.
+
+**The caps are a sanity bound, not a filter.** The plan said 200 characters per line. Live item cells run to 1698. At 200 the launch would refuse most of the real tracker. Shipped at 2400 per line, 12000 per assignment.
+
+### One red that was the fixture, and said so out loud
+
+Both dispatch cases went red on the first run of the finished stage, and neither was a rule failure. Under the new rule the coordinator writes a real ask, so it wrote one — and then went looking for `src/a/upload.py`, found the case's repo held nothing but a `README.md`, and handed the lane back: *"Waiting on: Robin, for the upload handler's repo and path."*
+
+That is finding 56's own sentence — the failure mode to design against is the session inventing plausible work rather than stopping — being obeyed by the coordinator, against a fixture I had written as carelessly as the one that produced the finding. `make_repo` gained a `files` spec, both fixtures now carry the handler their lane names, and the lanes carry an ask with acceptance criteria instead of a two-word title. A case whose lane names a path the repo does not hold measures the fixture, not the rule.
+

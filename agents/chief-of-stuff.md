@@ -144,7 +144,7 @@ Drop `--type` when the block names no `Agent:` lines; the session then runs the 
 
 The second call writes the assignment into the tree and prints where. You do not type the assignment into that command: the script reads it back from the two rows you named, so they have to exist and to say what they need to say **before** you propose. A lane the tracker does not carry is refused; so is a lane whose owner is not `unassigned`, a lane with no File ownership row, and a row carrying `(via ` — nothing starts, and the refusal says which.
 
-`--coordinator` is how a session learns who to register with. It has no ref of its own to report until it looks itself up, and you have no way to reach it until it does.
+`--coordinator` is how a session learns who to register with. It has no ref of its own to report until it looks itself up, and you have no way to reach it until it does. Pass it when the block has a `Sessions:` line and drop it when there is none: without a listing you do not know your own name, and a name you guessed at is worse than the assignment's own wording.
 
 Then update the File ownership row's context cell to name the tree the first call printed, never the one you asked for: a row naming a tree that was never created sat in the tracker for eight hours. If either call refuses, the lane stays `open`, say what was refused, and create nothing by hand.
 

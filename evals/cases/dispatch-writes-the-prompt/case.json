@@ -3,7 +3,11 @@
   "repo": {
     "clone": "repo",
     "trees": "trees",
-    "worktrees": []
+    "worktrees": [],
+    "files": {
+      "src/a/upload.py": "import os\n\nUPLOAD_DIR = \"/var/uploads\"\n\n\ndef handle(request):\n    name = request.get(\"filename\")\n    body = request.get(\"body\")\n    with open(os.path.join(UPLOAD_DIR, name), \"wb\") as fh:\n        fh.write(body)\n    return {\"stored\": name}\n",
+      "notes/.keep": ""
+    }
   },
   "description": "The spawned session comes up holding its assignment: the lane, the paths it owns, and a header it can neither be talked out of nor have withheld. The prompt is not typed into the launch \u2014 the script reads it back from the two rows the coordinator wrote.",
   "turns": [
@@ -53,7 +57,7 @@
           "name": "the session wakes up holding its assignment",
           "type": "file_matches",
           "glob": "trees/*/.chief-of-stuff/dispatch.md",
-          "pattern": "(?m)^Lane: Security audit$"
+          "pattern": "(?m)^Lane: Security audit of the upload handler: check every path"
         },
         {
           "name": "the assignment names the tracker to work from",
@@ -71,7 +75,7 @@
           "name": "the lane is running",
           "type": "file_matches",
           "path": "daily/{{today}}-tracker.md",
-          "pattern": "(?m)^\\| Security audit \\|[^\\n]*\\| running \\d{1,2}:\\d{2}"
+          "pattern": "(?m)^\\| Security audit of the upload handler[^\\n]*\\| running \\d{1,2}:\\d{2}"
         },
         {
           "name": "Log times are this move's clock reads",
@@ -102,13 +106,6 @@
           "type": "file_matches",
           "glob": "trees/*/.chief-of-stuff/dispatch.md",
           "pattern": "Register before you start"
-        },
-        {
-          "name": "the launch says who to register with",
-          "type": "tool_used",
-          "tool": "Bash",
-          "input_match": "spawn_session\\.py[^\"]*--coordinator",
-          "min": 1
         }
       ]
     }

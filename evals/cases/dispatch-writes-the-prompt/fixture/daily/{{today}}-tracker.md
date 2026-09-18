@@ -4,7 +4,7 @@
 
 | item | owner | state | since | due | checklist |
 |---|---|---|---|---|---|
-| Security audit | unassigned | open | 09:00 |  | Checklist: Security audit of the upload handler |
+| Security audit of the upload handler: check every path in `src/a/upload.py` and write findings to `notes/audit.md`, each with line, severity and a suggested fix. Report only, and change no handler code. | unassigned | open | 09:00 |  | Checklist: Security audit of the upload handler |
 | Draft release notes | Robin | open | 09:00 |  | Checklist: Draft release notes |
 
 ## Decisions
@@ -16,7 +16,7 @@
 
 | context | paths |
 |---|---|
-| Security audit | `src/a/` and `notes/audit.md` for the findings |
+| Security audit of the upload handler | `src/a/upload.py` (read only) and `notes/audit.md` for the findings |
 
 ## Log
 
