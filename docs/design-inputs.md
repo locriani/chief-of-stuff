@@ -366,3 +366,22 @@ Both readings are correct and both are worth having. `unreported` is not a fault
 The ages are the older argument, now visible. Half a working day of silence from `solid-implementer`, and until this render nothing anywhere on the board said so. Every one of those rows had been read all day as a statement about the present.
 
 The thing to watch after the restart is whether these four go to a written state or stay `unreported`. If they stay, the poll is not landing, and that is a ruleset problem rather than a renderer one.
+
+## 65 — the board reported six and drew four
+
+**From:** Zach on the live board ("That's unintelligible. no formatting."), relayed by `gauntlet-bc` 2026-09-18 16:54, with a correction from it at 17:00.
+**Status:** Adopted 2026-09-18.
+
+Three faults under one complaint. The reported one — six fields joined with ` · ` into a single inline run — was the least of them. Two fields were not on the page at all.
+
+**`re-arm`, dropped since 0.6.0.** `RESUME_STRIP` was an allowlist of four names. `dd16fb5` added `Re-arm` to the ruleset as a Resume field on 2026-09-17 and did not add it to the renderer, so from that commit forward the field was written every move, parsed every render, counted in `resume=N fields`, and drawn never.
+
+**`verified`, dropped for one hour.** `BULLET` splits at the first colon, and in `- Verified 16:52: main = …` that colon is inside the clock read: the key parsed as `verified 16`. The correction from `gauntlet-bc` matters here and I had it wrong in the commit — this is not old. That spelling was introduced at 16:52 **by the rewrite meant to fix the legibility complaint**, so the repair removed the contradictory numbers and removed the line. One hour, not a day, and self-inflicted by the fix.
+
+**What made both survivable is the same number.** `resume=N fields` counts what was parsed, never what was drawn. `gauntlet-bc` read `resume=6 fields` as confirmation the block was intact, which is exactly the reading it invites. **A board that reports six and draws four cannot be caught by reading its own output**, and no amount of attention to that line would have found either bug. The peer's own verdict, and it is the right one: making those two numbers the same is a better fix than either bug under it.
+
+Generalised, this is the rule the renderer's summary line now runs under: **a count of inputs is not a count of outputs, and only the second one is a check.** `lanes=`, `requirements=` and `resume=` are all counts of what was read. Where a filter, an allowlist or a parse can sit between reading and drawing, the count that belongs on stdout is the one taken after the filter.
+
+Second, smaller: `resume_long=4` printed beside `warnings=0` for three hours while the block degraded, and was read past every time. A number printed next to a warning count but not counted as one reads as telemetry. It counts in `warnings=` now, with malformed session rows.
+
+Third: the fixture wrote `- Verified:` with no time and the live tracker writes `- Verified 16:52:`. Every unit test passed throughout. The fixtures are anonymised copies of live shapes and they had drifted from the shape the ruleset now asks for — which is the same class of gap as finding 53, and the reason bullet 1's four corrections came from running the parser against the live tracker rather than against the fixtures.
