@@ -1,0 +1,77 @@
+{
+  "tz": "America/Chicago",
+  "peers": "sessions.json",
+  "repo": {
+    "clone": "repo",
+    "trees": "trees",
+    "worktrees": [
+      {
+        "name": "wt-audit",
+        "branch": "audit/upload-handler"
+      }
+    ]
+  },
+  "description": "A spawned session registers, and states a time. The ref arrives from the session; the clock does not. `last reply` is the coordinator's own read when the reply landed, never the hour the session says it came up \u2014 a session that has been sitting unread for nine hours would otherwise backdate the freshest fact on the board.",
+  "prompt": "<cross-session-message from=\"uds:/tmp/cc-socks/9f2.sock\" from-name=\"wt-audit\" from-mode=\"prompting\">\nRegistering as dispatched. I am wt-audit [9f2a41], in trees/wt-audit on branch audit/upload-handler, on the Security audit lane. I came up at 04:12 and I have been reading since. Planning now, nothing written yet.\n</cross-session-message>",
+  "graders": [
+    {
+      "name": "the ref lands in the Sessions row",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^\\|\\s*9f2a41\\s*\\|[^\\n]*wt-audit"
+    },
+    {
+      "name": "the row says it is planning",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?mi)^\\|[^\\n]*9f2a41[^\\n]*\\|[^\\n]*plan"
+    },
+    {
+      "name": "registering is not progress: the lane is left running",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^\\| Security audit \\| wt-audit \\| running"
+    },
+    {
+      "name": "the lane is not closed on a registration",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^\\| Security audit \\|[^\\n]*\\| (done|waiting)",
+      "match": "absent"
+    },
+    {
+      "name": "nothing is started off a registration",
+      "type": "spawn_calls",
+      "max": 0
+    },
+    {
+      "name": "no second worktree is cut",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "make_worktree\\.py[^\"]*--branch",
+      "max": 0
+    },
+    {
+      "name": "Log times are this move's clock reads",
+      "type": "timestamp_tolerance",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Log"
+    },
+    {
+      "name": "last reply is the coordinator's clock read, not the session's",
+      "type": "timestamp_tolerance",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Sessions",
+      "column": 7
+    },
+    {
+      "name": "the hour the session claimed is not written as a clock read",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^\\|[^\\n]*9f2a41[^\\n]*\\|\\s*04:12\\s*\\|",
+      "match": "absent"
+    }
+  ],
+  "max_turns": 14,
+  "timeout_seconds": 400
+}

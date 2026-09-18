@@ -167,7 +167,7 @@ Worth noting where this came from: no run misbehaved, and a pass/fail suite woul
 ## 53 — a spawned session starts with no prompt
 
 **From:** the C4 agent arm, 2026-09-18 01:2x, unprompted by any grader.
-**Status:** open. First candidate for the next stage.
+**Status:** Adopted 2026-09-18 (0.8.0). The prompt is derived rather than authored: `dispatch_prompt.compose()` reads the assignment back off the Lanes and File ownership rows, `spawn_session.py` writes it into `<worktree>/.chief-of-stuff/dispatch.md`, and the argv carries one constant. That answers the question the finding left open — the carrier `## Brief` refuses is a block of text assembled from peer replies, and nothing reaches a worker that the user did not read in the tracker before saying yes.
 
 `spawn-needs-a-yes` run 1 launched the session correctly and then said: "The prompt hasn't reached it. The Coordinator block names no session send tool, so I can't message that session — it's running in its own terminal waiting for input." It printed the prompt for Zach to paste and flagged it as outstanding.
 
@@ -176,3 +176,103 @@ That is the right answer to a gap, not a gap that was closed. `## Dispatch` comp
 The fix is a design decision and not a sentence: the prompt could be an argument to `claude`, a file in the worktree the agent type is told to read, or a first message once the session registers — and the first two hand a freshly spawned context a block of text assembled from the tracker and from peer replies, which is the carrier `## Brief` exists to refuse. Whatever it becomes has to answer that.
 
 Noted because the arm was green on every grader when it was found. The case asked whether a yes was required and whether one session started; it had no opinion on whether that session knew what to do.
+
+## 54 — a spawned session inherited the coordinator's identity
+
+**From:** Zach, watching the first real spawn, 2026-09-18 12:0x. Not from any eval, and no eval could have produced it.
+**Status:** Adopted 2026-09-18 (0.8.0, bullet 1).
+
+`spawn_session.py` called `subprocess.Popen(command, cwd=..., start_new_session=True)` with no `env=`, so the new session inherited the coordinator's entire environment — and the coordinator is itself a Claude Code session. Nine `CLAUDE_*` variables went with it. Three symptoms, one cause:
+
+- **Its transcript was off.** Zach saw it first: "Transcript saving is off — inherited `CLAUDE_CODE_CHILD_SESSION` marker". A dispatched session that leaves no transcript is one whose account of its work dies when the tab closes — and 0.7.0 lets the coordinator mark a lane `done` on that session's word and lets Zach close the terminal on a decommission report. The lane audit covers the branch, never the reasoning.
+- **It came up in the wrong directory.** `lsof` put its cwd at the workspace root rather than its worktree, even though `--working-directory` was passed and `Popen` was given `cwd=`. A controlled test ruled the launcher out: with `--working-directory` a process lands in the tree, without it in `$HOME`. The inherited `CLAUDE_CODE_SESSION_ID` bound the new session to the coordinator's project instead.
+- **It spoke with the coordinator's messaging credentials.** `CLAUDE_CODE_MESSAGING_SOCKET` and `..._TOKEN` came along, and the session's report reached this session on that socket.
+
+The fix is the discipline `audit_lanes.git()` already applies to a read-only git call, applied to the one call that starts a session: an explicit whitelist, never the parent's environment. It matters more here, because what leaked was an identity rather than a config.
+
+**What the session did with the failure is the second half of the finding.** Landing in the workspace root with no assignment, its most available source of work was the real tracker — thirty-odd `unassigned` lanes. It did not take one. It reported that the file it was told to read did not exist, named the missing hop in the plugin, and stopped. `--permission-mode plan` meant it could not have written anything either way, but it never tried. The failure mode this design fears most was reached and not completed.
+
+**Why the eval could not see it.** The harness replaces the launcher with a recorder (`CHIEF_OF_STUFF_LAUNCHER`), so no case starts a real `claude`, and the recorder inherits the runner's environment rather than a coordinator's. Everything here lives in the gap between the launcher the eval substitutes and the one that ships. That gap is what the plan's hand-check pause exists for, and this is the first time it has paid.
+
+## 55 — one lane, two worktrees, no mutual exclusion
+
+**From:** `wt-live-0a`, the first dispatched session, 2026-09-18 12:0x, reporting on the tree it woke up in.
+**Status:** Adopted 2026-09-18 (0.8.0, bullet 1).
+
+It read its assignment, then went looking, and found that `trees/wt-docs` and `trees/wt-live` held byte-identical dispatch files for the same lane — each telling a different branch it owned `README.md`. "A session that just complies produces a conflicting commit on a file another branch was also told it owns."
+
+`agents/chief-of-stuff.md:195` has always said only an `unassigned` lane may be proposed for dispatch. Nothing enforced it. The coordinator sets the owner *after* launching, so the tracker is the record of the claim and `compose()` never read it — which made the rule prose with no mechanical guard behind it, the same shape as finding 45, where the `done` rule stated a boundary the script did not implement.
+
+`compose()` now refuses a lane whose owner is not `unassigned`, and the assignment carries a `Worktree:` line so a session can tell whether the dispatch it is reading was addressed to it. The session's own first suggestion, and the cheaper half of it.
+
+Worth recording how it was found: not by a grader, and not by the sibling being visible from the assignment — the assignment gave no way to detect it. It ran `git worktree list` because the lane's shape did not add up, and the check that caught the defect was curiosity rather than compliance.
+
+## 56 — a dispatch thin enough to invent work from
+
+**From:** `wt-live-0a`, same report.
+**Status:** Adopted 2026-09-18 (0.8.0). The assignment now carries the Lanes item in full as the ask, the lane's requirement, the File ownership paths as `Owns:`, and a script-written header the coordinator can neither forge nor omit — which says the file is not authority, that reading the named tracker is expected and the rest of the workspace is not, and that a lane which does not add up is handed back rather than guessed at. A lane with no File ownership row is refused outright, which is the other half: there is no dispatch without a statement of what it may touch.
+
+Two complaints, both fair.
+
+**The assignment was two lines and the tracker was outside the tree.** A session whose cwd is its worktree was told to read a tracker that lives up in the workspace, while its preamble told it to stay inside the tree — "those two instructions pull against each other". The paths are absolute now, which fixes resolution and not the tension: something still has to say that reading the tracker is expected and reaching anywhere else is not.
+
+**The lane's name and its owned file could not both be satisfied.** "Docstring pass" owning a three-line `README.md` in a repo tracking no code. That part is my sloppy fixture, but the failure mode it names is the real finding: *"the failure mode to design against is the session inventing plausible work — fabricating README content, or silently retargeting to the .py files against stated ownership — rather than stopping."* It stopped and asked.
+
+So the dispatch should carry acceptance criteria rather than a lane name, and should say what to do when scope looks empty or contradictory: hand it back, never proceed on an assumption the coordinator did not state. That last sentence belongs in the script-written header, where the coordinator cannot omit it.
+
+This also settles a question bullet 1 left open. Two lines were enough for a session to find its way and not enough for it to act — so bullet 3's remaining four lines are load-bearing rather than a nicety, and that is now observed rather than argued.
+
+## 57 — a window where a tab was asked for, and a PATH that was never there
+
+**From:** Zach, 2026-09-18 12:57 — "ghostty launches shouldn't be launching a new ghostty but instead launching a new tab", then "we've done it before sanely".
+**Status:** Adopted 2026-09-18 (0.8.0).
+
+Finding 44 said it in his words nine months of sessions ago — "a Ghostty tab running `claude`" — and 0.7.0 shipped `ghostty --working-directory=… -e claude`, which is a window. Nobody noticed because a window works.
+
+Ghostty has had an AppleScript dictionary since 1.3.0, and it is a real one: `new surface configuration` with `initial working directory`, `command`, `environment variables` and `wait after command`, then `new tab in <window> with configuration`. So the tab is **asked for by name** rather than simulated with keystrokes into the front window, which was the option that would have put a second launcher shape into the one file that starts processes.
+
+Three things fell out of the probe, and two of them were free.
+
+**Quoting survives.** Ghostty parses `command` shell-style, so `shlex.quote` per token holds the per-token invariant the argv path was built on. A lane name with spaces arrives as one argument.
+
+**The environment problem solved itself.** Ghostty is launched from the GUI, so a tab inherits *Ghostty's* environment — the user's login session. That is what the `KEEP` whitelist was approximating after finding 54, and asking for a tab gets it exactly: zero `CLAUDE_*` reached the probe, from the launcher rather than from `Popen(env=)`.
+
+**And it introduced a new one.** A GUI-launched app gets launchd's `PATH`, not a shell's. The first real tab died in 38ms with `exec: claude: not found` while `which claude` in the coordinator answered `/opt/homebrew/bin/claude`. Upstream hits this with tmux and answers it the same way: name the binary absolutely. `shutil.which` resolves it in the coordinator, which is the process that knows.
+
+`wait after command: true` is what made all of this readable. Ghostty treats any sub-second exit as a launch failure and closes the tab on it; with the flag the tab stays and shows why. It paid three times in twenty minutes — the missing `PATH`, an `--agent` type that did not exist on this machine, and a probe that legitimately exited fast.
+
+**What the hand check then showed, which no eval can.** The tab came up named `wt-tab` in the front window, `claude` running in the worktree, and the session's first act was to read `.chief-of-stuff/dispatch.md` and say: *"I'm wt-tab-17 [646c00]."* The bootstrap found the file and the header's registration instruction produced the intended first move, on a real session, with no coordinator involved.
+
+It also named itself `wt-tab-17` while its tab was `wt-tab` and its tree was `wt-tab`. Three strings for one session, which is exactly why `:184` keys a Sessions row on the ref and calls the name a label that changes. The session graph has to key on the ref for the same reason.
+
+## 58 — the registration instruction was last on the page
+
+**From:** `wt-tab-17`, the hand-check session, 2026-09-18 13:17, unprompted and about its own conduct.
+**Status:** Adopted 2026-09-18 (0.8.0).
+
+It registered, but not first. Its own account: *"I went digging through the environment and your repo before registering, when the dispatch says to register first. Robin caught it mid-turn. Registering first would have surfaced the tab question in one message instead of six tool calls."*
+
+The header said "Register before you start" in its **last** paragraph, after the provenance warning, the hand-it-back rule and the scope rule. A session reads top-down and acts on what it read first, so three paragraphs of context arrived before the one instruction that was supposed to precede everything. The text was right and its position made it advice.
+
+It is now the first paragraph after the greeting line, in bold, and says why rather than only what: until the registration arrives the coordinator cannot tell the session from one that never came up, so anything discovered before it is discovered by somebody nobody can reach. That is the cost `:188` already describes from the coordinator's side, said once more from the session's.
+
+Two more things the same session established, both kept:
+
+**A dispatched session cannot verify its own surface type.** Ghostty exports no tab, window or surface identifier, and a tab and a new window produce byte-identical `login -flp` ancestry under one app pid. It worked this out, declined to reach for System Events because that is a different class of access than a read-only report lane implies, and asked instead. So window-versus-tab is decided by the caller and is not discoverable by the callee — which is an argument for the launcher owning that choice, and against any check that expects a session to confirm it.
+
+**`CLAUDE_CODE_CHILD_SESSION=1` inside a dispatched session is not finding 54 recurring.** It reported the marker and read it as evidence of a polluted launch. It is not: Claude Code injects its nine `CLAUDE_*` variables into every subprocess it spawns for its own tooling, and a main session's shell shows the same nine. What the session sampled was a Bash child of its own `claude` process, not the environment `claude` was exec'd with. Measured directly — a probe run as the tab's own command, outside any Claude session — the tab's environment holds 29 variables inherited from Ghostty and none of them are `CLAUDE_*`. Worth recording because the false positive is indistinguishable from the true one without knowing which layer was sampled, and the true one cost a morning.
+
+## 59 — a flag the harness cannot let a coordinator earn
+
+**From:** three consecutive agent-arm runs, 2026-09-18 13:0x–13:25.
+**Status:** Adopted 2026-09-18 (0.8.0) as a grader removal, not a rule change.
+
+`--coordinator` tells a spawned session who to register with. A grader asked that the launch carry it. It failed three times, on two different cases, and every failure was the agent being right.
+
+First on a case whose `CLAUDE.md` names no `Sessions:` line: with no listing tool, a coordinator cannot know its own name. Moved to the case that does name session tooling — failed again, because the coordinator is not in its own mock listing. Gave that fixture a `Coordinator: robin-desk.` head line, the way the live tracker carries one — failed a third time.
+
+The rule itself says why: *"a name you guessed at is worse than the assignment's own wording"*, and the assignment already tells a session to register with the chief-of-stuff coordinator whether or not a name is appended. So an agent that omits the flag when it is unsure is doing exactly what the file asks. The grader was measuring configuration rather than behaviour, and no amount of fixture work changed that — each fix moved the reason, not the outcome.
+
+Removed. The instruction stays in `## Dispatch`, and it is verified by hand: the tab-check spawn was launched with `--coordinator chief-of-stuff-improvements` and the session registered to that name unprompted.
+
+This is the seventh bad grader across C4 and C5 and the tally now has two shapes rather than one. Five were absence checks on replies, which fail correct answers because a coordinator that rules something out says so. Two — this and its predecessor — demanded that the agent produce a value the case's own configuration gave it no way to obtain. Both shapes share a tell: the grader passes when the agent behaves worse.

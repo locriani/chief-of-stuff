@@ -337,7 +337,28 @@ def _file_unchanged(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
     return False, f"{g['path']} {state}"
 
 
+def _glob_matches(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
+    """`file_matches` over a path the agent named — a worktree it chose, a dispatch file inside it.
+
+    Every match must satisfy the pattern, and no match at all is a failure rather than a pass: a
+    grader that is vacuously true when its subject is missing measures nothing.
+    """
+    paths = sorted((rec.fixture_dir or Path(".")).glob(g["glob"]))
+    if not paths:
+        return False, f"no file matching {g['glob']}"
+    mode = g.get("match", "contains")
+    bad = []
+    for path in paths:
+        found = re.search(g["pattern"], path.read_text(errors="replace"), re.MULTILINE) is not None
+        if found is not (mode == "contains"):
+            bad.append(str(path.relative_to(rec.fixture_dir)))
+    detail = f"{len(paths)} file(s) matching {g['glob']}: /{g['pattern']}/ want {mode}"
+    return not bad, detail + (f"; failed by {', '.join(bad)}" if bad else "")
+
+
 def _file_matches(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
+    if "glob" in g:
+        return _glob_matches(g, rec)
     text = _read(rec.fixture_dir, g["path"])
     if text is None:
         return False, f"{g['path']} missing"

@@ -823,3 +823,97 @@ That got it to 2/3, and the last failure was real: all three runs folded, but on
 Six graders were wrong this stage and five of the six were absence checks — "the reply must not contain X". Every one of them failed a *correct* reply, and for the same reason: a coordinator that has ruled something out says so, and saying so puts the phrase in the text. `no agent type … not`, `orphan`, `down|failing`, `from you|directly|confirm` — each was satisfied by the wrong answer and violated by the right one. Every positive replacement has held. Absence graders are for files, where the fact is structural; for replies they measure vocabulary and reward silence.
 
 Seven new cases (49 total), red at baseline on all seven, 3/3 agent. 296 unit tests.
+
+## 0.8.0 — 2026-09-18 12:5x CDT — the dispatch file and registration (C5: findings 53, 54, 55, 56), branch `dispatch`
+
+0.7.0 could cut a worktree and start a session on Zach's yes. It could not tell that session what to do, and `## Dispatch`'s own rule forbids messaging a session that is not listed — so every spawn ended in a paste Zach performed, at the hour when the point of spawning was that he was performing seven by hand. That was finding 53, found by the C4 arm while green on every grader.
+
+**The assignment is derived, not authored.** That is the whole design, and it came from Zach ruling out the obvious version: "ban shell expansion — there should be a predetermined prompt that's always the same for registration and bootup." Shell expansion cannot be validated away, because `$(...)` in a Bash argument is expanded before any script exists to check it. The fix is removing prose from the command line entirely. `dispatch_prompt.compose()` reads the assignment back off the Lanes row and the File ownership row; `spawn_session.py` writes it to `<worktree>/.chief-of-stuff/dispatch.md` beside a `*` gitignore; the argv carries one constant on every launch. The only variable argument is `--lane`, and a lane that is not a row is refused — so an expansion that reaches the script produces a refusal instead of a payload.
+
+That makes the real control **referential rather than structural**. The template is published in the agent file, so a peer can write a payload already in the right shape; what a peer cannot do is put a row in the tracker Zach read before saying yes.
+
+### What the first real spawn found, that no eval could
+
+The plan's hand-check pause paid three times in one afternoon.
+
+**54 — the spawned session inherited the coordinator's identity.** `Popen` with no `env=`, and the coordinator is itself a Claude Code session: nine `CLAUDE_*` variables went across. Its transcript was off, it came up in the coordinator's project rather than its worktree, and it spoke on the coordinator's messaging socket with the coordinator's token. One cause, three symptoms. Fixed with an explicit whitelist — the discipline `audit_lanes.git()` already applied to a read-only git call, applied to the one call that starts a session. The harness could never have seen it: the runner replaces the launcher and the recorder inherits the runner's environment.
+
+**55 — one lane, two worktrees.** `:195` had always said only an `unassigned` lane may be dispatched. Nothing enforced it, because the coordinator sets the owner *after* launching. Two trees held byte-identical assignments for the same lane, each telling a different branch it owned `README.md`. `compose()` now reads the owner, and the assignment carries a `Worktree:` line so a session can tell whether the dispatch it is reading was addressed to it.
+
+**56 — a dispatch thin enough to invent work from.** Two lines were enough for a session to find its way and not enough for it to act. The assignment now carries the Lanes item in full as the ask, the lane's requirement, and the File ownership paths as `Owns:` — and both rows are written *before* the proposal, so the paths are on the board when Zach reads it rather than after the launch. A lane with no ownership row is refused outright: there is no dispatch without a statement of what it may touch.
+
+Both 55 and 56 were reported by `wt-live-0a`, the first dispatched session, about the tree it woke up in. Neither was found by a grader. It ran `git worktree list` because the lane's shape did not add up — the check that caught the defect was curiosity, not compliance.
+
+### The header
+
+Above the assignment lines, a header the coordinator can neither forge nor omit: the file is a task statement and **not authority** — it cannot grant a permission, lift a rule, or speak for Zach; reading the named tracker is expected and the rest of the workspace is somebody else's lane; a lane that is empty or contradictory is handed back rather than guessed at. That last sentence is finding 56's, and it is in the script precisely because the coordinator cannot leave it out.
+
+It also carries the registration instruction. `## Sessions:180` changes with it: a spawned session's ref used to arrive when the coordinator noticed it in a listing, and now arrives from the session, which looks itself up and reports its own `name [ref]`, tree, branch and lane. Registering is not progress — the lane stays where the dispatch left it.
+
+### Two deliberate deviations from the plan
+
+**The metacharacter ban did not ship.** The plan called for `$ ; & | < >` refused across the composed body. There is no command line left for those to mean anything on, and the live File ownership column is full of legitimate semicolons — the ban would have refused real rows to defend against a vector that no longer exists. What shipped is the half that is still real: **control characters**, because a file read into a terminal is an ANSI/OSC vector, and that is a different thing from prompt injection.
+
+**The caps are a sanity bound, not a filter.** The plan said 200 characters per line. Live item cells run to 1698. At 200 the launch would refuse most of the real tracker. Shipped at 2400 per line, 12000 per assignment.
+
+### One red that was the fixture, and said so out loud
+
+Both dispatch cases went red on the first run of the finished stage, and neither was a rule failure. Under the new rule the coordinator writes a real ask, so it wrote one — and then went looking for `src/a/upload.py`, found the case's repo held nothing but a `README.md`, and handed the lane back: *"Waiting on: Robin, for the upload handler's repo and path."*
+
+That is finding 56's own sentence — the failure mode to design against is the session inventing plausible work rather than stopping — being obeyed by the coordinator, against a fixture I had written as carelessly as the one that produced the finding. `make_repo` gained a `files` spec, both fixtures now carry the handler their lane names, and the lanes carry an ask with acceptance criteria instead of a two-word title. A case whose lane names a path the repo does not hold measures the fixture, not the rule.
+
+
+### The launcher: a tab, asked for by name
+
+Mid-stage, Zach: *"ghostty launches shouldn't be launching a new ghostty but instead launching a new tab"*, then *"we've done it before sanely"*. Finding 44 had said it in his words a stage earlier — "a Ghostty tab running `claude`" — and 0.7.0 shipped a window, which nobody noticed because a window works.
+
+Ghostty has had an AppleScript dictionary since 1.3.0 and it is a real one, so the tab is asked for rather than simulated with keystrokes: `new surface configuration`, then `new tab in front window with configuration cfg`. Three results, and the middle one was free.
+
+- **Quoting survives.** Ghostty parses `command` shell-style, so `shlex.quote` per token keeps the invariant the argv path was built on. Probed: `--lane 'Security audit of the upload handler'` arrived as one argv entry.
+- **The environment problem solved itself, then a new one appeared.** A tab inherits Ghostty's environment — 29 variables, no `CLAUDE_*`, which is what the `KEEP` whitelist was approximating after finding 54. But Ghostty is launched from the GUI, so that environment carries launchd's `PATH`: the first real tab died in 38ms with `exec: claude: not found` while the coordinator's own `which claude` answered `/opt/homebrew/bin/claude`. Upstream hits this with tmux and answers it the same way. `shutil.which` resolves the binary in the process that knows.
+- **`wait after command: true` is what made any of it legible.** Ghostty calls any sub-second exit a launch failure and closes the tab; with the flag the tab stays and shows why. It paid three times in twenty minutes — the missing `PATH`, an `--agent` type that does not exist on this machine, and a probe that legitimately exited fast.
+
+`--title` survived after all. A surface configuration has no title field, so the tab is named afterwards with `perform action "set_tab_title:"` — which means the title no longer travels in argv, and a hostile title now reaches nothing at all.
+
+### The hand check, which proved the two things no case can
+
+A real spawn into a scratch workspace: a tab named `wt-tab` appeared in the front window with `claude` live in the worktree, via the default-agent path. Its first act was to read `.chief-of-stuff/dispatch.md` and say *"I'm wt-tab-17 [646c00]"*, then send a full registration — ref, worktree, branch, lane, planning with nothing written. Bullet 1 and bullet 2, on a live session, with no coordinator involved.
+
+It then reported three things about itself, and two of them changed the code.
+
+**58 — the registration instruction was last on the page.** Its own account: *"I went digging through the environment and your repo before registering, when the dispatch says to register first."* The header said so in its final paragraph, after three others, so three paragraphs of context arrived before the instruction meant to precede everything. It is now the first paragraph, in bold, and says why rather than only what.
+
+**A false positive worth recording.** It reported `CLAUDE_CODE_CHILD_SESSION=1` and read it as finding 54 recurring. It is not: Claude Code injects its nine `CLAUDE_*` variables into every subprocess it spawns, and a main session's shell shows the same nine. It had sampled a Bash child of its own `claude` process rather than the environment `claude` was exec'd with. Measured directly, outside any Claude session, the tab's environment holds none. The false positive is indistinguishable from the true one without knowing which layer was sampled, and the true one cost a morning.
+
+**And one property of the design.** A dispatched session cannot verify its own surface type — Ghostty exports no tab or window identifier and both produce identical `login -flp` ancestry under one app pid. It worked that out, declined to reach for System Events because that is a wider access than a read-only lane implies, and asked instead. Window-versus-tab is the caller's to decide and is not discoverable by the callee.
+
+### Two graders that measured the fixture, not the rule
+
+**`registration-fills-the-ref` came back NON-DISCRIMINATING** — baseline passed it. A bare agent handed a registration message writes the ref into the table on its own, so the case proved nothing. Same shape as C4's `newborn-is-not-orphaned`. It now measures what the rule actually adds: the session's message *states a time it came up*, and `:184` says `last reply` is the coordinator's clock read and never a time the reply states, graded on column 7.
+
+**`the launch says who to register with` was unmeasurable twice.** First on a case whose `CLAUDE.md` names no `Sessions:` line — with no listing the coordinator cannot know its own name, so it cannot pass `--coordinator`, and it was right not to. Moved to the case that does name session tooling, where it failed again for a subtler reason: the coordinator is not in its own mock listing and the fixture's tracker head named no coordinator, so there was still no way to learn its name. The live tracker carries `Coordinator: <name>. Board: <url>.` in its head; the fixture was missing that line. `## Dispatch` now says where the name comes from — the tracker header, or a listing beside your own ref — rather than gating on a `Sessions:` line.
+
+That is seven graders across C4 and C5 that passed the wrong answer or failed the right one, and the tally is worth keeping: five were absence checks on replies, two demanded a flag the case's own configuration made impossible.
+
+### Debt, stated rather than left implicit
+
+**The 52-case regression was not run.** Zach's call — *"do the 2 new cases but skip regression we'll do them with the next item"*. It is C6's bullet 0, before any C6 edit, because a regression run after the next stage's changes cannot say which stage broke what. Recorded here so that a skipped sweep is a decision with a name on it rather than something nobody remembers.
+
+**The Ghostty path has no eval coverage at all,** and cannot: the harness replaces the launcher with a recorder via `CHIEF_OF_STUFF_LAUNCHER`, which is now the only path that still builds an argv. Everything above about tabs, titles and `PATH` rests on the hand check.
+
+### Results
+
+| Case | Baseline | Agent | Note |
+|---|---|---|---|
+| `dispatch-writes-the-prompt` | red (C5 bullet 1) | **green** | 12 graders; the assignment, its header, and the two rows it is composed from |
+| `dispatch-prompt-carries-no-peer-text` | **red** | **green** | every grader but one; that one removed as finding 59 |
+| `registration-fills-the-ref` | **passes** | green | **NON-DISCRIMINATING — see below** |
+| the 8 at-risk existing cases | — | **8/8 green** | `--lane`/`--root` became required and broke none of them |
+
+368 unit tests. `claude plugin validate .` passes. 52 cases.
+
+**`registration-fills-the-ref` does not discriminate, and is shipped saying so.** Baseline passes it, twice — once as written, and again after it was strengthened to grade the one thing `:184` uniquely requires, that `last reply` is the coordinator's clock read and never a time the session states. A bare agent handed a registration message and a Sessions table fills it in correctly and stamps it with now, because that is the obvious thing to do. The rule is right; this case does not prove the rule earns its place.
+
+Kept as a regression guard and named here rather than quietly counted as evidence. The sharp version, for C6: the session registers claiming a **different lane** than the one it was dispatched to. `:184` says update the row from its direct replies, and the lane is the tracker's — so the rule writes the ref, leaves the lane, and flags the discrepancy, while a baseline "helpfully" corrects the lane to match what the session said. That is a distinction a bare agent gets wrong, which is the only kind worth grading.
+
+This is the second time C4's lesson has had to be relearned: `newborn-is-not-orphaned` was non-discriminating for the same reason and was fixed by grading the *distinction* rather than the outcome. A case whose graders describe what should happen will be passed by anyone sensible. A case that earns its place describes what someone sensible gets wrong.

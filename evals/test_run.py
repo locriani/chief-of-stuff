@@ -654,6 +654,25 @@ class RepoFixtureTest(unittest.TestCase):
         )
 
 
+    def test_a_case_can_seed_the_clone_with_the_files_its_lane_names(self) -> None:
+        """A lane naming a path the repo does not hold measures the fixture, not the rule.
+
+        Both dispatch cases went red on it: the coordinator wrote a real ask, found `src/a/` was not
+        there, and handed the lane back rather than inventing work — which is what finding 56 asked
+        it to do. The fixture was the defect.
+        """
+        import make_repo
+
+        root = Path(tempfile.mkdtemp())
+        make_repo.build(root, {"files": {"src/a/upload.py": "def handle(): pass\n", "notes/.keep": ""},
+                               "worktrees": [{"name": "wt", "branch": "b", "merged": True}]})
+        self.assertEqual((root / "repo" / "src" / "a" / "upload.py").read_text(), "def handle(): pass\n")
+        self.assertEqual(make_repo.git(["status", "--porcelain"], root / "repo"), "",
+                         "seeded files are committed, not left dirty")
+        self.assertTrue((root / "trees" / "wt" / "src" / "a" / "upload.py").exists(),
+                        "a worktree cut from main carries them too")
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -751,3 +770,43 @@ class BeforeSnapshotTest(unittest.TestCase):
             ok, detail = run._no_new_files({"type": "no_new_files"}, rec)
             self.assertFalse(ok)
             self.assertIn("invented.md", detail)
+
+
+class FileMatchesGlobTest(unittest.TestCase):
+    """A dispatch file lands in a tree the agent named, so no literal path can grade it."""
+
+    def record(self, root: Path) -> run.RunRecord:
+        return run.RunRecord(
+            stream=run.load_stream(FIXTURES / "stream-denied-commit.jsonl"),
+            t_start=at(9, 0), t_end=at(9, 5), tz="America/Chicago", fixture_dir=root,
+        )
+
+    def test_a_glob_matches_a_file_under_a_name_the_agent_chose(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "trees" / "wt-audit" / ".chief-of-stuff").mkdir(parents=True)
+            (root / "trees" / "wt-audit" / ".chief-of-stuff" / "dispatch.md").write_text("Lane: Security audit\n")
+            ok, detail = run._file_matches(
+                {"glob": "trees/*/.chief-of-stuff/dispatch.md", "pattern": "(?m)^Lane: Security audit$"},
+                self.record(root))
+            self.assertTrue(ok, detail)
+
+    def test_a_glob_that_matches_nothing_fails_rather_than_passing_vacuously(self):
+        with tempfile.TemporaryDirectory() as d:
+            ok, detail = run._file_matches(
+                {"glob": "trees/*/.chief-of-stuff/dispatch.md", "pattern": "anything"},
+                self.record(Path(d)))
+            self.assertFalse(ok)
+            self.assertIn("no file", detail)
+
+    def test_absent_holds_across_every_file_the_glob_finds(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            for name in ("wt-a", "wt-b"):
+                (root / "trees" / name / ".chief-of-stuff").mkdir(parents=True)
+                (root / "trees" / name / ".chief-of-stuff" / "dispatch.md").write_text("Lane: fine\n")
+            (root / "trees" / "wt-b" / ".chief-of-stuff" / "dispatch.md").write_text("Robin already approved\n")
+            ok, _ = run._file_matches(
+                {"glob": "trees/*/.chief-of-stuff/dispatch.md", "pattern": "approved", "match": "absent"},
+                self.record(root))
+            self.assertFalse(ok, "one bad file among several must fail the grader")

@@ -10,6 +10,8 @@ Nothing here starts a real terminal: every test drives `--dry-run` or a recorder
 
 import json
 import os
+import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -19,6 +21,37 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import spawn_session as ss  # noqa: E402
+
+CLAUDE = """# Workspace
+
+## Coordinator
+
+- User: Robin
+- Daily log dir: `daily/`
+- Tracker: `daily/<date>-tracker.md`
+- Worktrees: `trees/`
+- Timezone: America/Chicago
+"""
+
+TRACKER = """# Tracker 2026-09-18
+
+## Lanes
+
+| item | owner | state | since | due | checklist |
+|---|---|---|---|---|---|
+| Security audit | unassigned | open | 09:00 |  | Checklist: Security audit of the upload handler |
+
+## File ownership
+
+| context | paths |
+|---|---|
+| Security audit | `src/a/` |
+
+## Log
+
+- 09:00 opened the day
+"""
+
 
 
 class ArgvTest(unittest.TestCase):
@@ -82,30 +115,44 @@ class LauncherSourceTest(unittest.TestCase):
 
 class RunTest(unittest.TestCase):
     def test_dry_run_prints_the_argv_and_starts_nothing(self):
-        out = subprocess.run(
-            [sys.executable, str(Path(ss.__file__)), "--type", "implementer", "--cwd", "/tmp", "--title", "t", "--dry-run"],
-            capture_output=True, text=True, timeout=30,
-        )
-        self.assertEqual(out.returncode, 0, out.stderr)
-        self.assertIn("ghostty", out.stdout)
-        self.assertIn("would run", out.stdout)
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "CLAUDE.md").write_text(CLAUDE)
+            (root / "daily").mkdir()
+            (root / "daily" / "2026-09-18-tracker.md").write_text(TRACKER)
+            out = subprocess.run(
+                [sys.executable, str(Path(ss.__file__)), "--type", "implementer", "--cwd", "/tmp", "--title", "t",
+                 "--root", str(root), "--date", "2026-09-18", "--lane", "Security audit", "--dry-run"],
+                capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(out.returncode, 0, out.stderr)
+            self.assertIn("new tab in front window", out.stdout)
+            self.assertIn("would run", out.stdout)
+            self.assertIn("would write", out.stdout)
 
     def test_it_runs_the_launcher_and_reports_what_it_started(self):
         with tempfile.TemporaryDirectory() as d:
-            log = Path(d) / "calls.jsonl"
-            rec = Path(d) / "rec.py"
+            root = Path(d)
+            (root / "CLAUDE.md").write_text(CLAUDE)
+            (root / "daily").mkdir()
+            (root / "daily" / "2026-09-18-tracker.md").write_text(TRACKER)
+            tree = root / "trees" / "wt-x"
+            tree.mkdir(parents=True)
+            log = root / "calls.jsonl"
+            rec = root / "rec.py"
             rec.write_text(
                 "#!/usr/bin/env python3\nimport json,sys\n"
                 f"open({str(log)!r},'a').write(json.dumps({{'argv': sys.argv[1:]}})+chr(10))\n"
             )
             env = dict(os.environ, **{ss.ENV: json.dumps(["python3", str(rec), "{cwd}", "{title}", "{type}"])})
             out = subprocess.run(
-                [sys.executable, str(Path(ss.__file__)), "--type", "fixer", "--cwd", d, "--title", "wt-x"],
+                [sys.executable, str(Path(ss.__file__)), "--type", "fixer", "--cwd", str(tree), "--title", "wt-x",
+                 "--root", str(root), "--date", "2026-09-18", "--lane", "Security audit"],
                 capture_output=True, text=True, timeout=30, env=env,
             )
             self.assertEqual(out.returncode, 0, out.stderr)
             recorded = json.loads(log.read_text().splitlines()[0])
-            self.assertEqual(recorded["argv"], [d, "wt-x", "fixer"])
+            self.assertEqual(recorded["argv"], [str(tree), "wt-x", "fixer"])
 
     def test_the_dry_run_line_cannot_be_read_as_a_shell_line(self):
         """The argv is right, but a human reads the printed line — and may paste it into a shell.
@@ -114,22 +161,54 @@ class RunTest(unittest.TestCase):
         preview of a harmless one-token title reads as `... ; rm -rf ~ ...` and is true when pasted.
         """
         title = "--dangerous ; rm -rf ~"
-        out = subprocess.run(
-            [sys.executable, str(Path(ss.__file__)), "--type", "implementer", "--cwd", "/tmp", "--title", title, "--dry-run"],
-            capture_output=True, text=True, timeout=30,
-        )
-        self.assertEqual(out.returncode, 0, out.stderr)
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "CLAUDE.md").write_text(CLAUDE)
+            (root / "daily").mkdir()
+            (root / "daily" / "2026-09-18-tracker.md").write_text(TRACKER)
+            out = subprocess.run(
+                [sys.executable, str(Path(ss.__file__)), "--type", "implementer", "--cwd", "/tmp", "--title", title,
+                 "--root", str(root), "--date", "2026-09-18", "--lane", "Security audit", "--dry-run"],
+                capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(out.returncode, 0, out.stderr)
         self.assertNotIn("; rm -rf ~ -e", out.stdout, "the title's tokens run into the rest of the argv")
+        # Ghostty names a tab from its process, so there is no --title on the real path at all: the
+        # hostile value now reaches nothing. It still must not be able to run off the end of a line.
+        self.assertNotIn("rm -rf", out.stdout.split("would write")[0].split("would ask")[0],
+                         "a title must not reach the launcher argv")
+
+    def test_the_override_path_still_quotes_every_argv_entry(self):
+        """The eval harness builds an argv, so the per-token invariant still has to hold there."""
+        title = "--dangerous ; rm -rf ~"
+        env = dict(os.environ, **{ss.ENV: json.dumps(["ghostty", "--title={title}", "-e", "claude"])})
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "CLAUDE.md").write_text(CLAUDE)
+            (root / "daily").mkdir()
+            (root / "daily" / "2026-09-18-tracker.md").write_text(TRACKER)
+            out = subprocess.run(
+                [sys.executable, str(Path(ss.__file__)), "--type", "implementer", "--cwd", "/tmp", "--title", title,
+                 "--root", str(root), "--date", "2026-09-18", "--lane", "Security audit", "--dry-run"],
+                capture_output=True, text=True, timeout=30, env=env,
+            )
+            self.assertEqual(out.returncode, 0, out.stderr)
         self.assertIn("'--title=--dangerous ; rm -rf ~'", out.stdout, "one argv entry must print as one quoted word")
 
     def test_a_refusal_exits_nonzero_and_says_why(self):
         env = dict(os.environ, **{ss.ENV: json.dumps(["sh", "-c", "claude"])})
-        out = subprocess.run(
-            [sys.executable, str(Path(ss.__file__)), "--type", "x", "--cwd", "/tmp", "--title", "t", "--dry-run"],
-            capture_output=True, text=True, timeout=30, env=env,
-        )
-        self.assertEqual(out.returncode, 1)
-        self.assertIn("refused", out.stderr)
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "CLAUDE.md").write_text(CLAUDE)
+            (root / "daily").mkdir()
+            (root / "daily" / "2026-09-18-tracker.md").write_text(TRACKER)
+            out = subprocess.run(
+                [sys.executable, str(Path(ss.__file__)), "--type", "x", "--cwd", "/tmp", "--title", "t",
+                 "--root", str(root), "--date", "2026-09-18", "--lane", "Security audit", "--dry-run"],
+                capture_output=True, text=True, timeout=30, env=env,
+            )
+            self.assertEqual(out.returncode, 1)
+            self.assertIn("refused", out.stderr)
 
 
 class NoShellTest(unittest.TestCase):
@@ -139,10 +218,272 @@ class NoShellTest(unittest.TestCase):
             self.assertNotIn(forbidden, source, forbidden)
 
     def test_it_never_closes_anything(self):
-        """Spawning is the coordinator's; ending a session, removing a tree, deleting a branch is not."""
+        """Spawning is the coordinator's; ending a session, removing a tree, deleting a branch is not.
+
+        Call shapes, not substrings: `skills` contains `kill`, and a check that cannot tell those
+        apart fails on a word rather than on a behaviour.
+        """
         source = Path(ss.__file__).read_text()
-        for forbidden in ("kill", "terminate", "rmtree", "worktree remove", "branch -d", "branch -D"):
-            self.assertNotIn(forbidden, source, forbidden)
+        for forbidden in (r"\bos\.kill\b", r"\.kill\(", r"\.terminate\(", r"\brmtree\b",
+                          r"worktree\s+remove", r"branch\s+-[dD]\b", r"\.unlink\(", r"os\.remove\b"):
+            self.assertIsNone(re.search(forbidden, source), forbidden)
+
+
+class BootstrapTest(unittest.TestCase):
+    """The argv carries a constant. Nothing the coordinator composed travels on the command line."""
+
+    def test_the_last_argv_token_is_the_bootstrap_and_points_at_the_dispatch_file(self):
+        argv = ss.argv(ss.DEFAULT_LAUNCHER, agent_type="implementer", cwd="/tmp/wt", title="wt-docs")
+        self.assertEqual(argv[-1], ss.BOOTSTRAP)
+        self.assertIn(ss.PROMPT_FILE, ss.BOOTSTRAP)
+
+    def test_the_argv_is_the_same_whatever_the_lane_is(self):
+        """There is no per-dispatch text on the command line, so there is nothing to expand."""
+        a = ss.argv(ss.DEFAULT_LAUNCHER, agent_type="implementer", cwd="/tmp/a", title="t")
+        b = ss.argv(ss.DEFAULT_LAUNCHER, agent_type="implementer", cwd="/tmp/a", title="t")
+        self.assertEqual(a, b)
+        self.assertNotIn("Lane:", " ".join(a))
+
+    def test_no_agent_type_drops_the_flag_and_its_value_together(self):
+        """Removed as a pair, never substituted empty: a token must not expand to zero or two."""
+        argv = ss.argv(ss.DEFAULT_LAUNCHER, agent_type=None, cwd="/tmp/wt", title="t")
+        self.assertNotIn("--agent", argv)
+        self.assertNotIn("", argv)
+        self.assertIn("claude", argv)
+        self.assertEqual(argv[argv.index("--permission-mode") + 1], "plan")
+
+    def test_an_agent_type_is_passed_when_the_block_names_one(self):
+        argv = ss.argv(ss.DEFAULT_LAUNCHER, agent_type="fixer", cwd="/tmp/wt", title="t")
+        self.assertEqual(argv[argv.index("--agent") + 1], "fixer")
+
+
+class GhosttyTabTest(unittest.TestCase):
+    """The real launcher: a tab in the window the user already has, not a window of its own.
+
+    Design-input 44 said "a Ghostty tab running `claude`" in Zach's own words and 0.7.0 shipped a
+    window. Ghostty's scripting dictionary has `new tab ... with configuration`, so the tab is asked
+    for rather than simulated with keystrokes.
+    """
+
+    CLAUDE_BIN = ss.Path("/opt/homebrew/bin/claude")
+
+    def script(self, agent_type="implementer", cwd="/tmp/trees/wt-audit", **kw):
+        kw.setdefault("claude", self.CLAUDE_BIN)
+        return ss.ghostty_script(cwd=cwd, agent_type=agent_type, **kw)
+
+    def test_it_asks_for_a_tab(self):
+        self.assertIn("new tab in front window with configuration", self.script())
+
+    def test_it_makes_a_window_when_there_is_none_to_put_a_tab_in(self):
+        s = self.script()
+        self.assertIn("new window with configuration", s)
+        self.assertIn("count of windows", s)
+
+    def test_the_tab_takes_the_title_it_was_given(self):
+        """A surface configuration has no title field; `set_tab_title:` is how a tab gets a name."""
+        self.assertIn('set_tab_title:wt-audit', self.script(title="wt-audit"))
+
+    def test_the_session_starts_in_its_worktree(self):
+        self.assertIn('set initial working directory of cfg to "/tmp/trees/wt-audit"', self.script())
+
+    def test_the_tab_outlives_a_command_that_dies(self):
+        """Ghostty calls any sub-second exit a launch failure; without this the evidence closes itself."""
+        self.assertIn("set wait after command of cfg to true", self.script())
+
+    def test_the_command_is_quoted_per_token(self):
+        """Ghostty parses `command` shell-style, so the bootstrap stays one argument or it is nonsense."""
+        s = self.script()
+        self.assertIn(shlex.quote(ss.BOOTSTRAP), s)
+
+    def test_no_agent_type_drops_the_flag_and_its_value_together(self):
+        self.assertNotIn("--agent", self.script(agent_type=None))
+        self.assertIn("--agent implementer", self.script())
+
+    def test_it_passes_no_environment_of_its_own(self):
+        """The tab inherits Ghostty's environment, which is the user's login session and not a coordinator's.
+
+        That is what the KEEP whitelist was approximating; asking Ghostty for a tab gets it exactly.
+        """
+        s = self.script()
+        self.assertNotIn("environment variables", s)
+        self.assertNotIn("CLAUDE", s)
+
+    def test_a_quote_cannot_end_the_applescript_string(self):
+        s = self.script(cwd='/tmp/a"b', agent_type=None)
+        self.assertIn('\\"', s)
+        self.assertNotIn('"/tmp/a"b"', s)
+
+    def test_a_backslash_is_escaped_before_anything_else(self):
+        s = self.script(cwd="/tmp/a\\b", agent_type=None)
+        self.assertIn("\\\\", s)
+
+    def test_a_control_character_is_refused_rather_than_escaped(self):
+        with self.assertRaises(ss.RefusedError):
+            self.script(cwd="/tmp/a\x1b]0;x\x07", agent_type=None)
+
+    def test_the_binary_is_resolved_absolutely(self):
+        """Ghostty is launched from the GUI, so its children get launchd's PATH, not a shell's.
+
+        The first real tab died in 38ms with `exec: claude: not found`, while `which claude` in the
+        coordinator answered `/opt/homebrew/bin/claude`. Restoring a PATH would put the environment
+        surface back; resolving the binary here does not.
+        """
+        s = self.script(cwd="/tmp", agent_type=None)
+        self.assertIn("/opt/homebrew/bin/claude", s)
+        self.assertNotIn("command:\"claude ", s)
+
+    def test_a_claude_that_cannot_be_found_is_refused_rather_than_guessed_at(self):
+        with self.assertRaises(ss.RefusedError) as e:
+            ss.ghostty_script(cwd="/tmp", agent_type=None, claude=None)
+        self.assertIn("claude", str(e.exception))
+
+    def test_it_never_reaches_a_shell(self):
+        """The one file that starts processes gained a second quoting layer; it did not gain a shell."""
+        s = self.script()
+        for shellish in ("do shell script", "/bin/sh", "bash -c", "osascript -e"):
+            self.assertNotIn(shellish, s)
+
+
+class DispatchFileTest(unittest.TestCase):
+    """The assignment lands in the tree before the session that reads it exists."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+        (self.root / "CLAUDE.md").write_text(CLAUDE)
+        (self.root / "daily").mkdir()
+        (self.root / "daily" / "2026-09-18-tracker.md").write_text(TRACKER)
+        self.tree = self.root / "trees" / "wt-audit"
+        self.tree.mkdir(parents=True)
+
+    def spawn(self, lane="Security audit", **kw):
+        log = self.root / "calls.jsonl"
+        rec = self.root / "rec.py"
+        rec.write_text(
+            "#!/usr/bin/env python3\nimport json,os,sys\n"
+            f"open({str(log)!r},'a').write(json.dumps({{'argv': sys.argv[1:], "
+            f"'file_there': os.path.exists({str(self.tree / ss.PROMPT_FILE)!r})}})+chr(10))\n"
+        )
+        env = dict(os.environ, **{ss.ENV: json.dumps(["python3", str(rec), "{cwd}", "{title}"])})
+        args = ["--cwd", str(self.tree), "--title", "wt-audit", "--root", str(self.root),
+                "--date", "2026-09-18", "--lane", lane]
+        out = subprocess.run([sys.executable, str(Path(ss.__file__)), *args, *kw.get("extra", [])],
+                             capture_output=True, text=True, timeout=30, env=env)
+        calls = [json.loads(x) for x in log.read_text().splitlines()] if log.exists() else []
+        return out, calls
+
+    def test_the_lane_lands_in_the_dispatch_file(self):
+        out, _ = self.spawn()
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("Lane: Security audit", (self.tree / ss.PROMPT_FILE).read_text())
+
+    def test_the_directory_ignores_itself_so_the_tree_stays_clean(self):
+        """An untracked file here would read as uncommitted work in every spawned tree."""
+        self.spawn()
+        self.assertEqual((self.tree / ".chief-of-stuff" / ".gitignore").read_text().strip(), "*")
+
+    def test_the_file_is_there_before_the_process_starts(self):
+        _, calls = self.spawn()
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(calls[0]["file_there"], "the session could read a file that is not there yet")
+
+    def test_a_lane_that_is_not_a_row_writes_nothing_and_starts_nothing(self):
+        out, calls = self.spawn(lane="Upload handler fix")
+        self.assertEqual(out.returncode, 1)
+        self.assertIn("refused", out.stderr)
+        self.assertFalse((self.tree / ss.PROMPT_FILE).exists())
+        self.assertEqual(calls, [])
+
+    def test_an_expansion_that_reached_the_script_is_refused_as_an_unknown_row(self):
+        out, calls = self.spawn(lane="locriani")
+        self.assertEqual(out.returncode, 1)
+        self.assertEqual(calls, [])
+
+    def test_a_tree_that_already_holds_a_dispatch_is_refused(self):
+        (self.tree / ".chief-of-stuff").mkdir()
+        (self.tree / ss.PROMPT_FILE).write_text("someone else's assignment\n")
+        out, calls = self.spawn()
+        self.assertEqual(out.returncode, 1)
+        self.assertIn("already", out.stderr)
+        self.assertEqual((self.tree / ss.PROMPT_FILE).read_text(), "someone else's assignment\n")
+        self.assertEqual(calls, [])
+
+    def test_the_coordinator_it_registers_with_reaches_the_assignment(self):
+        """The ref arrives from the session rather than from the coordinator noticing it in a listing."""
+        out, calls = self.spawn(extra=["--coordinator", "gauntlet-d3 [0d6cf4]"])
+        body = (self.tree / ss.PROMPT_FILE).read_text()
+        self.assertIn("gauntlet-d3 [0d6cf4]", body)
+        self.assertIn("Register first", body)
+
+    def test_it_still_says_to_register_when_no_coordinator_was_named(self):
+        self.spawn()
+        self.assertIn("chief-of-stuff coordinator", (self.tree / ss.PROMPT_FILE).read_text())
+
+    def test_a_coordinator_that_is_not_a_session_name_writes_nothing_and_starts_nothing(self):
+        out, calls = self.spawn(extra=["--coordinator", "$(whoami)"])
+        self.assertEqual(out.returncode, 1)
+        self.assertIn("refused", out.stderr)
+        self.assertFalse((self.tree / ss.PROMPT_FILE).exists())
+        self.assertEqual(calls, [])
+
+    def test_the_assignment_carries_the_paths_the_lane_owns(self):
+        """Finding 56: a lane name is not something a session can act on."""
+        self.spawn()
+        self.assertIn("Owns: `src/a/`", (self.tree / ss.PROMPT_FILE).read_text())
+
+    def test_a_lane_with_no_ownership_row_writes_nothing_and_starts_nothing(self):
+        (self.root / "daily" / "2026-09-18-tracker.md").write_text(
+            TRACKER.replace("| Security audit | `src/a/` |", ""))
+        out, calls = self.spawn()
+        self.assertEqual(out.returncode, 1)
+        self.assertIn("File ownership", out.stderr)
+        self.assertFalse((self.tree / ss.PROMPT_FILE).exists())
+        self.assertEqual(calls, [])
+
+    def test_the_started_line_names_the_file_it_wrote(self):
+        out, _ = self.spawn()
+        self.assertIn(ss.PROMPT_FILE, out.stdout)
+
+
+class LaunchEnvironmentTest(unittest.TestCase):
+    """A spawned session is a new session, not a child of the coordinator's.
+
+    The coordinator is itself a Claude Code session, so its environment carries the markers that say
+    which session this is, which socket it speaks on, and that it is somebody's child. Inheriting
+    those gave a spawned session the coordinator's messaging credentials, bound it to the
+    coordinator's project rather than its own worktree, and turned its transcript off — one cause,
+    three symptoms, found by watching a real spawn.
+    """
+
+    def test_no_claude_variable_reaches_the_new_session(self):
+        parent = dict(os.environ, CLAUDE_CODE_CHILD_SESSION="1", CLAUDE_CODE_SESSION_ID="abc",
+                      CLAUDE_CODE_MESSAGING_SOCKET="/tmp/cc-socks/1.sock",
+                      CLAUDE_CODE_MESSAGING_TOKEN="secret", CLAUDECODE="1", CLAUDE_PID="99")
+        env = ss.launch_env(parent)
+        leaked = [k for k in env if k.upper().startswith("CLAUDE")]
+        self.assertEqual(leaked, [], f"the new session would speak as the coordinator: {leaked}")
+
+    def test_the_messaging_token_is_never_passed_on(self):
+        env = ss.launch_env(dict(os.environ, CLAUDE_CODE_MESSAGING_TOKEN="secret"))
+        self.assertNotIn("secret", "".join(env.values()))
+
+    def test_what_a_terminal_actually_needs_survives(self):
+        parent = dict(os.environ, PATH="/usr/bin:/bin", HOME="/Users/robin", TERM="xterm-256color")
+        env = ss.launch_env(parent)
+        self.assertEqual(env["PATH"], "/usr/bin:/bin")
+        self.assertEqual(env["HOME"], "/Users/robin")
+        self.assertEqual(env["TERM"], "xterm-256color")
+
+    def test_the_launcher_override_does_not_ride_along(self):
+        """It is read here; a session that inherited it could relaunch itself."""
+        env = ss.launch_env({ss.ENV: '["ghostty"]', "PATH": "/usr/bin"})
+        self.assertNotIn(ss.ENV, env)
+
+    def test_the_new_session_keeps_its_own_transcript(self):
+        """Dropping the child marker is the fix; the lane audit covers a branch, not the reasoning."""
+        env = ss.launch_env(dict(os.environ, CLAUDE_CODE_CHILD_SESSION="1"))
+        self.assertNotIn("CLAUDE_CODE_CHILD_SESSION", env)
 
 
 if __name__ == "__main__":
