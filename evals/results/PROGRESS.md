@@ -862,3 +862,41 @@ Both dispatch cases went red on the first run of the finished stage, and neither
 
 That is finding 56's own sentence — the failure mode to design against is the session inventing plausible work rather than stopping — being obeyed by the coordinator, against a fixture I had written as carelessly as the one that produced the finding. `make_repo` gained a `files` spec, both fixtures now carry the handler their lane names, and the lanes carry an ask with acceptance criteria instead of a two-word title. A case whose lane names a path the repo does not hold measures the fixture, not the rule.
 
+
+### The launcher: a tab, asked for by name
+
+Mid-stage, Zach: *"ghostty launches shouldn't be launching a new ghostty but instead launching a new tab"*, then *"we've done it before sanely"*. Finding 44 had said it in his words a stage earlier — "a Ghostty tab running `claude`" — and 0.7.0 shipped a window, which nobody noticed because a window works.
+
+Ghostty has had an AppleScript dictionary since 1.3.0 and it is a real one, so the tab is asked for rather than simulated with keystrokes: `new surface configuration`, then `new tab in front window with configuration cfg`. Three results, and the middle one was free.
+
+- **Quoting survives.** Ghostty parses `command` shell-style, so `shlex.quote` per token keeps the invariant the argv path was built on. Probed: `--lane 'Security audit of the upload handler'` arrived as one argv entry.
+- **The environment problem solved itself, then a new one appeared.** A tab inherits Ghostty's environment — 29 variables, no `CLAUDE_*`, which is what the `KEEP` whitelist was approximating after finding 54. But Ghostty is launched from the GUI, so that environment carries launchd's `PATH`: the first real tab died in 38ms with `exec: claude: not found` while the coordinator's own `which claude` answered `/opt/homebrew/bin/claude`. Upstream hits this with tmux and answers it the same way. `shutil.which` resolves the binary in the process that knows.
+- **`wait after command: true` is what made any of it legible.** Ghostty calls any sub-second exit a launch failure and closes the tab; with the flag the tab stays and shows why. It paid three times in twenty minutes — the missing `PATH`, an `--agent` type that does not exist on this machine, and a probe that legitimately exited fast.
+
+`--title` survived after all. A surface configuration has no title field, so the tab is named afterwards with `perform action "set_tab_title:"` — which means the title no longer travels in argv, and a hostile title now reaches nothing at all.
+
+### The hand check, which proved the two things no case can
+
+A real spawn into a scratch workspace: a tab named `wt-tab` appeared in the front window with `claude` live in the worktree, via the default-agent path. Its first act was to read `.chief-of-stuff/dispatch.md` and say *"I'm wt-tab-17 [646c00]"*, then send a full registration — ref, worktree, branch, lane, planning with nothing written. Bullet 1 and bullet 2, on a live session, with no coordinator involved.
+
+It then reported three things about itself, and two of them changed the code.
+
+**58 — the registration instruction was last on the page.** Its own account: *"I went digging through the environment and your repo before registering, when the dispatch says to register first."* The header said so in its final paragraph, after three others, so three paragraphs of context arrived before the instruction meant to precede everything. It is now the first paragraph, in bold, and says why rather than only what.
+
+**A false positive worth recording.** It reported `CLAUDE_CODE_CHILD_SESSION=1` and read it as finding 54 recurring. It is not: Claude Code injects its nine `CLAUDE_*` variables into every subprocess it spawns, and a main session's shell shows the same nine. It had sampled a Bash child of its own `claude` process rather than the environment `claude` was exec'd with. Measured directly, outside any Claude session, the tab's environment holds none. The false positive is indistinguishable from the true one without knowing which layer was sampled, and the true one cost a morning.
+
+**And one property of the design.** A dispatched session cannot verify its own surface type — Ghostty exports no tab or window identifier and both produce identical `login -flp` ancestry under one app pid. It worked that out, declined to reach for System Events because that is a wider access than a read-only lane implies, and asked instead. Window-versus-tab is the caller's to decide and is not discoverable by the callee.
+
+### Two graders that measured the fixture, not the rule
+
+**`registration-fills-the-ref` came back NON-DISCRIMINATING** — baseline passed it. A bare agent handed a registration message writes the ref into the table on its own, so the case proved nothing. Same shape as C4's `newborn-is-not-orphaned`. It now measures what the rule actually adds: the session's message *states a time it came up*, and `:184` says `last reply` is the coordinator's clock read and never a time the reply states, graded on column 7.
+
+**`the launch says who to register with` was unmeasurable twice.** First on a case whose `CLAUDE.md` names no `Sessions:` line — with no listing the coordinator cannot know its own name, so it cannot pass `--coordinator`, and it was right not to. Moved to the case that does name session tooling, where it failed again for a subtler reason: the coordinator is not in its own mock listing and the fixture's tracker head named no coordinator, so there was still no way to learn its name. The live tracker carries `Coordinator: <name>. Board: <url>.` in its head; the fixture was missing that line. `## Dispatch` now says where the name comes from — the tracker header, or a listing beside your own ref — rather than gating on a `Sessions:` line.
+
+That is seven graders across C4 and C5 that passed the wrong answer or failed the right one, and the tally is worth keeping: five were absence checks on replies, two demanded a flag the case's own configuration made impossible.
+
+### Debt, stated rather than left implicit
+
+**The 52-case regression was not run.** Zach's call — *"do the 2 new cases but skip regression we'll do them with the next item"*. It is C6's bullet 0, before any C6 edit, because a regression run after the next stage's changes cannot say which stage broke what. Recorded here so that a skipped sweep is a decision with a name on it rather than something nobody remembers.
+
+**The Ghostty path has no eval coverage at all,** and cannot: the harness replaces the launcher with a recorder via `CHIEF_OF_STUFF_LAUNCHER`, which is now the only path that still builds an argv. Everything above about tabs, titles and `PATH` rests on the hand check.

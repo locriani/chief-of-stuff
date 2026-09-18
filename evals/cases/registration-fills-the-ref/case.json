@@ -11,8 +11,8 @@
       }
     ]
   },
-  "description": "A spawned session registers. Its ref is the key to its row and it arrives from the session, not from the coordinator noticing it in a listing. Registering is not progress: the lane stays where the dispatch left it.",
-  "prompt": "<cross-session-message from=\"uds:/tmp/cc-socks/9f2.sock\" from-name=\"wt-audit\" from-mode=\"prompting\">\nRegistering as dispatched. I am wt-audit [9f2a41], in trees/wt-audit on branch audit/upload-handler, on the Security audit lane. Planning now, nothing written yet.\n</cross-session-message>",
+  "description": "A spawned session registers, and states a time. The ref arrives from the session; the clock does not. `last reply` is the coordinator's own read when the reply landed, never the hour the session says it came up \u2014 a session that has been sitting unread for nine hours would otherwise backdate the freshest fact on the board.",
+  "prompt": "<cross-session-message from=\"uds:/tmp/cc-socks/9f2.sock\" from-name=\"wt-audit\" from-mode=\"prompting\">\nRegistering as dispatched. I am wt-audit [9f2a41], in trees/wt-audit on branch audit/upload-handler, on the Security audit lane. I came up at 04:12 and I have been reading since. Planning now, nothing written yet.\n</cross-session-message>",
   "graders": [
     {
       "name": "the ref lands in the Sessions row",
@@ -56,6 +56,20 @@
       "type": "timestamp_tolerance",
       "path": "daily/{{today}}-tracker.md",
       "section": "## Log"
+    },
+    {
+      "name": "last reply is the coordinator's clock read, not the session's",
+      "type": "timestamp_tolerance",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Sessions",
+      "column": 7
+    },
+    {
+      "name": "the hour the session claimed is not written as a clock read",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^\\|[^\\n]*9f2a41[^\\n]*\\|\\s*04:12\\s*\\|",
+      "match": "absent"
     }
   ],
   "max_turns": 14,

@@ -11,6 +11,7 @@ Nothing here starts a real terminal: every test drives `--dry-run` or a recorder
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -125,7 +126,7 @@ class RunTest(unittest.TestCase):
                 capture_output=True, text=True, timeout=30,
             )
             self.assertEqual(out.returncode, 0, out.stderr)
-            self.assertIn("ghostty", out.stdout)
+            self.assertIn("new tab in front window", out.stdout)
             self.assertIn("would run", out.stdout)
             self.assertIn("would write", out.stdout)
 
@@ -172,6 +173,26 @@ class RunTest(unittest.TestCase):
             )
             self.assertEqual(out.returncode, 0, out.stderr)
         self.assertNotIn("; rm -rf ~ -e", out.stdout, "the title's tokens run into the rest of the argv")
+        # Ghostty names a tab from its process, so there is no --title on the real path at all: the
+        # hostile value now reaches nothing. It still must not be able to run off the end of a line.
+        self.assertNotIn("rm -rf", out.stdout.split("would write")[0].split("would ask")[0],
+                         "a title must not reach the launcher argv")
+
+    def test_the_override_path_still_quotes_every_argv_entry(self):
+        """The eval harness builds an argv, so the per-token invariant still has to hold there."""
+        title = "--dangerous ; rm -rf ~"
+        env = dict(os.environ, **{ss.ENV: json.dumps(["ghostty", "--title={title}", "-e", "claude"])})
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "CLAUDE.md").write_text(CLAUDE)
+            (root / "daily").mkdir()
+            (root / "daily" / "2026-09-18-tracker.md").write_text(TRACKER)
+            out = subprocess.run(
+                [sys.executable, str(Path(ss.__file__)), "--type", "implementer", "--cwd", "/tmp", "--title", title,
+                 "--root", str(root), "--date", "2026-09-18", "--lane", "Security audit", "--dry-run"],
+                capture_output=True, text=True, timeout=30, env=env,
+            )
+            self.assertEqual(out.returncode, 0, out.stderr)
         self.assertIn("'--title=--dangerous ; rm -rf ~'", out.stdout, "one argv entry must print as one quoted word")
 
     def test_a_refusal_exits_nonzero_and_says_why(self):
@@ -234,6 +255,93 @@ class BootstrapTest(unittest.TestCase):
     def test_an_agent_type_is_passed_when_the_block_names_one(self):
         argv = ss.argv(ss.DEFAULT_LAUNCHER, agent_type="fixer", cwd="/tmp/wt", title="t")
         self.assertEqual(argv[argv.index("--agent") + 1], "fixer")
+
+
+class GhosttyTabTest(unittest.TestCase):
+    """The real launcher: a tab in the window the user already has, not a window of its own.
+
+    Design-input 44 said "a Ghostty tab running `claude`" in Zach's own words and 0.7.0 shipped a
+    window. Ghostty's scripting dictionary has `new tab ... with configuration`, so the tab is asked
+    for rather than simulated with keystrokes.
+    """
+
+    CLAUDE_BIN = ss.Path("/opt/homebrew/bin/claude")
+
+    def script(self, agent_type="implementer", cwd="/tmp/trees/wt-audit", **kw):
+        kw.setdefault("claude", self.CLAUDE_BIN)
+        return ss.ghostty_script(cwd=cwd, agent_type=agent_type, **kw)
+
+    def test_it_asks_for_a_tab(self):
+        self.assertIn("new tab in front window with configuration", self.script())
+
+    def test_it_makes_a_window_when_there_is_none_to_put_a_tab_in(self):
+        s = self.script()
+        self.assertIn("new window with configuration", s)
+        self.assertIn("count of windows", s)
+
+    def test_the_tab_takes_the_title_it_was_given(self):
+        """A surface configuration has no title field; `set_tab_title:` is how a tab gets a name."""
+        self.assertIn('set_tab_title:wt-audit', self.script(title="wt-audit"))
+
+    def test_the_session_starts_in_its_worktree(self):
+        self.assertIn('set initial working directory of cfg to "/tmp/trees/wt-audit"', self.script())
+
+    def test_the_tab_outlives_a_command_that_dies(self):
+        """Ghostty calls any sub-second exit a launch failure; without this the evidence closes itself."""
+        self.assertIn("set wait after command of cfg to true", self.script())
+
+    def test_the_command_is_quoted_per_token(self):
+        """Ghostty parses `command` shell-style, so the bootstrap stays one argument or it is nonsense."""
+        s = self.script()
+        self.assertIn(shlex.quote(ss.BOOTSTRAP), s)
+
+    def test_no_agent_type_drops_the_flag_and_its_value_together(self):
+        self.assertNotIn("--agent", self.script(agent_type=None))
+        self.assertIn("--agent implementer", self.script())
+
+    def test_it_passes_no_environment_of_its_own(self):
+        """The tab inherits Ghostty's environment, which is the user's login session and not a coordinator's.
+
+        That is what the KEEP whitelist was approximating; asking Ghostty for a tab gets it exactly.
+        """
+        s = self.script()
+        self.assertNotIn("environment variables", s)
+        self.assertNotIn("CLAUDE", s)
+
+    def test_a_quote_cannot_end_the_applescript_string(self):
+        s = self.script(cwd='/tmp/a"b', agent_type=None)
+        self.assertIn('\\"', s)
+        self.assertNotIn('"/tmp/a"b"', s)
+
+    def test_a_backslash_is_escaped_before_anything_else(self):
+        s = self.script(cwd="/tmp/a\\b", agent_type=None)
+        self.assertIn("\\\\", s)
+
+    def test_a_control_character_is_refused_rather_than_escaped(self):
+        with self.assertRaises(ss.RefusedError):
+            self.script(cwd="/tmp/a\x1b]0;x\x07", agent_type=None)
+
+    def test_the_binary_is_resolved_absolutely(self):
+        """Ghostty is launched from the GUI, so its children get launchd's PATH, not a shell's.
+
+        The first real tab died in 38ms with `exec: claude: not found`, while `which claude` in the
+        coordinator answered `/opt/homebrew/bin/claude`. Restoring a PATH would put the environment
+        surface back; resolving the binary here does not.
+        """
+        s = self.script(cwd="/tmp", agent_type=None)
+        self.assertIn("/opt/homebrew/bin/claude", s)
+        self.assertNotIn("command:\"claude ", s)
+
+    def test_a_claude_that_cannot_be_found_is_refused_rather_than_guessed_at(self):
+        with self.assertRaises(ss.RefusedError) as e:
+            ss.ghostty_script(cwd="/tmp", agent_type=None, claude=None)
+        self.assertIn("claude", str(e.exception))
+
+    def test_it_never_reaches_a_shell(self):
+        """The one file that starts processes gained a second quoting layer; it did not gain a shell."""
+        s = self.script()
+        for shellish in ("do shell script", "/bin/sh", "bash -c", "osascript -e"):
+            self.assertNotIn(shellish, s)
 
 
 class DispatchFileTest(unittest.TestCase):
@@ -306,7 +414,7 @@ class DispatchFileTest(unittest.TestCase):
         out, calls = self.spawn(extra=["--coordinator", "gauntlet-d3 [0d6cf4]"])
         body = (self.tree / ss.PROMPT_FILE).read_text()
         self.assertIn("gauntlet-d3 [0d6cf4]", body)
-        self.assertIn("Register before you start", body)
+        self.assertIn("Register first", body)
 
     def test_it_still_says_to_register_when_no_coordinator_was_named(self):
         self.spawn()

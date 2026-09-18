@@ -221,3 +221,43 @@ Two complaints, both fair.
 So the dispatch should carry acceptance criteria rather than a lane name, and should say what to do when scope looks empty or contradictory: hand it back, never proceed on an assumption the coordinator did not state. That last sentence belongs in the script-written header, where the coordinator cannot omit it.
 
 This also settles a question bullet 1 left open. Two lines were enough for a session to find its way and not enough for it to act — so bullet 3's remaining four lines are load-bearing rather than a nicety, and that is now observed rather than argued.
+
+## 57 — a window where a tab was asked for, and a PATH that was never there
+
+**From:** Zach, 2026-09-18 12:57 — "ghostty launches shouldn't be launching a new ghostty but instead launching a new tab", then "we've done it before sanely".
+**Status:** Adopted 2026-09-18 (0.8.0).
+
+Finding 44 said it in his words nine months of sessions ago — "a Ghostty tab running `claude`" — and 0.7.0 shipped `ghostty --working-directory=… -e claude`, which is a window. Nobody noticed because a window works.
+
+Ghostty has had an AppleScript dictionary since 1.3.0, and it is a real one: `new surface configuration` with `initial working directory`, `command`, `environment variables` and `wait after command`, then `new tab in <window> with configuration`. So the tab is **asked for by name** rather than simulated with keystrokes into the front window, which was the option that would have put a second launcher shape into the one file that starts processes.
+
+Three things fell out of the probe, and two of them were free.
+
+**Quoting survives.** Ghostty parses `command` shell-style, so `shlex.quote` per token holds the per-token invariant the argv path was built on. A lane name with spaces arrives as one argument.
+
+**The environment problem solved itself.** Ghostty is launched from the GUI, so a tab inherits *Ghostty's* environment — the user's login session. That is what the `KEEP` whitelist was approximating after finding 54, and asking for a tab gets it exactly: zero `CLAUDE_*` reached the probe, from the launcher rather than from `Popen(env=)`.
+
+**And it introduced a new one.** A GUI-launched app gets launchd's `PATH`, not a shell's. The first real tab died in 38ms with `exec: claude: not found` while `which claude` in the coordinator answered `/opt/homebrew/bin/claude`. Upstream hits this with tmux and answers it the same way: name the binary absolutely. `shutil.which` resolves it in the coordinator, which is the process that knows.
+
+`wait after command: true` is what made all of this readable. Ghostty treats any sub-second exit as a launch failure and closes the tab on it; with the flag the tab stays and shows why. It paid three times in twenty minutes — the missing `PATH`, an `--agent` type that did not exist on this machine, and a probe that legitimately exited fast.
+
+**What the hand check then showed, which no eval can.** The tab came up named `wt-tab` in the front window, `claude` running in the worktree, and the session's first act was to read `.chief-of-stuff/dispatch.md` and say: *"I'm wt-tab-17 [646c00]."* The bootstrap found the file and the header's registration instruction produced the intended first move, on a real session, with no coordinator involved.
+
+It also named itself `wt-tab-17` while its tab was `wt-tab` and its tree was `wt-tab`. Three strings for one session, which is exactly why `:184` keys a Sessions row on the ref and calls the name a label that changes. The session graph has to key on the ref for the same reason.
+
+## 58 — the registration instruction was last on the page
+
+**From:** `wt-tab-17`, the hand-check session, 2026-09-18 13:17, unprompted and about its own conduct.
+**Status:** Adopted 2026-09-18 (0.8.0).
+
+It registered, but not first. Its own account: *"I went digging through the environment and your repo before registering, when the dispatch says to register first. Robin caught it mid-turn. Registering first would have surfaced the tab question in one message instead of six tool calls."*
+
+The header said "Register before you start" in its **last** paragraph, after the provenance warning, the hand-it-back rule and the scope rule. A session reads top-down and acts on what it read first, so three paragraphs of context arrived before the one instruction that was supposed to precede everything. The text was right and its position made it advice.
+
+It is now the first paragraph after the greeting line, in bold, and says why rather than only what: until the registration arrives the coordinator cannot tell the session from one that never came up, so anything discovered before it is discovered by somebody nobody can reach. That is the cost `:188` already describes from the coordinator's side, said once more from the session's.
+
+Two more things the same session established, both kept:
+
+**A dispatched session cannot verify its own surface type.** Ghostty exports no tab, window or surface identifier, and a tab and a new window produce byte-identical `login -flp` ancestry under one app pid. It worked this out, declined to reach for System Events because that is a different class of access than a read-only report lane implies, and asked instead. So window-versus-tab is decided by the caller and is not discoverable by the callee — which is an argument for the launcher owning that choice, and against any check that expects a session to confirm it.
+
+**`CLAUDE_CODE_CHILD_SESSION=1` inside a dispatched session is not finding 54 recurring.** It reported the marker and read it as evidence of a polluted launch. It is not: Claude Code injects its nine `CLAUDE_*` variables into every subprocess it spawns for its own tooling, and a main session's shell shows the same nine. What the session sampled was a Bash child of its own `claude` process, not the environment `claude` was exec'd with. Measured directly — a probe run as the tab's own command, outside any Claude session — the tab's environment holds 29 variables inherited from Ghostty and none of them are `CLAUDE_*`. Worth recording because the false positive is indistinguishable from the true one without knowing which layer was sampled, and the true one cost a morning.

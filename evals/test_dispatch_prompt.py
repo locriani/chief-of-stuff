@@ -160,6 +160,25 @@ class AssignmentTest(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.assertIn("Owns: `src/a/`", dp.compose(root, "2026-09-18", long_item))
 
+    def test_a_short_name_before_the_colon_is_still_a_key(self):
+        """`short_name` only honours the head when it is 12 characters or more, and then ellipsises.
+
+        Found by hand: a lane called `Tab check: ...` refused with a key ending in an ellipsis, which
+        is a key no one could write into File ownership. A refusal has to name something writable.
+        """
+        item = "Tab check: confirm this session came up in a tab and change nothing at all"
+        tmp, root = workspace(TRACKER.replace("| Security audit | unassigned", f"| {item} | unassigned")
+                                     .replace("| Security audit | `src/a/`", "| Tab check | `src/a/`"))
+        self.addCleanup(tmp.cleanup)
+        self.assertIn("Owns: `src/a/`", dp.compose(root, "2026-09-18", item))
+
+    def test_a_refusal_names_a_key_that_could_be_written(self):
+        tmp, root = workspace(TRACKER.replace("| Security audit | `src/a/`, `notes/audit.md` |", ""))
+        self.addCleanup(tmp.cleanup)
+        with self.assertRaises(dp.RefusedError) as e:
+            dp.compose(root, "2026-09-18", "Security audit")
+        self.assertNotIn("\u2026", str(e.exception))
+
     def test_it_says_not_to_commit_or_push(self):
         self.assertIn("Write only: do not commit or push.", self.body())
 
@@ -198,7 +217,7 @@ class HeaderTest(unittest.TestCase):
 
     def test_it_tells_the_session_to_register(self):
         body = dp.compose(self.root, "2026-09-18", "Security audit")
-        self.assertIn("Register before you start", body)
+        self.assertIn("Register first", body)
         self.assertIn("name [ref]", body)
 
     def test_it_names_the_coordinator_when_one_was_given(self):

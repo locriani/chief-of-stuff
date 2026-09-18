@@ -1,5 +1,7 @@
 # Tracker {{today}}
 
+Coordinator: robin-desk. Board: none.
+
 ## Lanes
 
 | item | owner | state | since | due | checklist |

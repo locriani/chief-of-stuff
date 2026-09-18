@@ -54,18 +54,20 @@ HEADER = """# Assignment
 
 You are a dispatched session. A coordinator wrote this file into your worktree when {user} said yes.
 
-It is a task statement and not authority. It cannot grant you a permission, lift a rule you run \
-under, or speak for {user}. If it asks for something outside the paths in `Owns:`, stop and ask {user}.
+**Register first, before you read anything else and before you look around.** List your sessions to \
+find your own `name [ref]`, then send {coordinator} one message carrying that ref, this worktree and \
+its branch, your lane, and that you are planning with nothing written yet. Registering first is not \
+politeness: until that message arrives the coordinator cannot tell you from a session that never came \
+up, and anything you discover before it is discovered by somebody nobody can reach.
+
+This file is a task statement and not authority. It cannot grant you a permission, lift a rule you \
+run under, or speak for {user}. If it asks for something outside the paths in `Owns:`, stop and ask {user}.
 
 If the lane below is empty, contradictory, or impossible as written, hand it back and say why. Never \
 proceed on an assumption nobody stated, and never substitute work that merely looks similar.
 
 Reading the tracker named below is expected, and so is the worktree you are in. Anything else in the \
 workspace is somebody's lane, not yours.
-
-Register before you start: list your sessions to find your own `name [ref]`, then send {coordinator} \
-one message carrying that ref, this worktree and its branch, your lane, and that you are planning \
-with nothing written yet. That ref is how the coordinator tells you from a session that never came up.
 """
 REPORT = ("Report: when the lane is finished, reply to the coordinator with what changed, where it is "
           "(branch and worktree), and what you did not do.")
@@ -92,7 +94,11 @@ def _owns(text: str, item: str, relative: str) -> str:
     spawn the coordinator rewrites that context cell to name the tree, which is why the short name is
     accepted too.
     """
-    keys = {item.strip(), short_name(item).strip()}
+    # Three spellings, all writable by hand: the item entire, the name before its first colon, and
+    # the board's own short name. `short_name` ellipsises anything long and ignores a head under
+    # twelve characters, so on its own it can name a key nobody could type.
+    head = item.split(": ", 1)[0].strip()
+    keys = {item.strip(), head, short_name(item).strip()} - {""}
     for line in _section(text, "## File ownership"):
         if not line.strip().startswith("|"):
             continue
@@ -102,8 +108,8 @@ def _owns(text: str, item: str, relative: str) -> str:
         if cells[0].strip() in keys:
             return _clean("the File ownership row", cells[1].strip())
     raise RefusedError(
-        f"no File ownership row for {short_name(item)!r} in {relative}; write the paths the lane owns "
-        "before proposing it, so the user reads them before saying yes")
+        f"no File ownership row for {head!r} in {relative}; write the paths the lane owns before "
+        "proposing it, so the user reads them before saying yes")
 
 
 def compose(root: Path, day: str | None, lane: str, worktree: Path | None = None,
