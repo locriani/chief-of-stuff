@@ -1177,3 +1177,87 @@ class SessionStateLegibilityTest(unittest.TestCase):
         graph = re.search(r'<section class="graph".*?</section>', self.html, re.S).group(0)
         for kind in ("working", "waiting", "starting", "ready"):
             self.assertRegex(graph, rf'<span class="chip {kind}">{kind}</span>')
+
+
+class ResumeLegibilityTest(unittest.TestCase):
+    """Zach, reading the live board: "That's unintelligible. no formatting."
+
+    Three faults under one complaint, and the one that was reported is the least of them.
+    """
+
+    LIVE = """- As of: 16:52 — gauntlet-bc [56e3fd]
+- In flight: nothing, and nothing has changed since 13:40
+- Next: goal #1 — owners for the three orphaned trees, then deploy main
+- Waiting on: Zach — tree owners, redeploy, S2, CLAUDE.md:172, restart
+- Re-arm: no Standing list; nothing handed without a fresh yes. Board watch dropped 16:51.
+- Verified 16:52: main = origin/main 6621341, unmoved. Both services 200. Audit clean.
+"""
+
+    def setUp(self) -> None:
+        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.tracker = TRACKER.replace("## Lanes", "## Resume\n\n" + self.LIVE + "\n## Lanes", 1)
+        self.block = rb.parse_resume(self.tracker)
+        self.html = rb.render(self.tracker, LOG, self.cfg, NOW)
+        self.strip = re.search(r'<(dl|div) class="resume".*?</\1>', self.html, re.S)
+
+    def test_a_clock_read_in_the_label_stays_out_of_the_key(self) -> None:
+        """`- Verified 16:52:` split at the first colon, so the key was `verified 16` and nothing ever matched it."""
+        self.assertIn("verified", self.block)
+        self.assertNotIn("verified 16", self.block)
+        self.assertIn("16:52", self.block["verified"])
+        self.assertIn("origin/main 6621341", self.block["verified"])
+
+    def test_every_parsed_field_reaches_the_board(self) -> None:
+        """An allowlist of four field names silently dropped `Re-arm` the day the ruleset added it."""
+        self.assertIsNotNone(self.strip, "no resume block in the rendered board")
+        for key, value in self.block.items():
+            self.assertIn(_first_words(value), self.strip.group(0), f"{key} is parsed, counted, and never drawn")
+
+    def test_the_block_is_one_row_per_field_and_not_an_inline_run(self) -> None:
+        """Six short lines joined with ` · ` are one 900-character paragraph, worst exactly when the day is busiest."""
+        self.assertIsNotNone(self.strip)
+        self.assertEqual(self.strip.group(1), "dl")
+        self.assertEqual(self.strip.group(0).count("<dt"), len(self.block))
+        self.assertEqual(self.strip.group(0).count("<dd"), len(self.block))
+
+    def test_a_field_past_the_threshold_folds_rather_than_running_off(self) -> None:
+        """The board already owns this idiom: `item_cell()` folds a long lane item the same way."""
+        long_value = "a merge order decision that will not fit on one line " * 5
+        tracker = self.tracker.replace("- In flight: nothing, and nothing has changed since 13:40",
+                                       "- In flight: " + long_value)
+        strip = re.search(r'<dl class="resume".*?</dl>', rb.render(tracker, LOG, self.cfg, NOW), re.S).group(0)
+        fold = re.search(r"<details class=\"long\"><summary>(.*?)</summary>(.*?)</details>", strip, re.S)
+        self.assertIsNotNone(fold, "a field over RESUME_LINE did not fold")
+        self.assertLess(len(fold.group(1)), len(fold.group(2)))
+        self.assertTrue(fold.group(1).rstrip().endswith("…"), "a clipped summary says it was clipped")
+
+    def test_an_over_long_field_is_counted_as_a_warning_not_as_telemetry(self) -> None:
+        """`resume_long=4` printed beside `warnings=0` for three hours and read as a lane count."""
+        root = Path(tempfile.mkdtemp())
+        (root / "CLAUDE.md").write_text(CLAUDE_MD)
+        (root / "daily").mkdir()
+        long_line = "- Next: " + "a merge order decision that will not fit on one line " * 6
+        tracker = self.tracker.replace("- Next: goal #1 — owners for the three orphaned trees, then deploy main", long_line)
+        (root / "daily" / "2026-09-16-tracker.md").write_text(tracker)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rb.main(["--date", "2026-09-16", "--root", str(root)])
+        out = buf.getvalue()
+        self.assertIn("resume_long=1", out)
+        self.assertNotIn("warnings=0", out)
+
+    def test_the_fields_keep_their_reading_order(self) -> None:
+        """As of, then in flight, then next: where we are, then what is moving, then what is next."""
+        strip = self.strip.group(0)
+        order = [strip.index(f"<dt>{k}") for k in ("as of", "in flight", "next", "waiting on")]
+        self.assertEqual(order, sorted(order))
+
+    def test_the_strip_still_escapes_its_text(self) -> None:
+        tracker = self.tracker.replace("tree owners", "<b>tree owners</b>")
+        html = rb.render(tracker, LOG, self.cfg, NOW)
+        self.assertIn("&lt;b&gt;tree owners&lt;/b&gt;", html)
+        self.assertNotIn("<b>tree owners</b>", html)
+
+
+def _first_words(value: str, n: int = 4) -> str:
+    return html_escape(" ".join(value.split()[:n]), quote=True)

@@ -382,26 +382,65 @@ def parse_requirements(text: str) -> list[tuple[str, list[Req]]]:
     return [(name, reqs) for name, reqs in groups if reqs]
 
 
+# `- Verified 16:52: main = ...` splits at the first colon, and that colon is inside the clock read:
+# the key came out `verified 16` and the value `52: main = ...`, so nothing ever matched `verified`
+# and the line carrying the day's checked facts was silently absent from the board. These put it back.
+LABEL_CLOCK = re.compile(r"^(.*\S)\s+(\d{1,2})$")
+VALUE_CLOCK = re.compile(r"^(\d{2}):\s*(.*)$")
+
+
 def parse_resume(text: str) -> dict[str, str]:
     """The `## Resume` block as `key: value` pairs, keys lowercased. No block, no keys, no error."""
     out: dict[str, str] = {}
     for line in _section(text, "## Resume"):
         m = BULLET.match(line)
-        if m:
-            out[_unquote(m.group(2)).lower()] = m.group(3).strip()
+        if not m:
+            continue
+        key, value = _unquote(m.group(2)).lower(), m.group(3).strip()
+        head, tail = LABEL_CLOCK.match(key), VALUE_CLOCK.match(value)
+        if head and tail:
+            key, value = head.group(1), f"{head.group(2)}:{tail.group(1)} · {tail.group(2)}"
+        out[key] = value
     return out
 
 
-RESUME_STRIP = ("as of", "in flight", "next", "waiting on")
+# Reading order for the fields the ruleset names, and nothing more: a field outside this tuple is
+# drawn after them rather than dropped. It used to be an allowlist of four, so the day the ruleset
+# gained `Re-arm` the renderer began discarding it without a word.
+RESUME_STRIP = ("as of", "in flight", "next", "waiting on", "re-arm", "verified")
+RESUME_CLIP = 110
+
+
+def _clip(value: str, cap: int) -> str:
+    """Cut on a word boundary and say so. A clipped line that does not admit it is just a wrong line."""
+    if len(value) <= cap:
+        return value
+    head = value[:cap].rsplit(" ", 1)[0].rstrip(" ,;·—–-")
+    return f"{head or value[:cap]} …"
+
+
+def _resume_value(value: str) -> str:
+    """A long field folds, the way `item_cell()` folds a long lane item. Same board, same idiom."""
+    if len(value) <= RESUME_LINE:
+        return _esc(value)
+    return f'<details class="long"><summary>{_esc(_clip(value, RESUME_CLIP))}</summary>{_esc(value)}</details>'
 
 
 def resume_strip(block: dict[str, str]) -> str:
-    """One line under the header: where the last move left off. Absent when the tracker has no block."""
-    parts = [f"<b>{_esc(k)}</b> {_esc(block[k])}" for k in RESUME_STRIP if block.get(k)]
-    if not parts:
+    """Where the last move left off, one row per field. Absent when the tracker has no block.
+
+    It was one inline run joined with ` · `, which is fine at two fields and unreadable at six — and
+    six is what a busy day writes. The fields are already a label and a value; they want a list.
+    """
+    order = [k for k in RESUME_STRIP if block.get(k)] + [k for k in block if k not in RESUME_STRIP and block[k]]
+    if not order:
         return ""
-    verified = f' · <span class="muted">verified {_esc(block["verified"])}</span>' if block.get("verified") else ""
-    return f'<div class="resume">{" · ".join(parts)}{verified}</div>\n'
+    rows = []
+    for k in order:
+        long = ' class="long-field"' if len(block[k]) > RESUME_LINE else ""
+        rows.append(f"<dt>{_esc(k)}</dt><dd{long}>{_resume_value(block[k])}</dd>")
+    rows = "".join(rows)
+    return f'<dl class="resume">{rows}</dl>\n'
 
 
 def _cells(line: str) -> list[str]:
@@ -973,7 +1012,7 @@ h1{{font-family:"Cormorant SC","Cormorant Garamond",Georgia,serif;font-size:26px
 h2{{font-family:"Cormorant SC","Cormorant Garamond",Georgia,serif;font-size:19px;font-weight:600;letter-spacing:.05em;margin:28px 0 8px;border-bottom:1px solid var(--brass);padding-bottom:4px}}
 .header{{display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:4px}} .header .logo{{width:260px;max-width:100%;border:1px solid var(--brass);border-radius:4px;display:block}}
 .head-text{{flex:1 1 260px;min-width:0}}
-.meta{{color:var(--muted);font-size:13px}} .resume{{margin:6px 0 0;font-size:13px;color:var(--fg);border-left:3px solid var(--brass);padding:2px 0 2px 8px}} .resume b{{color:var(--muted);font-weight:600;font-size:11px;letter-spacing:.06em;text-transform:uppercase}} .clock{{font-family:ui-monospace,monospace;font-size:14px;font-variant-numeric:tabular-nums;margin:6px 0}}
+.meta{{color:var(--muted);font-size:13px}} .clock{{font-family:ui-monospace,monospace;font-size:14px;font-variant-numeric:tabular-nums;margin:6px 0}}
 table{{border-collapse:collapse;width:100%;max-width:100%}} td,th{{text-align:left;padding:4px 8px;border-bottom:1px solid var(--line);vertical-align:top}} th{{color:var(--muted);font-weight:600;font-size:12px;letter-spacing:.04em;text-transform:uppercase}}
 tr.group th{{background:color-mix(in srgb,var(--brass) 18%,transparent);color:var(--fg);font-family:"Cormorant SC","Cormorant Garamond",Georgia,serif;font-weight:600;font-size:14px;letter-spacing:.12em;text-transform:uppercase;border-top:2px solid var(--brass);padding:6px 8px}}
 .muted{{color:var(--muted)}} .warn{{color:var(--dl);font-size:12px}}
@@ -1024,6 +1063,11 @@ details summary{{cursor:pointer}} details[open] summary{{margin-bottom:4px}}
 .chip.unknown{{background:repeating-linear-gradient(45deg,var(--dl) 0 1.5px,transparent 1.5px 5px),repeating-linear-gradient(-45deg,var(--dl) 0 1.5px,transparent 1.5px 5px),var(--surface)}}
 .chip.unreported{{background:repeating-radial-gradient(circle at 3px 3px,var(--muted) 0 1px,transparent 1px 7px),var(--surface)}}
 .chip.coordinator{{background:repeating-linear-gradient(90deg,var(--brass) 0 1px,transparent 1px 4px),var(--surface)}}
+.resume{{margin:6px 0 0;font-size:13px;color:var(--fg);border-left:3px solid var(--brass);padding:2px 0 2px 8px;display:grid;grid-template-columns:auto 1fr;gap:2px 10px}}
+.resume dt{{color:var(--muted);font-weight:600;font-size:10px;letter-spacing:.06em;text-transform:uppercase;padding-top:3px;white-space:nowrap}}
+.resume dd{{margin:0;min-width:0;overflow-wrap:anywhere}} .resume dd.long-field{{border-bottom:1px dotted var(--brass)}}
+.resume details.long>summary{{color:var(--fg)}} .resume details.long[open]>summary{{color:var(--muted)}}
+@media (max-width:520px){{.resume{{grid-template-columns:1fr;gap:0}} .resume dt{{padding-top:4px}}}}
 @media (max-width:520px){{.strip{{--name-w:36%}}}}
 </style>
 <div class="board" data-rendered-at="{_iso(now)}" data-tz="{_esc(cfg.tz)}" data-deadline="{_iso(nearest.at)}" data-deadline-name="{_esc(nearest.name)}">
@@ -1111,13 +1155,15 @@ def main(argv: list[str] | None = None) -> Path:
     parsed = parse_tracker(tracker_text)
     bars = [day_bar(lane, cfg, now) for lane in parsed.lanes]
     no_est = sum(1 for b in bars if b.label == NO_ESTIMATE)
-    warnings = sum(1 for lane in parsed.lanes if lane.warning)
     long_items = sum(1 for lane in parsed.lanes if len(lane.item) > LONG_ITEM)
+    block = parse_resume(tracker_text)
+    resume_long = sum(1 for v in block.values() if len(v) > RESUME_LINE)
+    # A count printed beside a warning count but not counted as one reads as telemetry: `resume_long=4`
+    # sat next to `warnings=0` for three hours while the block degraded, and was read past every time.
+    warnings = sum(1 for lane in parsed.lanes if lane.warning) + sum(1 for s in parsed.sessions if s.warning) + resume_long
     print(out)
     req_counts = ",".join(f"{name}:{sum(r.done for _, rs in parse_requirements(t) for r in rs)}/{sum(len(rs) for _, rs in parse_requirements(t))}" for name, t in req_texts.items() if t is not None)
     missing = sum(1 for t in req_texts.values() if t is None)
-    block = parse_resume(tracker_text)
-    resume_long = sum(1 for v in block.values() if len(v) > RESUME_LINE)
     resume_note = f"{len(block)} fields" if block else "none"
     print(f"lanes={len(parsed.lanes)} no_estimate={no_est} warnings={warnings} long_items={long_items} resume={resume_note} resume_long={resume_long} requirements={req_counts or 'none'} requirements_missing={missing} tracker_sha256={hashlib.sha256(tracker_text.encode()).hexdigest()[:12]}")
     return out
