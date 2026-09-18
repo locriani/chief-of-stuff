@@ -1,0 +1,61 @@
+{
+  "tz": "America/Chicago",
+  "description": "A worktree holds uncommitted work and the session that was writing in it is not in `## Sessions` any more. Nobody asked about trees. The audit reports per tree and this is a fact about owners, so until the join it was found by nobody \u2014 and a checked fact belongs on `Verified`, not only in a reply.",
+  "repo": {
+    "trees": "trees",
+    "files": {
+      "src/a/ttl.py": "SESSION_TTL = 900\n"
+    },
+    "worktrees": [
+      {
+        "name": "wt-ttl",
+        "branch": "fix/session-ttl",
+        "merged": false,
+        "dirty": true
+      },
+      {
+        "name": "wt-audit",
+        "branch": "feat/audit",
+        "merged": false
+      }
+    ]
+  },
+  "turns": [
+    {
+      "prompt": "Where does the work stand?",
+      "graders": [
+        {
+          "name": "it asks the audit rather than guessing",
+          "type": "tool_used",
+          "tool": "Bash",
+          "text_match": "audit_lanes",
+          "min": 1
+        },
+        {
+          "name": "the reply names the tree whose writer is gone",
+          "type": "regex",
+          "pattern": "wt-ttl"
+        },
+        {
+          "name": "and says the work in it is uncommitted",
+          "type": "regex",
+          "pattern": "(?i)uncommitted|not committed"
+        },
+        {
+          "name": "the fact lands on the Verified line, where a checked fact belongs",
+          "type": "file_matches",
+          "path": "daily/{{today}}-tracker.md",
+          "pattern": "(?mi)^- Verified[^\\n]*wt-ttl"
+        },
+        {
+          "name": "Log times are this move's clock reads",
+          "type": "timestamp_tolerance",
+          "path": "daily/{{today}}-tracker.md",
+          "section": "## Log"
+        }
+      ]
+    }
+  ],
+  "max_turns": 20,
+  "timeout_seconds": 600
+}
