@@ -276,3 +276,22 @@ The rule itself says why: *"a name you guessed at is worse than the assignment's
 Removed. The instruction stays in `## Dispatch`, and it is verified by hand: the tab-check spawn was launched with `--coordinator chief-of-stuff-improvements` and the session registered to that name unprompted.
 
 This is the seventh bad grader across C4 and C5 and the tally now has two shapes rather than one. Five were absence checks on replies, which fail correct answers because a coordinator that rules something out says so. Two — this and its predecessor — demanded that the agent produce a value the case's own configuration gave it no way to obtain. Both shapes share a tell: the grader passes when the agent behaves worse.
+
+## 60 — version stamping makes instruction/script skew impossible
+
+**From:** `gauntlet-bc`, 2026-09-18 13:33, raising it as a risk immediately after 0.8.0 was installed.
+**Status:** Closed as a non-risk, 2026-09-18. Recorded because the reasoning was right and one fact was missing.
+
+Its concern: 0.8.0's scripts are on disk while its own instructions are 0.6.x, so a coordinator following old rules would write rows the new script rejects, and the failure would surface at launch — the worst moment for it.
+
+It does not happen, and the reason is worth knowing. The plugin cache is version-stamped, one directory per version, all of them side by side:
+
+    ~/.claude/plugins/cache/chief-of-stuff/chief-of-stuff/0.1.0 … 0.6.2  0.7.0  0.8.0
+
+`${CLAUDE_PLUGIN_ROOT}` is bound when a session starts and keeps resolving to that session's own version. Installing a new version creates a directory beside it and touches nothing a running session can reach. The decisive detail here: `0.6.2/scripts/` holds `audit_lanes.py`, `probe_health.py` and `render_board.py` and nothing else — `spawn_session.py` and `make_worktree.py` arrived in 0.7.0 — so the session raising the concern could not reach the check it feared even deliberately.
+
+So a session always calls the scripts belonging to the rules it loaded. There is no mixed state to design against, and a restart that lags an install is safe rather than merely tolerable.
+
+**The note this corrects.** "Script fixes go live without a restart" has been carried in this project as a plain fact, and it is only true *within* a version, by editing that version's own cache directory in place. Across a version bump nothing reaches a running session. Both halves matter: the first is why a bad script can be fixed mid-session, the second is why a shipped fix cannot be assumed to have arrived anywhere.
+
+**What does still bite, unchanged.** Today's File ownership rows are keyed on the context in the 0.6.x shape — `nobody (session TTL fix, orphaned)` — while `_owns()` keys on the lane. After a restart, dispatching those lanes refuses until the rows are rewritten, which is the check working. Its judgement not to pre-restructure was right: those trees may go to existing sessions, which is an assignment and never touches the script, and the rows get rewritten as part of the proposal anyway.
