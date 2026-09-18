@@ -304,5 +304,45 @@ class DispatchFileTest(unittest.TestCase):
         self.assertIn(ss.PROMPT_FILE, out.stdout)
 
 
+class LaunchEnvironmentTest(unittest.TestCase):
+    """A spawned session is a new session, not a child of the coordinator's.
+
+    The coordinator is itself a Claude Code session, so its environment carries the markers that say
+    which session this is, which socket it speaks on, and that it is somebody's child. Inheriting
+    those gave a spawned session the coordinator's messaging credentials, bound it to the
+    coordinator's project rather than its own worktree, and turned its transcript off — one cause,
+    three symptoms, found by watching a real spawn.
+    """
+
+    def test_no_claude_variable_reaches_the_new_session(self):
+        parent = dict(os.environ, CLAUDE_CODE_CHILD_SESSION="1", CLAUDE_CODE_SESSION_ID="abc",
+                      CLAUDE_CODE_MESSAGING_SOCKET="/tmp/cc-socks/1.sock",
+                      CLAUDE_CODE_MESSAGING_TOKEN="secret", CLAUDECODE="1", CLAUDE_PID="99")
+        env = ss.launch_env(parent)
+        leaked = [k for k in env if k.upper().startswith("CLAUDE")]
+        self.assertEqual(leaked, [], f"the new session would speak as the coordinator: {leaked}")
+
+    def test_the_messaging_token_is_never_passed_on(self):
+        env = ss.launch_env(dict(os.environ, CLAUDE_CODE_MESSAGING_TOKEN="secret"))
+        self.assertNotIn("secret", "".join(env.values()))
+
+    def test_what_a_terminal_actually_needs_survives(self):
+        parent = dict(os.environ, PATH="/usr/bin:/bin", HOME="/Users/robin", TERM="xterm-256color")
+        env = ss.launch_env(parent)
+        self.assertEqual(env["PATH"], "/usr/bin:/bin")
+        self.assertEqual(env["HOME"], "/Users/robin")
+        self.assertEqual(env["TERM"], "xterm-256color")
+
+    def test_the_launcher_override_does_not_ride_along(self):
+        """It is read here; a session that inherited it could relaunch itself."""
+        env = ss.launch_env({ss.ENV: '["ghostty"]', "PATH": "/usr/bin"})
+        self.assertNotIn(ss.ENV, env)
+
+    def test_the_new_session_keeps_its_own_transcript(self):
+        """Dropping the child marker is the fix; the lane audit covers a branch, not the reasoning."""
+        env = ss.launch_env(dict(os.environ, CLAUDE_CODE_CHILD_SESSION="1"))
+        self.assertNotIn("CLAUDE_CODE_CHILD_SESSION", env)
+
+
 if __name__ == "__main__":
     unittest.main()

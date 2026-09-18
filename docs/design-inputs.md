@@ -176,3 +176,20 @@ That is the right answer to a gap, not a gap that was closed. `## Dispatch` comp
 The fix is a design decision and not a sentence: the prompt could be an argument to `claude`, a file in the worktree the agent type is told to read, or a first message once the session registers — and the first two hand a freshly spawned context a block of text assembled from the tracker and from peer replies, which is the carrier `## Brief` exists to refuse. Whatever it becomes has to answer that.
 
 Noted because the arm was green on every grader when it was found. The case asked whether a yes was required and whether one session started; it had no opinion on whether that session knew what to do.
+
+## 54 — a spawned session inherited the coordinator's identity
+
+**From:** Zach, watching the first real spawn, 2026-09-18 12:0x. Not from any eval, and no eval could have produced it.
+**Status:** Adopted 2026-09-18 (0.8.0, bullet 1).
+
+`spawn_session.py` called `subprocess.Popen(command, cwd=..., start_new_session=True)` with no `env=`, so the new session inherited the coordinator's entire environment — and the coordinator is itself a Claude Code session. Nine `CLAUDE_*` variables went with it. Three symptoms, one cause:
+
+- **Its transcript was off.** Zach saw it first: "Transcript saving is off — inherited `CLAUDE_CODE_CHILD_SESSION` marker". A dispatched session that leaves no transcript is one whose account of its work dies when the tab closes — and 0.7.0 lets the coordinator mark a lane `done` on that session's word and lets Zach close the terminal on a decommission report. The lane audit covers the branch, never the reasoning.
+- **It came up in the wrong directory.** `lsof` put its cwd at the workspace root rather than its worktree, even though `--working-directory` was passed and `Popen` was given `cwd=`. A controlled test ruled the launcher out: with `--working-directory` a process lands in the tree, without it in `$HOME`. The inherited `CLAUDE_CODE_SESSION_ID` bound the new session to the coordinator's project instead.
+- **It spoke with the coordinator's messaging credentials.** `CLAUDE_CODE_MESSAGING_SOCKET` and `..._TOKEN` came along, and the session's report reached this session on that socket.
+
+The fix is the discipline `audit_lanes.git()` already applies to a read-only git call, applied to the one call that starts a session: an explicit whitelist, never the parent's environment. It matters more here, because what leaked was an identity rather than a config.
+
+**What the session did with the failure is the second half of the finding.** Landing in the workspace root with no assignment, its most available source of work was the real tracker — thirty-odd `unassigned` lanes. It did not take one. It reported that the file it was told to read did not exist, named the missing hop in the plugin, and stopped. `--permission-mode plan` meant it could not have written anything either way, but it never tried. The failure mode this design fears most was reached and not completed.
+
+**Why the eval could not see it.** The harness replaces the launcher with a recorder (`CHIEF_OF_STUFF_LAUNCHER`), so no case starts a real `claude`, and the recorder inherits the runner's environment rather than a coordinator's. Everything here lives in the gap between the launcher the eval substitutes and the one that ships. That gap is what the plan's hand-check pause exists for, and this is the first time it has paid.

@@ -54,6 +54,13 @@ DEFAULT_LAUNCHER = [
     "plan",
     BOOTSTRAP,
 ]
+# What a terminal and an editor actually need. Everything else is dropped, and the CLAUDE_* markers
+# most of all: the coordinator is itself a Claude Code session, so passing its environment on gave a
+# spawned session the coordinator's messaging socket and token, bound it to the coordinator's
+# project instead of its own worktree, and turned its transcript off. A dispatched session that
+# leaves no transcript is one whose account of its work dies when the tab closes.
+KEEP = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "TERM_PROGRAM", "TMPDIR",
+        "LANG", "LC_ALL", "LC_CTYPE", "COLORTERM", "TZ", "SSH_AUTH_SOCK", "XDG_CONFIG_HOME")
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "fish", "env", "eval", "exec", "xargs"}
 METACHARACTERS = re.compile(r"[;&|`$<>\n]")
 PLACEHOLDER = re.compile(r"\{(\w+)\}")
@@ -122,6 +129,17 @@ def argv(template: list[str], *, agent_type: str | None, cwd: str, title: str) -
     return out
 
 
+def launch_env(parent: dict[str, str] | None = None) -> dict[str, str]:
+    """The environment the new session starts in: a whitelist, never the coordinator's own.
+
+    The same discipline `audit_lanes.git()` applies to a read-only git call, applied to the one call
+    that starts a session — and it matters more here, because what leaks is an identity rather than
+    a config.
+    """
+    source = os.environ if parent is None else parent
+    return {k: v for k, v in source.items() if k in KEEP and not k.upper().startswith("CLAUDE")}
+
+
 def write_dispatch(cwd: Path, body: str) -> Path:
     """The assignment as a file, created not overwritten, beside a gitignore that hides them both."""
     path = cwd / PROMPT_FILE
@@ -170,7 +188,7 @@ def main(argv_in: list[str] | None = None) -> int:
         print(f"refused: {exc}", file=sys.stderr)
         return 1
     try:
-        proc = subprocess.Popen(command, cwd=args.cwd, start_new_session=True)
+        proc = subprocess.Popen(command, cwd=args.cwd, env=launch_env(), start_new_session=True)
     except (OSError, ValueError) as exc:
         print(f"refused: could not start {command[0]}: {exc}", file=sys.stderr)
         return 1
