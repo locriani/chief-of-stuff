@@ -295,3 +295,20 @@ So a session always calls the scripts belonging to the rules it loaded. There is
 **The note this corrects.** "Script fixes go live without a restart" has been carried in this project as a plain fact, and it is only true *within* a version, by editing that version's own cache directory in place. Across a version bump nothing reaches a running session. Both halves matter: the first is why a bad script can be fixed mid-session, the second is why a shipped fix cannot be assumed to have arrived anywhere.
 
 **What does still bite, unchanged.** Today's File ownership rows are keyed on the context in the 0.6.x shape — `nobody (session TTL fix, orphaned)` — while `_owns()` keys on the lane. After a restart, dispatching those lanes refuses until the rows are rewritten, which is the check working. Its judgement not to pre-restructure was right: those trees may go to existing sessions, which is an assignment and never touches the script, and the rows get rewritten as part of the proposal anyway.
+
+## 61 — the guarantee did not cover the calls that mattered
+
+**From:** `gauntlet-bc`, 2026-09-18 13:35, correcting finding 60 twelve minutes after it was written.
+**Status:** Adopted 2026-09-18 (0.8.1).
+
+Finding 60 said version stamping makes instruction/script skew structurally impossible: `${CLAUDE_PLUGIN_ROOT}` binds at session start, so a session always calls the scripts of the version whose rules it loaded. The mechanism is right. The conclusion was not, because **that coordinator never calls through `${CLAUDE_PLUGIN_ROOT}`.** Its instructions name absolute paths into the canonical development tree — `/Users/locriani/Developer/chief-of-stuff/scripts/<name>.py` — for every script it runs.
+
+So the skew that stamping makes impossible for plugin-root calls is reachable by absolute path, and 0.8.0's `spawn_session.py` and `dispatch_prompt.py` were sitting in that tree, timestamped 13:29, while the session's rules were 0.6.x.
+
+Nothing had diverged, and that was checked rather than assumed: `render_board.py`, `audit_lanes.py` and `probe_health.py` are byte-identical between `0.6.2/scripts/` and the canonical tree, same mtimes. Every board rendered today came from the version its rules describe. The exposure is forward — an edit in the canonical tree reaches a running coordinator with no restart and no sign, which is the precise opposite of what stamping is for.
+
+**Where it came from.** The workspace `CLAUDE.md` names the canonical tree at line 150 and then, at line 172, describes the board as "rendered by `scripts/render_board.py` in the plugin" — a relative path with no root, twenty-two lines below an absolute tree. Resolving one against the other is the obvious reading, and it routes around the cache entirely.
+
+**The fix, split by who owns what.** `## Role` now says every script is `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/<name>.py` and never a path to a copy elsewhere, and says why: a workspace may name a canonical tree, but that is where the code is written, not where you read it from — a development tree is whatever it was last edited to be, minutes ago, by someone shipping the next version. That makes the ruleset self-defending whatever a workspace block says. The `CLAUDE.md` line is Zach's and is flagged to him, not edited.
+
+**Worth keeping for its own sake.** Two sessions reasoned carefully to opposite conclusions and both were right about a different path — one about the mechanism, one about the call site. Neither would have found it alone: the first claim was wrong about how the cache works, the correction was wrong about which code the cache governs, and only the collision produced the fact. The pattern to keep is that "verified" meant a different thing to each of us until someone named the path.
