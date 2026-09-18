@@ -1,0 +1,90 @@
+{
+  "tz": "America/Chicago",
+  "peers": "sessions.json",
+  "description": "A status poll asks what a session's subagents are doing, and the answers land in a closed-set `state` column and a `children` column. `ready for decommissioning` is a `doing` value and never a state, which is the thing a table with a state column invites you to get wrong.",
+  "turns": [
+    {
+      "prompt": "Poll the three sessions for status.",
+      "graders": [
+        {
+          "name": "it polls every session",
+          "type": "peer_calls",
+          "tool": "send",
+          "min": 3,
+          "max": 3
+        },
+        {
+          "name": "the poll asks what their subagents are doing",
+          "type": "peer_calls",
+          "tool": "send",
+          "text_match": "(?i)subagent",
+          "min": 3
+        },
+        {
+          "name": "the poll asks for a state from the closed set",
+          "type": "peer_calls",
+          "tool": "send",
+          "text_match": "(?i)planning.*working.*waiting.*idle",
+          "min": 3
+        },
+        {
+          "name": "nothing is written before the answers arrive",
+          "type": "file_matches",
+          "path": "daily/{{today}}-tracker.md",
+          "pattern": "(?m)^\\| a1b2c3 \\| wt-audit \\| *(working|planning|waiting|idle)",
+          "match": "absent"
+        }
+      ]
+    },
+    {
+      "prompt": "<cross-session-message from=\"uds:/tmp/cc-socks/111.sock\" from-name=\"wt-audit\" from-mode=\"prompting\">\nAuditing the upload handler, working. Waiting on nobody. Free at 15:00. Not blocked. Robin said TDD and no pushes. Two subagents running: path-sweep is checking every route, fixture-builder is idle waiting on me.\n</cross-session-message>\n\n<cross-session-message from=\"uds:/tmp/cc-socks/222.sock\" from-name=\"7719-fixer\" from-mode=\"prompting\">\nRelease notes drafted, nothing in flight. Waiting on Robin for the wording of the security section. Free now. Not blocked. Standing constraint: one stage then pause. No subagents.\n</cross-session-message>\n\n<cross-session-message from=\"uds:/tmp/cc-socks/333.sock\" from-name=\"4821-notes\" from-mode=\"prompting\">\nThe notes index migration is finished and I am ready for decommissioning. Waiting on nobody. Free now. Not blocked. No constraints. No subagents.\n</cross-session-message>",
+      "graders": [
+        {
+          "name": "the working session's state is recorded",
+          "type": "file_matches",
+          "path": "daily/{{today}}-tracker.md",
+          "pattern": "(?m)^\\| a1b2c3 \\|[^\\n]*\\| *working *\\|"
+        },
+        {
+          "name": "its two subagents are recorded",
+          "type": "file_matches",
+          "path": "daily/{{today}}-tracker.md",
+          "pattern": "(?m)^\\| a1b2c3 \\|[^\\n]*path-sweep[^\\n]*fixture-builder[^\\n]*\\|"
+        },
+        {
+          "name": "the waiting session names who it waits on",
+          "type": "file_matches",
+          "path": "daily/{{today}}-tracker.md",
+          "pattern": "(?m)^\\| d4e5f6 \\|[^\\n]*\\| *waiting *\\|[^\\n]*Robin"
+        },
+        {
+          "name": "a session with no subagents says so rather than leaving it blank",
+          "type": "file_matches",
+          "path": "daily/{{today}}-tracker.md",
+          "pattern": "(?mi)^\\| d4e5f6 \\|[^\\n]*\\| *none *\\|"
+        },
+        {
+          "name": "ready for decommissioning is not written as a state",
+          "type": "file_matches",
+          "path": "daily/{{today}}-tracker.md",
+          "pattern": "(?mi)^\\| 9f2a41 \\| [^|]*\\| *ready for decommissioning",
+          "match": "absent"
+        },
+        {
+          "name": "it is recorded in doing, where it belongs",
+          "type": "file_matches",
+          "path": "daily/{{today}}-tracker.md",
+          "pattern": "(?mi)^\\| 9f2a41 \\|[^\\n]*ready for decommissioning"
+        },
+        {
+          "name": "Log times are this move's clock reads",
+          "type": "timestamp_tolerance",
+          "path": "daily/{{today}}-tracker.md",
+          "section": "## Log"
+        }
+      ]
+    }
+  ],
+  "max_turns": 18,
+  "timeout_seconds": 600
+}

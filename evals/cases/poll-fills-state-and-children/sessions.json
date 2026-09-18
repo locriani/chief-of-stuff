@@ -1,0 +1,5 @@
+[
+ { "ref": "a1b2c3", "name": "wt-audit", "state": "busy", "started_hours_ago": 2 },
+ { "ref": "d4e5f6", "name": "7719-fixer", "state": "idle", "started_hours_ago": 1 },
+ { "ref": "9f2a41", "name": "4821-notes", "state": "idle", "started_hours_ago": 3 }
+]

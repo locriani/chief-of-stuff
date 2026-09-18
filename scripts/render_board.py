@@ -113,10 +113,107 @@ class Lane:
         return parts[1] if len(parts) > 1 and HHMM.match(parts[1]) else None
 
 
+# What a session reports about itself. `starting`, `ready` and `gone` are the coordinator's to work
+# out and never a session's to claim: a session cannot report that it is gone, and `ready for
+# decommissioning` is a `doing` value that `:189` says never becomes a state of its own.
+SESSION_STATES = ("planning", "working", "waiting", "idle")
+READY = re.compile(r"(?i)\bready for decommissioning\b")
+# `Zach — A2, A3, B`: the target, then why. An em dash, an en dash or a hyphen, because three
+# different sessions have written this cell and they did not agree.
+WAITS = re.compile(r"\s+[—–-]\s+|,\s+")
+# `nothing; the stack-default fix landed` is what a live row says when a session waits on no one.
+# Drawn literally it is an edge to a node called "nothing".
+NOBODY = re.compile(r"(?i)^(?:(?:nothing|none|nobody|n/?a)\b|[-—–]\s*$)")
+# The name cell accretes provenance: `update-claude-md-docs (third name, same ref)`.
+PARENTHETICAL = re.compile(r"\s*\([^()]*\)\s*$")
+
+
+@dataclass(frozen=True)
+class Session:
+    ref: str
+    name: str
+    state: str
+    doing: str
+    waiting_on: str
+    free_at: str
+    constraints: str
+    children: str
+    last_reply: str
+    warning: str = ""
+
+    @property
+    def kind(self) -> str:
+        """What to draw. Derived beats written, because the coordinator knows things the session cannot."""
+        if not self.ref.strip():
+            return "starting"
+        if READY.search(self.doing):
+            return "ready"
+        state = self.state.strip().lower()
+        if state in SESSION_STATES:
+            return state
+        # Nothing reported and a word nobody knows are two different facts, and every row of the live
+        # tracker was the first one — seven-column rows written before the column existed.
+        return "unknown" if state else "unreported"
+
+    @property
+    def label(self) -> str:
+        """The name without the history the cell accretes. The ref is the key; this is for reading."""
+        return PARENTHETICAL.sub("", self.name.strip()).strip() or self.name.strip()
+
+    @property
+    def waits_on(self) -> str:
+        """Who, as an edge. The graph draws the arrow, so the state stays four words wide."""
+        cell = self.waiting_on.strip()
+        if not cell or NOBODY.match(cell):
+            return ""
+        return WAITS.split(cell, 1)[0].strip()
+
+    @property
+    def waits_for(self) -> str:
+        cell = self.waiting_on.strip()
+        if not cell or NOBODY.match(cell):
+            return ""
+        parts = WAITS.split(cell, 1)
+        return parts[1].strip() if len(parts) > 1 else ""
+
+    @property
+    def child_names(self) -> tuple[str, ...]:
+        """A subagent is not a peer: it has no ref, answers no poll, and cannot be sent to.
+
+        So children are a cell on their owner's row rather than rows of their own, and what is
+        recoverable from `2: rules-audit (working), fixture-sweep (idle)` is names and count.
+        """
+        body = self.children.strip()
+        if not body or body.lower() in ("none", "-", "—"):
+            return ()
+        body = body.split(":", 1)[1] if re.match(r"^\d+\s*:", body) else body
+        names = [re.sub(r"\s*\(.*?\)\s*$", "", part).strip() for part in body.split(",")]
+        return tuple(n for n in names if n)
+
+
+# 7 columns is every tracker written before the state and children columns existed; 9 is after.
+# Positional parsing cannot tell `state` from `doing` without knowing which, so the count decides.
+SESSION_OLD = ("ref", "name", "doing", "waiting_on", "free_at", "constraints", "last_reply")
+SESSION_NEW = ("ref", "name", "state", "doing", "waiting_on", "free_at", "constraints", "children", "last_reply")
+
+
+def _session(cells: list[str]) -> Session:
+    names = SESSION_NEW if len(cells) >= len(SESSION_NEW) else SESSION_OLD
+    warning = "" if len(cells) == len(names) else f"{len(cells)} cells, expected {len(names)}"
+    fields = dict(zip(names, (cells + [""] * len(names))[: len(names)]))
+    session = Session(**{k: fields.get(k, "") for k in SESSION_NEW}, warning=warning)
+    state = session.state.strip().lower()
+    if state and state not in SESSION_STATES:
+        warning = (warning + "; " if warning else "") + f"state {session.state.strip()!r} is not one of {', '.join(SESSION_STATES)}"
+        session = Session(**{k: getattr(session, k) for k in SESSION_NEW}, warning=warning)
+    return session
+
+
 @dataclass(frozen=True)
 class Tracker:
     board_url: str | None
     lanes: tuple[Lane, ...]
+    sessions: tuple[Session, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -337,7 +434,13 @@ def parse_tracker(text: str) -> Tracker:
         warning = "" if len(cells) == 6 else f"{len(cells)} cells, expected 6"
         cells = (cells + [""] * 6)[:6]
         lanes.append(Lane(*cells, warning=warning))
-    return Tracker(board_url=url, lanes=tuple(lanes))
+    sessions: list[Session] = []
+    for row in [line for line in _section(text, "## Sessions") if line.strip().startswith("|")][1:]:
+        cells = _cells(row)
+        if _is_separator(cells) or not any(c.strip() for c in cells):
+            continue
+        sessions.append(_session(cells))
+    return Tracker(board_url=url, lanes=tuple(lanes), sessions=tuple(sessions))
 
 
 def _hhmm(value: str, day: date, zone: ZoneInfo) -> datetime | None:

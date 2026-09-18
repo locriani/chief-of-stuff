@@ -70,6 +70,16 @@ Coordinator: coordinator. Board: board-7.
 |---|---|---|
 | 11:15 | Draft release notes | "done" |
 
+## Sessions
+
+| ref | name | state | doing | waiting on | free at | constraints | children | last reply |
+|---|---|---|---|---|---|---|---|---|
+| a1b2c3 | worker-9a | working | refactor of the loader | | 15:00 | TDD | 2: rules-audit (working), fixture-sweep (idle) | 11:40 |
+| d4e5f6 | 7719-fixer | waiting | nothing; S1 landed | Robin — review of S1 | now | | none | 04:45 |
+|  | wt-docs | | spawned, not registered | | | | | 11:58 |
+| 9f2a41 | 4821-audit | idle | ready for decommissioning 11:20 | | now | | none | 11:20 |
+| b7c8d9 | odd-one | dancing | who knows | | | | | 11:00 |
+
 ## File ownership
 
 ## Log
@@ -142,6 +152,91 @@ class TrackerParseTest(unittest.TestCase):
         self.assertEqual([e.title for e in events], ["Standup (work)", "Class: Data modeling (program)", "Table meeting"])
         self.assertEqual(events[0].start, datetime(2026, 9, 16, 9, 0, tzinfo=CT))
         self.assertEqual(events[1].end, datetime(2026, 9, 16, 14, 0, tzinfo=CT))
+
+
+class SessionParseTest(unittest.TestCase):
+    """`## Sessions` reaches the board for the first time. Nothing read it before this."""
+
+    def setUp(self) -> None:
+        self.s = {x.name: x for x in rb.parse_tracker(TRACKER).sessions}
+
+    def test_it_reads_a_row_into_its_columns(self) -> None:
+        w = self.s["worker-9a"]
+        self.assertEqual((w.ref, w.state, w.free_at, w.last_reply), ("a1b2c3", "working", "15:00", "11:40"))
+        self.assertEqual(w.doing, "refactor of the loader")
+
+    def test_a_session_with_no_ref_is_starting_rather_than_stateless(self) -> None:
+        """`:188` — a row that has never carried a ref is not gone, it is not there yet."""
+        self.assertEqual(self.s["wt-docs"].kind, "starting")
+
+    def test_ready_is_derived_from_doing_and_never_written(self) -> None:
+        """`:189` — `ready for decommissioning` is a `doing` value and never a state of its own."""
+        self.assertEqual(self.s["4821-audit"].kind, "ready")
+
+    def test_the_four_written_states_pass_through(self) -> None:
+        self.assertEqual(self.s["worker-9a"].kind, "working")
+        self.assertEqual(self.s["7719-fixer"].kind, "waiting")
+
+    def test_a_word_outside_the_closed_set_is_kept_and_flagged(self) -> None:
+        """Same contract as a malformed Lanes row: keep it, say so, never silently normalise."""
+        odd = self.s["odd-one"]
+        self.assertEqual(odd.state, "dancing")
+        self.assertIn("dancing", odd.warning)
+
+    def test_who_it_waits_on_is_an_edge_not_part_of_the_state(self) -> None:
+        """`waiting on` already carries `Zach — A2, A3, B`: the target, then the reason."""
+        f = self.s["7719-fixer"]
+        self.assertEqual(f.waits_on, "Robin")
+        self.assertEqual(f.waits_for, "review of S1")
+
+    def test_a_session_waiting_on_nobody_named_has_no_edge(self) -> None:
+        self.assertEqual(self.s["worker-9a"].waits_on, "")
+
+    def test_children_are_counted_and_named(self) -> None:
+        w = self.s["worker-9a"]
+        self.assertEqual(w.child_names, ("rules-audit", "fixture-sweep"))
+        self.assertEqual(self.s["7719-fixer"].child_names, ())
+
+    def test_nothing_reported_is_not_the_same_as_a_word_nobody_knows(self) -> None:
+        """Found against the live tracker: four seven-column rows all read `unknown`, which is two facts."""
+        self.assertEqual(self.s["wt-docs"].kind, "starting")
+        self.assertEqual(self.s["odd-one"].kind, "unknown")
+        blank = rb.parse_tracker(
+            "# T\n\n## Sessions\n\n| ref | name | state | doing | waiting on | free at | constraints | children | last reply |\n"
+            "|---|---|---|---|---|---|---|---|---|\n| a1b2c3 | quiet |  | something |  |  |  |  | 09:00 |\n").sessions[0]
+        self.assertEqual(blank.kind, "unreported")
+
+    def test_waiting_on_nobody_is_not_an_edge_to_a_node_called_nothing(self) -> None:
+        """The live tracker says `nothing; the stack-default fix landed`. That is not a session."""
+        for cell in ("nothing", "none", "-", "—", "nobody", "Nothing; the fix landed"):
+            s = rb.Session(ref="a", name="n", state="idle", doing="", waiting_on=cell,
+                           free_at="", constraints="", children="", last_reply="")
+            self.assertEqual(s.waits_on, "", cell)
+
+    def test_a_comma_separates_who_from_why_when_no_dash_does(self) -> None:
+        """Live: `Zach, in that session` — three sessions wrote this cell and did not agree on a separator."""
+        s = rb.Session(ref="a", name="n", state="waiting", doing="", waiting_on="Zach, in that session",
+                       free_at="", constraints="", children="", last_reply="")
+        self.assertEqual(s.waits_on, "Zach")
+        self.assertEqual(s.waits_for, "in that session")
+
+    def test_the_node_label_drops_the_history_the_name_cell_accretes(self) -> None:
+        """Live: `update-claude-md-docs (third name, same ref)`. The graph wants the name, not its provenance."""
+        s = rb.Session(ref="a", name="update-claude-md-docs (third name, same ref)", state="idle", doing="",
+                       waiting_on="", free_at="", constraints="", children="", last_reply="")
+        self.assertEqual(s.label, "update-claude-md-docs")
+
+    def test_a_tracker_with_no_sessions_section_parses_to_nothing(self) -> None:
+        self.assertEqual(rb.parse_tracker("# T\n\n## Lanes\n").sessions, ())
+
+    def test_the_seven_column_shape_still_parses(self) -> None:
+        """Every tracker written before this version has no `state` and no `children` column."""
+        old = ("# T\n\n## Sessions\n\n| ref | name | doing | waiting on | free at | constraints | last reply |\n"
+               "|---|---|---|---|---|---|---|\n| a1b2c3 | old-shape | refactor | Robin — a yes | now | TDD | 09:00 |\n")
+        s = rb.parse_tracker(old).sessions[0]
+        self.assertEqual((s.ref, s.name, s.doing, s.last_reply), ("a1b2c3", "old-shape", "refactor", "09:00"))
+        self.assertEqual(s.state, "")
+        self.assertEqual(s.waits_on, "Robin")
 
 
 class BarTest(unittest.TestCase):

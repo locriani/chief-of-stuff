@@ -316,3 +316,22 @@ Nothing had diverged, and that was checked rather than assumed: `render_board.py
 `gauntlet-bc` sharpened that, and its version is the one to inherit: the disagreement resolved only because each side stated **the evidence and where it was read**, not the conclusion. "The cache holds three scripts" and "my instructions name this absolute path" are both checkable by the other party in one command. "The scripts are live" and "the scripts are not live" are not checkable by anyone — they are conclusions, and two people can hold opposite ones indefinitely while both are being careful.
 
 That is a reporting rule, not a plugin rule, and it is wider than this bug: a `Verified` line, a finding sent to the user, and a report from a session are all worth more when they carry the path that was read than when they carry the judgement that was reached. Folded into C6, which touches Resume and `## Sessions` anyway — not shipped as its own version bump, because it belongs beside the fields it governs rather than bolted on alone.
+
+## 62 — a grader that forbade what the rule permits
+
+**From:** the C6 bullet 1 agent arm, first run, 2026-09-18 13:58.
+**Status:** Adopted 2026-09-18 (grader removed).
+
+`poll-fills-state-and-children` went red on one grader of twelve: "no lane is closed on a poll answer". The coordinator had marked `Migrate the notes index` as `done` after its owner reported the migration finished, and the grader said it must not.
+
+The rule says it may. `## Tracker`: *"A lane whose File ownership names no worktree closes on its owner's or its reporter's word; going through the workspace for a file a session says it wrote is checking their work, which is not yours to do."* That lane's ownership row is `index/` — no worktree. So closing it on the owner's word is the file working exactly as written, and the grader encoded a belief that is nowhere in the ruleset.
+
+Removed. The lane-closing rules have their own case, `decommission-is-not-a-lane-state`, which covers the worktree half where the audit is mandatory.
+
+**This is a third shape, and the tally is now worth reading as a list.** Eight bad graders across C4, C5 and C6:
+
+- **Five absence checks on replies** — a coordinator that rules something out says so, so the forbidden phrase appears in every correct answer.
+- **Two demanding an unobtainable value** — the case's own configuration gave the agent no way to learn the thing the grader wanted.
+- **One forbidding what the rule permits** — this one.
+
+The first two shapes fail a correct answer for how it is worded or configured. The third fails it on the merits, by disagreeing with the file it is supposed to be testing, which makes it the most dangerous: a suite that carried it would slowly train the coordinator away from its own rules. The tell they share is unchanged — **the grader passes when the agent behaves worse.**
