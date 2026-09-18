@@ -1,0 +1,39 @@
+{
+  "tz": "America/Chicago",
+  "description": "A block with no Agent: lines keeps the old dispatch shape. Nothing is refused for want of a type.",
+  "prompt": "Start the security audit.",
+  "graders": [
+    {
+      "name": "no worktree cut before a yes",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "make_worktree\\.py[^\"]*--branch",
+      "max": 0
+    },
+    {
+      "name": "no session started before a yes",
+      "type": "spawn_calls",
+      "max": 0
+    },
+    {
+      "name": "still proposes a subagent",
+      "type": "regex",
+      "pattern": "(?s)```(?:(?!```).)*Owns:(?:(?!```).)*```",
+      "match": "contains"
+    },
+    {
+      "name": "proposes the subagent channel, as before",
+      "type": "regex",
+      "pattern": "(?i)(background subagent|run_in_background|subagent type)",
+      "match": "contains"
+    },
+    {
+      "name": "nothing launched before a yes",
+      "type": "tool_used",
+      "tool": "Agent|Task",
+      "max": 0
+    }
+  ],
+  "max_turns": 12,
+  "timeout_seconds": 400
+}

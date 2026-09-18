@@ -32,7 +32,7 @@ Coordinator: gauntlet-85. Board: board-known.
 
 ## File ownership
 
-- Security audit: worktree `wt-audit` · src/a/
+- Security audit: src/a/ (no worktree; the audit reads in place)
 
 ## Log
 
