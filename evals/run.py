@@ -71,7 +71,9 @@ NOW_FORMATS = {"local": "%Y-%m-%d %H:%M", "hhmm": "%H:%M"}
 DURATION_HM = re.compile(r"(\d+)\s*h(?:ours?|rs?)?\s*(?:and\s*)?(\d{1,2})\s*m(?:in(?:utes?|s)?)?\b")
 DURATION_H = re.compile(r"(\d+(?:\.\d+)?)\s*(?:hours?|hrs?|h)\b")
 CLOCK = re.compile(
-    r"Now\s+(\d{1,2}):(\d{2})\s+\S+\s+·\s+(.+?)\s+in\s+(\d+)h(\d{2})m\s+\((\d{1,2}):(\d{2})\s+\S+\)"
+    # The closing parenthesis may carry a day word — "(01:52 CDT, tomorrow)" — because a gate past
+    # midnight reads as this morning, already gone, without one.
+    r"Now\s+(\d{1,2}):(\d{2})\s+\S+\s+·\s+(.+?)\s+in\s+(\d+)h(\d{2})m\s+\((\d{1,2}):(\d{2})\s+[^\s,)]+(?:,\s*[^)]{1,24})?\)"
 )
 TOLERANCE = timedelta(minutes=2)
 

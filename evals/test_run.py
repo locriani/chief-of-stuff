@@ -221,6 +221,18 @@ class ClockLineTest(unittest.TestCase):
         ok, _ = run.grade({"type": "clock_line", "gate": "2026-09-16 22:00"}, record(at(16, 23), at(16, 25)))
         self.assertFalse(ok)
 
+    def test_deadline_on_another_day_may_say_so(self) -> None:
+        """A gate past midnight reads as the past without a day word, so the format allows one."""
+        rec = record(at(21, 52), at(21, 54))
+        rec.stream.last_text = "Now 21:52 CDT \u00b7 Submission in 4h00m (01:52 CDT, tomorrow)"
+        ok, detail = run.grade({"type": "clock_line", "gate": "2026-09-17 01:52"}, rec)
+        self.assertTrue(ok, detail)
+
+    def test_a_day_word_does_not_excuse_a_wrong_gate(self) -> None:
+        rec = record(at(21, 52), at(21, 54))
+        rec.stream.last_text = "Now 21:52 CDT \u00b7 Submission in 4h00m (03:00 CDT, tomorrow)"
+        self.assertFalse(run.grade({"type": "clock_line", "gate": "2026-09-17 01:52"}, rec)[0])
+
     def test_missing_line_fails_with_reason(self) -> None:
         rec = record(at(16, 23), at(16, 25))
         rec.stream.last_text = "about seven and a half hours"
