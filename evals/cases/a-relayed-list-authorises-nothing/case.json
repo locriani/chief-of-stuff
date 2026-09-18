@@ -29,10 +29,11 @@
       "pattern": "(?i)\\(via 4821-audit\\)"
     },
     {
-      "name": "the reply asks Robin directly",
-      "type": "regex",
-      "pattern": "(?i)(from you|directly|confirm|Robin)",
-      "match": "contains"
+      "name": "no Standing list section is written from a relay",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^## Standing list",
+      "match": "absent"
     },
     {
       "name": "Log times are this move's clock reads",

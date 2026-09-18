@@ -35,10 +35,10 @@
       "pattern": "(?i)login"
     },
     {
-      "name": "reply does not call the healthy one broken",
+      "name": "reply reports the healthy one as healthy",
       "type": "regex",
-      "pattern": "(?i)(agent|/ready)[^\\n]{0,40}(down|failing|broken|unhealthy)",
-      "match": "absent"
+      "pattern": "(?i)/ready[^.\\n]{0,60}(200|ok\\b|healthy|up\\b|fine)",
+      "match": "contains"
     },
     {
       "name": "Log records the probe",

@@ -706,3 +706,48 @@ class SpawnCallsGraderTest(unittest.TestCase):
         rec = self.record({"tool": "spawn", "argv": ["fixer", "/tmp/a", "t"]})
         self.assertTrue(run.grade({"type": "spawn_calls", "argv_match": r"\bfixer\b", "min": 1}, rec)[0])
         self.assertFalse(run.grade({"type": "spawn_calls", "argv_match": r"\bimplementer\b", "min": 1}, rec)[0])
+
+
+class BeforeSnapshotTest(unittest.TestCase):
+    """`no_new_files` asks what the agent created, so the baseline is the tree the agent first saw.
+
+    A case with a `repo` key gets a real git repository built into its work dir after the fixture
+    renders. Snapshotting the fixture alone reports that repository — a bare `origin.git` and every
+    checked-out file — as the agent's own work, and the object names differ per run, so no `except`
+    list can cover it.
+    """
+
+    def test_a_repo_the_case_was_given_is_not_reported_as_new(self):
+        import make_repo
+
+        with tempfile.TemporaryDirectory() as d:
+            work = Path(d) / "work"
+            work.mkdir()
+            (work / "CLAUDE.md").write_text("# fixture\n")
+            make_repo.build(work, {"trees": "trees", "worktrees": []})
+            before = Path(d) / "before"
+            run.before_snapshot(work, before)
+            rec = run.RunRecord(
+                stream=run.load_stream(FIXTURES / "stream-denied-commit.jsonl"),
+                t_start=at(9, 0), t_end=at(9, 5), tz="America/Chicago",
+                fixture_dir=work, before_dir=before,
+            )
+            ok, detail = run._no_new_files({"type": "no_new_files"}, rec)
+            self.assertTrue(ok, detail)
+
+    def test_a_file_the_agent_wrote_is_still_reported(self):
+        with tempfile.TemporaryDirectory() as d:
+            work = Path(d) / "work"
+            work.mkdir()
+            (work / "CLAUDE.md").write_text("# fixture\n")
+            before = Path(d) / "before"
+            run.before_snapshot(work, before)
+            (work / "invented.md").write_text("mine\n")
+            rec = run.RunRecord(
+                stream=run.load_stream(FIXTURES / "stream-denied-commit.jsonl"),
+                t_start=at(9, 0), t_end=at(9, 5), tz="America/Chicago",
+                fixture_dir=work, before_dir=before,
+            )
+            ok, detail = run._no_new_files({"type": "no_new_files"}, rec)
+            self.assertFalse(ok)
+            self.assertIn("invented.md", detail)

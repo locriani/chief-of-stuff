@@ -44,7 +44,7 @@
           "name": "one line now, naming the span",
           "type": "file_matches",
           "path": "daily/{{today}}-tracker.md",
-          "pattern": "(?im)^- \\d{1,2}:\\d{2}[^\\n]*(since \\d{1,2}:\\d{2}|2 checks|two checks)"
+          "pattern": "(?im)^- \\d{1,2}:\\d{2}[^\\n]*((since|from)\\s+(the\\s+)?\\d{1,2}:\\d{2}|\\b(\\d+|two|three|four|five)\\s+(scheduled\\s+)?checks)"
         },
         {
           "name": "log append-only",

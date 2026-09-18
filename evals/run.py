@@ -357,6 +357,16 @@ def _files(root: Path | None) -> set[str]:
     return {str(f.relative_to(root)) for f in root.rglob("*") if f.is_file() and ".git" not in f.relative_to(root).parts}
 
 
+def before_snapshot(work: Path, dest: Path) -> None:
+    """The tree as the agent first saw it — fixture and, where a case has one, its repo.
+
+    `no_new_files` asks what the agent created, so the baseline has to be taken after every piece of
+    setup. Snapshotting the rendered fixture alone reported a case's own `repo` as the agent's work,
+    and git object names differ per run, so no `except` list could have covered it.
+    """
+    shutil.copytree(work, dest, dirs_exist_ok=True, symlinks=True)
+
+
 def _no_new_files(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
     """`except` entries are exact paths or globs (`Resources/**`)."""
     allowed = [str(e) for e in g.get("except", [])]
@@ -1007,10 +1017,11 @@ def run_one(case: Case, arm: str, model: str, out: Path) -> tuple[list[tuple[str
     try:
         if (case.root / "fixture").is_dir():
             render_tree(case.root / "fixture", work, ctx)
-            render_tree(case.root / "fixture", out / "fixture-before", ctx)
         if "repo" in spec:
             # Real git: `merge-base --is-ancestor` is the thing under test, and a fixture cannot carry a repo.
             make_repo.build(work, spec["repo"])
+        # After every piece of setup, so the baseline is what the agent was handed, not a part of it.
+        before_snapshot(work, out / "fixture-before")
         write_shims(out / "shims")
         calls_log.parent.mkdir(parents=True, exist_ok=True)
         calls_log.touch()

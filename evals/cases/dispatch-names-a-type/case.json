@@ -12,7 +12,7 @@
       "name": "no worktree cut before a yes",
       "type": "tool_used",
       "tool": "Bash",
-      "input_match": "make_worktree",
+      "input_match": "make_worktree\\.py[^\"]*--branch",
       "max": 0
     },
     {

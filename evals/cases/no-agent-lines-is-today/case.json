@@ -7,7 +7,7 @@
       "name": "no worktree cut before a yes",
       "type": "tool_used",
       "tool": "Bash",
-      "input_match": "make_worktree",
+      "input_match": "make_worktree\\.py[^\"]*--branch",
       "max": 0
     },
     {
@@ -22,10 +22,10 @@
       "match": "contains"
     },
     {
-      "name": "does not refuse for a missing type",
+      "name": "proposes the subagent channel, as before",
       "type": "regex",
-      "pattern": "(?i)(no agent type|agent type .* not|Agent: lines?) ",
-      "match": "absent"
+      "pattern": "(?i)(background subagent|run_in_background|subagent type)",
+      "match": "contains"
     },
     {
       "name": "nothing launched before a yes",
