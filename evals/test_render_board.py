@@ -430,7 +430,7 @@ class DensityTest(unittest.TestCase):
         visible = re.sub(r"<[^>]+>", "", self.html.split("</style>", 1)[1].split("<script>", 1)[0])
         self.assertEqual(visible.count(esc), 0)
         self.assertEqual(visible.count("the worker left the registry"), 1)
-        self.assertLess(len(self.html), 24_000)  # the page without the logo asset; brand CSS, gridlines, the legend and the folded-row names add ~4 KB. The guard is against the 67 KB regression, not against a kilobyte
+        self.assertLess(len(self.html), 30_000)  # the page without the logo asset; brand CSS, gridlines, the legend and the folded-row names add ~4 KB, and the session graph ~4.8 (2.6 markup, 2.2 CSS: nine chip fills). The guard is against the 67 KB regression, not against a kilobyte
 
     def test_history_is_one_line_per_clause(self) -> None:
         body = re.search(r"<details><summary>Service architecture refactor</summary>(.*?)</details>", self.html, re.S).group(1)
@@ -1032,3 +1032,148 @@ class FoldedRowsExpandTest(unittest.TestCase):
         folded = self.html.count('<details class="folded">')
         rows = self.html.count('class="row summary-row"') + self.html.count('class="row group-row"')
         self.assertEqual(folded, rows, "every folded row opens, and a board with none has no stray disclosure")
+
+
+class SessionGraphTest(unittest.TestCase):
+    """The coordinator's own knowledge, drawn. Until now the board said nothing at all about who is working.
+
+    The argument for building it is the live tracker: four sessions whose `last reply` was eight hours
+    old, and nothing anywhere saying so. A node that does not carry its own age is a claim about the
+    present made from a memory of the morning.
+    """
+
+    def setUp(self) -> None:
+        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.html = rb.render(TRACKER, LOG, self.cfg, NOW)
+        self.graph = re.search(r'<section class="graph".*?</section>', self.html, re.S)
+        self.assertIsNotNone(self.graph, "no session graph in the rendered board")
+        self.graph = self.graph.group(0)
+
+    def node(self, ref: str) -> str:
+        m = re.search(rf'<details class="node[^"]*" data-ref="{ref}".*?(?=<details class="node|</ul>\n</details>)', self.graph, re.S)
+        self.assertIsNotNone(m, f"no node for {ref}")
+        return m.group(0)
+
+    def test_the_graph_sits_between_the_header_and_the_first_chart(self) -> None:
+        """Who is working is read before what is scheduled: the strips mean nothing without owners."""
+        self.assertLess(self.html.index('<section class="graph"'), self.html.index("<h2>Today</h2>"))
+        self.assertGreater(self.html.index('<section class="graph"'), self.html.index('<div class="header">'))
+
+    def test_every_session_is_a_node_citing_its_row(self) -> None:
+        """`data-ref`/`data-state`/`data-as-of`, so a grader cites structure rather than prose."""
+        self.assertEqual(self.graph.count('<details class="node'), len(rb.parse_tracker(TRACKER).sessions) + 1)
+        for ref in ("a1b2c3", "d4e5f6", "9f2a41", "b7c8d9"):
+            self.assertIn(f'data-ref="{ref}"', self.graph)
+        self.assertIn('data-state="working"', self.graph)
+        self.assertIn('data-as-of="11:40"', self.graph)
+
+    def test_the_node_draws_the_derived_kind_and_not_the_written_cell(self) -> None:
+        """A session cannot report that it is starting or ready; the coordinator works both out."""
+        self.assertIn('data-state="starting"', self.graph)
+        self.assertIn('data-state="ready"', self.graph)
+        self.assertIn('data-state="unknown"', self.graph)
+
+    def test_the_coordinator_is_the_root_and_every_session_hangs_from_it(self) -> None:
+        root = re.search(r'<details class="node coordinator"[^>]*>(.*)</details>', self.graph, re.S)
+        self.assertIsNotNone(root, "the graph has no coordinator root")
+        for ref in ("a1b2c3", "d4e5f6", "9f2a41"):
+            self.assertIn(f'data-ref="{ref}"', root.group(1))
+
+    def test_children_hang_under_their_owner_and_are_never_nodes_of_their_own(self) -> None:
+        """A subagent has no ref, answers no poll and cannot be sent to. A node implies it can be."""
+        owner = self.node("a1b2c3")
+        self.assertIn("rules-audit", owner)
+        self.assertIn("fixture-sweep", owner)
+        kids = re.search(r'<ul class="kids">(.*?)</ul>', owner, re.S)
+        self.assertIsNotNone(kids, "worker-9a reported two subagents and the graph drew neither")
+        self.assertNotIn("data-ref", kids.group(1))
+
+    def test_the_waiting_edge_names_who_and_reads_as_an_arrow(self) -> None:
+        f = self.node("d4e5f6")
+        self.assertIn('data-waits-on="Robin"', f)
+        self.assertIn("Robin", re.search(r"<summary>(.*?)</summary>", f, re.S).group(1))
+
+    def test_a_session_waiting_on_nobody_draws_no_edge(self) -> None:
+        self.assertNotIn("data-waits-on", self.node("a1b2c3"))
+
+    def test_the_age_is_baked_into_the_html_not_left_to_javascript(self) -> None:
+        """Design-inputs §50: the artifact CSP allows nothing external and this needs nothing."""
+        self.assertIn("2h50m", self.graph)
+        self.assertIn('data-age="170"', self.graph)
+
+    def test_a_stamp_ages_through_three_named_bands(self) -> None:
+        """State stays readable and visibly unreliable, rather than quietly becoming a lie."""
+        for minutes, band in ((5, "fresh"), (45, "aging"), (170, "stale"), (476, "stale")):
+            at = (NOW - timedelta(minutes=minutes)).strftime("%H:%M")
+            s = rb.Session(ref="a1b2c3", name="n", state="working", doing="d", waiting_on="",
+                           free_at="", constraints="", children="", last_reply=at)
+            out = rb.session_graph((s,), self.cfg, NOW)
+            self.assertIn(f'class="stamp {band}"', out, f"{minutes}m should read {band}")
+
+    def test_a_reply_time_after_now_was_yesterday_not_the_future(self) -> None:
+        """23:50 read at 14:30 is fifteen hours old, not nine hours from now."""
+        s = rb.Session(ref="a1b2c3", name="n", state="working", doing="d", waiting_on="",
+                       free_at="", constraints="", children="", last_reply="23:50")
+        self.assertIn('data-age="880"', rb.session_graph((s,), self.cfg, NOW))
+
+    def test_a_session_that_has_never_replied_says_so_rather_than_showing_an_age(self) -> None:
+        s = rb.Session(ref="a1b2c3", name="n", state="planning", doing="d", waiting_on="",
+                       free_at="", constraints="", children="", last_reply="")
+        out = rb.session_graph((s,), self.cfg, NOW)
+        self.assertIn("no reply yet", out)
+        self.assertNotIn("data-age=", out)
+
+    def test_the_tree_opens_with_css_and_attaches_no_handlers(self) -> None:
+        self.assertNotIn("onclick", self.graph)
+        script = self.html.split("<script>")[1]
+        self.assertNotIn(".node", script)
+        self.assertNotIn("addEventListener", script)
+
+    def test_a_tracker_with_no_sessions_draws_no_graph(self) -> None:
+        bare = TRACKER.split("## Sessions")[0] + "## File ownership\n\n## Log\n"
+        self.assertNotIn('<section class="graph"', rb.render(bare, LOG, self.cfg, NOW))
+
+    def test_a_node_escapes_the_text_it_carries(self) -> None:
+        s = rb.Session(ref="a1b2c3", name="<script>x</script>", state="working", doing="&", waiting_on="",
+                       free_at="", constraints="", children="", last_reply="14:00")
+        out = rb.session_graph((s,), self.cfg, NOW)
+        self.assertNotIn("<script>x", out)
+        self.assertIn("&lt;script&gt;x", out)
+
+
+class SessionStateLegibilityTest(unittest.TestCase):
+    """The same rule the bars live under, applied to the chips: a state you cannot tell apart is not shown."""
+
+    KINDS = ("planning", "working", "waiting", "idle", "starting", "ready", "unknown", "unreported")
+
+    def setUp(self) -> None:
+        self.html = rb.render(TRACKER, LOG, rb.parse_coordinator(CLAUDE_MD, today=NOW.date()), NOW)
+        self.css = self.html.split("<style>")[1].split("</style>")[0]
+
+    def fill(self, selector: str) -> str:
+        for line in self.css.splitlines():
+            for rule in line.split("}"):
+                if "{" in rule and selector in [c.strip() for c in rule.split("{")[0].split(",")]:
+                    for decl in rule.split("{", 1)[1].split(";"):
+                        if decl.strip().startswith("background"):
+                            return decl.strip()
+        return ""
+
+    def test_no_two_session_states_share_a_fill(self) -> None:
+        fills: dict[str, str] = {}
+        for kind in self.KINDS:
+            got = self.fill(f".chip.{kind}")
+            self.assertTrue(got, f".chip.{kind} sets no background of its own")
+            self.assertNotIn(got, fills, f"{kind} and {fills.get(got)} are drawn the same: {got}")
+            fills[got] = kind
+
+    def test_every_session_state_carries_a_pattern_not_only_a_hue(self) -> None:
+        """Greyscale and deuteranopia both survive a pattern; neither survives a hue."""
+        for kind in self.KINDS:
+            self.assertIn("gradient", self.fill(f".chip.{kind}"), f"{kind} is a flat fill: hue is its only carrier")
+
+    def test_the_chip_names_the_state_in_words_as_well(self) -> None:
+        """A pattern separates two states; only the word says which is which."""
+        graph = re.search(r'<section class="graph".*?</section>', self.html, re.S).group(0)
+        for kind in ("working", "waiting", "starting", "ready"):
+            self.assertRegex(graph, rf'<span class="chip {kind}">{kind}</span>')

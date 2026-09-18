@@ -593,6 +593,108 @@ def legend() -> str:
     return '<div class="legend">' + "".join(f'<span class="item"><span class="{cls}"></span> {label}</span>' for cls, label in LEGEND) + "</div>\n"
 
 
+# A poll cycle runs about an hour, so under half an hour is current, under two hours is last cycle,
+# and past that a node is reporting a memory of the morning. Baked in Python at render: the fade has
+# to survive with JavaScript off, and design-inputs §50 settled that this page runs none.
+STAMP_FRESH = timedelta(minutes=30)
+STAMP_AGING = timedelta(hours=2)
+# Every kind `Session.kind` can return. `gone` is the join's to add and is not derivable yet.
+SESSION_KINDS = ("planning", "working", "waiting", "idle", "starting", "ready", "unknown", "unreported")
+
+
+def _age(session: Session, cfg: Config, now: datetime) -> tuple[datetime | None, int | None]:
+    """When the session last spoke, and how long ago in minutes.
+
+    A reply time later than now is last night's, not this evening's: the cell carries HH:MM and no
+    date, and a coordinator reading 23:50 at 14:30 is looking at fifteen hours of silence.
+    """
+    at = _hhmm(session.last_reply, now.date(), cfg.zone)
+    if at is None:
+        return None, None
+    if at > now:
+        at -= timedelta(days=1)
+    return at, int((now - at).total_seconds() // 60)
+
+
+def _age_text(minutes: int) -> str:
+    return f"{minutes // 60}h{minutes % 60:02d}m" if minutes >= 60 else f"{minutes}m"
+
+
+def _band(minutes: int) -> str:
+    return "fresh" if minutes < STAMP_FRESH.total_seconds() / 60 else ("aging" if minutes < STAMP_AGING.total_seconds() / 60 else "stale")
+
+
+def _stamp(session: Session, cfg: Config, now: datetime) -> tuple[str, str]:
+    """The node's age, as html and as the `data-age` citation it is drawn from."""
+    at, minutes = _age(session, cfg, now)
+    if at is None:
+        if not session.last_reply.strip():
+            return '<span class="stamp never">no reply yet</span>', ""
+        # A cell that is not HH:MM is shown as written rather than guessed at or dropped.
+        return f'<span class="stamp unparsed">as of {_esc(session.last_reply.strip())}</span>', ""
+    return (f'<span class="stamp {_band(minutes)}">as of {at.strftime("%H:%M")} · {_age_text(minutes)}</span>',
+            f' data-as-of="{at.strftime("%H:%M")}" data-age="{minutes}" data-band="{_band(minutes)}"')
+
+
+def _facts(session: Session) -> str:
+    rows = [("doing", session.doing), ("waiting for", session.waits_for), ("free at", session.free_at),
+            ("constraints", session.constraints)]
+    body = "".join(f"<dt>{label}</dt><dd>{_esc(value.strip())}</dd>" for label, value in rows if value.strip())
+    warn = f'<dt>warning</dt><dd class="warn">{_esc(session.warning)}</dd>' if session.warning else ""
+    return f'<dl class="facts">{body}{warn}</dl>' if body or warn else ""
+
+
+def _session_node(session: Session, cfg: Config, now: datetime) -> str:
+    kind = session.kind
+    stamp, cite = _stamp(session, cfg, now)
+    who = session.waits_on
+    # An edge, not a state: `waiting on` carries who and then why, and the enum stays four words wide.
+    edge = f'<span class="edge">→ {_esc(who)}</span>' if who else ""
+    kids = "".join(f"<li>{_esc(name)}</li>" for name in session.child_names)
+    kid_list = f'<ul class="kids">{kids}</ul>' if kids else ""
+    ref = f' data-ref="{_esc(session.ref.strip())}"' if session.ref.strip() else ""
+    waits = f' data-waits-on="{_esc(who)}"' if who else ""
+    return (f'<li><details class="node {kind}"{ref} data-state="{kind}"{cite}{waits}>'
+            f'<summary><span class="chip {kind}">{kind}</span><span class="who">{_esc(session.label)}</span>'
+            f"{edge}{stamp}</summary>{_facts(session)}{kid_list}</details></li>")
+
+
+def session_graph(sessions: tuple[Session, ...], cfg: Config, now: datetime) -> str:
+    """The coordinator, its sessions, and their subagents, as one disclosure tree.
+
+    Nested `<details>` and nothing else: the idiom `_strip()` already uses for folded rows, and the
+    one shape a tree can take here. It is not a `Bar` — `_strip` positions everything as a percentage
+    of a time axis, and a tree has no time axis.
+
+    A subagent gets a list item and never a node: it has no ref, is in no listing, answers no poll and
+    cannot be sent to, and a node beside its peers would say all four were false.
+    """
+    if not sessions:
+        return ""
+    nodes = "\n".join(_session_node(s, cfg, now) for s in sessions)
+    stale = sum(1 for s in sessions if (m := _age(s, cfg, now)[1]) is not None and _band(m) == "stale")
+    unheard = sum(1 for s in sessions if _age(s, cfg, now)[0] is None)
+    kids = sum(len(s.child_names) for s in sessions)
+    notes = [f"{len(sessions)} {'session' if len(sessions) == 1 else 'sessions'}"]
+    if kids:
+        notes.append(f"{kids} {'subagent' if kids == 1 else 'subagents'}")
+    if stale:
+        notes.append(f"{stale} stale")
+    if unheard:
+        notes.append(f"{unheard} never replied")
+    return f"""<section class="graph" data-sessions="{len(sessions)}">
+<h2>Sessions · {len(sessions)}</h2>
+<div class="meta">a poll, with an age, and not a fact · every node is stamped with when that session last spoke, and reads stale past two hours · subagents hang under their owner and cannot be addressed</div>
+<details class="node coordinator" open>
+<summary><span class="chip coordinator">coordinator</span><span class="who">chief-of-stuff</span><span class="stamp fresh">{" · ".join(notes)}</span></summary>
+<ul class="peers">
+{nodes}
+</ul>
+</details>
+</section>
+"""
+
+
 def grid_marks(axis_a: datetime, axis_b: datetime, kind: str) -> list[tuple[datetime, bool]]:
     """Every hour on the day strip (a full line every two), every day on the week strip (a half line at midday)."""
     step = timedelta(hours=1) if kind == "day" else timedelta(days=1)
@@ -902,6 +1004,26 @@ details summary{{cursor:pointer}} details[open] summary{{margin-bottom:4px}}
 .req code{{font-family:ui-monospace,monospace;font-size:12px}} .req .evidence{{grid-column:2;color:var(--muted);font-size:12px}} .req .box{{font-variant-numeric:tabular-nums}}
 .hist{{list-style:none;margin:4px 0 2px;padding:0 0 0 10px;border-left:2px solid var(--line);font-size:12px;line-height:1.5;color:var(--muted);display:grid;gap:3px}}
 .hist li{{display:grid;grid-template-columns:3em 1fr;gap:8px}} .hist time{{font-family:ui-monospace,monospace;font-variant-numeric:tabular-nums;color:var(--fg)}}
+.graph{{margin:0}} .graph h2{{margin-top:22px}} .graph>.meta{{margin:-2px 0 6px}}
+.graph summary{{list-style:none;cursor:pointer;display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 8px;padding:2px 0}}
+.graph summary::-webkit-details-marker{{display:none}} .graph summary::before{{content:"\u25b8";color:var(--muted);font-size:10px;flex:none;width:.7em}} .graph details[open]>summary::before{{content:"\u25be"}}
+.peers{{list-style:none;margin:2px 0 0;padding:0 0 0 14px;border-left:1px solid var(--line)}} .peers>li{{padding:1px 0}}
+.kids{{list-style:none;margin:2px 0 6px;padding:0 0 0 22px;font-size:12px;color:var(--muted);display:flex;flex-wrap:wrap;gap:0 14px}} .kids li::before{{content:"\u2514\u2009";color:var(--line)}}
+.facts{{margin:2px 0 4px;padding:0 0 0 22px;display:grid;grid-template-columns:auto 1fr;gap:1px 8px;font-size:12px}} .facts dt{{color:var(--muted);text-transform:uppercase;letter-spacing:.05em;font-size:10px;padding-top:2px}} .facts dd{{margin:0;min-width:0;overflow-wrap:anywhere}}
+.who{{font-size:13px}} .edge{{color:var(--muted);font-size:12px}}
+.stamp{{margin-left:auto;font-size:11px;font-variant-numeric:tabular-nums;color:var(--muted);white-space:nowrap}}
+/* The claim fades, the name never does: a stale node is the one you most need to read. */
+.stamp.stale{{color:var(--dl)}} .stamp.never,.stamp.unparsed{{color:var(--dl)}} .node[data-band="aging"]>summary .chip{{opacity:.66}} .node[data-band="stale"]>summary .chip{{opacity:.4}}
+.chip{{flex:none;font-size:10px;letter-spacing:.07em;text-transform:uppercase;padding:1px 7px;border-radius:9px;border:1px solid var(--line);color:var(--fg);background:var(--surface)}}
+.chip.planning{{background:repeating-linear-gradient(45deg,var(--noest) 0 2px,transparent 2px 5px),var(--surface)}}
+.chip.working{{background:repeating-linear-gradient(90deg,var(--running) 0 3px,transparent 3px 5px),var(--surface)}}
+.chip.waiting{{background:repeating-linear-gradient(-45deg,var(--brass) 0 2px,transparent 2px 6px),var(--surface)}}
+.chip.idle{{background:repeating-linear-gradient(0deg,var(--done) 0 2px,transparent 2px 4px),var(--surface)}}
+.chip.starting{{background:repeating-radial-gradient(circle at 2px 2px,var(--open) 0 1.4px,transparent 1.4px 5px),var(--surface)}}
+.chip.ready{{background:repeating-linear-gradient(135deg,var(--now) 0 3px,transparent 3px 7px),var(--surface)}}
+.chip.unknown{{background:repeating-linear-gradient(45deg,var(--dl) 0 1.5px,transparent 1.5px 5px),repeating-linear-gradient(-45deg,var(--dl) 0 1.5px,transparent 1.5px 5px),var(--surface)}}
+.chip.unreported{{background:repeating-radial-gradient(circle at 3px 3px,var(--muted) 0 1px,transparent 1px 7px),var(--surface)}}
+.chip.coordinator{{background:repeating-linear-gradient(90deg,var(--brass) 0 1px,transparent 1px 4px),var(--surface)}}
 @media (max-width:520px){{.strip{{--name-w:36%}}}}
 </style>
 <div class="board" data-rendered-at="{_iso(now)}" data-tz="{_esc(cfg.tz)}" data-deadline="{_iso(nearest.at)}" data-deadline-name="{_esc(nearest.name)}">
@@ -911,6 +1033,7 @@ details summary{{cursor:pointer}} details[open] summary{{margin-bottom:4px}}
 <div class="meta">tracker as of {now.strftime('%H:%M')} {_esc(tzname)} <span id="ago"></span> · kept by chief-of-stuff · board {_esc(url or 'not yet published')}{long_note}</div>
 {resume_strip(parse_resume(tracker_text))}</div></div>
 
+{session_graph(tracker.sessions, cfg, now)}
 {unassigned_html}<h2>{_esc(cfg.user)}'s queue</h2>
 <table><tr><th>item</th><th>due</th><th>state</th></tr>
 {queue_rows}

@@ -335,3 +335,34 @@ Removed. The lane-closing rules have their own case, `decommission-is-not-a-lane
 - **One forbidding what the rule permits** — this one.
 
 The first two shapes fail a correct answer for how it is worded or configured. The third fails it on the merits, by disagreeing with the file it is supposed to be testing, which makes it the most dangerous: a suite that carried it would slowly train the coordinator away from its own rules. The tell they share is unchanged — **the grader passes when the agent behaves worse.**
+
+## 63 — the fade belongs on the claim, not on the node
+
+**From:** C6 bullet 2, writing the staleness CSS, 2026-09-18.
+**Status:** Adopted 2026-09-18, against the approved plan.
+
+The plan said *"the node dims as the stamp ages"*. Implemented literally that is backwards. A stale node is the one most worth reading: it is where the coordinator's picture of the day has quietly stopped matching it. Dimming the whole node makes the row you most need hardest to see, and rewards a board full of fresh trivia over one honest twelve-hour gap.
+
+What ages is not the session, it is the claim about the session. So the fade goes on the state chip — `.node[data-band="stale"]>summary .chip{opacity:.4}` — and the name stays at full contrast. The stamp itself moves the other way, taking the deadline red at `stale`, so age is louder rather than quieter as it grows.
+
+Same principle as `no estimate` on the bars: the board never makes missing information look like present information, and never makes unreliable information look like a detail.
+
+## 64 — the first live render said nobody had reported anything
+
+**From:** the graph run against `Areas/daily/2026-09-18-tracker.md` at 16:52, 2026-09-18.
+**Status:** Recorded.
+
+Four nodes. Every one `unreported`, every one `stale`:
+
+| session | state | last spoke | age |
+|---|---|---|---|
+| update-claude-md-docs | unreported | 13:21 | 3h30m |
+| solid-implementer | unreported | 04:45 | 12h07m |
+| agent-interface-improvements | unreported | 07:49 | 9h02m |
+| chief-of-stuff-improvements | unreported | 13:23 | 3h28m |
+
+Both readings are correct and both are worth having. `unreported` is not a fault in those sessions: the live tracker is still the seven-column shape, so no `state` cell exists for any of them to fill. The graph is reporting, accurately, that the coordinator has not restarted onto a version that asks — which is the same fact as `CLAUDE.md:172` and the unread 0.7.0/0.8.x installs, arriving here on its own without anyone going to look for it.
+
+The ages are the older argument, now visible. Half a working day of silence from `solid-implementer`, and until this render nothing anywhere on the board said so. Every one of those rows had been read all day as a statement about the present.
+
+The thing to watch after the restart is whether these four go to a written state or stay `unreported`. If they stay, the poll is not landing, and that is a ruleset problem rather than a renderer one.
