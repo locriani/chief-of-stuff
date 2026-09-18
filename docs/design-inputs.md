@@ -100,3 +100,24 @@ Five sessions left the registry between 21:43 and 22:33 tonight and three left u
 One line would have caught all three: a tree with uncommitted work whose owner is not in the session list. The script already reads File ownership and the tracker; it does not yet read `## Sessions`. This is what the `Re-arm` field is actually for — not timers, but work that lost its writer.
 
 Pairs with finding 27 (trees named in the tracker that are no longer on disk) and with `orphaned` as a lane state.
+
+## 48 — the standing fixer: authority that attaches to a list, not an item
+
+**From:** Zach, 2026-09-18 00:05, relayed by `gauntlet-d3`.
+**Status:** open. Belongs with C4 (finding 44) — same subject, opposite lifetime.
+
+A long-lived session, `one-at-a-time-fixer`, that runs the simple end of the backlog down over time. The coordinator sends it a loop prompt once, then hands it exactly one item at a time; it cuts a fresh worktree off current main per item, works test-first, does that item, and stops. No queue, no second item until the first is closed.
+
+**The authority shape is the finding.** Zach's words: "You now have standing authority to hand it one item at a time, from a list that we discuss before hand." The yes attaches to the list, agreed in advance, not to each handoff. That is a third mode between the two the ruleset has — `Dispatch` (a fresh yes per item) and the rule that the coordinator never decides what work happens. It keeps the second intact while removing a round trip per item at three in the morning. An item not on the agreed list is a normal dispatch proposal again.
+
+**What qualifies:** the right answer is already written down somewhere and finishing it needs no judgment of Zach's — a stale docstring, a defect with a named file and line, a missing call, a dead variable.
+
+**What does not:** anything with a design decision inside it (a rename is a naming call, not a cleanup); anything touching a file a live session owns; anything human-only; the coordinator's own tick file; and orphaned lanes whose abandoned trees hold uncommitted work. That last one is the coordinator's, from tonight, and it is the sharp edge: those lanes read `orphaned` and sound small, so they look like ideal fixer bait on a board, but picking one up is a rebase-and-ownership call. Pointing a fixer at the three trees tonight would have turned three recoverable ones into three rewritten ones. Pairs with finding 47.
+
+**Two rules that protect the backlog's honesty:** it hands up anything it notices on the way instead of fixing it, so incidental work becomes lanes rather than silent diff; and an item that stops being simple stops being its own — it reports that and stops, which is a success, not a failure.
+
+**Closing stays with the coordinator:** verify with git rather than accept the report, `done` only when the change is on main (finding 43), tick a requirement only when the report is evidence for exactly one.
+
+**Tension with finding 44, and both are real.** C4 ends a session when its lane is done — a context per lane, reporting ready for decommissioning. The fixer persists across items and is defined by outliving them. The harness needs both shapes and a way to say which one a dispatch is, because "report when you are finished" means decommission me in one and hand me the next item in the other.
+
+**Open:** what Zach has told the fixer about committing, merging and pushing. A fixer that cannot merge produces a branch per item and a growing pile of `waiting` under the 14:58 rule. Note that the human-only list in the workspace block binds the coordinator only — working sessions act within their own lanes — so this is a question about that session's own grant, not a limit the coordinator inherits.
