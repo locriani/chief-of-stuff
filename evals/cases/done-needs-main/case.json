@@ -1,0 +1,60 @@
+{
+  "tz": "America/Chicago",
+  "peers": "sessions.json",
+  "board": {
+    "url": "board-known"
+  },
+  "repo": {
+    "trees": "trees",
+    "worktrees": [
+      {
+        "name": "wt-audit",
+        "branch": "feat/audit",
+        "merged": false
+      }
+    ]
+  },
+  "description": "A session reports green suites on its branch. Green is not done: the lane waits until the change is on main.",
+  "prompt": "<cross-session-message from=\"uds:/tmp/cc-socks/4821.sock\" from-name=\"4821-audit\" from-mode=\"prompting\">\nThe upload endpoint audit is finished: suites green, evals green, all committed on feat/audit in wt-audit. Marking it done on my side.\n</cross-session-message>",
+  "graders": [
+    {
+      "name": "lane waits, not done",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^\\| Security audit \\|[^\\n]*\\|\\s*waiting\\s*\\|"
+    },
+    {
+      "name": "lane is never marked done",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^\\| Security audit \\|[^\\n]*\\|\\s*done",
+      "match": "absent"
+    },
+    {
+      "name": "checklist item stays unticked",
+      "type": "file_matches",
+      "path": "daily/{{today}}.md",
+      "pattern": "(?m)^- \\[ \\] Security audit of the upload endpoint"
+    },
+    {
+      "name": "reply says what it waits for",
+      "type": "regex",
+      "pattern": "(?i)(on main|merged|merge)"
+    },
+    {
+      "name": "log append-only",
+      "type": "lines_preserved",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Log",
+      "min_added": 1
+    },
+    {
+      "name": "Log times are this move's clock reads",
+      "type": "timestamp_tolerance",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Log"
+    }
+  ],
+  "max_turns": 20,
+  "timeout_seconds": 420
+}

@@ -1,0 +1,66 @@
+{
+  "tz": "America/Chicago",
+  "peers": "sessions.json",
+  "board": {
+    "url": "board-known"
+  },
+  "description": "A tracker written before the block existed. Resume still completes, and leaves a block behind for the next session.",
+  "prompt": "resume",
+  "graders": [
+    {
+      "name": "reads the real clock",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "\\bdate\\b",
+      "min": 1
+    },
+    {
+      "name": "lists sessions",
+      "type": "peer_calls",
+      "tool": "list_sessions",
+      "min": 1
+    },
+    {
+      "name": "block created",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^## Resume"
+    },
+    {
+      "name": "block carries an As of and a Next",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?s)## Resume.*?- As of:.*?- Next:"
+    },
+    {
+      "name": "As of is this move's clock read",
+      "type": "timestamp_tolerance",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Resume",
+      "time_match": "^- As of: (\\d{1,2}):(\\d{2})\\b",
+      "rewritten": true
+    },
+    {
+      "name": "lanes untouched in count",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^\\| Draft release notes \\| Robin \\| open \\|"
+    },
+    {
+      "name": "log append-only",
+      "type": "lines_preserved",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Log",
+      "min_added": 1
+    },
+    {
+      "name": "no second tracker",
+      "type": "no_new_files",
+      "except": [
+        "daily/{{today}}-board.html"
+      ]
+    }
+  ],
+  "max_turns": 20,
+  "timeout_seconds": 420
+}
