@@ -335,7 +335,7 @@ class DensityTest(unittest.TestCase):
         visible = re.sub(r"<[^>]+>", "", self.html.split("</style>", 1)[1].split("<script>", 1)[0])
         self.assertEqual(visible.count(esc), 0)
         self.assertEqual(visible.count("the worker left the registry"), 1)
-        self.assertLess(len(self.html), 21_000)  # the page without the logo asset; brand CSS, gridlines and the legend add ~1 KB
+        self.assertLess(len(self.html), 24_000)  # the page without the logo asset; brand CSS, gridlines, the legend and the folded-row names add ~4 KB. The guard is against the 67 KB regression, not against a kilobyte
 
     def test_history_is_one_line_per_clause(self) -> None:
         body = re.search(r"<details><summary>Service architecture refactor</summary>(.*?)</details>", self.html, re.S).group(1)
@@ -684,7 +684,6 @@ class LegendTest(unittest.TestCase):
             ("key bar running", "running"),
             ("key bar open", "open"),
             ("key bar orphaned", "orphaned"),
-            ("key bar done", "done"),
             ("key bar open-end", "no estimate"),
             ("key bar summary", "folded rows"),
             ("key band", "calendar event"),
@@ -862,3 +861,79 @@ class ResumeBlockTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StateLegibilityTest(unittest.TestCase):
+    """A state you cannot tell from another state is not shown.
+
+    Live on 0.6.1: `open`, `no estimate` and `folded rows` all resolved to `var(--open)` — the only
+    difference was a 135 degree stripe and an opacity drop, neither of which survives an 18x10px
+    legend swatch. Colour was also the sole carrier, so the olive states and grey `done` converge
+    under deuteranopia and nothing separates any of them in greyscale.
+    """
+
+    # Every state the chart can draw, as the class that paints it.
+    STATES = ("running", "open", "orphaned", "open-end", "summary")
+
+    def setUp(self) -> None:
+        self.html = rb.render(TRACKER, LOG, rb.parse_coordinator(CLAUDE_MD, today=NOW.date()), NOW)
+        self.css = self.html.split("<style>")[1].split("</style>")[0]
+
+    def fill(self, selector: str) -> str:
+        """The background declaration a selector sets, or "" when it sets none."""
+        for line in self.css.splitlines():
+            for rule in line.split("}"):
+                if "{" in rule and selector in [c.strip() for c in rule.split("{")[0].split(",")]:
+                    body = rule.split("{", 1)[1]
+                    for decl in body.split(";"):
+                        if decl.strip().startswith("background"):
+                            return decl.strip()
+        return ""
+
+    def test_no_two_states_share_a_fill(self) -> None:
+        fills = {}
+        for state in self.STATES:
+            selector = ".bar" if state == "open" else f".bar.{state}"
+            got = self.fill(selector)
+            self.assertTrue(got, f"{selector} sets no background of its own")
+            self.assertNotIn(got, fills, f"{state} and {fills.get(got)} are drawn the same: {got}")
+            fills[got] = state
+
+    def test_every_state_carries_a_pattern_not_only_a_hue(self) -> None:
+        """Greyscale and deuteranopia both survive a pattern; neither survives a hue."""
+        patterned = {"open", "open-end", "summary", "orphaned"}
+        for state in patterned:
+            selector = ".bar" if state == "open" else f".bar.{state}"
+            rule = self.fill(selector)
+            self.assertIn("gradient", rule, f"{state} is a flat fill: hue is its only carrier")
+
+    def test_legend_keys_are_drawn_like_the_bars_they_explain(self) -> None:
+        for state in self.STATES:
+            key = self.fill(f".key.bar.{state}") or self.fill(".key.bar")
+            bar = self.fill(".bar" if state == "open" else f".bar.{state}")
+            self.assertEqual(key, bar, f"the {state} legend key does not match its bar")
+
+    def test_the_legend_never_shows_a_state_the_chart_cannot_draw(self) -> None:
+        """`done` lanes are filtered out before any bar is built, so a `done` key explains nothing."""
+        self.assertNotIn(("key bar done", "done"), rb.LEGEND)
+
+
+class FoldedRowsExpandTest(unittest.TestCase):
+    """45 of 58 lanes behind one strip, with nothing to open it. The names were in the html all along."""
+
+    def setUp(self) -> None:
+        self.html = rb.render(TRACKER, LOG, rb.parse_coordinator(CLAUDE_MD, today=NOW.date()), NOW)
+
+    def test_a_folded_row_is_wrapped_in_a_disclosure(self) -> None:
+        self.assertIn('<details class="folded">', self.html)
+
+    def test_the_folded_names_are_readable_text_not_only_data_attributes(self) -> None:
+        folded = re.search(r'<details class="folded">(.*?)</details>', self.html, re.S)
+        self.assertIsNotNone(folded, "no folded disclosure in the rendered board")
+        self.assertIn('<ul class="folded-list">', folded.group(1))
+        self.assertRegex(folded.group(1), r"<li[^>]*>[^<]+</li>")
+
+    def test_one_disclosure_per_folded_row_and_none_otherwise(self) -> None:
+        folded = self.html.count('<details class="folded">')
+        rows = self.html.count('class="row summary-row"') + self.html.count('class="row group-row"')
+        self.assertEqual(folded, rows, "every folded row opens, and a board with none has no stray disclosure")

@@ -751,3 +751,21 @@ Red first, on the live shape: `['Delete agent-parked/', 'Reconcile ARCHITECTURE.
 Hand check on the live tracker after the fix: `lanes=81 trees=5 reopen=0`, with both true findings still printed — a tree with an uncommitted file, and two trees named in File ownership that are not on disk. 245 unit tests green.
 
 Two more from the same pass are recorded and not fixed: 46 (a missing tree whose branch is an ancestor of main is routine cleanup; one whose work never merged is the alarm, and the script prints one line for both) and 47 (the orphan join — a tree with uncommitted work whose owner is not in the session list, which is what `Re-arm` is actually for, and which found nothing tonight while three sessions left uncommitted work behind).
+
+## 0.6.2 — 2026-09-18 00:3x CDT — board legibility (findings 49, 50, 51), branch `board-legibility`
+
+Zach, looking at the live board: "we need more colors… has no meaningful differences between open and no estimate, folded rows don't expand, and the colors alone are not colorblind friendly." Three separate defects in one screenshot.
+
+Red first, six failures. The two that named the bug: `'' is not true : .bar.orphaned sets no background of its own` and `AssertionError: '' != 'background:var(--open)'` — the legend key and the bar it explains were not drawn from the same declaration, and two states had no fill of their own at all.
+
+**Distinctness is the test, not the palette.** The suite asserts that no two states share a fill and that every patterned state declares a gradient; it asserts no particular hex. A palette change can move any hue it likes and still cannot re-collide two states. `--open` stayed exactly as it was — the brand green is Zach's, and only the two new hues (`--noest` teal, `--fold` neutral) were mine to pick.
+
+**Pattern, not just hue**, because he asked for colourblind-safe and hue alone fails greyscale too: 45° hatch for `open`, vertical dashes for `no estimate`, fine vertical rules for `folded`, cross-hatch for `orphaned`, solid for `running`. Text inside bars was considered and rejected — 47 of 87 rows are folded precisely because there is no room, and a 20-minute bar fits no word.
+
+**The folded names were already in the html.** They shipped as empty `.member` spans that only a grader could read. The strip became a `<summary>` inside a `<details>` with the names listed below it, and the spans stayed exactly where they were — they are the citation the `board_bars` grader checks, and moving them out of the bar would have broken `test_same_day_lanes_group`, which counts them inside it. No JavaScript.
+
+**A fourth defect, found while fixing the first three.** The legend advertised a `done` key, and `render_board.py` filters `done` lanes out before any bar is built — the chart cannot draw one. A key for something never drawn is the same complaint Zach made, so it is gone.
+
+Two existing tests had to move rather than be worked around: `BrandTest` pinned `--open`'s hex (restored, so the test stands untouched), and `DensityTest`'s 21 KB bound became 24 KB because the visible names cost ~1 KB on the fixture — the guard exists against the 67 KB regression of 0.3.0, not against a kilobyte, and the comment now says so.
+
+Hand check on the live tracker (87 lanes, 47 folded): five folded rows, five disclosures, five lists, each list outside its absolutely-positioned bar, four distinct patterned fills. Verified structurally rather than visually — I have no browser in this session, and said so rather than claiming a look I did not take. 252 unit tests green.

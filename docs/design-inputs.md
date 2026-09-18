@@ -121,3 +121,32 @@ A long-lived session, `one-at-a-time-fixer`, that runs the simple end of the bac
 **Tension with finding 44, and both are real.** C4 ends a session when its lane is done — a context per lane, reporting ready for decommissioning. The fixer persists across items and is defined by outliving them. The harness needs both shapes and a way to say which one a dispatch is, because "report when you are finished" means decommission me in one and hand me the next item in the other.
 
 **Open:** what Zach has told the fixer about committing, merging and pushing. A fixer that cannot merge produces a branch per item and a growing pile of `waiting` under the 14:58 rule. Note that the human-only list in the workspace block binds the coordinator only — working sessions act within their own lanes — so this is a question about that session's own grant, not a limit the coordinator inherits.
+
+## 49 — three states, one colour
+
+**From:** Zach, 2026-09-18 00:21, from the rendered board.
+**Status:** Adopted 2026-09-18 (0.6.2).
+
+"has no meaningful differences between open and no estimate". `open`, `no estimate` and `folded rows` all resolved to `var(--open)`: `.bar.open-end` differed only by a 135° stripe, and `.key.bar.summary` only by `opacity:.55`. At an 18×10px legend swatch neither survives, so three of the nine keys were the same olive.
+
+Each state now carries its own hue *and* its own fill pattern, and the legend key is drawn from the same declaration as the bar it explains — the 0.5.0 lesson, that a key borrows the bar's classes, applies to fills as well as to positioning. A test asserts the fills are pairwise distinct rather than asserting any particular hex, so a later palette change cannot quietly re-collide two states.
+
+Also removed: the `done` key. `render_board.py` filters `done` lanes out before any bar is built, so the chart can never draw one and the key explained nothing.
+
+## 50 — folded rows could not be opened
+
+**From:** Zach, same message.
+**Status:** Adopted 2026-09-18 (0.6.2).
+
+"folded rows don't expand". 47 of 87 lanes sat behind one strip with no way to see them. Their names were in the html the whole time, as empty `.member` spans that only a grader could read.
+
+The strip is now a `<summary>` inside a `<details>`, with the names in a list below it. No JavaScript — the Artifact CSP allows nothing external and this needs nothing. The `.member` spans stay where they are and stay hidden: they are the machine-readable citation the board graders check, and moving them would have broken that.
+
+## 51 — colour was the only carrier
+
+**From:** Zach, same message.
+**Status:** Adopted 2026-09-18 (0.6.2).
+
+"the colors alone are not colorblind friendly". Under deuteranopia the olive states and grey `done` converge; in greyscale nothing separated any of them.
+
+Every state that can be drawn now carries a pattern as well as a hue — 45° hatch for `open`, vertical dashes for `no estimate`, fine vertical rules for `folded`, cross-hatch for `orphaned`, solid for `running` — so the chart reads with no colour at all. A test asserts each patterned state declares a gradient, which is the greyscale guarantee expressed as something a string test can see. Text inside bars was rejected: 47 rows are folded precisely because there is no room, and a 20-minute bar fits no word.
