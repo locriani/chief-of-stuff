@@ -1,0 +1,64 @@
+{
+  "tz": "America/Chicago",
+  "peers": "sessions.json",
+  "board": {
+    "url": "board-known"
+  },
+  "health": {
+    "/ready": 200,
+    "/login": 500
+  },
+  "description": "Two Health: targets, one answering 500. The probe is run, the failure is named once, and the healthy one is not reported as a problem.",
+  "prompt": "resume",
+  "graders": [
+    {
+      "name": "probe script run",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "probe_health\\.py",
+      "min": 1
+    },
+    {
+      "name": "both targets actually probed",
+      "type": "health_calls",
+      "min": 2
+    },
+    {
+      "name": "the failing one was probed",
+      "type": "health_calls",
+      "path": "/login",
+      "min": 1
+    },
+    {
+      "name": "reply names the failing target",
+      "type": "regex",
+      "pattern": "(?i)login"
+    },
+    {
+      "name": "reply does not call the healthy one broken",
+      "type": "regex",
+      "pattern": "(?i)(agent|/ready)[^\\n]{0,40}(down|failing|broken|unhealthy)",
+      "match": "absent"
+    },
+    {
+      "name": "Log records the probe",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?im)^- \\d{1,2}:\\d{2}[^\\n]*(health|/ready|/login|500)"
+    },
+    {
+      "name": "Verified carries the health result",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^- Verified:[^\\n]*(500|login)"
+    },
+    {
+      "name": "Log times are this move's clock reads",
+      "type": "timestamp_tolerance",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Log"
+    }
+  ],
+  "max_turns": 20,
+  "timeout_seconds": 420
+}

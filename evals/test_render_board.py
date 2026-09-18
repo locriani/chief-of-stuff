@@ -748,5 +748,117 @@ class CliTest(unittest.TestCase):
             rb.main(["--date", "2026-09-16", "--root", str(root)])
 
 
+RESUME = """- As of: 09:52 — gauntlet-f0 [308833]
+- In flight: nothing; the poll to 4821-audit is out
+- Next: read 4821-audit's reply, then the deploy decision
+- Waiting on: Robin — TB17 diff review
+- Re-arm: the 30-minute check; the board watch
+- Verified: origin/main d6aab3b, 2 unpushed; agent /ready 200, login 200 (09:47)
+"""
+TRACKER_RESUME = TRACKER.replace("## Lanes", "## Resume\n\n" + RESUME + "\n## Lanes", 1)
+
+
+class LegendKeyTest(unittest.TestCase):
+    """A legend key borrows the chart's classes, and those are absolutely positioned.
+
+    With no positioned ancestor an absolute key anchors to the page itself, so the calendar-event,
+    now and deadline marks land in the top-left corner above the header. Seen live on 0.5.0.
+    """
+
+    def setUp(self) -> None:
+        self.html = rb.render(TRACKER, LOG, rb.parse_coordinator(CLAUDE_MD, today=NOW.date()), NOW)
+        self.css = self.html.split("<style>")[1].split("</style>")[0]
+
+    def test_keys_are_taken_out_of_absolute_positioning(self) -> None:
+        rule = next((l for l in self.css.splitlines() if ".legend .key{" in l), "")
+        self.assertTrue(rule, "no `.legend .key` rule: keys still inherit .bar/.band/.nowline positioning")
+        self.assertIn("position:static", rule)
+
+    def test_every_legend_key_has_a_size_of_its_own(self) -> None:
+        # A key drawn as a line has no width; one drawn as a swatch has no border. Both need a height.
+        for mark in ("nowline", "dline", "band"):
+            rule = next((l for l in self.css.splitlines() if f".legend .key.{mark}{{" in l), "")
+            self.assertTrue(rule, f"no sizing rule for the {mark} key")
+            self.assertIn("height", rule)
+
+    def test_the_legend_sits_inside_a_positioned_row(self) -> None:
+        self.assertIn(".legend .item{", self.css)
+        rule = next(l for l in self.css.splitlines() if ".legend .item{" in l)
+        self.assertIn("position:relative", rule)
+
+
+class ResumeBlockTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+
+    def test_parses_the_block_into_fields(self) -> None:
+        block = rb.parse_resume(TRACKER_RESUME)
+        self.assertEqual(block["as of"], "09:52 — gauntlet-f0 [308833]")
+        self.assertEqual(block["waiting on"], "Robin — TB17 diff review")
+        self.assertIn("origin/main d6aab3b", block["verified"])
+
+    def test_no_block_is_empty_not_an_error(self) -> None:
+        self.assertEqual(rb.parse_resume(TRACKER), {})
+
+    def test_board_url_still_comes_from_the_header_not_the_block(self) -> None:
+        # A block above Lanes is inside the old header slice; a `Board:` word in it must not win.
+        tracker = TRACKER.replace(
+            "## Lanes",
+            "## Resume\n\n- Next: say the Board: not-a-url line was never republished\n\n## Lanes",
+            1,
+        )
+        self.assertEqual(rb.parse_tracker(tracker).board_url, "board-7")
+
+    def test_a_tracker_with_no_header_url_still_reads_none(self) -> None:
+        tracker = TRACKER.replace("Coordinator: coordinator. Board: board-7.", "Coordinator: coordinator.")
+        self.assertIsNone(rb.parse_tracker(tracker).board_url)
+
+    def test_a_block_cannot_supply_the_url_when_the_header_has_none(self) -> None:
+        # The header is what precedes the first `## `, so no later section can name the board.
+        tracker = TRACKER_RESUME.replace("Coordinator: coordinator. Board: board-7.", "Coordinator: coordinator.")
+        tracker = tracker.replace("- Re-arm:", "- Note: Board: bogus-url was last published at 09:00\n- Re-arm:")
+        self.assertIsNone(rb.parse_tracker(tracker).board_url)
+
+    def test_the_block_does_not_become_a_lane(self) -> None:
+        self.assertEqual(len(rb.parse_tracker(TRACKER_RESUME).lanes), len(rb.parse_tracker(TRACKER).lanes))
+
+    def test_page_shows_the_resume_strip(self) -> None:
+        html = rb.render(TRACKER_RESUME, LOG, self.cfg, NOW)
+        self.assertIn('class="resume"', html)
+        self.assertIn("09:52", html)
+        self.assertIn("TB17 diff review", html)
+
+    def test_strip_is_absent_without_a_block(self) -> None:
+        self.assertNotIn('class="resume"', rb.render(TRACKER, LOG, self.cfg, NOW))
+
+    def test_strip_escapes_its_text(self) -> None:
+        tracker = TRACKER_RESUME.replace("TB17 diff review", "TB17 <b>diff</b> review")
+        html = rb.render(tracker, LOG, self.cfg, NOW)
+        self.assertIn("&lt;b&gt;diff&lt;/b&gt;", html)
+        self.assertNotIn("<b>diff</b>", html)
+
+    def test_summary_counts_long_resume_lines(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        (root / "CLAUDE.md").write_text(CLAUDE_MD)
+        (root / "daily").mkdir()
+        long_line = "- Next: " + "a merge order decision that will not fit on one line " * 6
+        tracker = TRACKER_RESUME.replace("- Next: read 4821-audit's reply, then the deploy decision", long_line)
+        (root / "daily" / "2026-09-16-tracker.md").write_text(tracker)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rb.main(["--date", "2026-09-16", "--root", str(root)])
+        self.assertIn("resume_long=1", buf.getvalue())
+
+    def test_summary_reports_no_block(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        (root / "CLAUDE.md").write_text(CLAUDE_MD)
+        (root / "daily").mkdir()
+        (root / "daily" / "2026-09-16-tracker.md").write_text(TRACKER)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rb.main(["--date", "2026-09-16", "--root", str(root)])
+        self.assertIn("resume=none", buf.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

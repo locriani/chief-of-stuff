@@ -221,6 +221,18 @@ class ClockLineTest(unittest.TestCase):
         ok, _ = run.grade({"type": "clock_line", "gate": "2026-09-16 22:00"}, record(at(16, 23), at(16, 25)))
         self.assertFalse(ok)
 
+    def test_deadline_on_another_day_may_say_so(self) -> None:
+        """A gate past midnight reads as the past without a day word, so the format allows one."""
+        rec = record(at(21, 52), at(21, 54))
+        rec.stream.last_text = "Now 21:52 CDT \u00b7 Submission in 4h00m (01:52 CDT, tomorrow)"
+        ok, detail = run.grade({"type": "clock_line", "gate": "2026-09-17 01:52"}, rec)
+        self.assertTrue(ok, detail)
+
+    def test_a_day_word_does_not_excuse_a_wrong_gate(self) -> None:
+        rec = record(at(21, 52), at(21, 54))
+        rec.stream.last_text = "Now 21:52 CDT \u00b7 Submission in 4h00m (03:00 CDT, tomorrow)"
+        self.assertFalse(run.grade({"type": "clock_line", "gate": "2026-09-17 01:52"}, rec)[0])
+
     def test_missing_line_fails_with_reason(self) -> None:
         rec = record(at(16, 23), at(16, 25))
         rec.stream.last_text = "about seven and a half hours"
@@ -464,6 +476,180 @@ class UnknownGraderTest(unittest.TestCase):
     def test_unknown_type_fails_loud(self) -> None:
         with self.assertRaises(ValueError):
             run.grade({"type": "vibes"}, record(at(16, 23), at(16, 25)))
+
+
+RESUME_BEFORE = """# Tracker
+
+## Resume
+
+- As of: 16:23 — gauntlet-f0 [308833]
+- In flight: nothing
+- Waiting on: Robin — the diff review
+
+## Log
+
+- 09:00 opened
+"""
+
+
+class ResumeGraderTest(unittest.TestCase):
+    """The block is rewritten whole, so `added lines only` is the wrong lens: every time in it is this move's."""
+
+    def setUp(self) -> None:
+        self.before = Path(tempfile.mkdtemp())
+        self.after = Path(tempfile.mkdtemp())
+        for root in (self.before, self.after):
+            (root / "daily").mkdir()
+            (root / "daily" / "t.md").write_text(RESUME_BEFORE)
+        self.rec = record(at(16, 23), at(16, 25))
+        self.rec.fixture_dir = self.after
+        self.rec.before_dir = self.before
+
+    def write(self, text: str) -> None:
+        (self.after / "daily" / "t.md").write_text(text)
+
+    def grader(self, **extra) -> dict:
+        g = {"type": "timestamp_tolerance", "path": "daily/t.md", "section": "## Resume",
+             "time_match": r"^- As of: (\d{1,2}):(\d{2})\b"}
+        g.update(extra)
+        return g
+
+    def test_a_fresh_as_of_passes_and_a_stale_one_fails(self) -> None:
+        self.write(RESUME_BEFORE.replace("16:23", "16:24"))
+        self.assertTrue(self.grade(self.grader())[0], self.grade(self.grader())[1])
+        self.write(RESUME_BEFORE.replace("- As of: 16:23", "- As of: 09:10"))
+        ok, detail = self.grade(self.grader())
+        self.assertFalse(ok)
+        self.assertIn("09:10", detail)
+
+    def test_other_block_lines_are_skipped_not_failed(self) -> None:
+        self.write(RESUME_BEFORE.replace("- In flight: nothing", "- In flight: the 09:00 merge is still out"))
+        ok, detail = self.grade(self.grader())
+        self.assertTrue(ok, detail)
+
+    def test_rewritten_grades_an_unchanged_line_too(self) -> None:
+        # Same minute as the previous move: byte-identical, and without `rewritten` nothing is checked.
+        self.write(RESUME_BEFORE.replace("- In flight: nothing", "- In flight: a poll is out"))
+        self.assertIn("1 written time", self.grade(self.grader(rewritten=True))[1])
+        self.assertIn("0 written time", self.grade(self.grader())[1])
+
+    def test_rewritten_still_catches_a_stale_time(self) -> None:
+        self.write(RESUME_BEFORE.replace("- As of: 16:23", "- As of: 01:46"))
+        self.assertFalse(self.grade(self.grader(rewritten=True))[0])
+
+    def test_missing_section_fails(self) -> None:
+        self.write("# Tracker\n\n## Log\n\n- 09:00 opened\n")
+        ok, detail = self.grade(self.grader())
+        self.assertFalse(ok)
+        self.assertIn("missing", detail)
+
+    def grade(self, g: dict) -> tuple[bool, str]:
+        return run.grade(g, self.rec)
+
+
+class GitIsNotANewFileTest(unittest.TestCase):
+    def test_no_new_files_ignores_paths_under_a_git_dir(self) -> None:
+        before = Path(tempfile.mkdtemp())
+        after = Path(tempfile.mkdtemp())
+        (after / "repo" / ".git" / "objects").mkdir(parents=True)
+        (after / "repo" / ".git" / "objects" / "abc").write_bytes(b"\x00binary")
+        (after / "repo" / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+        (after / "stray.md").write_text("x")
+        rec = record(at(16, 23), at(16, 25))
+        rec.fixture_dir, rec.before_dir = after, before
+        ok, detail = run.grade({"type": "no_new_files"}, rec)
+        self.assertFalse(ok)
+        self.assertIn("stray.md", detail)
+        self.assertNotIn(".git", detail)
+
+
+class AllowedToolsTest(unittest.TestCase):
+    def test_the_two_state_scripts_are_runnable_and_nothing_else_is(self) -> None:
+        allowed = " ".join(run.ALLOWED)
+        self.assertIn("probe_health.py", allowed)
+        self.assertIn("audit_lanes.py", allowed)
+        self.assertNotIn("Bash(git", allowed)
+        self.assertNotIn("Bash(curl", allowed)
+
+
+class HealthServerTest(unittest.TestCase):
+    def test_serves_the_canned_status_and_logs_every_probe(self) -> None:
+        import json
+        import urllib.request
+
+        log = Path(tempfile.mkdtemp()) / "calls.jsonl"
+        server = run.health_server({"/ready": 200, "/login": 500}, log)
+        try:
+            base = f"http://127.0.0.1:{server.server_port}"
+            with urllib.request.urlopen(f"{base}/ready", timeout=2) as r:
+                self.assertEqual(r.status, 200)
+            with self.assertRaises(Exception):
+                urllib.request.urlopen(f"{base}/login", timeout=2)
+        finally:
+            run.stop_server(server)
+        calls = [json.loads(l) for l in log.read_text().splitlines()]
+        self.assertEqual([c["tool"] for c in calls], ["health", "health"])
+        self.assertEqual([c["path"] for c in calls], ["/ready", "/login"])
+        self.assertEqual([c["status"] for c in calls], [200, 500])
+
+    def test_an_unlisted_path_is_404_not_a_crash(self) -> None:
+        import urllib.request
+
+        log = Path(tempfile.mkdtemp()) / "calls.jsonl"
+        server = run.health_server({"/ready": 200}, log)
+        try:
+            with self.assertRaises(Exception):
+                urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}/nope", timeout=2)
+        finally:
+            run.stop_server(server)
+
+    def test_health_base_token_is_absent_without_a_health_key(self) -> None:
+        ctx = run.context("America/Chicago", at(16, 23))
+        self.assertNotIn("health_base", ctx)
+        with self.assertRaises(KeyError):
+            run.render("{{health_base}}/ready", ctx)
+
+
+class HealthCallsGraderTest(unittest.TestCase):
+    def test_counts_probes_in_the_turn(self) -> None:
+        rec = record(at(16, 23), at(16, 25))
+        rec.mock_calls = [
+            {"tool": "health", "path": "/ready", "status": 200, "at": at(16, 24).isoformat()},
+            {"tool": "health", "path": "/login", "status": 500, "at": at(16, 24).isoformat()},
+        ]
+        self.assertTrue(run.grade({"type": "health_calls", "min": 2}, rec)[0])
+        self.assertTrue(run.grade({"type": "health_calls", "path": "/login", "min": 1}, rec)[0])
+        ok, detail = run.grade({"type": "health_calls", "path": "/absent", "min": 1}, rec)
+        self.assertFalse(ok)
+        self.assertIn("0 call", detail)
+
+    def test_no_probe_at_all_fails_a_min(self) -> None:
+        rec = record(at(16, 23), at(16, 25))
+        rec.mock_calls = []
+        self.assertFalse(run.grade({"type": "health_calls", "min": 1}, rec)[0])
+
+
+class RepoFixtureTest(unittest.TestCase):
+    def test_builds_an_origin_a_clone_and_the_named_worktrees(self) -> None:
+        import make_repo
+
+        root = Path(tempfile.mkdtemp())
+        make_repo.build(root, {"trees": "trees", "worktrees": [
+            {"name": "wt-merged", "branch": "landed", "merged": True},
+            {"name": "wt-open", "branch": "feat/open", "merged": False},
+            {"name": "wt-dirty", "branch": "feat/dirty", "merged": True, "dirty": True},
+        ]})
+        self.assertTrue((root / "origin.git").is_dir())
+        for name in ("wt-merged", "wt-open", "wt-dirty"):
+            self.assertTrue((root / "trees" / name / ".git").exists(), name)
+        head = make_repo.git(["rev-parse", "--abbrev-ref", "HEAD"], root / "trees" / "wt-open")
+        self.assertEqual(head, "feat/open")
+        self.assertNotEqual(make_repo.git(["status", "--porcelain"], root / "trees" / "wt-dirty"), "")
+        self.assertEqual(make_repo.git(["status", "--porcelain"], root / "trees" / "wt-merged"), "")
+        self.assertEqual(
+            make_repo.git(["rev-parse", "origin/main"], root / "repo"),
+            make_repo.git(["rev-parse", "main"], root / "repo"),
+        )
 
 
 if __name__ == "__main__":

@@ -1,0 +1,88 @@
+{
+  "tz": "America/Chicago",
+  "peers": "sessions.json",
+  "board": {
+    "url": "board-known"
+  },
+  "description": "A new session on a day that already has files. It reads the `## Resume` block rather than re-deriving the day from the Log, renames itself in the header, and leaves the block fresh.",
+  "prompt": "resume",
+  "graders": [
+    {
+      "name": "reads the real clock",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "\\bdate\\b",
+      "min": 1
+    },
+    {
+      "name": "lists sessions",
+      "type": "peer_calls",
+      "tool": "list_sessions",
+      "min": 1
+    },
+    {
+      "name": "reply names what was in flight",
+      "type": "regex",
+      "pattern": "(?i)(audit poll|poll[^\\n]{0,30}(out|outstanding|pending)|4821-audit)"
+    },
+    {
+      "name": "reply names what Robin owes",
+      "type": "regex",
+      "pattern": "(?i)release notes"
+    },
+    {
+      "name": "header carries the new coordinator name",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^Coordinator: (?!gauntlet-85\\b)\\S+"
+    },
+    {
+      "name": "block still has every field",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?s)## Resume.*?- As of:.*?- In flight:.*?- Next:.*?- Waiting on:.*?- Re-arm:.*?- Verified:"
+    },
+    {
+      "name": "As of is this move's clock read",
+      "type": "timestamp_tolerance",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Resume",
+      "time_match": "^- As of: (\\d{1,2}):(\\d{2})\\b",
+      "rewritten": true
+    },
+    {
+      "name": "log append-only, one line added",
+      "type": "lines_preserved",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Log",
+      "min_added": 1
+    },
+    {
+      "name": "Log times are this move's clock reads",
+      "type": "timestamp_tolerance",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Log"
+    },
+    {
+      "name": "board republished to the known url",
+      "type": "board_url_fixed",
+      "tracker": "daily/{{today}}-tracker.md",
+      "expect": "board-known"
+    },
+    {
+      "name": "board matches the final tracker",
+      "type": "board_matches_tracker",
+      "tracker": "daily/{{today}}-tracker.md",
+      "html": "daily/{{today}}-board.html"
+    },
+    {
+      "name": "no second tracker",
+      "type": "no_new_files",
+      "except": [
+        "daily/{{today}}-board.html"
+      ]
+    }
+  ],
+  "max_turns": 20,
+  "timeout_seconds": 420
+}

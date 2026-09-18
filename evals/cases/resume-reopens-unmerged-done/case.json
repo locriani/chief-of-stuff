@@ -1,0 +1,65 @@
+{
+  "tz": "America/Chicago",
+  "peers": "sessions.json",
+  "board": {
+    "url": "board-known"
+  },
+  "repo": {
+    "trees": "trees",
+    "worktrees": [
+      {
+        "name": "wt-audit",
+        "branch": "feat/audit",
+        "merged": false
+      }
+    ]
+  },
+  "description": "A lane marked done in a worktree whose branch never reached main. The audit reopens it; the lane with no tree is untouched.",
+  "prompt": "resume",
+  "graders": [
+    {
+      "name": "audit script run",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "audit_lanes\\.py",
+      "min": 1
+    },
+    {
+      "name": "the unmerged lane is reopened",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^\\| Security audit \\|[^\\n]*\\|\\s*waiting\\s*\\|"
+    },
+    {
+      "name": "its checklist item is not ticked",
+      "type": "file_matches",
+      "path": "daily/{{today}}.md",
+      "pattern": "(?m)^- \\[ \\] Security audit of the upload endpoint"
+    },
+    {
+      "name": "the lane with no tree stays done",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^\\| Draft release notes \\| Robin \\| done"
+    },
+    {
+      "name": "Log says why",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?im)^- \\d{1,2}:\\d{2}[^\\n]*(not on main|unmerged|wt-audit|feat/audit)"
+    },
+    {
+      "name": "reply says it once",
+      "type": "regex",
+      "pattern": "(?i)(not on main|unmerged|not (yet )?merged|nothing merged|still on [`']?feat|on a branch)"
+    },
+    {
+      "name": "Log times are this move's clock reads",
+      "type": "timestamp_tolerance",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Log"
+    }
+  ],
+  "max_turns": 20,
+  "timeout_seconds": 420
+}

@@ -44,6 +44,7 @@ LOGO = Path(__file__).resolve().parent.parent / "assets" / "logo.webp"
 FONTS = "https://fonts.googleapis.com/css2?family=Alegreya+Sans:wght@400;500;600&family=Cormorant+SC:wght@600&display=swap"
 SHORT_NAME = 48
 LONG_ITEM = 80
+RESUME_LINE = 160
 CLAUSE_TIME = re.compile(r"(?:^|\s)(?:at\s+)?(\d{1,2}:\d{2}):?(?=\s|$|[,;)])")
 REQ_LINE = re.compile(r"^(\s*)- \[([ xX])\]\s+(.*?)\s*$")
 EVIDENCE = " — evidence: "
@@ -284,6 +285,28 @@ def parse_requirements(text: str) -> list[tuple[str, list[Req]]]:
     return [(name, reqs) for name, reqs in groups if reqs]
 
 
+def parse_resume(text: str) -> dict[str, str]:
+    """The `## Resume` block as `key: value` pairs, keys lowercased. No block, no keys, no error."""
+    out: dict[str, str] = {}
+    for line in _section(text, "## Resume"):
+        m = BULLET.match(line)
+        if m:
+            out[_unquote(m.group(2)).lower()] = m.group(3).strip()
+    return out
+
+
+RESUME_STRIP = ("as of", "in flight", "next", "waiting on")
+
+
+def resume_strip(block: dict[str, str]) -> str:
+    """One line under the header: where the last move left off. Absent when the tracker has no block."""
+    parts = [f"<b>{_esc(k)}</b> {_esc(block[k])}" for k in RESUME_STRIP if block.get(k)]
+    if not parts:
+        return ""
+    verified = f' · <span class="muted">verified {_esc(block["verified"])}</span>' if block.get("verified") else ""
+    return f'<div class="resume">{" · ".join(parts)}{verified}</div>\n'
+
+
 def _cells(line: str) -> list[str]:
     inner = line.strip()
     if inner.startswith("|"):
@@ -298,9 +321,9 @@ def _is_separator(cells: list[str]) -> bool:
 
 
 def parse_tracker(text: str) -> Tracker:
-    head = text.split("## Lanes", 1)[0]
+    head = re.split(r"(?m)^## ", text, maxsplit=1)[0]
     url = None
-    m = re.search(r"Board:\s*(\S+)", head)
+    m = re.search(r"(?m)^\s*(?:[-*]\s*)?(?:Coordinator:[^\n]*?)?Board:\s*(\S+)", head)
     if m:
         candidate = m.group(1).rstrip(".,;")
         if candidate and not candidate.startswith("<") and candidate.lower() != "none":
@@ -740,7 +763,7 @@ h1{{font-family:"Cormorant SC","Cormorant Garamond",Georgia,serif;font-size:26px
 h2{{font-family:"Cormorant SC","Cormorant Garamond",Georgia,serif;font-size:19px;font-weight:600;letter-spacing:.05em;margin:28px 0 8px;border-bottom:1px solid var(--brass);padding-bottom:4px}}
 .header{{display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:4px}} .header .logo{{width:260px;max-width:100%;border:1px solid var(--brass);border-radius:4px;display:block}}
 .head-text{{flex:1 1 260px;min-width:0}}
-.meta{{color:var(--muted);font-size:13px}} .clock{{font-family:ui-monospace,monospace;font-size:14px;font-variant-numeric:tabular-nums;margin:6px 0}}
+.meta{{color:var(--muted);font-size:13px}} .resume{{margin:6px 0 0;font-size:13px;color:var(--fg);border-left:3px solid var(--brass);padding:2px 0 2px 8px}} .resume b{{color:var(--muted);font-weight:600;font-size:11px;letter-spacing:.06em;text-transform:uppercase}} .clock{{font-family:ui-monospace,monospace;font-size:14px;font-variant-numeric:tabular-nums;margin:6px 0}}
 table{{border-collapse:collapse;width:100%;max-width:100%}} td,th{{text-align:left;padding:4px 8px;border-bottom:1px solid var(--line);vertical-align:top}} th{{color:var(--muted);font-weight:600;font-size:12px;letter-spacing:.04em;text-transform:uppercase}}
 tr.group th{{background:color-mix(in srgb,var(--brass) 18%,transparent);color:var(--fg);font-family:"Cormorant SC","Cormorant Garamond",Georgia,serif;font-weight:600;font-size:14px;letter-spacing:.12em;text-transform:uppercase;border-top:2px solid var(--brass);padding:6px 8px}}
 .muted{{color:var(--muted)}} .warn{{color:var(--dl);font-size:12px}}
@@ -752,7 +775,11 @@ tr.group th{{background:color-mix(in srgb,var(--brass) 18%,transparent);color:va
 .overlay{{position:absolute;top:0;bottom:0;left:var(--name-w);right:0;pointer-events:none}}
 .band{{position:absolute;top:0;bottom:0;background:var(--band)}}
 .grid{{position:absolute;top:0;bottom:0;border-left:1px solid var(--line)}} .grid.half{{border-left:1px dotted var(--line);opacity:.6}}
-.legend{{display:flex;flex-wrap:wrap;gap:4px 14px;margin:6px 0 2px;font-size:12px;color:var(--muted)}} .legend .item{{display:inline-flex;align-items:center;gap:5px}}
+.legend{{display:flex;flex-wrap:wrap;gap:4px 14px;margin:6px 0 2px;font-size:12px;color:var(--muted)}} .legend .item{{position:relative;display:inline-flex;align-items:center;gap:5px}}
+/* Keys borrow the chart classes for colour only: those are position:absolute, and an absolute key with no positioned ancestor lands in the page corner. */
+.legend .key{{position:static;flex:none;display:inline-block;width:18px;height:10px;border-radius:2px;top:auto;bottom:auto;left:auto;right:auto}}
+.legend .key.nowline{{width:0;height:12px;border-radius:0;border-left:2px solid var(--now)}} .legend .key.dline{{width:0;height:12px;border-radius:0;border-left:2px dashed var(--dl);transform:none}}
+.legend .key.band{{height:12px;background:var(--band);border:1px solid var(--line)}}
 .key{{display:inline-block;width:18px;height:10px;border-radius:2px}} .key.bar{{position:static;background:var(--open);padding:0}}
 .key.bar.running{{background:var(--running)}} .key.bar.done{{background:var(--done)}} .key.bar.summary{{background:var(--open);opacity:.55}}
 .key.band{{background:var(--band);border:1px solid var(--line)}} .key.nowline{{width:0;height:12px;border-left:2px solid var(--now);border-radius:0}} .key.dline{{width:0;height:12px;border-left:2px dashed var(--dl);border-radius:0}}
@@ -774,7 +801,7 @@ details summary{{cursor:pointer}} details[open] summary{{margin-bottom:4px}}
 <h1>Board · {now.strftime('%a %d %b')}</h1>
 <div class="clock" id="clock">Now — {_esc(tzname)} · {_esc(nearest.name)} ({nearest.at.strftime('%H:%M')} {_esc(tzname)})</div>
 <div class="meta">tracker as of {now.strftime('%H:%M')} {_esc(tzname)} <span id="ago"></span> · kept by chief-of-stuff · board {_esc(url or 'not yet published')}{long_note}</div>
-</div></div>
+{resume_strip(parse_resume(tracker_text))}</div></div>
 
 {unassigned_html}<h2>{_esc(cfg.user)}'s queue</h2>
 <table><tr><th>item</th><th>due</th><th>state</th></tr>
@@ -858,7 +885,10 @@ def main(argv: list[str] | None = None) -> Path:
     print(out)
     req_counts = ",".join(f"{name}:{sum(r.done for _, rs in parse_requirements(t) for r in rs)}/{sum(len(rs) for _, rs in parse_requirements(t))}" for name, t in req_texts.items() if t is not None)
     missing = sum(1 for t in req_texts.values() if t is None)
-    print(f"lanes={len(parsed.lanes)} no_estimate={no_est} warnings={warnings} long_items={long_items} requirements={req_counts or 'none'} requirements_missing={missing} tracker_sha256={hashlib.sha256(tracker_text.encode()).hexdigest()[:12]}")
+    block = parse_resume(tracker_text)
+    resume_long = sum(1 for v in block.values() if len(v) > RESUME_LINE)
+    resume_note = f"{len(block)} fields" if block else "none"
+    print(f"lanes={len(parsed.lanes)} no_estimate={no_est} warnings={warnings} long_items={long_items} resume={resume_note} resume_long={resume_long} requirements={req_counts or 'none'} requirements_missing={missing} tracker_sha256={hashlib.sha256(tracker_text.encode()).hexdigest()[:12]}")
     return out
 
 

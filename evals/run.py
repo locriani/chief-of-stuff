@@ -21,14 +21,19 @@ import sys
 import queue
 import tempfile
 import threading
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from datetime import datetime, timedelta
 from datetime import time as dtime
 from pathlib import Path
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import make_repo  # noqa: E402
 
 EVALS = Path(__file__).resolve().parent
 PLUGIN_ROOT = EVALS.parent
@@ -42,8 +47,13 @@ DEFAULT_MODEL = "opus"
 TOOLS = ["Bash", "Read", "Glob", "Grep", "Write", "Edit", "Agent"]
 # `mv`/`mkdir` are for filing moves (PARA); no `cp` or `rm`, so a "move" cannot become a copy or a delete.
 BOARD_RENDERER = PLUGIN_ROOT / "scripts" / "render_board.py"
-# The board renderer is the one script the agent may run: html comes from code, never from the agent.
-ALLOWED = ["Bash(date:*)", "Bash(TZ=*)", "Bash(mv:*)", "Bash(mkdir:*)", f"Bash(python3 {BOARD_RENDERER}:*)", "Read", "Glob", "Grep", "Write(./**)", "Edit(./**)"]
+HEALTH_PROBE = PLUGIN_ROOT / "scripts" / "probe_health.py"
+LANE_AUDIT = PLUGIN_ROOT / "scripts" / "audit_lanes.py"
+# The plugin's own scripts are the only ones the agent may run: html, health and merge state come
+# from code, never from the agent. git and curl stay off the allowlist — the scripts call them.
+ALLOWED = ["Bash(date:*)", "Bash(TZ=*)", "Bash(mv:*)", "Bash(mkdir:*)", f"Bash(python3 {BOARD_RENDERER}:*)",
+           f"Bash(python3 {HEALTH_PROBE}:*)", f"Bash(python3 {LANE_AUDIT}:*)",
+           "Read", "Glob", "Grep", "Write(./**)", "Edit(./**)"]
 DISALLOWED = ["Bash(railway:*)", "Bash(git commit:*)", "Bash(git add:*)", "Bash(git push:*)"]
 # These reach real Claude sessions on this machine. No eval run may expose them.
 PEER_TOOLS = ("ListAgents", "SendMessage")
@@ -61,7 +71,9 @@ NOW_FORMATS = {"local": "%Y-%m-%d %H:%M", "hhmm": "%H:%M"}
 DURATION_HM = re.compile(r"(\d+)\s*h(?:ours?|rs?)?\s*(?:and\s*)?(\d{1,2})\s*m(?:in(?:utes?|s)?)?\b")
 DURATION_H = re.compile(r"(\d+(?:\.\d+)?)\s*(?:hours?|hrs?|h)\b")
 CLOCK = re.compile(
-    r"Now\s+(\d{1,2}):(\d{2})\s+\S+\s+·\s+(.+?)\s+in\s+(\d+)h(\d{2})m\s+\((\d{1,2}):(\d{2})\s+\S+\)"
+    # The closing parenthesis may carry a day word — "(01:52 CDT, tomorrow)" — because a gate past
+    # midnight reads as this morning, already gone, without one.
+    r"Now\s+(\d{1,2}):(\d{2})\s+\S+\s+·\s+(.+?)\s+in\s+(\d+)h(\d{2})m\s+\((\d{1,2}):(\d{2})\s+[^\s,)]+(?:,\s*[^)]{1,24})?\)"
 )
 TOLERANCE = timedelta(minutes=2)
 
@@ -336,7 +348,10 @@ def _file_matches(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
 
 
 def _files(root: Path | None) -> set[str]:
-    return {str(f.relative_to(root)) for f in root.rglob("*") if f.is_file()} if root and root.is_dir() else set()
+    """Every file under `root`, minus anything inside a `.git/`: a repo built for a run is not the agent's doing."""
+    if not (root and root.is_dir()):
+        return set()
+    return {str(f.relative_to(root)) for f in root.rglob("*") if f.is_file() and ".git" not in f.relative_to(root).parts}
 
 
 def _no_new_files(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
@@ -642,10 +657,15 @@ def _timestamp_tolerance(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
     zone = ZoneInfo(rec.tz)
     day = rec.t_start.astimezone(zone).date()
     bad, checked = [], 0
+    named = re.compile(g["time_match"]) if "time_match" in g else None
     for line in after:
-        if line in before:
+        if line in before and not g.get("rewritten"):
             continue
-        if "column" in g:
+        if named:
+            m = named.search(line)
+            if not m:
+                continue  # a block line that states no time of its own, or quotes one it did not read
+        elif "column" in g:
             if not line.startswith("|"):
                 continue
             cells = [c.strip() for c in line.strip().strip("|").split("|")]
@@ -671,7 +691,20 @@ def _reply_lines(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
     return n <= g["max"], f"{n} non-empty line(s); want <= {g['max']}"
 
 
+def _health_calls(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
+    """Probes recorded by the loopback server in this turn. Without this a case can pass having probed nothing."""
+    calls = [c for c in rec.mock_calls if c.get("tool") == "health"]
+    if "path" in g:
+        calls = [c for c in calls if c.get("path") == g["path"]]
+    if "status" in g:
+        calls = [c for c in calls if c.get("status") == g["status"]]
+    lo, hi = g.get("min", 0), g.get("max")
+    ok = len(calls) >= lo and (hi is None or len(calls) <= hi)
+    return ok, f"{len(calls)} call(s); want min {lo}" + (f", max {hi}" if hi is not None else "")
+
+
 COORDINATION_GRADERS = {
+    "health_calls": _health_calls,
     "peer_calls": _peer_calls,
     "timestamp_tolerance": _timestamp_tolerance,
     "reply_lines": _reply_lines,
@@ -883,6 +916,41 @@ sys.exit(1)
 '''
 
 
+class _HealthHandler(BaseHTTPRequestHandler):
+    """Answers the status the case named for that path and logs the probe. 404 for anything unlisted."""
+
+    def do_GET(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler's name)
+        status = self.server.plan.get(self.path, 404)
+        body = json.dumps({"path": self.path, "status": status}).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        with open(self.server.log, "a") as fh:
+            fh.write(json.dumps({"tool": "health", "path": self.path, "status": status,
+                                 "at": datetime.now(ZoneInfo(self.server.tz)).isoformat()}) + "\n")
+
+    def log_message(self, *_a) -> None:
+        return
+
+
+def health_server(plan: dict[str, int], log: Path, tz: str = "America/Chicago") -> ThreadingHTTPServer:
+    """A loopback server for one run. Port 0, so nothing collides; every probe lands in the calls file."""
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _HealthHandler)
+    server.plan, server.log, server.tz = plan, log, tz
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.touch()
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def stop_server(server: ThreadingHTTPServer | None) -> None:
+    if server is not None:
+        server.shutdown()
+        server.server_close()
+
+
 def write_shims(shim_dir: Path) -> None:
     shim_dir.mkdir(parents=True, exist_ok=True)
     railway = shim_dir / "railway"
@@ -893,18 +961,26 @@ def write_shims(shim_dir: Path) -> None:
 def run_one(case: Case, arm: str, model: str, out: Path) -> tuple[list[tuple[str, bool, str]], str | None, dict[str, Any]]:
     tz = case.spec.get("tz", "America/Chicago")
     ctx = context(tz, datetime.now(ZoneInfo(tz)))
-    spec = render_value(case.spec, ctx)
     out.mkdir(parents=True, exist_ok=True)
+    calls_log = out / "calendar" / "calls.jsonl"
+    health = None
+    if "health" in case.spec:
+        # Started before the fixture renders: `{{health_base}}` has to exist when file contents are substituted.
+        health = health_server({str(k): int(v) for k, v in case.spec["health"].items()}, calls_log, tz)
+        ctx["health_base"] = f"http://127.0.0.1:{health.server_port}"
+    spec = render_value(case.spec, ctx)
     # Fixture lives outside this repo so the sidecar's own CLAUDE.md is not discovered upward.
     work = Path(tempfile.mkdtemp(prefix="cos-eval-"))
     try:
         if (case.root / "fixture").is_dir():
             render_tree(case.root / "fixture", work, ctx)
             render_tree(case.root / "fixture", out / "fixture-before", ctx)
+        if "repo" in spec:
+            # Real git: `merge-base --is-ancestor` is the thing under test, and a fixture cannot carry a repo.
+            make_repo.build(work, spec["repo"])
         write_shims(out / "shims")
         env = dict(os.environ, PATH=f"{out / 'shims'}{os.pathsep}{os.environ['PATH']}")
         mcp_config = None
-        calls_log = out / "calendar" / "calls.jsonl"
         if "calendar" in spec:
             # Events live in the results dir, not the agent's cwd, so the calendar is reachable only through the mock.
             (out / "calendar").mkdir(parents=True, exist_ok=True)
@@ -939,6 +1015,7 @@ def run_one(case: Case, arm: str, model: str, out: Path) -> tuple[list[tuple[str
         shutil.copytree(work, out / "fixture", dirs_exist_ok=True)
     finally:
         shutil.rmtree(work, ignore_errors=True)
+        stop_server(health)  # a daemon thread would otherwise outlive this case and serve the next one
 
     stream = load_stream(out / "stream.jsonl")
     meta = {

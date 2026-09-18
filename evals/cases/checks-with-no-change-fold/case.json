@@ -1,0 +1,67 @@
+{
+  "tz": "America/Chicago",
+  "peers": "sessions.json",
+  "board": {
+    "url": "board-known"
+  },
+  "description": "Two quiet checks then a real change. A check that finds nothing writes no Log line; the line that is finally written names the span.",
+  "turns": [
+    {
+      "prompt": "[Scheduled check] anything moved?",
+      "graders": [
+        {
+          "name": "no Log line for a quiet check",
+          "type": "lines_preserved",
+          "path": "daily/{{today}}-tracker.md",
+          "section": "## Log",
+          "min_added": 0
+        },
+        {
+          "name": "Log gained nothing",
+          "type": "file_matches",
+          "path": "daily/{{today}}-tracker.md",
+          "pattern": "(?im)^- \\d{1,2}:\\d{2}[^\\n]*no change",
+          "match": "absent"
+        }
+      ]
+    },
+    {
+      "prompt": "[Scheduled check] anything moved?",
+      "graders": [
+        {
+          "name": "still no no-change lines",
+          "type": "file_matches",
+          "path": "daily/{{today}}-tracker.md",
+          "pattern": "(?im)^- \\d{1,2}:\\d{2}[^\\n]*no change",
+          "count": 0
+        }
+      ]
+    },
+    {
+      "prompt": "<cross-session-message from=\"uds:/tmp/cc-socks/7719.sock\" from-name=\"7719-notes\" from-mode=\"prompting\">\nRelease notes drafted and pushed to main.\n</cross-session-message>",
+      "graders": [
+        {
+          "name": "one line now, naming the span",
+          "type": "file_matches",
+          "path": "daily/{{today}}-tracker.md",
+          "pattern": "(?im)^- \\d{1,2}:\\d{2}[^\\n]*(since \\d{1,2}:\\d{2}|2 checks|two checks)"
+        },
+        {
+          "name": "log append-only",
+          "type": "lines_preserved",
+          "path": "daily/{{today}}-tracker.md",
+          "section": "## Log",
+          "min_added": 1
+        },
+        {
+          "name": "Log times are this move's clock reads",
+          "type": "timestamp_tolerance",
+          "path": "daily/{{today}}-tracker.md",
+          "section": "## Log"
+        }
+      ]
+    }
+  ],
+  "max_turns": 16,
+  "timeout_seconds": 420
+}
