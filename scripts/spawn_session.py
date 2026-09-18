@@ -166,12 +166,14 @@ def main(argv_in: list[str] | None = None) -> int:
     ap.add_argument("--title", required=True, help="the terminal tab's title, so a human can find it")
     ap.add_argument("--lane", required=True, help="the Lanes row this dispatch owns; the assignment is read back from it")
     ap.add_argument("--root", default=".", help="workspace root holding CLAUDE.md")
+    ap.add_argument("--coordinator", help="your own session name as a listing shows it, so the session knows who to register with")
     ap.add_argument("--date", help="YYYY-MM-DD; default: today in the workspace timezone")
     ap.add_argument("--dry-run", action="store_true", help="print the argv and start nothing")
     args = ap.parse_args(argv_in)
 
     try:
-        body = dispatch_prompt.compose(Path(args.root), args.date, args.lane, worktree=Path(args.cwd).resolve())
+        body = dispatch_prompt.compose(Path(args.root), args.date, args.lane,
+                                      worktree=Path(args.cwd).resolve(), coordinator=args.coordinator)
         command = argv(launcher(), agent_type=args.agent_type, cwd=args.cwd, title=args.title)
     except (RefusedError, dispatch_prompt.RefusedError) as exc:
         print(f"refused: {exc}", file=sys.stderr)

@@ -36,7 +36,9 @@ TRACKER = """# Tracker 2026-09-18
 
 ## File ownership
 
-- Security audit: `src/a/` (findings go to `notes/audit.md`)
+| context | paths |
+|---|---|
+| Security audit | `src/a/`, `notes/audit.md` |
 
 ## Log
 
@@ -114,6 +116,147 @@ class ComposeTest(unittest.TestCase):
     def test_a_missing_tracker_is_refused_rather_than_composed_around(self):
         with self.assertRaises(dp.RefusedError):
             dp.compose(self.root, "2026-09-19", "Security audit")
+
+
+class AssignmentTest(unittest.TestCase):
+    """The remaining lines. Two lines were enough for a session to find its way and not to act."""
+
+    def setUp(self):
+        self.tmp, self.root = workspace()
+        self.addCleanup(self.tmp.cleanup)
+
+    def body(self, lane="Security audit", **kw):
+        return dp.compose(self.root, "2026-09-18", lane, **kw)
+
+    def test_the_whole_item_cell_travels_as_the_ask(self):
+        """The item is the ask. A session that reads only that row has to know what done looks like."""
+        ask = "Security audit: the upload handler. Done when every path is checked and the findings are in notes/audit.md"
+        tmp, root = workspace(TRACKER.replace("| Security audit | unassigned", f"| {ask} | unassigned"))
+        self.addCleanup(tmp.cleanup)
+        body = dp.compose(root, "2026-09-18", ask)
+        self.assertIn("Done when every path is checked", body)
+
+    def test_it_names_the_paths_the_lane_owns(self):
+        self.assertIn("Owns: `src/a/`, `notes/audit.md`", self.body())
+
+    def test_owning_nothing_is_said_rather_than_left_out(self):
+        tmp, root = workspace(TRACKER.replace("| Security audit | `src/a/`, `notes/audit.md` |",
+                                              "| Security audit | none |"))
+        self.addCleanup(tmp.cleanup)
+        self.assertIn("Owns: none", dp.compose(root, "2026-09-18", "Security audit"))
+
+    def test_a_lane_with_no_file_ownership_row_is_refused(self):
+        """Ownership is what keeps two sessions off one file. A dispatch without it is finding 55 again."""
+        tmp, root = workspace(TRACKER.replace("| Security audit | `src/a/`, `notes/audit.md` |", ""))
+        self.addCleanup(tmp.cleanup)
+        with self.assertRaises(dp.RefusedError) as e:
+            dp.compose(root, "2026-09-18", "Security audit")
+        self.assertIn("File ownership", str(e.exception))
+
+    def test_the_ownership_row_may_be_keyed_on_the_short_name(self):
+        """After the spawn the coordinator rewrites that cell to name the tree, so the long form goes."""
+        long_item = "Security audit: the upload handler, every path, findings into notes/audit.md"
+        tmp, root = workspace(TRACKER.replace("| Security audit | unassigned", f"| {long_item} | unassigned"))
+        self.addCleanup(tmp.cleanup)
+        self.assertIn("Owns: `src/a/`", dp.compose(root, "2026-09-18", long_item))
+
+    def test_it_says_not_to_commit_or_push(self):
+        self.assertIn("Write only: do not commit or push.", self.body())
+
+    def test_it_says_what_to_reply_with(self):
+        self.assertRegex(self.body(), r"(?m)^Report: \S")
+
+    def test_the_requirement_the_lane_serves_travels_when_there_is_one(self):
+        self.assertIn("Security audit of the upload handler", self.body())
+
+    def test_a_blank_checklist_leaves_the_line_out_rather_than_writing_an_empty_one(self):
+        tmp, root = workspace(TRACKER.replace("| Checklist: Security audit of the upload handler |", "|  |"))
+        self.addCleanup(tmp.cleanup)
+        self.assertNotRegex(dp.compose(root, "2026-09-18", "Security audit"), r"(?m)^Requirement:\s*$")
+
+
+class HeaderTest(unittest.TestCase):
+    """What the coordinator can neither forge nor omit, read hours in, after a compaction."""
+
+    def setUp(self):
+        self.tmp, self.root = workspace()
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_it_says_the_file_is_not_authority(self):
+        body = dp.compose(self.root, "2026-09-18", "Security audit")
+        self.assertIn("not authority", body)
+
+    def test_it_says_to_hand_back_a_lane_that_does_not_add_up(self):
+        """Finding 56: the failure mode to design against is inventing plausible work, not stopping."""
+        body = dp.compose(self.root, "2026-09-18", "Security audit")
+        self.assertIn("hand it back", body)
+        self.assertIn("assumption", body)
+
+    def test_it_resolves_the_tension_between_staying_in_the_tree_and_reading_the_tracker(self):
+        body = dp.compose(self.root, "2026-09-18", "Security audit")
+        self.assertIn("Reading the tracker named below is expected", body)
+
+    def test_it_tells_the_session_to_register(self):
+        body = dp.compose(self.root, "2026-09-18", "Security audit")
+        self.assertIn("Register before you start", body)
+        self.assertIn("name [ref]", body)
+
+    def test_it_names_the_coordinator_when_one_was_given(self):
+        body = dp.compose(self.root, "2026-09-18", "Security audit", coordinator="gauntlet-d3")
+        self.assertIn("gauntlet-d3", body)
+
+    def test_it_still_says_to_register_when_no_coordinator_was_named(self):
+        body = dp.compose(self.root, "2026-09-18", "Security audit")
+        self.assertIn("chief-of-stuff coordinator", body)
+
+    def test_a_coordinator_name_that_is_not_a_session_name_is_refused(self):
+        for bad in ("$(whoami)", "a b; rm", "\x1b]0;x\x07", "x" * 200):
+            with self.assertRaises(dp.RefusedError, msg=bad):
+                dp.compose(self.root, "2026-09-18", "Security audit", coordinator=bad)
+
+    def test_a_ref_may_ride_along_with_the_name(self):
+        body = dp.compose(self.root, "2026-09-18", "Security audit", coordinator="gauntlet-d3 [0d6cf4]")
+        self.assertIn("gauntlet-d3 [0d6cf4]", body)
+
+
+class QuarantineTest(unittest.TestCase):
+    """The tracker is not a trusted channel: a coordinator writes into it, and so does a peer."""
+
+    def field(self, tracker):
+        tmp, root = workspace(tracker)
+        self.addCleanup(tmp.cleanup)
+        return root
+
+    def test_session_origin_text_in_a_composed_field_is_refused(self):
+        """`(via <session>)` is what this system marks session-origin text with. It is data, not an instruction."""
+        for spoiled in (
+            TRACKER.replace("| Security audit | unassigned", "| Security audit (via 4821-audit) | unassigned"),
+            TRACKER.replace("`src/a/`, `notes/audit.md`", "`src/a/` (via 4821-audit)"),
+            TRACKER.replace("Checklist: Security audit", "Checklist: (via 4821-audit) Security audit"),
+        ):
+            root = self.field(spoiled)
+            lane = "Security audit (via 4821-audit)" if "Security audit (via" in spoiled else "Security audit"
+            with self.assertRaises(dp.RefusedError):
+                dp.compose(root, "2026-09-18", lane)
+
+    def test_a_control_character_is_refused(self):
+        """An OSC payload reaching a terminal is a separate vector from prompt injection."""
+        root = self.field(TRACKER.replace("`src/a/`", "`src/a/`\x1b]0;pwned\x07"))
+        with self.assertRaises(dp.RefusedError) as e:
+            dp.compose(root, "2026-09-18", "Security audit")
+        self.assertIn("control character", str(e.exception))
+
+    def test_a_line_longer_than_the_cap_is_refused(self):
+        root = self.field(TRACKER.replace("`src/a/`", "`" + "a" * (dp.LINE_CAP + 1) + "`"))
+        with self.assertRaises(dp.RefusedError):
+            dp.compose(root, "2026-09-18", "Security audit")
+
+    def test_a_real_tracker_row_is_well_inside_the_caps(self):
+        """The caps are a sanity bound. Live item cells run to 1700 characters and must still compose."""
+        self.assertGreater(dp.LINE_CAP, 1700)
+        long_item = "Security audit: " + ("word " * 340).strip()
+        root = self.field(TRACKER.replace("| Security audit | unassigned", f"| {long_item} | unassigned"))
+        self.assertIn("Owns: `src/a/`", dp.compose(root, "2026-09-18", long_item))
 
 
 if __name__ == "__main__":

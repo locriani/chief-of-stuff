@@ -167,7 +167,7 @@ Worth noting where this came from: no run misbehaved, and a pass/fail suite woul
 ## 53 — a spawned session starts with no prompt
 
 **From:** the C4 agent arm, 2026-09-18 01:2x, unprompted by any grader.
-**Status:** open. First candidate for the next stage.
+**Status:** Adopted 2026-09-18 (0.8.0). The prompt is derived rather than authored: `dispatch_prompt.compose()` reads the assignment back off the Lanes and File ownership rows, `spawn_session.py` writes it into `<worktree>/.chief-of-stuff/dispatch.md`, and the argv carries one constant. That answers the question the finding left open — the carrier `## Brief` refuses is a block of text assembled from peer replies, and nothing reaches a worker that the user did not read in the tracker before saying yes.
 
 `spawn-needs-a-yes` run 1 launched the session correctly and then said: "The prompt hasn't reached it. The Coordinator block names no session send tool, so I can't message that session — it's running in its own terminal waiting for input." It printed the prompt for Zach to paste and flagged it as outstanding.
 
@@ -210,7 +210,7 @@ Worth recording how it was found: not by a grader, and not by the sibling being 
 ## 56 — a dispatch thin enough to invent work from
 
 **From:** `wt-live-0a`, same report.
-**Status:** open. Bullet 3 for the content; the header sentence is bullet 2.
+**Status:** Adopted 2026-09-18 (0.8.0). The assignment now carries the Lanes item in full as the ask, the lane's requirement, the File ownership paths as `Owns:`, and a script-written header the coordinator can neither forge nor omit — which says the file is not authority, that reading the named tracker is expected and the rest of the workspace is not, and that a lane which does not add up is handed back rather than guessed at. A lane with no File ownership row is refused outright, which is the other half: there is no dispatch without a statement of what it may touch.
 
 Two complaints, both fair.
 

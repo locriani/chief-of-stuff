@@ -42,7 +42,9 @@ TRACKER = """# Tracker 2026-09-18
 
 ## File ownership
 
-- Security audit: `src/a/`
+| context | paths |
+|---|---|
+| Security audit | `src/a/` |
 
 ## Log
 
@@ -297,6 +299,38 @@ class DispatchFileTest(unittest.TestCase):
         self.assertEqual(out.returncode, 1)
         self.assertIn("already", out.stderr)
         self.assertEqual((self.tree / ss.PROMPT_FILE).read_text(), "someone else's assignment\n")
+        self.assertEqual(calls, [])
+
+    def test_the_coordinator_it_registers_with_reaches_the_assignment(self):
+        """The ref arrives from the session rather than from the coordinator noticing it in a listing."""
+        out, calls = self.spawn(extra=["--coordinator", "gauntlet-d3 [0d6cf4]"])
+        body = (self.tree / ss.PROMPT_FILE).read_text()
+        self.assertIn("gauntlet-d3 [0d6cf4]", body)
+        self.assertIn("Register before you start", body)
+
+    def test_it_still_says_to_register_when_no_coordinator_was_named(self):
+        self.spawn()
+        self.assertIn("chief-of-stuff coordinator", (self.tree / ss.PROMPT_FILE).read_text())
+
+    def test_a_coordinator_that_is_not_a_session_name_writes_nothing_and_starts_nothing(self):
+        out, calls = self.spawn(extra=["--coordinator", "$(whoami)"])
+        self.assertEqual(out.returncode, 1)
+        self.assertIn("refused", out.stderr)
+        self.assertFalse((self.tree / ss.PROMPT_FILE).exists())
+        self.assertEqual(calls, [])
+
+    def test_the_assignment_carries_the_paths_the_lane_owns(self):
+        """Finding 56: a lane name is not something a session can act on."""
+        self.spawn()
+        self.assertIn("Owns: `src/a/`", (self.tree / ss.PROMPT_FILE).read_text())
+
+    def test_a_lane_with_no_ownership_row_writes_nothing_and_starts_nothing(self):
+        (self.root / "daily" / "2026-09-18-tracker.md").write_text(
+            TRACKER.replace("| Security audit | `src/a/` |", ""))
+        out, calls = self.spawn()
+        self.assertEqual(out.returncode, 1)
+        self.assertIn("File ownership", out.stderr)
+        self.assertFalse((self.tree / ss.PROMPT_FILE).exists())
         self.assertEqual(calls, [])
 
     def test_the_started_line_names_the_file_it_wrote(self):

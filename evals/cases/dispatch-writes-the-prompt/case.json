@@ -5,7 +5,7 @@
     "trees": "trees",
     "worktrees": []
   },
-  "description": "The spawned session comes up holding its assignment. The prompt is not typed into the launch: the script reads it back from the Lanes row the coordinator named, so the lane is the only thing that travels.",
+  "description": "The spawned session comes up holding its assignment: the lane, the paths it owns, and a header it can neither be talked out of nor have withheld. The prompt is not typed into the launch \u2014 the script reads it back from the two rows the coordinator wrote.",
   "turns": [
     {
       "prompt": "Start the security audit.",
@@ -84,6 +84,31 @@
           "type": "file_matches",
           "glob": "trees/*/.chief-of-stuff/dispatch.md",
           "pattern": "(?m)^Workspace: /"
+        },
+        {
+          "name": "the assignment names the paths the lane owns",
+          "type": "file_matches",
+          "glob": "trees/*/.chief-of-stuff/dispatch.md",
+          "pattern": "(?m)^Owns: [^\\n]*src/a/"
+        },
+        {
+          "name": "the assignment says it is not authority",
+          "type": "file_matches",
+          "glob": "trees/*/.chief-of-stuff/dispatch.md",
+          "pattern": "not authority"
+        },
+        {
+          "name": "the assignment tells the session to register",
+          "type": "file_matches",
+          "glob": "trees/*/.chief-of-stuff/dispatch.md",
+          "pattern": "Register before you start"
+        },
+        {
+          "name": "the launch says who to register with",
+          "type": "tool_used",
+          "tool": "Bash",
+          "input_match": "spawn_session\\.py[^\"]*--coordinator",
+          "min": 1
         }
       ]
     }
