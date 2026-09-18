@@ -426,13 +426,22 @@ def _resume_value(value: str) -> str:
     return f'<details class="long"><summary>{_esc(_clip(value, RESUME_CLIP))}</summary>{_esc(value)}</details>'
 
 
+def resume_fields(block: dict[str, str]) -> list[str]:
+    """The fields that will be drawn, in reading order. The renderer and the summary line share it.
+
+    Finding 65: a count of what was parsed is not a count of what was drawn, and only the second one
+    is a check. `resume=N fields` is taken from here so the two can never disagree again.
+    """
+    return [k for k in RESUME_STRIP if block.get(k)] + [k for k in block if k not in RESUME_STRIP and block[k]]
+
+
 def resume_strip(block: dict[str, str]) -> str:
     """Where the last move left off, one row per field. Absent when the tracker has no block.
 
     It was one inline run joined with ` · `, which is fine at two fields and unreadable at six — and
     six is what a busy day writes. The fields are already a label and a value; they want a list.
     """
-    order = [k for k in RESUME_STRIP if block.get(k)] + [k for k in block if k not in RESUME_STRIP and block[k]]
+    order = resume_fields(block)
     if not order:
         return ""
     rows = []
@@ -1157,14 +1166,15 @@ def main(argv: list[str] | None = None) -> Path:
     no_est = sum(1 for b in bars if b.label == NO_ESTIMATE)
     long_items = sum(1 for lane in parsed.lanes if len(lane.item) > LONG_ITEM)
     block = parse_resume(tracker_text)
-    resume_long = sum(1 for v in block.values() if len(v) > RESUME_LINE)
+    resume_long = sum(1 for k in resume_fields(block) if len(block[k]) > RESUME_LINE)
     # A count printed beside a warning count but not counted as one reads as telemetry: `resume_long=4`
     # sat next to `warnings=0` for three hours while the block degraded, and was read past every time.
     warnings = sum(1 for lane in parsed.lanes if lane.warning) + sum(1 for s in parsed.sessions if s.warning) + resume_long
     print(out)
     req_counts = ",".join(f"{name}:{sum(r.done for _, rs in parse_requirements(t) for r in rs)}/{sum(len(rs) for _, rs in parse_requirements(t))}" for name, t in req_texts.items() if t is not None)
     missing = sum(1 for t in req_texts.values() if t is None)
-    resume_note = f"{len(block)} fields" if block else "none"
+    drawn = resume_fields(block)
+    resume_note = f"{len(drawn)} fields" if drawn else "none"
     print(f"lanes={len(parsed.lanes)} no_estimate={no_est} warnings={warnings} long_items={long_items} resume={resume_note} resume_long={resume_long} requirements={req_counts or 'none'} requirements_missing={missing} tracker_sha256={hashlib.sha256(tracker_text.encode()).hexdigest()[:12]}")
     return out
 

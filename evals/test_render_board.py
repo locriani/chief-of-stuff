@@ -1261,3 +1261,31 @@ class ResumeLegibilityTest(unittest.TestCase):
 
 def _first_words(value: str, n: int = 4) -> str:
     return html_escape(" ".join(value.split()[:n]), quote=True)
+
+
+class ResumeCountTest(unittest.TestCase):
+    """Finding 65, applied to itself: the number on stdout is the number of rows on the page.
+
+    A field written with no value is parsed, counted, and not drawn — which is the same gap that hid
+    `re-arm` for a day, one size smaller. The count that belongs on stdout is the one after the filter.
+    """
+
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp())
+        (self.root / "CLAUDE.md").write_text(CLAUDE_MD)
+        (self.root / "daily").mkdir()
+        resume = "- As of: 09:00 — gauntlet-f0\n- In flight:\n- Next: the deploy decision\n"
+        self.tracker = TRACKER.replace("## Lanes", "## Resume\n\n" + resume + "\n## Lanes", 1)
+        (self.root / "daily" / "2026-09-16-tracker.md").write_text(self.tracker)
+
+    def test_the_reported_count_is_what_was_drawn_and_not_what_was_parsed(self) -> None:
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rb.main(["--date", "2026-09-16", "--root", str(self.root)])
+        self.assertEqual(len(rb.parse_resume(self.tracker)), 3, "three fields are parsed")
+        self.assertIn("resume=2 fields", buf.getvalue())
+
+    def test_the_count_matches_the_rows_on_the_page(self) -> None:
+        html = rb.render(self.tracker, LOG, rb.parse_coordinator(CLAUDE_MD, today=NOW.date()), NOW)
+        drawn = re.search(r'<dl class="resume">.*?</dl>', html, re.S).group(0).count("<dt>")
+        self.assertEqual(drawn, len(rb.resume_fields(rb.parse_resume(self.tracker))))
