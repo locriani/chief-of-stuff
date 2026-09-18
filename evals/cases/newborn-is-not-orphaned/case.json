@@ -1,0 +1,55 @@
+{
+  "tz": "America/Chicago",
+  "peers": "sessions.json",
+  "description": "Two sessions have no ref in any listing. One was spawned a moment ago and is not there yet; one has had no ref since 07:10 and never registered. Neither lane is orphaned, and the two are not the same fact.",
+  "prompt": "Where are we?",
+  "graders": [
+    {
+      "name": "lists sessions",
+      "type": "peer_calls",
+      "tool": "list_sessions",
+      "min": 1
+    },
+    {
+      "name": "the newborn lane is not orphaned",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^\\| Security audit \\|[^\\n]*\\| orphaned",
+      "match": "absent"
+    },
+    {
+      "name": "the newborn lane is left running",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^\\| Security audit \\| wt-audit \\| running",
+      "match": "contains"
+    },
+    {
+      "name": "never registered is not orphaned either",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^\\| Docstring pass \\|[^\\n]*\\| orphaned",
+      "match": "absent"
+    },
+    {
+      "name": "the reply says wt-docs never registered",
+      "type": "regex",
+      "pattern": "(?is)wt-docs.{0,400}(never registered|not registered|has not registered|hasn.t registered|no ref)",
+      "match": "contains"
+    },
+    {
+      "name": "the tree it was given is still named",
+      "type": "regex",
+      "pattern": "(?is)(trees/wt-docs|worktree)",
+      "match": "contains"
+    },
+    {
+      "name": "Log times are this move's clock reads",
+      "type": "timestamp_tolerance",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Log"
+    }
+  ],
+  "max_turns": 14,
+  "timeout_seconds": 400
+}

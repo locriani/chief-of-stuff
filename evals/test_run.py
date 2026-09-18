@@ -6,6 +6,8 @@ The stream fixture is a real `claude -p --output-format stream-json --verbose` c
 
 from __future__ import annotations
 
+import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -654,3 +656,53 @@ class RepoFixtureTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SpawnHarnessTest(unittest.TestCase):
+    def test_both_new_scripts_are_reachable(self) -> None:
+        joined = " ".join(run.ALLOWED)
+        self.assertIn("make_worktree.py", joined)
+        self.assertIn("spawn_session.py", joined)
+
+    def test_the_terminal_itself_is_never_allowlisted(self) -> None:
+        """The agent reaches a terminal only through the script, so a malformed argv is a script error."""
+        joined = " ".join(run.ALLOWED)
+        for binary in ("ghostty", "osascript", "open -a", "tmux", "Bash(claude"):
+            self.assertNotIn(binary, joined, binary)
+
+    def test_the_recorder_stands_in_for_the_terminal(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "calls.jsonl"
+            template = run.write_recorder(Path(d) / "shims", log, "America/Chicago")
+            self.assertEqual(template[0], "python3")
+            out = subprocess.run(
+                ["python3", template[1], "implementer", "/tmp/wt", "wt-docs"],
+                capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(out.returncode, 0, out.stderr)
+            recorded = json.loads(log.read_text().splitlines()[0])
+            self.assertEqual(recorded["tool"], "spawn")
+            self.assertEqual(recorded["argv"], ["implementer", "/tmp/wt", "wt-docs"])
+            self.assertIn("at", recorded)
+
+
+class SpawnCallsGraderTest(unittest.TestCase):
+    G = {"type": "spawn_calls", "min": 1, "max": 1}
+
+    def record(self, *calls: dict) -> run.RunRecord:
+        rec = record(at(16, 23), at(16, 25))
+        rec.mock_calls = list(calls)
+        return rec
+
+    def test_counts_only_spawns(self) -> None:
+        ok, detail = run.grade(self.G, self.record({"tool": "spawn", "argv": ["implementer"]}, {"tool": "health"}))
+        self.assertTrue(ok, detail)
+
+    def test_no_spawn_fails_a_case_that_wanted_one(self) -> None:
+        ok, _ = run.grade(self.G, self.record({"tool": "health"}))
+        self.assertFalse(ok)
+
+    def test_argv_match_narrows_to_the_type_that_was_started(self) -> None:
+        rec = self.record({"tool": "spawn", "argv": ["fixer", "/tmp/a", "t"]})
+        self.assertTrue(run.grade({"type": "spawn_calls", "argv_match": r"\bfixer\b", "min": 1}, rec)[0])
+        self.assertFalse(run.grade({"type": "spawn_calls", "argv_match": r"\bimplementer\b", "min": 1}, rec)[0])

@@ -49,10 +49,13 @@ TOOLS = ["Bash", "Read", "Glob", "Grep", "Write", "Edit", "Agent"]
 BOARD_RENDERER = PLUGIN_ROOT / "scripts" / "render_board.py"
 HEALTH_PROBE = PLUGIN_ROOT / "scripts" / "probe_health.py"
 LANE_AUDIT = PLUGIN_ROOT / "scripts" / "audit_lanes.py"
+MAKE_WORKTREE = PLUGIN_ROOT / "scripts" / "make_worktree.py"
+SPAWN_SESSION = PLUGIN_ROOT / "scripts" / "spawn_session.py"
 # The plugin's own scripts are the only ones the agent may run: html, health and merge state come
 # from code, never from the agent. git and curl stay off the allowlist — the scripts call them.
 ALLOWED = ["Bash(date:*)", "Bash(TZ=*)", "Bash(mv:*)", "Bash(mkdir:*)", f"Bash(python3 {BOARD_RENDERER}:*)",
            f"Bash(python3 {HEALTH_PROBE}:*)", f"Bash(python3 {LANE_AUDIT}:*)",
+           f"Bash(python3 {MAKE_WORKTREE}:*)", f"Bash(python3 {SPAWN_SESSION}:*)",
            "Read", "Glob", "Grep", "Write(./**)", "Edit(./**)"]
 DISALLOWED = ["Bash(railway:*)", "Bash(git commit:*)", "Bash(git add:*)", "Bash(git push:*)"]
 # These reach real Claude sessions on this machine. No eval run may expose them.
@@ -691,6 +694,17 @@ def _reply_lines(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
     return n <= g["max"], f"{n} non-empty line(s); want <= {g['max']}"
 
 
+def _spawn_calls(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
+    """Sessions started this turn, as the recorder saw them. No real terminal opens in the sandbox."""
+    calls = [c for c in rec.mock_calls if c.get("tool") == "spawn"]
+    if "argv_match" in g:
+        pattern = re.compile(g["argv_match"])
+        calls = [c for c in calls if pattern.search(" ".join(c.get("argv", [])))]
+    lo, hi = g.get("min", 0), g.get("max")
+    ok = len(calls) >= lo and (hi is None or len(calls) <= hi)
+    return ok, f"{len(calls)} spawn(s); want min {lo}" + (f", max {hi}" if hi is not None else "")
+
+
 def _health_calls(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
     """Probes recorded by the loopback server in this turn. Without this a case can pass having probed nothing."""
     calls = [c for c in rec.mock_calls if c.get("tool") == "health"]
@@ -704,6 +718,7 @@ def _health_calls(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
 
 
 COORDINATION_GRADERS = {
+    "spawn_calls": _spawn_calls,
     "health_calls": _health_calls,
     "peer_calls": _peer_calls,
     "timestamp_tolerance": _timestamp_tolerance,
@@ -905,6 +920,16 @@ def grade_turns(spec: dict[str, Any], turns: list[Turn], tz: str, out: Path, cal
     return results
 
 
+SPAWN_RECORDER = """#!/usr/bin/env python3
+import json, sys
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+with open({log!r}, "a") as log:
+    log.write(json.dumps({{"tool": "spawn", "argv": sys.argv[1:], "at": datetime.now(ZoneInfo({tz!r})).isoformat()}}) + "\\n")
+print("spawn: recorded by the eval harness")
+"""
+
 RAILWAY_SHIM = '''#!/usr/bin/env python3
 import sys
 from pathlib import Path
@@ -951,6 +976,14 @@ def stop_server(server: ThreadingHTTPServer | None) -> None:
         server.server_close()
 
 
+def write_recorder(shim_dir: Path, calls_log: Path, tz: str) -> list[str]:
+    """A stand-in terminal. Returns the argv template the launcher env var carries."""
+    shim_dir.mkdir(parents=True, exist_ok=True)
+    recorder = shim_dir / "spawn_recorder.py"
+    recorder.write_text(SPAWN_RECORDER.format(log=str(calls_log), tz=tz))
+    return ["python3", str(recorder), "{type}", "{cwd}", "{title}"]
+
+
 def write_shims(shim_dir: Path) -> None:
     shim_dir.mkdir(parents=True, exist_ok=True)
     railway = shim_dir / "railway"
@@ -979,7 +1012,13 @@ def run_one(case: Case, arm: str, model: str, out: Path) -> tuple[list[tuple[str
             # Real git: `merge-base --is-ancestor` is the thing under test, and a fixture cannot carry a repo.
             make_repo.build(work, spec["repo"])
         write_shims(out / "shims")
-        env = dict(os.environ, PATH=f"{out / 'shims'}{os.pathsep}{os.environ['PATH']}")
+        calls_log.parent.mkdir(parents=True, exist_ok=True)
+        calls_log.touch()
+        env = dict(
+            os.environ,
+            PATH=f"{out / 'shims'}{os.pathsep}{os.environ['PATH']}",
+            CHIEF_OF_STUFF_LAUNCHER=json.dumps(write_recorder(out / "shims", calls_log, tz)),
+        )
         mcp_config = None
         if "calendar" in spec:
             # Events live in the results dir, not the agent's cwd, so the calendar is reachable only through the mock.

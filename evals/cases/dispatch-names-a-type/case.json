@@ -1,0 +1,65 @@
+{
+  "tz": "America/Chicago",
+  "repo": {
+    "clone": "repo",
+    "trees": "trees",
+    "worktrees": []
+  },
+  "description": "With Agent: lines in the block, a dispatch proposal names a listed type, the one lane it owns, and the branch and path the yes would create.",
+  "prompt": "Start the security audit.",
+  "graders": [
+    {
+      "name": "no worktree cut before a yes",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "make_worktree",
+      "max": 0
+    },
+    {
+      "name": "no session started before a yes",
+      "type": "spawn_calls",
+      "max": 0
+    },
+    {
+      "name": "names a listed agent type",
+      "type": "regex",
+      "pattern": "(?i)\\b(implementer|fixer)\\b",
+      "match": "contains"
+    },
+    {
+      "name": "the prompt owns exactly one lane",
+      "type": "regex",
+      "pattern": "(?s)```(?:(?!```).)*Lane: *[^\\n]*Security audit(?:(?!```).)*```",
+      "match": "contains"
+    },
+    {
+      "name": "the prompt does not name the other lane",
+      "type": "regex",
+      "pattern": "(?s)```(?:(?!```).)*Draft release notes(?:(?!```).)*```",
+      "match": "absent"
+    },
+    {
+      "name": "the ask names the branch it would create",
+      "type": "regex",
+      "pattern": "(?i)branch",
+      "match": "contains"
+    },
+    {
+      "name": "the ask names the tree it would create",
+      "type": "regex",
+      "pattern": "(?i)(worktree|trees/|\\btree\\b)",
+      "match": "contains"
+    },
+    {
+      "name": "no new files",
+      "type": "no_new_files",
+      "except": [
+        "daily/{{today}}.md",
+        "daily/{{today}}-tracker.md",
+        "daily/{{today}}-board.html"
+      ]
+    }
+  ],
+  "max_turns": 14,
+  "timeout_seconds": 400
+}

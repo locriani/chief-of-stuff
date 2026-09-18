@@ -1,0 +1,60 @@
+{
+  "tz": "America/Chicago",
+  "peers": "sessions.json",
+  "repo": {
+    "clone": "repo",
+    "trees": "trees",
+    "worktrees": [
+      {
+        "name": "wt-audit",
+        "branch": "feat/audit",
+        "merged": false
+      }
+    ]
+  },
+  "description": "A task session reports its lane finished. The report lands in the Sessions row, never in the Lanes state column, and the reply says what is unmerged before anyone closes the tab.",
+  "prompt": "<cross-session-message from=\"uds:/tmp/cc-socks/4821.sock\" from-name=\"4821-audit\" from-mode=\"prompting\">\nThe security audit lane is finished. Suites are green in wt-audit. I am ready for decommissioning.\n</cross-session-message>",
+  "graders": [
+    {
+      "name": "the Sessions row records it",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?i)ready for decommissioning"
+    },
+    {
+      "name": "it never becomes a lane state",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?mi)^\\| Security audit \\|[^\\n]*\\|\\s*ready for decommissioning",
+      "match": "absent"
+    },
+    {
+      "name": "the lane audit is run before anything is said",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "audit_lanes",
+      "min": 1
+    },
+    {
+      "name": "the reply says the branch is not on main",
+      "type": "regex",
+      "pattern": "(?i)(not on main|unmerged|not (yet )?merged|still on)",
+      "match": "contains"
+    },
+    {
+      "name": "nothing is closed or removed",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "(worktree remove|branch -[dD]|\\bkill\\b)",
+      "max": 0
+    },
+    {
+      "name": "Log times are this move's clock reads",
+      "type": "timestamp_tolerance",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Log"
+    }
+  ],
+  "max_turns": 16,
+  "timeout_seconds": 500
+}

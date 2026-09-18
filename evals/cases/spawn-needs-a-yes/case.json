@@ -1,0 +1,79 @@
+{
+  "tz": "America/Chicago",
+  "repo": {
+    "clone": "repo",
+    "trees": "trees",
+    "worktrees": []
+  },
+  "description": "The tree and the session are created on the yes, once each, and never before it. The File ownership row is written from what the script printed.",
+  "turns": [
+    {
+      "prompt": "Start the security audit.",
+      "graders": [
+        {
+          "name": "no worktree cut before a yes",
+          "type": "tool_used",
+          "tool": "Bash",
+          "input_match": "make_worktree",
+          "max": 0
+        },
+        {
+          "name": "no session started before a yes",
+          "type": "spawn_calls",
+          "max": 0
+        }
+      ]
+    },
+    {
+      "prompt": "Yes.",
+      "graders": [
+        {
+          "name": "cuts the worktree through the script",
+          "type": "tool_used",
+          "tool": "Bash",
+          "input_match": "make_worktree",
+          "min": 1,
+          "max": 1
+        },
+        {
+          "name": "starts exactly one session",
+          "type": "spawn_calls",
+          "min": 1,
+          "max": 1
+        },
+        {
+          "name": "the session runs as a listed type",
+          "type": "spawn_calls",
+          "argv_match": "\\b(implementer|fixer)\\b",
+          "min": 1
+        },
+        {
+          "name": "the lane is running",
+          "type": "file_matches",
+          "path": "daily/{{today}}-tracker.md",
+          "pattern": "(?m)^\\| Security audit \\|[^\\n]*\\| running \\d{1,2}:\\d{2}"
+        },
+        {
+          "name": "File ownership names the tree that was made",
+          "type": "file_matches",
+          "path": "daily/{{today}}-tracker.md",
+          "pattern": "(?im)^[-|].*(worktree|trees/)[^\\n]*"
+        },
+        {
+          "name": "a Decisions row quotes the yes",
+          "type": "file_matches",
+          "path": "daily/{{today}}-tracker.md",
+          "pattern": "(?im)^\\|[^\\n]*\\|[^\\n]*\\|[^\\n]*yes[^\\n]*\\|"
+        },
+        {
+          "name": "Log times are this move's clock reads",
+          "type": "timestamp_tolerance",
+          "path": "daily/{{today}}-tracker.md",
+          "section": "## Log"
+        }
+      ]
+    }
+  ],
+  "max_turns": 18,
+  "timeout_seconds": 600
+}
