@@ -70,3 +70,33 @@ Relayed by the live coordinator at the user's request (numbered 25–36 there; r
 - Coordinate other live sessions? **Later stage.** Peer coordination is stage 5, after live use; it gets its own replan.
 - Subagents for work? "I meant that it could launch new contexts with my approval (e.g. new claude instances)." Work dispatch on an explicit yes stays. A new Claude instance is a peer, so that channel lands in stage 5.
 - Tracker location? **Separate tracker file**, per day, next to the log.
+
+## 45 — `audit_lanes.py` attributes a tree to the wrong lane
+
+**From:** `gauntlet-d3`, 2026-09-17 22:36, running the script against the live tracker.
+**Status:** open (0.7.0 candidate).
+
+File ownership rows are keyed by context, and one context routinely holds several rows — `architecture [a16e40]` has one for the agent-parked deletion and one for the ARCHITECTURE.md reconciliation. The only thing distinguishing them is the parenthetical, and `_bare()` strips it so a `[ref]` or a timestamp cannot break the match. Both rows collapse to `architecture`, so the deletion lane — which has no tree and is verifiably complete — inherits the reconciliation row's worktree and gets reopened as "not on main".
+
+The `done` rule states the boundary in prose (lanes with no tree are unaffected) and the script does not implement it. That matters more than an ordinary bug because the rule tells the coordinator to believe the script over any session's report.
+
+Fix direction: when a context has several rows, a lane takes trees only from the row whose parenthetical names it; when no row names it, attribute nothing and print an ambiguity line rather than a reopen.
+
+## 46 — a missing worktree means two opposite things
+
+**From:** `gauntlet-d3`, same pass.
+**Status:** open (0.7.0 candidate).
+
+`openemr-agent-smart` was gone because its branch merged at 20:51 and the session cleaned up after itself. `openemr-agent-defects-140c0b2` was gone because it never existed: the row carried a planned name from 13:50 and the tree was created without the suffix. The script prints the same line for both — "the tracker names a tree that is not there".
+
+A missing tree whose branch is an ancestor of main is routine. A missing tree whose work never merged is the alarming case, and it is the one that should reach the reply. The branch name is already in the File ownership row.
+
+## 47 — the orphan join: uncommitted work whose owner is gone
+
+**From:** `gauntlet-d3`, same pass. The most valuable of the three.
+
+Five sessions left the registry between 21:43 and 22:33 tonight and three left uncommitted work — the session TTL fix, `EVAL-CI-GATE-PLAN.md`, and the README/Bruno work. `audit_lanes.py` found none of it, because it reports per tree and this is a fact about owners.
+
+One line would have caught all three: a tree with uncommitted work whose owner is not in the session list. The script already reads File ownership and the tracker; it does not yet read `## Sessions`. This is what the `Re-arm` field is actually for — not timers, but work that lost its writer.
+
+Pairs with finding 27 (trees named in the tracker that are no longer on disk) and with `orphaned` as a lane state.
