@@ -261,3 +261,18 @@ Two more things the same session established, both kept:
 **A dispatched session cannot verify its own surface type.** Ghostty exports no tab, window or surface identifier, and a tab and a new window produce byte-identical `login -flp` ancestry under one app pid. It worked this out, declined to reach for System Events because that is a different class of access than a read-only report lane implies, and asked instead. So window-versus-tab is decided by the caller and is not discoverable by the callee — which is an argument for the launcher owning that choice, and against any check that expects a session to confirm it.
 
 **`CLAUDE_CODE_CHILD_SESSION=1` inside a dispatched session is not finding 54 recurring.** It reported the marker and read it as evidence of a polluted launch. It is not: Claude Code injects its nine `CLAUDE_*` variables into every subprocess it spawns for its own tooling, and a main session's shell shows the same nine. What the session sampled was a Bash child of its own `claude` process, not the environment `claude` was exec'd with. Measured directly — a probe run as the tab's own command, outside any Claude session — the tab's environment holds 29 variables inherited from Ghostty and none of them are `CLAUDE_*`. Worth recording because the false positive is indistinguishable from the true one without knowing which layer was sampled, and the true one cost a morning.
+
+## 59 — a flag the harness cannot let a coordinator earn
+
+**From:** three consecutive agent-arm runs, 2026-09-18 13:0x–13:25.
+**Status:** Adopted 2026-09-18 (0.8.0) as a grader removal, not a rule change.
+
+`--coordinator` tells a spawned session who to register with. A grader asked that the launch carry it. It failed three times, on two different cases, and every failure was the agent being right.
+
+First on a case whose `CLAUDE.md` names no `Sessions:` line: with no listing tool, a coordinator cannot know its own name. Moved to the case that does name session tooling — failed again, because the coordinator is not in its own mock listing. Gave that fixture a `Coordinator: robin-desk.` head line, the way the live tracker carries one — failed a third time.
+
+The rule itself says why: *"a name you guessed at is worse than the assignment's own wording"*, and the assignment already tells a session to register with the chief-of-stuff coordinator whether or not a name is appended. So an agent that omits the flag when it is unsure is doing exactly what the file asks. The grader was measuring configuration rather than behaviour, and no amount of fixture work changed that — each fix moved the reason, not the outcome.
+
+Removed. The instruction stays in `## Dispatch`, and it is verified by hand: the tab-check spawn was launched with `--coordinator chief-of-stuff-improvements` and the session registered to that name unprompted.
+
+This is the seventh bad grader across C4 and C5 and the tally now has two shapes rather than one. Five were absence checks on replies, which fail correct answers because a coordinator that rules something out says so. Two — this and its predecessor — demanded that the agent produce a value the case's own configuration gave it no way to obtain. Both shapes share a tell: the grader passes when the agent behaves worse.

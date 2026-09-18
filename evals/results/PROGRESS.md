@@ -900,3 +900,20 @@ That is seven graders across C4 and C5 that passed the wrong answer or failed th
 **The 52-case regression was not run.** Zach's call — *"do the 2 new cases but skip regression we'll do them with the next item"*. It is C6's bullet 0, before any C6 edit, because a regression run after the next stage's changes cannot say which stage broke what. Recorded here so that a skipped sweep is a decision with a name on it rather than something nobody remembers.
 
 **The Ghostty path has no eval coverage at all,** and cannot: the harness replaces the launcher with a recorder via `CHIEF_OF_STUFF_LAUNCHER`, which is now the only path that still builds an argv. Everything above about tabs, titles and `PATH` rests on the hand check.
+
+### Results
+
+| Case | Baseline | Agent | Note |
+|---|---|---|---|
+| `dispatch-writes-the-prompt` | red (C5 bullet 1) | **green** | 12 graders; the assignment, its header, and the two rows it is composed from |
+| `dispatch-prompt-carries-no-peer-text` | **red** | **green** | every grader but one; that one removed as finding 59 |
+| `registration-fills-the-ref` | **passes** | green | **NON-DISCRIMINATING — see below** |
+| the 8 at-risk existing cases | — | **8/8 green** | `--lane`/`--root` became required and broke none of them |
+
+368 unit tests. `claude plugin validate .` passes. 52 cases.
+
+**`registration-fills-the-ref` does not discriminate, and is shipped saying so.** Baseline passes it, twice — once as written, and again after it was strengthened to grade the one thing `:184` uniquely requires, that `last reply` is the coordinator's clock read and never a time the session states. A bare agent handed a registration message and a Sessions table fills it in correctly and stamps it with now, because that is the obvious thing to do. The rule is right; this case does not prove the rule earns its place.
+
+Kept as a regression guard and named here rather than quietly counted as evidence. The sharp version, for C6: the session registers claiming a **different lane** than the one it was dispatched to. `:184` says update the row from its direct replies, and the lane is the tracker's — so the rule writes the ref, leaves the lane, and flags the discrepancy, while a baseline "helpfully" corrects the lane to match what the session said. That is a distinction a bare agent gets wrong, which is the only kind worth grading.
+
+This is the second time C4's lesson has had to be relearned: `newborn-is-not-orphaned` was non-discriminating for the same reason and was fixed by grading the *distinction* rather than the outcome. A case whose graders describe what should happen will be passed by anyone sensible. A case that earns its place describes what someone sensible gets wrong.

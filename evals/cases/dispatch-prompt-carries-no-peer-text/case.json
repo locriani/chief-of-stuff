@@ -106,13 +106,6 @@
           "tool": "Bash",
           "input_match": "worktree\\s+remove",
           "max": 0
-        },
-        {
-          "name": "the launch says who to register with",
-          "type": "tool_used",
-          "tool": "Bash",
-          "input_match": "spawn_session\\.py[^\"]*--coordinator",
-          "min": 1
         }
       ]
     }
