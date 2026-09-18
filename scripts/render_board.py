@@ -126,6 +126,12 @@ WAITS = re.compile(r"\s+[—–-]\s+|,\s+")
 NOBODY = re.compile(r"(?i)^(?:(?:nothing|none|nobody|n/?a)\b|[-—–]\s*$)")
 # The name cell accretes provenance: `update-claude-md-docs (third name, same ref)`.
 PARENTHETICAL = re.compile(r"\s*\([^()]*\)\s*$")
+SESSION_REF = re.compile(r"\s*\[[0-9a-f]{4,}\]\s*")
+
+
+def _bare_name(name: str) -> str:
+    """`demo-fixes [b8fca1] (fix 5)` → `demo-fixes`. Both sides of a join have to strip the same things."""
+    return PARENTHETICAL.sub("", SESSION_REF.sub(" ", name)).strip().lower()
 
 
 @dataclass(frozen=True)
@@ -646,8 +652,9 @@ def legend() -> str:
 # to survive with JavaScript off, and design-inputs §50 settled that this page runs none.
 STAMP_FRESH = timedelta(minutes=30)
 STAMP_AGING = timedelta(hours=2)
-# Every kind `Session.kind` can return. `gone` is the join's to add and is not derivable yet.
-SESSION_KINDS = ("planning", "working", "waiting", "idle", "starting", "ready", "unknown", "unreported")
+# Every kind a node can draw. The first four are reported; the rest the coordinator works out,
+# `gone` from the Lanes join because a session cannot report that it is gone.
+SESSION_KINDS = ("planning", "working", "waiting", "idle", "starting", "ready", "gone", "unknown", "unreported")
 
 
 def _age(session: Session, cfg: Config, now: datetime) -> tuple[datetime | None, int | None]:
@@ -692,8 +699,8 @@ def _facts(session: Session) -> str:
     return f'<dl class="facts">{body}{warn}</dl>' if body or warn else ""
 
 
-def _session_node(session: Session, cfg: Config, now: datetime) -> str:
-    kind = session.kind
+def _session_node(session: Session, cfg: Config, now: datetime, gone: set[str]) -> str:
+    kind = "gone" if session.label in gone else session.kind
     stamp, cite = _stamp(session, cfg, now)
     who = session.waits_on
     # An edge, not a state: `waiting on` carries who and then why, and the enum stays four words wide.
@@ -707,7 +714,22 @@ def _session_node(session: Session, cfg: Config, now: datetime) -> str:
             f"{edge}{stamp}</summary>{_facts(session)}{kid_list}</details></li>")
 
 
-def session_graph(sessions: tuple[Session, ...], cfg: Config, now: datetime) -> str:
+ORPHANED = "orphaned"
+
+
+def gone_sessions(lanes: tuple[Lane, ...], sessions: tuple[Session, ...]) -> set[str]:
+    """Sessions the registry still lists whose lane says its owner left. The join, in the renderer.
+
+    A session cannot report that it is gone, so this is the coordinator's to work out, and it is the
+    one state the board takes over a session's own word: `orphaned` on the lane and `working` in the
+    registry are the same row contradicting itself, and the lane is the column that was updated last.
+    """
+    left = {_bare_name(lane.owner) for lane in lanes if lane.kind == ORPHANED}
+    left -= {""}
+    return {s.label for s in sessions if _bare_name(s.name) in left}
+
+
+def session_graph(sessions: tuple[Session, ...], cfg: Config, now: datetime, gone: set[str] | None = None) -> str:
     """The coordinator, its sessions, and their subagents, as one disclosure tree.
 
     Nested `<details>` and nothing else: the idiom `_strip()` already uses for folded rows, and the
@@ -719,7 +741,8 @@ def session_graph(sessions: tuple[Session, ...], cfg: Config, now: datetime) -> 
     """
     if not sessions:
         return ""
-    nodes = "\n".join(_session_node(s, cfg, now) for s in sessions)
+    gone = gone or set()
+    nodes = "\n".join(_session_node(s, cfg, now, gone) for s in sessions)
     stale = sum(1 for s in sessions if (m := _age(s, cfg, now)[1]) is not None and _band(m) == "stale")
     unheard = sum(1 for s in sessions if _age(s, cfg, now)[0] is None)
     kids = sum(len(s.child_names) for s in sessions)
@@ -1071,6 +1094,7 @@ details summary{{cursor:pointer}} details[open] summary{{margin-bottom:4px}}
 .chip.ready{{background:repeating-linear-gradient(135deg,var(--now) 0 3px,transparent 3px 7px),var(--surface)}}
 .chip.unknown{{background:repeating-linear-gradient(45deg,var(--dl) 0 1.5px,transparent 1.5px 5px),repeating-linear-gradient(-45deg,var(--dl) 0 1.5px,transparent 1.5px 5px),var(--surface)}}
 .chip.unreported{{background:repeating-radial-gradient(circle at 3px 3px,var(--muted) 0 1px,transparent 1px 7px),var(--surface)}}
+.chip.gone{{background:repeating-linear-gradient(0deg,var(--dl) 0 1px,transparent 1px 3px),repeating-linear-gradient(90deg,var(--dl) 0 1px,transparent 1px 3px),var(--surface)}}
 .chip.coordinator{{background:repeating-linear-gradient(90deg,var(--brass) 0 1px,transparent 1px 4px),var(--surface)}}
 .resume{{margin:6px 0 0;font-size:13px;color:var(--fg);border-left:3px solid var(--brass);padding:2px 0 2px 8px;display:grid;grid-template-columns:auto 1fr;gap:2px 10px}}
 .resume dt{{color:var(--muted);font-weight:600;font-size:10px;letter-spacing:.06em;text-transform:uppercase;padding-top:3px;white-space:nowrap}}
@@ -1086,7 +1110,7 @@ details summary{{cursor:pointer}} details[open] summary{{margin-bottom:4px}}
 <div class="meta">tracker as of {now.strftime('%H:%M')} {_esc(tzname)} <span id="ago"></span> · kept by chief-of-stuff · board {_esc(url or 'not yet published')}{long_note}</div>
 {resume_strip(parse_resume(tracker_text))}</div></div>
 
-{session_graph(tracker.sessions, cfg, now)}
+{session_graph(tracker.sessions, cfg, now, gone_sessions(tracker.lanes, tracker.sessions))}
 {unassigned_html}<h2>{_esc(cfg.user)}'s queue</h2>
 <table><tr><th>item</th><th>due</th><th>state</th></tr>
 {queue_rows}

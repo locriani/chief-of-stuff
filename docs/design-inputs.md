@@ -385,3 +385,33 @@ Generalised, this is the rule the renderer's summary line now runs under: **a co
 Second, smaller: `resume_long=4` printed beside `warnings=0` for three hours while the block degraded, and was read past every time. A number printed next to a warning count but not counted as one reads as telemetry. It counts in `warnings=` now, with malformed session rows.
 
 Third: the fixture wrote `- Verified:` with no time and the live tracker writes `- Verified 16:52:`. Every unit test passed throughout. The fixtures are anonymised copies of live shapes and they had drifted from the shape the ruleset now asks for — which is the same class of gap as finding 53, and the reason bullet 1's four corrections came from running the parser against the live tracker rather than against the fixtures.
+
+## 66 — the audit could only reach a tree through a lane
+
+**From:** running bullet 3's join against the live workspace, 2026-09-18 17:20.
+**Status:** Adopted 2026-09-18.
+
+Finding 47 asked for one line: a tree with uncommitted work whose owner is not in the session list. I wrote it, the unit tests went green, and the live run reported `orphaned=0` — against a workspace holding exactly the three trees the finding was written about.
+
+`audit()` walked `for lane in lanes: rows_for(lane.item, lane.owner, owners)`. Every tree it ever looked at was reached through a lane that claimed it. The three orphaned trees are keyed in File ownership as `nobody (session TTL fix, orphaned …)`, and no lane owner is `nobody`, so `rows_for` matched none of them and the sweep walked past all three.
+
+**A tree reachable only through a lane is a tree nobody can reach once the lane lets go** — which is the same event that orphaned it. The structure guaranteed that the trees most worth finding were the ones the traversal could not see.
+
+Fixed by sweeping every File ownership row that names a tree after the lane pass, claimed or not. A row with no lane behind it reopens nothing — there is no lane to reopen — but its git state and its owner are reported like any other. The live run now names all three, with branches and file counts.
+
+The general shape is worth keeping, because it is not about worktrees: **a traversal keyed on a relationship cannot see the objects whose defining property is that the relationship is broken.** Finding 47's own phrasing had it — "it reports per tree and this is a fact about owners" — and I implemented the fact about owners while leaving the traversal keyed on lanes.
+
+## 67 — CIMP: what the audit can check and what it cannot
+
+**From:** Zach 2026-09-18 17:18, relayed by `gauntlet-bc` and confirmed against workspace `CLAUDE.md:59`.
+**Status:** Adopted 2026-09-18.
+
+House rule 5: "CIP now has a CIMP variant - MERGE. Work isn't done until it's in main. We should be testing final tests on main each time." A green branch is not evidence; a green main is, because a merge can break main without either side's branch suite noticing.
+
+This changes what `done` means, and `done` is `audit_lanes.py`'s whole subject. "On main, committed" is now necessary and not sufficient.
+
+**No script can watch a suite run**, so the audit does not pretend to. What it can do is name the commit the claim has to be about. `_push_gap` now prints `main <sha> even with origin/main`, and the ruleset requires that sha in `Verified` beside the suite result. When main has moved on, the evidence is about a main that no longer exists, and the mismatch is visible without trusting anybody's memory.
+
+That is the same shape as finding 61: report the state and where it can be checked, not the conclusion. An unpinned "suite green on main" is unfalsifiable; pinned to a sha it is a claim that can go stale in public.
+
+The stored `CIP` memory contradicted the new rule — it listed commit, merge, install, push with no on-main suite — and has been rewritten. `gauntlet-bc` flagged it rather than editing it, which was right: it is not that session's file. I verified the rule in `CLAUDE.md` myself rather than taking it from the relay, which is the only reason it was safe to act on.

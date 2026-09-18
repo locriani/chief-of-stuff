@@ -1144,7 +1144,7 @@ class SessionGraphTest(unittest.TestCase):
 class SessionStateLegibilityTest(unittest.TestCase):
     """The same rule the bars live under, applied to the chips: a state you cannot tell apart is not shown."""
 
-    KINDS = ("planning", "working", "waiting", "idle", "starting", "ready", "unknown", "unreported")
+    KINDS = ("planning", "working", "waiting", "idle", "starting", "ready", "gone", "unknown", "unreported")
 
     def setUp(self) -> None:
         self.html = rb.render(TRACKER, LOG, rb.parse_coordinator(CLAUDE_MD, today=NOW.date()), NOW)
@@ -1289,3 +1289,65 @@ class ResumeCountTest(unittest.TestCase):
         html = rb.render(self.tracker, LOG, rb.parse_coordinator(CLAUDE_MD, today=NOW.date()), NOW)
         drawn = re.search(r'<dl class="resume">.*?</dl>', html, re.S).group(0).count("<dt>")
         self.assertEqual(drawn, len(rb.resume_fields(rb.parse_resume(self.tracker))))
+
+
+class GoneSessionTest(unittest.TestCase):
+    """The join, in the renderer. A session cannot report that it is gone, so the coordinator works it out.
+
+    `orphaned` is a lane state meaning the owner left. A session still listed in `## Sessions` whose
+    lane is orphaned is a row the registry has not caught up with, and drawing it as `working` on the
+    strength of its own last reply is the board repeating a claim its other column already contradicts.
+    """
+
+    LANES = ("| Ghost work | wanderer | orphaned | 09:00 |  | Checklist: Ghost work |\n"
+             "| Live work | worker-9a | running 10:30 |  |  | Checklist: Live work |")
+
+    def setUp(self) -> None:
+        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.tracker = f"""# Tracker 2026-09-16
+
+Coordinator: coordinator. Board: board-7.
+
+## Lanes
+
+| item | owner | state | since | due | checklist |
+|---|---|---|---|---|---|
+{self.LANES}
+
+## Sessions
+
+| ref | name | state | doing | waiting on | free at | constraints | children | last reply |
+|---|---|---|---|---|---|---|---|---|
+| a1b2c3 | worker-9a | working | a lane | | 15:00 | | none | 11:40 |
+| e5f6a7 | wanderer | working | a lane | | 15:00 | | none | 11:40 |
+
+## File ownership
+
+## Log
+
+- 09:00 opened the day
+"""
+        parsed = rb.parse_tracker(self.tracker)
+        self.gone = rb.gone_sessions(parsed.lanes, parsed.sessions)
+
+    def test_a_session_whose_lane_is_orphaned_is_gone(self) -> None:
+        self.assertIn("wanderer", self.gone)
+
+    def test_a_session_whose_lane_is_running_is_not(self) -> None:
+        self.assertNotIn("worker-9a", self.gone)
+
+    def test_the_ref_a_listing_shows_does_not_defeat_the_join(self) -> None:
+        lanes = (rb.Lane("Ghost work", "wanderer [e5f6a7]", "orphaned", "", "", ""),)
+        s = (rb.Session(ref="e5f6a7", name="wanderer", state="working", doing="", waiting_on="",
+                        free_at="", constraints="", children="", last_reply="11:40"),)
+        self.assertIn("wanderer", rb.gone_sessions(lanes, s))
+
+    def test_the_graph_draws_gone_over_what_the_session_reported(self) -> None:
+        out = rb.session_graph(rb.parse_tracker(self.tracker).sessions, self.cfg, NOW, gone=self.gone)
+        self.assertIn('data-ref="e5f6a7" data-state="gone"', out)
+        self.assertIn('data-ref="a1b2c3" data-state="working"', out)
+
+    def test_gone_has_a_fill_of_its_own(self) -> None:
+        html = rb.render(self.tracker, LOG, self.cfg, NOW)
+        css = html.split("<style>")[1].split("</style>")[0]
+        self.assertIn(".chip.gone{", css)
