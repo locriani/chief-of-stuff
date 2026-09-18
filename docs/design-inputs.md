@@ -74,7 +74,7 @@ Relayed by the live coordinator at the user's request (numbered 25–36 there; r
 ## 45 — `audit_lanes.py` attributes a tree to the wrong lane
 
 **From:** `gauntlet-d3`, 2026-09-17 22:36, running the script against the live tracker.
-**Status:** open (0.7.0 candidate).
+**Status:** Adopted 2026-09-18 (0.6.1).
 
 File ownership rows are keyed by context, and one context routinely holds several rows — `architecture [a16e40]` has one for the agent-parked deletion and one for the ARCHITECTURE.md reconciliation. The only thing distinguishing them is the parenthetical, and `_bare()` strips it so a `[ref]` or a timestamp cannot break the match. Both rows collapse to `architecture`, so the deletion lane — which has no tree and is verifiably complete — inherits the reconciliation row's worktree and gets reopened as "not on main".
 

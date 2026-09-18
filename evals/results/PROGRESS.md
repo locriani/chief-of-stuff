@@ -737,3 +737,17 @@ Baseline Opus ×1: all six RED. Agent Opus ×3: `resume-reads-the-block`, `resum
 Both fixed, then Opus ×3 over the fix and its blast radius — every other lane the `done` rule governs: `non-owner-closes-lane`, `cal-transparent-not-busy`, `done-needs-main`, `lane-done-ticks-checkbox`, `resume-reopens-unmerged-done` — 5/5 GREEN, no failing grader in any run. `done-needs-main` was the one at risk and held: its lane names a worktree, so the narrowing does not reach it.
 
 - Evidence: `evals/results/20260917-214207` (the reopen rerun ×3), `…-214651` (the 36-case regression), `…-221346` (the two reds ×3), `…-221914` (the fix and blast radius ×3). 241 unit tests green.
+
+## 0.6.1 — 2026-09-18 00:1x CDT — finding 45, found by the coordinator an hour after 0.6.0 shipped
+
+`gauntlet-d3` ran `audit_lanes.py` against the live tracker and reported one of its three findings as a false positive: `reopen: Delete agent-parked/ — openemr-docs-architecture: not on main`, for a lane that is a filesystem deletion with no tree at all.
+
+The mechanism was narrower than "matching by owner". File ownership rows are keyed by context, and one context routinely holds several rows — `architecture [a16e40]` had one for the agent-parked deletion and one for the ARCHITECTURE.md reconciliation. What distinguishes them is the parenthetical, and `_bare()` strips it, precisely so a `[ref]` or a timestamp could not break the match. Both rows collapsed to `architecture`, and the deletion lane inherited the other row's worktree.
+
+That the `done` rule states the boundary in prose and the script did not implement it is the part that mattered: 0.6.0 also told the coordinator to believe the script over any session's report. I made it authoritative in the same release that gave it a way to be wrong.
+
+Red first, on the live shape: `['Delete agent-parked/', 'Reconcile ARCHITECTURE.md'] != ['Reconcile ARCHITECTURE.md']`. `rows_for()` now resolves trees per lane rather than per owner — a row keyed by the lane item is exact and wins; otherwise the owner's rows are scored on how much of the lane item their parenthetical repeats; a lone best row wins, and a tie or a blank draws nothing and prints an `ambiguous:` line instead. Drawing nothing is the right failure: attributing the wrong tree reopens a lane that is genuinely finished, while attributing none only fails to reopen one that is not. Four tests, including a guard that a context with a single row still needs no parenthetical.
+
+Hand check on the live tracker after the fix: `lanes=81 trees=5 reopen=0`, with both true findings still printed — a tree with an uncommitted file, and two trees named in File ownership that are not on disk. 245 unit tests green.
+
+Two more from the same pass are recorded and not fixed: 46 (a missing tree whose branch is an ancestor of main is routine cleanup; one whose work never merged is the alarm, and the script prints one line for both) and 47 (the orphan join — a tree with uncommitted work whose owner is not in the session list, which is what `Re-arm` is actually for, and which found nothing tonight while three sessions left uncommitted work behind).

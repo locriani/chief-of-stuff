@@ -339,3 +339,58 @@ class ArgvTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MultipleRowsPerContextTest(unittest.TestCase):
+    """One context, several rows: the parenthetical is the only thing saying which lane a row is about.
+
+    Live shape from 2026-09-17: `architecture [a16e40]` owned both the agent-parked deletion (no tree,
+    finished) and the ARCHITECTURE.md reconciliation (a tree). Matching on the bare context name gave
+    the deletion lane the other row's worktree and reopened a lane that was genuinely done.
+    """
+
+    OWNERSHIP = (
+        "| architecture [a16e40] (agent-parked deletion, 11:13-11:53, done) | Projects/week-1/agent-parked/ (deleted) |\n"
+        "| architecture [a16e40] (ARCHITECTURE.md reconciliation, from 11:53) | worktree wt-unmerged (docs/arch from main): ARCHITECTURE.md |"
+    )
+    ROWS = (
+        "| Delete agent-parked/ | architecture | done | 09:00 |  |  |\n"
+        "| Reconcile ARCHITECTURE.md | architecture | done | 09:00 |  |  |"
+    )
+
+    def test_a_no_tree_lane_does_not_inherit_a_sibling_rows_worktree(self):
+        tmp, root = workspace(self.ROWS, self.OWNERSHIP)
+        self.addCleanup(tmp.cleanup)
+        report = al.audit(root, "2026-09-17")
+        reopened = [r.lane for r in report.reopen]
+        self.assertNotIn("Delete agent-parked/", reopened)
+
+    def test_the_lane_the_row_names_still_reopens(self):
+        tmp, root = workspace(self.ROWS, self.OWNERSHIP)
+        self.addCleanup(tmp.cleanup)
+        report = al.audit(root, "2026-09-17")
+        self.assertEqual([r.lane for r in report.reopen], ["Reconcile ARCHITECTURE.md"])
+
+    def test_a_lane_no_row_names_is_reported_as_ambiguous_not_reopened(self):
+        ownership = (
+            "| pair [a1b2c3] (first thing, from 10:00) | worktree wt-unmerged (feat/open) |\n"
+            "| pair [a1b2c3] (second thing, from 11:00) | worktree wt-dirty (feat/dirty) |"
+        )
+        tmp, root = workspace("| Something else entirely | pair | done | 09:00 |  |  |", ownership)
+        self.addCleanup(tmp.cleanup)
+        report = al.audit(root, "2026-09-17")
+        self.assertEqual(report.reopen, [])
+        self.assertTrue(
+            any("ambiguous" in line and "Something else entirely" in line for line in report.lines),
+            report.lines,
+        )
+
+    def test_one_row_for_a_context_needs_no_parenthetical_at_all(self):
+        """The common case must not regress: a single row owns everything that context owns."""
+        tmp, root = workspace(
+            "| Ship the thing | solo | done | 09:00 |  |  |",
+            "| solo [a1b2c3] | worktree wt-unmerged (feat/open) |",
+        )
+        self.addCleanup(tmp.cleanup)
+        report = al.audit(root, "2026-09-17")
+        self.assertEqual([r.lane for r in report.reopen], ["Ship the thing"])

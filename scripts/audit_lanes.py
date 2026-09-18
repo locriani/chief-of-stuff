@@ -31,6 +31,10 @@ WORKTREE = re.compile(r"\bworktrees?\s+`?([A-Za-z0-9._\-/]+)`?")
 # "its worktree only", "that worktree instead": prose says the word without naming a tree.
 NOT_A_NAME = {"only", "its", "it", "the", "that", "this", "those", "a", "an", "and", "in", "at", "for", "of", "is", "was", "with", "instead", "too", "here", "there"}
 REF = re.compile(r"\s*\[[0-9a-f]{4,}\]\s*$")
+PAREN = re.compile(r"\((.*?)\)")
+TOKEN = re.compile(r"[A-Za-z0-9]+")
+# Words that say nothing about which lane a row is about.
+STOP = NOT_A_NAME | {"done", "from", "to", "on", "by", "worktree", "worktrees", "off", "main", "new"}
 GIT_ENV = {"GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0"}
 GIT_TIMEOUT = 15
 DONE = "done"
@@ -107,6 +111,39 @@ def owns(row: OwnerRow, owner: str) -> bool:
     return bool(owner.strip()) and _bare(row.context) == _bare(owner)
 
 
+def _tokens(text: str) -> set[str]:
+    return {t.lower() for t in TOKEN.findall(text) if len(t) > 1 and not t.isdigit() and t.lower() not in STOP}
+
+
+def _detail(context: str) -> str:
+    """The parenthetical of a File ownership row: with one context to several lanes, it is the only thing saying which."""
+    return " ".join(PAREN.findall(context))
+
+
+def rows_for(item: str, owner: str, owners: list[OwnerRow]) -> tuple[list[OwnerRow], str]:
+    """The rows that speak for this lane, and a note when nothing does.
+
+    A context owns several lanes at once — `architecture` held both a deletion and a doc edit — so
+    the bare name cannot attribute a tree. A row keyed by the lane item is exact and wins. Otherwise
+    the owner's rows are scored on how much of the lane item their parenthetical repeats; a lone best
+    row wins, and a tie or a blank draws nothing, because attributing the wrong tree reopens a lane
+    that is genuinely finished.
+    """
+    exact = [r for r in owners if owns(r, item)]
+    if exact:
+        return exact, ""
+    mine = [r for r in owners if owns(r, owner)]
+    if len(mine) <= 1:
+        return mine, ""
+    want = _tokens(item)
+    scored = [(len(want & _tokens(_detail(r.context))), r) for r in mine]
+    best = max(score for score, _ in scored)
+    top = [r for score, r in scored if score == best]
+    if best == 0 or len(top) > 1:
+        return [], f"ambiguous: {short_name(item)} — {len(mine)} File ownership rows for {_bare(owner)} and none names it; no tree attributed"
+    return top, ""
+
+
 def git(args: list[str], cwd: Path) -> tuple[int, str]:
     """One read-only git call. Never a shell, always a list, always bounded."""
     try:
@@ -175,9 +212,13 @@ def audit(root: Path, day: str) -> Report:
     report = Report()
     seen: set[Path] = set()
     refused: set[str] = set()
+    noted: set[str] = set()
     for lane in lanes:
-        names = [w for row in owners if owns(row, lane.owner) or owns(row, lane.item) for w in row.worktrees]
-        for name in names:
+        rows, note = rows_for(lane.item, lane.owner, owners)
+        if note and note not in noted:
+            noted.add(note)
+            report.lines.append(note)
+        for name in [w for row in rows for w in row.worktrees]:
             path, why_refused = _resolve(root, trees, name)
             if path is None:
                 if name not in refused:
