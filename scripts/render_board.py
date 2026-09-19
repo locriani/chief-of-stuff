@@ -54,6 +54,9 @@ FONTS = "https://fonts.googleapis.com/css2?family=Alegreya+Sans:wght@400;500;600
 SHORT_NAME = 48
 LONG_ITEM = 80
 RESUME_LINE = 160
+# The fold bounds what a long field shows closed; nothing bounded what it shows OPEN, and one 9 400-character
+# `As of:` field filled the viewport with the rest of the board below it. `.resume details.long[open]` caps it.
+# The comment lives here rather than in the stylesheet: CSS prose ships in every rendered page.
 # The lookbehinds are zero-width so the mark that opens a bold clause survives the time being lifted
 # out of it: `**22:19: copied**` keeps its `**` and loses only the time.
 CLAUSE_TIME = re.compile(r"(?:^|(?<=\s)|(?<=\*\*))(?:at\s+)?(\d{1,2}:\d{2}):?(?=\s|$|[,;)])")
@@ -532,6 +535,8 @@ def parse_resume(text: str) -> dict[str, str]:
 # gained `Re-arm` the renderer began discarding it without a word.
 RESUME_STRIP = ("as of", "in flight", "next", "waiting on", "re-arm", "verified")
 RESUME_CLIP = 110
+# What is left of a mark once the pairs are gone: an unclosed `**` or a lone backtick.
+MARK_LEFTOVER = re.compile(r"\*\*|`")
 
 
 def _clip(value: str, cap: int) -> str:
@@ -542,11 +547,22 @@ def _clip(value: str, cap: int) -> str:
     return f"{head or value[:cap]} …"
 
 
+def _summary_text(value: str) -> str:
+    """The plain-text head of a fold. It is escaped and never inlined, so no mark belongs in it.
+
+    Two ways one used to arrive, with the same look on the board. `_unmark` strips pairs, so clipping
+    first cuts a long `**` span in half and leaves a mark with no partner for it to match — hence
+    unmark, then clip. And a mark the writer never closed has no partner to begin with, which no
+    ordering fixes; the summary is plain text either way, so what is left of a mark is dropped.
+    """
+    return _clip(MARK_LEFTOVER.sub("", _unmark(value)), RESUME_CLIP)
+
+
 def _resume_value(value: str) -> str:
     """A long field folds, the way `item_cell()` folds a long lane item. Same board, same idiom."""
     if len(value) <= RESUME_LINE:
         return _inline(value)
-    return f'<details class="long"><summary>{_esc(_unmark(_clip(value, RESUME_CLIP)))}</summary>{_inline(value)}</details>'
+    return f'<details class="long"><summary>{_esc(_summary_text(value))}</summary>{_inline(value)}</details>'
 
 
 def resume_fields(block: dict[str, str]) -> list[str]:
@@ -1722,6 +1738,7 @@ details summary{{cursor:pointer}} details[open] summary{{margin-bottom:4px}}
 .resume dt{{color:var(--muted);font-weight:600;font-size:10px;letter-spacing:.06em;text-transform:uppercase;padding-top:3px;white-space:nowrap}}
 .resume dd{{margin:0;min-width:0;overflow-wrap:anywhere}} .resume dd.long-field{{border-bottom:1px dotted var(--brass)}}
 .resume details.long>summary{{color:var(--fg)}} .resume details.long[open]>summary{{color:var(--muted)}}
+.resume details.long[open]{{max-height:12em;overflow-y:auto}}
 @media (max-width:520px){{.resume{{grid-template-columns:1fr;gap:0}} .resume dt{{padding-top:4px}}}}
 @media (max-width:520px){{.strip{{--name-w:36%}}}}
 @media (max-width:420px){{

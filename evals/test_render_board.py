@@ -573,7 +573,10 @@ class RequirementsTest(unittest.TestCase):
         self.assertIn('<li class="req done depth-0"><span class="box">☑</span><span class="text">Social post</span><span class="evidence">commit abc1234</span></li>', section)
         self.assertIn("Shows the &lt;agent&gt; answering", section)
         self.assertNotIn("star bullets", section)
-        self.assertNotIn("max-height", page)
+        # 0.4.1 wrote this against the whole page; it means the requirements list, which must never sit in a
+        # scroll box that hides items. The resume strip does cap its opened fold, and that is a different row.
+        self.assertNotIn("max-height", section)
+        self.assertIn(".resume details.long[open]{max-height", page)
         # Stage 5 moved requirements out of the first screen: it answers "is the deck ready",
         # which is a question about the week, so it follows the week and precedes the lanes.
         self.assertGreater(page.index('class="reqs"'), page.index('data-strip="week"'))
@@ -1783,6 +1786,51 @@ class ResumeLegibilityTest(unittest.TestCase):
         self.assertIsNotNone(fold, "a field over RESUME_LINE did not fold")
         self.assertLess(len(fold.group(1)), len(fold.group(2)))
         self.assertTrue(fold.group(1).rstrip().endswith("…"), "a clipped summary says it was clipped")
+
+    def test_the_summary_of_a_folded_field_carries_no_orphan_mark(self) -> None:
+        """Zach, on the live board: the summary read `**ZACH IS AWAKE (10:43) AND HAS READ FDA.md …`.
+
+        `_resume_value` clips and then unmarks. A field whose `**` span is longer than the clip is cut
+        inside the pair, and `_unmark` cannot match a mark that has lost its partner, so the literal
+        asterisks reach the summary. Unmark first and there is no pair left to cut through.
+        """
+        value = ("**PEER IS AWAKE (10:43) AND HAS READ the brief: it stays exactly as written, there is "
+                 "nothing to do about it today and no session should act on its own initiative** " + "and more. " * 20)
+        tracker = self.tracker.replace("- In flight: nothing, and nothing has changed since 13:40",
+                                       "- In flight: " + value)
+        strip = re.search(r'<dl class="resume".*?</dl>', rb.render(tracker, LOG, self.cfg, NOW), re.S).group(0)
+        summary = re.search(r"<details class=\"long\"><summary>(.*?)</summary>", strip, re.S).group(1)
+        self.assertNotIn("**", summary, summary)
+        self.assertIn("PEER IS AWAKE", summary)
+
+    def test_a_mark_the_writer_never_closed_does_not_reach_the_summary_either(self) -> None:
+        """The same symptom, a different cause, and ordering alone does not fix this one.
+
+        `_unmark` strips pairs. An opening `**` with no partner survives it however the clip is
+        ordered, and the summary is plain text by construction — it is escaped, never inlined — so
+        no mark character belongs in it at all, paired or not.
+        """
+        value = "**an opening mark the writer never closed, " + "and the field runs on. " * 12
+        tracker = self.tracker.replace("- In flight: nothing, and nothing has changed since 13:40",
+                                       "- In flight: " + value)
+        strip = re.search(r'<dl class="resume".*?</dl>', rb.render(tracker, LOG, self.cfg, NOW), re.S).group(0)
+        summary = re.search(r"<details class=\"long\"><summary>(.*?)</summary>", strip, re.S).group(1)
+        self.assertNotIn("*", summary, summary)
+        self.assertIn("an opening mark", summary)
+
+    def test_no_single_field_can_push_the_board_off_the_screen(self) -> None:
+        """One `As of:` field of 9 400 characters expanded to fill the viewport; the board below it was gone.
+
+        The fold is the right idiom and it is not the whole answer: `<details>` bounds what is shown
+        closed and nothing bounds what is shown open. The strip is where the last move left off, not
+        a document, so the opened body scrolls within a cap instead of displacing the page.
+        """
+        html = rb.render(self.tracker, LOG, self.cfg, NOW)
+        css = html.split("<style>")[1].split("</style>")[0]
+        rule = re.search(r"\.resume details\.long\[open\]\{([^}]*)\}", css)
+        self.assertIsNotNone(rule, "nothing bounds an opened resume field")
+        self.assertIn("max-height", rule.group(1))
+        self.assertIn("overflow-y:auto", rule.group(1).replace(" ", ""))
 
     def test_an_over_long_field_is_counted_as_a_warning_not_as_telemetry(self) -> None:
         """`resume_long=4` printed beside `warnings=0` for three hours and read as a lane count."""
