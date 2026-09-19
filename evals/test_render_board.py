@@ -295,9 +295,9 @@ class RenderTest(unittest.TestCase):
     def test_bars_carry_sources_and_labels(self) -> None:
         audit = re.search(r'<[^>]*class="[^"]*\bbar\b[^"]*"[^>]*data-item="Security audit"[^>]*>', self.html)
         self.assertIsNotNone(audit)
-        self.assertIn('data-end-src="deadline"', audit.group(0))
+        self.assertIn('data-end-src="derived"', audit.group(0))
         self.assertIn('data-start-src="state"', audit.group(0))
-        self.assertIn('data-label="no estimate"', audit.group(0))
+        self.assertIn('data-label="est. 1/1 → Launch"', audit.group(0))
         readme = re.search(r'<[^>]*\bbar\b[^>]*data-item="Write eval README"[^>]*>', self.html)
         self.assertIn('data-end-src="due"', readme.group(0))
 
@@ -409,7 +409,8 @@ class DensityTest(unittest.TestCase):
         self.assertRegex(day, r'class="bar running[^"]*"[^>]*data-item="Security audit"')
         self.assertRegex(day, r'class="member"[^>]*data-item="Review deploy config"')
         self.assertNotRegex(day, r'class="bar[^"]*"[^>]*data-item="Review deploy config"')
-        self.assertRegex(day, r'data-summary="today"[^>]*data-count="4"')
+        # Two of the four unscheduled lanes are owned, so 0.10.0 derives their ends inside today and draws them.
+        self.assertRegex(day, r'data-summary="today"[^>]*data-count="2"')
         self.assertNotIn("Draft release notes", day)
         self.assertNotIn("Draft release notes", _strip_html(self.html, "week"))
 
@@ -780,6 +781,7 @@ class LegendTest(unittest.TestCase):
             ("key bar open", "open"),
             ("key bar orphaned", "orphaned"),
             ("key bar open-end", "no estimate"),
+            ("key bar derived", "estimated"),
             ("key bar summary", "folded rows"),
             ("key band", "calendar event"),
             ("key nowline", "now"),
@@ -968,7 +970,7 @@ class StateLegibilityTest(unittest.TestCase):
     """
 
     # Every state the chart can draw, as the class that paints it.
-    STATES = ("running", "open", "orphaned", "open-end", "summary")
+    STATES = ("running", "open", "orphaned", "open-end", "derived", "summary")
 
     def setUp(self) -> None:
         self.html = rb.render(TRACKER, LOG, rb.parse_coordinator(CLAUDE_MD, today=NOW.date()), NOW)
@@ -1452,3 +1454,68 @@ class EstimateTest(unittest.TestCase):
         lanes = [lane for lane in rb.parse_tracker(text).lanes if lane.kind != "done"]
         other = rb.estimates(lanes, self.cfg, NOW)
         self.assertEqual({e.end for e in other.values()}, {e.end for e in self.est.values()})
+
+
+class DrawnEstimateTest(unittest.TestCase):
+    """A derived end is drawn as its own state, cites its inputs, and folds when its slot is too narrow to read."""
+
+    def setUp(self) -> None:
+        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.html = rb.render(QUEUE_TRACKER, LOG, self.cfg, NOW)
+        self.day = _strip_html(self.html, "day")
+
+    def bar(self, item: str, html: str | None = None) -> str:
+        m = re.search(rf'<div class="bar[^"]*"[^>]*data-item="{re.escape(item)}"[^>]*>', html or self.day)
+        self.assertIsNotNone(m, item)
+        return m.group(0)
+
+    def test_the_bar_is_its_own_state_and_cites_its_inputs(self) -> None:
+        a = self.bar("A oldest")
+        self.assertIn('class="bar open derived"', a)
+        self.assertIn('data-end-src="derived"', a)
+        self.assertIn('data-est="2/4"', a)
+        self.assertIn('data-est-of="Launch"', a)
+        self.assertIn('data-label="est. 2/4 → Launch"', a)
+        self.assertRegex(a, r'title="[^"]*queue[^"]*"')
+        self.assertIn('class="bar running derived"', self.bar("B running"))
+
+    def test_an_unowned_lane_still_says_no_estimate(self) -> None:
+        for item in ("E unassigned", "F blank", "H left behind"):
+            self.assertRegex(self.day, rf'class="member" data-item="{re.escape(item)}"[^>]*data-end-src="deadline"[^>]*data-label="no estimate"')
+
+    def test_a_slot_narrower_than_a_tick_folds(self) -> None:
+        rows = "".join(f"| L{i} | many | open | 2026-09-16 |  | c |\n" for i in range(12))
+        text = QUEUE_TRACKER.replace("| K done |", rows + "| K done |")
+        day = _strip_html(rb.render(text, LOG, self.cfg, NOW), "day")
+        self.assertNotRegex(day, r'<div class="bar[^"]*"[^>]*data-item="L3"')
+        member = re.search(r'<span class="member" data-item="L3"[^>]*>', day)
+        self.assertIsNotNone(member)
+        self.assertIn('data-end-src="derived"', member.group(0))
+        self.assertIn('data-est="4/12"', member.group(0))
+        self.assertIn('class="bar open derived"', self.bar("A oldest"))
+
+    def test_the_legend_key_matches_the_bar(self) -> None:
+        css = self.html.split("<style>")[1].split("</style>")[0]
+        self.assertIn(".bar.derived{background:var(--est)}", css)
+        self.assertIn(".key.bar.derived{background:var(--est)}", css)
+        self.assertRegex(css, r"--est:#[0-9a-f]{6}")
+
+    def test_the_week_routes_a_derived_end_by_day_and_counts_it(self) -> None:
+        text = QUEUE_TRACKER.replace("| K done |", "| P | w | open | 2026-09-16 |  | c |\n| Q | w | open | 2026-09-16 |  | c |\n| R | w | open | 2026-09-16 | 17:00 | c |\n| K done |")
+        week = _strip_html(rb.render(text, LOG, self.cfg, NOW), "week")
+        row = re.search(r'data-group="2026-09-16" data-count="(\d+)"(.*?)</div></div></div>', week)
+        self.assertIsNotNone(row)
+        members = re.findall(r'class="member" data-item="([^"]+)"', row.group(2))
+        self.assertTrue({"P", "Q", "R", "D dated"} <= set(members), members)
+        self.assertIn("2 due · 4 est.", row.group(2))
+        self.assertNotRegex(week, r'class="member" data-item="P"[^>]*data-end-src="deadline"')
+
+    def test_the_cli_counts_derived_beside_no_estimate(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        (root / "CLAUDE.md").write_text(CLAUDE_MD)
+        (root / "daily").mkdir()
+        (root / "daily" / "2026-09-16-tracker.md").write_text(QUEUE_TRACKER)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rb.main(["--date", "2026-09-16", "--root", str(root)])
+        self.assertIn("no_estimate=5 derived=3", buf.getvalue())

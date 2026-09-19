@@ -617,7 +617,7 @@ def _board_bars(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
         attrs = dict(ATTR.findall(tag))
         if "end-src" in attrs:
             bars.setdefault(attrs["item"], attrs)
-    problems = [f"{item!r}: end src {a.get('end-src')!r}" for item, a in bars.items() if a.get("end-src") not in ("due", "state", "deadline")]
+    problems = [f"{item!r}: end src {a.get('end-src')!r}" for item, a in bars.items() if a.get("end-src") not in ("due", "state", "deadline", "derived")]
     for want in g.get("bars", []):
         a = bars.get(_esc_html(want["item"]))
         if a is None:
