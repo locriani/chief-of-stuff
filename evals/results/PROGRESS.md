@@ -1019,6 +1019,10 @@ Measured before the change on both live trackers: zero done lanes with a duratio
 Finding 76 (Decisions-row deadlines reach the reply and not the board) recorded. The 42 candidate findings five dispatched sessions sent tonight at Zach's request are a recording stage of their own, C10.
 
 
+### C9 reruns, and 0.11.1
+
+Agent arm on Opus, 0.11.0: the two new cases 3/3 each, green. Six reruns: 4 green, 2 red — `board-republish-on-lane-change` and `lane-done-ticks-checkbox`, both because the coordinator widened the fixture's six-column table mid-move and sized an untouched row (finding 79), and one grader regex predated `data-size` on a table row. The Lanes rule gained the sentence; both cases rerun 3/3 green. 0.11.1.
+
 ## C10 — the relayed findings, recorded (docs only)
 
 Zach: "fix 1 without planning". The 42 observations five dispatched sessions sent at 23:02–23:08 on 2026-09-18 are findings 80–97 in `docs/design-inputs.md`, folded where they overlap and every reporter named: idle polling (five reporters), the write-only line against a CIMP lane, authority through a peer, plan mode on a wait lane, launchd's PATH, no docker stack, blocked credential-shaped messages, guessed Owns lists, the hand-off pattern to keep, six report and ruling gaps, stale line-number citations, house rule 3 not reaching subagents, direct asks and pathless asks, a model the launcher cannot set, a 42k-token tracker, a demo credential taken for a secret, findings that trailed, and bundled sub-questions. All Recorded, none ruled on. No code, no rule change, no version.
