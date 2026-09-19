@@ -179,8 +179,12 @@ class AssignmentTest(unittest.TestCase):
             dp.compose(root, "2026-09-18", "Security audit")
         self.assertNotIn("\u2026", str(e.exception))
 
-    def test_it_says_not_to_commit_or_push(self):
-        self.assertIn("Write only: do not commit or push.", self.body())
+    def test_it_says_to_commit_and_not_to_merge(self):
+        """Superseded 0.12.0: this pinned `Write only: do not commit or push.`, which contradicted the
+        workspace rule the assignment exists to carry — every session makes meaningful small commits,
+        because uncommitted work is how work gets lost (Zach, 2026-09-18 23:00). The gate is the merge."""
+        self.assertRegex(self.body(), r"(?m)^Commits: Commit small and often\b")
+        self.assertIn("never merge", self.body())
 
     def test_it_says_what_to_reply_with(self):
         self.assertRegex(self.body(), r"(?m)^Report: \S")
@@ -280,3 +284,82 @@ class QuarantineTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StopCostsSomethingTest(unittest.TestCase):
+    """The assignment's own text is three-fifths prohibition. A session that must stop needs a price, not another no."""
+
+    def setUp(self):
+        self.tmp, self.root = workspace()
+        self.addCleanup(self.tmp.cleanup)
+        self.body = dp.compose(self.root, "2026-09-18", "Security audit")
+
+    def test_the_assignment_says_what_putting_work_down_costs(self):
+        self.assertIn("who it lands on", self.body)
+        self.assertIn("what breaks if nobody takes it", self.body)
+
+    def test_it_names_the_file_a_stop_is_written_to(self):
+        self.assertIn(".chief-of-stuff/stop.md", self.body)
+
+    def test_a_correct_refusal_is_still_worth_more_than_a_wrong_edit(self):
+        self.assertIn("worth more than a wrong edit", self.body)
+
+
+class PositiveHalfTest(unittest.TestCase):
+    """Prohibitions generalise and grants do not, so a fleet ratchets toward refusal. The grants are written as sharply."""
+
+    def setUp(self):
+        self.tmp, self.root = workspace()
+        self.addCleanup(self.tmp.cleanup)
+        self.body = dp.compose(self.root, "2026-09-18", "Security audit")
+
+    def test_two_categories_and_no_third(self):
+        self.assertIn("git revert", self.body)
+        self.assertIn("no third", self.body)
+
+    def test_a_revertible_change_in_this_tree_needs_nobody(self):
+        self.assertIn("needs nobody's word", self.body)
+
+    def test_a_relay_never_carries_an_irreversible_one(self):
+        self.assertIn("never travels on a relay", self.body)
+        self.assertIn("evidence about the past", self.body)
+
+    def test_not_handed_is_not_a_boundary(self):
+        self.assertIn("not one of the two", self.body)
+
+    def test_the_commit_line_is_zachs_rule_not_its_opposite(self):
+        """Zach, 2026-09-18 23:00: every session makes meaningful small commits; uncommitted work is how work gets lost."""
+        self.assertNotIn("do not commit", self.body)
+        self.assertIn("Commit small and often", self.body)
+        self.assertIn("never merge", self.body)
+
+    def test_owns_is_a_duty_with_a_failure_mode(self):
+        self.assertIn("yours to keep true", self.body)
+        self.assertIn("your error", self.body)
+
+    def test_a_flagged_problem_in_your_own_paths_is_your_assignment(self):
+        self.assertIn("is your assignment", self.body)
+        self.assertIn("do not act", self.body)
+
+    def test_the_two_errors_are_priced(self):
+        self.assertIn("costs one `git revert`", self.body)
+        self.assertIn("costs the deliverable", self.body)
+
+    def test_owns_none_gains_no_duty_clause(self):
+        tracker = (self.root / "daily" / "2026-09-18-tracker.md")
+        tracker.write_text(tracker.read_text().replace(
+            "| Security audit | `src/a/`, `notes/audit.md` |", "| Security audit | none |"))
+        body = dp.compose(self.root, "2026-09-18", "Security audit")
+        self.assertIn("Owns: none", body)
+        self.assertNotIn("yours to keep true", body.split("Owns: none")[1])
+
+
+class StopKindsTest(unittest.TestCase):
+    """Four stops take four routes. Arriving as indistinguishable English is how they landed as prose to interpret."""
+
+    def test_the_assignment_names_the_four_kinds(self):
+        tmp, root = workspace()
+        self.addCleanup(tmp.cleanup)
+        body = dp.compose(root, "2026-09-18", "Security audit")
+        for kind in ("permission", "authorization", "ownership", "scope"):
+            self.assertIn(kind, body)

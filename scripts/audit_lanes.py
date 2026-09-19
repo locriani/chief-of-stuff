@@ -25,7 +25,8 @@ from datetime import date, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from render_board import BULLET, ConfigError, _cells, _is_separator, _section, _unquote, parse_coordinator, parse_tracker, short_name  # noqa: E402
+from render_board import BULLET, ConfigError, _cells, _is_separator, _section, _unmark, _unquote, parse_coordinator, parse_tracker, short_name  # noqa: E402
+from dispatch_prompt import PROMPT_DIR, STOP_FILE  # noqa: E402
 
 # The branch is written in the parenthetical right after the tree name — `worktree wt-x (feat/y)` —
 # which is the only place it survives when the tree itself is gone. Finding 46 turns on that.
@@ -75,11 +76,49 @@ class Orphan:
         return f"orphaned work: {self.worktree} — {self.why}, and its owner {self.owner!r} is not in ## Sessions"
 
 
+@dataclass(frozen=True)
+class Stop:
+    """A session put this lane down and said so in its tree. The lane never heard.
+
+    A refusal and a session quietly dying are the same silence from the coordinator's side, which is
+    how an hour of finished work sat at `running 02:20` against a session that had stopped. The stop
+    is a file because a message is only as good as somebody reading it, and this walk happens anyway.
+    """
+
+    lane: str
+    kind: str
+    lands_on: str
+    worktree: str
+    state: str
+
+    def __str__(self) -> str:
+        who = f", lands on {self.lands_on}" if self.lands_on else ", lands on nobody it named"
+        return f"stopped: {short_name(self.lane)} — {self.worktree}: {self.kind or 'kind unstated'}{who}, and the lane still reads {self.state!r}"
+
+
+@dataclass(frozen=True)
+class QueueFault:
+    """A decision queue that cannot be worked through one row at a time.
+
+    Zach, 2026-09-19 03:26: one at a time, in order, with the context to decide. A queue that repeats
+    a number, keeps rows it has already answered, or carries a row nobody can act on is a list that
+    looks like progress — which is the thing that was banned, in a new place.
+    """
+
+    row: str
+    why: str
+
+    def __str__(self) -> str:
+        return f"decision queue: {self.row} — {self.why}"
+
+
 @dataclass
 class Report:
     lines: list[str] = field(default_factory=list)
     reopen: list[Reopen] = field(default_factory=list)
     orphans: list[Orphan] = field(default_factory=list)
+    stopped: list[Stop] = field(default_factory=list)
+    queue: list[QueueFault] = field(default_factory=list)
 
 
 def worktrees_dir(claude_md: str) -> str:
@@ -272,6 +311,59 @@ def _push_gap(worktree: Path) -> str:
     return at + ", ".join(parts) + " vs origin/main"
 
 
+# `Stop: permission`, `Lands on: Zach` — the assignment's own labelled lines, read back.
+STOP_FIELD = re.compile(r"(?im)^\s*([A-Za-z][A-Za-z ]*?)\s*:\s*(.*?)\s*$")
+# The two states a stopped lane is allowed to be in. Anything else means nobody moved it.
+SETTLED = ("open", "waiting")
+
+
+def read_stop(worktree: Path) -> dict[str, str] | None:
+    """The stop a session left in its own tree, as its fields. None when there is none to read."""
+    try:
+        text = (worktree / STOP_FILE).read_text()
+    except OSError:
+        return None
+    return {m.group(1).strip().lower(): m.group(2).strip() for m in STOP_FIELD.finditer(text)}
+
+
+# `~~1~~` and `**ANSWERED 03:29**`: the two ways the live queue marked a row it had already settled
+# while leaving it in the table.
+ANSWERED = re.compile(r"(?i)\bANSWERED\b|^~~.*~~$")
+DASH = {"", "-", "—", "–", "n/a", "none"}
+
+
+def queue_faults(tracker_text: str) -> tuple[list[QueueFault], list[str], int]:
+    """The decision queue read as a queue: unique numbers in order, answered rows gone, every row decidable."""
+    rows = [line for line in _section(tracker_text, "## Decision queue") if line.strip().startswith("|")]
+    if not rows:
+        return [], [], 0
+    faults: list[QueueFault] = []
+    lines: list[str] = []
+    seen: dict[str, str] = {}
+    open_rows: list[tuple[str, str]] = []
+    for row in rows[1:]:
+        cells = _cells(row)
+        if _is_separator(cells) or len(cells) < 2 or cells[0].strip().lower() == "#":
+            continue
+        num, decision = cells[0].strip(), cells[1].strip()
+        if ANSWERED.search(decision) or ANSWERED.search(num):
+            faults.append(QueueFault(f"row {num}", "answered and still in the table; an answered row moves to ## Decisions"))
+            continue
+        if num in seen:
+            faults.append(QueueFault(f"row {num}", f"carries the number {num} twice, so there is no next one"))
+        seen[num] = decision
+        why, blocked = (cells[2].strip() if len(cells) > 2 else ""), (cells[3].strip() if len(cells) > 3 else "")
+        if why.lower() in DASH and blocked.lower() in DASH:
+            faults.append(QueueFault(f"row {num}", "names neither why it is next nor who is blocked, so it cannot be decided from the row"))
+        open_rows.append((num, decision))
+    if open_rows:
+        num, decision = open_rows[0]
+        # A decision cell opens with a bold headline, and `short_name` cutting inside the mark pair
+        # returns a bare ellipsis: the line that says which one is next has to name it.
+        lines.append(f"next decision: {num} — {short_name(_unmark(decision))}")
+    return faults, lines, len(open_rows)
+
+
 def audit(root: Path, day: str) -> Report:
     claude_md = (root / "CLAUDE.md").read_text()
     cfg = parse_coordinator(claude_md, today=date.today())
@@ -294,6 +386,7 @@ def audit(root: Path, day: str) -> Report:
     refused: set[str] = set()
     noted: set[str] = set()
     orphaned: set[str] = set()
+    stopped_at: set[str] = set()
     gone: dict[str, str] = {}
     def visit(row: OwnerRow, name: str, lane) -> None:
         """One tree, once: its git state, any lane it reopens, and whether its writer is still here."""
@@ -316,6 +409,11 @@ def audit(root: Path, day: str) -> Report:
         # Finding 47: the audit reports per tree, and this is a fact about owners. Only uncommitted
         # work counts — an unmerged branch is recoverable by name, a dirty tree nobody is writing in
         # is not.
+        stop = read_stop(path)
+        if stop is not None and lane is not None and lane.kind not in SETTLED and name not in stopped_at:
+            stopped_at.add(name)
+            report.stopped.append(Stop(lane.item, stop.get("stop", ""), stop.get("lands on", ""),
+                                       f"{name} ({branch})", lane.state.strip()))
         owner = row.context.strip() or (lane.owner.strip() if lane is not None else "")
         if roster and "uncommitted" in why and _bare(owner) not in roster and name not in orphaned:
             orphaned.add(name)
@@ -344,8 +442,14 @@ def audit(root: Path, day: str) -> Report:
         report.lines.append(_push_gap(order[0]))
     report.lines.extend(str(r) for r in report.reopen)
     report.lines.extend(str(o) for o in report.orphans)
+    report.lines.extend(str(s) for s in report.stopped)
+    faults, queue_lines, queued = queue_faults(tracker_text)
+    report.queue.extend(faults)
+    report.lines.extend(queue_lines)
+    report.lines.extend(str(q) for q in report.queue)
     report.lines.append(
-        f"lanes={len(lanes)} trees={len(seen)} reopen={len(report.reopen)} orphaned={len(report.orphans)}")
+        f"lanes={len(lanes)} trees={len(seen)} reopen={len(report.reopen)} orphaned={len(report.orphans)} "
+        f"stopped={len(report.stopped)}" + (f" queued={queued}" if queue_lines or faults or queued else ""))
     return report
 
 
@@ -371,7 +475,7 @@ def main(argv: list[str] | None = None) -> int:
     report = audit(root, day)
     for line in report.lines:
         print(line)
-    return len(report.reopen)
+    return len(report.reopen) + len(report.stopped) + len(report.queue)
 
 
 if __name__ == "__main__":
