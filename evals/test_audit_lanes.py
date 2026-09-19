@@ -13,6 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import audit_lanes as al  # noqa: E402
+from render_board import short_name  # noqa: E402
 
 CLAUDE = """# Workspace
 
@@ -833,3 +834,66 @@ class OwnsRefTest(unittest.TestCase):
         report = al.audit(root, "2026-09-17")
         self.assertEqual(len(report.reopen), 1, report.lines)
         self.assertIn("wt-unmerged", str(report.reopen[0]))
+
+
+class ReopenGroupsByTreeTest(unittest.TestCase):
+    """Finding 116, option (c), from `gauntlet-b2` by way of `board-ux-improvements`.
+
+    `audit_lanes` asks git once per tree and then fans that one fact across the tree's lanes, so
+    thirteen reopen lines on the live tracker carried three facts. Grouping the *rendering* per tree
+    is not a change to what is detected: every lane that reopened still appears, the finding list is
+    untouched, and the exit code is unchanged. It is the ratio that moves, and the ratio is lines per
+    tree, which is what made the count climb as a session closed more lanes in one worktree.
+    """
+
+    TWO = ("| First | robin | done 10:00 | 09:00 |  | Checklist: First |\n"
+           "| Second | robin | done 10:00 | 09:00 |  | Checklist: Second |")
+    OWNS = "| robin | worktree wt-unmerged (feat/open) |"
+
+    def report(self):
+        tmp, root = workspace(self.TWO, self.OWNS, sessions=session_row("robin"))
+        self.addCleanup(tmp.cleanup)
+        return al.audit(root, "2026-09-17")
+
+    def test_two_lanes_on_one_tree_render_as_one_line(self) -> None:
+        lines = [l for l in self.report().lines if l.startswith("reopen:")]
+        self.assertEqual(len(lines), 1, lines)
+
+    def test_and_that_line_names_every_lane_it_covers(self) -> None:
+        """The invariant that makes this safe: grouping may not drop a lane from the output."""
+        report = self.report()
+        rendered = "\n".join(l for l in report.lines if l.startswith("reopen:"))
+        for r in report.reopen:
+            self.assertIn(short_name(r.lane), rendered)
+
+    def test_the_finding_list_and_the_exit_code_are_untouched(self) -> None:
+        report = self.report()
+        self.assertEqual(sorted(r.lane for r in report.reopen), ["First", "Second"])
+
+    def test_the_summary_says_how_many_facts_and_how_many_lanes(self) -> None:
+        summary = self.report().lines[-1]
+        self.assertIn("reopen=1 tree", summary)
+        self.assertIn("2 lane", summary)
+
+    def test_two_trees_stay_two_lines(self) -> None:
+        tmp, root = workspace(
+            "| First | robin | done 10:00 | 09:00 |  | Checklist: First |\n"
+            "| Other | sam | done 10:00 | 09:00 |  | Checklist: Other |",
+            "| robin | worktree wt-unmerged (feat/open) |\n| sam | worktree wt-dirty (feat/dirty) |",
+            sessions=session_row("robin") + "\n" + session_row("sam"))
+        self.addCleanup(tmp.cleanup)
+        lines = [l for l in al.audit(root, "2026-09-17").lines if l.startswith("reopen:")]
+        self.assertEqual(len(lines), 2, lines)
+
+    def test_a_bolded_lane_item_is_unmarked_before_it_is_shortened(self) -> None:
+        """`short_name` cutting inside a `**` pair returns a bare ellipsis — the same defect fixed for
+        the decision queue and never carried across. Grouping only made it visible: six lanes on one
+        line rendered as six ellipses, and the old per-lane output had been doing it all along."""
+        tmp, root = workspace(
+            "| **A lane whose item is bold and much longer than the short_name cut** | robin "
+            "| done 10:00 | 09:00 |  | Checklist: x |",
+            self.OWNS, sessions=session_row("robin"))
+        self.addCleanup(tmp.cleanup)
+        line = [l for l in al.audit(root, "2026-09-17").lines if l.startswith("reopen:")][0]
+        self.assertIn("A lane whose item is bold", line)
+        self.assertNotIn("**", line)
