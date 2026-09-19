@@ -9,7 +9,7 @@ Coordinator: gauntlet-85. Board: board-known.
 - Next: read 4821-audit's reply, then decide the release notes owner
 - Waiting on: Robin — the release notes owner
 - Re-arm: the 30-minute check
-- Verified: agent /ready 200 (09:38)
+- Verified 09:40: agent /ready 200 (09:38)
 
 ## Lanes
 
@@ -25,10 +25,10 @@ Coordinator: gauntlet-85. Board: board-known.
 
 ## Sessions
 
-| ref | name | doing | waiting on | free at | constraints | last reply |
-|---|---|---|---|---|---|---|
-| a1b2c3 | 4821-audit | security audit of the upload endpoint | none | 11:00 | none | 09:30 |
-| d4e5f6 | 7719-notes | idle | none | now | none | 09:05 |
+| ref | name | state | doing | waiting on | free at | constraints | children | last reply |
+|---|---|---|---|---|---|---|---|---|
+| a1b2c3 | 4821-audit | | security audit of the upload endpoint | none | 11:00 | none | 09:30 | |
+| d4e5f6 | 7719-notes | | idle | none | now | none | 09:05 | |
 
 ## File ownership
 

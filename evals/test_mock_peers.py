@@ -21,6 +21,7 @@ CT = ZoneInfo("America/Chicago")
 SESSIONS = [
     {"ref": "a1b2c3", "name": "4821-audit", "state": "busy", "started_hours_ago": 2},
     {"ref": "d4e5f6", "name": "7719-notes", "state": "idle", "started_hours_ago": 1},
+    {"ref": "9f2a41", "name": "wt-audit", "state": "busy", "started_minutes_ago": 3},
 ]
 
 
@@ -62,6 +63,9 @@ class MockPeersServerTest(unittest.TestCase):
         rows = self.text(r[3]).splitlines()
         self.assertIn("4821-audit [a1b2c3]  ·  interactive  ·  busy  ·  started 2h ago", rows)
         self.assertIn("7719-notes [d4e5f6]  ·  interactive  ·  idle  ·  started 1h ago", rows)
+        # `registration-fills-the-ref` sets minutes: a session that came up moments ago is the whole premise,
+        # and the mock had been listing it as an hour old.
+        self.assertIn("wt-audit [9f2a41]  ·  interactive  ·  busy  ·  started 3m ago", rows)
         entries = [json.loads(l) for l in self.log.read_text().splitlines()]
         self.assertEqual(entries[0]["tool"], "list_sessions")
         self.assertIn("at", entries[0])

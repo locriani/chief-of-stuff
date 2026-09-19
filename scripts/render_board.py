@@ -1132,7 +1132,8 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
     long_note = f" · {long_items} {'lane carries' if long_items == 1 else 'lanes carry'} history in the item cell" if long_items else ""
     tzname = now.strftime("%Z")
 
-    return f"""<title>Board {today.isoformat()}</title>
+    return f"""<meta charset="utf-8">
+<title>Board {today.isoformat()}</title>
 <link rel="stylesheet" href="{FONTS}">
 <meta name="tracker-sha256" content="{sha}">{req_meta}
 <style>

@@ -10,9 +10,9 @@
 
 ## Sessions
 
-| ref | name | doing | waiting on | free at | constraints | last reply |
-|---|---|---|---|---|---|---|
-|  | wt-audit | security audit | none | unknown | none | {{now_hhmm}} |
+| ref | name | state | doing | waiting on | free at | constraints | children | last reply |
+|---|---|---|---|---|---|---|---|---|
+|  | wt-audit | | security audit | none | unknown | none | {{now_hhmm}} | |
 |  | wt-docs | docstring pass | none | unknown | none | {{now-3h|hhmm}} |
 | a1b2c3 | 4821-audit | unrelated | none | unknown | none | {{now-1h|hhmm}} |
 

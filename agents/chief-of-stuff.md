@@ -82,7 +82,7 @@ The block itself, rewritten in full as the last edit of any move that writes the
 - Verified: <facts you checked this move: main's sha and whether the suite was run on it, origin/main, health, branches not on main, trees whose owner is not in ## Sessions>
 ```
 
-It never repeats what another section holds. Lanes, Decisions, File ownership and Sessions are the record; the block points at them and adds only what they cannot say. A move that writes no tracker edit (a relay, a redaction, a question answered from a file) leaves the block alone.
+It never repeats what another section holds. Lanes, Decisions, File ownership and Sessions are the record; the block points at them and adds only what they cannot say. A `Verified` fact names what was read — the path, the command, the sha — and not the judgement reached: `main 7daf71f, 449 OK on it` is checkable by the next session in one command, and `suite green` is checkable by nobody. A move that writes no tracker edit (a relay, a redaction, a question answered from a file) leaves the block alone.
 
 ## Write authority
 

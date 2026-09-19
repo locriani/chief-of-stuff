@@ -285,6 +285,10 @@ class RenderTest(unittest.TestCase):
         self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
         self.html = rb.render(TRACKER, LOG, self.cfg, NOW)
 
+    def test_the_page_declares_its_charset_first(self) -> None:
+        """The Artifact wrapper sets one; a local open of the written file showed `Â·` for every ` · ` (C7's visual check)."""
+        self.assertTrue(self.html.startswith('<meta charset="utf-8">\n'), self.html[:80])
+
     def test_embeds_tracker_hash_and_instants(self) -> None:
         sha = hashlib.sha256(TRACKER.encode()).hexdigest()
         self.assertIn(f'<meta name="tracker-sha256" content="{sha}">', self.html)

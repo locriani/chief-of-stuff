@@ -9,7 +9,7 @@ Coordinator: gauntlet-85. Board: board-known.
 - Next: find owners for anything nobody is holding
 - Waiting on: Robin — the session TTL decision
 - Re-arm: the 30-minute check
-- Verified: agent /ready 200 (09:38)
+- Verified 09:40: agent /ready 200 (09:38)
 
 ## Lanes
 

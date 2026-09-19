@@ -997,3 +997,12 @@ A Plan agent was asked to break the queue model and returned fourteen issues. Th
 Run `20260918-203609` finished during the backout: 8 green, 2 red, both harness faults (finding 74): the orphaned case's fixture had no `CLAUDE.md`, and the spawn grader anchored on the exact item text C5 expands into the brief. Both fixed here and re-run with the five board cases.
 
 Agent arm, 0.10.0: the four board cases and the two repaired cases, 6 green, 0 red, 0 unmeasured. 449 units green on the branch.
+
+
+## C8 — the three items, and what else surfaced (0.10.1)
+
+Zach's word: "fixing 1 2 3 and any other issues that pop up". Item 1, the tracker template's seven-column Sessions table, is nine columns with the ruleset's notes, and two more template drifts went with it: `done` now says the suite has to have run on main after the merge (house rule 5), and the `Verified` placeholder lists main's sha. Item 2, the render path at `CLAUDE.md:181`, carries `${CLAUDE_PLUGIN_ROOT}`, which is where finding 61 traced the absolute-path call site. Item 3, the `wt-tab-17` tab, was already closed. Both workspace edits are outside any repo and were made directly.
+
+The rest: a lint over every eval case (finding 75), which on its first run converted 21 fixture trackers and exposed a mock that ignored the registration case's premise; `mock_peers.py` honours `started_minutes_ago`; the page declares its charset; finding 61's reporting sentence is in `## Resume`. Finding 73, the deadline that governs no lane in particular, stays open: it needs the Coordinator block to say which lanes a deadline covers, and that is a design, not a fix.
+
+460 units green on the branch.
