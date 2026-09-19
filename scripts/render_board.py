@@ -1728,7 +1728,7 @@ details summary{{cursor:pointer}} details[open] summary{{margin-bottom:4px}}
 <div class="meta">tracker as of {now.strftime('%H:%M')} {_esc(tzname)} <span id="ago"></span> · kept by chief-of-stuff · board {_esc(url or 'not yet published')}{long_note}</div>
 {resume_strip(parse_resume(tracker_text))}</div></div>
 
-{due_html}{blocked_html}{req_html}
+{due_html}{blocked_html}
 
 <h2>Today</h2>
 <div class="meta">{len(day_bars)} scheduled · {len(day_folded)} folded into one row (no estimate, or due or estimated after today) · bands are calendar events · green line is now{orphan_note}</div>
@@ -1738,6 +1738,8 @@ details summary{{cursor:pointer}} details[open] summary{{margin-bottom:4px}}
 <div class="meta">{len(week_bars)} bars · {len(week_groups)} rows grouped by due day · the rest folded into one row per deadline · dashed lines are deadlines</div>
 {_load_row(load_cells, week_a, week_b)}
 {_strip(week, week_a, week_b, [], list(cfg.deadlines), week_ticks, "week")}
+
+{req_html}
 
 <h2>Lanes</h2>
 <div class="lanes">

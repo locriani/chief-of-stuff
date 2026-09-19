@@ -551,8 +551,10 @@ class RequirementsTest(unittest.TestCase):
         self.assertIn("Shows the &lt;agent&gt; answering", section)
         self.assertNotIn("star bullets", section)
         self.assertNotIn("max-height", page)
-        self.assertLess(page.index('class="reqs"'), page.index("<h2>Today</h2>"))
-        self.assertGreater(page.index('class="reqs"'), page.index("<h2>Blocked</h2>"))
+        # Stage 5 moved requirements out of the first screen: it answers "is the deck ready",
+        # which is a question about the week, so it follows the week and precedes the lanes.
+        self.assertGreater(page.index('class="reqs"'), page.index('data-strip="week"'))
+        self.assertLess(page.index('class="reqs"'), page.index("<h2>Lanes"))
         sha = hashlib.sha256(REQS.encode()).hexdigest()
         self.assertIn(f'<meta name="requirements-sha256" data-deadline="Final" content="{sha}">', page)
 
@@ -1120,6 +1122,52 @@ class WeekLoadTest(unittest.TestCase):
         for cls, label in (("key fill due", "committed"), ("key fill derived", "derived, no due written"),
                            ("key fill over", "over work time"), ("key fill free", "uncommitted")):
             self.assertRegex(legend, rf'<span class="{re.escape(cls)}"></span>\s*{re.escape(label)}', cls)
+
+
+class SectionOrderTest(unittest.TestCase):
+    """Stage 5: requirements and sessions take their slots, and the page reads in one order.
+
+    DUE NEXT · BLOCKED · 24 HOURS · WEEK · REQUIREMENTS · LANES · SESSIONS. Requirements sat third,
+    between BLOCKED and the day strip, where a long deck pushed the two strips off the first screen
+    — the thing with a clock on it should not be below a checklist of what the deck must contain.
+    It answers "is the deck ready", which is a question about the week, so it follows the week.
+
+    Sessions stays last: it is the roster the rest of the page cites, and nothing on it is a thing
+    to do next.
+    """
+
+    REQS = """# Final
+
+## Deck
+
+- [x] Title slide
+- [ ] Method
+- [ ] Results
+"""
+
+    def setUp(self) -> None:
+        self.cfg = rb.parse_coordinator(CLAUDE_MD_REQ, today=NOW.date())
+        self.html = rb.render(TRACKER, LOG, self.cfg, NOW, requirements={"Final": self.REQS, "Launch": self.REQS})
+        self.body = self.html.split("</style>", 1)[1]
+
+    def test_the_page_reads_in_the_approved_order(self) -> None:
+        marks = ["Due next", "Blocked", 'data-strip="day"', 'data-load="week"',
+                 'data-strip="week"', 'class="reqs"', "<h2>Lanes", "<h2>Sessions"]
+        at = [self.body.index(m) for m in marks]
+        self.assertEqual(at, sorted(at), [m for _, m in sorted(zip(at, marks))])
+
+    def test_requirements_sit_between_the_week_and_the_lanes(self) -> None:
+        self.assertGreater(self.body.index('class="reqs"'), self.body.index('data-strip="week"'))
+        self.assertLess(self.body.index('class="reqs"'), self.body.index("<h2>Lanes"))
+
+    def test_every_deck_still_renders_with_its_meter(self) -> None:
+        self.assertEqual(self.body.count('<section class="reqs"'), 2)
+        self.assertEqual(self.body.count('class="meter"'), 2)
+        self.assertIn("requirements · 1 of 3", self.body)
+
+    def test_sessions_is_last(self) -> None:
+        self.assertEqual(self.body.index("<h2>Sessions"), max(
+            self.body.index(m) for m in ("Due next", "Blocked", "<h2>Lanes", 'class="reqs"', "<h2>Sessions")))
 
 
 class GridlinesTest(unittest.TestCase):
