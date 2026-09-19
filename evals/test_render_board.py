@@ -1911,7 +1911,7 @@ class InlineMarksTest(unittest.TestCase):
         self.assertTrue(hist)
         joined = "".join(hist)
         self.assertIn("<code>39e516f</code>", joined)
-        self.assertIn("<strong>22:20: handed to research-1 on Robin&#x27;s yes</strong>", joined)
+        self.assertIn("<time>22:20</time><span><strong>handed to research-1 on Robin&#x27;s yes</strong>", joined)
         self.assertNotIn("**", joined)
 
     def test_session_facts_render_bold_and_code(self) -> None:
@@ -1923,3 +1923,46 @@ class InlineMarksTest(unittest.TestCase):
     def test_resume_values_render_code(self) -> None:
         resume = re.search(r'<dl class="resume">(.*?)</dl>', self.html, re.S).group(1)
         self.assertIn("<code>d6aab3b</code>", resume)
+
+
+class MarkSpansTest(unittest.TestCase):
+    """A mark pair is a span like a parenthesis: a clause split through the middle of one leaves half a mark on each side.
+
+    Found on the live board after the first fix: 21 history bullets held an orphan `**`, all of them a
+    bold clause containing a full stop, which `_depth0_split` cut in two. A long Resume field kept its
+    marks in the summary it folds behind, and a backtick in a name is the same noise as an asterisk.
+    """
+
+    def test_a_split_never_falls_inside_a_bold_span(self) -> None:
+        text = "Head. **22:19: copied into bruno/ (source untouched). Zach wants this:** launch.php reads it. Tail"
+        self.assertEqual(
+            rb._depth0_split(text),
+            ["Head", "**22:19: copied into bruno/ (source untouched). Zach wants this:** launch.php reads it", "Tail"],
+        )
+
+    def test_an_unbalanced_item_splits_as_it_always_did(self) -> None:
+        self.assertEqual(rb._depth0_split("**half open. and then"), ["**half open", "and then"])
+
+    def test_a_marked_clause_renders_whole(self) -> None:
+        tracker = MARKS_TRACKER.replace(
+            "**Session TTL fix, orphaned.** `session.py` reads 3600 where §10.2 says 1800",
+            "Head. **22:19: copied into bruno/ (source untouched). Zach wants this:** `launch.php` reads it",
+        )
+        html = rb.render(tracker, LOG, rb.parse_coordinator(CLAUDE_MD, today=NOW.date()), NOW)
+        hist = "".join(re.findall(r'<ul class="hist">(.*?)</ul>', html, re.S))
+        self.assertNotIn("**", hist)
+        self.assertIn("<time>22:19</time><span><strong>copied into bruno/ (source untouched). Zach wants this:</strong>", hist)
+
+    def test_a_long_resume_field_folds_without_its_marks(self) -> None:
+        long = "Zach — **the seed over `railway ssh`** " + "and the rest of a line that runs past the clip " * 3
+        tracker = MARKS_TRACKER.replace("- As of: 09:52 — gauntlet-f0 [308833]", f"- As of: 09:52 — gauntlet-f0 [308833]\n- Waiting on: {long}")
+        html = rb.render(tracker, LOG, rb.parse_coordinator(CLAUDE_MD, today=NOW.date()), NOW)
+        resume = re.search(r'<dl class="resume">(.*?)</dl>', html, re.S).group(1)
+        summary = re.search(r"<summary>(.*?)</summary>", resume, re.S).group(1)
+        self.assertNotIn("*", summary)
+        self.assertNotIn("`", summary)
+        self.assertIn("<strong>the seed over <code>railway ssh</code></strong>", resume)
+
+    def test_a_name_drops_backticks_and_keeps_a_lone_star(self) -> None:
+        self.assertEqual(rb._unmark("D8 `AGENT_FRAME_ANCESTORS` defaults to `*`"), "D8 AGENT_FRAME_ANCESTORS defaults to *")
+        self.assertEqual(rb._unmark("agent `39e516f`, 30 behind"), "agent 39e516f, 30 behind")
