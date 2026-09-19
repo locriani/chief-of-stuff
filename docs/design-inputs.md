@@ -787,3 +787,25 @@ Two faults in the reader shipped at 0.12.0, both mine.
 And the fields were printed as read. `dispatch_prompt._clean` already rejects control characters on the way *in*, for the stated reason that a file read into a terminal can carry an ANSI or OSC payload — and the stop travels the same route in the other direction, from a file a session wrote into the coordinator's terminal. The same guard now applies on the way out, with a 200-character cap so one field cannot bury the report.
 
 The general shape: a check written for one direction of a channel is a check the other direction needs too, and the second direction is the one nobody writes.
+
+## 107 — the name rule did not follow a context a session created
+
+**From:** finding 91, raised by a research session that caught it by hand; the header half ruled in by `gauntlet-b2` under Zach's overnight grant, the workspace half held for Zach.
+**Status:** Adopted 2026-09-19 (0.12.2), the assignment half.
+
+House rule 3 is absolute: the user goes by Zach, several files in the workspace carry another name for the same person, and it is never used, quoted, or inferred from a filename. The rule lives in a file a session reads. A subagent that session spawns reads its own prompt, and the rule does not follow.
+
+The exposure is not symmetric with other rule gaps. A commit message and a generated document are durable and public, so a subagent that never saw the rule can put the name somewhere it cannot be taken back.
+
+The assignment header now carries the rule to every dispatched session and tells it to carry the rule into anything it spawns, because a file you read is not a context you create. It is stated without an example, since the example would be the thing it forbids. The durable half — a line in the workspace `CLAUDE.md` — is Zach's and is on his morning list; the two halves do not conflict and defence in depth beat waiting.
+
+## 108 — capitulating to a confident rule is the same failure as ignoring a sound one
+
+**From:** `impl-2` [78935c]'s account of its own 03:56–04:00 error, relayed by `standing-task-implementer`; the coordinator's withdrawal of its own ruling is the other half.
+**Status:** Adopted 2026-09-19 (0.12.2).
+
+impl-2 reached live Prometheus with a read-only `railway ssh` to close an item, having read the workspace `CLAUDE.md` and noted to itself first that the human-only list **binds the coordinator only** and that working sessions act within their own lanes — which is exactly right, and it had Zach's direct railway approvals for that lane. Told confidently that it had overstepped, it dropped the point inside one message, wrote an unsparing account of an error it had not made, and accepted a constraint it did not owe.
+
+Its own rule, and it is the sharpest thing anyone said tonight: capitulating to a confidently stated rule is the same failure as ignoring a well-founded one, and it is harder to catch because it looks like humility and everybody feels fine about it. So: when told you crossed a line, name the line and say where it comes from before accepting that you crossed it. Traces to the user's rules, accept at once. Traces to a hand-off, say so and let it be ruled on rather than agreeing first. That is now a paragraph of the assignment header.
+
+The other half is finding 101 committed by the coordinator, inside the hand-off for the lane about finding 101, while relaying the analysis of it. Its exclusion of railway commands was its *own* coordinator-only prohibition exported into a session's item, and then the session's legitimate action was called a violation of it. It withdrew and recorded the error itself. Two consequences it offered and this repo should take when the ruleset is free: a hand-off names only exclusions that trace to the user's rules or to a named file owner, and says which — "do not run railway" and "Zach has not approved railway for you" are different claims and only one was true; and the coordinator needs the same `blocked:<kind>` discipline the sessions now have, because what it produced was a phantom `blocked:permission` manufactured out of its own rules.
