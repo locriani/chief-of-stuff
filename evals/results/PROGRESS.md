@@ -1147,3 +1147,14 @@ Grouped the rendering. Detection, the finding list and the exit code are all unt
 It exposed a latent defect it did not cause — `short_name` cutting inside a `**` pair, so six grouped lanes rendered as six ellipses. `_unmark` first.
 
 620 units green on the branch. Findings 116c, and 114 widened: the hold covers a merge, not just an edit.
+
+
+## C13h — a run is a verdict on a snapshot, and it writes down what it decided (0.12.8)
+
+Both halves of 114, once board-ux's sweep exited and `scripts/` was free.
+
+The allowlist carried absolute paths into the live checkout and so did `--plugin-dir` — six exposures, not the five first reported, because the agent definition is as much a mid-run moving part as the scripts. One copy per sweep under `evals/results/<stamp>/plugin`, `.git` and `evals/results` skipped: 2.2 MB, 321 files. The checkout stays writable and the results dir now contains the code that produced it.
+
+And the harness printed verdicts it never stored — a 3.3-hour sweep piped through `tail -80` lost 56 of 58. Each run writes `verdict.json` now, with `passed: null` on a harness error rather than false.
+
+631 units green on the branch. Findings 114, 114b.

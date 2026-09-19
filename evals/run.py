@@ -53,10 +53,19 @@ MAKE_WORKTREE = PLUGIN_ROOT / "scripts" / "make_worktree.py"
 SPAWN_SESSION = PLUGIN_ROOT / "scripts" / "spawn_session.py"
 # The plugin's own scripts are the only ones the agent may run: html, health and merge state come
 # from code, never from the agent. git and curl stay off the allowlist — the scripts call them.
-ALLOWED = ["Bash(date:*)", "Bash(TZ=*)", "Bash(mv:*)", "Bash(mkdir:*)", f"Bash(python3 {BOARD_RENDERER}:*)",
-           f"Bash(python3 {HEALTH_PROBE}:*)", f"Bash(python3 {LANE_AUDIT}:*)",
-           f"Bash(python3 {MAKE_WORKTREE}:*)", f"Bash(python3 {SPAWN_SESSION}:*)",
-           "Read", "Glob", "Grep", "Write(./**)", "Edit(./**)"]
+SCRIPTS = ("render_board.py", "probe_health.py", "audit_lanes.py", "make_worktree.py", "spawn_session.py")
+
+
+def allowed_tools(root: Path) -> list[str]:
+    """The allowlist, rooted. Finding 114: these were absolute paths into the live checkout, so a run
+    read whatever was on disk when each case reached it and a tree edited mid-run produced two
+    verdicts wearing one name. Rooting them lets a run point at a snapshot of its own."""
+    return (["Bash(date:*)", "Bash(TZ=*)", "Bash(mv:*)", "Bash(mkdir:*)"]
+            + [f"Bash(python3 {root / 'scripts' / name}:*)" for name in SCRIPTS]
+            + ["Read", "Glob", "Grep", "Write(./**)", "Edit(./**)"])
+
+
+ALLOWED = allowed_tools(PLUGIN_ROOT)
 DISALLOWED = ["Bash(railway:*)", "Bash(git commit:*)", "Bash(git add:*)", "Bash(git push:*)"]
 # These reach real Claude sessions on this machine. No eval run may expose them.
 PEER_TOOLS = ("ListAgents", "SendMessage")
@@ -807,17 +816,62 @@ def claude_binary() -> str:
     return "claude"
 
 
-def command(case: Case, arm: str, model: str, prompt: str | None, mcp_config: dict[str, Any] | None = None) -> list[str]:
-    """A `prompt` of None means a multi-turn case: user turns arrive as stream-json on stdin."""
+SNAPSHOT_SKIP = shutil.ignore_patterns(".git", "results", "__pycache__", "*.pyc", ".DS_Store")
+
+
+def snapshot_plugin(dest: Path) -> Path:
+    """Copy the plugin tree a run will read, so the run is a verdict on one state of the code.
+
+    `evals/results` is skipped because it holds every previous run and would grow each sweep by the
+    size of all of them; `.git` for the same reason. What remains is what a case can reach: the
+    scripts on the allowlist and the agent definition behind `--plugin-dir`.
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(PLUGIN_ROOT, dest, ignore=SNAPSHOT_SKIP, dirs_exist_ok=True)
+    return dest
+
+
+def write_verdict(out: Path, case: str, arm: str, model: str, run_no: int,
+                  results: list[tuple[str, bool, str]], error: str | None, meta: str) -> Path:
+    """What the run decided, beside the inputs it decided from. Finding 114b.
+
+    The result dir held every input to grading and none of its output, so a sweep whose stdout was
+    piped through `tail` was unreadable afterwards — 56 of 58 case verdicts gone from a 3.3-hour run.
+    Grading is a pure function of this directory and the verdicts could be rebuilt from it, which is
+    a recovery route and not a reason to leave them unwritten.
+
+    `passed` is None when a harness error stopped the run, never False: a case that never ran is not
+    a case that failed, which is the 0.9.0 lesson that cost fourteen false regressions.
+    """
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / "verdict.json"
+    path.write_text(json.dumps({
+        "case": case, "arm": arm, "model": model, "run": run_no, "meta": meta,
+        "error": error,
+        "passed": None if error else all(p for _, p, _ in results),
+        "graders": [{"name": n, "passed": p, "why": w} for n, p, w in results],
+    }, indent=2) + "\n")
+    return path
+
+
+def command(case: Case, arm: str, model: str, prompt: str | None, mcp_config: dict[str, Any] | None = None,
+            root: Path | None = None) -> list[str]:
+    """A `prompt` of None means a multi-turn case: user turns arrive as stream-json on stdin.
+
+    `root` is the plugin tree this run reads — a snapshot when one was taken, the live checkout
+    otherwise. Both the allowlisted script paths and `--plugin-dir` follow it, because the agent
+    definition is read live too and is as much a mid-run moving part as the scripts are.
+    """
+    root = root or PLUGIN_ROOT
     mcp_config = mcp_config or {"mcpServers": {}}
-    allowed = ALLOWED + ([CALENDAR_TOOL] if "calendar" in mcp_config["mcpServers"] else []) + ([BOARD_TOOL] if "board" in mcp_config["mcpServers"] else []) + (PEER_MOCK_TOOLS if "peers" in mcp_config["mcpServers"] else [])
+    allowed = allowed_tools(root) + ([CALENDAR_TOOL] if "calendar" in mcp_config["mcpServers"] else []) + ([BOARD_TOOL] if "board" in mcp_config["mcpServers"] else []) + (PEER_MOCK_TOOLS if "peers" in mcp_config["mcpServers"] else [])
     cmd = [
         claude_binary(), "-p", *([prompt] if prompt is not None else []),
         "--model", model,
         "--output-format", "stream-json", "--verbose",
         "--no-session-persistence",
         "--setting-sources", "project",
-        "--plugin-dir", str(PLUGIN_ROOT),
+        "--plugin-dir", str(root),
         "--strict-mcp-config", "--mcp-config", json.dumps(mcp_config),
         "--max-turns", str(case.spec.get("max_turns", 10)),
         "--tools", *TOOLS,
@@ -1047,7 +1101,7 @@ def write_shims(shim_dir: Path) -> None:
     railway.chmod(0o755)
 
 
-def run_one(case: Case, arm: str, model: str, out: Path) -> tuple[list[tuple[str, bool, str]], str | None, dict[str, Any]]:
+def run_one(case: Case, arm: str, model: str, out: Path, root: Path | None = None) -> tuple[list[tuple[str, bool, str]], str | None, dict[str, Any]]:
     tz = case.spec.get("tz", "America/Chicago")
     ctx = context(tz, datetime.now(ZoneInfo(tz)))
     out.mkdir(parents=True, exist_ok=True)
@@ -1098,7 +1152,7 @@ def run_one(case: Case, arm: str, model: str, out: Path) -> tuple[list[tuple[str
             mcp_config = merge_mcp(mcp_config, peers_mcp_config(sessions, calls_log, tz))
         if "turns" in spec:
             return run_turns(spec, arm, model, out, work, env, mcp_config, calls_log, tz, case_root=case.root, ctx=ctx)
-        cmd = command(case, arm, model, spec["prompt"], mcp_config=mcp_config)
+        cmd = command(case, arm, model, spec["prompt"], mcp_config=mcp_config, root=root)
         (out / "command.json").write_text(json.dumps(cmd, indent=1))
         t_start = datetime.now(ZoneInfo(tz))
         try:
@@ -1183,12 +1237,18 @@ def main(argv: list[str]) -> int:
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     harness_error = any_fail = False
     tally = {"green": 0, "red": 0, "unmeasured": 0}
+    # One copy for the whole sweep, so every case in a run exercises identical code and the results
+    # dir says which. Finding 114: the allowlist and `--plugin-dir` pointed into the live checkout,
+    # which silently made that tree read-only for the duration and made a mid-run edit invisible.
+    snapshot = snapshot_plugin(EVALS / "results" / stamp / "plugin")
+    print(f"plugin snapshot: {snapshot}")
     for case in cases:
         case_pass = True
         unmeasured = False
         for n in range(1, args.runs + 1):
             out = EVALS / "results" / stamp / case.name / args.arm / str(n)
-            results, error, meta = run_one(case, args.arm, args.model, out)
+            results, error, meta = run_one(case, args.arm, args.model, out, root=snapshot)
+            write_verdict(out, case.name, args.arm, args.model, n, results, error, meta)
             print(f"\n{case.name}  arm={args.arm}  model={args.model}  run={n}  {meta}")
             if error:
                 harness_error = unmeasured = True
