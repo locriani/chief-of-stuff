@@ -1018,3 +1018,34 @@ Measured before the change on both live trackers: zero done lanes with a duratio
 
 Finding 76 (Decisions-row deadlines reach the reply and not the board) recorded. The 42 candidate findings five dispatched sessions sent tonight at Zach's request are a recording stage of their own, C10.
 
+
+### C9 reruns, and 0.11.1
+
+Agent arm on Opus, 0.11.0: the two new cases 3/3 each, green. Six reruns: 4 green, 2 red — `board-republish-on-lane-change` and `lane-done-ticks-checkbox`, both because the coordinator widened the fixture's six-column table mid-move and sized an untouched row (finding 79), and one grader regex predated `data-size` on a table row. The Lanes rule gained the sentence; both cases rerun 3/3 green. 0.11.1.
+
+## C10 — the relayed findings, recorded (docs only)
+
+Zach: "fix 1 without planning". The 42 observations five dispatched sessions sent at 23:02–23:08 on 2026-09-18 are findings 80–97 in `docs/design-inputs.md`, folded where they overlap and every reporter named: idle polling (five reporters), the write-only line against a CIMP lane, authority through a peer, plan mode on a wait lane, launchd's PATH, no docker stack, blocked credential-shaped messages, guessed Owns lists, the hand-off pattern to keep, six report and ruling gaps, stale line-number citations, house rule 3 not reaching subagents, direct asks and pathless asks, a model the launcher cannot set, a 42k-token tracker, a demo credential taken for a secret, findings that trailed, and bundled sub-questions. All Recorded, none ruled on. No code, no rule change, no version.
+
+
+## C11 — inline marks render, and `gone` never reaches the state cell (0.11.2)
+
+Zach's two held items from the density review, planned and approved as one stage. Findings 98 and 99.
+
+Red first: `AttributeError: _unmark`, asterisks in every `.name`, no `<code>` in a history bullet or a session fact. Green, and then the live render said the fix was half done — 21 bullets held an orphan `**`, because `short_name()`, `_depth0_split()` and `CLAUSE_TIME` each cut through a mark span. Four more tests, one per cut. The live board now carries zero raw `**`; the two names still holding a `*` are the literal value of `AGENT_FRAME_ANCESTORS`, which is content.
+
+The `gone` half was graded before it was rewritten, and the coordinator's own account of why it wrote the cell is what the rewrite answers. `orphaned-owner` 3/3 green on the agent arm; the board cases green.
+
+497 units green on the branch.
+
+
+
+## C12 — a cell is a span too (0.11.3)
+
+Found while reporting status, not while looking: the live `2026-09-19` board carried one `8 cells, expected 7` warning, and behind it the night's largest lane drawn entirely out of column. Finding 100.
+
+Red first: `['a', 'x \\', 'y', 'b'] != ['a', 'x | y', 'b']`, `'x' != 'x | extra | cells'`, and three errors where the piped lane had no key to look up. Green in two steps — the splitter, then the anchor — and one of my own tests was wrong on the way: `| A|B open |` has one state cell, not two, so it recovered correctly instead of falling back. Rewritten to `| A|open|B |`, which is a genuine double claim.
+
+The live row now parses with an empty warning, `ran` reads `('00:28', '01:36')`, and `history=` went from `S:3 M:4 · all:7` with no L at all to `S:3 M:4 L:1 · all:8`. That missing L is the whole reason this was worth a version.
+
+510 units green on the branch.

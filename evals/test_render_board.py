@@ -1883,6 +1883,32 @@ Coordinator: coordinator. Board: board-7.
 """
 
 
+MARKS_TRACKER = """# Tracker 2026-09-16
+
+## Resume
+
+- As of: 09:52 — gauntlet-f0 [308833]
+- Verified 09:47: origin/main `d6aab3b`, 2 unpushed; agent /ready 200
+
+## Lanes
+
+| item | owner | state | since | due | checklist |
+|---|---|---|---|---|---|
+| **Deploy main.** Deployed tips are agent `39e516f`, 30 commits behind. **22:20: handed to research-1 on Robin's yes** — sizing and wiring | Robin | open | 2026-09-16 |  | c |
+| **Session TTL fix, orphaned.** `session.py` reads 3600 where §10.2 says 1800 | unassigned | open | 2026-09-16 |  | c |
+
+## Sessions
+
+| ref | name | state | doing | waiting on | free at | constraints | children | last reply |
+|---|---|---|---|---|---|---|---|---|
+| a1b2c3 | worker-9a | working | **left the registry by 20:09** — both lanes `done` | | 15:00 | TDD | none | 11:40 |
+
+## Log
+
+- 09:00 opened the day
+"""
+
+
 class TracerTest(unittest.TestCase):
     """The one lane, end to end. Every assertion here is a layer of the design."""
 
@@ -1966,3 +1992,183 @@ class TracerTest(unittest.TestCase):
         body = self.html.split("</style>", 1)[1]
         order = [body.index(h) for h in ("Due next", "Blocked", 'data-strip="day"', 'data-strip="week"', "<h2>Lanes")]
         self.assertEqual(order, sorted(order), "sections in the order they are read")
+
+
+class InlineMarksTest(unittest.TestCase):
+    """The coordinator writes `**bold**` headlines and `code` into items, facts and Resume values; the board showed the punctuation.
+
+    Finding 98: 50 of 100 live lane names began with literal asterisks. A nowrap name drops the marks and
+    keeps the words; prose that wraps — history bullets, session facts, Resume values — renders them. The
+    citation attributes (`data-item`) stay raw, because that is what the graders match.
+    """
+
+    def setUp(self) -> None:
+        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.html = rb.render(MARKS_TRACKER, LOG, self.cfg, NOW)
+        self.day = _strip_html(self.html, "day")
+
+    def test_unmark_drops_pairs_and_keeps_a_lone_marker(self) -> None:
+        self.assertEqual(rb._unmark("**Deploy main.** x"), "Deploy main. x")
+        self.assertEqual(rb._unmark("a ** b"), "a ** b")
+        self.assertEqual(rb._unmark("**a** and **b**"), "a and b")
+
+    def test_names_show_the_words_and_not_the_marks(self) -> None:
+        names = re.findall(r'<div class="name">([^<]*)</div>', self.day)
+        self.assertTrue(names)
+        for name in names:
+            self.assertNotIn("*", name, name)
+        self.assertTrue(any(n.startswith("Deploy main.") for n in names), names)
+        unassigned = self.html.split("<h2>Unassigned")[1].split("</table>")[0]
+        self.assertIn("<td>Session TTL fix, orphaned.", unassigned)
+        self.assertNotIn("**", unassigned)
+        lanes = self.html.split("<h2>Lanes</h2>")[1]
+        self.assertRegex(lanes, r"<summary>Deploy main\.[^<*]*</summary>")
+
+    def test_the_citation_stays_raw(self) -> None:
+        self.assertIn('data-item="**Deploy main.** Deployed tips', self.day)
+
+    def test_history_renders_code_and_bold(self) -> None:
+        lanes = self.html.split("<h2>Lanes</h2>")[1]
+        hist = re.findall(r'<ul class="hist">(.*?)</ul>', lanes, re.S)
+        self.assertTrue(hist)
+        joined = "".join(hist)
+        self.assertIn("<code>39e516f</code>", joined)
+        self.assertIn("<time>22:20</time><span><strong>handed to research-1 on Robin&#x27;s yes</strong>", joined)
+        self.assertNotIn("**", joined)
+
+    def test_session_facts_render_bold_and_code(self) -> None:
+        facts = re.search(r'<dl class="facts">(.*?)</dl>', self.html, re.S).group(1)
+        self.assertIn("<strong>left the registry by 20:09</strong>", facts)
+        self.assertIn("<code>done</code>", facts)
+        self.assertNotIn("**", facts)
+
+    def test_resume_values_render_code(self) -> None:
+        resume = re.search(r'<dl class="resume">(.*?)</dl>', self.html, re.S).group(1)
+        self.assertIn("<code>d6aab3b</code>", resume)
+
+
+class MarkSpansTest(unittest.TestCase):
+    """A mark pair is a span like a parenthesis: a clause split through the middle of one leaves half a mark on each side.
+
+    Found on the live board after the first fix: 21 history bullets held an orphan `**`, all of them a
+    bold clause containing a full stop, which `_depth0_split` cut in two. A long Resume field kept its
+    marks in the summary it folds behind, and a backtick in a name is the same noise as an asterisk.
+    """
+
+    def test_a_split_never_falls_inside_a_bold_span(self) -> None:
+        text = "Head. **22:19: copied into bruno/ (source untouched). Zach wants this:** launch.php reads it. Tail"
+        self.assertEqual(
+            rb._depth0_split(text),
+            ["Head", "**22:19: copied into bruno/ (source untouched). Zach wants this:** launch.php reads it", "Tail"],
+        )
+
+    def test_an_unbalanced_item_splits_as_it_always_did(self) -> None:
+        self.assertEqual(rb._depth0_split("**half open. and then"), ["**half open", "and then"])
+
+    def test_a_marked_clause_renders_whole(self) -> None:
+        tracker = MARKS_TRACKER.replace(
+            "**Session TTL fix, orphaned.** `session.py` reads 3600 where §10.2 says 1800",
+            "Head. **22:19: copied into bruno/ (source untouched). Zach wants this:** `launch.php` reads it",
+        )
+        html = rb.render(tracker, LOG, rb.parse_coordinator(CLAUDE_MD, today=NOW.date()), NOW)
+        hist = "".join(re.findall(r'<ul class="hist">(.*?)</ul>', html, re.S))
+        self.assertNotIn("**", hist)
+        self.assertIn("<time>22:19</time><span><strong>copied into bruno/ (source untouched). Zach wants this:</strong>", hist)
+
+    def test_a_long_resume_field_folds_without_its_marks(self) -> None:
+        long = "Zach — **the seed over `railway ssh`** " + "and the rest of a line that runs past the clip " * 3
+        tracker = MARKS_TRACKER.replace("- As of: 09:52 — gauntlet-f0 [308833]", f"- As of: 09:52 — gauntlet-f0 [308833]\n- Waiting on: {long}")
+        html = rb.render(tracker, LOG, rb.parse_coordinator(CLAUDE_MD, today=NOW.date()), NOW)
+        resume = re.search(r'<dl class="resume">(.*?)</dl>', html, re.S).group(1)
+        summary = re.search(r"<summary>(.*?)</summary>", resume, re.S).group(1)
+        self.assertNotIn("*", summary)
+        self.assertNotIn("`", summary)
+        self.assertIn("<strong>the seed over <code>railway ssh</code></strong>", resume)
+
+    def test_a_name_drops_backticks_and_keeps_a_lone_star(self) -> None:
+        self.assertEqual(rb._unmark("D8 `AGENT_FRAME_ANCESTORS` defaults to `*`"), "D8 AGENT_FRAME_ANCESTORS defaults to *")
+        self.assertEqual(rb._unmark("agent `39e516f`, 30 behind"), "agent 39e516f, 30 behind")
+
+
+PIPED_TRACKER = SIZED_TRACKER.replace(
+    "| A oldest | worker | open | 2026-09-15 |  | M | c |",
+    "| A oldest | worker | open | 2026-09-15 |  | M | c |\n"
+    "| P coded | worker | done 00:28–01:36 | 2026-09-19 | Final | L | c |\n"
+    "| P bare | worker | running 09:00 | 2026-09-16 |  | S | c |",
+).replace("| P coded |", '| P coded, `"ok"|"degraded"` in prose |').replace("| P bare |", "| P bare A|B plain |")
+
+
+class CellSpanTest(unittest.TestCase):
+    """A cell is a span too: the delimiter is a pipe nobody spoke for."""
+
+    def test_a_pipe_inside_a_backtick_span_is_not_a_delimiter(self) -> None:
+        self.assertEqual(rb._cells('| a | `x|y` | b |'), ["a", "`x|y`", "b"])
+
+    def test_an_escaped_pipe_is_a_pipe_and_loses_its_backslash(self) -> None:
+        self.assertEqual(rb._cells(r"| a | x \| y | b |"), ["a", "x | y", "b"])
+
+    def test_a_cell_holding_both_comes_back_once(self) -> None:
+        self.assertEqual(rb._cells(r"| a | `a|b` \| c | d |"), ["a", "`a|b` | c", "d"])
+
+    def test_an_odd_backtick_splits_as_it_always_did(self) -> None:
+        """A typo degrades to the old behaviour instead of swallowing the rest of the row."""
+        self.assertEqual(rb._cells("| a | `x|y | b |"), ["a", "`x", "y", "b"])
+
+    def test_the_ordinary_rows_parse_exactly_as_before(self) -> None:
+        self.assertEqual(rb._cells("| Write eval README | Robin | open | 09:00 | 17:00 | c |"),
+                         ["Write eval README", "Robin", "open", "09:00", "17:00", "c"])
+        self.assertEqual(rb._cells("|---|---|---|"), ["---", "---", "---"])
+
+    def test_a_session_row_keeps_its_columns_when_a_cell_carries_a_pipe(self) -> None:
+        cells = rb._cells('| ab12cd | impl-2 | working | reads `"ok"|"degraded"` | | | | | 09:00 |')
+        self.assertEqual(len(cells), 9)
+        self.assertEqual(cells[3], 'reads `"ok"|"degraded"`')
+
+
+class LaneAnchorTest(unittest.TestCase):
+    """An over-wide row is re-read from the one cell a machine can recognise: its state."""
+
+    def setUp(self) -> None:
+        self.by = {lane.item: lane for lane in rb.parse_tracker(PIPED_TRACKER).lanes}
+
+    def test_a_backticked_pipe_needs_no_recovery_at_all(self) -> None:
+        lane = self.by['P coded, `"ok"|"degraded"` in prose']
+        self.assertEqual(lane.warning, "")
+        self.assertEqual((lane.owner, lane.state, lane.due, lane.size, lane.checklist),
+                         ("worker", "done 00:28–01:36", "Final", "L", "c"))
+
+    def test_a_bare_pipe_in_the_item_is_anchored_back_onto_its_columns(self) -> None:
+        lane = self.by["P bare A|B plain"]
+        self.assertEqual((lane.owner, lane.state, lane.since, lane.size, lane.checklist),
+                         ("worker", "running 09:00", "2026-09-16", "S", "c"))
+
+    def test_a_recovered_row_still_warns(self) -> None:
+        self.assertIn("8 cells", self.by["P bare A|B plain"].warning)
+
+    def test_surplus_on_the_right_lands_in_the_checklist(self) -> None:
+        t = rb.parse_tracker(TRACKER)
+        long = [lane for lane in t.lanes if lane.item == "Long"][0]
+        self.assertEqual((long.owner, long.state, long.since, long.due), ("Robin", "open", "09:00", "10:00"))
+        self.assertEqual(long.checklist, "x | extra | cells")
+        self.assertIn("8 cells", long.warning)
+
+    def test_two_state_cells_fall_back_to_the_left_anchored_parse(self) -> None:
+        """Two candidates is not an anchor. The row keeps the parse it was written with, and the warning speaks."""
+        text = SIZED_TRACKER.replace("| A oldest | worker | open | 2026-09-15 |  | M | c |",
+                                     "| A|open|B | worker | open | 2026-09-15 |  | M | c |")
+        lane = [l for l in rb.parse_tracker(text).lanes if l.item == "A"][0]
+        self.assertEqual((lane.owner, lane.state), ("open", "B"))
+        self.assertIn("9 cells", lane.warning)
+
+    def test_no_state_cell_falls_back_to_the_left_anchored_parse(self) -> None:
+        text = SIZED_TRACKER.replace("| A oldest | worker | open | 2026-09-15 |  | M | c |",
+                                     "| A|B | worker | dancing | 2026-09-15 |  | M | c |")
+        lane = [l for l in rb.parse_tracker(text).lanes if l.item == "A"][0]
+        self.assertEqual(lane.owner, "B")
+        self.assertIn("8 cells", lane.warning)
+
+    def test_a_short_row_is_never_anchored(self) -> None:
+        text = SIZED_TRACKER.replace("| C newer | worker | open | 2026-09-16 |  |  | c |", "| C newer | worker | open |")
+        lane = {l.item: l for l in rb.parse_tracker(text).lanes}["C newer"]
+        self.assertEqual(lane.since, "")
+        self.assertIn("3 cells", lane.warning)
