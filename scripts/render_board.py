@@ -239,6 +239,7 @@ class Bar:
     start_src: str
     end_src: str
     label: str | None
+    est: "Estimate | None" = None
 
 
 @dataclass(frozen=True)
@@ -559,7 +560,83 @@ def _resolve_due(due: str, cfg: Config, today: date) -> datetime | None:
     return None
 
 
-def _end(lane: Lane, cfg: Config, now: datetime, start: datetime) -> tuple[datetime, str, str | None]:
+@dataclass(frozen=True)
+class Estimate:
+    """Where lane i of an owner's N lands if the queue drains evenly by the horizon. Not a claim about effort."""
+
+    end: datetime
+    i: int
+    n: int
+    of: str
+    slot: timedelta
+
+    @property
+    def label(self) -> str:
+        return f"est. {self.i}/{self.n} → {self.of}"
+
+    def title(self, owner: str) -> str:
+        return (f"{self.label}: where this lane lands if {owner}'s queue of {self.n} drains evenly by {self.of}, "
+                "running first, then oldest first. Not a claim about effort; set a due to override.")
+
+
+UNASSIGNED = re.compile(r"(?i)^unassigned$")
+
+
+def _owner_key(owner: str) -> str:
+    """The queue an owner cell names, or "" when it names nobody: blank, `unassigned`, `—`, `nobody`."""
+    key = _bare_name(owner)
+    if not key or NOBODY.match(owner.strip()) or UNASSIGNED.match(key):
+        return ""
+    return key
+
+
+def horizon(cfg: Config, now: datetime) -> tuple[datetime, str]:
+    """The nearest deadline still ahead, or midnight once every deadline has passed (the day strip's own rule)."""
+    d = nearest_deadline(cfg, now)
+    if d.at > now:
+        return d.at, d.name
+    return datetime.combine(now.date(), time(0, 0), tzinfo=cfg.zone) + timedelta(days=1), "end of day"
+
+
+def estimates(active: list[Lane], cfg: Config, now: datetime) -> dict[str, Estimate]:
+    """A derived end for every owned lane with no `due`, keyed by item. Nothing here is written to the tracker.
+
+    The tracker's clock is day-grained — `since` and `due` are dates, only `done` carries a time — so no lane
+    has a duration to learn from, and this reads none: not the item text (its length tracks age, not work
+    left), not the Log. Per owner, the active lanes that are blank or due by the horizon form a queue of N,
+    running first, then oldest first; lane i ends at `H - (N-i)/N x (H - now)`, so lane N is the horizon
+    instant. The order is the one fabricated input, and the label says which position a lane holds.
+    Unowned lanes get nothing: there is no queue to place them in, and the deadline they already draw to
+    is the honest end. A gone owner — one an `orphaned` lane names — is unowned for all its lanes.
+    """
+    h, of = horizon(cfg, now)
+    r = h - now
+    left = {_bare_name(lane.owner) for lane in active if lane.kind == ORPHANED} - {""}
+    queues: dict[str, list[tuple[tuple, Lane]]] = {}
+    for idx, lane in enumerate(active):
+        if lane.kind in ("done", ORPHANED):
+            continue
+        key = _owner_key(lane.owner)
+        if not key or key in left:
+            continue
+        due = _resolve_due(lane.due, cfg, now.date())
+        if due is not None and due > h:
+            continue
+        m = DATE.match(lane.since.strip())
+        since = date(int(m[1]), int(m[2]), int(m[3])) if m else now.date()
+        queues.setdefault(key, []).append(((lane.kind != "running", since, idx), lane))
+    out: dict[str, Estimate] = {}
+    for entries in queues.values():
+        entries.sort(key=lambda e: e[0])
+        n = len(entries)
+        for i, (_, lane) in enumerate(entries, 1):
+            if lane.due.strip():
+                continue
+            out[lane.item] = Estimate(h - r * ((n - i) / n), i, n, of, r / n)
+    return out
+
+
+def _end(lane: Lane, cfg: Config, now: datetime, start: datetime, est: dict[str, Estimate] | None = None) -> tuple[datetime, str, str | None]:
     today = now.date()
     if (due := _resolve_due(lane.due, cfg, today)) is not None:
         return due, "due", None
@@ -567,10 +644,12 @@ def _end(lane: Lane, cfg: Config, now: datetime, start: datetime) -> tuple[datet
         if t := lane.state_time:
             return _hhmm(t, today, cfg.zone), "state", None
         return start, "state", "done, no time"
+    if est and (e := est.get(lane.item)):
+        return max(e.end, start), "derived", e.label
     return nearest_deadline(cfg, now).at, "deadline", NO_ESTIMATE
 
 
-def day_bar(lane: Lane, cfg: Config, now: datetime) -> Bar:
+def day_bar(lane: Lane, cfg: Config, now: datetime, est: dict[str, Estimate] | None = None) -> Bar:
     today, zone = now.date(), cfg.zone
     day_start = datetime.combine(today, time(0, 0), tzinfo=zone)
     if lane.kind == "running" and (t := lane.state_time):
@@ -579,11 +658,11 @@ def day_bar(lane: Lane, cfg: Config, now: datetime) -> Bar:
         start, start_src = t, "since"
     else:
         start, start_src = day_start, "carried"
-    end, end_src, label = _end(lane, cfg, now, start)
-    return Bar(lane.item, lane.owner, lane.kind, start, end, start_src, end_src, label)
+    end, end_src, label = _end(lane, cfg, now, start, est)
+    return Bar(lane.item, lane.owner, lane.kind, start, end, start_src, end_src, label, est.get(lane.item) if est and end_src == "derived" else None)
 
 
-def week_bar(lane: Lane, cfg: Config, now: datetime) -> Bar:
+def week_bar(lane: Lane, cfg: Config, now: datetime, est: dict[str, Estimate] | None = None) -> Bar:
     today, zone = now.date(), cfg.zone
     day_start = datetime.combine(today, time(0, 0), tzinfo=zone)
     m = DATE.match(lane.since.strip())
@@ -595,8 +674,8 @@ def week_bar(lane: Lane, cfg: Config, now: datetime) -> Bar:
         start, start_src = t, "since"
     else:
         start, start_src = day_start, "carried"
-    end, end_src, label = _end(lane, cfg, now, start)
-    return Bar(lane.item, lane.owner, lane.kind, start, end, start_src, end_src, label)
+    end, end_src, label = _end(lane, cfg, now, start, est)
+    return Bar(lane.item, lane.owner, lane.kind, start, end, start_src, end_src, label, est.get(lane.item) if est and end_src == "derived" else None)
 
 
 # --- rendering -----------------------------------------------------------------------------------
@@ -622,9 +701,14 @@ def _pct(dt: datetime, a: datetime, b: datetime) -> float:
     return max(0.0, min(100.0, (dt - a).total_seconds() / span * 100.0))
 
 
+def _est_attrs(b: Bar) -> str:
+    """A derived end is a citation only if its inputs are on the bar: position in the queue, and the horizon."""
+    return f' data-est="{b.est.i}/{b.est.n}" data-est-of="{_esc(b.est.of)}"' if b.est else ""
+
+
 def _member(b: Bar) -> str:
     label = f' data-label="{_esc(b.label)}"' if b.label else ""
-    return f'<span class="member" data-item="{_esc(b.item)}" data-start-src="{b.start_src}" data-end-src="{b.end_src}"{label}></span>'
+    return f'<span class="member" data-item="{_esc(b.item)}" data-start-src="{b.start_src}" data-end-src="{b.end_src}"{label}{_est_attrs(b)}></span>'
 
 
 def _lanes(n: int) -> str:
@@ -636,6 +720,7 @@ LEGEND = [
     ("key bar open", "open"),
     ("key bar orphaned", "orphaned"),
     ("key bar open-end", "no estimate"),
+    ("key bar derived", "estimated"),
     ("key bar summary", "folded rows"),
     ("key band", "calendar event"),
     ("key nowline", "now"),
@@ -779,6 +864,21 @@ def grid_marks(axis_a: datetime, axis_b: datetime, kind: str) -> list[tuple[date
     return marks
 
 
+def _bar_row(b: Bar, axis_a: datetime, axis_b: datetime, row_class: str = "row") -> str:
+    """One lane as a positioned row. A top-level bar and a sublane inside a fold are the same markup."""
+    left, right = _pct(b.start, axis_a, axis_b), _pct(b.end, axis_a, axis_b)
+    edge = (" clamped" if b.end > axis_b else "") + (" clamped-left" if b.end < axis_a else "")
+    classes = f"bar {b.kind}" + (" open-end" if b.end_src == "deadline" else "") + (" derived" if b.end_src == "derived" else "") + edge
+    label = f' data-label="{_esc(b.label)}"' if b.label else ""
+    title = f' title="{_esc(b.est.title(b.owner))}"' if b.est else ""
+    text = f"<em>{_esc(b.label)}</em>" if b.label else ""
+    return (
+        f'<div class="{row_class}"><div class="name">{_esc(short_name(b.item))}</div><div class="track">'
+        f'<div class="{classes}" data-item="{_esc(b.item)}" data-start="{_iso(b.start)}" data-end="{_iso(b.end)}" '
+        f'data-start-src="{b.start_src}" data-end-src="{b.end_src}"{label}{_est_attrs(b)}{title} style="left:{left:.2f}%;width:{max(right - left, 0.6):.2f}%">{text}</div></div></div>'
+    )
+
+
 def _strip(rows: list[Bar | Summary], axis_a: datetime, axis_b: datetime, events: list[Event], deadlines: list[Deadline], ticks: list[tuple[datetime, str]], kind: str) -> str:
     out = [f'<div class="strip" data-strip="{kind}" data-axis-start="{_iso(axis_a)}" data-axis-end="{_iso(axis_b)}">']
     out.append('<div class="axis">')
@@ -790,21 +890,14 @@ def _strip(rows: list[Bar | Summary], axis_a: datetime, axis_b: datetime, events
         left, right = _pct(row.start, axis_a, axis_b), _pct(row.end, axis_a, axis_b)
         edge = (" clamped" if row.end > axis_b else "") + (" clamped-left" if row.end < axis_a else "")
         if isinstance(row, Bar):
-            b = row
-            classes = f"bar {b.kind}" + (" open-end" if b.end_src == "deadline" else "") + edge
-            label = f' data-label="{_esc(b.label)}"' if b.label else ""
-            text = f"<em>{_esc(b.label)}</em>" if b.label else ""
-            out.append(
-                f'<div class="row"><div class="name">{_esc(short_name(b.item))}</div><div class="track">'
-                f'<div class="{classes}" data-item="{_esc(b.item)}" data-start="{_iso(b.start)}" data-end="{_iso(b.end)}" '
-                f'data-start-src="{b.start_src}" data-end-src="{b.end_src}"{label} style="left:{left:.2f}%;width:{max(right - left, 0.6):.2f}%">{text}</div></div></div>'
-            )
+            out.append(_bar_row(row, axis_a, axis_b))
             continue
         sm = row
         names = " · ".join(short_name(m.item) for m in sm.members)
         hatch = " open-end" if sm.attr == "summary" else ""
         # The folded names were always in the html as empty `.member` spans, readable by a grader and
-        # by nobody else. The disclosure gives them to a person without moving the citations.
+        # by nobody else. The disclosure opens onto the members drawn as rows on the same axis — sublanes,
+        # not a list of names (Zach, 2026-09-18 12:55) — and the citations stay on the summary bar.
         out.append(
             '<details class="folded"><summary>'
             f'<div class="row {sm.attr}-row"><div class="name">{_esc(sm.name or _lanes(len(sm.members)))}</div><div class="track">'
@@ -812,9 +905,8 @@ def _strip(rows: list[Bar | Summary], axis_a: datetime, axis_b: datetime, events
             f'style="left:{left:.2f}%;width:{max(right - left, 0.6):.2f}%" title="{_esc(names)}"><em>{_esc(sm.label)}</em>'
             + "".join(_member(m) for m in sm.members)
             + "</div></div></div></summary>"
-            + '<ul class="folded-list">'
-            + "".join(f"<li>{_esc(short_name(m.item))}</li>" for m in sm.members)
-            + "</ul></details>"
+            + "".join(_bar_row(m, axis_a, axis_b, "row sub") for m in sm.members)
+            + "</details>"
         )
     out.append('<div class="overlay">')
     for at, major in grid_marks(axis_a, axis_b, kind):
@@ -844,17 +936,23 @@ def _strip(rows: list[Bar | Summary], axis_a: datetime, axis_b: datetime, events
 
 def _deadline_for(lane: Lane, bar: Bar, cfg: Config, now: datetime) -> Deadline:
     for d in cfg.deadlines:
-        if d.name.lower() == lane.due.strip().lower() or d.at == bar.end:
+        if d.name.lower() == lane.due.strip().lower() or (bar.end_src != "due" and d.at == bar.end):
             return d
     return nearest_deadline(cfg, now)
 
 
-def today_rows(active: list[Lane], cfg: Config, now: datetime, axis_b: datetime) -> tuple[list[Bar], list[Bar]]:
-    """Own bars: running lanes and lanes whose cited end falls by the axis end. Everything else folds."""
+def today_rows(active: list[Lane], cfg: Config, now: datetime, axis_b: datetime, est: dict[str, Estimate] | None = None, floor: timedelta | None = None) -> tuple[list[Bar], list[Bar]]:
+    """Own bars: running lanes and lanes whose cited end falls by the axis end. Everything else folds.
+
+    A derived end folds too when its slot is narrower than `floor` (the axis tick): a session with five
+    lanes and four hours left would otherwise unfold into five 48-minute slivers exactly when the strip
+    most needs reading. The estimate survives in the folded row's `.member` span.
+    """
     own, folded = [], []
     for lane in active:
-        b = day_bar(lane, cfg, now)
-        if (lane.kind == "running" and lane.state_time) or (b.end_src != "deadline" and b.end <= axis_b):
+        b = day_bar(lane, cfg, now, est)
+        narrow = b.est is not None and floor is not None and b.est.slot < floor
+        if (lane.kind == "running" and lane.state_time) or (b.end_src != "deadline" and b.end <= axis_b and not narrow):
             own.append(b)
         else:
             folded.append(b)
@@ -867,7 +965,7 @@ def week_axis_end(cfg: Config, week_a: datetime) -> datetime:
     return max(min(week_a + timedelta(days=WEEK_DAYS), day_after_last), week_a + timedelta(days=1))
 
 
-def week_rows(active: list[Lane], cfg: Config, now: datetime, week_a: datetime, week_b: datetime) -> list[Bar | Summary]:
+def week_rows(active: list[Lane], cfg: Config, now: datetime, week_a: datetime, week_b: datetime, est: dict[str, Estimate] | None = None) -> list[Bar | Summary]:
     """Running lanes get a bar. Lanes with a concrete due group by due day (a lone lane keeps its bar); overdue and
     past-the-axis lanes get one row each. The rest fold into one row per deadline. Returned in drawing order."""
     keyed: list[tuple[tuple, Bar | Summary]] = []
@@ -877,11 +975,11 @@ def week_rows(active: list[Lane], cfg: Config, now: datetime, week_a: datetime, 
     groups: dict[Deadline, list[Bar]] = {}
     instants = {d.at for d in cfg.deadlines}
     for lane in active:
-        b = week_bar(lane, cfg, now)
+        b = week_bar(lane, cfg, now, est)
         named = any(d.name.lower() == lane.due.strip().lower() for d in cfg.deadlines)
         if lane.kind == "running" and lane.state_time:
             keyed.append(((1, b.start), b))
-        elif b.end_src == "due" and not named and b.end not in instants:
+        elif b.end_src in ("due", "derived") and not named and b.end not in instants:
             if b.end < week_a:
                 overdue.append(b)
             elif b.end >= week_b:
@@ -897,7 +995,9 @@ def week_rows(active: list[Lane], cfg: Config, now: datetime, week_a: datetime, 
             keyed.append(((2, bars[0].end), bars[0]))
             continue
         end = max(b.end for b in bars)
-        keyed.append(((2, end), Summary(day.isoformat(), f"{len(bars)} due", max(week_a, min(b.start for b in bars)), end, tuple(bars), f"{day:%a %d} · {_lanes(len(bars))}", "group")))
+        due_n, est_n = sum(b.end_src == "due" for b in bars), sum(b.end_src == "derived" for b in bars)
+        label = " · ".join(part for part, n in ((f"{due_n} due", due_n), (f"{est_n} est.", est_n)) if n)
+        keyed.append(((2, end), Summary(day.isoformat(), label, max(week_a, min(b.start for b in bars)), end, tuple(bars), f"{day:%a %d} · {_lanes(len(bars))}", "group")))
     if later:
         keyed.append(((3,), Summary("later", f"due {min(b.end for b in later):%a %d}", week_a, max(b.end for b in later), tuple(later), f"Later · {_lanes(len(later))}", "group")))
     for d, bars in groups.items():
@@ -961,7 +1061,8 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
     day_start = datetime.combine(today, time(0, 0), tzinfo=zone)
     midnight = day_start + timedelta(days=1)
     axis_b = min(nearest.at, midnight) if nearest.at >= now else midnight
-    day_bars, day_folded = today_rows(active, cfg, now, axis_b)
+    est = estimates(active, cfg, now)
+    day_bars, day_folded = today_rows(active, cfg, now, axis_b, est, _tick_step(axis_b - (now - timedelta(hours=1))))
     cited = [b.start for b in day_bars if b.start_src != "carried" and b.start >= day_start]
     firsts = [e.start for e in events if e.start >= day_start]
     axis_a = max(day_start, min(cited + firsts + [now - timedelta(hours=1)]).replace(minute=0, second=0, microsecond=0))
@@ -973,12 +1074,12 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
         day_ticks.append((t, t.strftime("%H:%M")))
         t += step
     day_events = [e for e in events if e.end > axis_a and e.start < axis_b]
-    day_summaries = [Summary("today", "no estimate or due after today", axis_a, axis_b, tuple(day_folded))] if day_folded else []
+    day_summaries = [Summary("today", "no estimate, or due or estimated after today", axis_a, axis_b, tuple(day_folded))] if day_folded else []
 
     # Week strip: today to the day after the last deadline, at most 7 days, one column per day.
     week_a = datetime.combine(today, time(0, 0), tzinfo=zone)
     week_b = week_axis_end(cfg, week_a)
-    week = week_rows(active, cfg, now, week_a, week_b)
+    week = week_rows(active, cfg, now, week_a, week_b, est)
     week_bars = [r for r in week if isinstance(r, Bar)]
     week_groups = [r for r in week if isinstance(r, Summary) and r.attr == "group"]
     week_ticks = []
@@ -1035,9 +1136,9 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
 <link rel="stylesheet" href="{FONTS}">
 <meta name="tracker-sha256" content="{sha}">{req_meta}
 <style>
-:root{{--bg:#f4efe1;--surface:#fbf8ef;--fg:#2f2630;--muted:#6e6470;--line:#ddd3bd;--brass:#a7843e;--band:rgba(111,99,180,.14);--open:#9daa72;--noest:#2f8f86;--fold:#8a7f9c;--running:#6f63b4;--done:#bdb3a2;--dl:#c9533a;--now:#4f6b3a;--bar-ink:#fbf8ef}}
-@media (prefers-color-scheme:dark){{:root:not([data-theme="light"]){{--bg:#1e1a20;--surface:#29232b;--fg:#efe8d6;--muted:#a89fa8;--line:#3d3440;--brass:#c9a45c;--band:rgba(154,143,218,.18);--open:#6f7f48;--noest:#4fb3a7;--fold:#a093bb;--running:#9a8fda;--done:#5a5058;--dl:#f0775a;--now:#9dbb6e;--bar-ink:#1e1a20}}}}
-:root[data-theme="dark"]{{--bg:#1e1a20;--surface:#29232b;--fg:#efe8d6;--muted:#a89fa8;--line:#3d3440;--brass:#c9a45c;--band:rgba(154,143,218,.18);--open:#6f7f48;--noest:#4fb3a7;--fold:#a093bb;--running:#9a8fda;--done:#5a5058;--dl:#f0775a;--now:#9dbb6e;--bar-ink:#1e1a20}}
+:root{{--bg:#f4efe1;--surface:#fbf8ef;--fg:#2f2630;--muted:#6e6470;--line:#ddd3bd;--brass:#a7843e;--band:rgba(111,99,180,.14);--open:#9daa72;--noest:#2f8f86;--fold:#8a7f9c;--running:#6f63b4;--done:#bdb3a2;--dl:#c9533a;--now:#4f6b3a;--est:#b5567a;--bar-ink:#fbf8ef}}
+@media (prefers-color-scheme:dark){{:root:not([data-theme="light"]){{--bg:#1e1a20;--surface:#29232b;--fg:#efe8d6;--muted:#a89fa8;--line:#3d3440;--brass:#c9a45c;--band:rgba(154,143,218,.18);--open:#6f7f48;--noest:#4fb3a7;--fold:#a093bb;--running:#9a8fda;--done:#5a5058;--dl:#f0775a;--now:#9dbb6e;--est:#d98aa8;--bar-ink:#1e1a20}}}}
+:root[data-theme="dark"]{{--bg:#1e1a20;--surface:#29232b;--fg:#efe8d6;--muted:#a89fa8;--line:#3d3440;--brass:#c9a45c;--band:rgba(154,143,218,.18);--open:#6f7f48;--noest:#4fb3a7;--fold:#a093bb;--running:#9a8fda;--done:#5a5058;--dl:#f0775a;--now:#9dbb6e;--est:#d98aa8;--bar-ink:#1e1a20}}
 body{{background:var(--bg);color:var(--fg);font:14px/1.5 "Alegreya Sans","Gill Sans",system-ui,sans-serif;padding:16px 16px 48px;max-width:1100px;margin:0 auto}}
 h1{{font-family:"Cormorant SC","Cormorant Garamond",Georgia,serif;font-size:26px;font-weight:600;letter-spacing:.04em;margin:0 0 2px}}
 h2{{font-family:"Cormorant SC","Cormorant Garamond",Georgia,serif;font-size:19px;font-weight:600;letter-spacing:.05em;margin:28px 0 8px;border-bottom:1px solid var(--brass);padding-bottom:4px}}
@@ -1049,9 +1150,9 @@ tr.group th{{background:color-mix(in srgb,var(--brass) 18%,transparent);color:va
 .muted{{color:var(--muted)}} .warn{{color:var(--dl);font-size:12px}}
 .strip{{position:relative;margin:8px 0 4px;--name-w:30%}} .axis{{position:relative;height:18px;margin-left:var(--name-w);font-size:11px;color:var(--muted)}} .tick{{position:absolute;transform:translateX(-50%);white-space:nowrap}}
 .rows{{position:relative}} .row{{display:flex;align-items:center;height:26px}} .name{{width:var(--name-w);flex:none;padding-right:8px;box-sizing:border-box;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}} .track{{position:relative;flex:1;height:18px;border-left:1px solid var(--line)}}
-.summary-row .name{{color:var(--muted)}} details.folded>summary{{list-style:none;cursor:pointer}} details.folded>summary::-webkit-details-marker{{display:none}} details.folded>summary .name::before{{content:"\u25b8 "}} details.folded[open]>summary .name::before{{content:"\u25be "}} .folded-list{{list-style:none;margin:0 0 6px var(--name-w);padding:4px 8px;background:var(--surface);border-radius:4px;display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:2px 12px;font-size:12px;color:var(--muted)}}
+.summary-row .name{{color:var(--muted)}} details.folded>summary{{list-style:none;cursor:pointer}} details.folded>summary::-webkit-details-marker{{display:none}} details.folded>summary .name::before{{content:"\u25b8 "}} details.folded[open]>summary .name::before{{content:"\u25be "}} .row.sub{{height:22px}} .row.sub .name{{padding-left:18px;color:var(--muted);font-size:12px}} .row.sub .bar{{height:14px;line-height:14px;font-size:10px;top:2px}}
 .bar{{position:absolute;top:0;height:18px;border-radius:3px;background:var(--open);color:var(--bar-ink);font-size:11px;line-height:18px;padding:0 6px;overflow:hidden;white-space:nowrap;box-sizing:border-box}}
-.bar.running{{background:var(--running)}} .bar.orphaned{{background:var(--surface);color:var(--fg);outline:2px dashed var(--dl);outline-offset:-2px}} .bar.open-end{{background:var(--noest)}} .bar.summary{{background:var(--fold)}} .bar.clamped{{border-right:3px solid var(--dl)}} .bar.clamped-left{{border-left:3px solid var(--dl)}} .group-row .name{{font-weight:600}} .bar em{{font-style:normal;opacity:.85}} .member{{display:none}}
+.bar.running{{background:var(--running)}} .bar.orphaned{{background:var(--surface);color:var(--fg);outline:2px dashed var(--dl);outline-offset:-2px}} .bar.open-end{{background:var(--noest)}} .bar.derived{{background:var(--est)}} .bar.summary{{background:var(--fold)}} .bar.clamped{{border-right:3px solid var(--dl)}} .bar.clamped-left{{border-left:3px solid var(--dl)}} .group-row .name{{font-weight:600}} .bar em{{font-style:normal;opacity:.85}} .member{{display:none}}
 .overlay{{position:absolute;top:0;bottom:0;left:var(--name-w);right:0;pointer-events:none}}
 .band{{position:absolute;top:0;bottom:0;background:var(--band)}}
 .grid{{position:absolute;top:0;bottom:0;border-left:1px solid var(--line)}} .grid.half{{border-left:1px dotted var(--line);opacity:.6}}
@@ -1061,7 +1162,7 @@ tr.group th{{background:color-mix(in srgb,var(--brass) 18%,transparent);color:va
 .legend .key.nowline{{width:0;height:12px;border-radius:0;border-left:2px solid var(--now)}} .legend .key.dline{{width:0;height:12px;border-radius:0;border-left:2px dashed var(--dl);transform:none}}
 .legend .key.band{{height:12px;background:var(--band);border:1px solid var(--line)}}
 .key{{display:inline-block;width:18px;height:10px;border-radius:2px}} .key.bar{{position:static;background:var(--open);padding:0}}
-.key.bar.running{{background:var(--running)}} .key.bar.orphaned{{background:var(--surface);outline:2px dashed var(--dl);outline-offset:-2px}} .key.bar.open-end{{background:var(--noest)}} .key.bar.summary{{background:var(--fold)}}
+.key.bar.running{{background:var(--running)}} .key.bar.orphaned{{background:var(--surface);outline:2px dashed var(--dl);outline-offset:-2px}} .key.bar.open-end{{background:var(--noest)}} .key.bar.derived{{background:var(--est)}} .key.bar.summary{{background:var(--fold)}}
 .key.band{{background:var(--band);border:1px solid var(--line)}} .key.nowline{{width:0;height:12px;border-left:2px solid var(--now);border-radius:0}} .key.dline{{width:0;height:12px;border-left:2px dashed var(--dl);border-radius:0}}
 .dline{{position:absolute;top:0;bottom:0;border-left:2px dashed var(--dl);transform:translateX(-1px)}}
 .callouts{{margin-left:var(--name-w);margin-top:2px}} .callout{{position:relative;height:16px;font-size:11px;line-height:16px;color:var(--dl);white-space:nowrap}}
@@ -1117,7 +1218,7 @@ details summary{{cursor:pointer}} details[open] summary{{margin-bottom:4px}}
 {req_html}
 
 <h2>Today</h2>
-<div class="meta">{len(day_bars)} scheduled · {len(day_folded)} folded into one row (no estimate or due after today) · bands are calendar events · green line is now{orphan_note}</div>
+<div class="meta">{len(day_bars)} scheduled · {len(day_folded)} folded into one row (no estimate, or due or estimated after today) · bands are calendar events · green line is now{orphan_note}</div>
 {legend()}{_strip(day_bars + day_summaries, axis_a, axis_b, day_events, [nearest], day_ticks, "day")}
 
 <h2>Week</h2>
@@ -1185,8 +1286,10 @@ def main(argv: list[str] | None = None) -> Path:
     page = render(tracker_text, log_text, cfg, now, requirements=req_texts)
     out.write_text(page)
     parsed = parse_tracker(tracker_text)
-    bars = [day_bar(lane, cfg, now) for lane in parsed.lanes]
+    est = estimates([lane for lane in parsed.lanes if lane.kind != "done"], cfg, now)
+    bars = [day_bar(lane, cfg, now, est) for lane in parsed.lanes]
     no_est = sum(1 for b in bars if b.label == NO_ESTIMATE)
+    derived = sum(1 for b in bars if b.end_src == "derived")
     long_items = sum(1 for lane in parsed.lanes if len(lane.item) > LONG_ITEM)
     block = parse_resume(tracker_text)
     resume_long = sum(1 for k in resume_fields(block) if len(block[k]) > RESUME_LINE)
@@ -1198,7 +1301,7 @@ def main(argv: list[str] | None = None) -> Path:
     missing = sum(1 for t in req_texts.values() if t is None)
     drawn = resume_fields(block)
     resume_note = f"{len(drawn)} fields" if drawn else "none"
-    print(f"lanes={len(parsed.lanes)} no_estimate={no_est} warnings={warnings} long_items={long_items} resume={resume_note} resume_long={resume_long} requirements={req_counts or 'none'} requirements_missing={missing} tracker_sha256={hashlib.sha256(tracker_text.encode()).hexdigest()[:12]}")
+    print(f"lanes={len(parsed.lanes)} no_estimate={no_est} derived={derived} warnings={warnings} long_items={long_items} resume={resume_note} resume_long={resume_long} requirements={req_counts or 'none'} requirements_missing={missing} tracker_sha256={hashlib.sha256(tracker_text.encode()).hexdigest()[:12]}")
     return out
 
 

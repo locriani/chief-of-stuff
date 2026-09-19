@@ -460,3 +460,43 @@ Finding 51 put a hatch or stripe on every bar state, and C6 did the same for eve
 Every fill is flat again: bars and legend keys are one hue each, `orphaned` is an empty bar with a dashed edge, chips are a hue and a word. The pairwise-distinct tests stay, because a hue per state was the half of finding 51 that worked; the two "carries a pattern" tests are inverted so a pattern cannot regrow one state at a time. The greyscale and deuteranopia case those tests made is still real and still unanswered; the board is legible to the reader it has today, and that is the reader who asked.
 
 The graph's caption line went at the same time, at Zach's word ("is terrible delete it"): three clauses of hedging under a heading, explaining the section to a reader who can already see it.
+
+## 70 — the tracker's clock is day-grained
+
+**From:** measurement, 2026-09-18 20:4x, before C7 was planned.
+**Status:** Recorded 2026-09-18 (0.10.0).
+
+Across both live trackers (97 + 76 lanes) every `since` cell is a date and every `due` is a date or a deadline name; only `done HH:MM` carries a time, and the Log traces 9 of 44 done lanes. No lane has an hour-resolution duration. An estimator's resolution is bounded by the tracker, not by the estimator, and a "learn from history" model has nothing to learn from. Recorded so nobody reaches for one.
+
+## 71 — an estimate that knows nothing about effort
+
+**From:** Zach, 2026-09-18 12:54: "all items in the swimlane should be given an estimate. Estimates may be refined later. Estimates should be largely automatic, and overrideable by the user." Mechanism settled with gauntlet-bc at 13:23; built on Zach's direct word at 20:37.
+**Status:** Adopted 2026-09-18 (0.10.0).
+
+The board derives an end for every owned lane with no `due` from four inputs — `since`, `state`, `owner`, the nearest deadline ahead — and nothing else. Per owner, the active lanes blank or due by the horizon form a queue of N, running first, then oldest first; lane i ends at `H − (N−i)/N × (H − now)`, so lane N is the horizon instant and lane i is where it must be done for lane N to make it. That is a checkable statement about a budget, not a guess about work, and the label says which: `est. 2/4 → Final`, with `data-est` and `data-est-of` on the bar so the end can be recomputed from the tracker (finding 50: a citation must be recomputable) and a `title` stating the assumption in a sentence.
+
+The order is the one fabricated input. It is stated, cheap to be wrong about, and overridden by the `due` cell, which is what "refined later" means mechanically: nothing is written to the tracker, ever. Item text is excluded on purpose: its length tracks how long a lane has accumulated history, so it correlates with age, not work left.
+
+Two guards the stress test found. A derived slot narrower than an axis tick folds instead of drawing its own row, or a five-lane session at 08:00 on the last day would unfold into five 48-minute slivers exactly when the strip most needs reading. And a dated lane counts in its owner's N without getting a derived end, so Zach's fourteen dated lanes weigh against his two blank ones instead of costing nothing.
+
+## 72 — unowned lanes keep "no estimate"
+
+**From:** the C7 stress test, 2026-09-18 20:5x.
+**Status:** Adopted 2026-09-18 (0.10.0). Flagged to Zach at plan approval as the one departure from "all items"; approved.
+
+An unassigned or orphaned lane has no owner to derive a queue from. The only end available is the deadline, which is the bar it already draws; relabelling that bar `est. → Final` would present the absence of an estimate as one, which Board rule 3 and finding 63 forbid. So 46 of the 70 active lanes on 09-18 still read `no estimate`, and "all items" is read as all that can be. If the word should go, the label becomes `unassigned → Final` and the source stays `deadline`.
+
+## 73 — after Final, the nearest deadline is an exam
+
+**From:** the C7 stress test.
+**Status:** Open.
+
+At 12:01 on 09-20 `nearest_deadline` becomes `PCCAT 1st attempt` (09-26) and every week-1 leftover gets a precise end spread over six days toward an exam. Today's open-end bar has the same defect and draws no number; a derived end makes the wrong deadline look like a plan. The fix is a deadline knowing which lanes it governs, which the `## Coordinator` block does not say yet.
+
+## 74 — a fixture without a Coordinator block rewards refusing to work
+
+**From:** run 20260918-203609, `orphaned-work-has-no-owner`, my own case from that afternoon.
+**Status:** Adopted 2026-09-18 (0.10.0).
+
+The fixture had no `CLAUDE.md`. The coordinator found no `## Coordinator` block, said so, and correctly wrote nothing — and the grader that wanted the orphaned tree in `Verified` went red. Fourth fixture shape found in one day, same tell as the six empty repos: the fixture passes when the agent does less. The fixture lint finding 65 asked for gains a line: every case with `repo` has a fixture `CLAUDE.md`. The same run's `spawn-needs-a-yes` red was a grader anchored on `^\| Security audit \|`, the third of the "text the agent no longer authors" shape since C5 made the dispatch prompt derived from the item cell.
+

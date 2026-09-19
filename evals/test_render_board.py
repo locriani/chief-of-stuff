@@ -295,9 +295,9 @@ class RenderTest(unittest.TestCase):
     def test_bars_carry_sources_and_labels(self) -> None:
         audit = re.search(r'<[^>]*class="[^"]*\bbar\b[^"]*"[^>]*data-item="Security audit"[^>]*>', self.html)
         self.assertIsNotNone(audit)
-        self.assertIn('data-end-src="deadline"', audit.group(0))
+        self.assertIn('data-end-src="derived"', audit.group(0))
         self.assertIn('data-start-src="state"', audit.group(0))
-        self.assertIn('data-label="no estimate"', audit.group(0))
+        self.assertIn('data-label="est. 1/1 → Launch"', audit.group(0))
         readme = re.search(r'<[^>]*\bbar\b[^>]*data-item="Write eval README"[^>]*>', self.html)
         self.assertIn('data-end-src="due"', readme.group(0))
 
@@ -329,6 +329,11 @@ class RenderTest(unittest.TestCase):
 
     def test_warning_rows_are_shown(self) -> None:
         self.assertIn("2 cells", self.html)
+
+
+def _top_row(item: str) -> str:
+    """A regex for `item` drawn as a top-level row. A sub row inside a fold (`row sub`) is not one."""
+    return rf'<div class="row"><div class="name">[^<]*</div><div class="track"><div class="bar[^"]*"[^>]*data-item="{re.escape(item)}"'
 
 
 def _strip_html(page: str, kind: str) -> str:
@@ -408,8 +413,9 @@ class DensityTest(unittest.TestCase):
         self.assertRegex(day, r'class="bar[^"]*"[^>]*data-item="Write eval README"')
         self.assertRegex(day, r'class="bar running[^"]*"[^>]*data-item="Security audit"')
         self.assertRegex(day, r'class="member"[^>]*data-item="Review deploy config"')
-        self.assertNotRegex(day, r'class="bar[^"]*"[^>]*data-item="Review deploy config"')
-        self.assertRegex(day, r'data-summary="today"[^>]*data-count="4"')
+        self.assertNotRegex(day, _top_row("Review deploy config"))
+        # Two of the four unscheduled lanes are owned, so 0.10.0 derives their ends inside today and draws them.
+        self.assertRegex(day, r'data-summary="today"[^>]*data-count="2"')
         self.assertNotIn("Draft release notes", day)
         self.assertNotIn("Draft release notes", _strip_html(self.html, "week"))
 
@@ -420,17 +426,18 @@ class DensityTest(unittest.TestCase):
         self.assertIsNotNone(final)
         self.assertIn('data-end="2026-09-20T12:00:00-05:00"', final.group(0))
         self.assertRegex(week, r'class="member"[^>]*data-item="Review deploy config"')
-        self.assertNotRegex(week, r'class="bar[^"]*"[^>]*data-item="Review deploy config"')
+        self.assertNotRegex(week, _top_row("Review deploy config"))
 
     def test_item_text_bounded(self) -> None:
         esc = html_escape(LONG_ITEM)
         # The size cap is about item text, not the inlined logo asset.
         self.html = re.sub(r"data:image/webp;base64,[A-Za-z0-9+/=]+", "", self.html)
-        self.assertLessEqual(self.html.count(esc), 2)
+        # The lane table, the fold's `.member` citation, and the sub row the fold opens onto (0.10.0).
+        self.assertLessEqual(self.html.count(esc), 3)
         visible = re.sub(r"<[^>]+>", "", self.html.split("</style>", 1)[1].split("<script>", 1)[0])
         self.assertEqual(visible.count(esc), 0)
         self.assertEqual(visible.count("the worker left the registry"), 1)
-        self.assertLess(len(self.html), 30_000)  # the page without the logo asset; brand CSS, gridlines, the legend and the folded-row names add ~4 KB, and the session graph ~4.8 (2.6 markup, 2.2 CSS: nine chip fills). The guard is against the 67 KB regression, not against a kilobyte
+        self.assertLess(len(self.html), 32_000)  # 0.10.0: each fold opens onto a sub row per member, ~1 KB on this fixture;  # the page without the logo asset; brand CSS, gridlines, the legend and the folded-row names add ~4 KB, and the session graph ~4.8 (2.6 markup, 2.2 CSS: nine chip fills). The guard is against the 67 KB regression, not against a kilobyte
 
     def test_history_is_one_line_per_clause(self) -> None:
         body = re.search(r"<details><summary>Service architecture refactor</summary>(.*?)</details>", self.html, re.S).group(1)
@@ -602,7 +609,7 @@ class WeekByDayTest(unittest.TestCase):
         self.assertEqual(row.group(1), "Fri 18 · 3 lanes")
         self.assertEqual(row.group(2).count('class="member"'), 3)
         for item in ("Fix A", "Fix B", "Fix C"):
-            self.assertNotRegex(self.week, rf'class="bar[^"]*"[^>]*data-item="{item}"')
+            self.assertNotRegex(self.week, _top_row(item))
             self.assertRegex(row.group(2), rf'class="member" data-item="{item}"')
         self.assertIn("3 due", row.group(2))
 
@@ -780,6 +787,7 @@ class LegendTest(unittest.TestCase):
             ("key bar open", "open"),
             ("key bar orphaned", "orphaned"),
             ("key bar open-end", "no estimate"),
+            ("key bar derived", "estimated"),
             ("key bar summary", "folded rows"),
             ("key band", "calendar event"),
             ("key nowline", "now"),
@@ -968,7 +976,7 @@ class StateLegibilityTest(unittest.TestCase):
     """
 
     # Every state the chart can draw, as the class that paints it.
-    STATES = ("running", "open", "orphaned", "open-end", "summary")
+    STATES = ("running", "open", "orphaned", "open-end", "derived", "summary")
 
     def setUp(self) -> None:
         self.html = rb.render(TRACKER, LOG, rb.parse_coordinator(CLAUDE_MD, today=NOW.date()), NOW)
@@ -1015,19 +1023,44 @@ class StateLegibilityTest(unittest.TestCase):
 
 
 class FoldedRowsExpandTest(unittest.TestCase):
-    """45 of 58 lanes behind one strip, with nothing to open it. The names were in the html all along."""
+    """45 of 58 lanes behind one strip, with nothing to open it. The names were in the html all along.
+
+    0.6.2 opened the fold onto a list of names. Zach, 2026-09-18 12:55: "lane expansion must show sublanes,
+    not a wierd text listing of lanes". The body is now the members drawn as rows on the same axis.
+    """
 
     def setUp(self) -> None:
         self.html = rb.render(TRACKER, LOG, rb.parse_coordinator(CLAUDE_MD, today=NOW.date()), NOW)
 
+    def folded(self) -> str:
+        m = re.search(r'<details class="folded">(.*?)</details>', self.html, re.S)
+        self.assertIsNotNone(m, "no folded disclosure in the rendered board")
+        return m.group(1)
+
     def test_a_folded_row_is_wrapped_in_a_disclosure(self) -> None:
         self.assertIn('<details class="folded">', self.html)
 
-    def test_the_folded_names_are_readable_text_not_only_data_attributes(self) -> None:
-        folded = re.search(r'<details class="folded">(.*?)</details>', self.html, re.S)
-        self.assertIsNotNone(folded, "no folded disclosure in the rendered board")
-        self.assertIn('<ul class="folded-list">', folded.group(1))
-        self.assertRegex(folded.group(1), r"<li[^>]*>[^<]+</li>")
+    def test_the_fold_opens_onto_one_positioned_bar_per_member(self) -> None:
+        folded = self.folded()
+        count = int(re.search(r'data-count="(\d+)"', folded).group(1))
+        body = folded.split("</summary>", 1)[1]
+        rows = re.findall(r'<div class="row sub"><div class="name">([^<]+)</div><div class="track"><div class="bar [^"]*" data-item="([^"]+)" data-start="[^"]+" data-end="[^"]+" data-start-src="[^"]+" data-end-src="[^"]+"[^>]*style="left:[0-9.]+%;width:[0-9.]+%">', body)
+        self.assertEqual(len(rows), count, body)
+        self.assertNotIn("folded-list", self.html)
+        self.assertNotIn("<li", body)
+
+    def test_the_member_citations_stay_on_the_summary_bar(self) -> None:
+        summary = self.folded().split("</summary>", 1)[0]
+        self.assertEqual(summary.count('class="member"'), int(re.search(r'data-count="(\d+)"', summary).group(1)))
+        css = self.html.split("<style>")[1].split("</style>")[0]
+        self.assertIn(".member{display:none}", css)
+
+    def test_a_sub_row_carries_the_same_state_and_citations_as_a_top_row(self) -> None:
+        body = self.folded().split("</summary>", 1)[1]
+        sub = re.search(r'<div class="row sub">.*?<div class="bar ([^"]*)" data-item="Review deploy config"[^>]*>', body)
+        self.assertIsNotNone(sub, body)
+        self.assertIn("open", sub.group(1).split())
+        self.assertIn('data-end-src="due"', sub.group(0))
 
     def test_one_disclosure_per_folded_row_and_none_otherwise(self) -> None:
         folded = self.html.count('<details class="folded">')
@@ -1353,3 +1386,167 @@ Coordinator: coordinator. Board: board-7.
         html = rb.render(self.tracker, LOG, self.cfg, NOW)
         css = html.split("<style>")[1].split("</style>")[0]
         self.assertIn(".chip.gone{", css)
+
+
+QUEUE_TRACKER = """# Tracker 2026-09-16
+
+## Lanes
+
+| item | owner | state | since | due | checklist |
+|---|---|---|---|---|---|
+| A oldest | worker | open | 2026-09-15 |  | c |
+| B running | worker [ab12cd] | running 10:00 | 2026-09-16 |  | c |
+| C newer | worker (was ab12cd) | open | 2026-09-16 |  | c |
+| D dated | worker | open | 2026-09-16 | 17:00 | c |
+| E unassigned | unassigned | open | 2026-09-16 |  | c |
+| F blank |  | open | 2026-09-16 |  | c |
+| G orphaned | left-session | orphaned 09:05 | 2026-09-15 |  | c |
+| H left behind | left-session | open | 2026-09-16 |  | c |
+| I dash | — | open | 2026-09-16 |  | c |
+| J beyond | worker | open | 2026-09-16 | Final | c |
+| K done | worker | done 11:00 | 2026-09-16 |  | c |
+
+## Log
+
+- 09:00 opened the day
+"""
+
+
+class EstimateTest(unittest.TestCase):
+    """An owned lane with no `due` ends where its owner's queue puts it, and cites `derived`.
+
+    The tracker's clock is day-grained (`since` and `due` are dates; only `done` carries a time), so no
+    lane has a duration to learn from. The estimator therefore claims nothing about effort: lane i of
+    an owner's N ends at `H - (N-i)/N x (H - now)`, where H is the nearest deadline still ahead. The
+    one fabricated input is the order, and it is stated: running first, then oldest first.
+    """
+
+    def setUp(self) -> None:
+        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.lanes = [lane for lane in rb.parse_tracker(QUEUE_TRACKER).lanes if lane.kind != "done"]
+        self.by = {lane.item: lane for lane in self.lanes}
+        self.est = rb.estimates(self.lanes, self.cfg, NOW)
+        self.h = self.cfg.deadlines[0].at  # Launch 23:59, the nearest deadline ahead of 14:30
+        self.r = self.h - NOW
+
+    def test_the_queue_is_running_first_then_oldest_and_the_dated_lane_counts(self) -> None:
+        # worker: B (running), A (since 09-15), C (09-16), D (09-16, due 17:00 <= H) -> N=4; J's due is past H.
+        self.assertEqual({k for k in self.est if self.by[k].owner.startswith("worker")}, {"A oldest", "B running", "C newer"})
+        self.assertEqual((self.est["B running"].i, self.est["B running"].n), (1, 4))
+        self.assertEqual((self.est["A oldest"].i, self.est["A oldest"].n), (2, 4))
+        self.assertEqual((self.est["C newer"].i, self.est["C newer"].n), (3, 4))
+        self.assertEqual(self.est["B running"].end, self.h - self.r * (3 / 4))
+        self.assertEqual(self.est["A oldest"].end, self.h - self.r * (2 / 4))
+        self.assertEqual(self.est["C newer"].end, self.h - self.r * (1 / 4))
+        self.assertEqual(self.est["A oldest"].label, "est. 2/4 → Launch")
+
+    def test_a_ref_and_a_parenthetical_are_one_owner(self) -> None:
+        self.assertEqual({self.est[k].n for k in ("A oldest", "B running", "C newer")}, {4})
+
+    def test_the_last_lane_ends_at_the_deadline_instant(self) -> None:
+        lanes = [self.by["A oldest"], self.by["C newer"]]
+        est = rb.estimates(lanes, self.cfg, NOW)
+        self.assertEqual((est["A oldest"].i, est["C newer"].i), (1, 2))
+        self.assertEqual(est["C newer"].end, self.h)
+        self.assertEqual(est["A oldest"].end, NOW + self.r / 2)
+
+    def test_unowned_gone_and_dated_lanes_get_no_estimate(self) -> None:
+        for item in ("D dated", "E unassigned", "F blank", "G orphaned", "H left behind", "I dash", "J beyond"):
+            self.assertNotIn(item, self.est, item)
+
+    def test_a_derived_end_reaches_the_bar_only_when_asked_for(self) -> None:
+        lane = self.by["A oldest"]
+        plain = rb.day_bar(lane, self.cfg, NOW)
+        self.assertEqual((plain.end_src, plain.label), ("deadline", "no estimate"))
+        b = rb.day_bar(lane, self.cfg, NOW, self.est)
+        self.assertEqual((b.end_src, b.label, b.end), ("derived", "est. 2/4 → Launch", self.est["A oldest"].end))
+        w = rb.week_bar(lane, self.cfg, NOW, self.est)
+        self.assertEqual((w.end_src, w.end), ("derived", self.est["A oldest"].end))
+        d = rb.day_bar(self.by["D dated"], self.cfg, NOW, self.est)
+        self.assertEqual(d.end_src, "due")
+        u = rb.day_bar(self.by["E unassigned"], self.cfg, NOW, self.est)
+        self.assertEqual((u.end_src, u.label), ("deadline", "no estimate"))
+
+    def test_a_passed_deadline_makes_the_horizon_midnight(self) -> None:
+        late = datetime(2026, 9, 21, 9, 0, tzinfo=CT)
+        est = rb.estimates([self.by["A oldest"]], self.cfg, late)
+        self.assertEqual(est["A oldest"].end, datetime(2026, 9, 22, 0, 0, tzinfo=CT))
+        self.assertEqual(est["A oldest"].label, "est. 1/1 → end of day")
+
+    def test_a_since_after_now_never_ends_before_it_starts(self) -> None:
+        text = QUEUE_TRACKER.replace("| A oldest | worker | open | 2026-09-15 |", "| A oldest | worker | open | 2026-09-17 |")
+        lanes = [lane for lane in rb.parse_tracker(text).lanes if lane.item == "A oldest"]
+        w = rb.week_bar(lanes[0], self.cfg, NOW, rb.estimates(lanes, self.cfg, NOW))
+        self.assertEqual(w.end_src, "derived")
+        self.assertGreaterEqual(w.end, w.start)
+
+    def test_item_text_is_never_read(self) -> None:
+        text = QUEUE_TRACKER.replace("| A oldest |", "| A oldest, a very long item whose length says nothing about the work left (history: 09:00 opened; 10:00 blocked; 11:00 resumed; 12:00 more of the same) |")
+        lanes = [lane for lane in rb.parse_tracker(text).lanes if lane.kind != "done"]
+        other = rb.estimates(lanes, self.cfg, NOW)
+        self.assertEqual({e.end for e in other.values()}, {e.end for e in self.est.values()})
+
+
+class DrawnEstimateTest(unittest.TestCase):
+    """A derived end is drawn as its own state, cites its inputs, and folds when its slot is too narrow to read."""
+
+    def setUp(self) -> None:
+        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.html = rb.render(QUEUE_TRACKER, LOG, self.cfg, NOW)
+        self.day = _strip_html(self.html, "day")
+
+    def bar(self, item: str, html: str | None = None) -> str:
+        m = re.search(rf'<div class="bar[^"]*"[^>]*data-item="{re.escape(item)}"[^>]*>', html or self.day)
+        self.assertIsNotNone(m, item)
+        return m.group(0)
+
+    def test_the_bar_is_its_own_state_and_cites_its_inputs(self) -> None:
+        a = self.bar("A oldest")
+        self.assertIn('class="bar open derived"', a)
+        self.assertIn('data-end-src="derived"', a)
+        self.assertIn('data-est="2/4"', a)
+        self.assertIn('data-est-of="Launch"', a)
+        self.assertIn('data-label="est. 2/4 → Launch"', a)
+        self.assertRegex(a, r'title="[^"]*queue[^"]*"')
+        self.assertIn('class="bar running derived"', self.bar("B running"))
+
+    def test_an_unowned_lane_still_says_no_estimate(self) -> None:
+        for item in ("E unassigned", "F blank", "H left behind"):
+            self.assertRegex(self.day, rf'class="member" data-item="{re.escape(item)}"[^>]*data-end-src="deadline"[^>]*data-label="no estimate"')
+
+    def test_a_slot_narrower_than_a_tick_folds(self) -> None:
+        rows = "".join(f"| L{i} | many | open | 2026-09-16 |  | c |\n" for i in range(12))
+        text = QUEUE_TRACKER.replace("| K done |", rows + "| K done |")
+        day = _strip_html(rb.render(text, LOG, self.cfg, NOW), "day")
+        self.assertNotRegex(day, _top_row("L3"))
+        member = re.search(r'<span class="member" data-item="L3"[^>]*>', day)
+        self.assertIsNotNone(member)
+        self.assertIn('data-end-src="derived"', member.group(0))
+        self.assertIn('data-est="4/12"', member.group(0))
+        self.assertIn('class="bar open derived"', self.bar("A oldest"))
+
+    def test_the_legend_key_matches_the_bar(self) -> None:
+        css = self.html.split("<style>")[1].split("</style>")[0]
+        self.assertIn(".bar.derived{background:var(--est)}", css)
+        self.assertIn(".key.bar.derived{background:var(--est)}", css)
+        self.assertRegex(css, r"--est:#[0-9a-f]{6}")
+
+    def test_the_week_routes_a_derived_end_by_day_and_counts_it(self) -> None:
+        text = QUEUE_TRACKER.replace("| K done |", "| P | w | open | 2026-09-16 |  | c |\n| Q | w | open | 2026-09-16 |  | c |\n| R | w | open | 2026-09-16 | 17:00 | c |\n| K done |")
+        week = _strip_html(rb.render(text, LOG, self.cfg, NOW), "week")
+        row = re.search(r'data-group="2026-09-16" data-count="(\d+)"(.*?)</div></div></div>', week)
+        self.assertIsNotNone(row)
+        members = re.findall(r'class="member" data-item="([^"]+)"', row.group(2))
+        self.assertTrue({"P", "Q", "R", "D dated"} <= set(members), members)
+        self.assertIn("2 due · 4 est.", row.group(2))
+        self.assertNotRegex(week, r'class="member" data-item="P"[^>]*data-end-src="deadline"')
+
+    def test_the_cli_counts_derived_beside_no_estimate(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        (root / "CLAUDE.md").write_text(CLAUDE_MD)
+        (root / "daily").mkdir()
+        (root / "daily" / "2026-09-16-tracker.md").write_text(QUEUE_TRACKER)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rb.main(["--date", "2026-09-16", "--root", str(root)])
+        self.assertIn("no_estimate=5 derived=3", buf.getvalue())

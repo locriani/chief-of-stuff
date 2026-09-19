@@ -26,14 +26,12 @@
       "bars": [
         {
           "item": "Draft release notes",
-          "end_src": "deadline",
-          "label": "no estimate"
+          "end_src": "derived"
         },
         {
           "item": "Security audit",
           "start_src": "state",
-          "end_src": "deadline",
-          "label": "no estimate"
+          "end_src": "derived"
         },
         {
           "item": "Write eval README",
