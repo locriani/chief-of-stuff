@@ -1125,3 +1125,14 @@ The sweep called a live session's tree orphaned. `architecture-review-setup [768
 Verified against the live tracker rather than a fixture: `architecture-review-setup [768194]` now resolves, where the roster's name for it is `openemr-arch`.
 
 611 units green on the branch. Findings 112, 113 — the second the same blind spot in `render_board._bare_name`, recorded and not built because that file is board-ux's.
+
+
+## C13f — the ref reaches `owns()` (0.12.6)
+
+112 put the ref in the roster join and stopped at the edge of the one that mattered. `owns()` attributes a lane to an ownership row and so to a tree, and a lane with no tree is checked for nothing at all.
+
+Three names on one ref, and not one session: the tracker writes `impl-1 [4cd339]` in the lane owner column and `standing-task-implementer [4cd339]` in File ownership, and the same for impl-2, impl-3, research-1, research-2 and arch. Twenty-three `done` lanes matched no row.
+
+A/B on the live tracker, same minute: `reopen=2` before, `reopen=8` after. Six real lanes marked done whose branches are not on main.
+
+615 units green on the branch. Findings 114, 115.

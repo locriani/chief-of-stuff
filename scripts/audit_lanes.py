@@ -218,7 +218,17 @@ def listed(owner: str, roster: set[str], refs: set[str], user: str = "") -> tupl
 
 
 def owns(row: OwnerRow, owner: str) -> bool:
-    return bool(owner.strip()) and _bare(row.context) == _bare(owner)
+    """Same context? The ref decides where both sides carry one — finding 112's rule, which reaches
+    here too and was left out of it. This tracker runs one ref under three names: `arch [768194]`,
+    `architecture-review-setup [768194]` and `openemr-arch [768194]`, four of whose lanes matched no
+    ownership row and so were attributed no tree, and a lane with no tree is checked for nothing at
+    all. The name decides only where one side or the other has no ref to ask."""
+    if not owner.strip():
+        return False
+    theirs, mine = _ref(row.context), _ref(owner)
+    if theirs and mine:
+        return theirs == mine
+    return _bare(row.context) == _bare(owner)
 
 
 def _tokens(text: str) -> set[str]:
