@@ -536,3 +536,134 @@ Measured on the two live trackers before the change: 100 and 97 lanes, 34 and 20
 **Status:** Adopted 2026-09-19 (0.11.0), with finding 77.
 
 `running 21:16` is the only wall-clock start a lane ever carries — `since` is a date — and the close wrote `done 22:05` over it. Every done lane in both live trackers had lost its start that way. The grammar `done HH:MM–HH:MM` keeps it in the one cell the coordinator edits at both moments; `done HH:MM` alone stays legal and simply records nothing, and the board's summary line says how many lanes its means rest on.
+
+---
+
+Findings 80–97 are the 42 observations five dispatched sessions sent between 23:02 and 23:08 on 2026-09-18, at Zach's request, after their first evening under the 0.9.0–0.10.1 dispatch flow: `openemr-impl-1` [4cd339] (ten), `openemr-impl-2` [78935c] (eleven), `openemr-research-1` [e928f1] (six), `openemr-research-2` [281229] (seven), and the architecture session `openemr-arch` [768194] (eight). Folded where they overlap; each entry names every reporter. All are **Recorded**: none has been ruled on, and none changes a rule until Zach says so. Where a reporter's own words carry the point they are quoted.
+
+## 80 — polling an idle standing session returns the previous answer
+
+**From:** impl-1 (5), impl-2 (3), research-1 (A), research-2 (1), arch (7) — every session that was polled.
+**Status:** Recorded. Zach ruled the live instance at 22:19: "polling stops; message me unprompted the moment your state changes."
+
+The coordinator sent the same six-line status poll to each standing session at 21:49, 22:02 and 22:17. Nothing had changed between them, so the second and third returned the first's content, at two turns each side. The poll's shape was fine; its use as a heartbeat on an idle session was not — "a poll of an idle session with no lane in `running` can only return the previous answer" (impl-2). research-1 draws the line: push-on-change is the default, and a poll is for suspected silence, which is exactly when it earns its cost. Proposals on the table: skip sessions whose lane is not `running`; accept "unchanged since <msg_id>" as a full answer; `notify_when_idle` in place of most polls.
+
+## 81 — the dispatch said write-only and the lane said CIMP-complete
+
+**From:** impl-1 (1), impl-2 (1); both flagged it independently and handed it back.
+**Status:** Recorded. Zach ruled at 21:50: implementers commit and merge per item; push stays his.
+
+`dispatch.md` line 19, "Write only: do not commit or push", against a lane whose every item "ends CIMP-complete — merged to main". Merging is committing. Both implementers stopped on the contradiction, which is the right behaviour and a round trip each. The template should carry the git permission per lane type — a standing implementer commits and merges and never pushes — so the ruling is made once in the template rather than once per spawn.
+
+## 82 — authority through a peer is ambiguous, and the ambiguity costs the round trip it was meant to save
+
+**From:** arch (3).
+**Status:** Recorded.
+
+Three sources on one question — the session's own definition (never commits), the workspace `CLAUDE.md` human-only list, and a coordinator relay quoting Zach lifting the first — and a peer cannot grant escalation, so the session went back to Zach anyway. Proposed: when Zach changes a standing rule the change lands in `CLAUDE.md` as well as in the relay, and the relay says so. Note for the reader: the human-only list has said since 0.10.0 that it binds the coordinator only and working sessions act within their own lanes; the architecture session read the older sentence. The proposal stands either way, because the reading happened.
+
+## 83 — a standing lane dispatched into plan mode has nothing to plan
+
+**From:** impl-1 (10), impl-2 (4), research-1 (F).
+**Status:** Recorded.
+
+The dispatch names `planning with nothing written yet` as the registration state and the harness puts a fresh session in plan mode, so three sessions wrote a plan whose content was "wait" and called `ExitPlanMode` on it. Harmless, and research-1 notes it did make the constraints explicit. But a wait-shaped lane may not need plan mode on turn one; the first handed item is the thing to plan. A deliberate decision rather than a default.
+
+## 84 — a spawned tab carries launchd's PATH
+
+**From:** impl-1 (2), impl-2 (5).
+**Status:** Recorded. Extends finding 57.
+
+`docker`, `uv` and `bats` were not on PATH in the spawned tab; they were found by hand at `/usr/local/bin/docker` (OrbStack) and `/opt/homebrew/bin/{uv,bats}`. Finding 57 resolved `claude` absolutely for the launcher; the session inside inherits the same short PATH. Either `spawn_session.py` exports a PATH into the tab or the dispatch states the absolute tool paths. The architecture session hit it too and its finding reached the implementer through the coordinator inside an item, which worked and was manual.
+
+## 85 — a fresh worktree has no docker stack
+
+**From:** impl-1 (3).
+**Status:** Recorded.
+
+Anything needing PHPUnit or PHPStan cannot run in a tree as spawned until a stack is up; `ci/resolve-stack.py` fails loudly, which is correct. The dispatch could say which suites are runnable in the tree as spawned and what an item needing the others must do first.
+
+## 86 — cross-session messages about credential-shaped items get blocked, and silence then reads as no progress
+
+**From:** impl-1 (4).
+**Status:** Recorded.
+
+On the login-reference item the auto-mode classifier blocked two consecutive status messages to the coordinator, the second carrying no secret values — the subject alone tripped it. The coordinator could not learn the item was waiting on Zach except through Zach. Proposed: the ruleset expects silence on credential-shaped items and routes their status via the user, rather than reading no-message as no-progress.
+
+## 87 — the Owns list was guessed where it could have been grepped
+
+**From:** impl-2 (7), impl-1 (6).
+**Status:** Recorded.
+
+An item of the shape "every X at the edge" whose Owns list was written from memory left two routes in `main.py` uncounted and outside the implementer's files; the gap showed in the report rather than before the yes. Proposed: such an item carries the grep hit list for X, so Owns is derived from it. The same class, the other way: a behaviour-change item predictably breaks the test that encoded the old behaviour, and the implementer stopped for a one-test grant; the item could pre-authorise "tests that encode the old behaviour, named in the report".
+
+## 88 — what the hand-offs got right
+
+**From:** impl-1 (7), impl-2 (5, 11), research-2 (2, 5, 7), arch (the closing note).
+**Status:** Recorded, as the pattern to keep.
+
+Every item was actionable without a clarifying question except the Owns gap in finding 87. What did it: `file:line` for the defect; the spec section that is the authority and who owns that document; the facts already established (which tests, which line, who measured it); an explicit Owns list and an explicit not-yours list; what is deliberately out of scope and why; tool paths for a short-PATH tab; which main sha to merge onto, with an unprompted update when main moved; the exact report shape wanted. For research lanes, one named output path per question made "done and in-lane" a `git status` check, and the one-owned-path shape held across an endpoint inventory, an infrastructure plan and a cross-worktree audit without redesign. Two techniques worth naming: a throwaway detached worktree under the session's own scratchpad to check whether a diff applies cleanly to main without touching anyone's tree; and a relayed finding treated as a lead to verify rather than a fact to assume — the SMART-launch claim held, and the verification found a detail it had not spelled out. Registration was one call: `ListAgents` prints the session's own name and ref on its first line. The plan-then-approve flow caught a real misreading (three worktrees' differing `ARCHITECTURE.md` line counts read as competing edits; they were staleness) before it reached a file.
+
+## 89 — what a report must carry, and what a ruling must say
+
+**From:** impl-2 (6, 8, 9, 10), impl-1 (8), arch (4, 5).
+**Status:** Recorded.
+
+Six gaps in the report and ruling templates, each one round trip or one wrong number: the pre-change pass count beside the red ("438 → 442 with 3 red in between" shows the change was minimal; a red alone does not); the suite field as the exact command, not a directory (`bats tests/bats/ci-scripts/` finds no tests without `-r`, and which bash runs it is PATH order); the tree state measured after the suite, since eval regeneration dirties the tree; the merge shape named in the ruling (fast-forward or merge commit — left to the implementer, it differs per implementer); the coordinator's "closed, verified here — main <sha>" message as a required step, because without it a session cannot tell a closed item from a lost report; and the literal output of `git rev-parse --short origin/main main` beside the green line, because one report copied origin/main from tracker text and was wrong. Two working-session disciplines from the architecture session belong in the same template: never read an exit status through a pipe (it reported `exit=0` twice for runs that had failed, the status being `grep`'s), and before claiming a test proves anything, ask whether the assertion would also pass against an error body, an empty response or a redirect — two of its checks had.
+
+## 90 — line-number citations go stale across plugin versions
+
+**From:** research-1 (D).
+**Status:** Recorded. Extends finding 61.
+
+The tracker cited `render_board.py:747` for the one-requirements-file-per-deadline constraint; at 0.9.0 line 747 is inside the session-graph renderer. The substance held; the number did not. For a file that ships versions, cite the symbol — `Deadline.requirements`, `requirements_section()` — because the name survives an edit. The convention in finding 61 is what caught it: the rule to state what was read is what made the session open the file instead of repeating the number.
+
+## 91 — house rule 3 does not reach the subagents a session spawns
+
+**From:** research-1 (E), who ranks it first. So does this record.
+**Status:** Recorded.
+
+A research session spawned three subagents that read PDFs under `Resources/`, files under `~/Documents` and Drive documents carrying a legal name Zach does not use. Nothing in the harness passes house rule 3 to a subagent; the session added a sentence to each prompt by hand. A subagent's report lands in the parent's context and can flow from there into a document that gets committed. The failure is silent, one forgotten sentence away, and the blast radius is a name in a commit. Proposed: a standard sentence in dispatch text that a session must pass to any subagent it spawns.
+
+## 92 — a direct instruction to a session is a normal mode, and a direct ask names no path
+
+**From:** research-1 (B, C), research-2 (3).
+**Status:** Recorded.
+
+Twice in one week Zach gave a task straight to a dispatched session, bypassing the coordinator — the S2 incident already on the board, and the rubric task at 21:45. The dispatch describes one channel. What made the second harmless was the session self-reporting to the coordinator before writing anything, so ownership was recorded first. Proposed: dispatch text names direct instruction as expected and requires the self-report. The pathless case follows: a direct ask names no output path, the ownership rule has no branch for that, and both researchers improvised — one proposed a path and declared it in the report; the other judged the ask read-only and answered in chat. Make "propose a path and declare it before writing" the documented default.
+
+## 93 — the lane names a model the launcher cannot set
+
+**From:** impl-2 (2).
+**Status:** Recorded.
+
+"standing implementer on sonnet" was in the lane; `spawn_session.py` takes no model and the tab came up on the default. It was flagged at registration and then rode along as "until Zach types /model" in every status reply. Either the lane does not name what the harness cannot enforce, or the dispatch says "your model is not set by this file; report the one you are on".
+
+## 94 — the dispatch says read the tracker, and the tracker is 42k tokens
+
+**From:** impl-2 (9).
+**Status:** Recorded.
+
+279 lines, of which a standing session needs its own three rows (Lanes, Sessions, File ownership) and the header rules. The dispatch could quote those rows or name their line numbers and say the rest is history. Pairs with the density findings on the board side: the same document is too long for both its readers.
+
+## 95 — a demo credential is not a production secret, and a preference is not a question
+
+**From:** arch (1, 2). "This is the sharpest one."
+**Status:** Recorded.
+
+The architecture session treated the OpenEMR demo login as a secret — refused to put it anywhere, built an env-var override, reported the lane blocked twice — on a graded deliverable whose requirements include the login. Zach: the instance holds synthetic patients and the credential is documentation a grader must use. Proposed rule: a credential is a secret when it protects real data or real money; the test is what it protects, not whether the string looks like a password. Cost: about forty minutes and two round trips on a priority-1 item. The second: four questions batched to Zach, of which one was his (scope of `/evals`), one should have been decided and stated (which runner), and one should not have existed. Ask only where the answer changes what gets built and cannot be recovered later; otherwise pick, say so in one clause, and move.
+
+## 96 — findings lead, not trail
+
+**From:** arch (6).
+**Status:** Recorded.
+
+The review page followed its format — URL, numbered section list, one sentence — and the thing Zach needed (the deployed agent 13+ commits behind, two graded routes 404) sat below it. A format for a deliverable governs the deliverable, not the message carrying it; what changes the next decision goes first.
+
+## 97 — many sub-questions in one dispatch
+
+**From:** research-2 (6).
+**Status:** Recorded.
+
+One question packed six or seven distinct sub-asks into a single owned-file dispatch. It produced one coherent note under an improvised heading-per-sub-ask. Either the note format gets that contract, or the dispatch splits into separately reportable questions.
+
