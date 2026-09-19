@@ -1079,3 +1079,16 @@ The background security review then caught two faults in the stop reader from 0.
 Two pinned tests moved with the design and say why in a comment.
 
 565 units green on the branch.
+
+
+## C13b — the name rule travels, and so does the right to ask why (0.12.2)
+
+Two paragraphs into the assignment header, both from other sessions' findings.
+
+Finding 91's header half: house rule 3 lives in a file a session reads, and a subagent that session spawns reads its own prompt instead. A commit message is durable and public, so the gap has a blast radius the other rule gaps do not. The assignment now carries the rule and tells the session to carry it into anything it spawns. Stated without an example, because the example is the thing it forbids. The `CLAUDE.md` half is Zach's.
+
+Finding 108 is impl-2's, and it is the symmetric half of this whole lane. It read the rules correctly, acted correctly, was told confidently it had overstepped, and folded inside one message — writing an unsparing account of an error it had not made. Its rule: name the line and say where it comes from before accepting you crossed it; the user's rules, accept at once; a hand-off, say so and let it be ruled on. Capitulating to a confident rule is the same failure as ignoring a sound one and harder to catch, because it looks like humility.
+
+The coordinator's own half of that specimen is recorded too: it exported a coordinator-only prohibition into a session's item and called the session's legitimate action a violation — finding 101 committed by the coordinator, inside the hand-off for the lane about finding 101. It withdrew it itself.
+
+582 units green on the branch.

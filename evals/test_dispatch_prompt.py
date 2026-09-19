@@ -363,3 +363,43 @@ class StopKindsTest(unittest.TestCase):
         body = dp.compose(root, "2026-09-18", "Security audit")
         for kind in ("permission", "authorization", "ownership", "scope"):
             self.assertIn(kind, body)
+
+
+class NameRuleTravelsTest(unittest.TestCase):
+    """Finding 91: the workspace name rule does not reach a subagent a session spawns, and a commit message is durable."""
+
+    def setUp(self):
+        self.tmp, self.root = workspace()
+        self.addCleanup(self.tmp.cleanup)
+        self.body = dp.compose(self.root, "2026-09-18", "Security audit")
+
+    def test_the_assignment_names_the_user_as_the_only_name(self):
+        self.assertIn("Robin is the only name", self.body)
+
+    def test_it_says_where_the_wrong_name_is_durable(self):
+        self.assertIn("commit message", self.body)
+
+    def test_it_carries_the_rule_into_anything_the_session_spawns(self):
+        self.assertIn("carry this rule into it", self.body)
+
+    def test_the_rule_never_spells_a_name_of_its_own(self):
+        """The rule is stated without an example, because an example would be the thing it forbids."""
+        self.assertNotRegex(self.body, r"(?i)\b(legal|birth|given) name is\b")
+
+
+class ChallengedConstraintTest(unittest.TestCase):
+    """impl-2, 04:00: capitulating to a confidently stated rule is the same failure as ignoring a well-founded one."""
+
+    def setUp(self):
+        self.tmp, self.root = workspace()
+        self.addCleanup(self.tmp.cleanup)
+        self.body = dp.compose(self.root, "2026-09-18", "Security audit")
+
+    def test_a_line_you_are_told_you_crossed_gets_sourced_first(self):
+        self.assertIn("where it comes from", self.body)
+
+    def test_the_users_own_rules_are_accepted_at_once(self):
+        self.assertIn("accept it at once", self.body)
+
+    def test_a_constraint_that_traces_to_a_hand_off_is_said_so_not_agreed_to(self):
+        self.assertIn("say so and let it be ruled on", self.body)
