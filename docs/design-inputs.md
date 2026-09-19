@@ -897,3 +897,26 @@ A/B against the live tracker, same minute, same trees: `reopen=2` before, `reope
 This is the inverse of 112's lesson and it arrived four minutes later. 112 was proven by a red test and moved nothing live, which I said plainly. 115 was found in the same data by someone reading an A/B result for something else, and it moved the number by six. Neither the test nor the live run is sufficient alone: the test says the logic is right, the live run says whether anything was relying on it being wrong.
 
 The rule is now the same in both joins, which is the point — a ref decides where both sides carry one, a name decides where one side does not.
+
+## 116 — `reopen` asks a per-tree question and `done` is a per-lane claim
+
+**From:** `gauntlet-b2`, 06:25, disputing a conclusion of mine with six shas and refusing to act on it.
+**Status:** Open — the mechanism needs a fact the tracker does not carry. Zach's.
+
+I shipped 0.12.6, saw `reopen` go 2 to 8, and told the coordinator that six lanes were marked done whose branches were not on main and so under house rule 5 were not done. That was wrong, and the coordinator checked it against main before touching a state rather than believing an audit line.
+
+Verified here independently, in the arch worktree, read-only: `150276a`, `54b7eb3`, `5a3a383`, `05060ee`, `4d43f85` are every one an ancestor of main. What `arch/frank` carries unmerged is seven commits authored 04:03 to 06:14, and the last of the six lanes closed at 03:25. The six closed before that work existed. Their changes are on main; the tree is not.
+
+**The predicate generalises wrongly.** `reopen` asks "is this owner's tree on main?" and `done` is a claim about one lane's change reaching main. Those coincide only for a session that opens a tree, does one lane, and merges. A session that works continuously in one worktree always has unmerged work, so once its lanes are joined, every lane it has ever closed reopens and stays reopened for the rest of the day. arch is the worst case because it is the longest-lived single-tree session here; impl-1, impl-2 and f1c209 do it the moment they have an unmerged commit, which is most of the time. Eight is the floor, not the number.
+
+`research/r1` is a second shape: research notes never go to main by a convention held all night, so those lanes have no merge to wait for and reopen forever.
+
+**0.12.6 did not create this — it exposed it.** The defect was always in the predicate; the twenty-three unjoined lanes were simply never asked. The join fix is right and stays. What it did create is a noise source in a running instrument, and that is the part with a cost: a reader who checks eight reopens by hand, finds eight false, and is trained to skim the ninth. The coordinator had confessed to exactly that failure ninety minutes earlier about four different reopens, so the instrument is now manufacturing the condition it just apologised for.
+
+Three candidate mechanisms, none of them mine to pick:
+
+- **A lane carries the sha that closed it**, and `reopen` asks `merge-base --is-ancestor <sha> main` instead of asking about the tree. Correct, and a tracker grammar change.
+- **An ownership row declares that its branch never merges** (`research/r1`). Fixes the second shape only, also grammar.
+- **A lane is not reopened by work that did not exist when it closed** — compare the earliest unmerged commit's author date against the lane's `done HH:MM–HH:MM` end. Needs no grammar, is monotone (it can only suppress, never add a reopen), and kills the dominant class. It is still a heuristic: it cannot suppress an unrelated unmerged commit that predates the close, and it cannot tell which lane a commit belongs to. That is what the first option buys and this one does not.
+
+I did not build the third. It is a design decision about a gate two sessions read, and I had been wrong twice in fifteen minutes about what this same function does against live data. Containment is already correct without it: the coordinator recorded an autonomous decision not to reopen any of the eight, with the shas attached, so it can be overturned against evidence rather than judgement.
