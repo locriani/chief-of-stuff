@@ -763,6 +763,12 @@ class Estimate:
                 "running first, then oldest first. Not a claim about effort; set a due to override.")
 
 
+# The chips over the one lane table. `all` first and always checked, then the two owner questions the
+# Unassigned and queue tables used to be, then the three tracker states a lane can be in.
+FILTERS = ("all", "mine", "unassigned", "running", "orphaned", "done")
+FILTER_LABELS = {"all": "all", "mine": "yours", "unassigned": "unassigned",
+                 "running": "running", "orphaned": "orphaned", "done": "done"}
+
 UNASSIGNED = re.compile(r"(?i)^unassigned$")
 
 
@@ -1346,30 +1352,49 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
         body = "".join(f"<li><time>{_esc(t)}</time><span>{_inline(text)}</span></li>" for t, text in lines)
         return f'<details><summary>{_esc(short)}</summary><ul class="hist">{body}</ul></details>'
 
+    def lane_filters(lane: Lane) -> list[str]:
+        """The chips that keep this row. A filter is mechanical and selects over the whole table,
+        done rows included: `yours` answers "which lanes name Robin", and the groups keep the state
+        reading that the old queue table bought by excluding done."""
+        owner = lane.owner.strip().lower()
+        tokens = ["all"]
+        if owner == cfg.user.strip().lower():
+            tokens.append("mine")
+        if owner in ("unassigned", ""):
+            tokens.append("unassigned")
+        if lane.kind in ("running", "orphaned", "done"):
+            tokens.append(lane.kind)
+        return tokens
+
     def lane_rows(group: list[Lane]) -> str:
         rows = []
         for lane in group:
             warn = f' <span class="warn">{_esc(lane.warning)}</span>' if lane.warning else ""
             size = f' data-size="{_esc(lane.size)}"' if lane.size.strip() else ""
-            rows.append(f'<tr data-state="{_esc(lane.kind)}"{size}><td>{item_cell(lane.item, lane.label)}{warn}</td><td>{_esc(lane.owner)}</td><td>{_esc(lane.state)}</td><td>{_esc(lane.since)}</td><td>{_esc(lane.due)}</td><td>{_esc(lane.size)}</td></tr>')
-        return "\n".join(rows) or '<tr><td colspan="6" class="muted">none</td></tr>'
+            keeps = " ".join(lane_filters(lane))
+            rows.append(f'<tr data-state="{_esc(lane.kind)}" data-in="{keeps}"{size}><td>{item_cell(lane.item, lane.label)}{warn}</td><td>{_esc(lane.owner)}</td><td>{_esc(lane.state)}</td><td>{_esc(lane.since)}</td><td>{_esc(lane.due)}</td><td>{_esc(lane.size)}</td></tr>')
+        return "\n".join(rows) or '<tr data-in="all"><td colspan="6" class="muted">none</td></tr>'
 
-    queue = [lane for lane in active if lane.owner.strip().lower() == cfg.user.lower()]
-    unassigned = [lane for lane in active if lane.owner.strip().lower() in ("unassigned", "")]
-    unassigned_rows = "\n".join(f"<tr><td>{_esc(l.label)}</td><td>{_esc(l.due)}</td><td>{_esc(l.state)}</td></tr>" for l in unassigned)
-    unassigned_html = f"""<h2>Unassigned · {len(unassigned)}</h2>
-<table><tr><th>item</th><th>due</th><th>state</th></tr>
-{unassigned_rows}
-</table>
-""" if unassigned else ""
-    queue_rows = "\n".join(f"<tr><td>{_esc(l.label)}</td><td>{_esc(l.due)}</td><td>{_esc(l.state)}</td></tr>" for l in queue) or '<tr><td colspan="3" class="muted">nothing waiting on you</td></tr>'
     running = [l for l in active if l.kind == "running"]
     orphaned = [l for l in active if l.kind == "orphaned"]
     waiting = [l for l in active if l.kind not in ("running", "orphaned")]
-    def group_head(label: str, group: list[Lane]) -> str:
-        return f'<tr class="group"><th colspan="6">{_esc(label)} · {len(group)}</th></tr>'
 
-    orphan_group = f'\n{group_head("orphaned", orphaned)[:-10]} · nobody owns these</th></tr>\n{lane_rows(orphaned)}' if orphaned else ""
+    def group_head(label: str, group: list[Lane], note: str = "") -> str:
+        keeps = " ".join(f for f in FILTERS if f == "all" or any(f in lane_filters(l) for l in group))
+        tail = f" · {_esc(note)}" if note else ""
+        return f'<tr class="group" data-in="{keeps}"><th colspan="6">{_esc(label)} · {len(group)}{tail}</th></tr>'
+
+    orphan_group = f'\n{group_head("orphaned", orphaned, "nobody owns these")}\n{lane_rows(orphaned)}' if orphaned else ""
+    # Unassigned and `<user>'s queue` were the Lanes table printed twice more. They are chips over
+    # the one table now; the counts are the only thing those tables said that the rows do not.
+    counts = {f: sum(1 for l in lanes if f in lane_filters(l)) for f in FILTERS}
+    # Each radio sits immediately before its own label, so `:checked`/`:focus-visible` need one rule
+    # between them and not one per chip, and the radios still precede the table they filter.
+    chips = "".join(
+        f'<input type="radio" name="lf" id="lf-{f}"{" checked" if f == "all" else ""}>'
+        f'<label for="lf-{f}">{_esc(FILTER_LABELS[f])} <b>{counts[f]}</b></label>'
+        for f in FILTERS
+    )
     requirements = requirements or {}
     req_decks = [d for d in cfg.deadlines if d.requirements and d.at >= now]
     req_html = "\n".join(requirements_section(d, requirements.get(d.name)) for d in req_decks)
@@ -1415,6 +1440,9 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
 </div>
 """
 
+    filter_css = "\n".join(
+        f'#lf-{f}:checked~table tr[data-in]:not([data-in~="{f}"]){{display:none}}' for f in FILTERS
+    )
     long_items = sum(1 for lane in lanes if len(lane.item) > LONG_ITEM)
     orphan_note = f" · {sum(1 for l in active if l.kind == 'orphaned')} orphaned" if any(l.kind == "orphaned" for l in active) else ""
     long_note = f" · {long_items} {'lane carries' if long_items == 1 else 'lanes carry'} history in the item cell" if long_items else ""
@@ -1436,6 +1464,12 @@ h2{{font-family:"Cormorant SC","Cormorant Garamond",Georgia,serif;font-size:19px
 .meta{{color:var(--muted);font-size:13px}} .clock{{font-family:ui-monospace,monospace;font-size:14px;font-variant-numeric:tabular-nums;margin:6px 0}}
 table{{border-collapse:collapse;width:100%;max-width:100%}} td,th{{text-align:left;padding:4px 8px;border-bottom:1px solid var(--line);vertical-align:top}} th{{color:var(--muted);font-weight:600;font-size:12px;letter-spacing:.04em;text-transform:uppercase}}
 tr.group th{{background:color-mix(in srgb,var(--brass) 18%,transparent);color:var(--fg);font-family:"Cormorant SC","Cormorant Garamond",Georgia,serif;font-weight:600;font-size:14px;letter-spacing:.12em;text-transform:uppercase;border-top:2px solid var(--brass);padding:6px 8px}}
+.lanes{{position:relative}} .lanes>input{{position:absolute;width:1px;height:1px;opacity:0;margin:0}}
+.lanes>label{{display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-size:12.5px;padding:3px 10px;min-height:26px;margin:0 6px 8px 0;border:1px solid var(--line);border-radius:13px;background:var(--surface)}}
+.lanes>label b{{font-weight:400;font-variant-numeric:tabular-nums;opacity:.7}}
+.lanes>input:checked+label{{background:var(--fg);color:var(--surface);border-color:var(--fg)}}
+.lanes>input:focus-visible+label{{outline:2px solid var(--brass);outline-offset:2px}}
+{filter_css}
 .muted{{color:var(--muted)}} .warn{{color:var(--dl);font-size:12px}}
 .strip{{position:relative;margin:8px 0 4px;--name-w:30%}} .axis{{position:relative;height:18px;margin-left:var(--name-w);font-size:11px;color:var(--muted)}} .tick{{position:absolute;transform:translateX(-50%);white-space:nowrap}}
 .rows{{position:relative}} .row{{display:flex;align-items:center;height:26px}} .name{{width:var(--name-w);flex:none;padding-right:8px;box-sizing:border-box;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}} .track{{position:relative;flex:1;height:18px;border-left:1px solid var(--line)}}
@@ -1509,12 +1543,9 @@ details summary{{cursor:pointer}} details[open] summary{{margin-bottom:4px}}
 <div class="meta">{len(week_bars)} bars · {len(week_groups)} rows grouped by due day · the rest folded into one row per deadline · dashed lines are deadlines</div>
 {_strip(week, week_a, week_b, [], list(cfg.deadlines), week_ticks, "week")}
 
-{unassigned_html}<h2>{_esc(cfg.user)}'s queue</h2>
-<table><tr><th>item</th><th>due</th><th>state</th></tr>
-{queue_rows}
-</table>
-
 <h2>Lanes</h2>
+<div class="lanes">
+{chips}
 <table><tr><th>item</th><th>owner</th><th>state</th><th>since</th><th>due</th><th>size</th></tr>
 {group_head("running", running)}
 {lane_rows(running)}{orphan_group}
@@ -1523,6 +1554,7 @@ details summary{{cursor:pointer}} details[open] summary{{margin-bottom:4px}}
 {group_head("done", done)}
 {lane_rows(done)}
 </table>
+</div>
 {session_graph(tracker.sessions, cfg, now, gone_sessions(tracker.lanes, tracker.sessions))}
 </div>
 <script>

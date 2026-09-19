@@ -306,18 +306,22 @@ class RenderTest(unittest.TestCase):
         self.assertIn('data-end-src="due"', readme.group(0))
 
     def test_sections_and_cuts(self) -> None:
-        for heading in ("Robin's queue", "Today", "Week", "Lanes"):
+        for heading in ("Today", "Week", "Lanes"):
             self.assertIn(heading, self.html)
         for cut in ("Decisions", "File ownership", "release notes done"):
             self.assertNotIn(cut, self.html)
         self.assertIn("tracker as of 14:30", self.html)
         self.assertIn("board-7", self.html)
 
-    def test_queue_lists_user_lanes_not_done(self) -> None:
-        queue = self.html.split("Robin's queue", 1)[1].split("<h2", 1)[0]
-        self.assertIn("Write eval README", queue)
-        self.assertNotIn("Draft release notes", queue)
-        self.assertNotIn("Security audit", queue)
+    def test_the_yours_chip_selects_robins_lanes(self) -> None:
+        """What `Robin's queue` was: her lanes, and nobody else's. It is a filter of the one table
+        now, so a done lane of hers is kept by the chip and separated by the `done` group instead."""
+        lanes = self.html.split("<h2>Lanes", 1)[1]
+        rows = {re.search(r"<td>(?:<details><summary>)?([^<]*)", r).group(1): r
+                for r in re.findall(r"<tr data-state=.*?</tr>", lanes, re.S)}
+        self.assertIn("mine", rows["Write eval README"])
+        self.assertIn("mine", rows["Draft release notes"])
+        self.assertNotIn("mine", rows["Security audit"])
 
     def test_calendar_bands_and_week_deadline_lines(self) -> None:
         # The day strip is the next 24 hours, so it draws the events inside them: Standup at 09:00
@@ -446,9 +450,13 @@ class DensityTest(unittest.TestCase):
         visible = re.sub(r"<[^>]+>", "", self.html.split("</style>", 1)[1].split("<script>", 1)[0])
         self.assertEqual(visible.count(esc), 0)
         self.assertEqual(visible.count("the worker left the registry"), 1)
-        # Raised from 32 000 with the tracer bullet: DUE NEXT and BLOCKED are new first-screen
-        # bands, while the queue and Unassigned tables whose rows they repeat are still below them.
-        # Stage 1 folds those into the one lane table; this comes back down to 32 000 with it.
+        # The 32 000 loan is NOT paid here, and stage 1 cannot pay it. Measured on this fixture:
+        # 31 174 before the tracer bullet, 33 287 after it, 34 839 with stage 1's one table. The
+        # bullet's 2 113 is DUE NEXT and BLOCKED (1 335) plus the bars the rolling 24h axis now
+        # draws that the old midnight clamp cut off; stage 1 returns only ~325, because this
+        # fixture has no unassigned lanes and four queue rows. Deleting DUE NEXT and BLOCKED
+        # outright would still leave 33 504. The number is Zach's to reset — see DEFERRED in
+        # board-redesign-in-flight.md.
         self.assertLess(len(self.html), 36_000)
 
     def test_history_is_one_line_per_clause(self) -> None:
@@ -465,7 +473,7 @@ class DensityTest(unittest.TestCase):
         self.assertNotIn("overflow", hist_css)
 
     def test_table_rows_carry_state(self) -> None:
-        self.assertRegex(self.html, r'<tr data-state="done"><td>Draft release notes')
+        self.assertRegex(self.html, r'<tr data-state="done" data-in="[^"]*"><td>Draft release notes')
         self.assertIn("<details><summary>Service architecture refactor</summary>", self.html)
 
     def test_long_item_count(self) -> None:
@@ -734,22 +742,111 @@ class OrphanAndUnassignedTest(unittest.TestCase):
 
     def test_orphaned_has_its_own_table_group(self) -> None:
         table = self.html.split("<h2>Lanes</h2>", 1)[1]
-        self.assertIn('<tr class="group"><th colspan="6">orphaned · 1 · nobody owns these</th></tr>', table)
+        self.assertIn('<tr class="group" data-in="all orphaned"><th colspan="6">orphaned · 1 · nobody owns these</th></tr>', table)
         self.assertLess(table.index("nobody owns these"), table.index("Security audit"))
         self.assertLess(table.index("Security audit"), table.index("open · waiting"))
         self.assertIn("1 orphaned", self.html)
 
-    def test_unassigned_lanes_sit_above_the_queue(self) -> None:
-        self.assertIn("<h2>Unassigned · 1</h2>", self.html)
-        unassigned = self.html.split("<h2>Unassigned · 1</h2>", 1)[1].split("<h2", 1)[0]
-        self.assertIn("Pick a deploy window", unassigned)
-        queue = self.html.split("Robin's queue", 1)[1].split("<h2", 1)[0]
-        self.assertNotIn("Pick a deploy window", queue)
-        head = "<h2>Robin&#x27;s queue</h2>" if "<h2>Robin&#x27;s queue</h2>" in self.html else "<h2>Robin's queue</h2>"
-        self.assertLess(self.html.index("Unassigned · 1"), self.html.index(head))
+    def test_unassigned_is_a_chip_over_the_one_table(self) -> None:
+        lanes = self.html.split("<h2>Lanes", 1)[1]
+        self.assertIn('<label for="lf-unassigned">unassigned <b>1</b></label>', lanes)
+        row = next(r for r in re.findall(r"<tr data-state=.*?</tr>", lanes, re.S) if "Pick a deploy window" in r)
+        self.assertIn('data-in="all unassigned"', row)
 
-    def test_no_unassigned_section_when_none(self) -> None:
-        self.assertNotIn("Unassigned ·", rb.render(TRACKER, LOG, self.cfg, NOW))
+    def test_the_chip_counts_zero_when_nothing_is_unassigned(self) -> None:
+        self.assertIn('<label for="lf-unassigned">unassigned <b>0</b></label>',
+                      rb.render(TRACKER, LOG, self.cfg, NOW))
+
+
+class OneLaneTableTest(unittest.TestCase):
+    """Stage 1: three lane tables become one, and Unassigned and the queue become filters of it.
+
+    Unassigned and `<user>'s queue` were projections of the Lanes table printed as tables of their
+    own, so a lane owned by Robin and due at 17:00 was on the page three times over. They become
+    chips above the one table: `all`, `yours`, `unassigned`, and the three tracker states. The
+    chips are radio inputs and the rows carry the filters that keep them in `data-in`, so the
+    filtering is CSS over precomputed attributes and the page still needs no JS — with JS off, or
+    in a reader that ignores `:checked`, every row is visible, which is what the table did before.
+
+    A filter is mechanical: it selects over every row in the table, done rows included. So `yours`
+    answers "which lanes name Robin", and a done lane of Robin's still appears under `done` — the
+    groups keep the state reading that the old queue table got by excluding done.
+    """
+
+    TRACKER = OrphanAndUnassignedTest.TRACKER.replace(
+        "| Ship docs site | Robin | open | 2026-09-16 | 2026-09-18 15:00 | Checklist: Ship docs site |",
+        "| Ship docs site | Robin | open | 2026-09-16 | 2026-09-18 15:00 | Checklist: Ship docs site |\n"
+        "| Cut the release branch | impl-2 | running 13:40 | 13:40 | 17:00 | Checklist: cut the branch |",
+    )
+
+    # label -> (the lanes it keeps, the groups left standing)
+    FILTERS = {
+        "all": 10,
+        "yours": 5,
+        "unassigned": 1,
+        "running": 1,
+        "orphaned": 1,
+        "done": 1,
+    }
+
+    def setUp(self) -> None:
+        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.html = rb.render(self.TRACKER, LOG, self.cfg, NOW)
+        self.lanes = self.html.split("<h2>Lanes", 1)[1]
+        self.css = self.html.split("<style>")[1].split("</style>")[0]
+
+    def test_the_queue_and_unassigned_tables_are_gone(self) -> None:
+        self.assertNotIn("Unassigned ·", self.html)
+        # `Robin's queue` survives as an estimate basis on a bar's hover text — it is the heading,
+        # and the table under it, that go.
+        self.assertNotIn("queue</h2>", self.html)
+        self.assertEqual(self.html.count("<h2>Lanes"), 1)
+        self.assertEqual(self.html.count("<th>item</th>"), 1)
+
+    def test_every_lane_is_in_the_one_table_exactly_once(self) -> None:
+        rows = re.findall(r"<tr data-state=[^>]*>", self.lanes)
+        self.assertEqual(len(rows), 10, rows)
+        for label in ("Write eval README", "Pick a deploy window", "Security audit",
+                      "Draft release notes", "Ship docs site", "Cut the release branch"):
+            self.assertEqual(self.lanes.count(f"<summary>{label}</summary>") + self.lanes.count(f"<td>{label}"), 1, label)
+
+    def test_six_chips_carry_the_counts(self) -> None:
+        chips = re.findall(r'<label for="lf-([a-z]+)"[^>]*>(.*?)</label>', self.lanes, re.S)
+        self.assertEqual([c[0] for c in chips], ["all", "mine", "unassigned", "running", "orphaned", "done"], chips)
+        seen = {}
+        for key, body in chips:
+            label = re.sub(r"<[^>]+>", " ", body).split()
+            seen[label[0]] = int(label[-1])
+        self.assertEqual(seen, self.FILTERS)
+
+    def test_rows_carry_the_filters_that_keep_them(self) -> None:
+        def row(label: str) -> str:
+            return next(r for r in re.findall(r"<tr data-state=.*?</tr>", self.lanes, re.S) if label in r)
+
+        self.assertIn('data-in="all mine"', row("Write eval README"))
+        self.assertIn('data-in="all unassigned"', row("Pick a deploy window"))
+        self.assertIn('data-in="all orphaned"', row("Security audit"))
+        self.assertIn('data-in="all mine done"', row("Draft release notes"))
+        self.assertIn('data-in="all running"', row("Cut the release branch"))
+
+    def test_a_group_header_goes_when_its_group_empties(self) -> None:
+        heads = re.findall(r'<tr class="group" data-in="([^"]*)"><th[^>]*>(.*?) · \d', self.lanes)
+        self.assertEqual({label: keeps for keeps, label in heads}, {
+            "running": "all running",
+            "orphaned": "all orphaned",
+            "open · waiting": "all mine unassigned",
+            "done": "all mine done",
+        })
+
+    def test_the_chips_filter_in_css_and_default_to_all(self) -> None:
+        self.assertIn('<input type="radio" name="lf" id="lf-all" checked>', self.lanes)
+        for key in ("all", "mine", "unassigned", "running", "orphaned", "done"):
+            self.assertIn(f'#lf-{key}:checked~table tr[data-in]:not([data-in~="{key}"]){{display:none}}', self.css)
+        # The radios stay reachable by keyboard: taken out of flow, never out of the tab order.
+        rule = next((l for l in self.css.splitlines() if ".lanes>input{" in l), "")
+        self.assertTrue(rule, "no `.lanes>input` rule")
+        self.assertNotIn("display:none", rule)
+        self.assertIn(".lanes>input:focus-visible+label{", self.css)
 
 
 class GridlinesTest(unittest.TestCase):
@@ -821,7 +918,7 @@ class LaneGroupHeaderTest(unittest.TestCase):
         self.table = self.html.split("<h2>Lanes</h2>", 1)[1]
 
     def test_group_rows_are_marked_and_counted(self) -> None:
-        heads = re.findall(r'<tr class="group"><th colspan="6">([^<]*)</th></tr>', self.table)
+        heads = re.findall(r'<tr class="group" data-in="[^"]*"><th colspan="6">([^<]*)</th></tr>', self.table)
         self.assertEqual(heads, ["running · 0", "orphaned · 1 · nobody owns these", "open · waiting · 7", "done · 1"])
 
     def test_group_rows_look_like_headers(self) -> None:
@@ -831,7 +928,7 @@ class LaneGroupHeaderTest(unittest.TestCase):
             self.assertIn(prop, css, prop)
 
     def test_empty_group_says_none(self) -> None:
-        self.assertRegex(self.table, r'<tr class="group"><th colspan="6">running · 0</th></tr>\s*<tr><td colspan="6" class="muted">none</td></tr>')
+        self.assertRegex(self.table, r'<tr class="group" data-in="all"><th colspan="6">running · 0</th></tr>\s*<tr data-in="all"><td colspan="6" class="muted">none</td></tr>')
 
 
 class CliTest(unittest.TestCase):
@@ -2018,9 +2115,9 @@ class InlineMarksTest(unittest.TestCase):
         for name in names:
             self.assertNotIn("*", name, name)
         self.assertTrue(any(n.startswith("Deploy main.") for n in names), names)
-        unassigned = self.html.split("<h2>Unassigned")[1].split("</table>")[0]
-        self.assertIn("<td>Session TTL fix, orphaned.", unassigned)
-        self.assertNotIn("**", unassigned)
+        lanes_table = self.html.split("<h2>Lanes", 1)[1].split("</table>")[0]
+        self.assertIn("<summary>Session TTL fix, orphaned.", lanes_table)
+        self.assertNotIn("**", lanes_table)
         lanes = self.html.split("<h2>Lanes</h2>")[1]
         self.assertRegex(lanes, r"<summary>Deploy main\.[^<*]*</summary>")
 
