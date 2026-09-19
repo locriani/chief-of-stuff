@@ -459,8 +459,9 @@ def queue_faults(tracker_text: str) -> tuple[list[QueueFault], list[str], int]:
         open_rows.append((num, decision))
     if open_rows:
         num, decision = open_rows[0]
-        # A decision cell opens with a bold headline, and `clip_name` cutting inside the mark pair
-        # returns a bare ellipsis: the line that says which one is next has to name it.
+        # A decision cell opens with a bold headline. `clip_name` handles the mark pair itself since
+        # the short_name/clip_name split, so the `_unmark` here is no longer load-bearing for that —
+        # it stays because it also strips backticks, and a name is read here in a terminal line.
         lines.append(f"next decision: {num} — {clip_name(_unmark(decision))}")
     return faults, lines, len(open_rows)
 
