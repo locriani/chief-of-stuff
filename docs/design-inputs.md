@@ -867,3 +867,18 @@ Two things beside it. `_bare()` did not strip emphasis, so `**sam**` never match
 **Status:** Open — `scripts/render_board.py` is held by `board-ux-improvements`.
 
 `render_board._bare_name()` strips the ref and the parenthetical but not emphasis: `**openemr-arch** (tab title x)` → `**openemr-arch**`, `**sam**` → `**sam**`. `gone_sessions()` joins lane owners to session names through it, so a bolded name on either side never matches and the board draws a session as gone that is not. It is the fixable half of 112 in a file this lane does not own; the ref half needs the same treatment there, and the fix is two lines in a function with tests already around it.
+
+## 114 — a running eval makes its own checkout read-only and says so nowhere
+
+**From:** `board-ux-improvements`, 06:16, correcting a claim of mine that its run was pinned to a sha.
+**Status:** Open — recorded here because `evals/run.py` is this lane's file and the finding was living only in another session's memory.
+
+I told it its 58-case run was pinned to `0bf5076`. It is pinned to nothing. `run.py` builds the sandbox allowlist from absolute paths into the live checkout — `BOARD_RENDERER = PLUGIN_ROOT / "scripts" / "render_board.py"`, then `Bash(python3 {BOARD_RENDERER}:*)` — and nothing is copied. The sandboxed agent shells out to the file on disk as it stands at the moment that case runs. It is five scripts, not one: the renderer, the health probe, the lane audit, `make_worktree`, `spawn_session`.
+
+So a run of N cases against a tree somebody edits mid-run is not one verdict. Cases before the edit and cases after it exercise different code, the result directory looks exactly the same either way, and no line of output records that the ground moved. board-ux caught this on its own at case 33 of 58 and held a one-line fix for an hour rather than split its run, which is the right answer and one the harness gave it no help reaching.
+
+The hazard is collision between two correct sessions. One runs a suite; the other edits a file the suite is reading; the first one's results are silently half-and-half. Nothing in the harness declares the lock it is effectively taking, so the second session has no way to know it exists.
+
+The fix is to make a run a verdict on a snapshot: copy the scripts into the run's temp dir at launch and allowlist the copies, so the checkout stays writable and every case in a run exercises identical code. Deliberately not done at 06:16 — board-ux's run depends on current behaviour being stable for another hour, and changing the harness under a live run is the same mistake pointed the other way.
+
+Beside it, the lesson that goes with 112 and 113: a fix whose join key nothing on today's tracker exercises leaves the live board byte-identical, and that is the expected result rather than a failed fix. Zero of 129 lane owners carry emphasis. Proven by the red test or not proven at all.
