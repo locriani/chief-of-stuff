@@ -696,3 +696,22 @@ So the sentence now says where the work-out goes: "yours to work out for your re
 
 The general shape, worth keeping: a rule that names a derived value without naming where it may be written will be written somewhere, and the case that covers the moment is the place to add the grader.
 
+
+## 100 — one `|` shifted a lane row, and a closed lane's duration with it
+
+**From:** the live tracker, 2026-09-19 01:57, the Prometheus/Grafana deploy lane.
+**Status:** Adopted 2026-09-19 (0.11.3).
+
+The item prose held `` `"observability": "ok"|"degraded"` `` — code, inside a backtick span, quoted from the spec. `_cells()` split the row on every `|`, so the lane drew with a paragraph of prose as its owner, `impl-2 [78935c]` as its state, `Final` as its size and `L` as its checklist. The board said `8 cells, expected 7` in small type and showed the rest anyway.
+
+This is finding 98's span in a second splitter. C11 taught `short_name()`, `_depth0_split()` and `CLAUSE_TIME` that a pair of marks is a span; `_cells()` was not on that list, and it is the splitter the other three feed from. The item column is free prose, prose carries code, and code carries pipes, so this had a schedule of its own.
+
+What it cost is the argument for fixing it rather than warning harder. The row's state cell was not `done 00:28–01:36` but `impl-2 [78935c]`, so `Lane.ran` was `None`, so the night's one closed L lane contributed nothing to `history()` and every L estimate on the board was drawn from an empty sample. A corrupted row is not a cosmetic defect on a board whose one rule is that no information leaves the page.
+
+Three layers, and the row now parses with no warning at all because the first two catch it before the third is needed:
+
+- `\|` is a pipe, not a delimiter, and the cell keeps the backslash out of its value. That is GFM's own answer, so a tracker written this way stays valid Markdown wherever it is read. The Lanes rule now says to write it.
+- A pipe inside a backtick span is a pipe. Not GFM — GFM splits there — but it is what a coordinator writes and what a human reading the raw row means. An odd backtick is a typo and degrades to the old split, the same bailout C11 used for an odd `**`.
+- An over-wide Lanes row is re-read from its state cell. `state` is the one column a machine can recognise on sight, so `item` absorbs the excess to its left and `checklist` the excess to its right — both the free-prose columns on their side, which is where a stray pipe comes from. Exactly one cell may claim the anchor, or the row keeps the parse it was written with and only the warning speaks.
+
+`_cells()` is shared by the Lanes header probe, the Lanes rows, the Sessions rows and the Calendar table, so the first two layers reach all four. A stray pipe in a Sessions row was the worse case before this — `_session()` warns, but the board drew the wrong state with no cell-count line to explain it.

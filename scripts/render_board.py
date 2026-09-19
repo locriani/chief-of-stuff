@@ -142,6 +142,9 @@ class Lane:
 # out and never a session's to claim: a session cannot report that it is gone, and `ready for
 # decommissioning` is a `doing` value that `:189` says never becomes a state of its own.
 SESSION_STATES = ("planning", "working", "waiting", "idle")
+# The Lanes rule's own vocabulary, as a whole cell. It is what makes an over-wide row recoverable: every other
+# lane column is prose, a date or blank, and none of them can be told apart from the item they drifted out of.
+LANE_STATE = re.compile(r"(?i)^(?:open|waiting|orphaned|done|running\s+\d{1,2}:\d{2}|done\s+\d{1,2}:\d{2}(?:[\u2013-]\d{1,2}:\d{2})?)$")
 READY = re.compile(r"(?i)\bready for decommissioning\b")
 # `Zach — A2, A3, B`: the target, then why. An em dash, an en dash or a hyphen, because three
 # different sessions have written this cell and they did not agree.
@@ -515,13 +518,54 @@ def resume_strip(block: dict[str, str]) -> str:
     return f'<dl class="resume">{rows}</dl>\n'
 
 
-def _cells(line: str) -> list[str]:
+def _split_row(line: str) -> list[str]:
+    r"""Split a table row on its delimiters. A cell is a span too: `\|` is a pipe, and so is a pipe inside a
+    backtick span — the item column is prose, prose carries code, and code carries pipes. An odd backtick is a
+    typo, and a typo degrades to the old split instead of swallowing the rest of the row."""
     inner = line.strip()
     if inner.startswith("|"):
         inner = inner[1:]
-    if inner.endswith("|"):
+    if inner.endswith("|") and not inner.endswith("\\|"):
         inner = inner[:-1]
-    return [c.strip() for c in inner.split("|")]
+    spans = inner.count("`") % 2 == 0
+    cells, cur, coded = [], [], False
+    i = 0
+    while i < len(inner):
+        c = inner[i]
+        if c == "\\" and i + 1 < len(inner) and inner[i + 1] == "|":
+            cur.append("|")
+            i += 2
+            continue
+        if c == "`" and spans:
+            coded = not coded
+        if c == "|" and not coded:
+            cells.append("".join(cur))
+            cur = []
+        else:
+            cur.append(c)
+        i += 1
+    cells.append("".join(cur))
+    return cells
+
+
+def _cells(line: str) -> list[str]:
+    return [c.strip() for c in _split_row(line)]
+
+
+def _anchor(raw: list[str], cols: tuple[str, ...]) -> list[str] | None:
+    """A row wider than its table is one cell that grew a pipe. Re-read it from its state column — the one cell
+    of a lane row a machine can recognise on sight: `item` absorbs the excess on its left and `checklist` the
+    excess on its right, which is where the prose, and so the stray pipe, lives. Exactly one cell may claim the
+    anchor; otherwise the row is left as it was written and only the warning speaks."""
+    hits = [i for i, c in enumerate(raw) if LANE_STATE.match(c.strip())]
+    if len(hits) != 1:
+        return None
+    s, state = hits[0], cols.index("state")
+    if s < state or len(raw) - s < len(cols) - state:
+        return None
+    head = ["|".join(raw[: s - state + 1])] + raw[s - state + 1 : s]
+    tail = raw[s + 1 : s + len(cols) - state - 1] + ["|".join(raw[s + len(cols) - state - 1 :])]
+    return head + [raw[s]] + tail
 
 
 def _is_separator(cells: list[str]) -> bool:
@@ -541,10 +585,14 @@ def parse_tracker(text: str) -> Tracker:
     # The header decides the width: a six-column table parses as it always has, every lane unsized.
     cols = LANE_COLS_SIZED if rows and [c.lower() for c in _cells(rows[0])] == list(LANE_COLS_SIZED) else LANE_COLS
     for row in rows[1:]:
-        cells = _cells(row)
+        raw = _split_row(row)
+        cells = [c.strip() for c in raw]
         if _is_separator(cells):
             continue
         warning = "" if len(cells) == len(cols) else f"{len(cells)} cells, expected {len(cols)}"
+        if len(cells) > len(cols):
+            fixed = _anchor(raw, cols)
+            cells = [c.strip() for c in fixed] if fixed else cells
         fields = dict(zip(cols, (cells + [""] * len(cols))[:len(cols)]))
         lanes.append(Lane(**fields, warning=warning))
     sessions: list[Session] = []
