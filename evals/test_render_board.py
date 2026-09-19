@@ -1844,3 +1844,82 @@ class DeadlineScopeTest(unittest.TestCase):
         # main() renders at the real clock, so the name is whichever governing deadline is next — never the exam.
         m = re.search(r"horizon=(Launch|Final|end of day) ", buf.getvalue())
         self.assertIsNotNone(m, buf.getvalue())
+
+
+MARKS_TRACKER = """# Tracker 2026-09-16
+
+## Resume
+
+- As of: 09:52 — gauntlet-f0 [308833]
+- Verified 09:47: origin/main `d6aab3b`, 2 unpushed; agent /ready 200
+
+## Lanes
+
+| item | owner | state | since | due | checklist |
+|---|---|---|---|---|---|
+| **Deploy main.** Deployed tips are agent `39e516f`, 30 commits behind. **22:20: handed to research-1 on Robin's yes** — sizing and wiring | Robin | open | 2026-09-16 |  | c |
+| **Session TTL fix, orphaned.** `session.py` reads 3600 where §10.2 says 1800 | unassigned | open | 2026-09-16 |  | c |
+
+## Sessions
+
+| ref | name | state | doing | waiting on | free at | constraints | children | last reply |
+|---|---|---|---|---|---|---|---|---|
+| a1b2c3 | worker-9a | working | **left the registry by 20:09** — both lanes `done` | | 15:00 | TDD | none | 11:40 |
+
+## Log
+
+- 09:00 opened the day
+"""
+
+
+class InlineMarksTest(unittest.TestCase):
+    """The coordinator writes `**bold**` headlines and `code` into items, facts and Resume values; the board showed the punctuation.
+
+    Finding 98: 50 of 100 live lane names began with literal asterisks. A nowrap name drops the marks and
+    keeps the words; prose that wraps — history bullets, session facts, Resume values — renders them. The
+    citation attributes (`data-item`) stay raw, because that is what the graders match.
+    """
+
+    def setUp(self) -> None:
+        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.html = rb.render(MARKS_TRACKER, LOG, self.cfg, NOW)
+        self.day = _strip_html(self.html, "day")
+
+    def test_unmark_drops_pairs_and_keeps_a_lone_marker(self) -> None:
+        self.assertEqual(rb._unmark("**Deploy main.** x"), "Deploy main. x")
+        self.assertEqual(rb._unmark("a ** b"), "a ** b")
+        self.assertEqual(rb._unmark("**a** and **b**"), "a and b")
+
+    def test_names_show_the_words_and_not_the_marks(self) -> None:
+        names = re.findall(r'<div class="name">([^<]*)</div>', self.day)
+        self.assertTrue(names)
+        for name in names:
+            self.assertNotIn("*", name, name)
+        self.assertTrue(any(n.startswith("Deploy main.") for n in names), names)
+        unassigned = self.html.split("<h2>Unassigned")[1].split("</table>")[0]
+        self.assertIn("<td>Session TTL fix, orphaned.", unassigned)
+        self.assertNotIn("**", unassigned)
+        lanes = self.html.split("<h2>Lanes</h2>")[1]
+        self.assertRegex(lanes, r"<summary>Deploy main\.[^<*]*</summary>")
+
+    def test_the_citation_stays_raw(self) -> None:
+        self.assertIn('data-item="**Deploy main.** Deployed tips', self.day)
+
+    def test_history_renders_code_and_bold(self) -> None:
+        lanes = self.html.split("<h2>Lanes</h2>")[1]
+        hist = re.findall(r'<ul class="hist">(.*?)</ul>', lanes, re.S)
+        self.assertTrue(hist)
+        joined = "".join(hist)
+        self.assertIn("<code>39e516f</code>", joined)
+        self.assertIn("<strong>22:20: handed to research-1 on Robin&#x27;s yes</strong>", joined)
+        self.assertNotIn("**", joined)
+
+    def test_session_facts_render_bold_and_code(self) -> None:
+        facts = re.search(r'<dl class="facts">(.*?)</dl>', self.html, re.S).group(1)
+        self.assertIn("<strong>left the registry by 20:09</strong>", facts)
+        self.assertIn("<code>done</code>", facts)
+        self.assertNotIn("**", facts)
+
+    def test_resume_values_render_code(self) -> None:
+        resume = re.search(r'<dl class="resume">(.*?)</dl>', self.html, re.S).group(1)
+        self.assertIn("<code>d6aab3b</code>", resume)
