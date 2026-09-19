@@ -21,6 +21,8 @@ import render_board as rb  # noqa: E402
 
 CASES = sorted(p for p in (EVALS / "cases").iterdir() if (p / "case.json").exists())
 SESSIONS_HEADER = "| ref | name | state | doing | waiting on | free at | constraints | children | last reply |"
+# Both Lanes widths are legal: the renderer keys cells by the header and a six-column table is every lane unsized.
+LANES_HEADERS = ("| item | owner | state | since | due | checklist |", "| item | owner | state | since | due | size | checklist |")
 VERIFIED = re.compile(r"^- Verified \d{2}:\d{2}:")
 # What `mock_peers.py` reads off a session row. Anything else is a premise the run never sees.
 SESSION_KEYS = {"ref", "name", "state", "started_hours_ago", "started_minutes_ago"}
@@ -113,6 +115,14 @@ class CaseLintTest(unittest.TestCase):
                 for line in f.read_text().splitlines():
                     if line.startswith("| ref |"):
                         self.assertEqual(line.strip(), SESSIONS_HEADER, f"{case.name}: {f.name}")
+
+    def test_fixture_lanes_tables_have_a_header_the_renderer_keys_on(self) -> None:
+        """0.11.0: the Lanes header decides whether a `size` cell exists; a header the renderer does not know reads every row as malformed."""
+        for case in CASES:
+            for f in fixture_files(case, "tracker.md"):
+                for line in f.read_text().splitlines():
+                    if line.startswith("| item |"):
+                        self.assertIn(line.strip(), LANES_HEADERS, f"{case.name}: {f.name}")
 
     def test_fixture_verified_lines_carry_a_clock_and_are_drawn(self) -> None:
         """Same finding: `- Verified:` with no time passed every test while the live tracker wrote `- Verified 16:52:`."""
