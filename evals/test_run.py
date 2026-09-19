@@ -7,6 +7,7 @@ The stream fixture is a real `claude -p --output-format stream-json --verbose` c
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -387,7 +388,9 @@ class MultiTurnTest(unittest.TestCase):
 
     def test_command_without_prompt_reads_stream_json(self) -> None:
         cmd = run.command(run.Case("c", Path("/c"), {}), "baseline", "sonnet", None)
-        self.assertEqual(cmd[:2], ["claude", "-p"])
+        # Was `"claude"` until 0.12.1: a bare name is not on a GUI-launched terminal's PATH, and
+        # every case written from such a tab went ungraded.
+        self.assertEqual(cmd[:2], [run.claude_binary(), "-p"])
         self.assertEqual(cmd[2], "--model")
         self.assertEqual(cmd[cmd.index("--input-format") + 1], "stream-json")
 
@@ -853,3 +856,21 @@ class UnmeasuredVerdictTest(unittest.TestCase):
         out, code = self.run_main([("a grader", True, "fine")], None)
         self.assertRegex(out, r"(?m)^\d+ case\(s\): 1 green, 0 red, 0 unmeasured")
         self.assertEqual(code, 0)
+
+
+class ClaudeBinaryTest(unittest.TestCase):
+    """GUI-launched Ghostty inherits launchd's PATH, not the shell's, so a bare `claude` is not there."""
+
+    def tearDown(self):
+        os.environ.pop("CHIEF_OF_STUFF_CLAUDE", None)
+
+    def test_it_resolves_an_absolute_path_rather_than_trusting_PATH(self):
+        self.assertTrue(Path(run.claude_binary()).is_absolute())
+
+    def test_the_env_override_wins(self):
+        os.environ["CHIEF_OF_STUFF_CLAUDE"] = "/somewhere/else/claude"
+        self.assertEqual(run.claude_binary(), "/somewhere/else/claude")
+
+    def test_the_command_names_the_resolved_binary(self):
+        case = run.Case(name="x", root=Path("."), spec={})
+        self.assertEqual(run.command(case, "agent", "opus", "hi")[0], run.claude_binary())

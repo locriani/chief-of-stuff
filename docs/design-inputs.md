@@ -765,3 +765,25 @@ Every refusal, ownership question and human-only routing produces a decision for
 The coordinator built a `## Decision queue` section; the plugin now audits it, because a queue nobody checks degrades the same way a lane does. Three faults, all of them present on the live tracker the first time it ran: two rows carrying the number 4, so there is no next one; two answered rows still in the table against the section's own rule that an answered row moves to `## Decisions`; and a row that names neither why it is next nor who is blocked, which cannot be decided from the row. It also prints which decision is next, which needed `_unmark` before `short_name` — a cell opening with a bold headline cut inside the mark pair and the line came back a bare ellipsis.
 
 What is not built: the queue has no time column, so staleness is not computable and deferral does not yet decay. Neither `## Standing list` nor `## Decision queue` has a place on the board either, which is the same failure as a refused lane keeping `running` — the state exists and nothing surfaces it. Both are board-ux's files; recorded, not done.
+
+## 105 — the eval runner named a binary that a GUI-launched tab does not have
+
+**From:** `board-ux-improvements`, whose `lane-named-on-write` case was written and left ungraded: "`claude` is not on PATH in this sandbox."
+**Status:** Adopted 2026-09-19 (0.12.1).
+
+`evals/run.py` spawned `"claude"` by bare name. A tab opened from the GUI inherits launchd's PATH, not the shell's, so no session started that way can run a case, and every case it writes stays ungraded — the same launchd PATH problem `spawn_session` already names `claude` absolutely to avoid. It now resolves through `CHIEF_OF_STUFF_CLAUDE`, then `shutil.which`, then the two places a Mac install puts it.
+
+Worth keeping for the boundary work: this sat unowned for hours while being one line, revertible, in one repo, and blocking another session's entire cycle. It is the shape finding 103 predicts — nobody's assignment, so nobody's.
+
+## 106 — the stop reader failed open and printed what it read
+
+**From:** the background security review of `dbf2825`, minutes after the merge.
+**Status:** Adopted 2026-09-19 (0.12.1).
+
+Two faults in the reader shipped at 0.12.0, both mine.
+
+`read_stop` caught `OSError` and returned `None`, so a stop file that existed and could not be read was indistinguishable from no stop at all. That is fail-open on precisely the state the feature exists to surface: the lane would go on reading `running` and the exit code would stay clean. `FileNotFoundError` is now the only case that means no stop; anything else that exists reports itself as one.
+
+And the fields were printed as read. `dispatch_prompt._clean` already rejects control characters on the way *in*, for the stated reason that a file read into a terminal can carry an ANSI or OSC payload — and the stop travels the same route in the other direction, from a file a session wrote into the coordinator's terminal. The same guard now applies on the way out, with a 200-character cap so one field cannot bury the report.
+
+The general shape: a check written for one direction of a channel is a check the other direction needs too, and the second direction is the one nobody writes.

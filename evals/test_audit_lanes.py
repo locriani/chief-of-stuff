@@ -710,3 +710,35 @@ class DecisionQueueTest(unittest.TestCase):
         with_queue(self.root, "| 3 | **Which surface carries the cache hit rate.** impl-1 measured first | x | y |")
         self.assertIn("next decision: 3 — Which surface carries the cache hit rate",
                       "\n".join(al.audit(self.root, "2026-09-17").lines))
+
+
+class StopReadGuardTest(unittest.TestCase):
+    """A stop file is written by a session and printed into somebody's terminal. It is checked like a dispatch field."""
+
+    def setUp(self):
+        self.tmp, self.root = workspace(
+            "| Merge D4 | impl-3 | running 02:20 | 09:00 |  | c |",
+            "| Merge D4 | worktree wt-unmerged (feat/open) |",
+            session_row("impl-3"))
+        self.dir = self.root / "trees" / "wt-unmerged" / al.PROMPT_DIR
+        self.dir.mkdir(parents=True)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_a_stop_that_exists_but_cannot_be_read_still_counts(self):
+        """Fail-open is the one thing this feature cannot do: a stop it could not read is still a stop."""
+        (self.dir / "stop.md").mkdir()  # a directory where the file goes: exists, unreadable as text
+        report = al.audit(self.root, "2026-09-17")
+        self.assertEqual(len(report.stopped), 1)
+        self.assertIn("unreadable", str(report.stopped[0]))
+
+    def test_an_escape_payload_never_reaches_the_terminal(self):
+        (self.dir / "stop.md").write_text("Stop: permission\nLane: Merge D4\nLands on: \x1b]0;pwned\x07Robin\n")
+        line = str(al.audit(self.root, "2026-09-17").stopped[0])
+        self.assertNotIn("\x1b", line)
+        self.assertNotIn("\x07", line)
+
+    def test_a_field_long_enough_to_bury_the_report_is_clipped(self):
+        (self.dir / "stop.md").write_text("Stop: permission\nLane: Merge D4\nLands on: " + "x" * 5000 + "\n")
+        self.assertLess(len(str(al.audit(self.root, "2026-09-17").stopped[0])), 1000)
