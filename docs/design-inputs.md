@@ -867,3 +867,33 @@ Two things beside it. `_bare()` did not strip emphasis, so `**sam**` never match
 **Status:** Open — `scripts/render_board.py` is held by `board-ux-improvements`.
 
 `render_board._bare_name()` strips the ref and the parenthetical but not emphasis: `**openemr-arch** (tab title x)` → `**openemr-arch**`, `**sam**` → `**sam**`. `gone_sessions()` joins lane owners to session names through it, so a bolded name on either side never matches and the board draws a session as gone that is not. It is the fixable half of 112 in a file this lane does not own; the ref half needs the same treatment there, and the fix is two lines in a function with tests already around it.
+
+## 114 — a running eval makes its own checkout read-only and says so nowhere
+
+**From:** `board-ux-improvements`, 06:16, correcting a claim of mine that its run was pinned to a sha.
+**Status:** Open — recorded here because `evals/run.py` is this lane's file and the finding was living only in another session's memory.
+
+I told it its 58-case run was pinned to `0bf5076`. It is pinned to nothing. `run.py` builds the sandbox allowlist from absolute paths into the live checkout — `BOARD_RENDERER = PLUGIN_ROOT / "scripts" / "render_board.py"`, then `Bash(python3 {BOARD_RENDERER}:*)` — and nothing is copied. The sandboxed agent shells out to the file on disk as it stands at the moment that case runs. It is five scripts, not one: the renderer, the health probe, the lane audit, `make_worktree`, `spawn_session`.
+
+So a run of N cases against a tree somebody edits mid-run is not one verdict. Cases before the edit and cases after it exercise different code, the result directory looks exactly the same either way, and no line of output records that the ground moved. board-ux caught this on its own at case 33 of 58 and held a one-line fix for an hour rather than split its run, which is the right answer and one the harness gave it no help reaching.
+
+The hazard is collision between two correct sessions. One runs a suite; the other edits a file the suite is reading; the first one's results are silently half-and-half. Nothing in the harness declares the lock it is effectively taking, so the second session has no way to know it exists.
+
+The fix is to make a run a verdict on a snapshot: copy the scripts into the run's temp dir at launch and allowlist the copies, so the checkout stays writable and every case in a run exercises identical code. Deliberately not done at 06:16 — board-ux's run depends on current behaviour being stable for another hour, and changing the harness under a live run is the same mistake pointed the other way.
+
+Beside it, the lesson that goes with 112 and 113: a fix whose join key nothing on today's tracker exercises leaves the live board byte-identical, and that is the expected result rather than a failed fix. Zero of 129 lane owners carry emphasis. Proven by the red test or not proven at all.
+
+## 115 — the ref reaches `owns()` too, and that is where it was costing something
+
+**From:** `gauntlet-b2`, 06:18, noticing one ref under two names in the lane owner column while confirming a correction of mine.
+**Status:** Adopted 2026-09-19 (0.12.6).
+
+112 put the ref in the roster join and stopped there. `owns()` — the join that attributes a lane to an ownership row, and through it to a tree — still compared names, and that is the join that decides whether a lane is checked at all.
+
+It was three names on one ref, not two: `arch [768194]`, `architecture-review-setup [768194]`, `openemr-arch [768194]`. And it was not one session. The tracker has been writing short names in the lane owner column and full registration names in File ownership all day — `impl-1 [4cd339]` against `standing-task-implementer [4cd339]`, `impl-2 [78935c]` against `task-implementer-lane [78935c]`, `research-1 [e928f1]`, `impl-3 [4e5baf]`, `research-2 [281229]`. **Twenty-three `done` lanes matched no ownership row.** A lane with no tree is checked for nothing: no reopen, no orphan, no stop. Silently unaudited, and the summary line counted them as lanes like any other.
+
+A/B against the live tracker, same minute, same trees: `reopen=2` before, `reopen=8` after. The six that appeared are real — five arch lanes and two research-1 lanes marked `done` whose branches are not on main, which under house rule 5 are not done. Only six of the twenty-three surfaced because the other seventeen happen to be clean and on main; they were unchecked all the same, and would have stayed unchecked the moment one of them wasn't.
+
+This is the inverse of 112's lesson and it arrived four minutes later. 112 was proven by a red test and moved nothing live, which I said plainly. 115 was found in the same data by someone reading an A/B result for something else, and it moved the number by six. Neither the test nor the live run is sufficient alone: the test says the logic is right, the live run says whether anything was relying on it being wrong.
+
+The rule is now the same in both joins, which is the point — a ref decides where both sides carry one, a name decides where one side does not.

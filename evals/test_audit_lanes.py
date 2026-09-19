@@ -801,3 +801,35 @@ class RefJoinTest(unittest.TestCase):
         """An empty ref column is not a roster of nobody, the same way an empty table is not."""
         report = self.audit("| sam [768194] | worktree wt-dirty (feat/dirty) |", session_row("sam", ref=""))
         self.assertEqual(report.orphans, [], report.lines)
+
+
+class OwnsRefTest(unittest.TestCase):
+    """Finding 115. 112 put the ref in the roster join and stopped there. `owns()` — the join that
+    attributes a lane to an ownership row, and so to a tree — still read names, and today's tracker
+    runs one ref under three names: `arch [768194]`, `architecture-review-setup [768194]`,
+    `openemr-arch [768194]`. Four lanes matched no row, so no tree, so no reopen, orphan or stop
+    check reached them. Silently unaudited is worse than wrongly audited.
+    """
+
+    def row(self, context: str) -> al.OwnerRow:
+        return al.parse_ownership(f"| {context} | worktree wt-a (feat/a) |")[0]
+
+    def test_two_names_on_one_ref_are_one_context(self) -> None:
+        self.assertTrue(al.owns(self.row("architecture-review-setup [768194]"), "openemr-arch [768194]"))
+
+    def test_one_name_on_two_refs_is_two_contexts(self) -> None:
+        self.assertFalse(al.owns(self.row("sam [aaaaaa]"), "sam [bbbbbb]"))
+
+    def test_with_a_ref_on_one_side_only_the_name_still_decides(self) -> None:
+        self.assertTrue(al.owns(self.row("sam"), "sam [aaaaaa]"))
+        self.assertTrue(al.owns(self.row("sam [aaaaaa]"), "sam"))
+
+    def test_a_lane_renamed_away_from_its_row_is_still_audited(self) -> None:
+        tmp, root = workspace(
+            "| Landed work | openemr-arch [768194] | done | 09:00 |  | Checklist: Landed work |",
+            "| architecture-review-setup [768194] | worktree wt-unmerged (feat/open) |",
+            sessions=session_row("openemr-arch", ref="768194"))
+        self.addCleanup(tmp.cleanup)
+        report = al.audit(root, "2026-09-17")
+        self.assertEqual(len(report.reopen), 1, report.lines)
+        self.assertIn("wt-unmerged", str(report.reopen[0]))
