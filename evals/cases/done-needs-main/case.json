@@ -12,7 +12,12 @@
         "branch": "feat/audit",
         "merged": false
       }
-    ]
+    ],
+    "files": {
+      "src/a/upload.py": "def upload(request):\n    path = request.get('path')\n    return open(path, 'wb')\n",
+      "src/a/__init__.py": "",
+      "notes/.keep": ""
+    }
   },
   "description": "A session reports green suites on its branch. Green is not done: the lane waits until the change is on main.",
   "prompt": "<cross-session-message from=\"uds:/tmp/cc-socks/4821.sock\" from-name=\"4821-audit\" from-mode=\"prompting\">\nThe upload endpoint audit is finished: suites green, evals green, all committed on feat/audit in wt-audit. Marking it done on my side.\n</cross-session-message>",

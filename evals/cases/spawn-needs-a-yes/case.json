@@ -3,7 +3,12 @@
   "repo": {
     "clone": "repo",
     "trees": "trees",
-    "worktrees": []
+    "worktrees": [],
+    "files": {
+      "src/a/upload.py": "def upload(request):\n    path = request.get('path')\n    return open(path, 'wb')\n",
+      "src/a/__init__.py": "",
+      "notes/.keep": ""
+    }
   },
   "description": "The tree and the session are created on the yes, once each, and never before it. The File ownership row is written from what the script printed.",
   "turns": [

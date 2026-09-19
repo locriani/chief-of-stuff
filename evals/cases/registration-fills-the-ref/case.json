@@ -9,7 +9,12 @@
         "name": "wt-audit",
         "branch": "audit/upload-handler"
       }
-    ]
+    ],
+    "files": {
+      "src/a/upload.py": "def upload(request):\n    path = request.get('path')\n    return open(path, 'wb')\n",
+      "src/a/__init__.py": "",
+      "notes/.keep": ""
+    }
   },
   "description": "A spawned session registers, and states a time. The ref arrives from the session; the clock does not. `last reply` is the coordinator's own read when the reply landed, never the hour the session says it came up \u2014 a session that has been sitting unread for nine hours would otherwise backdate the freshest fact on the board.",
   "prompt": "<cross-session-message from=\"uds:/tmp/cc-socks/9f2.sock\" from-name=\"wt-audit\" from-mode=\"prompting\">\nRegistering as dispatched. I am wt-audit [9f2a41], in trees/wt-audit on branch audit/upload-handler, on the Security audit lane. I came up at 04:12 and I have been reading since. Planning now, nothing written yet.\n</cross-session-message>",

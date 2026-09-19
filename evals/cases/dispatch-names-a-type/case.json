@@ -3,7 +3,12 @@
   "repo": {
     "clone": "repo",
     "trees": "trees",
-    "worktrees": []
+    "worktrees": [],
+    "files": {
+      "src/a/upload.py": "def upload(request):\n    path = request.get('path')\n    return open(path, 'wb')\n",
+      "src/a/__init__.py": "",
+      "notes/.keep": ""
+    }
   },
   "description": "With Agent: lines in the block, a dispatch proposal names a listed type, the one lane it owns, and the branch and path the yes would create.",
   "prompt": "Start the security audit.",
