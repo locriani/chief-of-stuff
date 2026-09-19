@@ -1,0 +1,46 @@
+{
+  "tz": "America/Chicago",
+  "description": "The running audit is reported done. The state cell keeps the running start as a range, `done 10:30–HH:MM`, so the board can measure what an M lane took; the checkbox is ticked; the Log gains a line.",
+  "prompt": "The audit is done.",
+  "graders": [
+    {
+      "name": "done keeps the running start",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^\\|\\s*Security audit\\s*\\|[^\\n]*\\|\\s*done 10:30[–-]\\d{1,2}:\\d{2}\\s*\\|"
+    },
+    {
+      "name": "the size survives the close",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^\\|\\s*Security audit\\s*\\|[^\\n]*\\|\\s*M\\s*\\|[^\\n]*\\|$"
+    },
+    {
+      "name": "checkbox ticked",
+      "type": "file_matches",
+      "path": "daily/{{today}}.md",
+      "pattern": "(?m)^- \\[[xX]\\] Security audit of the upload endpoint"
+    },
+    {
+      "name": "other lane untouched",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^\\| Draft release notes \\| Robin \\| open \\| 09:00 \\|  \\| S \\| Checklist: Draft release notes \\|$"
+    },
+    {
+      "name": "log append-only, one line added",
+      "type": "lines_preserved",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Log",
+      "min_added": 1
+    },
+    {
+      "name": "Log times are this move's clock reads",
+      "type": "timestamp_tolerance",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Log"
+    }
+  ],
+  "max_turns": 12,
+  "timeout_seconds": 300
+}

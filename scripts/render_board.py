@@ -35,6 +35,12 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 HHMM = re.compile(r"^(\d{1,2}):(\d{2})$")
+# `done 21:16–22:05`: the running start kept on close. An en dash or a hyphen, because two hands write it.
+RAN = re.compile(r"^(\d{1,2}:\d{2})[–-](\d{1,2}:\d{2})$")
+SIZES = ("S", "M", "L", "XL")
+ALL_SIZES = "all"
+LANE_COLS = ("item", "owner", "state", "since", "due", "checklist")
+LANE_COLS_SIZED = ("item", "owner", "state", "since", "due", "size", "checklist")
 DATE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{1,2}):(\d{2}))?$")
 BULLET = re.compile(r"^(\s*)-\s*([^:]+?):\s*(.*?)\s*$")
 CAL_LIST = re.compile(r"^\s*-\s*(\d{1,2}:\d{2})\s*[–—-]\s*(\d{1,2}:\d{2})\s*(?:[A-Z]{2,5}\s+)?(.+?)\s*$")
@@ -62,6 +68,9 @@ class Deadline:
     name: str
     at: datetime
     requirements: str | None = None
+    # "all": unnamed lanes fall to it (the default). "named": only lanes whose `due` names it — an exam
+    # governs no lane on the table, and a derived end toward it would make it look like a plan (finding 73).
+    scope: str = "all"
 
 
 @dataclass(frozen=True)
@@ -102,6 +111,7 @@ class Lane:
     due: str
     checklist: str
     warning: str = ""
+    size: str = ""
 
     @property
     def kind(self) -> str:
@@ -109,8 +119,21 @@ class Lane:
 
     @property
     def state_time(self) -> str | None:
+        """The one clock the state carries: the running start, or the done end (a range gives its end)."""
         parts = self.state.split()
-        return parts[1] if len(parts) > 1 and HHMM.match(parts[1]) else None
+        if len(parts) < 2:
+            return None
+        if HHMM.match(parts[1]):
+            return parts[1]
+        m = RAN.match(parts[1])
+        return m.group(2) if m else None
+
+    @property
+    def ran(self) -> tuple[str, str] | None:
+        """`done 21:16–22:05` → ("21:16", "22:05"): the running start kept on close. None when it was dropped."""
+        parts = self.state.split()
+        m = RAN.match(parts[1]) if len(parts) > 1 else None
+        return (m.group(1), m.group(2)) if m and self.kind == "done" else None
 
 
 # What a session reports about itself. `starting`, `ready` and `gone` are the coordinator's to work
@@ -240,6 +263,7 @@ class Bar:
     end_src: str
     label: str | None
     est: "Estimate | None" = None
+    size: str = ""
 
 
 @dataclass(frozen=True)
@@ -351,7 +375,8 @@ def parse_coordinator(text: str, today: date) -> Config:
         m = DATE.match(_unquote(when))
         if m:
             reqs = next((r.group(1) for o in options if (r := re.match(r"(?i)requirements\s+`?([^`]+?)`?\s*$", o))), None)
-            deadlines.append(Deadline(name, datetime(int(m[1]), int(m[2]), int(m[3]), int(m[4] or 23), int(m[5] or 59), tzinfo=zone), reqs))
+            scope = "named" if any(re.match(r"(?i)named lanes only\s*$", o) for o in options) else "all"
+            deadlines.append(Deadline(name, datetime(int(m[1]), int(m[2]), int(m[3]), int(m[4] or 23), int(m[5] or 59), tzinfo=zone), reqs, scope))
     tracker = re.search(r"`([^`]+)`", top["Tracker"])
     board_tool = board_url = None
     if "Board" in top:
@@ -482,13 +507,15 @@ def parse_tracker(text: str) -> Tracker:
             url = candidate
     lanes: list[Lane] = []
     rows = [line for line in _section(text, "## Lanes") if line.strip().startswith("|")]
+    # The header decides the width: a six-column table parses as it always has, every lane unsized.
+    cols = LANE_COLS_SIZED if rows and [c.lower() for c in _cells(rows[0])] == list(LANE_COLS_SIZED) else LANE_COLS
     for row in rows[1:]:
         cells = _cells(row)
         if _is_separator(cells):
             continue
-        warning = "" if len(cells) == 6 else f"{len(cells)} cells, expected 6"
-        cells = (cells + [""] * 6)[:6]
-        lanes.append(Lane(*cells, warning=warning))
+        warning = "" if len(cells) == len(cols) else f"{len(cells)} cells, expected {len(cols)}"
+        fields = dict(zip(cols, (cells + [""] * len(cols))[:len(cols)]))
+        lanes.append(Lane(**fields, warning=warning))
     sessions: list[Session] = []
     for row in [line for line in _section(text, "## Sessions") if line.strip().startswith("|")][1:]:
         cells = _cells(row)
@@ -537,12 +564,30 @@ def parse_calendar(log_text: str, today: date, zone: ZoneInfo) -> list[Event]:
 
 
 def nearest_deadline(cfg: Config, now: datetime) -> Deadline:
+    """The nearest deadline of all, whatever it governs: the Clock line, `data-deadline` and the axes use it."""
     for d in cfg.deadlines:
         if d.at >= now:
             return d
     if cfg.deadlines:
         return cfg.deadlines[-1]
+    return _end_of_day(cfg, now)
+
+
+def _end_of_day(cfg: Config, now: datetime) -> Deadline:
     return Deadline("end of day", datetime.combine(now.date(), time(23, 59), tzinfo=cfg.zone))
+
+
+def governing_deadline(cfg: Config, now: datetime) -> Deadline:
+    """The nearest deadline ahead that unnamed lanes fall to, else end of day.
+
+    A lane that names no deadline is drawn or estimated toward this one. A deadline marked `named lanes
+    only` is skipped: after Final the nearest deadline is an exam (finding 73), and nothing on the Lanes
+    table is due to it unless its `due` cell says so.
+    """
+    for d in cfg.deadlines:
+        if d.at >= now and d.scope == "all":
+            return d
+    return _end_of_day(cfg, now)
 
 
 def _resolve_due(due: str, cfg: Config, today: date) -> datetime | None:
@@ -560,21 +605,51 @@ def _resolve_due(due: str, cfg: Config, today: date) -> datetime | None:
     return None
 
 
+def _dur(td: timedelta) -> str:
+    h, m = divmod(int(td.total_seconds()) // 60, 60)
+    return f"{h}h{m:02d}m" if h else f"{m}m"
+
+
+def _ordinal(n: int) -> str:
+    return f"{n}{'th' if 10 <= n % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')}"
+
+
 @dataclass(frozen=True)
 class Estimate:
-    """Where lane i of an owner's N lands if the queue drains evenly by the horizon. Not a claim about effort."""
+    """Where lane i of an owner's N lands.
+
+    Two bases. `history`: the queue drains at the mean elapsed time of closed lanes of each size (Zach,
+    2026-09-18: "generate an average amount of time spent per t-shirt sized puzzle ... use that"). `queue`:
+    no lane has closed with a range yet, so the queue drains evenly by the horizon — the 0.10.0 model,
+    which claims nothing about effort. The label says which, so a reader can tell a measurement from a share.
+    """
 
     end: datetime
     i: int
     n: int
     of: str
     slot: timedelta
+    size: str = ""
+    basis: str = "queue"
+    count: int = 0
+    borrowed: bool = False
 
     @property
     def label(self) -> str:
+        if self.basis == "history":
+            return f"est. {self.size or '?'} ~{_dur(self.slot)}"
         return f"est. {self.i}/{self.n} → {self.of}"
 
     def title(self, owner: str) -> str:
+        if self.basis == "history":
+            if not self.size:
+                rests = f"unsized: the mean of all {self.count} lanes closed with a range, {_dur(self.slot)}"
+            elif self.borrowed:
+                rests = f"size {self.size}: no {self.size} lane has closed with a range, so the mean of all {self.count} closed lanes stands in, {_dur(self.slot)}"
+            else:
+                rests = f"size {self.size}: mean of {self.count} {self.size} lanes closed with a range, {_dur(self.slot)} each"
+            return (f"{self.label}: {rests}; {_ordinal(self.i)} of {self.n} in {owner}'s queue, running first, then oldest first. "
+                    "Set a due to override.")
         return (f"{self.label}: where this lane lands if {owner}'s queue of {self.n} drains evenly by {self.of}, "
                 "running first, then oldest first. Not a claim about effort; set a due to override.")
 
@@ -591,21 +666,22 @@ def _owner_key(owner: str) -> str:
 
 
 def horizon(cfg: Config, now: datetime) -> tuple[datetime, str]:
-    """The nearest deadline still ahead, or midnight once every deadline has passed (the day strip's own rule)."""
-    d = nearest_deadline(cfg, now)
-    if d.at > now:
+    """The nearest governing deadline still ahead, or midnight once none is (the day strip's own rule)."""
+    d = governing_deadline(cfg, now)
+    if d.at > now and d.name != "end of day":
         return d.at, d.name
     return datetime.combine(now.date(), time(0, 0), tzinfo=cfg.zone) + timedelta(days=1), "end of day"
 
 
-def estimates(active: list[Lane], cfg: Config, now: datetime) -> dict[str, Estimate]:
+def estimates(active: list[Lane], cfg: Config, now: datetime, hist: dict[str, tuple[timedelta, int]] | None = None) -> dict[str, Estimate]:
     """A derived end for every owned lane with no `due`, keyed by item. Nothing here is written to the tracker.
 
-    The tracker's clock is day-grained — `since` and `due` are dates, only `done` carries a time — so no lane
-    has a duration to learn from, and this reads none: not the item text (its length tracks age, not work
-    left), not the Log. Per owner, the active lanes that are blank or due by the horizon form a queue of N,
-    running first, then oldest first; lane i ends at `H - (N-i)/N x (H - now)`, so lane N is the horizon
-    instant. The order is the one fabricated input, and the label says which position a lane holds.
+    Per owner, the active lanes that are blank or due by the horizon form a queue of N, running first, then
+    oldest first. With `hist` (see `history()`), a cursor starts at now and each lane takes the mean elapsed
+    time of closed lanes of its size — a running lane from its own start, never ending before now; a lane
+    with a `due` takes its time from the queue and keeps its due. Without history no lane has a duration to
+    learn from, and this reads none — not the item text (its length tracks age, not work left), not the
+    Log: lane i ends at `H - (N-i)/N x (H - now)`, so lane N is the horizon instant, and the label says so.
     Unowned lanes get nothing: there is no queue to place them in, and the deadline they already draw to
     is the honest end. A gone owner — one an `orphaned` lane names — is unowned for all its lanes.
     """
@@ -629,10 +705,43 @@ def estimates(active: list[Lane], cfg: Config, now: datetime) -> dict[str, Estim
     for entries in queues.values():
         entries.sort(key=lambda e: e[0])
         n = len(entries)
+        cursor = now
         for i, (_, lane) in enumerate(entries, 1):
-            if lane.due.strip():
-                continue
-            out[lane.item] = Estimate(h - r * ((n - i) / n), i, n, of, r / n)
+            if hist:
+                size = lane.size.strip().upper()
+                borrowed = bool(size) and size not in hist
+                mean, count = hist[size] if size and size in hist else hist[ALL_SIZES]
+                start = _hhmm(lane.state_time, now.date(), cfg.zone) if lane.kind == "running" and lane.state_time else None
+                end = max(now, start + mean) if start else cursor + mean
+                cursor = max(cursor, end)
+                if not lane.due.strip():
+                    out[lane.item] = Estimate(end, i, n, of, mean, size, "history", count, borrowed)
+            elif not lane.due.strip():
+                out[lane.item] = Estimate(h - r * ((n - i) / n), i, n, of, r / n)
+    return out
+
+
+def history(lanes: list[Lane], cfg: Config, now: datetime) -> dict[str, tuple[timedelta, int]]:
+    """Mean elapsed time per size over done lanes that kept their running start, plus an `all` row.
+
+    Only `done HH:MM–HH:MM` counts: `since` is a date and `done HH:MM` alone has no start (finding 70), so
+    a lane closed without the range records nothing and is left out rather than guessed at. A range that
+    runs backwards crossed midnight and is dropped too. Empty when no lane has a range, and the estimator
+    then falls back to the queue-drain of 0.10.0, labelled as such.
+    """
+    today, zone = now.date(), cfg.zone
+    spans: dict[str, list[timedelta]] = {}
+    for lane in lanes:
+        if not (r := lane.ran):
+            continue
+        a, b = _hhmm(r[0], today, zone), _hhmm(r[1], today, zone)
+        if a is None or b is None or b <= a:
+            continue
+        spans.setdefault(lane.size.strip().upper(), []).append(b - a)
+    out = {size: (sum(v, timedelta()) / len(v), len(v)) for size, v in spans.items()}
+    if out:
+        every = [d for v in spans.values() for d in v]
+        out[ALL_SIZES] = (sum(every, timedelta()) / len(every), len(every))
     return out
 
 
@@ -646,7 +755,7 @@ def _end(lane: Lane, cfg: Config, now: datetime, start: datetime, est: dict[str,
         return start, "state", "done, no time"
     if est and (e := est.get(lane.item)):
         return max(e.end, start), "derived", e.label
-    return nearest_deadline(cfg, now).at, "deadline", NO_ESTIMATE
+    return governing_deadline(cfg, now).at, "deadline", NO_ESTIMATE
 
 
 def day_bar(lane: Lane, cfg: Config, now: datetime, est: dict[str, Estimate] | None = None) -> Bar:
@@ -659,7 +768,7 @@ def day_bar(lane: Lane, cfg: Config, now: datetime, est: dict[str, Estimate] | N
     else:
         start, start_src = day_start, "carried"
     end, end_src, label = _end(lane, cfg, now, start, est)
-    return Bar(lane.item, lane.owner, lane.kind, start, end, start_src, end_src, label, est.get(lane.item) if est and end_src == "derived" else None)
+    return Bar(lane.item, lane.owner, lane.kind, start, end, start_src, end_src, label, est.get(lane.item) if est and end_src == "derived" else None, lane.size.strip().upper())
 
 
 def week_bar(lane: Lane, cfg: Config, now: datetime, est: dict[str, Estimate] | None = None) -> Bar:
@@ -675,7 +784,7 @@ def week_bar(lane: Lane, cfg: Config, now: datetime, est: dict[str, Estimate] | 
     else:
         start, start_src = day_start, "carried"
     end, end_src, label = _end(lane, cfg, now, start, est)
-    return Bar(lane.item, lane.owner, lane.kind, start, end, start_src, end_src, label, est.get(lane.item) if est and end_src == "derived" else None)
+    return Bar(lane.item, lane.owner, lane.kind, start, end, start_src, end_src, label, est.get(lane.item) if est and end_src == "derived" else None, lane.size.strip().upper())
 
 
 # --- rendering -----------------------------------------------------------------------------------
@@ -702,8 +811,9 @@ def _pct(dt: datetime, a: datetime, b: datetime) -> float:
 
 
 def _est_attrs(b: Bar) -> str:
-    """A derived end is a citation only if its inputs are on the bar: position in the queue, and the horizon."""
-    return f' data-est="{b.est.i}/{b.est.n}" data-est-of="{_esc(b.est.of)}"' if b.est else ""
+    """A derived end is a citation only if its inputs are on the bar: position in the queue, the basis, the horizon or the size."""
+    est = f' data-est="{b.est.i}/{b.est.n}" data-est-basis="{b.est.basis}" data-est-of="{_esc(b.est.of)}"' if b.est else ""
+    return est + (f' data-size="{_esc(b.size)}"' if b.size else "")
 
 
 def _member(b: Bar) -> str:
@@ -938,7 +1048,7 @@ def _deadline_for(lane: Lane, bar: Bar, cfg: Config, now: datetime) -> Deadline:
     for d in cfg.deadlines:
         if d.name.lower() == lane.due.strip().lower() or (bar.end_src != "due" and d.at == bar.end):
             return d
-    return nearest_deadline(cfg, now)
+    return governing_deadline(cfg, now)
 
 
 def today_rows(active: list[Lane], cfg: Config, now: datetime, axis_b: datetime, est: dict[str, Estimate] | None = None, floor: timedelta | None = None) -> tuple[list[Bar], list[Bar]]:
@@ -1061,7 +1171,7 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
     day_start = datetime.combine(today, time(0, 0), tzinfo=zone)
     midnight = day_start + timedelta(days=1)
     axis_b = min(nearest.at, midnight) if nearest.at >= now else midnight
-    est = estimates(active, cfg, now)
+    est = estimates(active, cfg, now, history(lanes, cfg, now))
     day_bars, day_folded = today_rows(active, cfg, now, axis_b, est, _tick_step(axis_b - (now - timedelta(hours=1))))
     cited = [b.start for b in day_bars if b.start_src != "carried" and b.start >= day_start]
     firsts = [e.start for e in events if e.start >= day_start]
@@ -1100,8 +1210,9 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
         rows = []
         for lane in group:
             warn = f' <span class="warn">{_esc(lane.warning)}</span>' if lane.warning else ""
-            rows.append(f'<tr data-state="{_esc(lane.kind)}"><td>{item_cell(lane.item)}{warn}</td><td>{_esc(lane.owner)}</td><td>{_esc(lane.state)}</td><td>{_esc(lane.since)}</td><td>{_esc(lane.due)}</td></tr>')
-        return "\n".join(rows) or '<tr><td colspan="5" class="muted">none</td></tr>'
+            size = f' data-size="{_esc(lane.size)}"' if lane.size.strip() else ""
+            rows.append(f'<tr data-state="{_esc(lane.kind)}"{size}><td>{item_cell(lane.item)}{warn}</td><td>{_esc(lane.owner)}</td><td>{_esc(lane.state)}</td><td>{_esc(lane.since)}</td><td>{_esc(lane.due)}</td><td>{_esc(lane.size)}</td></tr>')
+        return "\n".join(rows) or '<tr><td colspan="6" class="muted">none</td></tr>'
 
     queue = [lane for lane in active if lane.owner.strip().lower() == cfg.user.lower()]
     unassigned = [lane for lane in active if lane.owner.strip().lower() in ("unassigned", "")]
@@ -1116,7 +1227,7 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
     orphaned = [l for l in active if l.kind == "orphaned"]
     waiting = [l for l in active if l.kind not in ("running", "orphaned")]
     def group_head(label: str, group: list[Lane]) -> str:
-        return f'<tr class="group"><th colspan="5">{_esc(label)} · {len(group)}</th></tr>'
+        return f'<tr class="group"><th colspan="6">{_esc(label)} · {len(group)}</th></tr>'
 
     orphan_group = f'\n{group_head("orphaned", orphaned)[:-10]} · nobody owns these</th></tr>\n{lane_rows(orphaned)}' if orphaned else ""
     requirements = requirements or {}
@@ -1227,7 +1338,7 @@ details summary{{cursor:pointer}} details[open] summary{{margin-bottom:4px}}
 {_strip(week, week_a, week_b, [], list(cfg.deadlines), week_ticks, "week")}
 
 <h2>Lanes</h2>
-<table><tr><th>item</th><th>owner</th><th>state</th><th>since</th><th>due</th></tr>
+<table><tr><th>item</th><th>owner</th><th>state</th><th>since</th><th>due</th><th>size</th></tr>
 {group_head("running", running)}
 {lane_rows(running)}{orphan_group}
 {group_head("open · waiting", waiting)}
@@ -1287,8 +1398,12 @@ def main(argv: list[str] | None = None) -> Path:
     page = render(tracker_text, log_text, cfg, now, requirements=req_texts)
     out.write_text(page)
     parsed = parse_tracker(tracker_text)
-    est = estimates([lane for lane in parsed.lanes if lane.kind != "done"], cfg, now)
+    hist = history(list(parsed.lanes), cfg, now)
+    est = estimates([lane for lane in parsed.lanes if lane.kind != "done"], cfg, now, hist)
     bars = [day_bar(lane, cfg, now, est) for lane in parsed.lanes]
+    sized = " ".join(f"{k or '?'}:{hist[k][1]}" for k in (*SIZES, "") if k in hist)
+    hist_note = f"{sized} · all:{hist[ALL_SIZES][1]}" if hist else "none"
+    horizon_name = horizon(cfg, now)[1]
     no_est = sum(1 for b in bars if b.label == NO_ESTIMATE)
     derived = sum(1 for b in bars if b.end_src == "derived")
     long_items = sum(1 for lane in parsed.lanes if len(lane.item) > LONG_ITEM)
@@ -1302,7 +1417,7 @@ def main(argv: list[str] | None = None) -> Path:
     missing = sum(1 for t in req_texts.values() if t is None)
     drawn = resume_fields(block)
     resume_note = f"{len(drawn)} fields" if drawn else "none"
-    print(f"lanes={len(parsed.lanes)} no_estimate={no_est} derived={derived} warnings={warnings} long_items={long_items} resume={resume_note} resume_long={resume_long} requirements={req_counts or 'none'} requirements_missing={missing} tracker_sha256={hashlib.sha256(tracker_text.encode()).hexdigest()[:12]}")
+    print(f"lanes={len(parsed.lanes)} no_estimate={no_est} derived={derived} warnings={warnings} long_items={long_items} resume={resume_note} resume_long={resume_long} requirements={req_counts or 'none'} requirements_missing={missing} history={hist_note} horizon={horizon_name} tracker_sha256={hashlib.sha256(tracker_text.encode()).hexdigest()[:12]}")
     return out
 
 
