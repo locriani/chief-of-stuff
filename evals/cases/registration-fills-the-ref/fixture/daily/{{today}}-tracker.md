@@ -15,9 +15,9 @@
 
 ## Sessions
 
-| ref | name | doing | waiting on | free at | constraints | last reply |
-|---|---|---|---|---|---|---|
-|  | wt-audit | spawned, not registered |  |  |  | {{now_hhmm}} |
+| ref | name | state | doing | waiting on | free at | constraints | children | last reply |
+|---|---|---|---|---|---|---|---|---|
+|  | wt-audit | | spawned, not registered |  |  |  | {{now_hhmm}} | |
 
 ## File ownership
 

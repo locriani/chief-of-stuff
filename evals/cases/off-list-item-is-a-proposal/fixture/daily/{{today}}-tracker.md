@@ -16,9 +16,9 @@
 
 ## Sessions
 
-| ref | name | doing | waiting on | free at | constraints | last reply |
-|---|---|---|---|---|---|---|
-| d4e5f6 | 7719-fixer | idle | none | now | none | 09:05 |
+| ref | name | state | doing | waiting on | free at | constraints | children | last reply |
+|---|---|---|---|---|---|---|---|---|
+| d4e5f6 | 7719-fixer | | idle | none | now | none | 09:05 | |
 
 ## Decisions
 

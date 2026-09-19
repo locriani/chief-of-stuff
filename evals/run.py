@@ -756,6 +756,10 @@ COORDINATION_GRADERS = {
     "reply_lines": _reply_lines,
 }
 
+# Every `type` a case may name. `grade()` is the dispatcher; this is what `test_cases.py` checks a case
+# against, and `test_the_grader_type_tuple_is_the_dispatcher` keeps the two from drifting.
+GRADER_TYPES = ("tool_used", "regex", "clock_line", "mock_calls", "duration_stated", *FILE_GRADERS, *BOARD_GRADERS, *COORDINATION_GRADERS)
+
 
 def peers_mcp_config(sessions: Path, log: Path, tz: str) -> dict[str, Any]:
     args = [str(MOCK_PEERS.resolve()), "--sessions", str(sessions), "--log", str(log), "--tz", tz]
