@@ -51,7 +51,9 @@ FONTS = "https://fonts.googleapis.com/css2?family=Alegreya+Sans:wght@400;500;600
 SHORT_NAME = 48
 LONG_ITEM = 80
 RESUME_LINE = 160
-CLAUSE_TIME = re.compile(r"(?:^|\s)(?:at\s+)?(\d{1,2}:\d{2}):?(?=\s|$|[,;)])")
+# The lookbehinds are zero-width so the mark that opens a bold clause survives the time being lifted
+# out of it: `**22:19: copied**` keeps its `**` and loses only the time.
+CLAUSE_TIME = re.compile(r"(?:^|(?<=\s)|(?<=\*\*))(?:at\s+)?(\d{1,2}:\d{2}):?(?=\s|$|[,;)])")
 REQ_LINE = re.compile(r"^(\s*)- \[([ xX])\]\s+(.*?)\s*$")
 EVIDENCE = " — evidence: "
 TICK_STEPS_H = (1, 2, 3, 4, 6)
@@ -277,29 +279,56 @@ class Summary:
     attr: str = "summary"
 
 
+def _unmark(text: str) -> str:
+    """`**bold**` and `` `code` `` → their words. For a name that cannot wrap: the marks go, and a cut can never split a pair."""
+    return re.sub(r"`([^`]+)`", r"\1", re.sub(r"\*\*(.+?)\*\*", r"\1", text))
+
+
+def _whole(text: str) -> bool:
+    """A candidate that ends inside a `**` span hands the rest of the item an orphan mark, and the splitter reads it as prose."""
+    return text.count("**") % 2 == 0
+
+
 def short_name(item: str) -> str:
-    """The item up to its first ": " (when that leaves a real name), then up to " (" if still long, capped on a word boundary."""
+    """The item up to its first ": " (when that leaves a real name), then up to " (" if still long, capped on a word boundary.
+
+    Every cut stops at a whole number of mark spans: `**22:19: copied**` holds a ": " and a full stop,
+    and cutting through it leaves `**` on one side and the rest unbalanced.
+    """
     name = item.strip()
     head = name.split(": ", 1)[0]
-    if head != name and len(head) >= 12:
+    if head != name and len(head) >= 12 and _whole(head):
         name = head
-    if len(name) > SHORT_NAME and " (" in name:
+    if len(name) > SHORT_NAME and " (" in name and _whole(name.split(" (", 1)[0]):
         name = name.split(" (", 1)[0]
     if len(name) > SHORT_NAME:
         cut = name[:SHORT_NAME]
+        if not _whole(cut):
+            cut = cut[: cut.rfind("**")]
         space = cut.rfind(" ")
         name = (cut[:space] if space > SHORT_NAME // 2 else cut).rstrip(" ,;:–—-") + "…"
     return name
 
 
 def _depth0_split(text: str) -> list[str]:
-    """Split on "; " and ". " outside parentheses."""
-    parts, depth, start, i = [], 0, 0, 0
+    """Split on "; " and ". " outside parentheses and outside a `**bold**` span.
+
+    A mark pair is a span like a parenthesis. A bold clause routinely holds a full stop, and cutting
+    through one leaves half a mark on each side — 21 live history bullets read `**…` for that reason.
+    An item with an odd number of marks is already unbalanced, and tracking them there would swallow
+    every later split, so the tracking is switched off for it.
+    """
+    parts, depth, start, i, marked = [], 0, 0, 0, False
+    spans = text.count("**") % 2 == 0
     while i < len(text):
+        if spans and text[i : i + 2] == "**":
+            marked = not marked
+            i += 2
+            continue
         c = text[i]
         depth += c == "("
         depth -= c == ")" and depth > 0
-        if depth == 0 and c in ";." and text[i + 1 : i + 2] == " ":
+        if depth == 0 and not marked and c in ";." and text[i + 1 : i + 2] == " ":
             parts.append(text[start:i])
             start = i + 2
             i += 1
@@ -322,6 +351,8 @@ def history_lines(item: str) -> list[tuple[str, str]]:
                 when = m.group(1)
                 clause = (clause[: m.start()] + " " + clause[m.end() :]).strip()
                 clause = re.sub(r"\s{2,}", " ", clause).strip(" ,:")
+                # The strip cannot see past an opening mark: `** : copied` is what lifting the time leaves.
+                clause = re.sub(r"^(\*\*)[\s,:]+", r"\1", clause)
                 break
         lines.append((when, clause))
     return lines
@@ -454,8 +485,8 @@ def _clip(value: str, cap: int) -> str:
 def _resume_value(value: str) -> str:
     """A long field folds, the way `item_cell()` folds a long lane item. Same board, same idiom."""
     if len(value) <= RESUME_LINE:
-        return _esc(value)
-    return f'<details class="long"><summary>{_esc(_clip(value, RESUME_CLIP))}</summary>{_esc(value)}</details>'
+        return _inline(value)
+    return f'<details class="long"><summary>{_esc(_unmark(_clip(value, RESUME_CLIP)))}</summary>{_inline(value)}</details>'
 
 
 def resume_fields(block: dict[str, str]) -> list[str]:
@@ -889,7 +920,7 @@ def _stamp(session: Session, cfg: Config, now: datetime) -> tuple[str, str]:
 def _facts(session: Session) -> str:
     rows = [("doing", session.doing), ("waiting for", session.waits_for), ("free at", session.free_at),
             ("constraints", session.constraints)]
-    body = "".join(f"<dt>{label}</dt><dd>{_esc(value.strip())}</dd>" for label, value in rows if value.strip())
+    body = "".join(f"<dt>{label}</dt><dd>{_inline(value.strip())}</dd>" for label, value in rows if value.strip())
     warn = f'<dt>warning</dt><dd class="warn">{_esc(session.warning)}</dd>' if session.warning else ""
     return f'<dl class="facts">{body}{warn}</dl>' if body or warn else ""
 
@@ -983,7 +1014,7 @@ def _bar_row(b: Bar, axis_a: datetime, axis_b: datetime, row_class: str = "row")
     title = f' title="{_esc(b.est.title(b.owner))}"' if b.est else ""
     text = f"<em>{_esc(b.label)}</em>" if b.label else ""
     return (
-        f'<div class="{row_class}"><div class="name">{_esc(short_name(b.item))}</div><div class="track">'
+        f'<div class="{row_class}"><div class="name">{_esc(short_name(_unmark(b.item)))}</div><div class="track">'
         f'<div class="{classes}" data-item="{_esc(b.item)}" data-start="{_iso(b.start)}" data-end="{_iso(b.end)}" '
         f'data-start-src="{b.start_src}" data-end-src="{b.end_src}"{label}{_est_attrs(b)}{title} style="left:{left:.2f}%;width:{max(right - left, 0.6):.2f}%">{text}</div></div></div>'
     )
@@ -1201,10 +1232,10 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
     def item_cell(item: str) -> str:
         short = short_name(item)
         if short == item.strip():
-            return _esc(item)
+            return _esc(_unmark(item))
         lines = history_lines(item) or [("", item)]
-        body = "".join(f"<li><time>{_esc(t)}</time><span>{_esc(text)}</span></li>" for t, text in lines)
-        return f'<details><summary>{_esc(short)}</summary><ul class="hist">{body}</ul></details>'
+        body = "".join(f"<li><time>{_esc(t)}</time><span>{_inline(text)}</span></li>" for t, text in lines)
+        return f'<details><summary>{_esc(short_name(_unmark(item)))}</summary><ul class="hist">{body}</ul></details>'
 
     def lane_rows(group: list[Lane]) -> str:
         rows = []
@@ -1216,13 +1247,13 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
 
     queue = [lane for lane in active if lane.owner.strip().lower() == cfg.user.lower()]
     unassigned = [lane for lane in active if lane.owner.strip().lower() in ("unassigned", "")]
-    unassigned_rows = "\n".join(f"<tr><td>{_esc(short_name(l.item))}</td><td>{_esc(l.due)}</td><td>{_esc(l.state)}</td></tr>" for l in unassigned)
+    unassigned_rows = "\n".join(f"<tr><td>{_esc(short_name(_unmark(l.item)))}</td><td>{_esc(l.due)}</td><td>{_esc(l.state)}</td></tr>" for l in unassigned)
     unassigned_html = f"""<h2>Unassigned · {len(unassigned)}</h2>
 <table><tr><th>item</th><th>due</th><th>state</th></tr>
 {unassigned_rows}
 </table>
 """ if unassigned else ""
-    queue_rows = "\n".join(f"<tr><td>{_esc(short_name(l.item))}</td><td>{_esc(l.due)}</td><td>{_esc(l.state)}</td></tr>" for l in queue) or '<tr><td colspan="3" class="muted">nothing waiting on you</td></tr>'
+    queue_rows = "\n".join(f"<tr><td>{_esc(short_name(_unmark(l.item)))}</td><td>{_esc(l.due)}</td><td>{_esc(l.state)}</td></tr>" for l in queue) or '<tr><td colspan="3" class="muted">nothing waiting on you</td></tr>'
     running = [l for l in active if l.kind == "running"]
     orphaned = [l for l in active if l.kind == "orphaned"]
     waiting = [l for l in active if l.kind not in ("running", "orphaned")]

@@ -1027,3 +1027,14 @@ Agent arm on Opus, 0.11.0: the two new cases 3/3 each, green. Six reruns: 4 gree
 
 Zach: "fix 1 without planning". The 42 observations five dispatched sessions sent at 23:02–23:08 on 2026-09-18 are findings 80–97 in `docs/design-inputs.md`, folded where they overlap and every reporter named: idle polling (five reporters), the write-only line against a CIMP lane, authority through a peer, plan mode on a wait lane, launchd's PATH, no docker stack, blocked credential-shaped messages, guessed Owns lists, the hand-off pattern to keep, six report and ruling gaps, stale line-number citations, house rule 3 not reaching subagents, direct asks and pathless asks, a model the launcher cannot set, a 42k-token tracker, a demo credential taken for a secret, findings that trailed, and bundled sub-questions. All Recorded, none ruled on. No code, no rule change, no version.
 
+
+## C11 — inline marks render, and `gone` never reaches the state cell (0.11.2)
+
+Zach's two held items from the density review, planned and approved as one stage. Findings 98 and 99.
+
+Red first: `AttributeError: _unmark`, asterisks in every `.name`, no `<code>` in a history bullet or a session fact. Green, and then the live render said the fix was half done — 21 bullets held an orphan `**`, because `short_name()`, `_depth0_split()` and `CLAUSE_TIME` each cut through a mark span. Four more tests, one per cut. The live board now carries zero raw `**`; the two names still holding a `*` are the literal value of `AGENT_FRAME_ANCESTORS`, which is content.
+
+The `gone` half was graded before it was rewritten, and the coordinator's own account of why it wrote the cell is what the rewrite answers. `orphaned-owner` 3/3 green on the agent arm; the board cases green.
+
+497 units green on the branch.
+

@@ -674,3 +674,25 @@ The review page followed its format — URL, numbered section list, one sentence
 
 One question packed six or seven distinct sub-asks into a single owned-file dispatch. It produced one coherent note under an improvised heading-per-sub-ask. Either the note format gets that contract, or the dispatch splits into separately reportable questions.
 
+## 98 — the board showed the punctuation the coordinator wrote
+
+**From:** the density review, 2026-09-18 22:52, measured on the live board.
+**Status:** Adopted 2026-09-19 (0.11.2).
+
+50 of 100 lane names began with literal asterisks — `**Deploy main.** Deployed tips are agent…` — and the same marks stood in the Lanes summaries, the history bullets, the session facts and the Resume values. `_inline()` had rendered `` `code` ``, `**strong**` and `*em*` since the requirements list arrived and was used nowhere else. The split is by context: a name cannot wrap, so it drops the marks and keeps the words (`_unmark()`, backticks too); prose that wraps renders them. Citation attributes stay raw, because `data-item` is what the graders match.
+
+The first fix left 21 bullets holding an orphan `**`, which is the more interesting half. A mark pair is a span, like a parenthesis, and three places cut through one: `short_name()`, whose `": "` heuristic landed inside `**22:19: copied…**`; `_depth0_split()`, which splits on a full stop and a bold clause routinely holds one; and `CLAUSE_TIME`, whose `(?:^|\s)` prefix could not see a time an opening mark hid, so 71 bullets kept a time that belongs in the `<time>` column. All three respect the span now, and an item with an odd number of marks is left to split as it always did rather than swallowing every later break.
+
+What this is not: reading the leading bold phrase as the lane's name. The coordinator is already writing one, and whether the board should treat it as such is question 2 of `docs/board-design-brief.md`, for the design session.
+
+## 99 — `gone` reached the state cell through one word
+
+**From:** the live tracker, 2026-09-18, rows 748895 and 6edad3; the coordinator's own account at 01:04 on request.
+**Status:** Adopted 2026-09-19 (0.11.2).
+
+Both rows carried `gone` in the Sessions `state` cell, which the rule forbids and the board warns on. Asked what made it write them, the live coordinator answered precisely: the sentence says the three derived states are "yours to work out", it read that as "yours to write", and when it widened the inherited table at 20:33 those two rows got `gone` and the five spawned rows got `starting`. The template text it had been running against said "never written here"; the version it was running said only that a session never claims them.
+
+So the sentence now says where the work-out goes: "yours to work out for your reply and for the board, and never for the cell — the cell keeps what the session last said, blank if it never said, and the board derives `gone` from the orphaned lane." `orphaned-owner` grades it, because that case already stages the exact moment and graded only the lane and the Log: the Sessions cell must not read `gone`, and the gone owner's row keeps what it last reported. 3/3 green on the agent arm.
+
+The general shape, worth keeping: a rule that names a derived value without naming where it may be written will be written somewhere, and the case that covers the moment is the place to add the grader.
+
