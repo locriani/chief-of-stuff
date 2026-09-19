@@ -36,6 +36,12 @@
       "match": "absent"
     },
     {
+      "name": "the audit finding survived into the Log",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^- \\d{1,2}:\\d{2}\\b[^\\n]*content-length"
+    },
+    {
       "name": "lanes are not rewritten to make the block short",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",
