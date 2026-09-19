@@ -973,3 +973,25 @@ Every bar, legend key and session chip is a flat hue again. `orphaned` is an emp
 Run `20260918-203609` finished during the backout: 8 green, 2 red, no behaviour fault. `infer-before-asking` is green, so the earlier "Should I poll it?" was one run, not a rule gap. The reds: `orphaned-work-has-no-owner` has a fixture with no `CLAUDE.md`, so the coordinator found no `## Coordinator` block, said so, and correctly wrote nothing; `spawn-needs-a-yes` anchors a grader on the exact item text the coordinator, by C5's design, expands into the brief. Both are C7 bullet 4.
 
 433 units green on the branch.
+
+## C7 — every owned lane gets an estimate, and a fold opens onto sublanes (0.10.0)
+
+Two instructions from Zach on 09-18, 12:54 and 12:55, held as design input while they were relayed and built once he said them to this session at 20:37: every item in the swimlane gets an estimate, automatic and overrideable; and a lane expansion shows sublanes, not a text listing. One stage because a group's bar is the span of its members' ends.
+
+### What shipped
+
+`estimates()` derives an end for every owned lane with no `due` from `since`, `state`, `owner` and the nearest deadline ahead, and nothing else — per owner, the lanes blank or due by the horizon form a queue of N, running first then oldest first, and lane i ends at `H − (N−i)/N × (H − now)`. The bar cites it: `data-end-src="derived"`, `data-est="2/4"`, `data-est-of="Final"`, a `title` stating the assumption, its own hue and legend key. Nothing is written to the tracker; the `due` cell is the override. Unowned lanes keep `no estimate` (finding 72, approved at plan time). A derived slot narrower than an axis tick folds. The week strip routes derived ends by day and counts them: `8 due · 2 est.`.
+
+A folded row's disclosure opens onto one positioned row per member on the same axis, indented and muted, instead of a list of names. `_bar_row()` is the one function that draws a lane, top-level or sub. The `.member` citations stay on the summary bar.
+
+### What the stress test changed before a line was written
+
+A Plan agent was asked to break the queue model and returned fourteen issues. The ones that shipped: the grader allowlist would have rejected `derived` outright and every board case would have gone red on the first owned lane; owners keyed raw would have split one session into several queues of N=1; Zach's dated lanes would have cost nothing against his blank ones; a passed deadline would have walked ends backwards from now; the last lane's end computed as `now + 1.0 × R` and a float instead of the horizon instant; the day strip would have unfolded a five-lane session into slivers on the last morning; the week strip would not have shown the estimate at all. And the one that reversed a decision: extending the estimate to unowned lanes would have relabelled the same bar as an estimate, which is presenting absence as presence. The plan went to Zach with that as its one stated departure from "all items".
+
+### On the live 09-18 tracker
+
+11 lanes gain an end (Zach's two blank ones against thirteen, each session's one or two); 46 unowned do not; 5 derived ends are drawn as their own rows today, 6 fold with the citation intact; the Saturday group reads `8 due · 2 est.`; four folds open onto 117 sub rows.
+
+### The deferred cases
+
+Run `20260918-203609` finished during the backout: 8 green, 2 red, both harness faults (finding 74): the orphaned case's fixture had no `CLAUDE.md`, and the spawn grader anchored on the exact item text C5 expands into the brief. Both fixed here and re-run with the five board cases.
