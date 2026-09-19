@@ -576,3 +576,137 @@ class MainShaTest(unittest.TestCase):
             "| sam | worktree wt-never-made (feat/planned) |")
         self.addCleanup(tmp.cleanup)
         self.assertFalse([ln for ln in al.audit(root, "2026-09-17").lines if "origin/main" in ln])
+
+
+STOP = """Stop: permission
+Lane: {lane}
+Lands on: Robin
+Costs: D4 does not reach main, and the Final submission is short a deliverable
+"""
+
+
+class StopTest(unittest.TestCase):
+    """A stop is an artifact, not a message: a message is lost if nobody reads it, a file is not."""
+
+    def setUp(self):
+        self.tmp, self.root = workspace(
+            "| Merge D4 | impl-3 | running 02:20 | 09:00 |  | c |",
+            "| Merge D4 | worktree wt-unmerged (feat/open) |",
+            session_row("impl-3"))
+        stop = self.root / "trees" / "wt-unmerged" / al.PROMPT_DIR
+        stop.mkdir(parents=True)
+        (stop / "stop.md").write_text(STOP.format(lane="Merge D4"))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_a_stop_against_a_running_lane_is_reported(self):
+        report = al.audit(self.root, "2026-09-17")
+        self.assertEqual([s.lane for s in report.stopped], ["Merge D4"])
+        self.assertEqual(report.stopped[0].lands_on, "Robin")
+
+    def test_the_line_says_the_kind_and_who_it_lands_on(self):
+        line = str(al.audit(self.root, "2026-09-17").stopped[0])
+        self.assertIn("stopped:", line)
+        self.assertIn("permission", line)
+        self.assertIn("Robin", line)
+
+    def test_the_summary_counts_it_and_the_exit_code_does_too(self):
+        report = al.audit(self.root, "2026-09-17")
+        self.assertIn("stopped=1", report.lines[-1])
+        self.assertEqual(al.main(["--root", str(self.root), "--date", "2026-09-17"]), 1)
+
+    def test_a_stop_whose_lane_is_already_open_is_not_a_fault(self):
+        tracker = self.root / "daily" / "2026-09-17-tracker.md"
+        tracker.write_text(tracker.read_text().replace("running 02:20", "open"))
+        report = al.audit(self.root, "2026-09-17")
+        self.assertEqual(report.stopped, [])
+        self.assertIn("stopped=0", report.lines[-1])
+
+    def test_a_tree_with_no_stop_says_nothing(self):
+        (self.root / "trees" / "wt-unmerged" / al.PROMPT_DIR / "stop.md").unlink()
+        self.assertEqual(al.audit(self.root, "2026-09-17").stopped, [])
+
+
+class StopEdgesTest(unittest.TestCase):
+    """A session that half-wrote a stop still stopped, and a stop somebody acted on is not a fault."""
+
+    def setUp(self):
+        self.tmp, self.root = workspace(
+            "| Merge D4 | impl-3 | running 02:20 | 09:00 |  | c |",
+            "| Merge D4 | worktree wt-unmerged (feat/open) |",
+            session_row("impl-3"))
+        self.dir = self.root / "trees" / "wt-unmerged" / al.PROMPT_DIR
+        self.dir.mkdir(parents=True)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_a_stop_with_no_kind_is_reported_as_unstated_not_ignored(self):
+        (self.dir / "stop.md").write_text("Lane: Merge D4\nLands on: Robin\n")
+        line = str(al.audit(self.root, "2026-09-17").stopped[0])
+        self.assertIn("kind unstated", line)
+
+    def test_a_stop_naming_nobody_says_so(self):
+        (self.dir / "stop.md").write_text("Stop: scope\nLane: Merge D4\n")
+        self.assertIn("lands on nobody it named", str(al.audit(self.root, "2026-09-17").stopped[0]))
+
+    def test_an_empty_stop_file_still_counts(self):
+        (self.dir / "stop.md").write_text("")
+        self.assertEqual(len(al.audit(self.root, "2026-09-17").stopped), 1)
+
+
+QUEUE = """
+## Decision queue
+
+| # | decision | why it is next | who is blocked |
+|---|---|---|---|
+{rows}
+"""
+
+
+def with_queue(root: Path, rows: str) -> None:
+    t = root / "daily" / "2026-09-17-tracker.md"
+    t.write_text(t.read_text() + QUEUE.format(rows=rows))
+
+
+class DecisionQueueTest(unittest.TestCase):
+    """Emitting N asks is emitting none, so the queue has to be one ordered list with a payload per row."""
+
+    def setUp(self):
+        self.tmp, self.root = workspace("| A | Robin | open | 09:00 |  | c |", "| A | none |")
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_a_clean_queue_reports_its_head_and_no_fault(self):
+        with_queue(self.root, "| 1 | Ship it | it blocks two | impl-2 |\n| 2 | Later | it does not | nobody |")
+        report = al.audit(self.root, "2026-09-17")
+        self.assertEqual(report.queue, [])
+        self.assertIn("queued=2", report.lines[-1])
+        self.assertIn("next decision: 1 — Ship it", "\n".join(report.lines))
+
+    def test_two_rows_with_the_same_number_are_a_fault(self):
+        with_queue(self.root, "| 1 | Ship it | x | y |\n| 4 | One | x | y |\n| 4 | Another | x | y |")
+        self.assertIn("number 4 twice", "\n".join(str(q) for q in al.audit(self.root, "2026-09-17").queue))
+
+    def test_an_answered_row_that_never_left_is_a_fault(self):
+        with_queue(self.root, "| ~~1~~ | ~~Done~~ **ANSWERED 03:29** | — | — |\n| 2 | Ship it | x | y |")
+        self.assertIn("answered", "\n".join(str(q) for q in al.audit(self.root, "2026-09-17").queue))
+
+    def test_a_row_with_no_payload_cannot_be_decided(self):
+        with_queue(self.root, "| 1 | Ship it |  |  |")
+        self.assertIn("names neither", "\n".join(str(q) for q in al.audit(self.root, "2026-09-17").queue))
+
+    def test_faults_reach_the_exit_code(self):
+        with_queue(self.root, "| 4 | One | x | y |\n| 4 | Another | x | y |")
+        self.assertEqual(al.main(["--root", str(self.root), "--date", "2026-09-17"]), 1)
+
+    def test_no_queue_section_says_nothing_at_all(self):
+        report = al.audit(self.root, "2026-09-17")
+        self.assertEqual(report.queue, [])
+        self.assertNotIn("queued=", report.lines[-1])
+
+    def test_the_next_line_names_a_decision_that_opens_with_a_bold_headline(self):
+        """`short_name` cutting inside a `**` pair returns a bare ellipsis, and the whole point of the line is the name."""
+        with_queue(self.root, "| 3 | **Which surface carries the cache hit rate.** impl-1 measured first | x | y |")
+        self.assertIn("next decision: 3 — Which surface carries the cache hit rate",
+                      "\n".join(al.audit(self.root, "2026-09-17").lines))

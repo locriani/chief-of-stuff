@@ -1049,3 +1049,20 @@ Red first: `['a', 'x \\', 'y', 'b'] != ['a', 'x | y', 'b']`, `'x' != 'x | extra 
 The live row now parses with an empty warning, `ran` reads `('00:28', '01:36')`, and `history=` went from `S:3 M:4 · all:7` with no L at all to `S:3 M:4 L:1 · all:8`. That missing L is the whole reason this was worth a version.
 
 510 units green on the branch.
+
+
+## C13 — a stop has a price and a shape (0.12.0)
+
+Zach at 03:16, relayed: sessions refusing handed work on boundary grounds, items dropped. Run as tracer bullets on his word, all seven without pausing. Findings 101–104.
+
+The correction that made it designable came from `openemr-arch`, not from the symptom: the refusals were right, and the rule the session applied was written nowhere. **Prohibitions generalise and grants do not**, so the fleet ratchets toward refusal, and a deletion cannot fix a rule with no line to delete.
+
+The clearest instance was ours. Three of `dispatch_prompt.HEADER`'s five paragraphs were pure prohibition; every session that refused tonight woke up holding it. It also carried `Write only: do not commit or push.` against Zach's own commits decision — the assignment told sessions the opposite of the rule that exists to stop work being lost.
+
+Tracer first: one stop, end to end, HEADER to file to auditor to exit code, proven by hand before any layer was thickened. `stopped: Merge D4 — wt-unmerged (feat/open): permission, lands on Robin, and the lane still reads 'running 02:20'`, exit 1. Then the positive half of the assignment, the four stop kinds, and the decision-queue audit.
+
+The queue audit found three real faults on the live tracker the first time it ran: two rows numbered 4, two answered rows that never left, and `next decision: 3 — …` where a bold headline cut inside its mark pair. The first two are the coordinator's to fix; the third was mine and is fixed.
+
+Red first at both ends: 3 failures and 5 errors for the tracer, 9 more for the positive half, 7 for the kinds and the queue. One superseded test moved with the design and says why in its docstring.
+
+552 units green on the branch. No eval case, deliberately: eval cases grade the coordinator and these bullets change what workers receive. The real verification is tomorrow's fleet.

@@ -33,8 +33,9 @@ import dispatch_prompt  # noqa: E402
 
 ENV = "CHIEF_OF_STUFF_LAUNCHER"
 # The assignment lives in the tree, not on the command line. `.chief-of-stuff/` ignores itself, so a
-# dispatch never reads as uncommitted work in the tree it was written into.
-PROMPT_DIR = ".chief-of-stuff"
+# dispatch never reads as uncommitted work in the tree it was written into. The directory is defined
+# beside the assignment it carries, because the stop that travels back out of the tree shares it.
+PROMPT_DIR = dispatch_prompt.PROMPT_DIR
 PROMPT_FILE = f"{PROMPT_DIR}/dispatch.md"
 # The same string on every launch. There is no per-dispatch text in the argv, so there is nothing
 # for a shell to expand on the way here.

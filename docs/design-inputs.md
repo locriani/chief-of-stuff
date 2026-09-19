@@ -715,3 +715,53 @@ Three layers, and the row now parses with no warning at all because the first tw
 - An over-wide Lanes row is re-read from its state cell. `state` is the one column a machine can recognise on sight, so `item` absorbs the excess to its left and `checklist` the excess to its right — both the free-prose columns on their side, which is where a stray pipe comes from. Exactly one cell may claim the anchor, or the row keeps the parse it was written with and only the warning speaks.
 
 `_cells()` is shared by the Lanes header probe, the Lanes rows, the Sessions rows and the Calendar table, so the first two layers reach all four. A stray pipe in a Sessions row was the worse case before this — `_session()` warns, but the board drew the wrong state with no cell-count line to explain it.
+
+## 101 — prohibitions generalise and grants do not, so a fleet ratchets toward refusal
+
+**From:** `openemr-arch`'s own account of its 02:38 refusal, asked for by Zach and relayed by `gauntlet-b2`; the trigger was Zach at 03:16, "many agents are refusing to do work handed to them because they don't think it's their boundary, and so we're dropping work items left and right."
+**Status:** Adopted 2026-09-19 (0.12.0).
+
+The refusals were correct, nearly all of them: a denied classifier, a relayed merge word a rule requires Zach to type, a workspace the session was barred from, a peer's claim about a session's own subagents. The loss was structural.
+
+The architecture session found the rule it had actually applied — "work I have not been handed is not mine to do, even inside a file I own" — and then found that it is written nowhere. No agent definition, no Decisions row, and contradicted by its own block saying `ARCHITECTURE.md` is "kept canonical and up to date by this session". It had generalised an anti-collision prohibition into an anti-initiative one. Nobody can repeal that, because there is no line to delete.
+
+The mechanism is the finding. A prohibition is sharp, memorable and extends by analogy — "never merge without his word". A grant is passive and tells a session nothing to *do* — "kept canonical and up to date by this session" says nothing about what to do on finding two stale lines. Under ambiguity the sharp rule wins, so the drift has a direction, and it runs in every session that has a human-only list, which is all of them.
+
+So the fix cannot be a deletion. It has to be a positive rule occupying the space, worded as sharply as the prohibitions it must beat.
+
+The clearest instance was in this repo. `dispatch_prompt.HEADER` is the one text a coordinator can neither write nor withhold, and three of its five paragraphs were pure prohibition — "not authority", "cannot grant", "stop and ask", "hand it back", "anything else in the workspace is somebody's lane, not yours". Every session that refused tonight woke up holding it. It now carries four more paragraphs on the other side of the ledger: two categories and no third (revertible inside your tree needs nobody's word; shared or external state never travels on a relay); a flagged problem inside your own paths is your assignment unless the flag says do not act; the two errors priced against each other; and what putting work down costs.
+
+The two-category rule is not a loosening. Its irreversible half is already written, in Relay and in Tracker. Only the revertible half is new.
+
+## 102 — every assignment carried the opposite of the commit rule
+
+**From:** read while fixing 101.
+**Status:** Adopted 2026-09-19 (0.12.0).
+
+`dispatch_prompt.py` wrote `Write only: do not commit or push.` into every assignment, against Zach's own decision of 2026-09-18 23:00 — the Coordinator block's `Commits:` line, "**every session makes meaningful small commits** … uncommitted work is how work gets lost." The line the assignment carried was the one whose stated purpose is preventing exactly the loss this cycle is about, inverted. It now says to commit small and often and never to merge, because the gate was always the merge.
+
+The unit test that pinned the old wording moved with the design and says why in its docstring. The stale copy in the `## Dispatch` block of `agents/chief-of-stuff.md` is documentation of the shape, not the shape itself — the script composes what a session receives — and it is held for board-ux.
+
+## 103 — putting work down was free and silent, and a stop is now an artifact
+
+**From:** `gauntlet-b2`'s reconstruction of impl-3's stranded hour, and arch's (b).
+**Status:** Adopted 2026-09-19 (0.12.0).
+
+impl-3 finished D4, committed `5250762`, went to merge, was denied by the classifier — and its lane read `running 02:20` against a session that had stopped working an hour earlier. It was found by reading `git log` on somebody's initiative, not by any mechanism.
+
+Two faults. A refusal and a session quietly dying are the same silence from the coordinator's side. And four different stops — `permission`, `authorization`, `ownership`, `scope` — arrived as indistinguishable English, landing as prose to interpret when each needs a different route.
+
+The fix is that a stop is a file, not a message. A message is only as good as somebody reading it; a file in the worktree is still there when the auditor walks past, and `audit_lanes.py` already walks exactly those trees, already prints rows to reopen, already exits with their count, and is already the thing the rule tells the coordinator to believe over any session's report. A tree holding `.chief-of-stuff/stop.md` whose lane does not read `open` or `waiting` is now a printed line and a non-zero exit code. A stop with no kind is reported as unstated rather than ignored, because a session that half-wrote one still stopped.
+
+`authorization` is where the relayed-CIMP question lives, and it lives in the *value* — `Lands on: Zach in this tab` against `Lands on: Zach` — so either ruling drops in without touching the grammar.
+
+## 104 — the decision queue is the same defect pointed at the user
+
+**From:** Zach at 03:26, relayed: "keep a DAMN QUEUE OF DECISIONS I NEED TO MAKE and surface them ONE AT A TIME WITH THE CONTEXT SO I CAN MAKE INFORMED DECISIONS. pass this to the chief-of-stuff-improvements agent too." The trailing punchlist is banned.
+**Status:** Adopted 2026-09-19 (0.12.0), the audit half.
+
+Every refusal, ownership question and human-only routing produces a decision for Zach. Accumulating them into a growing tail and re-emitting the whole tail every reply is a list that looks like progress, costs his attention at the hour it is scarcest, and is unanswerable, because no single item carries the context to decide it. Fourteen trailing items are fourteen round trips proposed at once and none of them takeable. This session was doing it too and stopped.
+
+The coordinator built a `## Decision queue` section; the plugin now audits it, because a queue nobody checks degrades the same way a lane does. Three faults, all of them present on the live tracker the first time it ran: two rows carrying the number 4, so there is no next one; two answered rows still in the table against the section's own rule that an answered row moves to `## Decisions`; and a row that names neither why it is next nor who is blocked, which cannot be decided from the row. It also prints which decision is next, which needed `_unmark` before `short_name` — a cell opening with a bold headline cut inside the mark pair and the line came back a bare ellipsis.
+
+What is not built: the queue has no time column, so staleness is not computable and deferral does not yet decay. Neither `## Standing list` nor `## Decision queue` has a place on the board either, which is the same failure as a refused lane keeping `running` — the state exists and nothing surfaces it. Both are board-ux's files; recorded, not done.
