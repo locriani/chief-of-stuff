@@ -1066,3 +1066,16 @@ The queue audit found three real faults on the live tracker the first time it ra
 Red first at both ends: 3 failures and 5 errors for the tracer, 9 more for the positive half, 7 for the kinds and the queue. One superseded test moved with the design and says why in its docstring.
 
 552 units green on the branch. No eval case, deliberately: eval cases grade the coordinator and these bullets change what workers receive. The real verification is tomorrow's fleet.
+
+
+## C13a — the binary and the guard (0.12.1)
+
+Two follow-ons, neither planned, both taken under the rule C13 shipped: revertible, in this repo, and one of them blocking another session.
+
+`evals/run.py` named `claude` bare, so `board-ux`'s `lane-named-on-write` and every case it writes went ungraded from a GUI-launched tab. Resolved absolutely — override, then PATH, then the two Mac install paths — and it lands on `/opt/homebrew/Caskroom/claude-code/2.1.267/claude` here. Finding 105.
+
+The background security review then caught two faults in the stop reader from 0.12.0, minutes after its merge. It failed open: a stop file that existed and could not be read returned the same `None` as no stop, which is silence on exactly the state the feature exists to break. And it printed session-written fields straight into the coordinator's terminal, where `dispatch_prompt._clean` already rejects control characters going the other way. Both fixed, three tests, finding 106.
+
+Two pinned tests moved with the design and say why in a comment.
+
+565 units green on the branch.

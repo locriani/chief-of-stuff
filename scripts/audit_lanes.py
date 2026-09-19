@@ -93,7 +93,10 @@ class Stop:
 
     def __str__(self) -> str:
         who = f", lands on {self.lands_on}" if self.lands_on else ", lands on nobody it named"
-        return f"stopped: {short_name(self.lane)} — {self.worktree}: {self.kind or 'kind unstated'}{who}, and the lane still reads {self.state!r}"
+        kind = self.kind or "kind unstated"
+        if kind == UNREADABLE:
+            kind = "a stop file that is unreadable"
+        return f"stopped: {short_name(self.lane)} — {self.worktree}: {kind}{who}, and the lane still reads {self.state!r}"
 
 
 @dataclass(frozen=True)
@@ -317,13 +320,34 @@ STOP_FIELD = re.compile(r"(?im)^\s*([A-Za-z][A-Za-z ]*?)\s*:\s*(.*?)\s*$")
 SETTLED = ("open", "waiting")
 
 
+# The same guard `dispatch_prompt._clean` applies on the way in, applied on the way out: this file is
+# written by a session and printed into somebody's terminal, so an ANSI or OSC payload in it would be
+# a payload in the report. C0 without tab or newline, DEL, and C1.
+CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+FIELD_CAP = 200
+UNREADABLE = "unreadable"
+
+
+def _field(value: str) -> str:
+    """One field off the stop, made safe to print: no escapes, and short enough not to bury the report."""
+    clean = CONTROL.sub("", value).strip()
+    return clean if len(clean) <= FIELD_CAP else clean[:FIELD_CAP] + "…"
+
+
 def read_stop(worktree: Path) -> dict[str, str] | None:
-    """The stop a session left in its own tree, as its fields. None when there is none to read."""
+    """The stop a session left in its own tree, as its fields. None only when there is no stop at all.
+
+    A stop that exists and cannot be read is still a stop. Returning None for it would fail open on
+    exactly the state this exists to surface, so the unreadable case reports itself as one.
+    """
+    path = worktree / STOP_FILE
     try:
-        text = (worktree / STOP_FILE).read_text()
-    except OSError:
+        text = path.read_text()
+    except FileNotFoundError:
         return None
-    return {m.group(1).strip().lower(): m.group(2).strip() for m in STOP_FIELD.finditer(text)}
+    except OSError:
+        return {"stop": UNREADABLE} if path.exists() else None
+    return {m.group(1).strip().lower(): _field(m.group(2)) for m in STOP_FIELD.finditer(text)}
 
 
 # `~~1~~` and `**ANSWERED 03:29**`: the two ways the live queue marked a row it had already settled
