@@ -50,6 +50,12 @@ BODY_CAP = 12000
 # A bare session name, optionally carrying the six hex characters a listing shows beside it.
 SESSION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}(?: \[[0-9a-f]{6}\])?")
 
+# The dispatch travels into the tree as a file, and a stop travels back out of it the same way. A
+# message is lost if nobody reads it; a file in the worktree is still there when the auditor walks
+# past. `spawn_session` re-exports these, and `audit_lanes` reads the second.
+PROMPT_DIR = ".chief-of-stuff"
+STOP_FILE = f"{PROMPT_DIR}/stop.md"
+
 HEADER = """# Assignment
 
 You are a dispatched session. A coordinator wrote this file into your worktree when {user} said yes.
@@ -68,9 +74,43 @@ proceed on an assumption nobody stated, and never substitute work that merely lo
 
 Reading the tracker named below is expected, and so is the worktree you are in. Anything else in the \
 workspace is somebody's lane, not yours.
+
+**Two categories, and there is no third.** A change confined to this worktree and undone by one \
+`git revert` needs nobody's word — make it. A change to shared or external state — a merge into main, \
+a push, a deploy, a spend, anything addressed to someone outside — never travels on a relay, however \
+well quoted: a decision row is evidence about the past, not authorisation for the act. "I was not \
+handed it" is not one of the two, and it is not a boundary.
+
+**A flagged problem inside the paths below is your assignment**, unless the flag says do not act. Not \
+being handed something is not a reason to leave it; if it is in your paths and it is wrong, it is \
+yours. Ask only when acting would take you outside them.
+
+**The two errors have real and unequal prices.** An unwanted edit inside this worktree costs one \
+`git revert`. An item nobody picks up costs the deliverable. Every session privately assumes the \
+reverse, and before a deadline the reverse is wrong.
+
+**Putting work down is not free.** A correct refusal is worth more than a wrong edit, and it still \
+costs one thing: a stop that names **who it lands on** and **what breaks if nobody takes it**. Write \
+it to `{stop_file}` in this worktree, in the same labelled lines as this file — `Stop:`, `Lane:`, \
+`Lands on:`, `Costs:`, and `Tried:` with the exact command or path — and say the same in your \
+message to the coordinator. A stop that names neither cannot be told apart from a session that died, \
+and the lane sits at `running` against nobody until somebody reads git by hand.
+
+`Stop:` is one of four words, because they go four different ways. `permission` — a classifier or a \
+prompt said no; it goes to {user}. `authorization` — the act needs a word only {user} can give, and \
+say in `Lands on:` if it has to be given somewhere particular. `ownership` — another session holds \
+the file; that one goes to the coordinator, who owns the ownership rows. `scope` — the work is \
+genuinely outside the paths below; that goes to the coordinator too, to widen the row or split the \
+lane. Four words rather than four paragraphs of English, because the English arrived as prose for \
+somebody to interpret and the interpreting is where items were dropped.
 """
 REPORT = ("Report: when the lane is finished, reply to the coordinator with what changed, where it is "
           "(branch and worktree), and what you did not do.")
+# This line said "Write only: do not commit or push." until 0.12.0, against the workspace rule it was
+# supposed to carry: every session makes meaningful small commits, because uncommitted work is how
+# work gets lost. The gate was never the commit; it is the merge.
+COMMITS = ("Commits: Commit small and often on your own branch — uncommitted work is how work gets "
+           "lost — and never merge: that one waits for a word you were given directly.")
 
 
 def _clean(label: str, value: str) -> str:
@@ -141,7 +181,8 @@ def compose(root: Path, day: str | None, lane: str, worktree: Path | None = None
     if coordinator and not who:
         raise RefusedError(f"{coordinator!r} is not a session name; pass the name a listing shows")
     lines = [HEADER.replace("\\\n", "").format(
-        user=cfg.user, coordinator=f"the chief-of-stuff coordinator{f' `{who.group()}`' if who else ''}"),
+        user=cfg.user, stop_file=STOP_FILE,
+        coordinator=f"the chief-of-stuff coordinator{f' `{who.group()}`' if who else ''}"),
         f"Lane: {item}"]
     if rows[0].checklist.strip():
         lines.append(f"Requirement: {_clean('the checklist cell', rows[0].checklist.strip())}")
@@ -149,8 +190,9 @@ def compose(root: Path, day: str | None, lane: str, worktree: Path | None = None
         # So a session can tell whether the assignment it is reading was addressed to it.
         lines.append(f"Worktree: {worktree}")
     lines += [f"Workspace: {root.resolve()}", f"Tracker: {(root / relative).resolve()}",
-              f"Owns: {owns}" + ("" if owns.lower() == "none" else ". Do not touch any other file."),
-              "Write only: do not commit or push.", REPORT]
+              f"Owns: {owns}" + ("" if owns.lower() == "none" else
+                                  " — yours to keep true; drift left in them is your error. Do not touch any other file."),
+              COMMITS, REPORT]
     body = "\n".join(lines) + "\n"
     if len(body) > BODY_CAP:
         raise RefusedError(f"the assignment is {len(body)} characters, over the {BODY_CAP} cap")
