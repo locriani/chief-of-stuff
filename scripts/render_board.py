@@ -1455,24 +1455,45 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
         for d in req_decks
         if requirements.get(d.name) is not None
     )
-    # 1 · DUE NEXT — every active lane with a clock on it, soonest first.
-    dated = sorted(
-        ((d, lane) for lane in active if (d := _resolve_due(lane.due, cfg, today))),
-        key=lambda pair: pair[0],
-    )
-    due_rows = "\n".join(
-        f'<tr><td>{d.strftime("%H:%M") if d.date() == today else d.strftime("%a %d %H:%M")}</td>'
-        f"<td>{_esc(lane.label)}</td><td>{_esc(lane.owner)}</td><td>{_esc(lane.state)}</td><td>{_esc(lane.size)}</td></tr>"
-        for d, lane in dated
-    ) or '<tr><td colspan="5" class="muted">nothing with a time on it</td></tr>'
-    per_deadline = " · ".join(
-        f"{sum(1 for d, _ in dated if d <= dl.at)} before {dl.name}" for dl in cfg.deadlines if dl.at >= now
-    )
+    # 1 · DUE NEXT — a card per governing deadline, in the order the deadlines fall. A flat list
+    # sorted by time answers "what is next" but not "what makes me late for the thing with a clock
+    # on it": a lane answering to tomorrow sitting between two of this morning's reads as one of
+    # them. Lanes answering to no deadline come last, because nothing in them can make him late.
+    def _clock(at: datetime) -> str:
+        return at.strftime("%H:%M") if at.date() == today else at.strftime("%a %d %H:%M")
+
+    due_groups: dict[str, list[tuple[Lane, Bar]]] = {}
+    for lane in active:
+        b = day_bar(lane, cfg, now, est)
+        due_groups.setdefault(_deadline_for(lane, b, cfg, now).name, []).append((lane, b))
+    order = [d.name for d in cfg.deadlines if d.name in due_groups]
+    order += [n for n in due_groups if n not in order]
+
+    def due_card(name: str, group: list[tuple[Lane, Bar]]) -> str:
+        at = next((d.at for d in cfg.deadlines if d.name == name), None)
+        # A lane with no estimate has no time to sort by; it is counted in the head rather than
+        # given a row it cannot fill. `NO_ESTIMATE` is the meaning the rest of the page uses.
+        timed = sorted((p for p in group if p[1].label != NO_ESTIMATE), key=lambda p: p[1].end)
+        no_est = sum(1 for _, b in group if b.label == NO_ESTIMATE)
+        rows = "\n".join(
+            f'<div class="due-row" data-kind="{_esc(lane.kind)}" data-at-src="{b.end_src}">'
+            f'<span class="at">{"~" if b.end_src == "derived" else ""}{_clock(b.end)}'
+            f'{" ⚑" if lane.kind == "orphaned" else ""}</span>'
+            f'<span class="what">{_esc(lane.label)}</span>'
+            f'<span class="who">{_esc(lane.owner)}</span>'
+            f'<span class="state">{_esc(lane.state)}</span>'
+            f'<span class="size">{_esc(lane.size)}</span></div>'
+            for lane, b in timed
+        ) or '<div class="due-row muted"><span class="what">nothing with a time on it</span></div>'
+        head = f"{_esc(name)} · {_clock(at)}" if at else _esc(name)
+        return (f'<div class="card due-card"><div class="card-head"><b>{head}</b>'
+                f'<span class="meta">{len(group)} lane{"" if len(group) == 1 else "s"} · {no_est} with no estimate</span>'
+                f"</div>\n{rows}</div>")
+
     due_html = f"""<h2>Due next</h2>
-<div class="meta">{_esc(per_deadline)}</div>
-<table><tr><th>at</th><th>name</th><th>owner</th><th>state</th><th>size</th></tr>
-{due_rows}
-</table>
+<div class="cards due">
+{chr(10).join(due_card(n, due_groups[n]) for n in order) or '<div class="card muted">nothing with a time on it</div>'}
+</div>
 """
 
     # 2 · BLOCKED — the band that is never folded: on you, unowned, or a session that stopped reporting.
@@ -1480,15 +1501,33 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
     unowned = [lane for lane in active if lane.kind == "orphaned"]
     quiet = [s for s in tracker.sessions if _band(_age(s, cfg, now)[1] or 10**6) == "stale" or not s.state.strip()]
 
+    # BLOCKED is never folded, so it cannot be allowed to grow without bound either: each card
+    # shows its first three and says how many more there are.
+    BLOCKED_SHOWN = 3
+
     def blocked_card(title: str, rows: list[str]) -> str:
-        body = "".join(f"<li>{r}</li>" for r in rows) or '<li class="muted">none</li>'
+        body = "".join(f'<li class="blocked-row">{r}</li>' for r in rows[:BLOCKED_SHOWN]) or '<li class="muted">none</li>'
+        if len(rows) > BLOCKED_SHOWN:
+            body += f'<li class="more">+ {len(rows) - BLOCKED_SHOWN} more</li>'
         return f'<div class="card"><h3>{_esc(title)} · {len(rows)}</h3><ul>{body}</ul></div>'
+
+    def lane_line(l: Lane) -> str:
+        return f"{_esc(l.label)} <span class='muted'>· {_esc(l.due.strip()) or 'no due'}</span>"
+
+    def quiet_line(s: Session) -> str:
+        """A session name on its own does not say what the silence costs: how long, and how many
+        lanes are waiting behind it."""
+        minutes = _age(s, cfg, now)[1]
+        silence = f"silent {_dur(timedelta(minutes=minutes))}" if minutes is not None else "never reported"
+        held = sum(1 for l in active if _bare_name(l.owner) == _bare_name(s.name))
+        return (f"{_esc(s.name)} <span class='warn'>· {silence}</span> "
+                f"<span class='muted'>· {held} lane{'' if held == 1 else 's'}</span>")
 
     blocked_html = f"""<h2>Blocked</h2>
 <div class="cards">
-{blocked_card("Awaiting you", [f"{_esc(l.label)} <span class='muted'>{_esc(l.due)}</span>" for l in awaiting])}
-{blocked_card("Orphaned", [f"{_esc(l.label)} <span class='muted'>{_esc(l.due)}</span>" for l in unowned])}
-{blocked_card("Not reporting", [f"{_esc(s.name)} {_stamp(s, cfg, now)[0]}" for s in quiet])}
+{blocked_card("Awaiting you", [lane_line(l) for l in awaiting])}
+{blocked_card("Orphaned", [lane_line(l) for l in unowned])}
+{blocked_card("Not reporting", [quiet_line(s) for s in quiet])}
 </div>
 """
 
@@ -1522,6 +1561,16 @@ tr.group th{{background:color-mix(in srgb,var(--brass) 18%,transparent);color:va
 .lanes>input:checked+label{{background:var(--fg);color:var(--surface);border-color:var(--fg)}}
 .lanes>input:focus-visible+label{{outline:2px solid var(--brass);outline-offset:2px}}
 {filter_css}
+.cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px;margin:8px 0}} .cards.due{{grid-template-columns:repeat(auto-fit,minmax(330px,1fr))}}
+.card{{background:var(--surface);border:1px solid var(--line);border-radius:5px;padding:8px 11px}} .due-card{{border-left:3px solid var(--dl)}}
+.card h3,.card-head b{{margin:0 0 5px;font-family:"Cormorant SC","Cormorant Garamond",Georgia,serif;font-size:13.5px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--brass)}}
+.card ul{{margin:0;padding:0;list-style:none}} .card li,.due-row{{font-size:12.5px;line-height:1.7}} .card .more{{color:var(--muted)}}
+.card-head{{display:flex;align-items:baseline;gap:8px;border-bottom:1px dotted var(--line);padding-bottom:5px;margin-bottom:6px}}
+.due-row{{display:flex;align-items:center;gap:10px}} .due-row .at{{width:62px;flex:none;font-family:ui-monospace,monospace;font-variant-numeric:tabular-nums}}
+.due-row[data-at-src="derived"] .at{{color:var(--est)}} .due-row[data-kind="orphaned"] .at,.due-row[data-kind="orphaned"] .who{{color:var(--dl)}}
+.due-row .what{{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+.due-row .who{{width:84px;flex:none;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+.due-row .state{{flex:none;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}} .due-row .size{{width:16px;flex:none;text-align:center;color:var(--muted)}}
 .muted{{color:var(--muted)}} .warn{{color:var(--dl);font-size:12px}}
 .strip{{position:relative;margin:8px 0 4px;--name-w:30%}} .axis{{position:relative;height:18px;margin-left:var(--name-w);font-size:11px;color:var(--muted)}} .tick{{position:absolute;transform:translateX(-50%);white-space:nowrap}}
 .rows{{position:relative}} .row{{display:flex;align-items:center;height:26px}} .name{{width:var(--name-w);flex:none;padding-right:8px;box-sizing:border-box;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}} .track{{position:relative;flex:1;height:18px;border-left:1px solid var(--line)}}
