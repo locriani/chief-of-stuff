@@ -1847,6 +1847,33 @@ class ResumeLegibilityTest(unittest.TestCase):
         self.assertIn("resume_long=1", out)
         self.assertNotIn("warnings=0", out)
 
+    def test_a_field_that_obeys_the_written_rule_is_not_warned_about(self) -> None:
+        """`RESUME_LINE` did two jobs with one number, and the two jobs disagreed the moment one moved.
+
+        `agents/chief-of-stuff.md` bounds a field at 300 characters. The renderer warned past 160, so
+        a block whose every field obeys the rule exactly still printed `resume_long=5` — a guard that
+        cannot be satisfied is one a writer learns to ignore, which is how the live `As of` reached
+        19 044 characters with the count in every render for nine hours. Folding is a display
+        question and warning is a hygiene question; they want their own numbers.
+
+        Measured on a live 136-lane tracker: 286, 241, 269, 250, 273 — over the fold, inside the rule.
+        """
+        root = Path(tempfile.mkdtemp())
+        (root / "CLAUDE.md").write_text(CLAUDE_MD)
+        (root / "daily").mkdir()
+        obeys = "- Next: " + "x" * 250
+        tracker = self.tracker.replace("- Next: goal #1 — owners for the three orphaned trees, then deploy main", obeys)
+        (root / "daily" / "2026-09-16-tracker.md").write_text(tracker)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rb.main(["--date", "2026-09-16", "--root", str(root)])
+        out = buf.getvalue()
+        self.assertIn("resume_long=0", out)
+        # It still folds: 250 characters is too long to read inline in a six-row strip.
+        html = rb.render(tracker, LOG, self.cfg, NOW)
+        strip = re.search(r'<dl class="resume".*?</dl>', html, re.S).group(0)
+        self.assertIn('<details class="long">', strip)
+
     def test_the_fields_keep_their_reading_order(self) -> None:
         """As of, then in flight, then next: where we are, then what is moving, then what is next."""
         strip = self.strip.group(0)

@@ -53,7 +53,12 @@ LOGO = Path(__file__).resolve().parent.parent / "assets" / "logo.webp"
 FONTS = "https://fonts.googleapis.com/css2?family=Alegreya+Sans:wght@400;500;600&family=Cormorant+SC:wght@600&display=swap"
 SHORT_NAME = 48
 LONG_ITEM = 80
-RESUME_LINE = 160
+# Two questions, two numbers. They were one constant, and the day the written rule moved to 300 the guard
+# became unsatisfiable: every field could obey `agents/chief-of-stuff.md` exactly and still be counted.
+# A guard that cannot be satisfied is one a writer learns to ignore — `resume_long=5` in every render for
+# nine hours is how the live `As of` reached 19 044 characters.
+RESUME_FOLD = 160   # display: too long to read inline in a six-row strip, so it folds
+RESUME_CAP = 300    # hygiene: the bound `agents/chief-of-stuff.md` gives the writer. Keep the two in step.
 # The fold bounds what a long field shows closed; nothing bounded what it shows OPEN, and one 9 400-character
 # `As of:` field filled the viewport with the rest of the board below it. `.resume details.long[open]` caps it.
 # The comment lives here rather than in the stylesheet: CSS prose ships in every rendered page.
@@ -560,7 +565,7 @@ def _summary_text(value: str) -> str:
 
 def _resume_value(value: str) -> str:
     """A long field folds, the way `item_cell()` folds a long lane item. Same board, same idiom."""
-    if len(value) <= RESUME_LINE:
+    if len(value) <= RESUME_FOLD:
         return _inline(value)
     return f'<details class="long"><summary>{_esc(_summary_text(value))}</summary>{_inline(value)}</details>'
 
@@ -585,7 +590,7 @@ def resume_strip(block: dict[str, str]) -> str:
         return ""
     rows = []
     for k in order:
-        long = ' class="long-field"' if len(block[k]) > RESUME_LINE else ""
+        long = ' class="long-field"' if len(block[k]) > RESUME_FOLD else ""
         rows.append(f"<dt>{_esc(k)}</dt><dd{long}>{_resume_value(block[k])}</dd>")
     rows = "".join(rows)
     return f'<dl class="resume">{rows}</dl>\n'
@@ -1852,7 +1857,7 @@ def main(argv: list[str] | None = None) -> Path:
     derived = sum(1 for b in bars if b.end_src == "derived")
     long_items = sum(1 for lane in parsed.lanes if len(lane.item) > LONG_ITEM)
     block = parse_resume(tracker_text)
-    resume_long = sum(1 for k in resume_fields(block) if len(block[k]) > RESUME_LINE)
+    resume_long = sum(1 for k in resume_fields(block) if len(block[k]) > RESUME_CAP)
     # A count printed beside a warning count but not counted as one reads as telemetry: `resume_long=4`
     # sat next to `warnings=0` for three hours while the block degraded, and was read past every time.
     warnings = sum(1 for lane in parsed.lanes if lane.warning) + sum(1 for s in parsed.sessions if s.warning) + resume_long
