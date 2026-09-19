@@ -1158,3 +1158,14 @@ The allowlist carried absolute paths into the live checkout and so did `--plugin
 And the harness printed verdicts it never stored — a 3.3-hour sweep piped through `tail -80` lost 56 of 58. Each run writes `verdict.json` now, with `passed: null` on a harness error rather than false.
 
 631 units green on the branch. Findings 114, 114b.
+
+
+## C14 — 0.12.9, the board-UX sequence landed
+
+Zach's CIMP at 17:33, on five commits of `board-ux-improvements`' work sitting merged on main and unpushed since 15:00. Not this lane's work; the commit and merge were already done, so what remained of the sequence was the suite on main, the install, the push and the ledger.
+
+What landed, from the commits themselves: the resume strip reads as a strip rather than a document; the Resume block held to six lines with a check it could not run named as such; folding and warning separated into two questions that had shared one number; `short_name` split into `clip_name` (the hard character cut, for terminal lines) and a `short_name` that ends at a clause boundary and loses no letters; `table-layout:fixed` so opening a fold stops re-laying out the table; the filter chips fixed — `~table` had been hopping to a sibling since stage 6's phone pass, so all six chips showed all rows; the density cap measuring item text rather than the stylesheet's fixed cost; and a new grader for `resume-block-stays-short`, where delete-and-stub had scored 9 of 9 and a preservation check was satisfied *better* by deletion than by filing.
+
+One caveat carried forward rather than resolved, in the newest commit's own words: `resume-block-stays-short` has not been run on opus, and the case needs `--model opus --runs 3` before anything in it is called green. Not run here — a sweep is hours and makes the worktree read-only, and it is not what CIMP asked for.
+
+641 units green on main. This lane's own change is one stale comment: `clip_name` handles the mark pair itself since the split, so the `_unmark` beside it is no longer load-bearing for that reason, and the comment said it was. The guard stays — it also strips backticks.
