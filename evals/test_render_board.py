@@ -320,7 +320,10 @@ class RenderTest(unittest.TestCase):
         self.assertNotIn("Security audit", queue)
 
     def test_calendar_bands_and_week_deadline_lines(self) -> None:
-        self.assertIn('data-band="Standup (work)"', self.html)
+        # The day strip is the next 24 hours, so it draws the events inside them: Standup at 09:00
+        # is behind us at 14:30 and no longer on it. Table meeting at 15:00 is.
+        self.assertIn('data-band="Table meeting"', self.html)
+        self.assertNotIn('data-band="Standup (work)"', self.html)
         self.assertIn('data-deadline-name="Final"', self.html)
 
     def test_escapes_html(self) -> None:
@@ -392,11 +395,13 @@ class DensityTest(unittest.TestCase):
         self.html = rb.render(TRACKER, LOG, self.cfg, NOW)
         self.html2 = rb.render(TRACKER, LOG, self.cfg, NOW2)
 
-    def test_day_axis_ends_today_with_few_ticks(self) -> None:
+    def test_day_axis_is_the_next_twenty_four_hours_with_few_ticks(self) -> None:
         for page, now in ((self.html, NOW), (self.html2, NOW2)):
             day = _strip_html(page, "day")
+            start = datetime.fromisoformat(re.search(r'data-axis-start="([^"]+)"', day).group(1))
             end = datetime.fromisoformat(re.search(r'data-axis-end="([^"]+)"', day).group(1))
-            self.assertLessEqual(end, datetime(now.year, now.month, now.day, tzinfo=CT) + timedelta(days=1))
+            self.assertEqual(end - start, timedelta(hours=24))
+            self.assertLessEqual(start, now)
             self.assertLessEqual(day.count('class="tick"'), 9)
             self.assertGreaterEqual(day.count('class="tick"'), 3)
 
@@ -441,7 +446,10 @@ class DensityTest(unittest.TestCase):
         visible = re.sub(r"<[^>]+>", "", self.html.split("</style>", 1)[1].split("<script>", 1)[0])
         self.assertEqual(visible.count(esc), 0)
         self.assertEqual(visible.count("the worker left the registry"), 1)
-        self.assertLess(len(self.html), 32_000)  # 0.10.0: each fold opens onto a sub row per member, ~1 KB on this fixture;  # the page without the logo asset; brand CSS, gridlines, the legend and the folded-row names add ~4 KB, and the session graph ~4.8 (2.6 markup, 2.2 CSS: nine chip fills). The guard is against the 67 KB regression, not against a kilobyte
+        # Raised from 32 000 with the tracer bullet: DUE NEXT and BLOCKED are new first-screen
+        # bands, while the queue and Unassigned tables whose rows they repeat are still below them.
+        # Stage 1 folds those into the one lane table; this comes back down to 32 000 with it.
+        self.assertLess(len(self.html), 36_000)
 
     def test_history_is_one_line_per_clause(self) -> None:
         body = re.search(r"<details><summary>Service architecture refactor</summary>(.*?)</details>", self.html, re.S).group(1)
@@ -527,7 +535,7 @@ class RequirementsTest(unittest.TestCase):
         self.assertNotIn("star bullets", section)
         self.assertNotIn("max-height", page)
         self.assertLess(page.index('class="reqs"'), page.index("<h2>Today</h2>"))
-        self.assertGreater(page.index('class="reqs"'), page.index("Robin's queue"))
+        self.assertGreater(page.index('class="reqs"'), page.index("<h2>Blocked</h2>"))
         sha = hashlib.sha256(REQS.encode()).hexdigest()
         self.assertIn(f'<meta name="requirements-sha256" data-deadline="Final" content="{sha}">', page)
 
@@ -737,7 +745,8 @@ class OrphanAndUnassignedTest(unittest.TestCase):
         self.assertIn("Pick a deploy window", unassigned)
         queue = self.html.split("Robin's queue", 1)[1].split("<h2", 1)[0]
         self.assertNotIn("Pick a deploy window", queue)
-        self.assertLess(self.html.index("Unassigned · 1"), self.html.index("Robin&#x27;s queue") if "Robin&#x27;s queue" in self.html else self.html.index("Robin's queue"))
+        head = "<h2>Robin&#x27;s queue</h2>" if "<h2>Robin&#x27;s queue</h2>" in self.html else "<h2>Robin's queue</h2>"
+        self.assertLess(self.html.index("Unassigned · 1"), self.html.index(head))
 
     def test_no_unassigned_section_when_none(self) -> None:
         self.assertNotIn("Unassigned ·", rb.render(TRACKER, LOG, self.cfg, NOW))
@@ -760,15 +769,15 @@ class GridlinesTest(unittest.TestCase):
         self.assertEqual([round(p, 2) for k, p in grid if k == "full"][:3], [0.0, 14.29, 28.57])
         self.assertEqual(round(next(p for k, p in grid if k == "half"), 2), 7.14)
 
-    def test_day_grid_every_hour_with_two_hour_majors(self) -> None:
+    def test_day_grid_lands_under_the_ticks(self) -> None:
+        """A full line per tick, a half line between. Hourly lines over a rolling 24h axis were 25
+        lines across the strip — hatching, not a grid — and they cost more bytes than they were worth."""
         grid = self.grids("day")
         day = _strip_html(self.page, "day")
-        start = datetime.fromisoformat(re.search(r'data-axis-start="([^"]+)"', day).group(1))
-        end = datetime.fromisoformat(re.search(r'data-axis-end="([^"]+)"', day).group(1))
-        hours = int((end - start).total_seconds() // 3600)
-        self.assertEqual(len(grid), hours + 1)
-        self.assertEqual([k for k, _ in grid].count("full"), hours // 2 + 1)
-        self.assertEqual([k for _, k in [(0, k) for k, _ in grid]][:4], ["full", "half", "full", "half"])
+        ticks = [float(p) for p in re.findall(r'<span class="tick" style="left:([0-9.]+)%">', day)]
+        self.assertEqual([round(p, 2) for k, p in grid if k == "full"], [round(p, 2) for p in ticks])
+        self.assertEqual([k for k, _ in grid][:4], ["full", "half", "full", "half"])
+        self.assertLessEqual(len(grid), 2 * len(ticks))
 
     def test_grid_sits_under_the_bars(self) -> None:
         week = _strip_html(self.page, "week")
@@ -1048,8 +1057,11 @@ class FoldedRowsExpandTest(unittest.TestCase):
         folded = self.folded()
         count = int(re.search(r'data-count="(\d+)"', folded).group(1))
         body = folded.split("</summary>", 1)[1]
-        rows = re.findall(r'<div class="row sub"><div class="name">([^<]+)</div><div class="track"><div class="bar [^"]*" data-item="([^"]+)" data-start="[^"]+" data-end="[^"]+" data-start-src="[^"]+" data-end-src="[^"]+"[^>]*style="left:[0-9.]+%;width:[0-9.]+%">', body)
+        rows = re.findall(r'<div class="row sub"><div class="name">([^<]+)</div><div class="track"><div class="bar [^"]*"([^>]*)style="left:[0-9.]+%;width:[0-9.]+%">', body)
         self.assertEqual(len(rows), count, body)
+        for _, attrs in rows:  # every citation is present, in whatever order the bar writes them
+            for cite in ("data-item=", "data-start=", "data-end=", "data-start-src=", "data-end-src="):
+                self.assertIn(cite, attrs, body)
         self.assertNotIn("folded-list", self.html)
         self.assertNotIn("<li", body)
 
@@ -1061,7 +1073,7 @@ class FoldedRowsExpandTest(unittest.TestCase):
 
     def test_a_sub_row_carries_the_same_state_and_citations_as_a_top_row(self) -> None:
         body = self.folded().split("</summary>", 1)[1]
-        sub = re.search(r'<div class="row sub">.*?<div class="bar ([^"]*)" data-item="Review deploy config"[^>]*>', body)
+        sub = re.search(r'<div class="row sub">.*?<div class="bar ([^"]*)"[^>]*data-item="Review deploy config"[^>]*>', body)
         self.assertIsNotNone(sub, body)
         self.assertIn("open", sub.group(1).split())
         self.assertIn('data-end-src="due"', sub.group(0))
@@ -1092,10 +1104,12 @@ class SessionGraphTest(unittest.TestCase):
         self.assertIsNotNone(m, f"no node for {ref}")
         return m.group(0)
 
-    def test_the_graph_sits_between_the_header_and_the_first_chart(self) -> None:
-        """Who is working is read before what is scheduled: the strips mean nothing without owners."""
-        self.assertLess(self.html.index('<section class="graph"'), self.html.index("<h2>Today</h2>"))
-        self.assertGreater(self.html.index('<section class="graph"'), self.html.index('<div class="header">'))
+    def test_the_graph_closes_the_page_after_the_work(self) -> None:
+        """Who is working used to open the page. The first screen answers what is due and what is
+        blocked (Zach, 2026-09-19); a session that has stopped reporting is called out in BLOCKED,
+        so the full roster is reference and reads last."""
+        self.assertGreater(self.html.index('<section class="graph"'), self.html.index("<h2>Today</h2>"))
+        self.assertGreater(self.html.index('<section class="graph"'), self.html.index("<h2>Lanes</h2>"))
 
     def test_every_session_is_a_node_citing_its_row(self) -> None:
         """`data-ref`/`data-state`/`data-as-of`, so a grader cites structure rather than prose."""
@@ -1844,3 +1858,111 @@ class DeadlineScopeTest(unittest.TestCase):
         # main() renders at the real clock, so the name is whichever governing deadline is next — never the exam.
         m = re.search(r"horizon=(Launch|Final|end of day) ", buf.getvalue())
         self.assertIsNotNone(m, buf.getvalue())
+
+
+# --- the tracer bullet ----------------------------------------------------------------------------
+# One lane threaded through every layer: written with a `name`, parsed, labelled by that name,
+# placed on a rolling 24h axis, inside a deadline swimlane under its owner, on a reordered page.
+
+TRACKER_NAMED = """# Tracker 2026-09-16
+
+Coordinator: coordinator. Board: board-7.
+
+## Lanes
+
+| name | item | owner | state | since | due | size | checklist |
+|---|---|---|---|---|---|---|---|
+| Cut the release branch | **Cut the release branch.** 23:40: handed to impl-2 with the checklist; 00:12: branch cut, suite green on the branch | impl-2 | running 10:30 | 10:30 | 23:00 | M | Checklist: cut |
+|  | Write eval README | Robin | open | 09:00 | 17:00 |  | Checklist: readme |
+
+## Sessions
+
+## Log
+
+- 09:00 opened the day
+"""
+
+
+class TracerTest(unittest.TestCase):
+    """The one lane, end to end. Every assertion here is a layer of the design."""
+
+    def setUp(self) -> None:
+        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.tracker = rb.parse_tracker(TRACKER_NAMED)
+        self.html = rb.render(TRACKER_NAMED, LOG, self.cfg, NOW)
+
+    def test_the_name_column_parses_and_an_unnamed_row_falls_back(self) -> None:
+        named, unnamed = self.tracker.lanes
+        self.assertEqual(named.name, "Cut the release branch")
+        self.assertEqual(named.label, "Cut the release branch")
+        self.assertEqual(named.owner, "impl-2")
+        self.assertEqual(named.size, "M")
+        self.assertEqual(named.warning, "")
+        # No name written: the label is what short_name() has always produced.
+        self.assertEqual(unnamed.name, "")
+        self.assertEqual(unnamed.label, rb.short_name(unnamed.item))
+
+    def test_the_six_and_seven_column_trackers_still_parse(self) -> None:
+        """100 live rows are not rewritten in one go: all three header widths keep working."""
+        old = rb.parse_tracker(TRACKER)
+        self.assertEqual(old.lanes[0].label, "Write eval README")
+        self.assertEqual(old.lanes[0].name, "")
+        sized = rb.parse_tracker(TRACKER.replace(
+            "| item | owner | state | since | due | checklist |",
+            "| item | owner | state | since | due | size | checklist |"))
+        self.assertEqual(sized.lanes[0].name, "")
+
+    def test_the_bar_is_labelled_by_the_name_not_by_the_prose(self) -> None:
+        # `data-item` keeps its meaning: the whole item cell, the bar's provenance. The lane's
+        # identity is the written name, and it gets its own attribute rather than overloading that one.
+        bar = re.search(r'<[^>]*\bbar\b[^>]*data-name="Cut the release branch"[^>]*>', self.html)
+        self.assertIsNotNone(bar, "the bar cites the lane by its written name")
+        self.assertIn("handed to impl-2", bar.group(0), "and still carries the item cell as provenance")
+        # The point of the name column: 50 live lanes open with a bold headline and render its marks.
+        # `data-item` keeps the cell verbatim; no asterisk survives into anything a person reads.
+        visible = re.sub(r"<[^>]+>", "", self.html.split("</style>", 1)[1])
+        self.assertNotIn("**", visible)
+        self.assertIn("Cut the release branch", visible)
+        strip = re.sub(r"<[^>]+>", "", _strip_html(self.html, "day"))
+        self.assertNotIn("handed to impl-2", strip, "the strip draws the name, never the history")
+        self.assertIn("Cut the release branch", _strip_html(self.html, "day"))
+
+    def test_the_day_axis_is_a_rolling_twenty_four_hours(self) -> None:
+        day = _strip_html(self.html, "day")
+        a = datetime.fromisoformat(re.search(r'data-axis-start="([^"]+)"', day).group(1))
+        b = datetime.fromisoformat(re.search(r'data-axis-end="([^"]+)"', day).group(1))
+        self.assertEqual(b - a, timedelta(hours=24))
+        self.assertLessEqual(a, NOW)
+        self.assertGreaterEqual(b, NOW + timedelta(hours=23))
+
+    def test_late_at_night_the_axis_is_still_twenty_four_hours(self) -> None:
+        """The bug this replaces: the axis end clamped to midnight, so at 23:00 only one hour of
+        the strip lay ahead of now however much work was scheduled past it."""
+        late = datetime(2026, 9, 16, 23, 0, tzinfo=CT)
+        day = _strip_html(rb.render(TRACKER_NAMED, LOG, self.cfg, late), "day")
+        a = datetime.fromisoformat(re.search(r'data-axis-start="([^"]+)"', day).group(1))
+        b = datetime.fromisoformat(re.search(r'data-axis-end="([^"]+)"', day).group(1))
+        self.assertEqual(b - a, timedelta(hours=24))
+
+    def test_the_bar_sits_under_a_deadline_swimlane_and_names_its_owner(self) -> None:
+        day = _strip_html(self.html, "day")
+        self.assertRegex(day, r'data-swimlane="Launch"', "a group row per governing deadline")
+        bar = re.search(r'<[^>]*\bbar\b[^>]*data-name="Cut the release branch"[^>]*>', day).group(0)
+        self.assertIn('data-owner="impl-2"', bar)
+        self.assertLess(day.index('data-swimlane="Launch"'), day.index('data-name="Cut the release branch"'))
+
+    def test_the_blocked_band_renders_its_stamps_rather_than_printing_their_markup(self) -> None:
+        """`_stamp` hands back html. Escaping it put `&lt;span class=&quot;stamp stale&quot;&gt;`
+        in front of a reader on the first end-to-end render. TRACKER has sessions that have gone
+        quiet, so the card has rows to get wrong."""
+        page = rb.render(TRACKER, LOG, self.cfg, NOW)
+        blocked = page.split("<h2>Blocked</h2>", 1)[1].split("<h2", 1)[0]
+        self.assertIn("Not reporting · ", blocked)
+        self.assertRegex(blocked, r'Not reporting · [1-9]')
+        self.assertIn('<span class="stamp', blocked)
+        self.assertNotIn("&lt;span", blocked)
+
+    def test_the_page_reads_due_next_then_blocked_then_the_day(self) -> None:
+        body = self.html.split("</style>", 1)[1]
+        order = [body.index(h) for h in ("Due next", "Blocked", 'data-strip="day"', 'data-strip="week"', "<h2>Lanes")]
+        self.assertEqual(order, sorted(order), "sections in the order they are read")

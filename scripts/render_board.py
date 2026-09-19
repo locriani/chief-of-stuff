@@ -29,7 +29,7 @@ import hashlib
 import html
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -41,6 +41,9 @@ SIZES = ("S", "M", "L", "XL")
 ALL_SIZES = "all"
 LANE_COLS = ("item", "owner", "state", "since", "due", "checklist")
 LANE_COLS_SIZED = ("item", "owner", "state", "since", "due", "size", "checklist")
+LANE_COLS_NAMED = ("name", "item", "owner", "state", "since", "due", "size", "checklist")
+# Widest first: a header is matched whole, and the live tracker carries all three while it is rewritten.
+LANE_HEADERS = (LANE_COLS_NAMED, LANE_COLS_SIZED, LANE_COLS)
 DATE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{1,2}):(\d{2}))?$")
 BULLET = re.compile(r"^(\s*)-\s*([^:]+?):\s*(.*?)\s*$")
 CAL_LIST = re.compile(r"^\s*-\s*(\d{1,2}:\d{2})\s*[–—-]\s*(\d{1,2}:\d{2})\s*(?:[A-Z]{2,5}\s+)?(.+?)\s*$")
@@ -112,6 +115,13 @@ class Lane:
     checklist: str
     warning: str = ""
     size: str = ""
+    name: str = ""
+
+    @property
+    def label(self) -> str:
+        """What the lane is called. A written `name` is the coordinator's judgement and stands;
+        with no name column the board falls back to guessing the name out of the prose, as it always has."""
+        return self.name.strip() or short_name(self.item)
 
     @property
     def kind(self) -> str:
@@ -256,6 +266,7 @@ class Event:
 class Bar:
     item: str
     owner: str
+    name: str
     kind: str
     start: datetime
     end: datetime
@@ -264,6 +275,14 @@ class Bar:
     label: str | None
     est: "Estimate | None" = None
     size: str = ""
+    deadline: str = ""
+
+
+@dataclass(frozen=True)
+class Swim:
+    """A swimlane header: the deadline a run of rows answers to. The rows under it are its owners."""
+    name: str
+    count: int
 
 
 @dataclass(frozen=True)
@@ -308,9 +327,19 @@ def _depth0_split(text: str) -> list[str]:
     return [p.strip().rstrip(".").strip() for p in parts if p.strip().rstrip(".").strip()]
 
 
-def history_lines(item: str) -> list[tuple[str, str]]:
-    """What an item cell carries past its short name, one (time, text) per clause; the first HH:MM outside parentheses is pulled out."""
-    full, short = item.strip(), short_name(item)
+def history_lines(item: str, label: str | None = None) -> list[tuple[str, str]]:
+    """What an item cell carries past its name, one (time, text) per clause; the first HH:MM outside parentheses is pulled out.
+
+    `label` is the lane's written name when it has one. The coordinator writes it as a bold headline
+    on the front of the cell (`**Deploy main.** 21:16: …`), so the headline is the name said twice:
+    strip it, whichever form it is in, rather than printing its asterisks.
+    """
+    full = item.strip()
+    short = label or short_name(item)
+    for head in ([f"**{label}.**", f"**{label}**", label] if label else []) + [short]:
+        if head and full.startswith(head):
+            short = head
+            break
     if short == full:
         return []
     rest = full[len(short) :] if not short.endswith("…") and full.startswith(short) else full
@@ -507,8 +536,9 @@ def parse_tracker(text: str) -> Tracker:
             url = candidate
     lanes: list[Lane] = []
     rows = [line for line in _section(text, "## Lanes") if line.strip().startswith("|")]
-    # The header decides the width: a six-column table parses as it always has, every lane unsized.
-    cols = LANE_COLS_SIZED if rows and [c.lower() for c in _cells(rows[0])] == list(LANE_COLS_SIZED) else LANE_COLS
+    # The header decides the width: a six-column table parses as it always has, every lane unsized and unnamed.
+    header = [c.lower() for c in _cells(rows[0])] if rows else []
+    cols = next((h for h in LANE_HEADERS if header == list(h)), LANE_COLS)
     for row in rows[1:]:
         cells = _cells(row)
         if _is_separator(cells):
@@ -768,7 +798,8 @@ def day_bar(lane: Lane, cfg: Config, now: datetime, est: dict[str, Estimate] | N
     else:
         start, start_src = day_start, "carried"
     end, end_src, label = _end(lane, cfg, now, start, est)
-    return Bar(lane.item, lane.owner, lane.kind, start, end, start_src, end_src, label, est.get(lane.item) if est and end_src == "derived" else None, lane.size.strip().upper())
+    bar = Bar(lane.item, lane.owner, lane.label, lane.kind, start, end, start_src, end_src, label, est.get(lane.item) if est and end_src == "derived" else None, lane.size.strip().upper())
+    return replace(bar, deadline=_deadline_for(lane, bar, cfg, now).name)
 
 
 def week_bar(lane: Lane, cfg: Config, now: datetime, est: dict[str, Estimate] | None = None) -> Bar:
@@ -784,7 +815,8 @@ def week_bar(lane: Lane, cfg: Config, now: datetime, est: dict[str, Estimate] | 
     else:
         start, start_src = day_start, "carried"
     end, end_src, label = _end(lane, cfg, now, start, est)
-    return Bar(lane.item, lane.owner, lane.kind, start, end, start_src, end_src, label, est.get(lane.item) if est and end_src == "derived" else None, lane.size.strip().upper())
+    bar = Bar(lane.item, lane.owner, lane.label, lane.kind, start, end, start_src, end_src, label, est.get(lane.item) if est and end_src == "derived" else None, lane.size.strip().upper())
+    return replace(bar, deadline=_deadline_for(lane, bar, cfg, now).name)
 
 
 # --- rendering -----------------------------------------------------------------------------------
@@ -961,16 +993,20 @@ def session_graph(sessions: tuple[Session, ...], cfg: Config, now: datetime, gon
 
 
 def grid_marks(axis_a: datetime, axis_b: datetime, kind: str) -> list[tuple[datetime, bool]]:
-    """Every hour on the day strip (a full line every two), every day on the week strip (a half line at midday)."""
-    step = timedelta(hours=1) if kind == "day" else timedelta(days=1)
-    marks, at, i = [], axis_a, 0
+    """A line per tick on the day strip (a half line between), every day on the week strip (a half line at midday).
+
+    The day grid followed the clock, not the axis: an hourly grid over a rolling 24 hours is 25 lines
+    across ~1100px, one every 44px, which reads as hatching rather than as a grid. It follows the tick
+    step now, so the lines land under the labels whatever span the axis covers.
+    """
+    step = _tick_step(axis_b - axis_a) if kind == "day" else timedelta(days=1)
+    marks, at = [], axis_a
     last = axis_b if kind == "day" else axis_b - step
     while at <= last:
-        marks.append((at, i % 2 == 0 if kind == "day" else True))
-        if kind == "week":
+        marks.append((at, True))
+        if at + step / 2 <= axis_b:
             marks.append((at + step / 2, False))
         at += step
-        i += 1
     return marks
 
 
@@ -983,13 +1019,13 @@ def _bar_row(b: Bar, axis_a: datetime, axis_b: datetime, row_class: str = "row")
     title = f' title="{_esc(b.est.title(b.owner))}"' if b.est else ""
     text = f"<em>{_esc(b.label)}</em>" if b.label else ""
     return (
-        f'<div class="{row_class}"><div class="name">{_esc(short_name(b.item))}</div><div class="track">'
-        f'<div class="{classes}" data-item="{_esc(b.item)}" data-start="{_iso(b.start)}" data-end="{_iso(b.end)}" '
+        f'<div class="{row_class}"><div class="name">{_esc(b.name)}</div><div class="track">'
+        f'<div class="{classes}" data-name="{_esc(b.name)}" data-owner="{_esc(b.owner)}" data-item="{_esc(b.item)}" data-start="{_iso(b.start)}" data-end="{_iso(b.end)}" '
         f'data-start-src="{b.start_src}" data-end-src="{b.end_src}"{label}{_est_attrs(b)}{title} style="left:{left:.2f}%;width:{max(right - left, 0.6):.2f}%">{text}</div></div></div>'
     )
 
 
-def _strip(rows: list[Bar | Summary], axis_a: datetime, axis_b: datetime, events: list[Event], deadlines: list[Deadline], ticks: list[tuple[datetime, str]], kind: str) -> str:
+def _strip(rows: list["Swim | Bar | Summary"], axis_a: datetime, axis_b: datetime, events: list[Event], deadlines: list[Deadline], ticks: list[tuple[datetime, str]], kind: str) -> str:
     out = [f'<div class="strip" data-strip="{kind}" data-axis-start="{_iso(axis_a)}" data-axis-end="{_iso(axis_b)}">']
     out.append('<div class="axis">')
     for at, label in ticks:
@@ -997,13 +1033,19 @@ def _strip(rows: list[Bar | Summary], axis_a: datetime, axis_b: datetime, events
     out.append("</div>")
     out.append('<div class="rows">')
     for row in rows:
+        if isinstance(row, Swim):
+            out.append(
+                f'<div class="row swim-row" data-swimlane="{_esc(row.name)}" data-count="{row.count}">'
+                f'<div class="name">{_esc(row.name)} · {row.count}</div><div class="track"></div></div>'
+            )
+            continue
         left, right = _pct(row.start, axis_a, axis_b), _pct(row.end, axis_a, axis_b)
         edge = (" clamped" if row.end > axis_b else "") + (" clamped-left" if row.end < axis_a else "")
         if isinstance(row, Bar):
             out.append(_bar_row(row, axis_a, axis_b))
             continue
         sm = row
-        names = " · ".join(short_name(m.item) for m in sm.members)
+        names = " · ".join(m.name for m in sm.members)
         hatch = " open-end" if sm.attr == "summary" else ""
         # The folded names were always in the html as empty `.member` spans, readable by a grader and
         # by nobody else. The disclosure opens onto the members drawn as rows on the same axis — sublanes,
@@ -1049,6 +1091,26 @@ def _deadline_for(lane: Lane, bar: Bar, cfg: Config, now: datetime) -> Deadline:
         if d.name.lower() == lane.due.strip().lower() or (bar.end_src != "due" and d.at == bar.end):
             return d
     return governing_deadline(cfg, now)
+
+
+def swimlanes(bars: list[Bar]) -> list["Swim | Bar"]:
+    """Deadline outer, owner inner — the two groupings Zach asked for at once (2026-09-19).
+
+    Deadlines keep the order they are first drawn in; lanes answering to none come last, under one
+    header, because nothing in them can make him late.
+    """
+    order: list[str] = []
+    for b in bars:
+        if b.deadline not in order:
+            order.append(b.deadline)
+    first = {n: i for i, n in enumerate(order)}  # positions before the sort: the list is what is being sorted
+    order.sort(key=lambda n: (n == "", first[n]))
+    rows: list[Swim | Bar] = []
+    for name in order:
+        members = [b for b in bars if b.deadline == name]
+        rows.append(Swim(name or "no deadline", len(members)))
+        rows.extend(sorted(members, key=lambda b: b.owner.lower()))
+    return rows
 
 
 def today_rows(active: list[Lane], cfg: Config, now: datetime, axis_b: datetime, est: dict[str, Estimate] | None = None, floor: timedelta | None = None) -> tuple[list[Bar], list[Bar]]:
@@ -1166,17 +1228,16 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
     nearest = nearest_deadline(cfg, now)
     url = tracker.board_url or cfg.board_url
 
-    # Day strip: ends at the nearest deadline or midnight, whichever is first; starts at the earliest of now-1h,
-    # today's first calendar event, and the drawn bars' cited starts (carried bars sit at the axis start).
+    # Day strip: a rolling 24 hours from this hour. It used to end at the nearest deadline or midnight,
+    # which meant that at 23:00 only an hour of it lay ahead of now, however much work was scheduled past
+    # it — the strip answered "what is left of today" when the question is "what do I have in the next 24
+    # hours" (Zach, 2026-09-19). Tonight's sleep and tomorrow morning are always on it now; a bar that
+    # started before the axis draws clamped-left, as a carried bar always has.
     day_start = datetime.combine(today, time(0, 0), tzinfo=zone)
-    midnight = day_start + timedelta(days=1)
-    axis_b = min(nearest.at, midnight) if nearest.at >= now else midnight
+    axis_a = now.replace(minute=0, second=0, microsecond=0)
+    axis_b = axis_a + timedelta(hours=24)
     est = estimates(active, cfg, now, history(lanes, cfg, now))
-    day_bars, day_folded = today_rows(active, cfg, now, axis_b, est, _tick_step(axis_b - (now - timedelta(hours=1))))
-    cited = [b.start for b in day_bars if b.start_src != "carried" and b.start >= day_start]
-    firsts = [e.start for e in events if e.start >= day_start]
-    axis_a = max(day_start, min(cited + firsts + [now - timedelta(hours=1)]).replace(minute=0, second=0, microsecond=0))
-    axis_b = max(axis_b, axis_a + timedelta(hours=3))
+    day_bars, day_folded = today_rows(active, cfg, now, axis_b, est, _tick_step(axis_b - axis_a))
     step = _tick_step(axis_b - axis_a)
     day_ticks = []
     t = axis_a
@@ -1198,12 +1259,12 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
         week_ticks.append((t, t.strftime("%a %d")))
         t += timedelta(days=1)
 
-    def item_cell(item: str) -> str:
-        short = short_name(item)
+    def item_cell(item: str, label: str) -> str:
+        short = label
         if short == item.strip():
             return _esc(item)
-        lines = history_lines(item) or [("", item)]
-        body = "".join(f"<li><time>{_esc(t)}</time><span>{_esc(text)}</span></li>" for t, text in lines)
+        lines = history_lines(item, label if label != short_name(item) else None) or [("", item)]
+        body = "".join(f"<li><time>{_esc(t)}</time><span>{_inline(text)}</span></li>" for t, text in lines)
         return f'<details><summary>{_esc(short)}</summary><ul class="hist">{body}</ul></details>'
 
     def lane_rows(group: list[Lane]) -> str:
@@ -1211,18 +1272,18 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
         for lane in group:
             warn = f' <span class="warn">{_esc(lane.warning)}</span>' if lane.warning else ""
             size = f' data-size="{_esc(lane.size)}"' if lane.size.strip() else ""
-            rows.append(f'<tr data-state="{_esc(lane.kind)}"{size}><td>{item_cell(lane.item)}{warn}</td><td>{_esc(lane.owner)}</td><td>{_esc(lane.state)}</td><td>{_esc(lane.since)}</td><td>{_esc(lane.due)}</td><td>{_esc(lane.size)}</td></tr>')
+            rows.append(f'<tr data-state="{_esc(lane.kind)}"{size}><td>{item_cell(lane.item, lane.label)}{warn}</td><td>{_esc(lane.owner)}</td><td>{_esc(lane.state)}</td><td>{_esc(lane.since)}</td><td>{_esc(lane.due)}</td><td>{_esc(lane.size)}</td></tr>')
         return "\n".join(rows) or '<tr><td colspan="6" class="muted">none</td></tr>'
 
     queue = [lane for lane in active if lane.owner.strip().lower() == cfg.user.lower()]
     unassigned = [lane for lane in active if lane.owner.strip().lower() in ("unassigned", "")]
-    unassigned_rows = "\n".join(f"<tr><td>{_esc(short_name(l.item))}</td><td>{_esc(l.due)}</td><td>{_esc(l.state)}</td></tr>" for l in unassigned)
+    unassigned_rows = "\n".join(f"<tr><td>{_esc(l.label)}</td><td>{_esc(l.due)}</td><td>{_esc(l.state)}</td></tr>" for l in unassigned)
     unassigned_html = f"""<h2>Unassigned · {len(unassigned)}</h2>
 <table><tr><th>item</th><th>due</th><th>state</th></tr>
 {unassigned_rows}
 </table>
 """ if unassigned else ""
-    queue_rows = "\n".join(f"<tr><td>{_esc(short_name(l.item))}</td><td>{_esc(l.due)}</td><td>{_esc(l.state)}</td></tr>" for l in queue) or '<tr><td colspan="3" class="muted">nothing waiting on you</td></tr>'
+    queue_rows = "\n".join(f"<tr><td>{_esc(l.label)}</td><td>{_esc(l.due)}</td><td>{_esc(l.state)}</td></tr>" for l in queue) or '<tr><td colspan="3" class="muted">nothing waiting on you</td></tr>'
     running = [l for l in active if l.kind == "running"]
     orphaned = [l for l in active if l.kind == "orphaned"]
     waiting = [l for l in active if l.kind not in ("running", "orphaned")]
@@ -1238,6 +1299,43 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
         for d in req_decks
         if requirements.get(d.name) is not None
     )
+    # 1 · DUE NEXT — every active lane with a clock on it, soonest first.
+    dated = sorted(
+        ((d, lane) for lane in active if (d := _resolve_due(lane.due, cfg, today))),
+        key=lambda pair: pair[0],
+    )
+    due_rows = "\n".join(
+        f'<tr><td>{d.strftime("%H:%M") if d.date() == today else d.strftime("%a %d %H:%M")}</td>'
+        f"<td>{_esc(lane.label)}</td><td>{_esc(lane.owner)}</td><td>{_esc(lane.state)}</td><td>{_esc(lane.size)}</td></tr>"
+        for d, lane in dated
+    ) or '<tr><td colspan="5" class="muted">nothing with a time on it</td></tr>'
+    per_deadline = " · ".join(
+        f"{sum(1 for d, _ in dated if d <= dl.at)} before {dl.name}" for dl in cfg.deadlines if dl.at >= now
+    )
+    due_html = f"""<h2>Due next</h2>
+<div class="meta">{_esc(per_deadline)}</div>
+<table><tr><th>at</th><th>name</th><th>owner</th><th>state</th><th>size</th></tr>
+{due_rows}
+</table>
+"""
+
+    # 2 · BLOCKED — the band that is never folded: on you, unowned, or a session that stopped reporting.
+    awaiting = [lane for lane in active if lane.owner.strip().lower() == cfg.user.lower()]
+    unowned = [lane for lane in active if lane.kind == "orphaned"]
+    quiet = [s for s in tracker.sessions if _band(_age(s, cfg, now)[1] or 10**6) == "stale" or not s.state.strip()]
+
+    def blocked_card(title: str, rows: list[str]) -> str:
+        body = "".join(f"<li>{r}</li>" for r in rows) or '<li class="muted">none</li>'
+        return f'<div class="card"><h3>{_esc(title)} · {len(rows)}</h3><ul>{body}</ul></div>'
+
+    blocked_html = f"""<h2>Blocked</h2>
+<div class="cards">
+{blocked_card("Awaiting you", [f"{_esc(l.label)} <span class='muted'>{_esc(l.due)}</span>" for l in awaiting])}
+{blocked_card("Orphaned", [f"{_esc(l.label)} <span class='muted'>{_esc(l.due)}</span>" for l in unowned])}
+{blocked_card("Not reporting", [f"{_esc(s.name)} {_stamp(s, cfg, now)[0]}" for s in quiet])}
+</div>
+"""
+
     long_items = sum(1 for lane in lanes if len(lane.item) > LONG_ITEM)
     orphan_note = f" · {sum(1 for l in active if l.kind == 'orphaned')} orphaned" if any(l.kind == "orphaned" for l in active) else ""
     long_note = f" · {long_items} {'lane carries' if long_items == 1 else 'lanes carry'} history in the item cell" if long_items else ""
@@ -1322,20 +1420,20 @@ details summary{{cursor:pointer}} details[open] summary{{margin-bottom:4px}}
 <div class="meta">tracker as of {now.strftime('%H:%M')} {_esc(tzname)} <span id="ago"></span> · kept by chief-of-stuff · board {_esc(url or 'not yet published')}{long_note}</div>
 {resume_strip(parse_resume(tracker_text))}</div></div>
 
-{session_graph(tracker.sessions, cfg, now, gone_sessions(tracker.lanes, tracker.sessions))}
-{unassigned_html}<h2>{_esc(cfg.user)}'s queue</h2>
-<table><tr><th>item</th><th>due</th><th>state</th></tr>
-{queue_rows}
-</table>
-{req_html}
+{due_html}{blocked_html}{req_html}
 
 <h2>Today</h2>
 <div class="meta">{len(day_bars)} scheduled · {len(day_folded)} folded into one row (no estimate, or due or estimated after today) · bands are calendar events · green line is now{orphan_note}</div>
-{legend()}{_strip(day_bars + day_summaries, axis_a, axis_b, day_events, [nearest], day_ticks, "day")}
+{legend()}{_strip(swimlanes(day_bars) + day_summaries, axis_a, axis_b, day_events, [nearest], day_ticks, "day")}
 
 <h2>Week</h2>
 <div class="meta">{len(week_bars)} bars · {len(week_groups)} rows grouped by due day · the rest folded into one row per deadline · dashed lines are deadlines</div>
 {_strip(week, week_a, week_b, [], list(cfg.deadlines), week_ticks, "week")}
+
+{unassigned_html}<h2>{_esc(cfg.user)}'s queue</h2>
+<table><tr><th>item</th><th>due</th><th>state</th></tr>
+{queue_rows}
+</table>
 
 <h2>Lanes</h2>
 <table><tr><th>item</th><th>owner</th><th>state</th><th>since</th><th>due</th><th>size</th></tr>
@@ -1346,6 +1444,7 @@ details summary{{cursor:pointer}} details[open] summary{{margin-bottom:4px}}
 {group_head("done", done)}
 {lane_rows(done)}
 </table>
+{session_graph(tracker.sessions, cfg, now, gone_sessions(tracker.lanes, tracker.sessions))}
 </div>
 <script>
 (function(){{
