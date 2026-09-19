@@ -831,3 +831,18 @@ One word, `HEAD` to `main`, and the resolution is now checked so a failure repor
 The queue check that a row must name why it is next and who is blocked fired on a struck-through tombstone — an entry recording that push and deploy had been *removed* from the queue, with `—` in both cells. The check was right and the row was deleted, but the shape is real: a queue sometimes needs to record that something left it and why.
 
 If it is ever supported it should be a different thing from a row, not a row with empty cells. A decision row that cannot be decided is exactly what the check exists to catch, and widening it to admit tombstones would blind it to the case it was written for.
+
+## 111 — a report is not a state change
+
+**From:** `openemr-arch`'s account of its own 04:32 stop, relayed by `gauntlet-b2`, with `f1c209`'s identical admission beside it.
+**Status:** Adopted 2026-09-19 (0.12.4).
+
+The hourly sweep found two sessions idle eighty minutes after each had announced its next step, both with unmoved branches. Neither was blocked. f1c209: "I told you at 04:34 I was starting S1 and then ended the turn without starting it." arch finished a commit at 04:32, wrote a long report, and treated the report as the completion — "sending the summary felt like finishing the work, and the next item never started."
+
+This is a third failure class, and the first two do not reach it. Finding 101 is a session declining work it judged out of bounds; finding 108 is a session accepting a constraint it did not owe. Both involve judgement about a rule. This one involves none: the session intends to continue and simply does not, and it is invisible from the inside because the transcript ends on a paragraph that reads like a conclusion. `DECLINED` against `UNOWNED` does not distinguish it either, because nothing was declined. A finished report with no next action named is byte-identical to a finished report from a session about to keep going, and the difference first appears in a diff an hour later.
+
+arch's rule, adopted as it proposed it: a session that has just reported names what it is doing next in the same breath, or is assumed idle.
+
+It lands on the line this repo had already corrected once. The template ended `Report: <what to reply with when done>`, which is exactly the instruction that makes a report feel terminal. It now ends in one of two named states — the one thing you are starting now, or `idle and available` — and never neither, with the mechanism stated in the header so the rule reads as a description of a real failure rather than as ceremony. Naming the next action makes the stop visible at the moment it happens, to the session itself, which is the only observer present.
+
+The hourly sweep is the external form of the same check and is not a substitute: it finds the stop up to an hour late. Both instruments Zach asked for tonight — the sweep at 03:32, and a prod at 03:50 for the session that "keeps trying to stop" — caught this within the hour, which argues for the sweep and equally that the sweep should not have had to.

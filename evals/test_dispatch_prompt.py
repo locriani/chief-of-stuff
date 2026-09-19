@@ -403,3 +403,22 @@ class ChallengedConstraintTest(unittest.TestCase):
 
     def test_a_constraint_that_traces_to_a_hand_off_is_said_so_not_agreed_to(self):
         self.assertIn("say so and let it be ruled on", self.body)
+
+
+class ReportIsNotAStateChangeTest(unittest.TestCase):
+    """arch, 04:32: sending the summary felt like finishing the work, and the next item never started."""
+
+    def setUp(self):
+        self.tmp, self.root = workspace()
+        self.addCleanup(self.tmp.cleanup)
+        self.body = dp.compose(self.root, "2026-09-18", "Security audit")
+
+    def test_the_report_line_demands_one_of_two_named_states(self):
+        self.assertRegex(self.body, r"(?m)^Report:.*`Next:`")
+        self.assertIn("idle and available", self.body)
+
+    def test_the_header_says_why_a_report_feels_terminal(self):
+        self.assertIn("A report is not a state change", self.body)
+
+    def test_an_unnamed_next_reads_as_idle_rather_than_as_working(self):
+        self.assertIn("assume you are idle", self.body)
