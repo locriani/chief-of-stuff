@@ -762,3 +762,42 @@ class PushGapNamesMainTest(unittest.TestCase):
         line = al._push_gap(self.root / "trees" / "wt-unmerged")
         self.assertIn(f"main {self.main}", line)
         self.assertIn("even with origin/main", line)
+
+
+class RefJoinTest(unittest.TestCase):
+    """Finding 112. A ref is minted once and survives a rename; a name is a tab title, and one changed
+    at 03:21 on Zach's word that the worktree is the name. The join read the names, missed, and called
+    a session that had committed five minutes earlier orphaned. Where both sides carry a ref, the ref
+    is the join.
+    """
+
+    DIRTY = "| Unsaved work | sam | waiting | 09:00 |  | Checklist: Unsaved work |"
+
+    def audit(self, ownership: str, sessions: str):
+        tmp, root = workspace(self.DIRTY, ownership, sessions=sessions)
+        self.addCleanup(tmp.cleanup)
+        return al.audit(root, "2026-09-17")
+
+    def test_a_renamed_session_is_not_an_orphan(self) -> None:
+        report = self.audit("| sam [768194] | worktree wt-dirty (feat/dirty) |",
+                            session_row("**openemr-arch** (tab title `sam`)", ref="768194"))
+        self.assertEqual(report.orphans, [], report.lines)
+
+    def test_a_bolded_session_name_still_joins_when_there_is_no_ref(self) -> None:
+        report = self.audit("| sam | worktree wt-dirty (feat/dirty) |", session_row("**sam**"))
+        self.assertEqual(report.orphans, [], report.lines)
+
+    def test_a_ref_no_session_carries_is_an_orphan_however_familiar_the_name(self) -> None:
+        report = self.audit("| sam [999999] | worktree wt-dirty (feat/dirty) |",
+                            session_row("sam", ref="a1b2c3"))
+        self.assertEqual(len(report.orphans), 1, report.lines)
+        self.assertIn("999999", str(report.orphans[0]))
+
+    def test_with_no_ref_on_the_owner_the_name_still_decides(self) -> None:
+        report = self.audit("| sam | worktree wt-dirty (feat/dirty) |", session_row("sam", ref="768194"))
+        self.assertEqual(report.orphans, [], report.lines)
+
+    def test_a_tracker_whose_sessions_carry_no_refs_falls_back_to_names(self) -> None:
+        """An empty ref column is not a roster of nobody, the same way an empty table is not."""
+        report = self.audit("| sam [768194] | worktree wt-dirty (feat/dirty) |", session_row("sam", ref=""))
+        self.assertEqual(report.orphans, [], report.lines)
