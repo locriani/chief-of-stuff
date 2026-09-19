@@ -541,6 +541,13 @@ Measured on the two live trackers before the change: 100 and 97 lanes, 34 and 20
 
 Findings 80–97 are the 42 observations five dispatched sessions sent between 23:02 and 23:08 on 2026-09-18, at Zach's request, after their first evening under the 0.9.0–0.10.1 dispatch flow: `openemr-impl-1` [4cd339] (ten), `openemr-impl-2` [78935c] (eleven), `openemr-research-1` [e928f1] (six), `openemr-research-2` [281229] (seven), and the architecture session `openemr-arch` [768194] (eight). Folded where they overlap; each entry names every reporter. All are **Recorded**: none has been ruled on, and none changes a rule until Zach says so. Where a reporter's own words carry the point they are quoted.
 
+## 79 — a size arrives with its row, never in a move about another lane
+
+**From:** the C9 reruns, 2026-09-19 00:4x — `board-republish-on-lane-change` and `lane-done-ticks-checkbox`, both red the same way.
+**Status:** Adopted 2026-09-19 (0.11.1).
+
+Both fixtures carry the six-column Lanes table. Told "the audit is done", the coordinator widened the table to seven columns mid-move and wrote `M` into Robin's release-notes row, which it had no reason to touch; the "other lane untouched" grader objected, correctly. The 0.11.0 rule said the table has seven columns and said nothing about a table that has six. It now says: a size arrives when you write the row or its item changes, never in a move about another lane; a tracker you inherit with six columns is widened, every size blank, at Open the day, and until then is read as it is. The live coordinator had already chosen that for itself ("the size column waits for the 09-19 open rather than a night rewrite of 107 rows"). One grader also predated `data-size` on a table row. Both cases 3/3 green on the fix.
+
 ## 80 — polling an idle standing session returns the previous answer
 
 **From:** impl-1 (5), impl-2 (3), research-1 (A), research-2 (1), arch (7) — every session that was polled.
