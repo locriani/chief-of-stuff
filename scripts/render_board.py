@@ -1725,11 +1725,11 @@ details summary{{cursor:pointer}} details[open] summary{{margin-bottom:4px}}
 body{{padding:12px 12px 36px}}
 .strip{{--name-w:96px}}
 .cards,.cards.due{{grid-template-columns:1fr}}
-.due-row{{flex-wrap:wrap;gap:0 8px;align-items:flex-start;padding:5px 0;border-top:1px dotted var(--line)}}
-.due-row .at{{width:44px}}
-.due-row .what{{flex:1 1 100%;white-space:normal;order:1;min-width:0}}
-.due-row .who,.due-row .state,.due-row .size{{order:2;width:auto;flex:0 0 auto;margin-left:52px}}
-.due-row .who{{margin-left:52px}} .due-row .state,.due-row .size{{margin-left:0}}
+.due-row{{flex-wrap:wrap;gap:0 8px;align-items:baseline;padding:5px 0;border-top:1px dotted var(--line)}}
+.due-row .at{{flex:0 0 52px;width:52px;white-space:nowrap;order:0}}
+.due-row .what{{flex:1 1 calc(100% - 60px);white-space:normal;order:1;min-width:0}}
+.due-row .who{{order:2;flex:0 0 auto;width:auto;margin-left:60px}}
+.due-row .state,.due-row .size{{order:3;flex:0 0 auto;width:auto;margin-left:0}}
 .due-row .who::after,.due-row .state::after{{content:" ·";color:var(--muted)}}
 .load{{height:58px}} .load-cell .col{{height:40px}} .load-cell .at{{font-size:9.5px}}
 .lanes>label{{font-size:12px;padding:3px 9px}}

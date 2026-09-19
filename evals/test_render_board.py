@@ -1194,7 +1194,11 @@ class PhoneTest(unittest.TestCase):
 
     def test_the_due_row_stacks_instead_of_holding_five_columns(self) -> None:
         self.assertRegex(self.phone, r"\.due-row\{[^}]*flex-wrap:wrap")
-        self.assertRegex(self.phone, r"\.due-row \.what\{[^}]*flex:1 1 100%")
+        # The name sits BESIDE the time, not under it: a full-width `what` pushes the time onto a
+        # line of its own and the row becomes three lines, which the 390px render showed and the
+        # overflow probe did not — it measured width, not whether the row still reads.
+        self.assertRegex(self.phone, r"\.due-row \.what\{[^}]*flex:1 1 calc\(100% - 60px\)")
+        self.assertRegex(self.phone, r"\.due-row \.at\{[^}]*white-space:nowrap")
 
     def test_the_strip_name_column_is_pixels_not_a_third_of_the_screen(self) -> None:
         self.assertRegex(self.phone, r"\.strip\{--name-w:9[0-9]px\}")
@@ -1218,7 +1222,7 @@ class PhoneTest(unittest.TestCase):
         """Laptop first: every phone rule lives inside a max-width query and none outside one."""
         outside = re.sub(r"@media[^{]*\{(?:[^{}]|\{[^{}]*\})*\}", "", self.css)
         self.assertNotIn("--name-w:96px", outside)
-        self.assertNotIn("flex:1 1 100%", outside)
+        self.assertNotIn("calc(100% - 60px)", outside)
 
 
 class GridlinesTest(unittest.TestCase):
