@@ -874,3 +874,65 @@ class ClaudeBinaryTest(unittest.TestCase):
     def test_the_command_names_the_resolved_binary(self):
         case = run.Case(name="x", root=Path("."), spec={})
         self.assertEqual(run.command(case, "agent", "opus", "hi")[0], run.claude_binary())
+
+
+class VerdictOnDiskTest(unittest.TestCase):
+    """Finding 114b, `board-ux-improvements`: the harness prints verdicts and stores none.
+
+    A result dir held `stream.jsonl`, `command.json`, `fixture`, `fixture-before` and `shims` — every
+    input to grading and none of its output. It piped a 3.3-hour sweep through `tail -80` and lost 56
+    of 58 case verdicts. Grading is a pure function of the result dir, so it rebuilt them; that it was
+    *possible* is not a reason for a run not to record what it decided.
+    """
+
+    def test_a_run_writes_what_it_decided(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "case" / "agent" / "1"
+            run.write_verdict(out, "lane-sized-on-write", "agent", "opus", 1,
+                              [("g1", True, "matched"), ("g2", False, "no such line")], None, "12.3s")
+            data = json.loads((out / "verdict.json").read_text())
+        self.assertEqual(data["case"], "lane-sized-on-write")
+        self.assertEqual(data["arm"], "agent")
+        self.assertEqual(data["run"], 1)
+        self.assertFalse(data["passed"])
+        self.assertEqual([g["name"] for g in data["graders"]], ["g1", "g2"])
+        self.assertEqual(data["graders"][1]["why"], "no such line")
+
+    def test_a_harness_error_is_recorded_as_unmeasured_not_as_red(self) -> None:
+        """The 0.9.0 lesson, now durable: a case that never ran is not a case that failed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "case" / "agent" / "1"
+            run.write_verdict(out, "c", "agent", "opus", 1, [], "claude exited 1", "0.2s")
+            data = json.loads((out / "verdict.json").read_text())
+        self.assertEqual(data["error"], "claude exited 1")
+        self.assertIsNone(data["passed"])
+
+
+class RunIsASnapshotTest(unittest.TestCase):
+    """Finding 114: the allowlist carried absolute paths into the live checkout, and so did
+    `--plugin-dir`. A run read whatever was on disk when each case reached it, so a tree being edited
+    mid-run made the run two verdicts wearing one name, with nothing in the output saying so.
+    """
+
+    def test_the_allowlist_follows_the_root_it_is_given(self) -> None:
+        cmd = run.command(run.Case("c", Path("/c"), {}), "baseline", "sonnet", None, root=Path("/snap"))
+        joined = " ".join(cmd)
+        self.assertIn("/snap/scripts/render_board.py", joined)
+        self.assertIn("/snap/scripts/audit_lanes.py", joined)
+        self.assertNotIn(str(run.PLUGIN_ROOT / "scripts"), joined)
+
+    def test_the_plugin_dir_follows_it_too(self) -> None:
+        cmd = run.command(run.Case("c", Path("/c"), {}), "agent", "sonnet", None, root=Path("/snap"))
+        self.assertIn("/snap", cmd[cmd.index("--plugin-dir") + 1])
+
+    def test_the_default_root_is_still_the_live_tree(self) -> None:
+        joined = " ".join(run.command(run.Case("c", Path("/c"), {}), "baseline", "sonnet", None))
+        self.assertIn(str(run.PLUGIN_ROOT / "scripts" / "render_board.py"), joined)
+
+    def test_a_snapshot_carries_the_code_and_not_the_results(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = run.snapshot_plugin(Path(tmp) / "plugin")
+            self.assertTrue((dest / "scripts" / "render_board.py").is_file())
+            self.assertTrue((dest / "agents").is_dir())
+            self.assertFalse((dest / ".git").exists())
+            self.assertFalse((dest / "evals" / "results").exists())

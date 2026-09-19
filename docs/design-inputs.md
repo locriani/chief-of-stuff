@@ -881,6 +881,8 @@ The hazard is collision between two correct sessions. One runs a suite; the othe
 
 The fix is to make a run a verdict on a snapshot: copy the scripts into the run's temp dir at launch and allowlist the copies, so the checkout stays writable and every case in a run exercises identical code.
 
+**Fixed 2026-09-19 07:5x (0.12.8), once board-ux's sweep exited and `scripts/` was free.** One copy of the plugin tree per sweep, under `evals/results/<stamp>/plugin`, with `.git` and `evals/results` skipped — 2.2 MB and 321 files. Both the allowlisted script paths and `--plugin-dir` follow that root, because the agent definition is read live too and is as much a mid-run moving part as the scripts; it was six exposures, not five. The checkout stays writable, every case in a sweep exercises identical code, and the results dir now contains the code that produced it.
+
 **06:57, board-ux again, and it widens the rule:** the hold is not on *editing*, it is on anything that changes `scripts/` — and a CIMP merge of main into the sweeping worktree is such a thing. So a session running a sweep cannot take a merge either, which is a constraint nobody would infer from "do not edit during a run". Worth stating because it binds the session that is behaving best: one holding a fix rather than splitting its run is also holding its merge. Deliberately not done at 06:16 — board-ux's run depends on current behaviour being stable for another hour, and changing the harness under a live run is the same mistake pointed the other way.
 
 Beside it, the lesson that goes with 112 and 113: a fix whose join key nothing on today's tracker exercises leaves the live board byte-identical, and that is the expected result rather than a failed fix. Zero of 129 lane owners carry emphasis. Proven by the red test or not proven at all.
@@ -1006,3 +1008,16 @@ It answers "how many things are true". A per-lane sha answers "which lane failed
 **It also exposed a latent defect it did not cause.** Six grouped lanes rendered as six ellipses, because `short_name` cuts inside a `**` pair and returns a bare ellipsis — the same defect fixed for the decision queue earlier tonight and never carried across. The old per-lane output had been doing it all along; one ellipsis a line reads as a long item, six on a line reads as a bug. `_unmark` first, and the lanes are legible for the first time.
 
 **And a warning from board-ux that belongs with option (a), not this one:** if a per-lane sha is ever built, a sha that fails validation must resolve to **unknown**, never to clear. Every failure mode of the instrument today is a false reopen — noisy, self-clearing, and visible. A sha-based check introduces a false *clear*, which is silent and permanent. `rows_for` already holds that line for tree attribution, refusing to guess when a lane matches no row; (a) would invert it unless it is built with that rule in front.
+
+## 114b — the harness printed its verdicts and stored none
+
+**From:** `board-ux-improvements`, 07:53, from its own 3.3-hour sweep.
+**Status:** Fixed 2026-09-19 (0.12.8).
+
+A result dir held `stream.jsonl`, `command.json`, `fixture`, `fixture-before` and `shims` — every *input* to grading and none of its output. It piped the sweep through `tail -80` at 04:25 and lost 56 of 58 case verdicts.
+
+It got them back, and the recovery is the finding's other half: **grading is already a pure function of the result dir.** Rebuild `RunRecord` from the stored `stream.jsonl`, `fixture`, `fixture-before` and `calendar/calls.jsonl`; take `t_start`/`t_end` from the mtimes of `command.json` (written immediately before the subprocess) and `stream.jsonl` (immediately after), which bracket the run inside the graders' own tolerance; rebuild `ctx` with `context(tz, t_start)`; call `grade(g, rec)`. It reproduced the verdicts it still had, as a control. The `grade_turns` path is not covered.
+
+That it was recoverable is a recovery route, not a reason to leave it unwritten. Each run now writes `verdict.json` beside the inputs it decided from. `passed` is `None` when a harness error stopped the run, never `false` — a case that never ran is not a case that failed, which is the 0.9.0 lesson that once read as fourteen regressions to hunt.
+
+The two halves of 114 are the same defect seen from either end. Snapshotting the scripts makes a run a verdict on one state of the code; writing the verdict makes the run's own conclusion survive the terminal it was printed to. A sweep that did neither stored every input to grading and no output, against code that could change underneath it, and said nothing about either.
