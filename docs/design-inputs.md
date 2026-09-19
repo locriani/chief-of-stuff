@@ -299,7 +299,7 @@ So a session always calls the scripts belonging to the rules it loaded. There is
 ## 61 — the guarantee did not cover the calls that mattered
 
 **From:** `gauntlet-bc`, 2026-09-18 13:35, correcting finding 60 twelve minutes after it was written.
-**Status:** Adopted 2026-09-18 (0.8.1).
+**Status:** Adopted 2026-09-18 (0.8.1). The reporting rule at the end is in `## Resume` as of 0.10.1, and the workspace line it traced (`CLAUDE.md:181`) now carries `${CLAUDE_PLUGIN_ROOT}`.
 
 Finding 60 said version stamping makes instruction/script skew structurally impossible: `${CLAUDE_PLUGIN_ROOT}` binds at session start, so a session always calls the scripts of the version whose rules it loaded. The mechanism is right. The conclusion was not, because **that coordinator never calls through `${CLAUDE_PLUGIN_ROOT}`.** Its instructions name absolute paths into the canonical development tree — `/Users/locriani/Developer/chief-of-stuff/scripts/<name>.py` — for every script it runs.
 
@@ -499,4 +499,17 @@ At 12:01 on 09-20 `nearest_deadline` becomes `PCCAT 1st attempt` (09-26) and eve
 **Status:** Adopted 2026-09-18 (0.10.0).
 
 The fixture had no `CLAUDE.md`. The coordinator found no `## Coordinator` block, said so, and correctly wrote nothing — and the grader that wanted the orphaned tree in `Verified` went red. Fourth fixture shape found in one day, same tell as the six empty repos: the fixture passes when the agent does less. The fixture lint finding 65 asked for gains a line: every case with `repo` has a fixture `CLAUDE.md`. The same run's `spawn-needs-a-yes` red was a grader anchored on `^\| Security audit \|`, the third of the "text the agent no longer authors" shape since C5 made the dispatch prompt derived from the item cell.
+
+## 75 — the fixtures had no test
+
+**From:** C8, 2026-09-18 22:4x, closing findings 65 (third point), 68 and 74.
+**Status:** Adopted 2026-09-18 (0.10.1).
+
+Four fixture shapes in one day rewarded the coordinator for doing less — a repo with no files, a fixture with no `CLAUDE.md`, a Sessions table the ruleset had stopped writing, a `- Verified:` line with no clock — and every unit test passed through all of them, because no test read the cases. `evals/test_cases.py` does now: grader types against `run.GRADER_TYPES` (a tuple pinned to the dispatcher by a test that asks the dispatcher to reject a name the tuple lacks), patterns and placeholders through the runner's own `render()`, a Coordinator block wherever there is a repo, files wherever there are worktrees, `sessions.json` keys the mock reads, nine-column Sessions tables, and clocked `Verified` lines that `resume_fields()` draws.
+
+Its first run found 20 seven-column Sessions tables and 6 clockless `Verified` lines across 21 fixture trackers, and one more thing nobody had noticed: `registration-fills-the-ref` sets `started_minutes_ago: 3` on the session that just came up, and `mock_peers.py` read only `started_hours_ago`, so the run's whole premise — a session moments old — was listed as an hour old. The key-set check is what surfaced it; the mock honours minutes now.
+
+The rule underneath: a fixture is a claim about the live shape, and a claim nobody tests drifts in the direction that makes the run easiest. The lint runs under CIMP on main, which is where a drift has to be caught.
+
+The third of the items Zach held, the `wt-tab-17` Ghostty tab from the 13:26 launcher check, was found already closed: nine tabs listed, none of them it.
 
