@@ -1353,3 +1353,102 @@ Coordinator: coordinator. Board: board-7.
         html = rb.render(self.tracker, LOG, self.cfg, NOW)
         css = html.split("<style>")[1].split("</style>")[0]
         self.assertIn(".chip.gone{", css)
+
+
+QUEUE_TRACKER = """# Tracker 2026-09-16
+
+## Lanes
+
+| item | owner | state | since | due | checklist |
+|---|---|---|---|---|---|
+| A oldest | worker | open | 2026-09-15 |  | c |
+| B running | worker [ab12cd] | running 10:00 | 2026-09-16 |  | c |
+| C newer | worker (was ab12cd) | open | 2026-09-16 |  | c |
+| D dated | worker | open | 2026-09-16 | 17:00 | c |
+| E unassigned | unassigned | open | 2026-09-16 |  | c |
+| F blank |  | open | 2026-09-16 |  | c |
+| G orphaned | left-session | orphaned 09:05 | 2026-09-15 |  | c |
+| H left behind | left-session | open | 2026-09-16 |  | c |
+| I dash | — | open | 2026-09-16 |  | c |
+| J beyond | worker | open | 2026-09-16 | Final | c |
+| K done | worker | done 11:00 | 2026-09-16 |  | c |
+
+## Log
+
+- 09:00 opened the day
+"""
+
+
+class EstimateTest(unittest.TestCase):
+    """An owned lane with no `due` ends where its owner's queue puts it, and cites `derived`.
+
+    The tracker's clock is day-grained (`since` and `due` are dates; only `done` carries a time), so no
+    lane has a duration to learn from. The estimator therefore claims nothing about effort: lane i of
+    an owner's N ends at `H - (N-i)/N x (H - now)`, where H is the nearest deadline still ahead. The
+    one fabricated input is the order, and it is stated: running first, then oldest first.
+    """
+
+    def setUp(self) -> None:
+        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.lanes = [lane for lane in rb.parse_tracker(QUEUE_TRACKER).lanes if lane.kind != "done"]
+        self.by = {lane.item: lane for lane in self.lanes}
+        self.est = rb.estimates(self.lanes, self.cfg, NOW)
+        self.h = self.cfg.deadlines[0].at  # Launch 23:59, the nearest deadline ahead of 14:30
+        self.r = self.h - NOW
+
+    def test_the_queue_is_running_first_then_oldest_and_the_dated_lane_counts(self) -> None:
+        # worker: B (running), A (since 09-15), C (09-16), D (09-16, due 17:00 <= H) -> N=4; J's due is past H.
+        self.assertEqual({k for k in self.est if self.by[k].owner.startswith("worker")}, {"A oldest", "B running", "C newer"})
+        self.assertEqual((self.est["B running"].i, self.est["B running"].n), (1, 4))
+        self.assertEqual((self.est["A oldest"].i, self.est["A oldest"].n), (2, 4))
+        self.assertEqual((self.est["C newer"].i, self.est["C newer"].n), (3, 4))
+        self.assertEqual(self.est["B running"].end, self.h - self.r * (3 / 4))
+        self.assertEqual(self.est["A oldest"].end, self.h - self.r * (2 / 4))
+        self.assertEqual(self.est["C newer"].end, self.h - self.r * (1 / 4))
+        self.assertEqual(self.est["A oldest"].label, "est. 2/4 → Launch")
+
+    def test_a_ref_and_a_parenthetical_are_one_owner(self) -> None:
+        self.assertEqual({self.est[k].n for k in ("A oldest", "B running", "C newer")}, {4})
+
+    def test_the_last_lane_ends_at_the_deadline_instant(self) -> None:
+        lanes = [self.by["A oldest"], self.by["C newer"]]
+        est = rb.estimates(lanes, self.cfg, NOW)
+        self.assertEqual((est["A oldest"].i, est["C newer"].i), (1, 2))
+        self.assertEqual(est["C newer"].end, self.h)
+        self.assertEqual(est["A oldest"].end, NOW + self.r / 2)
+
+    def test_unowned_gone_and_dated_lanes_get_no_estimate(self) -> None:
+        for item in ("D dated", "E unassigned", "F blank", "G orphaned", "H left behind", "I dash", "J beyond"):
+            self.assertNotIn(item, self.est, item)
+
+    def test_a_derived_end_reaches_the_bar_only_when_asked_for(self) -> None:
+        lane = self.by["A oldest"]
+        plain = rb.day_bar(lane, self.cfg, NOW)
+        self.assertEqual((plain.end_src, plain.label), ("deadline", "no estimate"))
+        b = rb.day_bar(lane, self.cfg, NOW, self.est)
+        self.assertEqual((b.end_src, b.label, b.end), ("derived", "est. 2/4 → Launch", self.est["A oldest"].end))
+        w = rb.week_bar(lane, self.cfg, NOW, self.est)
+        self.assertEqual((w.end_src, w.end), ("derived", self.est["A oldest"].end))
+        d = rb.day_bar(self.by["D dated"], self.cfg, NOW, self.est)
+        self.assertEqual(d.end_src, "due")
+        u = rb.day_bar(self.by["E unassigned"], self.cfg, NOW, self.est)
+        self.assertEqual((u.end_src, u.label), ("deadline", "no estimate"))
+
+    def test_a_passed_deadline_makes_the_horizon_midnight(self) -> None:
+        late = datetime(2026, 9, 21, 9, 0, tzinfo=CT)
+        est = rb.estimates([self.by["A oldest"]], self.cfg, late)
+        self.assertEqual(est["A oldest"].end, datetime(2026, 9, 22, 0, 0, tzinfo=CT))
+        self.assertEqual(est["A oldest"].label, "est. 1/1 → end of day")
+
+    def test_a_since_after_now_never_ends_before_it_starts(self) -> None:
+        text = QUEUE_TRACKER.replace("| A oldest | worker | open | 2026-09-15 |", "| A oldest | worker | open | 2026-09-17 |")
+        lanes = [lane for lane in rb.parse_tracker(text).lanes if lane.item == "A oldest"]
+        w = rb.week_bar(lanes[0], self.cfg, NOW, rb.estimates(lanes, self.cfg, NOW))
+        self.assertEqual(w.end_src, "derived")
+        self.assertGreaterEqual(w.end, w.start)
+
+    def test_item_text_is_never_read(self) -> None:
+        text = QUEUE_TRACKER.replace("| A oldest |", "| A oldest, a very long item whose length says nothing about the work left (history: 09:00 opened; 10:00 blocked; 11:00 resumed; 12:00 more of the same) |")
+        lanes = [lane for lane in rb.parse_tracker(text).lanes if lane.kind != "done"]
+        other = rb.estimates(lanes, self.cfg, NOW)
+        self.assertEqual({e.end for e in other.values()}, {e.end for e in self.est.values()})

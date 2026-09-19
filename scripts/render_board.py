@@ -559,7 +559,78 @@ def _resolve_due(due: str, cfg: Config, today: date) -> datetime | None:
     return None
 
 
-def _end(lane: Lane, cfg: Config, now: datetime, start: datetime) -> tuple[datetime, str, str | None]:
+@dataclass(frozen=True)
+class Estimate:
+    """Where lane i of an owner's N lands if the queue drains evenly by the horizon. Not a claim about effort."""
+
+    end: datetime
+    i: int
+    n: int
+    of: str
+
+    @property
+    def label(self) -> str:
+        return f"est. {self.i}/{self.n} → {self.of}"
+
+
+UNASSIGNED = re.compile(r"(?i)^unassigned$")
+
+
+def _owner_key(owner: str) -> str:
+    """The queue an owner cell names, or "" when it names nobody: blank, `unassigned`, `—`, `nobody`."""
+    key = _bare_name(owner)
+    if not key or NOBODY.match(owner.strip()) or UNASSIGNED.match(key):
+        return ""
+    return key
+
+
+def horizon(cfg: Config, now: datetime) -> tuple[datetime, str]:
+    """The nearest deadline still ahead, or midnight once every deadline has passed (the day strip's own rule)."""
+    d = nearest_deadline(cfg, now)
+    if d.at > now:
+        return d.at, d.name
+    return datetime.combine(now.date(), time(0, 0), tzinfo=cfg.zone) + timedelta(days=1), "end of day"
+
+
+def estimates(active: list[Lane], cfg: Config, now: datetime) -> dict[str, Estimate]:
+    """A derived end for every owned lane with no `due`, keyed by item. Nothing here is written to the tracker.
+
+    The tracker's clock is day-grained — `since` and `due` are dates, only `done` carries a time — so no lane
+    has a duration to learn from, and this reads none: not the item text (its length tracks age, not work
+    left), not the Log. Per owner, the active lanes that are blank or due by the horizon form a queue of N,
+    running first, then oldest first; lane i ends at `H - (N-i)/N x (H - now)`, so lane N is the horizon
+    instant. The order is the one fabricated input, and the label says which position a lane holds.
+    Unowned lanes get nothing: there is no queue to place them in, and the deadline they already draw to
+    is the honest end. A gone owner — one an `orphaned` lane names — is unowned for all its lanes.
+    """
+    h, of = horizon(cfg, now)
+    r = h - now
+    left = {_bare_name(lane.owner) for lane in active if lane.kind == ORPHANED} - {""}
+    queues: dict[str, list[tuple[tuple, Lane]]] = {}
+    for idx, lane in enumerate(active):
+        if lane.kind in ("done", ORPHANED):
+            continue
+        key = _owner_key(lane.owner)
+        if not key or key in left:
+            continue
+        due = _resolve_due(lane.due, cfg, now.date())
+        if due is not None and due > h:
+            continue
+        m = DATE.match(lane.since.strip())
+        since = date(int(m[1]), int(m[2]), int(m[3])) if m else now.date()
+        queues.setdefault(key, []).append(((lane.kind != "running", since, idx), lane))
+    out: dict[str, Estimate] = {}
+    for entries in queues.values():
+        entries.sort(key=lambda e: e[0])
+        n = len(entries)
+        for i, (_, lane) in enumerate(entries, 1):
+            if lane.due.strip():
+                continue
+            out[lane.item] = Estimate(h - r * ((n - i) / n), i, n, of)
+    return out
+
+
+def _end(lane: Lane, cfg: Config, now: datetime, start: datetime, est: dict[str, Estimate] | None = None) -> tuple[datetime, str, str | None]:
     today = now.date()
     if (due := _resolve_due(lane.due, cfg, today)) is not None:
         return due, "due", None
@@ -567,10 +638,12 @@ def _end(lane: Lane, cfg: Config, now: datetime, start: datetime) -> tuple[datet
         if t := lane.state_time:
             return _hhmm(t, today, cfg.zone), "state", None
         return start, "state", "done, no time"
+    if est and (e := est.get(lane.item)):
+        return max(e.end, start), "derived", e.label
     return nearest_deadline(cfg, now).at, "deadline", NO_ESTIMATE
 
 
-def day_bar(lane: Lane, cfg: Config, now: datetime) -> Bar:
+def day_bar(lane: Lane, cfg: Config, now: datetime, est: dict[str, Estimate] | None = None) -> Bar:
     today, zone = now.date(), cfg.zone
     day_start = datetime.combine(today, time(0, 0), tzinfo=zone)
     if lane.kind == "running" and (t := lane.state_time):
@@ -579,11 +652,11 @@ def day_bar(lane: Lane, cfg: Config, now: datetime) -> Bar:
         start, start_src = t, "since"
     else:
         start, start_src = day_start, "carried"
-    end, end_src, label = _end(lane, cfg, now, start)
+    end, end_src, label = _end(lane, cfg, now, start, est)
     return Bar(lane.item, lane.owner, lane.kind, start, end, start_src, end_src, label)
 
 
-def week_bar(lane: Lane, cfg: Config, now: datetime) -> Bar:
+def week_bar(lane: Lane, cfg: Config, now: datetime, est: dict[str, Estimate] | None = None) -> Bar:
     today, zone = now.date(), cfg.zone
     day_start = datetime.combine(today, time(0, 0), tzinfo=zone)
     m = DATE.match(lane.since.strip())
@@ -595,7 +668,7 @@ def week_bar(lane: Lane, cfg: Config, now: datetime) -> Bar:
         start, start_src = t, "since"
     else:
         start, start_src = day_start, "carried"
-    end, end_src, label = _end(lane, cfg, now, start)
+    end, end_src, label = _end(lane, cfg, now, start, est)
     return Bar(lane.item, lane.owner, lane.kind, start, end, start_src, end_src, label)
 
 
@@ -849,11 +922,11 @@ def _deadline_for(lane: Lane, bar: Bar, cfg: Config, now: datetime) -> Deadline:
     return nearest_deadline(cfg, now)
 
 
-def today_rows(active: list[Lane], cfg: Config, now: datetime, axis_b: datetime) -> tuple[list[Bar], list[Bar]]:
+def today_rows(active: list[Lane], cfg: Config, now: datetime, axis_b: datetime, est: dict[str, Estimate] | None = None) -> tuple[list[Bar], list[Bar]]:
     """Own bars: running lanes and lanes whose cited end falls by the axis end. Everything else folds."""
     own, folded = [], []
     for lane in active:
-        b = day_bar(lane, cfg, now)
+        b = day_bar(lane, cfg, now, est)
         if (lane.kind == "running" and lane.state_time) or (b.end_src != "deadline" and b.end <= axis_b):
             own.append(b)
         else:
@@ -867,7 +940,7 @@ def week_axis_end(cfg: Config, week_a: datetime) -> datetime:
     return max(min(week_a + timedelta(days=WEEK_DAYS), day_after_last), week_a + timedelta(days=1))
 
 
-def week_rows(active: list[Lane], cfg: Config, now: datetime, week_a: datetime, week_b: datetime) -> list[Bar | Summary]:
+def week_rows(active: list[Lane], cfg: Config, now: datetime, week_a: datetime, week_b: datetime, est: dict[str, Estimate] | None = None) -> list[Bar | Summary]:
     """Running lanes get a bar. Lanes with a concrete due group by due day (a lone lane keeps its bar); overdue and
     past-the-axis lanes get one row each. The rest fold into one row per deadline. Returned in drawing order."""
     keyed: list[tuple[tuple, Bar | Summary]] = []
@@ -877,7 +950,7 @@ def week_rows(active: list[Lane], cfg: Config, now: datetime, week_a: datetime, 
     groups: dict[Deadline, list[Bar]] = {}
     instants = {d.at for d in cfg.deadlines}
     for lane in active:
-        b = week_bar(lane, cfg, now)
+        b = week_bar(lane, cfg, now, est)
         named = any(d.name.lower() == lane.due.strip().lower() for d in cfg.deadlines)
         if lane.kind == "running" and lane.state_time:
             keyed.append(((1, b.start), b))
