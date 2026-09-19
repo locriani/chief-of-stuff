@@ -995,3 +995,5 @@ A Plan agent was asked to break the queue model and returned fourteen issues. Th
 ### The deferred cases
 
 Run `20260918-203609` finished during the backout: 8 green, 2 red, both harness faults (finding 74): the orphaned case's fixture had no `CLAUDE.md`, and the spawn grader anchored on the exact item text C5 expands into the brief. Both fixed here and re-run with the five board cases.
+
+Agent arm, 0.10.0: the four board cases and the two repaired cases, 6 green, 0 red, 0 unmeasured. 449 units green on the branch.
