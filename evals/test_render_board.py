@@ -362,12 +362,17 @@ class ShortNameTest(unittest.TestCase):
             "Stored, not sent (Robin 20:49 Wed): ARCHITECTURE.md point 2, no finding for some patients": "Stored, not sent (Robin 20:49 Wed)",
             "Fix: login bug": "Fix: login bug",
             "AI cost analysis": "AI cost analysis",
-            "a" * 30 + " " + "b" * 30 + " " + "c" * 30: "a" * 30 + "…",
             "": "",
         }
         for item, want in cases.items():
             self.assertEqual(rb.short_name(item), want, item)
-            self.assertLessEqual(len(rb.short_name(item)), 49)
+        # The width belongs to the medium that has one. `short_name` returns the name; `clip_name`
+        # is what a caller one terminal line wide calls, and the cut lives there now.
+        long_item = "a" * 30 + " " + "b" * 30 + " " + "c" * 30
+        self.assertEqual(long_item, rb.short_name(long_item))
+        self.assertEqual("a" * 30 + "…", rb.clip_name(long_item))
+        for item in cases:
+            self.assertLessEqual(len(rb.clip_name(item)), 49)
 
     def test_a_long_bolded_item_keeps_its_name(self) -> None:
         """A cut inside a lone `**` span must not eat the whole name.
@@ -378,7 +383,7 @@ class ShortNameTest(unittest.TestCase):
         short_name(item)`) puts that straight on the board as a lane called `…`.
         """
         item = "**ARCHITECTURE.md section 12.5 rewritten so the deploy story matches the code**"
-        got = rb.short_name(item)
+        got = rb.clip_name(item)
         self.assertNotEqual("…", got)
         self.assertIn("ARCHITECTURE.md", got)
         self.assertLessEqual(len(got), 49)
@@ -389,8 +394,8 @@ class ShortNameTest(unittest.TestCase):
                      "lead in **" + "c" * 60 + "** trailing",
                      "**short**",
                      "**a** and **" + "d" * 60 + "**"):
-            self.assertTrue(rb._whole(rb.short_name(item).rstrip("…")), item)
-            self.assertNotEqual("…", rb.short_name(item), item)
+            self.assertTrue(rb._whole(rb.clip_name(item).rstrip("…")), item)
+            self.assertNotEqual("…", rb.clip_name(item), item)
 
 
 class HistoryLinesTest(unittest.TestCase):
@@ -473,30 +478,24 @@ class DensityTest(unittest.TestCase):
         visible = re.sub(r"<[^>]+>", "", self.html.split("</style>", 1)[1].split("<script>", 1)[0])
         self.assertEqual(visible.count(esc), 0)
         self.assertEqual(visible.count("the worker left the registry"), 1)
-        # This number keeps going the wrong way and Zach has to set it. The run so far, measured
-        # on this fixture: 31 174 before the tracer bullet · 33 287 after it · 34 839 with stage 1's
-        # one table · 38 768 with stage 3's deadline cards · 41 407 with stage 4's week load row.
-        # Each rise is the design showing more, not the page getting denser — stage 3 gives a row to
-        # every lane with a time on it rather than only those with a written `due`, which is the
-        # thickening it was asked for.
+        # A density guard for item text measures item text. The same reason the logo comes out
+        # above takes the stylesheet out here: 15 466 of this page was CSS — 36% of a number named
+        # for the lanes — and it is a fixed cost that does not grow with them. Every stage that
+        # added a rule spent the lanes' budget, and the cap rose to cover it four times over:
+        # 32 000 → 36 000 → 39 800 → 42 500. None of those bytes were written by a lane.
         #
-        # The deeper problem is that this guard cannot tell those two apart. 14 385 of the 41 407
-        # here is CSS, a fixed cost that does not grow with lanes; the fixture has nine. On the live
-        # 116-lane tracker that CSS amortises to nothing and the per-lane bytes are what matter, so
-        # a whole-page byte cap measured on nine lanes is the wrong instrument for "density" and
-        # will keep needing a rise at every stage that adds a section.
-        #
-        # Re-based mechanically rather than chosen: measured + the 2.65% headroom the pre-bullet
-        # 32 000 had over 31 174. The item-text assertions above are the part of this test that
-        # still bites. See DEFERRED in board-redesign-in-flight.md.
-        self.assertLess(len(self.html), 42_500)
+        # Measured the day the loan came back, on this fixture: 27 062, under the original 32 000
+        # with 15% to spare. The run for the record, whole-page: 31 174 before the tracer bullet ·
+        # 33 287 after it · 34 839 with stage 1's one table · 38 768 with stage 3's deadline cards ·
+        # 41 407 with stage 4's week load row · 42 528 with stage 6's fixed column geometry.
+        self.assertLess(len(re.sub(r"<style>.*?</style>", "", self.html, flags=re.S)), 32_000)
 
     def test_history_is_one_line_per_clause(self) -> None:
         body = re.search(r"<details><summary>Service architecture refactor</summary>(.*?)</details>", self.html, re.S).group(1)
         self.assertIn('<ul class="hist">', body)
         self.assertIn("<li><time>01:20</time><span>plan approved (relayed, not verbatim)</span></li>", body)
         self.assertIn("<li><time>07:46</time><span>the worker left the registry</span></li>", body)
-        self.assertIn("<li><time></time><span>record fetch tools → service tools</span></li>", body)
+        self.assertIn('<li class="notime"><span>record fetch tools → service tools</span></li>', body)
 
     def test_history_expands_fully(self) -> None:
         hist_css = " ".join(re.findall(r"\.hist[^{]*\{[^}]*\}", self.html))
@@ -847,6 +846,26 @@ class OneLaneTableTest(unittest.TestCase):
                       "Draft release notes", "Ship docs site", "Cut the release branch"):
             self.assertEqual(self.lanes.count(f"<summary>{label}</summary>") + self.lanes.count(f"<td>{label}"), 1, label)
 
+    def test_a_chip_reaches_the_rows_it_filters(self) -> None:
+        """The chips went inert in stage 6 and every test here stayed green.
+
+        `#lf-running:checked~table` hops to a *sibling*, and stage 6's phone pass wrapped the table
+        in `<div class="scroll">` to let it scroll at 390px. The table stopped being a sibling and
+        became a nephew, the rule matched nothing, and all six chips filtered nothing — measured in
+        a browser, 14 of 14 rows visible under every one of them.
+
+        Nothing caught it because the tests here read the two ends and never the join: one reads
+        `data-in` on the rows, one reads that the rule is in the stylesheet, and the rule reaching
+        the rows is the direction neither of them faces. This test faces it.
+        """
+        hop = re.search(r"#lf-running:checked~(\S+?) tr\[data-in\]", self.css).group(1)
+        after = self.lanes.split("</label>")[-1]
+        tag, attrs = re.match(r"\s*<(\w+)([^>]*)>", after).groups()
+        cls = (re.search(r'class="([^"]*)"', attrs).group(1) if 'class="' in attrs else "")
+        self.assertIn("data-in=", after, "the chips are not followed by the rows at all")
+        self.assertTrue(hop == "*" or hop == tag or hop.lstrip(".") in cls.split(),
+                        f"`~{hop}` hops to a sibling that is not <{tag} class={cls!r}>, and the rows are inside that")
+
     def test_six_chips_carry_the_counts(self) -> None:
         chips = re.findall(r'<label for="lf-([a-z]+)"[^>]*>(.*?)</label>', self.lanes, re.S)
         self.assertEqual([c[0] for c in chips], ["all", "mine", "unassigned", "running", "orphaned", "done"], chips)
@@ -877,8 +896,12 @@ class OneLaneTableTest(unittest.TestCase):
 
     def test_the_chips_filter_in_css_and_default_to_all(self) -> None:
         self.assertIn('<input type="radio" name="lf" id="lf-all" checked>', self.lanes)
+        # Spelling the combinator out here is what let stage 6 break the chips in silence: this
+        # assertion passed on a rule that had stopped matching anything. It reads the hop from the
+        # stylesheet now, and `test_a_chip_reaches_the_rows_it_filters` checks that hop lands.
+        hop = re.search(r"#lf-all:checked~(\S+?) tr\[data-in\]", self.css).group(1)
         for key in ("all", "mine", "unassigned", "running", "orphaned", "done"):
-            self.assertIn(f'#lf-{key}:checked~table tr[data-in]:not([data-in~="{key}"]){{display:none}}', self.css)
+            self.assertIn(f'#lf-{key}:checked~{hop} tr[data-in]:not([data-in~="{key}"]){{display:none}}', self.css)
         # The radios stay reachable by keyboard: taken out of flow, never out of the tab order.
         rule = next((l for l in self.css.splitlines() if ".lanes>input{" in l), "")
         self.assertTrue(rule, "no `.lanes>input` rule")
@@ -2768,3 +2791,84 @@ class LaneAnchorTest(unittest.TestCase):
         lane = {l.item: l for l in rb.parse_tracker(text).lanes}["C newer"]
         self.assertEqual(lane.since, "")
         self.assertIn("3 cells", lane.warning)
+
+
+class TruncationAndPositionTest(unittest.TestCase):
+    """A lane's name is not cut, and nothing on the board moves because a fold opened.
+
+    Measured on a ten-lane render, before: opening the folds moved the owner column 115px right
+    (979 → 1094), state 74px (1194 → 1268), and every other column with them, because the table
+    is auto-laid-out and re-measures against whichever cells happen to be open. And the item's own
+    sentence, cut at 48 characters with `…` in the summary, was re-printed whole 56px to the right
+    of where it had just been — the fold hid nothing but the tail it had itself removed.
+    """
+
+    TRACKER = """# Tracker 2026-09-18
+
+Coordinator: Robin. Board: board-7.
+
+## Lanes
+
+| item | owner | state | since | due | size |
+|---|---|---|---|---|---|
+| The readiness probe reads the wrong port and reports healthy while the service is down | Robin | open | 09:00 | | S |
+| Cut the release branch 13:40: branch cut; 14:10: tagged | impl-2 | running 13:40 | 13:40 | | M |
+
+## Log
+
+- 09:00 opened the day
+"""
+
+    def setUp(self) -> None:
+        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.html = rb.render(self.TRACKER, LOG, self.cfg, NOW)
+        self.table = re.search(r'<div class="lanes">.*?</table>', self.html, re.S).group(0)
+
+    def test_a_long_item_keeps_every_word_of_its_name(self) -> None:
+        """`short_name` picks a name out of an item; the character cut only loses letters.
+
+        A `<td>` wraps, so the board has no width that a 48-character cut is measuring. The cut
+        is a fixed-width medium's business — `audit_lanes.py` prints one finding per terminal
+        line — and it followed the name onto a page that never needed it.
+        """
+        item = "The readiness probe reads the wrong port and reports healthy while the service is down"
+        self.assertEqual(item, rb.short_name(item))
+        self.assertNotIn("…", self.table)
+
+    def test_a_cell_that_would_only_restate_itself_is_not_a_fold(self) -> None:
+        """The cut is what made the fold look necessary: the summary was the item minus its tail,
+        so the body had to carry the item entire, and the same sentence appeared twice in one cell
+        at two different left edges. Uncut, the name is the item and the cell is plain text."""
+        cell = re.search(r"<tr data-state=\"open\"[^>]*><td>(.*?)</td>", self.table, re.S).group(1)
+        self.assertNotIn("<details>", cell)
+        self.assertIn("reports healthy while the service is down", cell)
+
+    def test_the_columns_do_not_move_when_a_fold_opens(self) -> None:
+        """Auto layout makes every column's x a function of which rows are open. Fixed layout
+        makes it a function of the widths declared here, which no cell can argue with."""
+        css = self.html.split("<style>", 1)[1].split("</style>", 1)[0]
+        rule = re.search(r"\.lanes table\{([^}]*)\}", css)
+        self.assertIsNotNone(rule, "the lane table declares no layout of its own")
+        self.assertIn("table-layout:fixed", rule.group(1))
+        self.assertRegex(css, r"\.lanes [^{]*\b(?:th|col)[^{]*\{[^}]*width:")
+
+    def test_a_name_does_not_carry_a_clock_the_time_column_already_shows(self) -> None:
+        """Only the render showed this one. `**Deploy main.** 21:16: laid out the state` splits on
+        the ": " after the clock, so the derived name ends `… 21:16` — a string the item does not
+        literally contain, which `history_lines` therefore cannot strip off the front. It gave up and
+        split the item entire, and the headline came back as the first history line with the same
+        clock beside it in the time column: the name, twice, one of them under a time.
+        """
+        tracker = self.TRACKER.replace(
+            "| Cut the release branch 13:40: branch cut; 14:10: tagged |",
+            "| **Cut the release branch** 13:40: branch cut; 14:10: tagged |")
+        html = rb.render(tracker, LOG, self.cfg, NOW)
+        cell = re.search(r"<td>(<details>.*?</details>)</td>", html, re.S).group(1)
+        self.assertIn("<summary>Cut the release branch</summary>", cell)
+        self.assertEqual(1, cell.count("Cut the release branch"), cell)
+        self.assertIn("<li><time>13:40</time><span>branch cut</span></li>", cell)
+
+    def test_a_clause_with_no_time_does_not_sit_in_the_time_column(self) -> None:
+        """`.hist li` is a 3em column and a 1fr column. A clause with no time was given the 3em
+        anyway, so it started 56px right of the name it belongs to, indented past nothing."""
+        self.assertNotIn("<time></time>", self.html)

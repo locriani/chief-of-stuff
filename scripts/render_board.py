@@ -171,6 +171,7 @@ WAITS = re.compile(r"\s+[—–-]\s+|,\s+")
 # Drawn literally it is an edge to a node called "nothing".
 NOBODY = re.compile(r"(?i)^(?:(?:nothing|none|nobody|n/?a)\b|[-—–]\s*$)")
 # The name cell accretes provenance: `update-claude-md-docs (third name, same ref)`.
+NAME_TAIL_TIME = re.compile(r"[\s,;–—-]*(?:at\s+)?\d{1,2}:\d{2}\**$")
 PARENTHETICAL = re.compile(r"\s*\([^()]*\)\s*$")
 SESSION_REF = re.compile(r"\s*\[[0-9a-f]{4,}\]\s*")
 
@@ -345,26 +346,66 @@ def _whole(text: str) -> bool:
 
 
 def short_name(item: str) -> str:
-    """The item up to its first ": " (when that leaves a real name), then up to " (" if still long, capped on a word boundary.
+    """The item up to its first ": " (when that leaves a real name), then up to " (" if still long.
 
-    Every cut stops at a whole number of mark spans: `**22:19: copied**` holds a ": " and a full stop,
-    and cutting through it leaves `**` on one side and the rest unbalanced.
+    Both cuts are structural: they find where the name ends and the history begins. Neither loses a
+    letter of the name it returns. A name with letters missing is not a shorter name, it is a wrong
+    one, and the board has no width that a character cut would be measuring — a `<td>` wraps. The
+    cut belongs to a caller that really is one line wide; `clip_name` is that, and `audit_lanes.py`
+    printing one finding per terminal line is who calls it.
     """
     name = item.strip()
     head = name.split(": ", 1)[0]
     if head != name and len(head) >= 12 and _whole(head):
-        name = head
+        # `**Deploy main.** 21:16: laid out the state` splits after the clock, not before it, so the
+        # head comes away holding a time the writer did not put in the name. It costs more than it
+        # looks: `history_lines` strips the name off the front of the item to get the history, and a
+        # name the item does not literally contain matches nothing — so the headline is printed again
+        # as the first history line, under a time column already showing the same clock. Only this
+        # branch glues one on; a sentence the writer ended with a time is their sentence.
+        name = NAME_TAIL_TIME.sub("", head) or head
     if len(name) > SHORT_NAME and " (" in name and _whole(name.split(" (", 1)[0]):
         name = name.split(" (", 1)[0]
     if len(name) > SHORT_NAME:
-        cut = name[:SHORT_NAME]
+        clause = _head_clause(name)
+        if clause != name and _whole(clause):
+            name = clause
+    return name
+
+
+def _head_clause(text: str) -> str:
+    """The first sentence, its punctuation kept. Where an item's name ends when nothing else says.
+
+    `_depth0_split` answers the same question and is the right one to ask — the name has to end where
+    the history begins, or the cell loses a clause between the two. It hands its parts back stripped,
+    though, and `Session TTL fix, orphaned.` without the full stop is not what the writer wrote.
+    """
+    parts = _depth0_split(text)
+    if len(parts) < 2:
+        return text
+    end = text.find(parts[0])
+    if end < 0:
+        return text
+    end += len(parts[0])
+    return text[: end + 1] if text[end : end + 1] in ".;" else text[:end]
+
+
+def clip_name(item: str, cap: int = SHORT_NAME) -> str:
+    """`short_name` for a medium with a real width, capped on a word boundary.
+
+    Every cut stops at a whole number of mark spans: `**22:19: copied**` holds a ": " and a full stop,
+    and cutting through it leaves `**` on one side and the rest unbalanced.
+    """
+    name = short_name(item)
+    if len(name) > cap:
+        cut = name[:cap]
         if not _whole(cut):
             # Trimming back to a whole number of mark spans empties the cut when the only opening
             # mark is the first character, and a bare `…` is not a short name, it is the loss of one.
             trimmed = cut[: cut.rfind("**")]
-            cut = trimmed if trimmed.strip(" ,;:–—-") else _unmark(name)[:SHORT_NAME]
+            cut = trimmed if trimmed.strip(" ,;:–—-") else _unmark(name)[:cap]
         space = cut.rfind(" ")
-        name = (cut[:space] if space > SHORT_NAME // 2 else cut).rstrip(" ,;:–—-") + "…"
+        name = (cut[:space] if space > cap // 2 else cut).rstrip(" ,;:–—-") + "…"
     return name
 
 
@@ -1506,8 +1547,9 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
         short = label
         if short == _unmark(item).strip():
             return _esc(_unmark(item))
-        lines = history_lines(item, label if label != short_name(_unmark(item)) else None) or [("", item)]
-        body = "".join(f"<li><time>{_esc(t)}</time><span>{_inline(text)}</span></li>" for t, text in lines)
+        lines = history_lines(item, label) or [("", item)]
+        body = "".join(f"<li><time>{_esc(t)}</time><span>{_inline(text)}</span></li>" if t
+                       else f'<li class="notime"><span>{_inline(text)}</span></li>' for t, text in lines)
         return f'<details><summary>{_esc(short)}</summary><ul class="hist">{body}</ul></details>'
 
     def lane_filters(lane: Lane) -> list[str]:
@@ -1638,7 +1680,11 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
 """
 
     filter_css = "\n".join(
-        f'#lf-{f}:checked~table tr[data-in]:not([data-in~="{f}"]){{display:none}}' for f in FILTERS
+        # `~*` and not `~table`: the rows only have to be somewhere after the chips, not directly
+        # under them. Stage 6 wrapped the table in `.scroll` for the phone and `~table` stopped
+        # matching, which cost all six chips their whole job in silence. Naming the wrapper here
+        # would just move the next break to the next wrapper.
+        f'#lf-{f}:checked~* tr[data-in]:not([data-in~="{f}"]){{display:none}}' for f in FILTERS
     )
     long_items = sum(1 for lane in lanes if len(lane.item) > LONG_ITEM)
     orphan_note = f" · {sum(1 for l in active if l.kind == 'orphaned')} orphaned" if any(l.kind == "orphaned" for l in active) else ""
@@ -1659,7 +1705,7 @@ h2{{font-family:"Cormorant SC","Cormorant Garamond",Georgia,serif;font-size:19px
 .header{{display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:4px}} .header .logo{{width:260px;max-width:100%;border:1px solid var(--brass);border-radius:4px;display:block}}
 .head-text{{flex:1 1 260px;min-width:0}}
 .meta{{color:var(--muted);font-size:13px}} .clock{{font-family:ui-monospace,monospace;font-size:14px;font-variant-numeric:tabular-nums;margin:6px 0}}
-table{{border-collapse:collapse;width:100%;max-width:100%}} td,th{{text-align:left;padding:4px 8px;border-bottom:1px solid var(--line);vertical-align:top}} th{{color:var(--muted);font-weight:600;font-size:12px;letter-spacing:.04em;text-transform:uppercase}}
+table{{border-collapse:collapse;width:100%;max-width:100%}} .lanes table{{table-layout:fixed}} .lanes{{overflow-wrap:anywhere}} .lanes th:first-child{{width:40%}} .lanes th:nth-child(2){{width:18%}} td,th{{text-align:left;padding:4px 8px;border-bottom:1px solid var(--line);vertical-align:top}} th{{color:var(--muted);font-weight:600;font-size:12px;letter-spacing:.04em;text-transform:uppercase}}
 tr.group th{{background:color-mix(in srgb,var(--brass) 18%,transparent);color:var(--fg);font-family:"Cormorant SC","Cormorant Garamond",Georgia,serif;font-weight:600;font-size:14px;letter-spacing:.12em;text-transform:uppercase;border-top:2px solid var(--brass);padding:6px 8px}}
 .lanes{{position:relative}} .lanes>input{{position:absolute;width:1px;height:1px;opacity:0;margin:0}}
 .lanes>label{{display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-size:12.5px;padding:3px 10px;min-height:26px;margin:0 6px 8px 0;border:1px solid var(--line);border-radius:13px;background:var(--surface)}}
@@ -1717,7 +1763,7 @@ details summary{{cursor:pointer}} details[open] summary{{margin-bottom:4px}}
 .req{{display:grid;grid-template-columns:1.4em 1fr;column-gap:6px;font-size:13px}} .req.depth-1{{margin-left:1.6em}} .req.depth-2{{margin-left:3.2em}} .req.done .text{{color:var(--muted)}}
 .req code{{font-family:ui-monospace,monospace;font-size:12px}} .req .evidence{{grid-column:2;color:var(--muted);font-size:12px}} .req .box{{font-variant-numeric:tabular-nums}}
 .hist{{list-style:none;margin:4px 0 2px;padding:0 0 0 10px;border-left:2px solid var(--line);font-size:12px;line-height:1.5;color:var(--muted);display:grid;gap:3px}}
-.hist li{{display:grid;grid-template-columns:3em 1fr;gap:8px}} .hist time{{font-family:ui-monospace,monospace;font-variant-numeric:tabular-nums;color:var(--fg)}}
+.hist li{{display:grid;grid-template-columns:3em 1fr;gap:8px}} .hist li.notime{{display:block}} .hist time{{font-family:ui-monospace,monospace;font-variant-numeric:tabular-nums;color:var(--fg)}}
 .graph{{margin:0}} .graph h2{{margin-top:22px}} .graph>.meta{{margin:-2px 0 6px}}
 .graph summary{{list-style:none;cursor:pointer;display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 8px;padding:2px 0}}
 .graph summary::-webkit-details-marker{{display:none}} .graph summary::before{{content:"\u25b8";color:var(--muted);font-size:10px;flex:none;width:.7em}} .graph details[open]>summary::before{{content:"\u25be"}}

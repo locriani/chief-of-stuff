@@ -25,7 +25,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from render_board import BULLET, ConfigError, _cells, _is_separator, _section, _unmark, _unquote, parse_coordinator, parse_tracker, short_name  # noqa: E402
+from render_board import BULLET, ConfigError, _cells, _is_separator, _section, _unmark, _unquote, clip_name, parse_coordinator, parse_tracker  # noqa: E402
 from dispatch_prompt import PROMPT_DIR, STOP_FILE  # noqa: E402
 
 # The branch is written in the parenthetical right after the tree name — `worktree wt-x (feat/y)` —
@@ -64,7 +64,7 @@ class Reopen:
     why: str
 
     def __str__(self) -> str:
-        return f"reopen: {short_name(self.lane)} — {self.worktree}: {self.why}"
+        return f"reopen: {clip_name(self.lane)} — {self.worktree}: {self.why}"
 
 
 @dataclass(frozen=True)
@@ -102,7 +102,7 @@ class Stop:
         kind = self.kind or "kind unstated"
         if kind == UNREADABLE:
             kind = "a stop file that is unreadable"
-        return f"stopped: {short_name(self.lane)} — {self.worktree}: {kind}{who}, and the lane still reads {self.state!r}"
+        return f"stopped: {clip_name(self.lane)} — {self.worktree}: {kind}{who}, and the lane still reads {self.state!r}"
 
 
 @dataclass(frozen=True)
@@ -260,7 +260,7 @@ def rows_for(item: str, owner: str, owners: list[OwnerRow]) -> tuple[list[OwnerR
     best = max(score for score, _ in scored)
     top = [r for score, r in scored if score == best]
     if best == 0 or len(top) > 1:
-        return [], f"ambiguous: {short_name(item)} — {len(mine)} File ownership rows for {_bare(owner)} and none names it; no tree attributed"
+        return [], f"ambiguous: {clip_name(item)} — {len(mine)} File ownership rows for {_bare(owner)} and none names it; no tree attributed"
     return top, ""
 
 
@@ -355,7 +355,7 @@ def group_reopens(reopens: list[Reopen]) -> list[str]:
         if key not in lanes:
             order.append(key)
             lanes[key] = []
-        lanes[key].append(short_name(_unmark(r.lane)))
+        lanes[key].append(clip_name(_unmark(r.lane)))
     out = []
     for worktree, why in order:
         names = lanes[(worktree, why)]
@@ -459,9 +459,9 @@ def queue_faults(tracker_text: str) -> tuple[list[QueueFault], list[str], int]:
         open_rows.append((num, decision))
     if open_rows:
         num, decision = open_rows[0]
-        # A decision cell opens with a bold headline, and `short_name` cutting inside the mark pair
+        # A decision cell opens with a bold headline, and `clip_name` cutting inside the mark pair
         # returns a bare ellipsis: the line that says which one is next has to name it.
-        lines.append(f"next decision: {num} — {short_name(_unmark(decision))}")
+        lines.append(f"next decision: {num} — {clip_name(_unmark(decision))}")
     return faults, lines, len(open_rows)
 
 
