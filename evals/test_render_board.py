@@ -849,6 +849,80 @@ class OneLaneTableTest(unittest.TestCase):
         self.assertIn(".lanes>input:focus-visible+label{", self.css)
 
 
+BODY_LOG = LOG.replace(
+    "- 09:00–09:15 CDT Standup (work)",
+    "- 09:00–09:15 CDT Standup (work)\n"
+    "- 16:30-17:30 Gym\n"
+    "- 18:00–18:40 Eat (dinner)\n"
+    "- 20:00–21:30 Recreation\n"
+    "| 23:10 | 23:59 | Sleep |",
+)
+
+
+class BodyLaneTest(unittest.TestCase):
+    """Stage 2: the BODY lane — sleep, eat, gym, recreation — drawn as its own first row.
+
+    The 24 hours the board draws are a day of a person, not of a queue: the hours already spent
+    asleep, eating, at the gym or off are not available for work, and until they are on the strip
+    every deadline above them reads as if they were. They come from the calendar the log already
+    carries, so this needs no new grammar — an event whose title names one of the four kinds is a
+    body segment instead of a background band, and every other event stays the band it was.
+
+    The four fills are the ones already recorded against the body lane, and re-solving them is
+    parked: sleep #332288, eat #D55E00, gym #117733, recreation #F0E442, cream ink on sleep and
+    gym alone.
+    """
+
+    def setUp(self) -> None:
+        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.html = rb.render(TRACKER, BODY_LOG, self.cfg, NOW)
+        self.day = _strip_html(self.html, "day")
+        self.css = self.html.split("<style>")[1].split("</style>")[0]
+
+    def test_the_four_kinds_are_classified_off_the_calendar(self) -> None:
+        self.assertEqual(
+            [rb.body_kind(t) for t in ("Sleep", "Eat (dinner)", "Gym", "Recreation",
+                                       "Standup (work)", "Table meeting", "sleepy hollow review")],
+            ["sleep", "eat", "gym", "recreation", "", "", ""],
+        )
+
+    def test_the_body_row_is_the_first_row_of_the_day(self) -> None:
+        rows = re.findall(r'<div class="(row\b[a-z -]*)"', self.day)
+        self.assertEqual(rows[0], "row body", rows[:3])
+        self.assertLess(self.day.index('class="row body"'), self.day.index('class="row swim-row"'))
+        self.assertIn('<div class="name">body</div>', self.day)
+        self.assertEqual(self.day.count('class="row body"'), 1)
+
+    def test_each_kind_is_a_segment_carrying_its_clock(self) -> None:
+        segs = re.findall(r'<div class="seg ([a-z]+)"[^>]*data-start="([^"]+)"[^>]*data-end="([^"]+)"', self.day)
+        self.assertEqual([s[0] for s in segs], ["gym", "eat", "recreation", "sleep"])
+        self.assertTrue(segs[0][1].endswith("16:30:00-05:00"), segs[0])
+        self.assertTrue(segs[0][2].endswith("17:30:00-05:00"), segs[0])
+
+    def test_a_body_event_is_not_also_a_band(self) -> None:
+        # Drawn twice it would read as two things happening at once.
+        self.assertNotIn('data-band="Sleep"', self.day)
+        self.assertNotIn('data-band="Gym"', self.day)
+        self.assertIn('data-band="Table meeting"', self.day)
+
+    def test_the_fills_are_the_ones_already_recorded(self) -> None:
+        for kind, fill in (("sleep", "#332288"), ("eat", "#D55E00"),
+                           ("gym", "#117733"), ("recreation", "#F0E442")):
+            self.assertIn(f"--{kind}:{fill}", self.css, kind)
+            self.assertIn(f".seg.{kind}{{background:var(--{kind})", self.css, kind)
+
+    def test_cream_ink_on_sleep_and_gym_alone(self) -> None:
+        rule = re.search(r"\.seg\{([^}]*)\}", self.css).group(1)
+        self.assertIn("color:var(--fg)", rule)
+        cream = re.search(r"([.a-z,]*)\{color:var\(--bar-ink\)\}", self.css)
+        self.assertEqual(sorted(cream.group(1).split(",")), [".seg.gym", ".seg.sleep"])
+
+    def test_the_legend_names_the_four_kinds(self) -> None:
+        legend = re.search(r'<div class="legend">(.*?)</div>\n', self.html, re.S).group(1)
+        for kind in ("sleep", "eat", "gym", "recreation"):
+            self.assertRegex(legend, rf'<span class="key seg {kind}"></span>\s*{kind}')
+
+
 class GridlinesTest(unittest.TestCase):
     def setUp(self) -> None:
         self.cfg = rb.parse_coordinator(CLAUDE_MD_FAR, today=NOW2.date())
@@ -899,6 +973,10 @@ class LegendTest(unittest.TestCase):
             ("key bar open-end", "no estimate"),
             ("key bar derived", "estimated"),
             ("key bar summary", "folded rows"),
+            ("key seg sleep", "sleep"),
+            ("key seg eat", "eat"),
+            ("key seg gym", "gym"),
+            ("key seg recreation", "recreation"),
             ("key band", "calendar event"),
             ("key nowline", "now"),
             ("key dline", "deadline"),

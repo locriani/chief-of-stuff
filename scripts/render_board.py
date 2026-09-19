@@ -260,11 +260,36 @@ class Tracker:
     sessions: tuple[Session, ...] = ()
 
 
+# The four kinds of the body lane. A body kind is recognised by its own name as a whole word in the
+# event's title and by nothing else: the design names these four, and a wider vocabulary (workout,
+# breakfast, lunch, dinner on their own) is a decision rather than an implementation of it.
+BODY_KINDS = ("sleep", "eat", "gym", "recreation")
+BODY_WORD = {k: re.compile(rf"(?i)\b{k}\b") for k in BODY_KINDS}
+
+
+def body_kind(title: str) -> str:
+    """The body kind an event's title names, or "" when it names none."""
+    for kind in BODY_KINDS:
+        if BODY_WORD[kind].search(title):
+            return kind
+    return ""
+
+
 @dataclass(frozen=True)
 class Event:
     start: datetime
     end: datetime
     title: str
+
+    @property
+    def kind(self) -> str:
+        return body_kind(self.title)
+
+
+@dataclass(frozen=True)
+class Body:
+    """The body lane: one row whose track carries every body event on the axis, in clock order."""
+    segments: tuple[Event, ...]
 
 
 @dataclass(frozen=True)
@@ -949,6 +974,10 @@ LEGEND = [
     ("key bar open-end", "no estimate"),
     ("key bar derived", "estimated"),
     ("key bar summary", "folded rows"),
+    ("key seg sleep", "sleep"),
+    ("key seg eat", "eat"),
+    ("key seg gym", "gym"),
+    ("key seg recreation", "recreation"),
     ("key band", "calendar event"),
     ("key nowline", "now"),
     ("key dline", "deadline"),
@@ -1110,7 +1139,21 @@ def _bar_row(b: Bar, axis_a: datetime, axis_b: datetime, row_class: str = "row")
     )
 
 
-def _strip(rows: list["Swim | Bar | Summary"], axis_a: datetime, axis_b: datetime, events: list[Event], deadlines: list[Deadline], ticks: list[tuple[datetime, str]], kind: str) -> str:
+def _body_row(body: Body, axis_a: datetime, axis_b: datetime) -> str:
+    """The body lane. Hours already spent asleep, eating or off are not available for work, and a
+    deadline row above them reads as if they were until they are drawn."""
+    segs = []
+    for ev in body.segments:
+        left, right = _pct(ev.start, axis_a, axis_b), _pct(ev.end, axis_a, axis_b)
+        segs.append(
+            f'<div class="seg {ev.kind}" data-body="{ev.kind}" data-start="{_iso(ev.start)}" data-end="{_iso(ev.end)}" '
+            f'title="{_esc(ev.title)} {ev.start.strftime("%H:%M")}–{ev.end.strftime("%H:%M")}" '
+            f'style="left:{left:.2f}%;width:{max(right - left, 0.6):.2f}%"><em>{_esc(ev.kind)}</em></div>'
+        )
+    return f'<div class="row body"><div class="name">body</div><div class="track">{"".join(segs)}</div></div>'
+
+
+def _strip(rows: list["Body | Swim | Bar | Summary"], axis_a: datetime, axis_b: datetime, events: list[Event], deadlines: list[Deadline], ticks: list[tuple[datetime, str]], kind: str) -> str:
     out = [f'<div class="strip" data-strip="{kind}" data-axis-start="{_iso(axis_a)}" data-axis-end="{_iso(axis_b)}">']
     out.append('<div class="axis">')
     for at, label in ticks:
@@ -1118,6 +1161,9 @@ def _strip(rows: list["Swim | Bar | Summary"], axis_a: datetime, axis_b: datetim
     out.append("</div>")
     out.append('<div class="rows">')
     for row in rows:
+        if isinstance(row, Body):
+            out.append(_body_row(row, axis_a, axis_b))
+            continue
         if isinstance(row, Swim):
             out.append(
                 f'<div class="row swim-row" data-swimlane="{_esc(row.name)}" data-count="{row.count}">'
@@ -1307,6 +1353,10 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
     tracker = parse_tracker(tracker_text)
     today, zone = now.date(), cfg.zone
     events = parse_calendar(log_text, today, zone)
+    # A body event is drawn once, as a segment of the body lane; drawn as a band as well it would
+    # read as two things happening at once. Every other event stays the band it was.
+    body_events = [e for e in events if e.kind]
+    events = [e for e in events if not e.kind]
     lanes = list(tracker.lanes)
     active = [lane for lane in lanes if lane.kind != "done"]
     done = [lane for lane in lanes if lane.kind == "done"]
@@ -1330,6 +1380,8 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
         day_ticks.append((t, t.strftime("%H:%M")))
         t += step
     day_events = [e for e in events if e.end > axis_a and e.start < axis_b]
+    on_axis = sorted((e for e in body_events if e.end > axis_a and e.start < axis_b), key=lambda e: e.start)
+    day_body: list[Body] = [Body(tuple(on_axis))] if on_axis else []
     day_summaries = [Summary("today", "no estimate, or due or estimated after today", axis_a, axis_b, tuple(day_folded))] if day_folded else []
 
     # Week strip: today to the day after the last deadline, at most 7 days, one column per day.
@@ -1453,9 +1505,9 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
 <link rel="stylesheet" href="{FONTS}">
 <meta name="tracker-sha256" content="{sha}">{req_meta}
 <style>
-:root{{--bg:#f4efe1;--surface:#fbf8ef;--fg:#2f2630;--muted:#6e6470;--line:#ddd3bd;--brass:#a7843e;--band:rgba(111,99,180,.14);--open:#9daa72;--noest:#2f8f86;--fold:#8a7f9c;--running:#6f63b4;--done:#bdb3a2;--dl:#c9533a;--now:#4f6b3a;--est:#b5567a;--bar-ink:#fbf8ef}}
-@media (prefers-color-scheme:dark){{:root:not([data-theme="light"]){{--bg:#1e1a20;--surface:#29232b;--fg:#efe8d6;--muted:#a89fa8;--line:#3d3440;--brass:#c9a45c;--band:rgba(154,143,218,.18);--open:#6f7f48;--noest:#4fb3a7;--fold:#a093bb;--running:#9a8fda;--done:#5a5058;--dl:#f0775a;--now:#9dbb6e;--est:#d98aa8;--bar-ink:#1e1a20}}}}
-:root[data-theme="dark"]{{--bg:#1e1a20;--surface:#29232b;--fg:#efe8d6;--muted:#a89fa8;--line:#3d3440;--brass:#c9a45c;--band:rgba(154,143,218,.18);--open:#6f7f48;--noest:#4fb3a7;--fold:#a093bb;--running:#9a8fda;--done:#5a5058;--dl:#f0775a;--now:#9dbb6e;--est:#d98aa8;--bar-ink:#1e1a20}}
+:root{{--bg:#f4efe1;--surface:#fbf8ef;--fg:#2f2630;--muted:#6e6470;--line:#ddd3bd;--brass:#a7843e;--band:rgba(111,99,180,.14);--open:#9daa72;--noest:#2f8f86;--fold:#8a7f9c;--running:#6f63b4;--done:#bdb3a2;--dl:#c9533a;--now:#4f6b3a;--est:#b5567a;--bar-ink:#fbf8ef;--sleep:#332288;--eat:#D55E00;--gym:#117733;--recreation:#F0E442}}
+@media (prefers-color-scheme:dark){{:root:not([data-theme="light"]){{--bg:#1e1a20;--surface:#29232b;--fg:#efe8d6;--muted:#a89fa8;--line:#3d3440;--brass:#c9a45c;--band:rgba(154,143,218,.18);--open:#6f7f48;--noest:#4fb3a7;--fold:#a093bb;--running:#9a8fda;--done:#5a5058;--dl:#f0775a;--now:#9dbb6e;--est:#d98aa8;--bar-ink:#1e1a20;--sleep:#332288;--eat:#D55E00;--gym:#117733;--recreation:#F0E442}}}}
+:root[data-theme="dark"]{{--bg:#1e1a20;--surface:#29232b;--fg:#efe8d6;--muted:#a89fa8;--line:#3d3440;--brass:#c9a45c;--band:rgba(154,143,218,.18);--open:#6f7f48;--noest:#4fb3a7;--fold:#a093bb;--running:#9a8fda;--done:#5a5058;--dl:#f0775a;--now:#9dbb6e;--est:#d98aa8;--bar-ink:#1e1a20;--sleep:#332288;--eat:#D55E00;--gym:#117733;--recreation:#F0E442}}
 body{{background:var(--bg);color:var(--fg);font:14px/1.5 "Alegreya Sans","Gill Sans",system-ui,sans-serif;padding:16px 16px 48px;max-width:1100px;margin:0 auto}}
 h1{{font-family:"Cormorant SC","Cormorant Garamond",Georgia,serif;font-size:26px;font-weight:600;letter-spacing:.04em;margin:0 0 2px}}
 h2{{font-family:"Cormorant SC","Cormorant Garamond",Georgia,serif;font-size:19px;font-weight:600;letter-spacing:.05em;margin:28px 0 8px;border-bottom:1px solid var(--brass);padding-bottom:4px}}
@@ -1474,6 +1526,12 @@ tr.group th{{background:color-mix(in srgb,var(--brass) 18%,transparent);color:va
 .strip{{position:relative;margin:8px 0 4px;--name-w:30%}} .axis{{position:relative;height:18px;margin-left:var(--name-w);font-size:11px;color:var(--muted)}} .tick{{position:absolute;transform:translateX(-50%);white-space:nowrap}}
 .rows{{position:relative}} .row{{display:flex;align-items:center;height:26px}} .name{{width:var(--name-w);flex:none;padding-right:8px;box-sizing:border-box;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}} .track{{position:relative;flex:1;height:18px;border-left:1px solid var(--line)}}
 .summary-row .name{{color:var(--muted)}} details.folded>summary{{list-style:none;cursor:pointer}} details.folded>summary::-webkit-details-marker{{display:none}} details.folded>summary .name::before{{content:"\u25b8 "}} details.folded[open]>summary .name::before{{content:"\u25be "}} .row.sub{{height:22px}} .row.sub .name{{padding-left:18px;color:var(--muted);font-size:12px}} .row.sub .bar{{height:14px;line-height:14px;font-size:10px;top:2px}}
+.row.body .name{{color:var(--muted)}}
+.seg{{position:absolute;top:0;height:18px;border-radius:3px;color:var(--fg);font-size:11px;line-height:18px;padding:0 6px;overflow:hidden;white-space:nowrap;box-sizing:border-box}}
+.seg.sleep{{background:var(--sleep)}} .seg.eat{{background:var(--eat)}} .seg.gym{{background:var(--gym)}} .seg.recreation{{background:var(--recreation)}}
+.seg.sleep,.seg.gym{{color:var(--bar-ink)}}
+.seg em{{font-style:normal;opacity:.85}}
+.key.seg{{position:static;padding:0;display:inline-block;width:18px;height:10px;border-radius:2px}}
 .bar{{position:absolute;top:0;height:18px;border-radius:3px;background:var(--open);color:var(--bar-ink);font-size:11px;line-height:18px;padding:0 6px;overflow:hidden;white-space:nowrap;box-sizing:border-box}}
 .bar.running{{background:var(--running)}} .bar.orphaned{{background:var(--surface);color:var(--fg);outline:2px dashed var(--dl);outline-offset:-2px}} .bar.open-end{{background:var(--noest)}} .bar.derived{{background:var(--est)}} .bar.summary{{background:var(--fold)}} .bar.clamped{{border-right:3px solid var(--dl)}} .bar.clamped-left{{border-left:3px solid var(--dl)}} .group-row .name{{font-weight:600}} .bar em{{font-style:normal;opacity:.85}} .member{{display:none}}
 .overlay{{position:absolute;top:0;bottom:0;left:var(--name-w);right:0;pointer-events:none}}
@@ -1537,7 +1595,7 @@ details summary{{cursor:pointer}} details[open] summary{{margin-bottom:4px}}
 
 <h2>Today</h2>
 <div class="meta">{len(day_bars)} scheduled · {len(day_folded)} folded into one row (no estimate, or due or estimated after today) · bands are calendar events · green line is now{orphan_note}</div>
-{legend()}{_strip(swimlanes(day_bars) + day_summaries, axis_a, axis_b, day_events, [nearest], day_ticks, "day")}
+{legend()}{_strip(day_body + swimlanes(day_bars) + day_summaries, axis_a, axis_b, day_events, [nearest], day_ticks, "day")}
 
 <h2>Week</h2>
 <div class="meta">{len(week_bars)} bars · {len(week_groups)} rows grouped by due day · the rest folded into one row per deadline · dashed lines are deadlines</div>
