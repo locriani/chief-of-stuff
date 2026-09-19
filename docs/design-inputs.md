@@ -846,3 +846,163 @@ arch's rule, adopted as it proposed it: a session that has just reported names w
 It lands on the line this repo had already corrected once. The template ended `Report: <what to reply with when done>`, which is exactly the instruction that makes a report feel terminal. It now ends in one of two named states — the one thing you are starting now, or `idle and available` — and never neither, with the mechanism stated in the header so the rule reads as a description of a real failure rather than as ceremony. Naming the next action makes the stop visible at the moment it happens, to the session itself, which is the only observer present.
 
 The hourly sweep is the external form of the same check and is not a substitute: it finds the stop up to an hour late. Both instruments Zach asked for tonight — the sweep at 03:32, and a prod at 03:50 for the session that "keeps trying to stop" — caught this within the hour, which argues for the sweep and equally that the sweep should not have had to.
+
+
+## 112 — a ref is the join; a name is a tab title
+
+**From:** `gauntlet-b2`, 06:03, from the hourly sweep's own output.
+**Status:** Adopted 2026-09-19 (0.12.5).
+
+The audit called a live session's tree orphaned: `orphaned work: openemr-arch (arch/frank) — 1 uncommitted file(s); not on main, and its owner 'architecture-review-setup' is not in ## Sessions`. That session was awake, listed, and had committed `3d039f7` on that branch five minutes earlier. `orphaned=3` against `orphaned=2` at 04:54 was entirely this.
+
+Both cells carried the ref and the matcher compared the names. File ownership read `architecture-review-setup [768194]`; the Sessions row keyed `768194` had its *name* cell rewritten at 03:21 to `**openemr-arch** (tab title …)` on Zach's word that the worktree is the name. `_bare()` stripped the ref from both sides and joined on what was left, so a rename the tracker recorded correctly broke a join that had no business reading the name at all.
+
+A ref is minted once and survives every rename. A name is a tab title, and in this fleet tab titles change — twice tonight. So where the cell carries a ref and the roster has refs to compare against, the ref decides and the name is decoration; the name decides only when there is no ref to ask. A ref the roster does not carry stays a real absence even under a familiar name, because the context that took the paths is gone whatever now wears its label — and the line now says which key failed, so a stale ownership row reads as a stale ref rather than as a missing session.
+
+Two things beside it. `_bare()` did not strip emphasis, so `**sam**` never matched `sam` — a coordinator bolds the name it most wants read, which is the name a join most needs to match; it unmarks now. And the peer did not silence the alarm by editing either row to satisfy the matcher, which would have undone Zach's naming and hidden the bug: it filed it as autonomous decision A24 and left the fault standing. That is the behaviour the instrument exists for.
+
+## 113 — the same blind spot, in the renderer
+
+**From:** found while fixing 112. Recorded, deliberately not built.
+**Status:** Open — `scripts/render_board.py` is held by `board-ux-improvements`.
+
+`render_board._bare_name()` strips the ref and the parenthetical but not emphasis: `**openemr-arch** (tab title x)` → `**openemr-arch**`, `**sam**` → `**sam**`. `gone_sessions()` joins lane owners to session names through it, so a bolded name on either side never matches and the board draws a session as gone that is not. It is the fixable half of 112 in a file this lane does not own; the ref half needs the same treatment there, and the fix is two lines in a function with tests already around it.
+
+## 114 — a running eval makes its own checkout read-only and says so nowhere
+
+**From:** `board-ux-improvements`, 06:16, correcting a claim of mine that its run was pinned to a sha.
+**Status:** Open — recorded here because `evals/run.py` is this lane's file and the finding was living only in another session's memory.
+
+I told it its 58-case run was pinned to `0bf5076`. It is pinned to nothing. `run.py` builds the sandbox allowlist from absolute paths into the live checkout — `BOARD_RENDERER = PLUGIN_ROOT / "scripts" / "render_board.py"`, then `Bash(python3 {BOARD_RENDERER}:*)` — and nothing is copied. The sandboxed agent shells out to the file on disk as it stands at the moment that case runs. It is five scripts, not one: the renderer, the health probe, the lane audit, `make_worktree`, `spawn_session`.
+
+So a run of N cases against a tree somebody edits mid-run is not one verdict. Cases before the edit and cases after it exercise different code, the result directory looks exactly the same either way, and no line of output records that the ground moved. board-ux caught this on its own at case 33 of 58 and held a one-line fix for an hour rather than split its run, which is the right answer and one the harness gave it no help reaching.
+
+The hazard is collision between two correct sessions. One runs a suite; the other edits a file the suite is reading; the first one's results are silently half-and-half. Nothing in the harness declares the lock it is effectively taking, so the second session has no way to know it exists.
+
+The fix is to make a run a verdict on a snapshot: copy the scripts into the run's temp dir at launch and allowlist the copies, so the checkout stays writable and every case in a run exercises identical code.
+
+**06:57, board-ux again, and it widens the rule:** the hold is not on *editing*, it is on anything that changes `scripts/` — and a CIMP merge of main into the sweeping worktree is such a thing. So a session running a sweep cannot take a merge either, which is a constraint nobody would infer from "do not edit during a run". Worth stating because it binds the session that is behaving best: one holding a fix rather than splitting its run is also holding its merge. Deliberately not done at 06:16 — board-ux's run depends on current behaviour being stable for another hour, and changing the harness under a live run is the same mistake pointed the other way.
+
+Beside it, the lesson that goes with 112 and 113: a fix whose join key nothing on today's tracker exercises leaves the live board byte-identical, and that is the expected result rather than a failed fix. Zero of 129 lane owners carry emphasis. Proven by the red test or not proven at all.
+
+## 115 — the ref reaches `owns()` too, and that is where it was costing something
+
+**From:** `gauntlet-b2`, 06:18, noticing one ref under two names in the lane owner column while confirming a correction of mine.
+**Status:** Adopted 2026-09-19 (0.12.6).
+
+112 put the ref in the roster join and stopped there. `owns()` — the join that attributes a lane to an ownership row, and through it to a tree — still compared names, and that is the join that decides whether a lane is checked at all.
+
+It was three names on one ref, not two: `arch [768194]`, `architecture-review-setup [768194]`, `openemr-arch [768194]`. And it was not one session. The tracker has been writing short names in the lane owner column and full registration names in File ownership all day — `impl-1 [4cd339]` against `standing-task-implementer [4cd339]`, `impl-2 [78935c]` against `task-implementer-lane [78935c]`, `research-1 [e928f1]`, `impl-3 [4e5baf]`, `research-2 [281229]`. **Twenty-three `done` lanes matched no ownership row.** A lane with no tree is checked for nothing: no reopen, no orphan, no stop. Silently unaudited, and the summary line counted them as lanes like any other.
+
+A/B against the live tracker, same minute, same trees: `reopen=2` before, `reopen=8` after. The six that appeared are real — five arch lanes and two research-1 lanes marked `done` whose branches are not on main, which under house rule 5 are not done. Only six of the twenty-three surfaced because the other seventeen happen to be clean and on main; they were unchecked all the same, and would have stayed unchecked the moment one of them wasn't.
+
+This is the inverse of 112's lesson and it arrived four minutes later. 112 was proven by a red test and moved nothing live, which I said plainly. 115 was found in the same data by someone reading an A/B result for something else, and it moved the number by six. Neither the test nor the live run is sufficient alone: the test says the logic is right, the live run says whether anything was relying on it being wrong.
+
+The rule is now the same in both joins, which is the point — a ref decides where both sides carry one, a name decides where one side does not.
+
+## 116 — `reopen` asks a per-tree question and `done` is a per-lane claim
+
+**From:** `gauntlet-b2`, 06:25, disputing a conclusion of mine with six shas and refusing to act on it.
+**Status:** Open — the mechanism needs a fact the tracker does not carry. Zach's.
+
+I shipped 0.12.6, saw `reopen` go 2 to 8, and told the coordinator that six lanes were marked done whose branches were not on main and so under house rule 5 were not done. That was wrong, and the coordinator checked it against main before touching a state rather than believing an audit line.
+
+Verified here independently, in the arch worktree, read-only: `150276a`, `54b7eb3`, `5a3a383`, `05060ee`, `4d43f85` are every one an ancestor of main. What `arch/frank` carries unmerged is seven commits authored 04:03 to 06:14, and the last of the six lanes closed at 03:25. The six closed before that work existed. Their changes are on main; the tree is not.
+
+**The predicate generalises wrongly.** `reopen` asks "is this owner's tree on main?" and `done` is a claim about one lane's change reaching main. Those coincide only for a session that opens a tree, does one lane, and merges. A session that works continuously in one worktree always has unmerged work, so once its lanes are joined, every lane it has ever closed reopens and stays reopened for the rest of the day. arch is the worst case because it is the longest-lived single-tree session here; impl-1, impl-2 and f1c209 do it the moment they have an unmerged commit, which is most of the time. Eight is the floor, not the number.
+
+`research/r1` is a second shape: research notes never go to main by a convention held all night, so those lanes have no merge to wait for and reopen forever.
+
+**0.12.6 did not create this — it exposed it.** The defect was always in the predicate; the twenty-three unjoined lanes were simply never asked. The join fix is right and stays. What it did create is a noise source in a running instrument, and that is the part with a cost: a reader who checks eight reopens by hand, finds eight false, and is trained to skim the ninth. The coordinator had confessed to exactly that failure ninety minutes earlier about four different reopens, so the instrument is now manufacturing the condition it just apologised for.
+
+Three candidate mechanisms, none of them mine to pick:
+
+- **A lane carries the sha that closed it**, and `reopen` asks `merge-base --is-ancestor <sha> main` instead of asking about the tree. Correct, and a tracker grammar change.
+- **An ownership row declares that its branch never merges** (`research/r1`). Fixes the second shape only, also grammar.
+- **A lane is not reopened by work that did not exist when it closed** — compare the earliest unmerged commit's author date against the lane's `done HH:MM–HH:MM` end. Needs no grammar, is monotone (it can only suppress, never add a reopen), and kills the dominant class. It is still a heuristic: it cannot suppress an unrelated unmerged commit that predates the close, and it cannot tell which lane a commit belongs to. That is what the first option buys and this one does not.
+
+I did not build the third. It is a design decision about a gate two sessions read, and I had been wrong twice in fifteen minutes about what this same function does against live data. Containment is already correct without it: the coordinator recorded an autonomous decision not to reopen any of the eight, with the shas attached, so it can be overturned against evidence rather than judgement.
+
+### 116a — the cheap mechanism was built, and this repo's own suite falsified it
+
+**Built and discarded 2026-09-19 06:3x. Nothing shipped.**
+
+`gauntlet-b2` made the argument for the third mechanism better than I had: the monotone property is not a heuristic about which commit belongs to which lane, it is a fact about time, so the rule can only withdraw a reopen and never raise one. I updated on that argument — not on the ceiling of thirty it sent with it — and built it: `closed_at()` reading the end of a `done HH:MM–HH:MM` range and resolving an ambiguous midnight crossing to the *later* day so a suppression fires only under every reading, `earliest_unmerged()` reading `%aI`, and `superseded()` withdrawing a reopen when every unmerged commit postdates the close. Seven new tests green.
+
+Then four existing tests failed, and they were the deliberate ones — `test_done_on_an_unmerged_branch_must_reopen`, `test_two_done_lanes_one_landed_one_not`, `test_done_lane_reopens_when_its_tree_is_named_in_a_bullet`, and the exit-code test that rests on them. I was one edit from moving four tests to accommodate the design, which is the move this repo has made legitimately before and which here would have hidden a real loss.
+
+**The premise is false in the case the instrument exists for.** "Work authored after a lane closed cannot be that lane's unfinished work" holds only if the lane's work was already committed when it was marked done. A session that marks a lane `done 03:25` and commits that lane's work at 04:03 breaks it, and the rule then hides a genuinely incomplete lane forever. That pattern is present here — impl-3 committed `bb1fb86` while its lane was still `running`, and the coordinator's own note was that committed is not CIMP-complete.
+
+So the rule is monotone in false positives and *not* monotone overall: it trades roughly twenty-two false reopens for a class of false negatives, and for a gate a false negative is the worse one. The clean statement of the defect: **`reopen` exists because a lane's written state drifts from git, and this mechanism makes the lane's written state authoritative over git.** That is backwards, and no narrowing fixes it — the arch case is 38 minutes between close and the next commit, which is indistinguishable from a session that marked done and kept working.
+
+This is evidence *for* the sha-per-lane option rather than a reason to keep waiting. A lane carrying the sha that closed it needs no inference about time at all: `merge-base --is-ancestor <sha> main` is a fact about the change the lane claimed, which is the thing `done` asserts. The coordinator verified its six by hand by reading commit messages against lane items — a judgement the audit cannot make and the grammar would not need.
+
+What holds from the attempt: the ceiling of thirty is real, the cost climbs fastest when the fleet is most productive, and the board is the surface Zach reads first. The decision is unchanged and still his; it now has one fewer option and a better reason for the one that remains.
+
+## 117 — a reviewer without the primary evidence catches reasoning, not facts
+
+**From:** the 06:03–06:36 exchange between this lane, `gauntlet-b2` and `board-ux-improvements`. Four false general claims, four corrections, and the corrections were not alike.
+
+Between them: I credited 0.12.5 with a live effect it did not have, then asserted six lanes were not done when their changes were all on main; the coordinator credited 0.12.5 with four reopens its own earlier output attributed to a merge, then asserted a timing invariant its own Log refutes; board-ux told me my inertness claim did not cover its file. Every one was wrong or incomplete, and every one was caught within minutes.
+
+**The corrections sorted by access to the primary artifact, not by care or seniority.** The coordinator and this lane can both read the tracker, and both of our corrections of each other were factual and settled the question on the spot: five shas checked against main, four orphaned lanes enumerated, an A/B run in the same minute. board-ux is barred from the Gauntlet workspace by Zach's constraint and holds to it, so its correction of me could only be methodological — *"identical output proves inertness on the inputs that version touches"* — and it was right, and it was the most useful sentence anyone said in the half hour. But the specific live claim it hung on that reasoning was false: it predicted the board was drawing a session as working against an orphaned lane, and no such lane exists. It could not check, so it reasoned to a confident specific.
+
+That is the finding, and it is a routing rule rather than a criticism of anyone: **a reviewer without read access to the artifact catches errors of reasoning and cannot catch errors of fact, and will supply confident specifics to fill the gap.** Both halves matter. The methodological catch was worth more than either factual one, because it generalises and they did not. The specific was noise that cost two sessions a check.
+
+Three consequences. A verification request goes to a session that can read the evidence — I answered board-ux's orphaned-lane question in one command because I could read the file it cannot, and it had asked the coordinator rather than me. A reviewer held out of an artifact for write-safety reasons is correctly held out and should say *"I cannot check this"* where it currently says *"this is happening"*. And the reasoning-level catch should be solicited deliberately rather than treated as a consolation: board-ux produced it precisely because it could not run the check and had to think about what the check would have proved.
+
+The shape underneath all four errors was the same and the coordinator named it best: reaching for a general statement without searching one's own record for the case that breaks it. Its rule — before asserting an invariant about how sessions behave, search the Log, because if a counterexample exists you probably wrote it down — is the durable half. Mine is narrower and belongs beside it: **before generalising a null result, name which inputs the change actually touches.** I had A/B'd one join and generalised to a neighbouring join in the same file and to a second file, and was wrong about both.
+
+### 116b — the forecast landed to the number, and nobody arranged it
+
+**Verified here 2026-09-19 06:46, independently of the report.**
+
+At 06:30 the coordinator projected that one commit on `feat/rules-s0-prereq` would take `reopen` from 8 to 13. f1c209 landed TB5 at 06:42 — eight commits, green, clean tree, deliberately unmerged because its plan's cadence is CIMP per rule family. The audit at 06:46, run here against the live tracker:
+
+    lanes=131 trees=10 reopen=13 orphaned=2 stopped=0 queued=14
+
+Thirteen. Nothing is wrong anywhere. The instrument that exists to notice stopped work is reporting thirteen stopped lanes because a session is working well and holding its merges to a cadence its own plan specifies.
+
+The distribution is the defect stated as arithmetic, and it is sharper than the argument that produced it:
+
+    6  openemr-arch (arch/frank): not on main
+    5  openemr-agent-brief (feat/rules-s0-prereq): not on main
+    2  openemr-research-1 (research/r1): not on main
+
+**Thirteen lines carry three facts.** Three trees are off main; the audit says so thirteen times because thirteen closed lanes are attributed to those three trees, and `reopen` has no per-lane fact to distinguish them. The ratio is not fixed either — it is lines per tree, so it degrades as a session closes more lanes in one worktree, which is to say as it gets more done.
+
+This was a projection an hour ago and is now a measurement, and neither session arranged it: f1c209 had no idea it was a test and was simply correct. That makes it better evidence for the decision than anything either of us could have constructed, and it settles the shape of the choice — a gate whose false-positive count is driven by the fleet's throughput reads as noise exactly when the reader most needs it to read as signal.
+
+## 118 — three sessions, three ways of mistaking a partial view for the whole
+
+**From:** the 04:30–06:45 window, assembled by `gauntlet-b2` from three unrelated reports.
+
+- **This lane:** generalised a null result without naming which inputs the change touched. I A/B'd one join, got identical output, and extended the conclusion to a neighbouring join in the same function and to a second file. Wrong about both.
+- **The coordinator:** asserted an invariant about how sessions behave without searching its own Log for the counterexample — which it had written itself, ninety minutes earlier, about impl-3 committing while its lane read `running`.
+- **f1c209:** read a SQL result whose filter was broken by an empty-string `REGEXP` and whose output was then cut by `head` — six rows of a thirty-one-row list — and read a truncated result as a complete one, producing a wrong spec from it.
+
+Three mechanisms, one shape: a view that was partial for a reason none of us could see from inside it, taken for the whole. The reasons do not resemble each other — an untested input set, an unsearched record, a truncated pipe — which is why three separate rules came out of them and why the rules are each correct and each narrow.
+
+What the class suggests, and what no one of the three suggests alone: the mitigation is not more care at the moment of asserting. All three sessions were careful. It is that **the boundary of a view is usually invisible from inside it, and the cheapest instrument is a second party with different access** — which is 117 from the other direction. Each of these was caught within minutes, and in every case by somebody else.
+
+Recorded without a mechanism attached, deliberately. Three instances in two hours is enough to name a class and not enough to know what would catch it, and a rule invented here would be a fourth partial view.
+
+### 116c — one line per fact (0.12.7)
+
+`gauntlet-b2`'s third option, handed on by `board-ux-improvements`, which declined to build it for three stated reasons — its loop does not design while it runs, `audit_lanes.py` is this lane's active file, and its own sweep holds `scripts/` anyway.
+
+`visit()` asks git **once per tree** — its docstring has said "One tree, once" since it was written — and then fans that single answer across every lane the tree owns. That is the whole mechanism of the noise: thirteen lines carrying three facts, with the ratio being lines per tree, so it degraded exactly as a session closed more lanes in one stable worktree.
+
+Grouping the rendering per tree is not what 116a was. Nothing about detection changes: the finding list is untouched, the exit code is untouched, every tree that was flagged is still flagged, and every lane still appears by name on its tree's line. The distinguishing evidence is the suite — 116a turned four deliberate tests red because lanes stopped being reported; this turned none, because none stop. The live invariant was checked too: thirteen lane names before, thirteen present after, none dropped.
+
+    before:  13 lines
+    after:   reopen: openemr-arch (arch/frank): not on main — 6 done lanes: …
+             reopen: openemr-research-1 (research/r1): not on main — 2 done lanes: …
+             reopen: openemr-agent-brief (feat/rules-s0-prereq): not on main — 5 done lanes: …
+             lanes=131 trees=10 reopen=3 trees/13 lanes
+
+It answers "how many things are true". A per-lane sha answers "which lane failed to merge". Those are different questions and Zach should still have the second one; this one needed no new written field to answer, which is why it could be built tonight and that cannot.
+
+**It also exposed a latent defect it did not cause.** Six grouped lanes rendered as six ellipses, because `short_name` cuts inside a `**` pair and returns a bare ellipsis — the same defect fixed for the decision queue earlier tonight and never carried across. The old per-lane output had been doing it all along; one ellipsis a line reads as a long item, six on a line reads as a bug. `_unmark` first, and the lanes are legible for the first time.
+
+**And a warning from board-ux that belongs with option (a), not this one:** if a per-lane sha is ever built, a sha that fails validation must resolve to **unknown**, never to clear. Every failure mode of the instrument today is a false reopen — noisy, self-clearing, and visible. A sha-based check introduces a false *clear*, which is silent and permanent. `rows_for` already holds that line for tree attribution, refusing to guess when a lane matches no row; (a) would invert it unless it is built with that rule in front.

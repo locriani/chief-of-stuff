@@ -13,6 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import audit_lanes as al  # noqa: E402
+from render_board import short_name  # noqa: E402
 
 CLAUDE = """# Workspace
 
@@ -762,3 +763,137 @@ class PushGapNamesMainTest(unittest.TestCase):
         line = al._push_gap(self.root / "trees" / "wt-unmerged")
         self.assertIn(f"main {self.main}", line)
         self.assertIn("even with origin/main", line)
+
+
+class RefJoinTest(unittest.TestCase):
+    """Finding 112. A ref is minted once and survives a rename; a name is a tab title, and one changed
+    at 03:21 on Zach's word that the worktree is the name. The join read the names, missed, and called
+    a session that had committed five minutes earlier orphaned. Where both sides carry a ref, the ref
+    is the join.
+    """
+
+    DIRTY = "| Unsaved work | sam | waiting | 09:00 |  | Checklist: Unsaved work |"
+
+    def audit(self, ownership: str, sessions: str):
+        tmp, root = workspace(self.DIRTY, ownership, sessions=sessions)
+        self.addCleanup(tmp.cleanup)
+        return al.audit(root, "2026-09-17")
+
+    def test_a_renamed_session_is_not_an_orphan(self) -> None:
+        report = self.audit("| sam [768194] | worktree wt-dirty (feat/dirty) |",
+                            session_row("**openemr-arch** (tab title `sam`)", ref="768194"))
+        self.assertEqual(report.orphans, [], report.lines)
+
+    def test_a_bolded_session_name_still_joins_when_there_is_no_ref(self) -> None:
+        report = self.audit("| sam | worktree wt-dirty (feat/dirty) |", session_row("**sam**"))
+        self.assertEqual(report.orphans, [], report.lines)
+
+    def test_a_ref_no_session_carries_is_an_orphan_however_familiar_the_name(self) -> None:
+        report = self.audit("| sam [999999] | worktree wt-dirty (feat/dirty) |",
+                            session_row("sam", ref="a1b2c3"))
+        self.assertEqual(len(report.orphans), 1, report.lines)
+        self.assertIn("999999", str(report.orphans[0]))
+
+    def test_with_no_ref_on_the_owner_the_name_still_decides(self) -> None:
+        report = self.audit("| sam | worktree wt-dirty (feat/dirty) |", session_row("sam", ref="768194"))
+        self.assertEqual(report.orphans, [], report.lines)
+
+    def test_a_tracker_whose_sessions_carry_no_refs_falls_back_to_names(self) -> None:
+        """An empty ref column is not a roster of nobody, the same way an empty table is not."""
+        report = self.audit("| sam [768194] | worktree wt-dirty (feat/dirty) |", session_row("sam", ref=""))
+        self.assertEqual(report.orphans, [], report.lines)
+
+
+class OwnsRefTest(unittest.TestCase):
+    """Finding 115. 112 put the ref in the roster join and stopped there. `owns()` — the join that
+    attributes a lane to an ownership row, and so to a tree — still read names, and today's tracker
+    runs one ref under three names: `arch [768194]`, `architecture-review-setup [768194]`,
+    `openemr-arch [768194]`. Four lanes matched no row, so no tree, so no reopen, orphan or stop
+    check reached them. Silently unaudited is worse than wrongly audited.
+    """
+
+    def row(self, context: str) -> al.OwnerRow:
+        return al.parse_ownership(f"| {context} | worktree wt-a (feat/a) |")[0]
+
+    def test_two_names_on_one_ref_are_one_context(self) -> None:
+        self.assertTrue(al.owns(self.row("architecture-review-setup [768194]"), "openemr-arch [768194]"))
+
+    def test_one_name_on_two_refs_is_two_contexts(self) -> None:
+        self.assertFalse(al.owns(self.row("sam [aaaaaa]"), "sam [bbbbbb]"))
+
+    def test_with_a_ref_on_one_side_only_the_name_still_decides(self) -> None:
+        self.assertTrue(al.owns(self.row("sam"), "sam [aaaaaa]"))
+        self.assertTrue(al.owns(self.row("sam [aaaaaa]"), "sam"))
+
+    def test_a_lane_renamed_away_from_its_row_is_still_audited(self) -> None:
+        tmp, root = workspace(
+            "| Landed work | openemr-arch [768194] | done | 09:00 |  | Checklist: Landed work |",
+            "| architecture-review-setup [768194] | worktree wt-unmerged (feat/open) |",
+            sessions=session_row("openemr-arch", ref="768194"))
+        self.addCleanup(tmp.cleanup)
+        report = al.audit(root, "2026-09-17")
+        self.assertEqual(len(report.reopen), 1, report.lines)
+        self.assertIn("wt-unmerged", str(report.reopen[0]))
+
+
+class ReopenGroupsByTreeTest(unittest.TestCase):
+    """Finding 116, option (c), from `gauntlet-b2` by way of `board-ux-improvements`.
+
+    `audit_lanes` asks git once per tree and then fans that one fact across the tree's lanes, so
+    thirteen reopen lines on the live tracker carried three facts. Grouping the *rendering* per tree
+    is not a change to what is detected: every lane that reopened still appears, the finding list is
+    untouched, and the exit code is unchanged. It is the ratio that moves, and the ratio is lines per
+    tree, which is what made the count climb as a session closed more lanes in one worktree.
+    """
+
+    TWO = ("| First | robin | done 10:00 | 09:00 |  | Checklist: First |\n"
+           "| Second | robin | done 10:00 | 09:00 |  | Checklist: Second |")
+    OWNS = "| robin | worktree wt-unmerged (feat/open) |"
+
+    def report(self):
+        tmp, root = workspace(self.TWO, self.OWNS, sessions=session_row("robin"))
+        self.addCleanup(tmp.cleanup)
+        return al.audit(root, "2026-09-17")
+
+    def test_two_lanes_on_one_tree_render_as_one_line(self) -> None:
+        lines = [l for l in self.report().lines if l.startswith("reopen:")]
+        self.assertEqual(len(lines), 1, lines)
+
+    def test_and_that_line_names_every_lane_it_covers(self) -> None:
+        """The invariant that makes this safe: grouping may not drop a lane from the output."""
+        report = self.report()
+        rendered = "\n".join(l for l in report.lines if l.startswith("reopen:"))
+        for r in report.reopen:
+            self.assertIn(short_name(r.lane), rendered)
+
+    def test_the_finding_list_and_the_exit_code_are_untouched(self) -> None:
+        report = self.report()
+        self.assertEqual(sorted(r.lane for r in report.reopen), ["First", "Second"])
+
+    def test_the_summary_says_how_many_facts_and_how_many_lanes(self) -> None:
+        summary = self.report().lines[-1]
+        self.assertIn("reopen=1 tree", summary)
+        self.assertIn("2 lane", summary)
+
+    def test_two_trees_stay_two_lines(self) -> None:
+        tmp, root = workspace(
+            "| First | robin | done 10:00 | 09:00 |  | Checklist: First |\n"
+            "| Other | sam | done 10:00 | 09:00 |  | Checklist: Other |",
+            "| robin | worktree wt-unmerged (feat/open) |\n| sam | worktree wt-dirty (feat/dirty) |",
+            sessions=session_row("robin") + "\n" + session_row("sam"))
+        self.addCleanup(tmp.cleanup)
+        lines = [l for l in al.audit(root, "2026-09-17").lines if l.startswith("reopen:")]
+        self.assertEqual(len(lines), 2, lines)
+
+    def test_a_bolded_lane_item_is_unmarked_before_it_is_shortened(self) -> None:
+        """`short_name` cutting inside a `**` pair returns a bare ellipsis — the same defect fixed for
+        the decision queue and never carried across. Grouping only made it visible: six lanes on one
+        line rendered as six ellipses, and the old per-lane output had been doing it all along."""
+        tmp, root = workspace(
+            "| **A lane whose item is bold and much longer than the short_name cut** | robin "
+            "| done 10:00 | 09:00 |  | Checklist: x |",
+            self.OWNS, sessions=session_row("robin"))
+        self.addCleanup(tmp.cleanup)
+        line = [l for l in al.audit(root, "2026-09-17").lines if l.startswith("reopen:")][0]
+        self.assertIn("A lane whose item is bold", line)
+        self.assertNotIn("**", line)
