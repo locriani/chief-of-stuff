@@ -1038,3 +1038,14 @@ The `gone` half was graded before it was rewritten, and the coordinator's own ac
 
 497 units green on the branch.
 
+
+
+## C12 — a cell is a span too (0.11.3)
+
+Found while reporting status, not while looking: the live `2026-09-19` board carried one `8 cells, expected 7` warning, and behind it the night's largest lane drawn entirely out of column. Finding 100.
+
+Red first: `['a', 'x \\', 'y', 'b'] != ['a', 'x | y', 'b']`, `'x' != 'x | extra | cells'`, and three errors where the piped lane had no key to look up. Green in two steps — the splitter, then the anchor — and one of my own tests was wrong on the way: `| A|B open |` has one state cell, not two, so it recovered correctly instead of falling back. Rewritten to `| A|open|B |`, which is a genuine double claim.
+
+The live row now parses with an empty warning, `ran` reads `('00:28', '01:36')`, and `history=` went from `S:3 M:4 · all:7` with no L at all to `S:3 M:4 L:1 · all:8`. That missing L is the whole reason this was worth a version.
+
+510 units green on the branch.

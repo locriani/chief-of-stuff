@@ -1966,3 +1966,87 @@ class MarkSpansTest(unittest.TestCase):
     def test_a_name_drops_backticks_and_keeps_a_lone_star(self) -> None:
         self.assertEqual(rb._unmark("D8 `AGENT_FRAME_ANCESTORS` defaults to `*`"), "D8 AGENT_FRAME_ANCESTORS defaults to *")
         self.assertEqual(rb._unmark("agent `39e516f`, 30 behind"), "agent 39e516f, 30 behind")
+
+
+PIPED_TRACKER = SIZED_TRACKER.replace(
+    "| A oldest | worker | open | 2026-09-15 |  | M | c |",
+    "| A oldest | worker | open | 2026-09-15 |  | M | c |\n"
+    "| P coded | worker | done 00:28–01:36 | 2026-09-19 | Final | L | c |\n"
+    "| P bare | worker | running 09:00 | 2026-09-16 |  | S | c |",
+).replace("| P coded |", '| P coded, `"ok"|"degraded"` in prose |').replace("| P bare |", "| P bare A|B plain |")
+
+
+class CellSpanTest(unittest.TestCase):
+    """A cell is a span too: the delimiter is a pipe nobody spoke for."""
+
+    def test_a_pipe_inside_a_backtick_span_is_not_a_delimiter(self) -> None:
+        self.assertEqual(rb._cells('| a | `x|y` | b |'), ["a", "`x|y`", "b"])
+
+    def test_an_escaped_pipe_is_a_pipe_and_loses_its_backslash(self) -> None:
+        self.assertEqual(rb._cells(r"| a | x \| y | b |"), ["a", "x | y", "b"])
+
+    def test_a_cell_holding_both_comes_back_once(self) -> None:
+        self.assertEqual(rb._cells(r"| a | `a|b` \| c | d |"), ["a", "`a|b` | c", "d"])
+
+    def test_an_odd_backtick_splits_as_it_always_did(self) -> None:
+        """A typo degrades to the old behaviour instead of swallowing the rest of the row."""
+        self.assertEqual(rb._cells("| a | `x|y | b |"), ["a", "`x", "y", "b"])
+
+    def test_the_ordinary_rows_parse_exactly_as_before(self) -> None:
+        self.assertEqual(rb._cells("| Write eval README | Robin | open | 09:00 | 17:00 | c |"),
+                         ["Write eval README", "Robin", "open", "09:00", "17:00", "c"])
+        self.assertEqual(rb._cells("|---|---|---|"), ["---", "---", "---"])
+
+    def test_a_session_row_keeps_its_columns_when_a_cell_carries_a_pipe(self) -> None:
+        cells = rb._cells('| ab12cd | impl-2 | working | reads `"ok"|"degraded"` | | | | | 09:00 |')
+        self.assertEqual(len(cells), 9)
+        self.assertEqual(cells[3], 'reads `"ok"|"degraded"`')
+
+
+class LaneAnchorTest(unittest.TestCase):
+    """An over-wide row is re-read from the one cell a machine can recognise: its state."""
+
+    def setUp(self) -> None:
+        self.by = {lane.item: lane for lane in rb.parse_tracker(PIPED_TRACKER).lanes}
+
+    def test_a_backticked_pipe_needs_no_recovery_at_all(self) -> None:
+        lane = self.by['P coded, `"ok"|"degraded"` in prose']
+        self.assertEqual(lane.warning, "")
+        self.assertEqual((lane.owner, lane.state, lane.due, lane.size, lane.checklist),
+                         ("worker", "done 00:28–01:36", "Final", "L", "c"))
+
+    def test_a_bare_pipe_in_the_item_is_anchored_back_onto_its_columns(self) -> None:
+        lane = self.by["P bare A|B plain"]
+        self.assertEqual((lane.owner, lane.state, lane.since, lane.size, lane.checklist),
+                         ("worker", "running 09:00", "2026-09-16", "S", "c"))
+
+    def test_a_recovered_row_still_warns(self) -> None:
+        self.assertIn("8 cells", self.by["P bare A|B plain"].warning)
+
+    def test_surplus_on_the_right_lands_in_the_checklist(self) -> None:
+        t = rb.parse_tracker(TRACKER)
+        long = [lane for lane in t.lanes if lane.item == "Long"][0]
+        self.assertEqual((long.owner, long.state, long.since, long.due), ("Robin", "open", "09:00", "10:00"))
+        self.assertEqual(long.checklist, "x | extra | cells")
+        self.assertIn("8 cells", long.warning)
+
+    def test_two_state_cells_fall_back_to_the_left_anchored_parse(self) -> None:
+        """Two candidates is not an anchor. The row keeps the parse it was written with, and the warning speaks."""
+        text = SIZED_TRACKER.replace("| A oldest | worker | open | 2026-09-15 |  | M | c |",
+                                     "| A|open|B | worker | open | 2026-09-15 |  | M | c |")
+        lane = [l for l in rb.parse_tracker(text).lanes if l.item == "A"][0]
+        self.assertEqual((lane.owner, lane.state), ("open", "B"))
+        self.assertIn("9 cells", lane.warning)
+
+    def test_no_state_cell_falls_back_to_the_left_anchored_parse(self) -> None:
+        text = SIZED_TRACKER.replace("| A oldest | worker | open | 2026-09-15 |  | M | c |",
+                                     "| A|B | worker | dancing | 2026-09-15 |  | M | c |")
+        lane = [l for l in rb.parse_tracker(text).lanes if l.item == "A"][0]
+        self.assertEqual(lane.owner, "B")
+        self.assertIn("8 cells", lane.warning)
+
+    def test_a_short_row_is_never_anchored(self) -> None:
+        text = SIZED_TRACKER.replace("| C newer | worker | open | 2026-09-16 |  |  | c |", "| C newer | worker | open |")
+        lane = {l.item: l for l in rb.parse_tracker(text).lanes}["C newer"]
+        self.assertEqual(lane.since, "")
+        self.assertIn("3 cells", lane.warning)
