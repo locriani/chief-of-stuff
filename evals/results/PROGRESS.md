@@ -1103,3 +1103,14 @@ The count was right all along, because `rev-list main...origin/main` resolves th
 One word. Both live trees now report `main 9da36b4`, which is the property that was missing: the same answer from any worktree. Finding 109; the tombstone-row shape is 110, recorded and deliberately not built.
 
 596 units green on the branch.
+
+
+## C13d — a report is not a state change (0.12.4)
+
+arch's diagnosis of its own stop, and the best of tonight's batch: writing up what you did is not doing the next thing, and the two are identical from inside. Two sessions idle eighty minutes after announcing their next step, neither blocked, both branches unmoved.
+
+A third failure class. 101 is declining work out of bounds, 108 is accepting a constraint you do not owe — both judgements about a rule. This one has no judgement in it at all: the session means to continue and does not, and the transcript ends on a paragraph that reads like a conclusion.
+
+It landed on the line I had already corrected once tonight. `Report: <what to reply with when done>` is the instruction that makes a report feel terminal. Every report now ends naming one of two states — the next thing, or `idle and available` — and never neither.
+
+606 units green on the branch. Finding 111.

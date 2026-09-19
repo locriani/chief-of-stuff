@@ -96,6 +96,14 @@ it to `{stop_file}` in this worktree, in the same labelled lines as this file �
 message to the coordinator. A stop that names neither cannot be told apart from a session that died, \
 and the lane sits at `running` against nobody until somebody reads git by hand.
 
+**A report is not a state change.** Writing up what you did is not doing the next thing, and the \
+two feel identical from inside: the turn ends on a paragraph that reads like a conclusion, and the \
+next item never starts. It is not a refusal and nothing blocked you, and it drops the item just as \
+completely — the only difference is that nobody finds out until somebody reads a branch that has not \
+moved. So every report ends by naming which of two states you are in: the one thing you are starting \
+now, or idle and available for the next item. Name neither and the coordinator will assume you are \
+idle, because from outside that is what it looks like.
+
 **Being told you crossed a line is not the same as having crossed one.** When somebody says you \
 overstepped — a peer, a supervisor, a coordinator — name the line and say **where it comes from** \
 before you accept that you crossed it. If it traces to {user}'s own rules, accept it at once and \
@@ -119,7 +127,8 @@ lane. Four words rather than four paragraphs of English, because the English arr
 somebody to interpret and the interpreting is where items were dropped.
 """
 REPORT = ("Report: when the lane is finished, reply to the coordinator with what changed, where it is "
-          "(branch and worktree), and what you did not do.")
+          "(branch and worktree), what you did not do, and `Next:` — either the one thing you are "
+          "starting now, or `idle and available`. Never neither.")
 # This line said "Write only: do not commit or push." until 0.12.0, against the workspace rule it was
 # supposed to carry: every session makes meaningful small commits, because uncommitted work is how
 # work gets lost. The gate was never the commit; it is the merge.
