@@ -493,12 +493,63 @@ def _file_moved(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
     return True, f"{src} -> {same[0].relative_to(rec.fixture_dir)}"
 
 
+def _lane_rows(text: str) -> list[tuple[str, str]] | None:
+    """Every Lanes row as (name, item) in order, or None when the table has no `name` column.
+
+    `name` is the newest Lanes column. An older six-column tracker has none — the board falls back
+    to guessing a name from the item, and `agents/chief-of-stuff.md` says such a tracker is not to
+    be rewritten wholesale to add it. There is nothing to compare in that case, and saying so beats
+    passing by default: a grader that cannot see its subject has not checked it.
+    """
+    rows = _section(text, "## Lanes") or []
+    cells = [[c.strip() for c in r.strip().strip("|").split("|")] for r in rows if r.strip().startswith("|")]
+    table = [c for c in cells if not all(set(x) <= set("-: ") for x in c)]
+    if not table or table[0][:2] != ["name", "item"]:
+        return None
+    return [(r[0], r[1]) for r in table[1:] if len(r) > 1]
+
+
+def _lane_names_unchanged(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
+    """No lane was renamed. A fact carried out of the Resume block goes to the Log or to `item`.
+
+    Not a length rule. A long name can be a house style with readers, and a fixture does not get to
+    rule on that; the failure this watches for is a measurement narrative appended to a NAME during
+    a move about something else, where `item` is the documented home for history. `except` names the
+    lanes a case expects to be renamed, for a move that changes what a lane is about.
+
+    A lane is matched to its former self by its item as a PREFIX. Neither column is a stable key on
+    its own: the name is the attribute under test, and the item is documented to accrete history
+    (Lanes: "`item` keeps the wording, the history you append"). What holds is that an appended item
+    still begins with the item that was there.
+    """
+    before = _lane_rows(_read(rec.before_dir, g["path"]) or "")
+    after = _lane_rows(_read(rec.fixture_dir, g["path"]) or "")
+    if before is None or after is None:
+        which = "before" if before is None else "after"
+        return False, f"{g['path']}: no `name` column in the Lanes table ({which})"
+    allowed, renamed, gone = set(g.get("except", [])), [], []
+    left = list(after)
+    for was, item in before:
+        match = next((r for r in left if r[1] == item or r[1].startswith(item)), None)
+        if match is None:
+            if was not in allowed:
+                gone.append(was)
+            continue
+        left.remove(match)
+        if match[0] != was and was not in allowed:
+            renamed.append(f"{was!r} -> {match[0]!r}")
+    if renamed or gone:
+        return False, f"{g['path']}: renamed {renamed}, lost {gone}"
+    return True, f"{g['path']}: {len(before)} lane name(s) unchanged"
+
+
 FILE_GRADERS = {
     "file_moved": _file_moved,
     "file_unchanged": _file_unchanged,
     "file_matches": _file_matches,
     "no_new_files": _no_new_files,
     "lines_preserved": _lines_preserved,
+    "lane_names_unchanged": _lane_names_unchanged,
     "checklist_ticks_only": _checklist_ticks_only,
 }
 

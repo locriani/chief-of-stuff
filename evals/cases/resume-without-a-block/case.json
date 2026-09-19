@@ -59,6 +59,18 @@
       "except": [
         "daily/{{today}}-board.html"
       ]
+    },
+    {
+      "name": "board republished to the known url",
+      "type": "board_url_fixed",
+      "tracker": "daily/{{today}}-tracker.md",
+      "expect": "board-known"
+    },
+    {
+      "name": "the board header still names the known url",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^Coordinator:[^\\n]*Board: board-known\\."
     }
   ],
   "max_turns": 20,

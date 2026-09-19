@@ -383,6 +383,84 @@ class FileGraderTest(unittest.TestCase):
         self.assertFalse(self.grade({"type": "lines_preserved", "path": "daily/t.md", "section": "## Log"})[0])
 
 
+class LaneNamesUnchangedTest(unittest.TestCase):
+    """A fact carried out of the Resume block goes to the Log or to `item`, never to `name`.
+
+    `name` is the newest Lanes column and the only thing the board draws on a bar and in the lane
+    table, so a name carrying a measurement narrative is prose on every view of that lane. `item` is
+    where history belongs and is documented to accrete it, which is why this is not a length rule:
+    a long name can be a house style with readers, and a fixture does not get to rule on that.
+    Rewriting a name during a move about something else is the defect.
+
+    A lane is matched to its former self by its item as a PREFIX. Neither column is a stable key on
+    its own — the name is the attribute under test, and the item is documented to grow — but an
+    appended item still begins with the item that was there.
+    """
+
+    TRACKER = (
+        "# Tracker\n\n## Lanes\n\n| name | item | owner | state |\n|---|---|---|---|\n"
+        "| Load test | Load test the ingest path | unassigned | open |\n"
+        "| Audit | Security audit of the upload endpoint | 4821-audit | running 09:30 |\n"
+        "\n## Log\n\n- 09:00 opened\n"
+    )
+
+    def setUp(self) -> None:
+        self.before = Path(tempfile.mkdtemp())
+        self.after = Path(tempfile.mkdtemp())
+        for root in (self.before, self.after):
+            (root / "daily").mkdir()
+            (root / "daily" / "t.md").write_text(self.TRACKER)
+        self.rec = record(at(16, 23), at(16, 25))
+        self.rec.fixture_dir = self.after
+        self.rec.before_dir = self.before
+        self.g = {"type": "lane_names_unchanged", "path": "daily/t.md"}
+
+    def write(self, text: str) -> None:
+        (self.after / "daily" / "t.md").write_text(text)
+
+    def test_an_untouched_table_passes(self) -> None:
+        ok, detail = run.grade(self.g, self.rec)
+        self.assertTrue(ok, detail)
+
+    def test_narrative_appended_to_a_name_fails_and_names_the_lane(self) -> None:
+        self.write(self.TRACKER.replace(
+            "| Load test |",
+            "| Load test. Measured 09:12 and 09:35; the second reading was slower, one run each |"))
+        ok, detail = run.grade(self.g, self.rec)
+        self.assertFalse(ok)
+        self.assertIn("Load test", detail)
+
+    def test_history_appended_to_the_item_is_not_a_name_change(self) -> None:
+        """The Lanes rule: "`item` keeps the wording, the history you append, and the status note"."""
+        self.write(self.TRACKER.replace("| unassigned | open |", "| unassigned | done 09:00-16:24 |")
+                   .replace("Load test the ingest path", "Load test the ingest path. 16:24: measured, no regression"))
+        ok, detail = run.grade(self.g, self.rec)
+        self.assertTrue(ok, detail)
+
+    def test_a_lane_named_in_except_may_be_renamed(self) -> None:
+        self.write(self.TRACKER.replace("| Audit |", "| Upload audit |"))
+        self.assertFalse(run.grade(self.g, self.rec)[0])
+        ok, detail = run.grade({**self.g, "except": ["Audit"]}, self.rec)
+        self.assertTrue(ok, detail)
+
+    def test_a_lost_lane_is_reported(self) -> None:
+        self.write(self.TRACKER.replace("| Load test | Load test the ingest path | unassigned | open |\n", ""))
+        ok, detail = run.grade(self.g, self.rec)
+        self.assertFalse(ok)
+        self.assertIn("Load test", detail)
+
+    def test_a_table_with_no_name_column_is_not_graded_silently(self) -> None:
+        """A six-column tracker predates the column. A grader that cannot see its subject has not
+        checked it, so it says so rather than passing — which is how this grader came to be written
+        against fixtures that had no `name` cell to protect."""
+        six = "# Tracker\n\n## Lanes\n\n| item | owner | state |\n|---|---|---|\n| audit | coordinator | open |\n"
+        (self.before / "daily" / "t.md").write_text(six)
+        self.write(six)
+        ok, detail = run.grade(self.g, self.rec)
+        self.assertFalse(ok)
+        self.assertIn("name", detail)
+
+
 class MultiTurnTest(unittest.TestCase):
     FAKE = [sys.executable, str(FIXTURES / "fake_claude.py")]
 
