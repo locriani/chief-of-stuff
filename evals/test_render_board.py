@@ -452,12 +452,12 @@ class DensityTest(unittest.TestCase):
         self.assertEqual(visible.count("the worker left the registry"), 1)
         # This number keeps going the wrong way and Zach has to set it. The run so far, measured
         # on this fixture: 31 174 before the tracer bullet · 33 287 after it · 34 839 with stage 1's
-        # one table · 37 313 with stage 3's deadline cards · 38 768 once those cards are styled.
+        # one table · 38 768 with stage 3's deadline cards · 41 407 with stage 4's week load row.
         # Each rise is the design showing more, not the page getting denser — stage 3 gives a row to
         # every lane with a time on it rather than only those with a written `due`, which is the
         # thickening it was asked for.
         #
-        # The deeper problem is that this guard cannot tell those two apart. 13 621 of the 38 768
+        # The deeper problem is that this guard cannot tell those two apart. 14 385 of the 41 407
         # here is CSS, a fixed cost that does not grow with lanes; the fixture has nine. On the live
         # 116-lane tracker that CSS amortises to nothing and the per-lane bytes are what matter, so
         # a whole-page byte cap measured on nine lanes is the wrong instrument for "density" and
@@ -466,7 +466,7 @@ class DensityTest(unittest.TestCase):
         # Re-based mechanically rather than chosen: measured + the 2.65% headroom the pre-bullet
         # 32 000 had over 31 174. The item-text assertions above are the part of this test that
         # still bites. See DEFERRED in board-redesign-in-flight.md.
-        self.assertLess(len(self.html), 39_800)
+        self.assertLess(len(self.html), 42_500)
 
     def test_history_is_one_line_per_clause(self) -> None:
         body = re.search(r"<details><summary>Service architecture refactor</summary>(.*?)</details>", self.html, re.S).group(1)
@@ -1033,6 +1033,93 @@ class BlockedCardsTest(unittest.TestCase):
         card = self.cards()["Not reporting"]
         self.assertRegex(card, r'(silent \d+h\d+m|never reported)')
         self.assertRegex(card, r'\d+ lanes?</span>')
+
+
+class WeekLoadTest(unittest.TestCase):
+    """Stage 4: a load row over the week — what is committed against the work time there is for it.
+
+    The week strip says when lanes land. It does not say whether they can: a day carrying eighteen
+    hours of estimated work and thirteen hours awake looks exactly like a day carrying four. The
+    load row puts the two numbers side by side, one cell per day of the axis, and marks the days
+    where the first is larger than the second.
+
+    Work time available is the day minus the body lane — which is why the body lane came first.
+    Beyond today the calendar holds no events, so nothing is booked and the whole day reads as
+    available; that is true of the inputs rather than useful, and the gap is recorded under
+    DEFERRED rather than papered over with an invented working day.
+    """
+
+    # SIZED_TRACKER is the fixture that can answer the question at all: it carries sizes and closed
+    # lanes with ranges, so there is a mean per size to estimate from. A tracker with neither has no
+    # committed time to report, only lanes it cannot size — which is what `data-unsized` counts.
+    def setUp(self) -> None:
+        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.html = rb.render(SIZED_TRACKER, BODY_LOG, self.cfg, NOW)
+        self.load = self.html.split('data-load="week"', 1)[1].split("</div></div>", 1)[0]
+
+    def test_the_load_row_sits_above_the_week_strip(self) -> None:
+        body = self.html.split("</style>", 1)[1]
+        self.assertLess(body.index("<h2>Week</h2>"), body.index('data-load="week"'))
+        self.assertLess(body.index('data-load="week"'), body.index('data-strip="week"'))
+
+    def test_a_cell_per_day_carrying_both_numbers(self) -> None:
+        cells = re.findall(
+            r'<div class="load-cell"[^>]*data-day="(\d{4}-\d{2}-\d{2})"[^>]*data-committed="(\d+)"[^>]*data-available="(\d+)"',
+            self.load)
+        self.assertTrue(cells)
+        days = [c[0] for c in cells]
+        self.assertEqual(days, sorted(days))
+        self.assertEqual(days[0], NOW.date().isoformat())
+        for _, committed, available in cells:
+            self.assertGreaterEqual(int(available), 0)
+            self.assertGreaterEqual(int(committed), 0)
+
+    def test_the_body_lane_is_taken_out_of_the_work_time(self) -> None:
+        """Today's available time runs from now, not from midnight — the morning is spent. NOW is
+        14:30, so 570 minutes of the day are left, and BODY_LOG books 239 of them (gym 60, eat 40,
+        recreation 90, sleep 49)."""
+        first = re.search(r'<div class="load-cell"[^>]*data-available="(\d+)"', self.load)
+        self.assertEqual(int(first.group(1)), 570 - 239)
+
+    def test_a_day_over_its_work_time_is_marked_and_flagged(self) -> None:
+        cells = re.findall(
+            r'<div class="load-cell"[^>]*data-committed="(\d+)"[^>]*data-available="(\d+)"[^>]*data-over="([01])"'
+            r'.*?<span class="at">([^<]*)</span>', self.load, re.S)
+        self.assertTrue(cells)
+        for committed, available, over, text in cells:
+            self.assertEqual(over, "1" if int(committed) > int(available) else "0", (committed, available))
+            self.assertEqual("⚑" in text, over == "1", text)
+
+    def test_the_committed_time_is_split_into_written_and_derived(self) -> None:
+        cells = re.findall(r'data-committed="(\d+)" data-due="(\d+)" data-derived="(\d+)"', self.load)
+        self.assertTrue(cells)
+        for committed, due, derived in cells:
+            self.assertEqual(int(committed), int(due) + int(derived))
+        self.assertIn('<span class="fill due"', self.load)
+
+    def test_committed_is_work_and_not_the_span_of_the_bar(self) -> None:
+        """A lane running since Monday and due Friday occupies four days of the strip and is not
+        four days of work; charging its span to every day it crosses is what this pins shut.
+
+        SIZED_TRACKER's five active lanes, each charged once to the day it lands, all of which is
+        today: A oldest 1h30m + B running 30m + C newer 1h07m derived = 187, and D dated (no
+        estimate, no L in the history, so the mean of all four closed lanes, 1h07m) + E unassigned
+        (M, 1h30m) = 157 written. 344 against 331 minutes of work time left, so today is over."""
+        first = re.search(r'<div class="load-cell"[^>]*data-committed="(\d+)" data-due="(\d+)" '
+                          r'data-derived="(\d+)" data-unsized="(\d+)" data-available="(\d+)" '
+                          r'data-over="(\d)"', self.load)
+        self.assertIsNotNone(first, self.load[:400])
+        self.assertEqual(first.groups(), ("344", "157", "187", "0", "331", "1"))
+
+    def test_each_lane_is_charged_to_exactly_one_day(self) -> None:
+        total = sum(int(c) for c in re.findall(r'data-committed="(\d+)"', self.load))
+        self.assertEqual(total, 344)
+
+    def test_the_legend_names_the_load_marks(self) -> None:
+        legend = re.search(r'<div class="legend">(.*?)</div>\n', self.html, re.S).group(1)
+        for cls, label in (("key fill due", "committed"), ("key fill derived", "derived, no due written"),
+                           ("key fill over", "over work time"), ("key fill free", "uncommitted")):
+            self.assertRegex(legend, rf'<span class="{re.escape(cls)}"></span>\s*{re.escape(label)}', cls)
 
 
 class GridlinesTest(unittest.TestCase):

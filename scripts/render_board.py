@@ -978,6 +978,10 @@ LEGEND = [
     ("key seg eat", "eat"),
     ("key seg gym", "gym"),
     ("key seg recreation", "recreation"),
+    ("key fill due", "committed"),
+    ("key fill derived", "derived, no due written"),
+    ("key fill over", "over work time"),
+    ("key fill free", "uncommitted"),
     ("key band", "calendar event"),
     ("key nowline", "now"),
     ("key dline", "deadline"),
@@ -1137,6 +1141,83 @@ def _bar_row(b: Bar, axis_a: datetime, axis_b: datetime, row_class: str = "row")
         f'<div class="{classes}" data-name="{_esc(b.name)}" data-owner="{_esc(b.owner)}" data-item="{_esc(b.item)}" data-start="{_iso(b.start)}" data-end="{_iso(b.end)}" '
         f'data-start-src="{b.start_src}" data-end-src="{b.end_src}"{label}{_est_attrs(b)}{title} style="left:{left:.2f}%;width:{max(right - left, 0.6):.2f}%">{text}</div></div></div>'
     )
+
+
+def week_load(bars: list[Bar], body: list[Event], week_a: datetime, week_b: datetime, now: datetime,
+              est: dict[str, Estimate], hist: dict[str, tuple[timedelta, int]]) -> list[dict]:
+    """What each day of the week axis has committed to it, against the work time it has left.
+
+    The week strip says when lanes land; it does not say whether they can. A day carrying eighteen
+    hours of estimated work and thirteen hours awake looks exactly like a day carrying four.
+
+    Committed is estimated WORK, not the wall-clock span of the bar: a lane running since Monday and
+    due Friday occupies four days of the strip and is not four days of work. The duration comes from
+    the lane's own estimate, else the mean of closed lanes of its size, else the mean of all of them;
+    a lane none of those can size is counted apart rather than guessed at. Each lane is charged to
+    the day it lands, which is the day its slipping would be felt. Every active lane counts, folded
+    into a summary row or not — a day's load is not lighter because the strip drew its lanes as one.
+
+    Work time available is the day minus the body lane, and today starts at `now` rather than at
+    midnight because the morning is already spent. Beyond today the calendar holds no events, so
+    nothing is booked and the whole day reads as available — true of the inputs rather than useful.
+    """
+    def work(b: Bar) -> timedelta | None:
+        if (e := est.get(b.item)) is not None:
+            return e.slot
+        if b.size and b.size in hist:
+            return hist[b.size][0]
+        return hist[ALL_SIZES][0] if ALL_SIZES in hist else None
+
+    cells = []
+    day = week_a
+    while day < week_b:
+        nxt = min(day + timedelta(days=1), week_b)
+        open_a = max(day, now)
+        booked = sum(max(0, int((min(e.end, nxt) - max(e.start, open_a)).total_seconds() // 60)) for e in body)
+        available = max(0, int((nxt - open_a).total_seconds() // 60) - booked)
+        lands = [b for b in bars if day <= b.end < nxt]
+        due_m = derived_m = unsized = 0
+        for b in lands:
+            w = work(b)
+            if w is None:
+                unsized += 1
+            elif b.end_src == "derived":
+                derived_m += int(w.total_seconds() // 60)
+            else:
+                due_m += int(w.total_seconds() // 60)
+        cells.append({"day": day.date(), "due": due_m, "derived": derived_m, "unsized": unsized,
+                      "committed": due_m + derived_m, "available": available})
+        day = nxt
+    return cells
+
+
+def _load_row(cells: list[dict], axis_a: datetime, axis_b: datetime) -> str:
+    """One cell per day, the bar scaled against the busiest day so the columns are comparable."""
+    peak = max([max(c["committed"], c["available"]) for c in cells] + [1])
+    out = ['<div class="load" data-load="week">']
+    for c in cells:
+        left = _pct(datetime.combine(c["day"], time(0, 0), tzinfo=axis_a.tzinfo), axis_a, axis_b)
+        right = _pct(datetime.combine(c["day"] + timedelta(days=1), time(0, 0), tzinfo=axis_a.tzinfo), axis_a, axis_b)
+        over = 1 if c["committed"] > c["available"] else 0
+        spare = max(c["available"] - c["committed"], 0)
+        bits = [("due", c["due"]), ("derived", c["derived"])] if not over else [
+            ("due", min(c["due"], c["available"])),
+            ("derived", max(min(c["committed"], c["available"]) - c["due"], 0)),
+            ("over", c["committed"] - c["available"]),
+        ]
+        fills = "".join(
+            f'<span class="fill {k}" style="height:{m / peak * 100:.2f}%"></span>' for k, m in bits if m > 0
+        ) + (f'<span class="fill free" style="height:{spare / peak * 100:.2f}%"></span>' if spare else "")
+        out.append(
+            f'<div class="load-cell" data-day="{c["day"].isoformat()}" data-committed="{c["committed"]}" '
+            f'data-due="{c["due"]}" data-derived="{c["derived"]}" data-unsized="{c["unsized"]}" '
+            f'data-available="{c["available"]}" data-over="{over}" '
+            f'style="left:{left:.2f}%;width:{max(right - left, 0.6):.2f}%">'
+            f'<span class="at">{_dur(timedelta(minutes=c["committed"]))}{" ⚑" if over else ""}</span>'
+            f'<span class="col">{fills}</span></div>'
+        )
+    out.append("</div>")
+    return "\n".join(out)
 
 
 def _body_row(body: Body, axis_a: datetime, axis_b: datetime) -> str:
@@ -1390,6 +1471,7 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
     week = week_rows(active, cfg, now, week_a, week_b, est)
     week_bars = [r for r in week if isinstance(r, Bar)]
     week_groups = [r for r in week if isinstance(r, Summary) and r.attr == "group"]
+    load_cells = week_load([week_bar(l, cfg, now, est) for l in active], body_events, week_a, week_b, now, est, history(lanes, cfg, now))
     week_ticks = []
     t = week_a
     while t < week_b:
@@ -1571,6 +1653,12 @@ tr.group th{{background:color-mix(in srgb,var(--brass) 18%,transparent);color:va
 .due-row .what{{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
 .due-row .who{{width:84px;flex:none;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
 .due-row .state{{flex:none;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}} .due-row .size{{width:16px;flex:none;text-align:center;color:var(--muted)}}
+.load{{position:relative;height:66px;margin:6px 0 2px}}
+.load-cell{{position:absolute;top:0;bottom:0;display:flex;flex-direction:column;justify-content:flex-end;padding:0 4px;box-sizing:border-box}}
+.load-cell .at{{font-size:10.5px;color:var(--muted);text-align:center;font-variant-numeric:tabular-nums;margin-bottom:2px}} .load-cell[data-over="1"] .at{{color:var(--dl);font-weight:700}}
+.load-cell .col{{display:flex;flex-direction:column-reverse;height:48px;background:var(--line);border-radius:3px 3px 0 0;overflow:hidden}}
+.fill{{display:block;width:100%}} .fill.due{{background:var(--now)}} .fill.derived{{background:var(--est)}} .fill.over{{background:var(--dl)}}
+.key.fill{{display:inline-block;width:18px;height:10px;border-radius:2px}} .key.fill.free{{background:var(--line)}}
 .muted{{color:var(--muted)}} .warn{{color:var(--dl);font-size:12px}}
 .strip{{position:relative;margin:8px 0 4px;--name-w:30%}} .axis{{position:relative;height:18px;margin-left:var(--name-w);font-size:11px;color:var(--muted)}} .tick{{position:absolute;transform:translateX(-50%);white-space:nowrap}}
 .rows{{position:relative}} .row{{display:flex;align-items:center;height:26px}} .name{{width:var(--name-w);flex:none;padding-right:8px;box-sizing:border-box;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}} .track{{position:relative;flex:1;height:18px;border-left:1px solid var(--line)}}
@@ -1648,6 +1736,7 @@ details summary{{cursor:pointer}} details[open] summary{{margin-bottom:4px}}
 
 <h2>Week</h2>
 <div class="meta">{len(week_bars)} bars · {len(week_groups)} rows grouped by due day · the rest folded into one row per deadline · dashed lines are deadlines</div>
+{_load_row(load_cells, week_a, week_b)}
 {_strip(week, week_a, week_b, [], list(cfg.deadlines), week_ticks, "week")}
 
 <h2>Lanes</h2>
