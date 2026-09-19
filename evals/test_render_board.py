@@ -1750,3 +1750,97 @@ class DrawnSizedEstimateTest(unittest.TestCase):
         with contextlib.redirect_stdout(buf):
             rb.main(["--root", str(root), "--date", "2026-09-16"])
         self.assertIn("history=none", buf.getvalue())
+
+
+CLAUDE_MD_EXAM = CLAUDE_MD.replace("  - Final: 2026-09-20 12:00", "  - Final: 2026-09-20 12:00\n  - PCCAT 1st attempt: 2026-09-26; named lanes only")
+CLAUDE_MD_EXAM_GOVERNS = CLAUDE_MD.replace("  - Final: 2026-09-20 12:00", "  - Final: 2026-09-20 12:00\n  - PCCAT 1st attempt: 2026-09-26")
+SUNDAY = datetime(2026, 9, 20, 12, 1, tzinfo=CT)
+SUNDAY_TRACKER = """# Tracker 2026-09-20
+
+## Lanes
+
+| item | owner | state | since | due | checklist |
+|---|---|---|---|---|---|
+| Leftover one | worker | open | 2026-09-19 |  | c |
+| Leftover two | worker | open | 2026-09-20 |  | c |
+| Nobody's | unassigned | open | 2026-09-20 |  | c |
+| Study | Zach | open | 2026-09-20 | PCCAT 1st attempt | c |
+
+## Log
+
+- 09:00 opened the day
+"""
+
+
+class DeadlineScopeTest(unittest.TestCase):
+    """Finding 73: after Final, the nearest deadline is an exam, and nothing on the Lanes table is due to it.
+
+    A deadline line may say `named lanes only`: lanes whose `due` names it still draw to it, and no lane
+    falls to it by default. The estimator's horizon, the unowned lane's open end and the week strip's
+    fold use the nearest deadline that governs unnamed lanes; the Clock line and the axes keep the
+    nearest deadline of all, because the exam is real.
+    """
+
+    def setUp(self) -> None:
+        self.cfg = rb.parse_coordinator(CLAUDE_MD_EXAM, today=SUNDAY.date())
+        self.governs = rb.parse_coordinator(CLAUDE_MD_EXAM_GOVERNS, today=SUNDAY.date())
+        self.lanes = list(rb.parse_tracker(SUNDAY_TRACKER).lanes)
+        self.by = {lane.item: lane for lane in self.lanes}
+
+    def test_the_option_parses_and_defaults_to_all(self) -> None:
+        exam = next(d for d in self.cfg.deadlines if d.name.startswith("PCCAT"))
+        self.assertEqual(exam.scope, "named")
+        self.assertEqual({d.scope for d in self.cfg.deadlines if d.name != exam.name}, {"all"})
+        self.assertEqual({d.scope for d in self.governs.deadlines}, {"all"})
+        both = rb.parse_coordinator(CLAUDE_MD.replace("  - Final: 2026-09-20 12:00", "  - Final: 2026-09-20 12:00; named lanes only; requirements `reqs.md`"), today=SUNDAY.date())
+        final = next(d for d in both.deadlines if d.name == "Final")
+        self.assertEqual((final.scope, final.requirements), ("named", "reqs.md"))
+
+    def test_governing_deadline_skips_a_named_only_one(self) -> None:
+        self.assertEqual(rb.governing_deadline(self.cfg, SUNDAY).name, "end of day")
+        self.assertEqual(rb.governing_deadline(self.cfg, SUNDAY).at, datetime(2026, 9, 20, 23, 59, tzinfo=CT))
+        self.assertEqual(rb.governing_deadline(self.governs, SUNDAY).name, "PCCAT 1st attempt")
+        before = datetime(2026, 9, 20, 11, 0, tzinfo=CT)
+        self.assertEqual(rb.governing_deadline(self.cfg, before).name, "Final")
+        self.assertEqual(rb.nearest_deadline(self.cfg, SUNDAY).name, "PCCAT 1st attempt")
+
+    def test_the_horizon_and_the_estimates_stop_at_end_of_day(self) -> None:
+        self.assertEqual(rb.horizon(self.cfg, SUNDAY), (datetime(2026, 9, 21, 0, 0, tzinfo=CT), "end of day"))
+        est = rb.estimates(self.lanes, self.cfg, SUNDAY)
+        self.assertEqual({e.of for e in est.values()}, {"end of day"})
+        self.assertEqual(est["Leftover one"].label, "est. 1/2 → end of day")
+        self.assertEqual({e.of for e in rb.estimates(self.lanes, self.governs, SUNDAY).values()}, {"PCCAT 1st attempt"})
+
+    def test_an_unowned_lane_ends_today_not_at_the_exam(self) -> None:
+        b = rb.day_bar(self.by["Nobody's"], self.cfg, SUNDAY)
+        self.assertEqual((b.end, b.end_src, b.label), (datetime(2026, 9, 20, 23, 59, tzinfo=CT), "deadline", "no estimate"))
+        self.assertEqual(rb.day_bar(self.by["Nobody's"], self.governs, SUNDAY).end, datetime(2026, 9, 26, 23, 59, tzinfo=CT))
+
+    def test_a_lane_that_names_the_exam_still_draws_to_it(self) -> None:
+        b = rb.day_bar(self.by["Study"], self.cfg, SUNDAY)
+        self.assertEqual((b.end, b.end_src), (datetime(2026, 9, 26, 23, 59, tzinfo=CT), "due"))
+        self.assertEqual(rb._deadline_for(self.by["Study"], b, self.cfg, SUNDAY).name, "PCCAT 1st attempt")
+        nobody = rb.day_bar(self.by["Nobody's"], self.cfg, SUNDAY)
+        self.assertEqual(rb._deadline_for(self.by["Nobody's"], nobody, self.cfg, SUNDAY).name, "end of day")
+
+    def test_the_page_carries_no_exam_estimate_and_the_week_folds_under_end_of_day(self) -> None:
+        html = rb.render(SUNDAY_TRACKER, LOG, self.cfg, SUNDAY)
+        self.assertNotIn('data-est-of="PCCAT 1st attempt"', html)
+        self.assertIn('data-deadline-name="PCCAT 1st attempt"', html)  # the Clock line and the axes keep the real deadline
+        week = _strip_html(html, "week")
+        self.assertRegex(week, r'data-item="Nobody&#x27;s"[^>]*data-end-src="deadline"')
+        self.assertNotRegex(week, r'data-group="PCCAT 1st attempt"[^>]*>(?:(?!</details>).)*data-item="Nobody&#x27;s"')
+        governs = rb.render(SUNDAY_TRACKER, LOG, self.governs, SUNDAY)
+        self.assertIn('data-est-of="PCCAT 1st attempt"', governs)
+
+    def test_the_cli_names_the_horizon(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        (root / "CLAUDE.md").write_text(CLAUDE_MD_EXAM)
+        (root / "daily").mkdir()
+        (root / "daily" / "2026-09-16-tracker.md").write_text(QUEUE_TRACKER)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rb.main(["--root", str(root), "--date", "2026-09-16"])
+        # main() renders at the real clock, so the name is whichever governing deadline is next — never the exam.
+        m = re.search(r"horizon=(Launch|Final|end of day) ", buf.getvalue())
+        self.assertIsNotNone(m, buf.getvalue())

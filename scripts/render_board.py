@@ -68,6 +68,9 @@ class Deadline:
     name: str
     at: datetime
     requirements: str | None = None
+    # "all": unnamed lanes fall to it (the default). "named": only lanes whose `due` names it — an exam
+    # governs no lane on the table, and a derived end toward it would make it look like a plan (finding 73).
+    scope: str = "all"
 
 
 @dataclass(frozen=True)
@@ -372,7 +375,8 @@ def parse_coordinator(text: str, today: date) -> Config:
         m = DATE.match(_unquote(when))
         if m:
             reqs = next((r.group(1) for o in options if (r := re.match(r"(?i)requirements\s+`?([^`]+?)`?\s*$", o))), None)
-            deadlines.append(Deadline(name, datetime(int(m[1]), int(m[2]), int(m[3]), int(m[4] or 23), int(m[5] or 59), tzinfo=zone), reqs))
+            scope = "named" if any(re.match(r"(?i)named lanes only\s*$", o) for o in options) else "all"
+            deadlines.append(Deadline(name, datetime(int(m[1]), int(m[2]), int(m[3]), int(m[4] or 23), int(m[5] or 59), tzinfo=zone), reqs, scope))
     tracker = re.search(r"`([^`]+)`", top["Tracker"])
     board_tool = board_url = None
     if "Board" in top:
@@ -560,12 +564,30 @@ def parse_calendar(log_text: str, today: date, zone: ZoneInfo) -> list[Event]:
 
 
 def nearest_deadline(cfg: Config, now: datetime) -> Deadline:
+    """The nearest deadline of all, whatever it governs: the Clock line, `data-deadline` and the axes use it."""
     for d in cfg.deadlines:
         if d.at >= now:
             return d
     if cfg.deadlines:
         return cfg.deadlines[-1]
+    return _end_of_day(cfg, now)
+
+
+def _end_of_day(cfg: Config, now: datetime) -> Deadline:
     return Deadline("end of day", datetime.combine(now.date(), time(23, 59), tzinfo=cfg.zone))
+
+
+def governing_deadline(cfg: Config, now: datetime) -> Deadline:
+    """The nearest deadline ahead that unnamed lanes fall to, else end of day.
+
+    A lane that names no deadline is drawn or estimated toward this one. A deadline marked `named lanes
+    only` is skipped: after Final the nearest deadline is an exam (finding 73), and nothing on the Lanes
+    table is due to it unless its `due` cell says so.
+    """
+    for d in cfg.deadlines:
+        if d.at >= now and d.scope == "all":
+            return d
+    return _end_of_day(cfg, now)
 
 
 def _resolve_due(due: str, cfg: Config, today: date) -> datetime | None:
@@ -644,9 +666,9 @@ def _owner_key(owner: str) -> str:
 
 
 def horizon(cfg: Config, now: datetime) -> tuple[datetime, str]:
-    """The nearest deadline still ahead, or midnight once every deadline has passed (the day strip's own rule)."""
-    d = nearest_deadline(cfg, now)
-    if d.at > now:
+    """The nearest governing deadline still ahead, or midnight once none is (the day strip's own rule)."""
+    d = governing_deadline(cfg, now)
+    if d.at > now and d.name != "end of day":
         return d.at, d.name
     return datetime.combine(now.date(), time(0, 0), tzinfo=cfg.zone) + timedelta(days=1), "end of day"
 
@@ -733,7 +755,7 @@ def _end(lane: Lane, cfg: Config, now: datetime, start: datetime, est: dict[str,
         return start, "state", "done, no time"
     if est and (e := est.get(lane.item)):
         return max(e.end, start), "derived", e.label
-    return nearest_deadline(cfg, now).at, "deadline", NO_ESTIMATE
+    return governing_deadline(cfg, now).at, "deadline", NO_ESTIMATE
 
 
 def day_bar(lane: Lane, cfg: Config, now: datetime, est: dict[str, Estimate] | None = None) -> Bar:
@@ -1026,7 +1048,7 @@ def _deadline_for(lane: Lane, bar: Bar, cfg: Config, now: datetime) -> Deadline:
     for d in cfg.deadlines:
         if d.name.lower() == lane.due.strip().lower() or (bar.end_src != "due" and d.at == bar.end):
             return d
-    return nearest_deadline(cfg, now)
+    return governing_deadline(cfg, now)
 
 
 def today_rows(active: list[Lane], cfg: Config, now: datetime, axis_b: datetime, est: dict[str, Estimate] | None = None, floor: timedelta | None = None) -> tuple[list[Bar], list[Bar]]:
@@ -1381,6 +1403,7 @@ def main(argv: list[str] | None = None) -> Path:
     bars = [day_bar(lane, cfg, now, est) for lane in parsed.lanes]
     sized = " ".join(f"{k or '?'}:{hist[k][1]}" for k in (*SIZES, "") if k in hist)
     hist_note = f"{sized} · all:{hist[ALL_SIZES][1]}" if hist else "none"
+    horizon_name = horizon(cfg, now)[1]
     no_est = sum(1 for b in bars if b.label == NO_ESTIMATE)
     derived = sum(1 for b in bars if b.end_src == "derived")
     long_items = sum(1 for lane in parsed.lanes if len(lane.item) > LONG_ITEM)
@@ -1394,7 +1417,7 @@ def main(argv: list[str] | None = None) -> Path:
     missing = sum(1 for t in req_texts.values() if t is None)
     drawn = resume_fields(block)
     resume_note = f"{len(drawn)} fields" if drawn else "none"
-    print(f"lanes={len(parsed.lanes)} no_estimate={no_est} derived={derived} warnings={warnings} long_items={long_items} resume={resume_note} resume_long={resume_long} requirements={req_counts or 'none'} requirements_missing={missing} history={hist_note} tracker_sha256={hashlib.sha256(tracker_text.encode()).hexdigest()[:12]}")
+    print(f"lanes={len(parsed.lanes)} no_estimate={no_est} derived={derived} warnings={warnings} long_items={long_items} resume={resume_note} resume_long={resume_long} requirements={req_counts or 'none'} requirements_missing={missing} history={hist_note} horizon={horizon_name} tracker_sha256={hashlib.sha256(tracker_text.encode()).hexdigest()[:12]}")
     return out
 
 
