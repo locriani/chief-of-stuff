@@ -490,7 +490,7 @@ An unassigned or orphaned lane has no owner to derive a queue from. The only end
 ## 73 — after Final, the nearest deadline is an exam
 
 **From:** the C7 stress test.
-**Status:** Open.
+**Status:** Adopted 2026-09-19 (0.11.0), inside a larger change — see finding 77. A deadline line may say `named lanes only`; `governing_deadline()` is what the horizon, the unowned open end and the week fold use, and the Clock line keeps the nearest deadline of all.
 
 At 12:01 on 09-20 `nearest_deadline` becomes `PCCAT 1st attempt` (09-26) and every week-1 leftover gets a precise end spread over six days toward an exam. Today's open-end bar has the same defect and draws no number; a derived end makes the wrong deadline look like a plan. The fix is a deadline knowing which lanes it governs, which the `## Coordinator` block does not say yet.
 
@@ -514,3 +514,25 @@ The rule underneath: a fixture is a claim about the live shape, and a claim nobo
 
 The third of the items Zach held, the `wt-tab-17` Ghostty tab from the 13:26 launcher check, was found already closed: nine tabs listed, none of them it.
 
+## 76 — Decisions-row deadlines exist in the ruleset only
+
+**From:** planning C9, 2026-09-18 23:0x.
+**Status:** Recorded.
+
+`agents/chief-of-stuff.md:32` says deadlines come from the block "and from Decisions rows whose item starts `deadline:`". `render_board.py` reads the block. A deadline a coordinator records that way reaches the Clock line in its reply and nothing on the board: no marker, no horizon, no fold. Either the renderer reads those rows or the sentence goes; recorded so the next person who writes `deadline:` in Decisions knows which half of the system will see it.
+
+## 77 — the estimator's second model: size and history
+
+**From:** Zach, 2026-09-18 23:07, rejecting the deadline-only fix for finding 73: "there's other problems with deadline estimation. You can infer a t-shirt size based on it, and generate an average amount of time spent per t-shirt sized puzzle extremely easily. So use that." Two answers at 23:1x: the coordinator writes the size into a Lanes column; a done lane's elapsed time comes from the state cell keeping both times.
+**Status:** Adopted 2026-09-19 (0.11.0).
+
+The 0.10.0 estimator (finding 71) placed a lane at a share of the time to the nearest deadline, which said nothing about the lane and was only ever meant as the honest shape of "no duration to learn from". Two things make a duration learnable. A `size` column, `S`/`M`/`L`/`XL`, is the coordinator's judgement of the item as written, under a rubric that names what a session does and never hours; a person's value stands. And `done` keeps the running start — `done 21:16–22:05` — so a closed lane records how long it ran (finding 78). `history()` takes the mean elapsed time per size over lanes closed with a range; the estimator walks each owner's queue from now, running first then oldest, and each lane takes its size's mean, a running lane from its own start and never ending before now; a lane with a `due` takes its time and keeps its due. A size with no closed lanes borrows the all-sizes mean and the title says so. Before any lane has closed with a range the 0.10.0 model stands, and the label tells the two apart: `est. M ~1h20m` is measured, `est. 2/5 → Final` is a share.
+
+Measured on the two live trackers before the change: 100 and 97 lanes, 34 and 20 done, zero with a duration. History starts on the first close under the new grammar, so the live board shows `history=none` until then. The renderer infers no size from prose: finding 71 already found that item length tracks age, and a size the coordinator wrote is a claim someone can read and overwrite.
+
+## 78 — `done HH:MM` overwrote the one duration the tracker recorded
+
+**From:** the C9 measurement, 2026-09-18 23:1x.
+**Status:** Adopted 2026-09-19 (0.11.0), with finding 77.
+
+`running 21:16` is the only wall-clock start a lane ever carries — `since` is a date — and the close wrote `done 22:05` over it. Every done lane in both live trackers had lost its start that way. The grammar `done HH:MM–HH:MM` keeps it in the one cell the coordinator edits at both moments; `done HH:MM` alone stays legal and simply records nothing, and the board's summary line says how many lanes its means rest on.

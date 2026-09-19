@@ -1006,3 +1006,15 @@ Zach's word: "fixing 1 2 3 and any other issues that pop up". Item 1, the tracke
 The rest: a lint over every eval case (finding 75), which on its first run converted 21 fixture trackers and exposed a mock that ignored the registration case's premise; `mock_peers.py` honours `started_minutes_ago`; the page declares its charset; finding 61's reporting sentence is in `## Resume`. Finding 73, the deadline that governs no lane in particular, stays open: it needs the Coordinator block to say which lanes a deadline covers, and that is a design, not a fix.
 
 460 units green on the branch.
+
+
+## C9 — estimates from size and history, and a deadline that governs no lane (0.11.0)
+
+Planned as the finding-73 fix and redirected at plan approval: Zach, 23:07, "infer a t-shirt size ... generate an average amount of time spent per t-shirt sized puzzle ... use that." Two forks put to him and answered: the coordinator writes the size (a `size` column, S/M/L/XL, under a rubric that names what a session does and never hours), and `done` keeps the running start (`done 21:16–22:05`). Finding 77 is the design; 78 is the grammar; 73 is adopted inside it as `named lanes only` on a deadline line, with `governing_deadline()` behind the horizon, the unowned open end and the week fold while the Clock line keeps the nearest deadline of all.
+
+Red first, three times. Bullet 1: `Lane() takes 6 positional`, no `ran`, no `history`. Bullet 2: `estimates() takes 3 positional arguments but 4 were given`, no `data-size`, no `data-est-basis`, no `history=` on the summary line. Bullet 3: the Sunday-noon page carried `data-est-of="PCCAT 1st attempt"`. The Lanes header is keyed, not counted, so every six-column fixture parses as before with every lane unsized; the lint accepts both headers. Two cases, `lane-sized-on-write` and `done-keeps-running-start`.
+
+Measured before the change on both live trackers: zero done lanes with a duration. The live board therefore reads `history=none horizon=Final` tonight, and the 0.10.0 queue-drain stands, labelled, until the first close under the new grammar.
+
+Finding 76 (Decisions-row deadlines reach the reply and not the board) recorded. The 42 candidate findings five dispatched sessions sent tonight at Zach's request are a recording stage of their own, C10.
+
