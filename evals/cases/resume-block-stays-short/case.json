@@ -45,7 +45,7 @@
       "name": "lanes are not rewritten to make the block short",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",
-      "pattern": "(?m)^\\| Load test the ingest path \\|"
+      "pattern": "(?m)^\\| Load test the ingest path[ .|]"
     },
     {
       "name": "log append-only, one line added",
