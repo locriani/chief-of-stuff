@@ -298,8 +298,12 @@ def _push_gap(worktree: Path) -> str:
     watch that happen. Naming main's commit is what makes the claim checkable rather than
     unfalsifiable — a `Verified` line pinned to a sha that is no longer main's is stale evidence.
     """
-    _, sha = git(["rev-parse", "--short", "HEAD"], worktree)
-    at = f"main {sha} " if sha and " " not in sha else "main "
+    # `main`, not `HEAD`: this runs in whichever worktree the scan reached first, and a worktree's
+    # HEAD is its own branch. The count below always resolved the ref correctly, so a right number
+    # vouched for a wrong name — the failure mode a reader cannot catch, on the one line the CIMP
+    # gate rests on.
+    code, sha = git(["rev-parse", "--short", "main"], worktree)
+    at = f"main {sha} " if code == 0 and sha and " " not in sha else "main "
     code, counts = git(["rev-list", "--left-right", "--count", "main...origin/main"], worktree)
     if code != 0 or not counts:
         return f"{at}vs origin/main unknown"

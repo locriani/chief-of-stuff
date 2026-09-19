@@ -809,3 +809,25 @@ impl-2 reached live Prometheus with a read-only `railway ssh` to close an item, 
 Its own rule, and it is the sharpest thing anyone said tonight: capitulating to a confidently stated rule is the same failure as ignoring a well-founded one, and it is harder to catch because it looks like humility and everybody feels fine about it. So: when told you crossed a line, name the line and say where it comes from before accepting that you crossed it. Traces to the user's rules, accept at once. Traces to a hand-off, say so and let it be ruled on rather than agreeing first. That is now a paragraph of the assignment header.
 
 The other half is finding 101 committed by the coordinator, inside the hand-off for the lane about finding 101, while relaying the analysis of it. Its exclusion of railway commands was its *own* coordinator-only prohibition exported into a session's item, and then the session's legitimate action was called a violation of it. It withdrew and recorded the error itself. Two consequences it offered and this repo should take when the ruleset is free: a hand-off names only exclusions that trace to the user's rules or to a named file owner, and says which — "do not run railway" and "Zach has not approved railway for you" are different claims and only one was true; and the coordinator needs the same `blocked:<kind>` discipline the sessions now have, because what it produced was a phantom `blocked:permission` manufactured out of its own rules.
+
+## 109 — the audit's `main` line named a worktree's branch tip
+
+**From:** `gauntlet-b2`, 2026-09-19 04:12, with the mechanism guessed correctly and the arithmetic checked by hand first.
+**Status:** Adopted 2026-09-19 (0.12.3).
+
+`_push_gap` ran `git rev-parse --short HEAD` in whichever worktree the scan reached first, and a worktree's `HEAD` is its own branch. Run from the live workspace it printed `main ba28da7 15 unpushed vs origin/main`, where `ba28da7` was the tip of `feat/rules-s0-prereq` in the `openemr-agent-brief` tree and main was `9da36b4`. The docstring said "the commit main is at" all along; `HEAD` was the slip.
+
+The count was right the whole time, because `rev-list main...origin/main` resolves the ref `main` from any worktree of the repo. That is what makes this expensive rather than cosmetic: a line that is wrong everywhere gets caught, and a line whose hard-looking number is right while the identifier is quietly wrong gets believed. The reporter filed it for exactly that reason.
+
+The cost is in the CIMP gate. `Verified` is specified as facts a successor can re-check in one command, and the `done` rule turns on whether the recorded sha still matches main's — "when it no longer matches the one in `Verified`, the evidence is about a main that no longer exists and the lane is not closed on it." A successor comparing a correctly recorded sha against a mislabelled branch tip reopens a lane that is fine, or, if the tip happens to match, closes one that is not. The audit is the thing the rule says to believe over any session's report, which is precisely what makes a wrong identifier in it dangerous.
+
+One word, `HEAD` to `main`, and the resolution is now checked so a failure reports no sha rather than a wrong one. Verified against the two live trees: both report `main 9da36b4`, from any worktree, which is the property that was missing.
+
+## 110 — a row that records a removal is not a decision
+
+**From:** `gauntlet-b2`, on the decision-queue check firing correctly on a row it had left deliberately.
+**Status:** Recorded.
+
+The queue check that a row must name why it is next and who is blocked fired on a struck-through tombstone — an entry recording that push and deploy had been *removed* from the queue, with `—` in both cells. The check was right and the row was deleted, but the shape is real: a queue sometimes needs to record that something left it and why.
+
+If it is ever supported it should be a different thing from a row, not a row with empty cells. A decision row that cannot be decided is exactly what the check exists to catch, and widening it to admit tombstones would blind it to the case it was written for.

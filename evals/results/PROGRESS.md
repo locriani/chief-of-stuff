@@ -1092,3 +1092,14 @@ Finding 108 is impl-2's, and it is the symmetric half of this whole lane. It rea
 The coordinator's own half of that specimen is recorded too: it exported a coordinator-only prohibition into a session's item and called the session's legitimate action a violation — finding 101 committed by the coordinator, inside the hand-off for the lane about finding 101. It withdrew it itself.
 
 582 units green on the branch.
+
+
+## C13c — main is not HEAD (0.12.3)
+
+Reported by the coordinator, verified here before it was taken: `_push_gap` ran `rev-parse --short HEAD` in whichever worktree the scan reached first, so the audit's `main` line carried that tree's branch tip. Live: `main ba28da7 15 unpushed`, where `ba28da7` was `feat/rules-s0-prereq` and main was `9da36b4`.
+
+The count was right all along, because `rev-list main...origin/main` resolves the ref from any worktree. A right number vouching for a wrong name is the version of this bug a reader cannot catch, and the line is the one the CIMP gate rests on — `Verified` is re-checkable only if it names the branch it claims to.
+
+One word. Both live trees now report `main 9da36b4`, which is the property that was missing: the same answer from any worktree. Finding 109; the tombstone-row shape is 110, recorded and deliberately not built.
+
+596 units green on the branch.
