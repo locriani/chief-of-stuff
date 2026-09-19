@@ -742,3 +742,23 @@ class StopReadGuardTest(unittest.TestCase):
     def test_a_field_long_enough_to_bury_the_report_is_clipped(self):
         (self.dir / "stop.md").write_text("Stop: permission\nLane: Merge D4\nLands on: " + "x" * 5000 + "\n")
         self.assertLess(len(str(al.audit(self.root, "2026-09-17").stopped[0])), 1000)
+
+
+class PushGapNamesMainTest(unittest.TestCase):
+    """The one sha the CIMP gate rests on. `Verified` is re-checkable only if it names the branch it claims to."""
+
+    def setUp(self):
+        self.tmp, self.root = workspace("| A | Robin | open | 09:00 |  | c |", "| A | none |")
+        self.addCleanup(self.tmp.cleanup)
+        self.main = git("rev-parse", "--short", "main", cwd=self.root / "repo")
+
+    def test_it_names_mains_commit_and_not_the_worktrees(self):
+        tree = self.root / "trees" / "wt-unmerged"
+        self.assertNotEqual(git("rev-parse", "--short", "HEAD", cwd=tree), self.main)
+        self.assertIn(f"main {self.main}", al._push_gap(tree))
+
+    def test_the_count_and_the_sha_describe_the_same_branch(self):
+        """The count resolved `main` while the sha resolved `HEAD`, so a right number vouched for a wrong name."""
+        line = al._push_gap(self.root / "trees" / "wt-unmerged")
+        self.assertIn(f"main {self.main}", line)
+        self.assertIn("even with origin/main", line)
