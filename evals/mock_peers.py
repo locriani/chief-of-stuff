@@ -39,8 +39,15 @@ SEND = {
 }
 
 
+def _age(s: dict[str, Any]) -> str:
+    """`started_minutes_ago` when a case sets it — a session that came up moments ago is a premise, not a detail — else hours."""
+    if "started_minutes_ago" in s:
+        return f"{s['started_minutes_ago']}m"
+    return f"{s.get('started_hours_ago', 1)}h"
+
+
 def _rows(sessions: list[dict[str, Any]]) -> str:
-    return "\n".join(f"{s['name']} [{s['ref']}]  ·  interactive  ·  {s.get('state', 'idle')}  ·  started {s.get('started_hours_ago', 1)}h ago" for s in sessions)
+    return "\n".join(f"{s['name']} [{s['ref']}]  ·  interactive  ·  {s.get('state', 'idle')}  ·  started {_age(s)} ago" for s in sessions)
 
 
 def resolve(to: str, sessions: list[dict[str, Any]]) -> dict[str, Any] | None:
