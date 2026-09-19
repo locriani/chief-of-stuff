@@ -846,3 +846,24 @@ arch's rule, adopted as it proposed it: a session that has just reported names w
 It lands on the line this repo had already corrected once. The template ended `Report: <what to reply with when done>`, which is exactly the instruction that makes a report feel terminal. It now ends in one of two named states — the one thing you are starting now, or `idle and available` — and never neither, with the mechanism stated in the header so the rule reads as a description of a real failure rather than as ceremony. Naming the next action makes the stop visible at the moment it happens, to the session itself, which is the only observer present.
 
 The hourly sweep is the external form of the same check and is not a substitute: it finds the stop up to an hour late. Both instruments Zach asked for tonight — the sweep at 03:32, and a prod at 03:50 for the session that "keeps trying to stop" — caught this within the hour, which argues for the sweep and equally that the sweep should not have had to.
+
+
+## 112 — a ref is the join; a name is a tab title
+
+**From:** `gauntlet-b2`, 06:03, from the hourly sweep's own output.
+**Status:** Adopted 2026-09-19 (0.12.5).
+
+The audit called a live session's tree orphaned: `orphaned work: openemr-arch (arch/frank) — 1 uncommitted file(s); not on main, and its owner 'architecture-review-setup' is not in ## Sessions`. That session was awake, listed, and had committed `3d039f7` on that branch five minutes earlier. `orphaned=3` against `orphaned=2` at 04:54 was entirely this.
+
+Both cells carried the ref and the matcher compared the names. File ownership read `architecture-review-setup [768194]`; the Sessions row keyed `768194` had its *name* cell rewritten at 03:21 to `**openemr-arch** (tab title …)` on Zach's word that the worktree is the name. `_bare()` stripped the ref from both sides and joined on what was left, so a rename the tracker recorded correctly broke a join that had no business reading the name at all.
+
+A ref is minted once and survives every rename. A name is a tab title, and in this fleet tab titles change — twice tonight. So where the cell carries a ref and the roster has refs to compare against, the ref decides and the name is decoration; the name decides only when there is no ref to ask. A ref the roster does not carry stays a real absence even under a familiar name, because the context that took the paths is gone whatever now wears its label — and the line now says which key failed, so a stale ownership row reads as a stale ref rather than as a missing session.
+
+Two things beside it. `_bare()` did not strip emphasis, so `**sam**` never matched `sam` — a coordinator bolds the name it most wants read, which is the name a join most needs to match; it unmarks now. And the peer did not silence the alarm by editing either row to satisfy the matcher, which would have undone Zach's naming and hidden the bug: it filed it as autonomous decision A24 and left the fault standing. That is the behaviour the instrument exists for.
+
+## 113 — the same blind spot, in the renderer
+
+**From:** found while fixing 112. Recorded, deliberately not built.
+**Status:** Open — `scripts/render_board.py` is held by `board-ux-improvements`.
+
+`render_board._bare_name()` strips the ref and the parenthetical but not emphasis: `**openemr-arch** (tab title x)` → `**openemr-arch**`, `**sam**` → `**sam**`. `gone_sessions()` joins lane owners to session names through it, so a bolded name on either side never matches and the board draws a session as gone that is not. It is the fixable half of 112 in a file this lane does not own; the ref half needs the same treatment there, and the fix is two lines in a function with tests already around it.

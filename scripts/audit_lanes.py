@@ -37,6 +37,9 @@ NOT_A_BRANCH = {"now", "was", "then", "renamed", "from", "to", "branch", "on", "
 # "its worktree only", "that worktree instead": prose says the word without naming a tree.
 NOT_A_NAME = {"only", "its", "it", "the", "that", "this", "those", "a", "an", "and", "in", "at", "for", "of", "is", "was", "with", "instead", "too", "here", "there"}
 REF = re.compile(r"\s*\[[0-9a-f]{4,}\]\s*$")
+# The same ref, anywhere in the cell rather than at the end of it: `coordinator (`gauntlet-b2`
+# [028827])` carries it inside the parenthetical, and that cell is a context like any other.
+ANY_REF = re.compile(r"\[([0-9a-f]{4,})\]")
 PAREN = re.compile(r"\((.*?)\)")
 TOKEN = re.compile(r"[A-Za-z0-9]+")
 # Words that say nothing about which lane a row is about.
@@ -71,9 +74,12 @@ class Orphan:
     worktree: str
     owner: str
     why: str
+    ref: str = ""
 
     def __str__(self) -> str:
-        return f"orphaned work: {self.worktree} — {self.why}, and its owner {self.owner!r} is not in ## Sessions"
+        who = f"{self.owner!r} [{self.ref}]" if self.ref else f"{self.owner!r}"
+        how = "names a ref no ## Sessions row carries" if self.ref else "is not in ## Sessions"
+        return f"orphaned work: {self.worktree} — {self.why}, and its owner {who} {how}"
 
 
 @dataclass(frozen=True)
@@ -179,9 +185,36 @@ def parse_ownership(text: str) -> list[OwnerRow]:
 
 
 def _bare(name: str) -> str:
-    """`demo-fixes [b8fca1] (fix 5, from 11:13)` → `demo-fixes`."""
-    head = name.split("(")[0].strip()
+    """`**demo-fixes** [b8fca1] (fix 5, from 11:13)` → `demo-fixes`. Both sides of the join strip the
+    same things, and emphasis is one of them: a coordinator bolds the name it most wants read, which
+    is the name a join most needs to match."""
+    head = _unmark(name.split("(")[0]).strip()
     return REF.sub("", head).strip().lower()
+
+
+def _ref(cell: str) -> str:
+    """The `[768194]` a context cell carries, or nothing."""
+    m = ANY_REF.search(cell)
+    return m.group(1).lower() if m else ""
+
+
+def listed(owner: str, roster: set[str], refs: set[str], user: str = "") -> tuple[bool, str]:
+    """Is this context still in `## Sessions`, and if not, what did the asking turn on?
+
+    A ref is minted once and survives every rename; a name is a tab title, and here they change —
+    `768194`'s was rewritten at 03:21 on Zach's word that the worktree is the name, and the join,
+    reading names, called a live session's tree orphaned. So where the cell carries a ref and the
+    roster has refs to compare it against, the ref decides and the name is decoration. A ref the
+    roster does not carry is a real absence even under a familiar name: the context that took the
+    paths is gone whatever now wears its label.
+    """
+    bare = _bare(owner)
+    if user and bare == _bare(user):
+        return True, ""
+    ref = _ref(owner) if refs else ""
+    if ref:
+        return ref in refs, "" if ref in refs else ref
+    return bare in roster, ""
 
 
 def owns(row: OwnerRow, owner: str) -> bool:
@@ -403,6 +436,9 @@ def audit(root: Path, day: str) -> Report:
     # The roster, for the join. An empty `## Sessions` is not a roster of nobody: with nothing to
     # join against, the script says nothing about owners rather than calling every tree orphaned.
     roster = {_bare(s.name) for s in tracker.sessions if s.name.strip()}
+    # The ref column, which is the join proper wherever both sides have one. Empty is not a roster of
+    # nobody here either: a tracker whose refs are blank falls back to the names it does have.
+    refs = {_ref(s.ref) or s.ref.strip().lower() for s in tracker.sessions if s.ref.strip()}
     if roster:
         # The user is not a session and never was; they are exempt from the join, not absent from it.
         roster.add(_bare(cfg.user))
@@ -443,9 +479,10 @@ def audit(root: Path, day: str) -> Report:
             report.stopped.append(Stop(lane.item, stop.get("stop", ""), stop.get("lands on", ""),
                                        f"{name} ({branch})", lane.state.strip()))
         owner = row.context.strip() or (lane.owner.strip() if lane is not None else "")
-        if roster and "uncommitted" in why and _bare(owner) not in roster and name not in orphaned:
+        here, missing = listed(owner, roster, refs, cfg.user) if roster else (True, "")
+        if roster and "uncommitted" in why and not here and name not in orphaned:
             orphaned.add(name)
-            report.orphans.append(Orphan(f"{name} ({branch})", _bare(owner), why))
+            report.orphans.append(Orphan(f"{name} ({branch})", _bare(owner), why, missing))
 
     for lane in lanes:
         rows, note = rows_for(lane.item, lane.owner, owners)

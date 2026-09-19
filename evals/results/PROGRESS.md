@@ -1114,3 +1114,14 @@ A third failure class. 101 is declining work out of bounds, 108 is accepting a c
 It landed on the line I had already corrected once tonight. `Report: <what to reply with when done>` is the instruction that makes a report feel terminal. Every report now ends naming one of two states — the next thing, or `idle and available` — and never neither.
 
 606 units green on the branch. Finding 111.
+
+
+## C13e — a ref is the join, not a name (0.12.5)
+
+The sweep called a live session's tree orphaned. `architecture-review-setup [768194]` in File ownership, `**openemr-arch** (tab title …)` keyed `768194` in Sessions, both carrying the ref, and the matcher compared the names — so a rename the tracker recorded correctly broke a join that had no business reading the name.
+
+`listed()` now decides on the ref wherever the cell has one and the roster has refs to compare against; the name decides only when there is no ref. A ref the roster does not carry is still a real absence, and the line says which key failed so a stale ownership row reads as a stale ref. `_bare()` unmarks too — `**sam**` never matched `sam`.
+
+Verified against the live tracker rather than a fixture: `architecture-review-setup [768194]` now resolves, where the roster's name for it is `openemr-arch`.
+
+611 units green on the branch. Findings 112, 113 — the second the same blind spot in `render_board._bare_name`, recorded and not built because that file is board-ux's.
