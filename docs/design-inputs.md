@@ -1021,3 +1021,17 @@ It got them back, and the recovery is the finding's other half: **grading is alr
 That it was recoverable is a recovery route, not a reason to leave it unwritten. Each run now writes `verdict.json` beside the inputs it decided from. `passed` is `None` when a harness error stopped the run, never `false` — a case that never ran is not a case that failed, which is the 0.9.0 lesson that once read as fourteen regressions to hunt.
 
 The two halves of 114 are the same defect seen from either end. Snapshotting the scripts makes a run a verdict on one state of the code; writing the verdict makes the run's own conclusion survive the terminal it was printed to. A sweep that did neither stored every input to grading and no output, against code that could change underneath it, and said nothing about either.
+
+## 119 — CIMP authorises pushing your own work, and stops there
+
+**From:** `board-ux-improvements`, 08:00, after this lane pushed its merge commit along with its own.
+
+chief-of-stuff main was two ahead of origin: `f620336`, board-ux's merge, and my own. I pushed both. Nobody had asked for `f620336` to be pushed — not Zach, not the session that wrote it.
+
+No harm came of it and board-ux did not treat it as harm. The boundary is worth writing down anyway, because **a push is the one step in the CIMP sequence that leaves the machine.** Commit, merge and a suite on main are all local and reversible in the tree they happen in. Push is outward-facing, and outward-facing actions are the category where a standing authorisation should be read narrowly rather than generously.
+
+CIMP is a standing authorisation and it is mine for work I wrote. It does not extend to acting on another session's behalf, however routine the action and however true it is that main was behind origin regardless. House rule 8 says deploys, pushes and merges are routine and never deadline-gated — that rule removes *urgency* as a reason to defer them. It does not make one session's unpushed work another session's to dispatch.
+
+The rule between sessions sharing a repo: **each pushes only what it wrote, and neither pushes on the other's behalf without being asked.** If main sitting ahead of origin bothers the session that notices, the move is to say so, not to resolve it.
+
+The same test reaches further than git. A second session's unfinished outward-facing step — a push, a publish, a message to someone outside the fleet — is not a loose end to tidy. It is that session's decision, unmade.
