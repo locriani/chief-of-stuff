@@ -726,7 +726,7 @@ class OrphanAndUnassignedTest(unittest.TestCase):
 
     def test_orphaned_has_its_own_table_group(self) -> None:
         table = self.html.split("<h2>Lanes</h2>", 1)[1]
-        self.assertIn('<tr class="group"><th colspan="5">orphaned · 1 · nobody owns these</th></tr>', table)
+        self.assertIn('<tr class="group"><th colspan="6">orphaned · 1 · nobody owns these</th></tr>', table)
         self.assertLess(table.index("nobody owns these"), table.index("Security audit"))
         self.assertLess(table.index("Security audit"), table.index("open · waiting"))
         self.assertIn("1 orphaned", self.html)
@@ -812,7 +812,7 @@ class LaneGroupHeaderTest(unittest.TestCase):
         self.table = self.html.split("<h2>Lanes</h2>", 1)[1]
 
     def test_group_rows_are_marked_and_counted(self) -> None:
-        heads = re.findall(r'<tr class="group"><th colspan="5">([^<]*)</th></tr>', self.table)
+        heads = re.findall(r'<tr class="group"><th colspan="6">([^<]*)</th></tr>', self.table)
         self.assertEqual(heads, ["running · 0", "orphaned · 1 · nobody owns these", "open · waiting · 7", "done · 1"])
 
     def test_group_rows_look_like_headers(self) -> None:
@@ -822,7 +822,7 @@ class LaneGroupHeaderTest(unittest.TestCase):
             self.assertIn(prop, css, prop)
 
     def test_empty_group_says_none(self) -> None:
-        self.assertRegex(self.table, r'<tr class="group"><th colspan="5">running · 0</th></tr>\s*<tr><td colspan="5" class="muted">none</td></tr>')
+        self.assertRegex(self.table, r'<tr class="group"><th colspan="6">running · 0</th></tr>\s*<tr><td colspan="6" class="muted">none</td></tr>')
 
 
 class CliTest(unittest.TestCase):
@@ -1554,3 +1554,199 @@ class DrawnEstimateTest(unittest.TestCase):
         with contextlib.redirect_stdout(buf):
             rb.main(["--date", "2026-09-16", "--root", str(root)])
         self.assertIn("no_estimate=5 derived=3", buf.getvalue())
+
+
+SIZED_TRACKER = """# Tracker 2026-09-16
+
+## Lanes
+
+| item | owner | state | since | due | size | checklist |
+|---|---|---|---|---|---|---|
+| A oldest | worker | open | 2026-09-15 |  | M | c |
+| B running | worker [ab12cd] | running 13:00 | 2026-09-16 |  | S | c |
+| C newer | worker | open | 2026-09-16 |  |  | c |
+| D dated | worker | open | 2026-09-16 | 17:00 | L | c |
+| E unassigned | unassigned | open | 2026-09-16 |  | M | c |
+| K1 done | worker | done 09:00–10:00 | 2026-09-16 |  | M | c |
+| K2 done | worker | done 10:00-12:00 | 2026-09-16 |  | M | c |
+| K3 done | other | done 11:00–11:30 | 2026-09-16 |  | S | c |
+| K4 done | other | done 08:00–09:00 | 2026-09-16 |  |  | c |
+| K5 no range | worker | done 11:00 | 2026-09-16 |  | M | c |
+| K6 backwards | worker | done 23:00–01:00 | 2026-09-16 |  | XL | c |
+
+## Log
+
+- 09:00 opened the day
+"""
+
+
+class SizeGrammarTest(unittest.TestCase):
+    """The Lanes table may carry a `size` column, and `done` may keep the running start as a range.
+
+    Finding 77: the estimator's second model needs two things the tracker never recorded — how big a
+    lane is and how long lanes of that size took. The size is the coordinator's judgement in a column;
+    the duration is the `running HH:MM` start kept on close, `done 21:16–22:05`, which `done 22:05`
+    alone threw away (finding 78).
+    """
+
+    def setUp(self) -> None:
+        self.t = rb.parse_tracker(SIZED_TRACKER)
+        self.by = {lane.item: lane for lane in self.t.lanes}
+
+    def test_seven_columns_parse_and_the_size_is_read_by_header(self) -> None:
+        self.assertEqual(self.by["A oldest"].size, "M")
+        self.assertEqual(self.by["C newer"].size, "")
+        self.assertEqual(self.by["A oldest"].checklist, "c")
+        self.assertEqual([lane.warning for lane in self.t.lanes], [""] * len(self.t.lanes))
+
+    def test_six_columns_still_parse_unsized_without_a_warning(self) -> None:
+        t = rb.parse_tracker(QUEUE_TRACKER)
+        self.assertEqual({lane.size for lane in t.lanes}, {""})
+        self.assertEqual([lane.warning for lane in t.lanes], [""] * len(t.lanes))
+        self.assertEqual(t.lanes[0].checklist, "c")
+
+    def test_a_row_matching_neither_width_still_warns(self) -> None:
+        text = SIZED_TRACKER.replace("| C newer | worker | open | 2026-09-16 |  |  | c |", "| C newer | worker | open |")
+        lane = {l.item: l for l in rb.parse_tracker(text).lanes}["C newer"]
+        self.assertIn("3 cells", lane.warning)
+        self.assertIn("expected 7", lane.warning)
+
+    def test_a_done_range_keeps_the_end_as_state_time_and_exposes_the_start(self) -> None:
+        self.assertEqual(self.by["K1 done"].state_time, "10:00")
+        self.assertEqual(self.by["K1 done"].ran, ("09:00", "10:00"))
+        self.assertEqual(self.by["K2 done"].ran, ("10:00", "12:00"))
+        self.assertIsNone(self.by["K5 no range"].ran)
+        self.assertEqual(self.by["K5 no range"].state_time, "11:00")
+        self.assertEqual(self.by["B running"].state_time, "13:00")
+        self.assertIsNone(self.by["B running"].ran)
+
+    def test_a_done_range_draws_the_bar_as_before(self) -> None:
+        cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        b = rb.day_bar(self.by["K1 done"], cfg, NOW)
+        self.assertEqual((b.end, b.end_src), (datetime(2026, 9, 16, 10, 0, tzinfo=CT), "state"))
+
+    def test_history_means_per_size_with_an_all_sizes_row(self) -> None:
+        cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        h = rb.history(self.t.lanes, cfg, NOW)
+        self.assertEqual(h["M"], (timedelta(hours=1, minutes=30), 2))
+        self.assertEqual(h["S"], (timedelta(minutes=30), 1))
+        self.assertEqual(h[""], (timedelta(hours=1), 1))
+        self.assertEqual(h[rb.ALL_SIZES], (timedelta(minutes=67, seconds=30), 4))  # 60+120+30+60 over four
+        self.assertNotIn("XL", h)  # K6 ran backwards across midnight and is dropped
+        self.assertNotIn("L", h)
+
+    def test_no_range_anywhere_means_no_history(self) -> None:
+        cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.assertEqual(rb.history(rb.parse_tracker(QUEUE_TRACKER).lanes, cfg, NOW), {})
+
+
+class SizedEstimateTest(unittest.TestCase):
+    """With history, a lane ends where its owner's queue puts it times what lanes of its size have taken.
+
+    Zach, 2026-09-18 23:07: "infer a t-shirt size ... generate an average amount of time spent per t-shirt
+    sized puzzle ... use that." A cursor starts at now; a running lane ends at its own start plus the mean
+    for its size, never before now; every other lane ends at the cursor plus its mean; a lane with a due
+    advances the cursor and keeps its due. Only blank-due owned lanes get a derived end.
+    """
+
+    def setUp(self) -> None:
+        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.lanes = list(rb.parse_tracker(SIZED_TRACKER).lanes)
+        self.active = [lane for lane in self.lanes if lane.kind != "done"]
+        self.by = {lane.item: lane for lane in self.lanes}
+        self.hist = rb.history(self.lanes, self.cfg, NOW)
+        self.est = rb.estimates(self.active, self.cfg, NOW, self.hist)
+        self.m, self.s, self.unsized = timedelta(minutes=90), timedelta(minutes=30), timedelta(minutes=67, seconds=30)
+
+    def test_ends_chain_from_now_by_size_means(self) -> None:
+        # worker: B running (S, started 13:00), A oldest (M), C newer (unsized -> all-sizes mean), D dated (L, due 17:00, no L history -> all-sizes mean).
+        b = self.est["B running"]
+        self.assertEqual(b.end, NOW)  # 13:00 + 30m = 13:30 is already past 14:30; never before now
+        self.assertEqual(self.est["A oldest"].end, NOW + self.m)
+        self.assertEqual(self.est["C newer"].end, NOW + self.m + self.unsized)
+        self.assertNotIn("D dated", self.est)
+
+    def test_labels_name_the_size_and_the_mean(self) -> None:
+        self.assertEqual(self.est["A oldest"].label, "est. M ~1h30m")
+        self.assertEqual(self.est["B running"].label, "est. S ~30m")
+        self.assertEqual(self.est["C newer"].label, "est. ? ~1h07m")
+        self.assertEqual({e.basis for e in self.est.values()}, {"history"})
+        self.assertEqual((self.est["A oldest"].size, self.est["A oldest"].i, self.est["A oldest"].n), ("M", 2, 4))
+
+    def test_the_title_says_what_the_mean_rests_on(self) -> None:
+        t = self.est["A oldest"].title("worker")
+        self.assertIn("size M", t)
+        self.assertIn("2 M lanes", t)
+        self.assertIn("2nd of 4", t)
+        self.assertIn("worker", t)
+        t = self.est["C newer"].title("worker")
+        self.assertIn("unsized", t)
+        self.assertIn("all 4", t)
+
+    def test_a_size_with_no_history_borrows_the_all_sizes_mean(self) -> None:
+        text = SIZED_TRACKER.replace("| C newer | worker | open | 2026-09-16 |  |  | c |", "| C newer | worker | open | 2026-09-16 |  | XL | c |")
+        lanes = list(rb.parse_tracker(text).lanes)
+        est = rb.estimates([l for l in lanes if l.kind != "done"], self.cfg, NOW, rb.history(lanes, self.cfg, NOW))
+        self.assertEqual(est["C newer"].end, NOW + self.m + self.unsized)
+        self.assertEqual(est["C newer"].label, "est. XL ~1h07m")
+        self.assertIn("no XL lane has closed with a range", est["C newer"].title("worker"))
+
+    def test_unowned_lanes_get_nothing_even_when_sized(self) -> None:
+        self.assertNotIn("E unassigned", self.est)
+
+    def test_no_history_falls_back_to_the_queue_drain(self) -> None:
+        est = rb.estimates(self.active, self.cfg, NOW, {})
+        self.assertEqual(est["A oldest"].label, "est. 2/4 → Launch")
+        self.assertEqual(est["A oldest"].basis, "queue")
+        self.assertEqual(rb.estimates(self.active, self.cfg, NOW), est)
+
+
+class DrawnSizedEstimateTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.html = rb.render(SIZED_TRACKER, LOG, self.cfg, NOW)
+        self.day = _strip_html(self.html, "day")
+
+    def bar(self, item: str) -> str:
+        m = re.search(rf'<div class="bar[^"]*"[^>]*data-item="{re.escape(item)}"[^>]*>', self.day)
+        self.assertIsNotNone(m, item)
+        return m.group(0)
+
+    def test_the_bar_cites_size_basis_and_the_measured_label(self) -> None:
+        a = self.bar("A oldest")
+        self.assertIn('class="bar open derived"', a)
+        self.assertIn('data-size="M"', a)
+        self.assertIn('data-est-basis="history"', a)
+        self.assertIn('data-est="2/4"', a)
+        self.assertIn('data-label="est. M ~1h30m"', a)
+        self.assertRegex(a, r'title="[^"]*2 M lanes[^"]*"')
+
+    def test_the_queue_fallback_says_so_on_the_bar(self) -> None:
+        day = _strip_html(rb.render(QUEUE_TRACKER, LOG, self.cfg, NOW), "day")
+        m = re.search(r'<div class="bar[^"]*"[^>]*data-item="A oldest"[^>]*>', day)
+        self.assertIn('data-est-basis="queue"', m.group(0))
+        self.assertIn('data-est-of="Launch"', m.group(0))
+        self.assertNotIn("data-size", m.group(0))
+
+    def test_an_unowned_sized_lane_says_no_estimate_and_its_size(self) -> None:
+        self.assertRegex(self.day, r'data-item="E unassigned"[^>]*data-size="M"[^>]*data-label="no estimate"|data-item="E unassigned"[^>]*data-label="no estimate"[^>]*data-size="M"')
+
+    def test_the_lanes_table_has_a_size_column(self) -> None:
+        lanes = self.html.split("<h2>Lanes</h2>")[1]
+        self.assertIn("<th>item</th><th>owner</th><th>state</th><th>since</th><th>due</th><th>size</th>", lanes)
+        self.assertRegex(lanes, r'<tr data-state="open"[^>]*data-size="M">.*?<td>M</td>')
+
+    def test_the_cli_reports_history_per_size(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        (root / "CLAUDE.md").write_text(CLAUDE_MD)
+        (root / "daily").mkdir()
+        (root / "daily" / "2026-09-16-tracker.md").write_text(SIZED_TRACKER)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rb.main(["--root", str(root), "--date", "2026-09-16"])
+        self.assertRegex(buf.getvalue(), r"history=S:1 M:2 \?:1 · all:4")
+        (root / "daily" / "2026-09-16-tracker.md").write_text(QUEUE_TRACKER)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rb.main(["--root", str(root), "--date", "2026-09-16"])
+        self.assertIn("history=none", buf.getvalue())
