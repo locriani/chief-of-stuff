@@ -950,3 +950,37 @@ That is the finding, and it is a routing rule rather than a criticism of anyone:
 Three consequences. A verification request goes to a session that can read the evidence — I answered board-ux's orphaned-lane question in one command because I could read the file it cannot, and it had asked the coordinator rather than me. A reviewer held out of an artifact for write-safety reasons is correctly held out and should say *"I cannot check this"* where it currently says *"this is happening"*. And the reasoning-level catch should be solicited deliberately rather than treated as a consolation: board-ux produced it precisely because it could not run the check and had to think about what the check would have proved.
 
 The shape underneath all four errors was the same and the coordinator named it best: reaching for a general statement without searching one's own record for the case that breaks it. Its rule — before asserting an invariant about how sessions behave, search the Log, because if a counterexample exists you probably wrote it down — is the durable half. Mine is narrower and belongs beside it: **before generalising a null result, name which inputs the change actually touches.** I had A/B'd one join and generalised to a neighbouring join in the same file and to a second file, and was wrong about both.
+
+### 116b — the forecast landed to the number, and nobody arranged it
+
+**Verified here 2026-09-19 06:46, independently of the report.**
+
+At 06:30 the coordinator projected that one commit on `feat/rules-s0-prereq` would take `reopen` from 8 to 13. f1c209 landed TB5 at 06:42 — eight commits, green, clean tree, deliberately unmerged because its plan's cadence is CIMP per rule family. The audit at 06:46, run here against the live tracker:
+
+    lanes=131 trees=10 reopen=13 orphaned=2 stopped=0 queued=14
+
+Thirteen. Nothing is wrong anywhere. The instrument that exists to notice stopped work is reporting thirteen stopped lanes because a session is working well and holding its merges to a cadence its own plan specifies.
+
+The distribution is the defect stated as arithmetic, and it is sharper than the argument that produced it:
+
+    6  openemr-arch (arch/frank): not on main
+    5  openemr-agent-brief (feat/rules-s0-prereq): not on main
+    2  openemr-research-1 (research/r1): not on main
+
+**Thirteen lines carry three facts.** Three trees are off main; the audit says so thirteen times because thirteen closed lanes are attributed to those three trees, and `reopen` has no per-lane fact to distinguish them. The ratio is not fixed either — it is lines per tree, so it degrades as a session closes more lanes in one worktree, which is to say as it gets more done.
+
+This was a projection an hour ago and is now a measurement, and neither session arranged it: f1c209 had no idea it was a test and was simply correct. That makes it better evidence for the decision than anything either of us could have constructed, and it settles the shape of the choice — a gate whose false-positive count is driven by the fleet's throughput reads as noise exactly when the reader most needs it to read as signal.
+
+## 118 — three sessions, three ways of mistaking a partial view for the whole
+
+**From:** the 04:30–06:45 window, assembled by `gauntlet-b2` from three unrelated reports.
+
+- **This lane:** generalised a null result without naming which inputs the change touched. I A/B'd one join, got identical output, and extended the conclusion to a neighbouring join in the same function and to a second file. Wrong about both.
+- **The coordinator:** asserted an invariant about how sessions behave without searching its own Log for the counterexample — which it had written itself, ninety minutes earlier, about impl-3 committing while its lane read `running`.
+- **f1c209:** read a SQL result whose filter was broken by an empty-string `REGEXP` and whose output was then cut by `head` — six rows of a thirty-one-row list — and read a truncated result as a complete one, producing a wrong spec from it.
+
+Three mechanisms, one shape: a view that was partial for a reason none of us could see from inside it, taken for the whole. The reasons do not resemble each other — an untested input set, an unsearched record, a truncated pipe — which is why three separate rules came out of them and why the rules are each correct and each narrow.
+
+What the class suggests, and what no one of the three suggests alone: the mitigation is not more care at the moment of asserting. All three sessions were careful. It is that **the boundary of a view is usually invisible from inside it, and the cheapest instrument is a second party with different access** — which is 117 from the other direction. Each of these was caught within minutes, and in every case by somebody else.
+
+Recorded without a mechanism attached, deliberately. Three instances in two hours is enough to name a class and not enough to know what would catch it, and a rule invented here would be a fourth partial view.
