@@ -85,7 +85,7 @@ Fix direction: when a context has several rows, a lane takes trees only from the
 ## 46 — a missing worktree means two opposite things
 
 **From:** `gauntlet-d3`, same pass.
-**Status:** open (0.7.0 candidate).
+**Status:** Adopted 2026-09-18 (0.9.0, C6 bullet 3). `missing_tree()` classifies a missing tree three ways: its branch is on main (merged and cleaned up), its branch is not on main (the work exists only there — the alarm), or no branch by that name exists (the row named a tree that was never created).
 
 `openemr-agent-smart` was gone because its branch merged at 20:51 and the session cleaned up after itself. `openemr-agent-defects-140c0b2` was gone because it never existed: the row carried a planned name from 13:50 and the tree was created without the suffix. The script prints the same line for both — "the tracker names a tree that is not there".
 
@@ -94,6 +94,7 @@ A missing tree whose branch is an ancestor of main is routine. A missing tree wh
 ## 47 — the orphan join: uncommitted work whose owner is gone
 
 **From:** `gauntlet-d3`, same pass. The most valuable of the three.
+**Status:** Adopted 2026-09-18 (0.9.0, C6 bullet 3). `audit_lanes.py` reads `## Sessions` and reports a tree with uncommitted work whose owner is not in it; `gone_sessions()` puts the same join on the board. Finding 66 records why the first run found nothing.
 
 Five sessions left the registry between 21:43 and 22:33 tonight and three left uncommitted work — the session TTL fix, `EVAL-CI-GATE-PLAN.md`, and the README/Bruno work. `audit_lanes.py` found none of it, because it reports per tree and this is a fact about owners.
 
