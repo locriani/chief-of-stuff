@@ -369,6 +369,29 @@ class ShortNameTest(unittest.TestCase):
             self.assertEqual(rb.short_name(item), want, item)
             self.assertLessEqual(len(rb.short_name(item)), 49)
 
+    def test_a_long_bolded_item_keeps_its_name(self) -> None:
+        """A cut inside a lone `**` span must not eat the whole name.
+
+        The trim to a whole number of mark spans uses `rfind("**")`, and an item whose only opening
+        `**` is at index 0 trims to the empty string — so the name comes back as a bare `…`, which
+        is not a short name, it is the absence of one. `render_board.py:395` (`label or
+        short_name(item)`) puts that straight on the board as a lane called `…`.
+        """
+        item = "**ARCHITECTURE.md section 12.5 rewritten so the deploy story matches the code**"
+        got = rb.short_name(item)
+        self.assertNotEqual("…", got)
+        self.assertIn("ARCHITECTURE.md", got)
+        self.assertLessEqual(len(got), 49)
+        self.assertTrue(rb._whole(got.rstrip("…")), got)
+
+    def test_every_cut_still_leaves_no_orphan_mark(self) -> None:
+        for item in ("**" + "a" * 30 + " " + "b" * 30 + "**",
+                     "lead in **" + "c" * 60 + "** trailing",
+                     "**short**",
+                     "**a** and **" + "d" * 60 + "**"):
+            self.assertTrue(rb._whole(rb.short_name(item).rstrip("…")), item)
+            self.assertNotEqual("…", rb.short_name(item), item)
+
 
 class HistoryLinesTest(unittest.TestCase):
     def test_history_lines(self) -> None:
@@ -1871,6 +1894,24 @@ Coordinator: coordinator. Board: board-7.
         s = (rb.Session(ref="e5f6a7", name="wanderer", state="working", doing="", waiting_on="",
                         free_at="", constraints="", children="", last_reply="11:40"),)
         self.assertIn("wanderer", rb.gone_sessions(lanes, s))
+
+    def test_emphasis_on_either_side_does_not_defeat_the_join(self) -> None:
+        """A bolded name is the same name. Both sides of the join have to strip the same things.
+
+        `**wanderer**` in the owner cell and `wanderer` in the registry are one session, and a join
+        that misses them draws a live session as gone — the one state the board takes over a
+        session's own word, so it has to be right.
+        """
+        lanes = (rb.Lane("Ghost work", "**wanderer** (tab title)", "orphaned", "", "", ""),)
+        s = (rb.Session(ref="e5f6a7", name="wanderer", state="working", doing="", waiting_on="",
+                        free_at="", constraints="", children="", last_reply="11:40"),)
+        self.assertIn("wanderer", rb.gone_sessions(lanes, s))
+
+    def test_a_bolded_registry_name_is_not_gone_when_its_lane_runs(self) -> None:
+        lanes = (rb.Lane("Live work", "worker-9a", "running 10:30", "", "", ""),)
+        s = (rb.Session(ref="a1b2c3", name="**worker-9a**", state="working", doing="", waiting_on="",
+                        free_at="", constraints="", children="", last_reply="11:40"),)
+        self.assertEqual(set(), rb.gone_sessions(lanes, s))
 
     def test_the_graph_draws_gone_over_what_the_session_reported(self) -> None:
         out = rb.session_graph(rb.parse_tracker(self.tracker).sessions, self.cfg, NOW, gone=self.gone)

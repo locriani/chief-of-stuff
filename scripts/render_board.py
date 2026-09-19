@@ -169,7 +169,7 @@ SESSION_REF = re.compile(r"\s*\[[0-9a-f]{4,}\]\s*")
 
 def _bare_name(name: str) -> str:
     """`demo-fixes [b8fca1] (fix 5)` → `demo-fixes`. Both sides of a join have to strip the same things."""
-    return PARENTHETICAL.sub("", SESSION_REF.sub(" ", name)).strip().lower()
+    return PARENTHETICAL.sub("", SESSION_REF.sub(" ", _unmark(name))).strip().lower()
 
 
 @dataclass(frozen=True)
@@ -351,7 +351,10 @@ def short_name(item: str) -> str:
     if len(name) > SHORT_NAME:
         cut = name[:SHORT_NAME]
         if not _whole(cut):
-            cut = cut[: cut.rfind("**")]
+            # Trimming back to a whole number of mark spans empties the cut when the only opening
+            # mark is the first character, and a bare `…` is not a short name, it is the loss of one.
+            trimmed = cut[: cut.rfind("**")]
+            cut = trimmed if trimmed.strip(" ,;:–—-") else _unmark(name)[:SHORT_NAME]
         space = cut.rfind(" ")
         name = (cut[:space] if space > SHORT_NAME // 2 else cut).rstrip(" ,;:–—-") + "…"
     return name
