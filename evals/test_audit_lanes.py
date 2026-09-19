@@ -40,6 +40,12 @@ Coordinator: coordinator. Board: none.
 | time | item | Robin's words |
 |---|---|---|
 
+## Sessions
+
+| ref | name | state | doing | waiting on | free at | constraints | children | last reply |
+|---|---|---|---|---|---|---|---|---|
+{sessions}
+
 ## File ownership
 
 | context | paths |
@@ -101,12 +107,17 @@ def build(root: Path) -> dict[str, Path]:
     return {"origin": origin, "clone": clone, "trees": trees}
 
 
-def workspace(rows: str, ownership: str) -> tuple[tempfile.TemporaryDirectory, Path]:
+def session_row(name: str, ref: str = "a1b2c3") -> str:
+    return f"| {ref} | {name} | working | a lane | | now | | none | 09:30 |"
+
+
+def workspace(rows: str, ownership: str, sessions: str = "") -> tuple[tempfile.TemporaryDirectory, Path]:
     tmp = tempfile.TemporaryDirectory()
     root = Path(tmp.name)
     (root / "daily").mkdir()
     (root / "CLAUDE.md").write_text(CLAUDE)
-    (root / "daily" / "2026-09-17-tracker.md").write_text(TRACKER.format(rows=rows, ownership=ownership))
+    (root / "daily" / "2026-09-17-tracker.md").write_text(
+        TRACKER.format(rows=rows, ownership=ownership, sessions=sessions))
     build(root)
     return tmp, root
 
@@ -394,3 +405,174 @@ class MultipleRowsPerContextTest(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         report = al.audit(root, "2026-09-17")
         self.assertEqual([r.lane for r in report.reopen], ["Ship the thing"])
+
+
+class OrphanJoinTest(unittest.TestCase):
+    """Finding 47. The audit reports per tree, and a tree that lost its writer is a fact about owners.
+
+    Five sessions left the registry in fifty minutes one night and three left uncommitted work. The
+    script found none of it, because nothing here had ever read `## Sessions`.
+    """
+
+    DIRTY = "| Unsaved work | sam | waiting | 09:00 |  | Checklist: Unsaved work |"
+    OWNS = "| sam | worktree wt-dirty (feat/dirty) |"
+
+    def test_uncommitted_work_whose_owner_is_not_a_session_is_named(self) -> None:
+        tmp, root = workspace(self.DIRTY, self.OWNS, sessions=session_row("robin"))
+        self.addCleanup(tmp.cleanup)
+        report = al.audit(root, "2026-09-17")
+        self.assertEqual(len(report.orphans), 1, report.lines)
+        line = str(report.orphans[0])
+        self.assertIn("wt-dirty", line)
+        self.assertIn("sam", line)
+        self.assertIn("uncommitted", line)
+
+    def test_a_live_owner_is_not_an_orphan(self) -> None:
+        tmp, root = workspace(self.DIRTY, self.OWNS, sessions=session_row("sam"))
+        self.addCleanup(tmp.cleanup)
+        self.assertEqual(al.audit(root, "2026-09-17").orphans, [])
+
+    def test_the_ref_a_listing_shows_does_not_defeat_the_join(self) -> None:
+        """`_bare()` already strips `[a1b2c3]`; this is the one place both sides of the join use it."""
+        tmp, root = workspace(self.DIRTY, self.OWNS, sessions=session_row("sam [a1b2c3]"))
+        self.addCleanup(tmp.cleanup)
+        self.assertEqual(al.audit(root, "2026-09-17").orphans, [])
+
+    def test_no_sessions_section_makes_no_orphan_claims(self) -> None:
+        """A listing is not a roster, and neither is an empty table. With no roster, say nothing."""
+        tmp, root = workspace(self.DIRTY, self.OWNS)
+        self.addCleanup(tmp.cleanup)
+        self.assertEqual(al.audit(root, "2026-09-17").orphans, [])
+
+    def test_committed_work_is_not_an_orphan_however_gone_its_owner(self) -> None:
+        """An unmerged branch is recoverable by name. A dirty tree nobody is writing in is not."""
+        tmp, root = workspace(
+            "| Open branch work | sam | waiting | 09:00 |  | Checklist: Open branch work |",
+            "| sam | worktree wt-unmerged (feat/open) |", sessions=session_row("robin"))
+        self.addCleanup(tmp.cleanup)
+        self.assertEqual(al.audit(root, "2026-09-17").orphans, [])
+
+    def test_the_count_reaches_the_summary_line(self) -> None:
+        tmp, root = workspace(self.DIRTY, self.OWNS, sessions=session_row("robin"))
+        self.addCleanup(tmp.cleanup)
+        self.assertIn("orphaned=1", al.audit(root, "2026-09-17").lines[-1])
+
+
+class MissingTreeTest(unittest.TestCase):
+    """Finding 46. A missing tree means two opposite things and the script printed one line for both.
+
+    `openemr-agent-smart` was gone because its branch merged and the session tidied up.
+    `openemr-agent-defects-140c0b2` was gone because the row carried a planned name and the tree was
+    made without the suffix. One is housekeeping; the other is a lane pointing at nothing.
+    """
+
+    def remove(self, root: Path, name: str) -> None:
+        git("worktree", "remove", "--force", str(root / "trees" / name), cwd=root / "repo")
+
+    def test_a_merged_branch_with_no_tree_is_routine(self) -> None:
+        tmp, root = workspace(
+            "| Landed work | robin | done 10:00 | 09:00 |  | Checklist: Landed work |",
+            "| robin | worktree wt-merged (landed) |")
+        self.addCleanup(tmp.cleanup)
+        self.remove(root, "wt-merged")
+        line = next(ln for ln in al.audit(root, "2026-09-17").lines if "wt-merged" in ln)
+        self.assertIn("landed", line)
+        self.assertIn("on main", line)
+        self.assertNotIn("never", line)
+
+    def test_an_unmerged_branch_with_no_tree_is_the_alarming_one(self) -> None:
+        tmp, root = workspace(
+            "| Open branch work | sam | waiting | 09:00 |  | Checklist: Open branch work |",
+            "| sam | worktree wt-unmerged (feat/open) |")
+        self.addCleanup(tmp.cleanup)
+        self.remove(root, "wt-unmerged")
+        line = next(ln for ln in al.audit(root, "2026-09-17").lines if "wt-unmerged" in ln)
+        self.assertIn("feat/open", line)
+        self.assertIn("not on main", line)
+
+    def test_a_name_with_no_branch_behind_it_was_never_created(self) -> None:
+        tmp, root = workspace(
+            "| Planned work | sam | waiting | 09:00 |  | Checklist: Planned work |",
+            "| sam | worktree wt-never-made (feat/planned) |")
+        self.addCleanup(tmp.cleanup)
+        line = next(ln for ln in al.audit(root, "2026-09-17").lines if "wt-never-made" in ln)
+        self.assertIn("no branch", line)
+
+    def test_with_no_tree_left_to_ask_git_in_the_script_says_so(self) -> None:
+        """Every answer here is git's answer, and git needs a repository to be asked in."""
+        tmp, root = workspace(
+            "| Planned work | sam | waiting | 09:00 |  | Checklist: Planned work |",
+            "| sam | worktree wt-never-made (feat/planned) |")
+        self.addCleanup(tmp.cleanup)
+        for name in ("wt-merged", "wt-unmerged", "wt-dirty"):
+            self.remove(root, name)
+        line = next(ln for ln in al.audit(root, "2026-09-17").lines if "wt-never-made" in ln)
+        self.assertIn("no worktree", line)
+        self.assertNotIn("no branch", line)
+
+
+class UnclaimedOwnershipRowTest(unittest.TestCase):
+    """A tree reached only through a lane is a tree nobody can reach once the lane lets go.
+
+    Live at 17:20 the workspace held three trees whose File ownership context was `nobody (…,
+    orphaned …)`. No lane owner is `nobody`, so `rows_for` matched none of them and the audit walked
+    straight past all three — the very trees finding 47 was written about.
+    """
+
+    OWNS = ("| robin | worktree wt-merged (landed) |\n"
+            "| nobody (the TTL fix, orphaned) | worktree wt-dirty (feat/dirty) |")
+    LANE = "| Landed work | robin | done 10:00 | 09:00 |  | Checklist: Landed work |"
+
+    def test_a_row_no_lane_claims_is_still_audited(self) -> None:
+        tmp, root = workspace(self.LANE, self.OWNS, sessions=session_row("robin"))
+        self.addCleanup(tmp.cleanup)
+        report = al.audit(root, "2026-09-17")
+        self.assertTrue(any("wt-dirty" in ln for ln in report.lines), report.lines)
+
+    def test_and_its_orphaned_work_is_named(self) -> None:
+        tmp, root = workspace(self.LANE, self.OWNS, sessions=session_row("robin"))
+        self.addCleanup(tmp.cleanup)
+        report = al.audit(root, "2026-09-17")
+        self.assertEqual(len(report.orphans), 1, report.lines)
+        self.assertIn("nobody", str(report.orphans[0]))
+
+    def test_an_unclaimed_row_never_reopens_a_lane(self) -> None:
+        """It belongs to no lane, so there is no row to reopen and nothing to infer about one."""
+        tmp, root = workspace(self.LANE, self.OWNS, sessions=session_row("robin"))
+        self.addCleanup(tmp.cleanup)
+        self.assertEqual(al.audit(root, "2026-09-17").reopen, [])
+
+    def test_a_tree_is_reported_once_however_many_rows_reach_it(self) -> None:
+        tmp, root = workspace(
+            "| Landed work | robin | done 10:00 | 09:00 |  | Checklist: Landed work |",
+            "| robin | worktree wt-merged (landed) |\n| nobody | worktree wt-merged (landed) |",
+            sessions=session_row("robin"))
+        self.addCleanup(tmp.cleanup)
+        report = al.audit(root, "2026-09-17")
+        self.assertEqual(sum(1 for ln in report.lines if ln.startswith("wt-merged ")), 1, report.lines)
+
+
+class MainShaTest(unittest.TestCase):
+    """House rule 5 (CIMP, 2026-09-18 17:18): a green branch is not evidence, a green main is.
+
+    The script cannot watch a suite run, so it does not claim to. What it can do is name the commit
+    the claim has to be about, so "suite green on main" becomes checkable instead of unfalsifiable:
+    if main has moved since, the evidence is about a main that no longer exists.
+    """
+
+    def test_the_audit_names_the_commit_on_main_a_claim_must_pin_to(self) -> None:
+        tmp, root = workspace(
+            "| Landed work | robin | done 10:00 | 09:00 |  | Checklist: Landed work |",
+            "| robin | worktree wt-merged (landed) |")
+        self.addCleanup(tmp.cleanup)
+        sha = git("rev-parse", "--short", "main", cwd=root / "repo")
+        line = next(ln for ln in al.audit(root, "2026-09-17").lines if "origin/main" in ln)
+        self.assertIn(sha, line)
+
+    def test_with_no_tree_on_disk_there_is_no_sha_to_report(self) -> None:
+        """Every answer here is git's answer, and there is nowhere left to ask."""
+        tmp, root = workspace(
+            "| Planned work | sam | waiting | 09:00 |  | Checklist: Planned work |",
+            "| sam | worktree wt-never-made (feat/planned) |")
+        self.addCleanup(tmp.cleanup)
+        self.assertFalse([ln for ln in al.audit(root, "2026-09-17").lines if "origin/main" in ln])

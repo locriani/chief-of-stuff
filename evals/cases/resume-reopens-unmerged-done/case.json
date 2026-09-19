@@ -12,7 +12,12 @@
         "branch": "feat/audit",
         "merged": false
       }
-    ]
+    ],
+    "files": {
+      "src/a/upload.py": "def upload(request):\n    path = request.get('path')\n    return open(path, 'wb')\n",
+      "src/a/__init__.py": "",
+      "notes/.keep": ""
+    }
   },
   "description": "A lane marked done in a worktree whose branch never reached main. The audit reopens it; the lane with no tree is untouched.",
   "prompt": "resume",

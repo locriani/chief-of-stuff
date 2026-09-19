@@ -1,0 +1,61 @@
+{
+  "tz": "America/Chicago",
+  "description": "A new session picks up a day that already has files. `## Resume` step 1 runs the lane audit, and one tree holds uncommitted work whose writer is not in `## Sessions` any more \u2014 the row that names it is keyed `nobody`, so no lane points at it either. The audit reports per tree and this is a fact about owners, so until the join it was found by nobody. `Verified` is where a checked fact goes.",
+  "repo": {
+    "trees": "trees",
+    "files": {
+      "src/a/ttl.py": "SESSION_TTL = 900\n"
+    },
+    "worktrees": [
+      {
+        "name": "wt-ttl",
+        "branch": "fix/session-ttl",
+        "merged": false,
+        "dirty": true
+      },
+      {
+        "name": "wt-audit",
+        "branch": "feat/audit",
+        "merged": false
+      }
+    ]
+  },
+  "turns": [
+    {
+      "prompt": "Pick up where the last session left off.",
+      "graders": [
+        {
+          "name": "it asks the audit rather than guessing",
+          "type": "tool_used",
+          "tool": "Bash",
+          "text_match": "audit_lanes",
+          "min": 1
+        },
+        {
+          "name": "the reply names the tree whose writer is gone",
+          "type": "regex",
+          "pattern": "wt-ttl"
+        },
+        {
+          "name": "and says the work in it is uncommitted",
+          "type": "regex",
+          "pattern": "(?i)uncommitted|not committed"
+        },
+        {
+          "name": "the orphaned tree reaches Verified, where a checked fact goes",
+          "type": "file_matches",
+          "path": "daily/{{today}}-tracker.md",
+          "pattern": "(?mi)^- Verified[^\\n]*wt-ttl"
+        },
+        {
+          "name": "Log times are this move's clock reads",
+          "type": "timestamp_tolerance",
+          "path": "daily/{{today}}-tracker.md",
+          "section": "## Log"
+        }
+      ]
+    }
+  ],
+  "max_turns": 20,
+  "timeout_seconds": 600
+}

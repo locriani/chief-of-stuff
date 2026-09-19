@@ -113,10 +113,113 @@ class Lane:
         return parts[1] if len(parts) > 1 and HHMM.match(parts[1]) else None
 
 
+# What a session reports about itself. `starting`, `ready` and `gone` are the coordinator's to work
+# out and never a session's to claim: a session cannot report that it is gone, and `ready for
+# decommissioning` is a `doing` value that `:189` says never becomes a state of its own.
+SESSION_STATES = ("planning", "working", "waiting", "idle")
+READY = re.compile(r"(?i)\bready for decommissioning\b")
+# `Zach — A2, A3, B`: the target, then why. An em dash, an en dash or a hyphen, because three
+# different sessions have written this cell and they did not agree.
+WAITS = re.compile(r"\s+[—–-]\s+|,\s+")
+# `nothing; the stack-default fix landed` is what a live row says when a session waits on no one.
+# Drawn literally it is an edge to a node called "nothing".
+NOBODY = re.compile(r"(?i)^(?:(?:nothing|none|nobody|n/?a)\b|[-—–]\s*$)")
+# The name cell accretes provenance: `update-claude-md-docs (third name, same ref)`.
+PARENTHETICAL = re.compile(r"\s*\([^()]*\)\s*$")
+SESSION_REF = re.compile(r"\s*\[[0-9a-f]{4,}\]\s*")
+
+
+def _bare_name(name: str) -> str:
+    """`demo-fixes [b8fca1] (fix 5)` → `demo-fixes`. Both sides of a join have to strip the same things."""
+    return PARENTHETICAL.sub("", SESSION_REF.sub(" ", name)).strip().lower()
+
+
+@dataclass(frozen=True)
+class Session:
+    ref: str
+    name: str
+    state: str
+    doing: str
+    waiting_on: str
+    free_at: str
+    constraints: str
+    children: str
+    last_reply: str
+    warning: str = ""
+
+    @property
+    def kind(self) -> str:
+        """What to draw. Derived beats written, because the coordinator knows things the session cannot."""
+        if not self.ref.strip():
+            return "starting"
+        if READY.search(self.doing):
+            return "ready"
+        state = self.state.strip().lower()
+        if state in SESSION_STATES:
+            return state
+        # Nothing reported and a word nobody knows are two different facts, and every row of the live
+        # tracker was the first one — seven-column rows written before the column existed.
+        return "unknown" if state else "unreported"
+
+    @property
+    def label(self) -> str:
+        """The name without the history the cell accretes. The ref is the key; this is for reading."""
+        return PARENTHETICAL.sub("", self.name.strip()).strip() or self.name.strip()
+
+    @property
+    def waits_on(self) -> str:
+        """Who, as an edge. The graph draws the arrow, so the state stays four words wide."""
+        cell = self.waiting_on.strip()
+        if not cell or NOBODY.match(cell):
+            return ""
+        return WAITS.split(cell, 1)[0].strip()
+
+    @property
+    def waits_for(self) -> str:
+        cell = self.waiting_on.strip()
+        if not cell or NOBODY.match(cell):
+            return ""
+        parts = WAITS.split(cell, 1)
+        return parts[1].strip() if len(parts) > 1 else ""
+
+    @property
+    def child_names(self) -> tuple[str, ...]:
+        """A subagent is not a peer: it has no ref, answers no poll, and cannot be sent to.
+
+        So children are a cell on their owner's row rather than rows of their own, and what is
+        recoverable from `2: rules-audit (working), fixture-sweep (idle)` is names and count.
+        """
+        body = self.children.strip()
+        if not body or body.lower() in ("none", "-", "—"):
+            return ()
+        body = body.split(":", 1)[1] if re.match(r"^\d+\s*:", body) else body
+        names = [re.sub(r"\s*\(.*?\)\s*$", "", part).strip() for part in body.split(",")]
+        return tuple(n for n in names if n)
+
+
+# 7 columns is every tracker written before the state and children columns existed; 9 is after.
+# Positional parsing cannot tell `state` from `doing` without knowing which, so the count decides.
+SESSION_OLD = ("ref", "name", "doing", "waiting_on", "free_at", "constraints", "last_reply")
+SESSION_NEW = ("ref", "name", "state", "doing", "waiting_on", "free_at", "constraints", "children", "last_reply")
+
+
+def _session(cells: list[str]) -> Session:
+    names = SESSION_NEW if len(cells) >= len(SESSION_NEW) else SESSION_OLD
+    warning = "" if len(cells) == len(names) else f"{len(cells)} cells, expected {len(names)}"
+    fields = dict(zip(names, (cells + [""] * len(names))[: len(names)]))
+    session = Session(**{k: fields.get(k, "") for k in SESSION_NEW}, warning=warning)
+    state = session.state.strip().lower()
+    if state and state not in SESSION_STATES:
+        warning = (warning + "; " if warning else "") + f"state {session.state.strip()!r} is not one of {', '.join(SESSION_STATES)}"
+        session = Session(**{k: getattr(session, k) for k in SESSION_NEW}, warning=warning)
+    return session
+
+
 @dataclass(frozen=True)
 class Tracker:
     board_url: str | None
     lanes: tuple[Lane, ...]
+    sessions: tuple[Session, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -285,26 +388,74 @@ def parse_requirements(text: str) -> list[tuple[str, list[Req]]]:
     return [(name, reqs) for name, reqs in groups if reqs]
 
 
+# `- Verified 16:52: main = ...` splits at the first colon, and that colon is inside the clock read:
+# the key came out `verified 16` and the value `52: main = ...`, so nothing ever matched `verified`
+# and the line carrying the day's checked facts was silently absent from the board. These put it back.
+LABEL_CLOCK = re.compile(r"^(.*\S)\s+(\d{1,2})$")
+VALUE_CLOCK = re.compile(r"^(\d{2}):\s*(.*)$")
+
+
 def parse_resume(text: str) -> dict[str, str]:
     """The `## Resume` block as `key: value` pairs, keys lowercased. No block, no keys, no error."""
     out: dict[str, str] = {}
     for line in _section(text, "## Resume"):
         m = BULLET.match(line)
-        if m:
-            out[_unquote(m.group(2)).lower()] = m.group(3).strip()
+        if not m:
+            continue
+        key, value = _unquote(m.group(2)).lower(), m.group(3).strip()
+        head, tail = LABEL_CLOCK.match(key), VALUE_CLOCK.match(value)
+        if head and tail:
+            key, value = head.group(1), f"{head.group(2)}:{tail.group(1)} · {tail.group(2)}"
+        out[key] = value
     return out
 
 
-RESUME_STRIP = ("as of", "in flight", "next", "waiting on")
+# Reading order for the fields the ruleset names, and nothing more: a field outside this tuple is
+# drawn after them rather than dropped. It used to be an allowlist of four, so the day the ruleset
+# gained `Re-arm` the renderer began discarding it without a word.
+RESUME_STRIP = ("as of", "in flight", "next", "waiting on", "re-arm", "verified")
+RESUME_CLIP = 110
+
+
+def _clip(value: str, cap: int) -> str:
+    """Cut on a word boundary and say so. A clipped line that does not admit it is just a wrong line."""
+    if len(value) <= cap:
+        return value
+    head = value[:cap].rsplit(" ", 1)[0].rstrip(" ,;·—–-")
+    return f"{head or value[:cap]} …"
+
+
+def _resume_value(value: str) -> str:
+    """A long field folds, the way `item_cell()` folds a long lane item. Same board, same idiom."""
+    if len(value) <= RESUME_LINE:
+        return _esc(value)
+    return f'<details class="long"><summary>{_esc(_clip(value, RESUME_CLIP))}</summary>{_esc(value)}</details>'
+
+
+def resume_fields(block: dict[str, str]) -> list[str]:
+    """The fields that will be drawn, in reading order. The renderer and the summary line share it.
+
+    Finding 65: a count of what was parsed is not a count of what was drawn, and only the second one
+    is a check. `resume=N fields` is taken from here so the two can never disagree again.
+    """
+    return [k for k in RESUME_STRIP if block.get(k)] + [k for k in block if k not in RESUME_STRIP and block[k]]
 
 
 def resume_strip(block: dict[str, str]) -> str:
-    """One line under the header: where the last move left off. Absent when the tracker has no block."""
-    parts = [f"<b>{_esc(k)}</b> {_esc(block[k])}" for k in RESUME_STRIP if block.get(k)]
-    if not parts:
+    """Where the last move left off, one row per field. Absent when the tracker has no block.
+
+    It was one inline run joined with ` · `, which is fine at two fields and unreadable at six — and
+    six is what a busy day writes. The fields are already a label and a value; they want a list.
+    """
+    order = resume_fields(block)
+    if not order:
         return ""
-    verified = f' · <span class="muted">verified {_esc(block["verified"])}</span>' if block.get("verified") else ""
-    return f'<div class="resume">{" · ".join(parts)}{verified}</div>\n'
+    rows = []
+    for k in order:
+        long = ' class="long-field"' if len(block[k]) > RESUME_LINE else ""
+        rows.append(f"<dt>{_esc(k)}</dt><dd{long}>{_resume_value(block[k])}</dd>")
+    rows = "".join(rows)
+    return f'<dl class="resume">{rows}</dl>\n'
 
 
 def _cells(line: str) -> list[str]:
@@ -337,7 +488,13 @@ def parse_tracker(text: str) -> Tracker:
         warning = "" if len(cells) == 6 else f"{len(cells)} cells, expected 6"
         cells = (cells + [""] * 6)[:6]
         lanes.append(Lane(*cells, warning=warning))
-    return Tracker(board_url=url, lanes=tuple(lanes))
+    sessions: list[Session] = []
+    for row in [line for line in _section(text, "## Sessions") if line.strip().startswith("|")][1:]:
+        cells = _cells(row)
+        if _is_separator(cells) or not any(c.strip() for c in cells):
+            continue
+        sessions.append(_session(cells))
+    return Tracker(board_url=url, lanes=tuple(lanes), sessions=tuple(sessions))
 
 
 def _hhmm(value: str, day: date, zone: ZoneInfo) -> datetime | None:
@@ -488,6 +645,125 @@ LEGEND = [
 
 def legend() -> str:
     return '<div class="legend">' + "".join(f'<span class="item"><span class="{cls}"></span> {label}</span>' for cls, label in LEGEND) + "</div>\n"
+
+
+# A poll cycle runs about an hour, so under half an hour is current, under two hours is last cycle,
+# and past that a node is reporting a memory of the morning. Baked in Python at render: the fade has
+# to survive with JavaScript off, and design-inputs §50 settled that this page runs none.
+STAMP_FRESH = timedelta(minutes=30)
+STAMP_AGING = timedelta(hours=2)
+# Every kind a node can draw. The first four are reported; the rest the coordinator works out,
+# `gone` from the Lanes join because a session cannot report that it is gone.
+SESSION_KINDS = ("planning", "working", "waiting", "idle", "starting", "ready", "gone", "unknown", "unreported")
+
+
+def _age(session: Session, cfg: Config, now: datetime) -> tuple[datetime | None, int | None]:
+    """When the session last spoke, and how long ago in minutes.
+
+    A reply time later than now is last night's, not this evening's: the cell carries HH:MM and no
+    date, and a coordinator reading 23:50 at 14:30 is looking at fifteen hours of silence.
+    """
+    at = _hhmm(session.last_reply, now.date(), cfg.zone)
+    if at is None:
+        return None, None
+    if at > now:
+        at -= timedelta(days=1)
+    return at, int((now - at).total_seconds() // 60)
+
+
+def _age_text(minutes: int) -> str:
+    return f"{minutes // 60}h{minutes % 60:02d}m" if minutes >= 60 else f"{minutes}m"
+
+
+def _band(minutes: int) -> str:
+    return "fresh" if minutes < STAMP_FRESH.total_seconds() / 60 else ("aging" if minutes < STAMP_AGING.total_seconds() / 60 else "stale")
+
+
+def _stamp(session: Session, cfg: Config, now: datetime) -> tuple[str, str]:
+    """The node's age, as html and as the `data-age` citation it is drawn from."""
+    at, minutes = _age(session, cfg, now)
+    if at is None:
+        if not session.last_reply.strip():
+            return '<span class="stamp never">no reply yet</span>', ""
+        # A cell that is not HH:MM is shown as written rather than guessed at or dropped.
+        return f'<span class="stamp unparsed">as of {_esc(session.last_reply.strip())}</span>', ""
+    return (f'<span class="stamp {_band(minutes)}">as of {at.strftime("%H:%M")} · {_age_text(minutes)}</span>',
+            f' data-as-of="{at.strftime("%H:%M")}" data-age="{minutes}" data-band="{_band(minutes)}"')
+
+
+def _facts(session: Session) -> str:
+    rows = [("doing", session.doing), ("waiting for", session.waits_for), ("free at", session.free_at),
+            ("constraints", session.constraints)]
+    body = "".join(f"<dt>{label}</dt><dd>{_esc(value.strip())}</dd>" for label, value in rows if value.strip())
+    warn = f'<dt>warning</dt><dd class="warn">{_esc(session.warning)}</dd>' if session.warning else ""
+    return f'<dl class="facts">{body}{warn}</dl>' if body or warn else ""
+
+
+def _session_node(session: Session, cfg: Config, now: datetime, gone: set[str]) -> str:
+    kind = "gone" if session.label in gone else session.kind
+    stamp, cite = _stamp(session, cfg, now)
+    who = session.waits_on
+    # An edge, not a state: `waiting on` carries who and then why, and the enum stays four words wide.
+    edge = f'<span class="edge">→ {_esc(who)}</span>' if who else ""
+    kids = "".join(f"<li>{_esc(name)}</li>" for name in session.child_names)
+    kid_list = f'<ul class="kids">{kids}</ul>' if kids else ""
+    ref = f' data-ref="{_esc(session.ref.strip())}"' if session.ref.strip() else ""
+    waits = f' data-waits-on="{_esc(who)}"' if who else ""
+    return (f'<li><details class="node {kind}"{ref} data-state="{kind}"{cite}{waits}>'
+            f'<summary><span class="chip {kind}">{kind}</span><span class="who">{_esc(session.label)}</span>'
+            f"{edge}{stamp}</summary>{_facts(session)}{kid_list}</details></li>")
+
+
+ORPHANED = "orphaned"
+
+
+def gone_sessions(lanes: tuple[Lane, ...], sessions: tuple[Session, ...]) -> set[str]:
+    """Sessions the registry still lists whose lane says its owner left. The join, in the renderer.
+
+    A session cannot report that it is gone, so this is the coordinator's to work out, and it is the
+    one state the board takes over a session's own word: `orphaned` on the lane and `working` in the
+    registry are the same row contradicting itself, and the lane is the column that was updated last.
+    """
+    left = {_bare_name(lane.owner) for lane in lanes if lane.kind == ORPHANED}
+    left -= {""}
+    return {s.label for s in sessions if _bare_name(s.name) in left}
+
+
+def session_graph(sessions: tuple[Session, ...], cfg: Config, now: datetime, gone: set[str] | None = None) -> str:
+    """The coordinator, its sessions, and their subagents, as one disclosure tree.
+
+    Nested `<details>` and nothing else: the idiom `_strip()` already uses for folded rows, and the
+    one shape a tree can take here. It is not a `Bar` — `_strip` positions everything as a percentage
+    of a time axis, and a tree has no time axis.
+
+    A subagent gets a list item and never a node: it has no ref, is in no listing, answers no poll and
+    cannot be sent to, and a node beside its peers would say all four were false.
+    """
+    if not sessions:
+        return ""
+    gone = gone or set()
+    nodes = "\n".join(_session_node(s, cfg, now, gone) for s in sessions)
+    stale = sum(1 for s in sessions if (m := _age(s, cfg, now)[1]) is not None and _band(m) == "stale")
+    unheard = sum(1 for s in sessions if _age(s, cfg, now)[0] is None)
+    kids = sum(len(s.child_names) for s in sessions)
+    notes = [f"{len(sessions)} {'session' if len(sessions) == 1 else 'sessions'}"]
+    if kids:
+        notes.append(f"{kids} {'subagent' if kids == 1 else 'subagents'}")
+    if stale:
+        notes.append(f"{stale} stale")
+    if unheard:
+        notes.append(f"{unheard} never replied")
+    return f"""<section class="graph" data-sessions="{len(sessions)}">
+<h2>Sessions · {len(sessions)}</h2>
+<div class="meta">a poll, with an age, and not a fact · every node is stamped with when that session last spoke, and reads stale past two hours · subagents hang under their owner and cannot be addressed</div>
+<details class="node coordinator" open>
+<summary><span class="chip coordinator">coordinator</span><span class="who">chief-of-stuff</span><span class="stamp fresh">{" · ".join(notes)}</span></summary>
+<ul class="peers">
+{nodes}
+</ul>
+</details>
+</section>
+"""
 
 
 def grid_marks(axis_a: datetime, axis_b: datetime, kind: str) -> list[tuple[datetime, bool]]:
@@ -768,7 +1044,7 @@ h1{{font-family:"Cormorant SC","Cormorant Garamond",Georgia,serif;font-size:26px
 h2{{font-family:"Cormorant SC","Cormorant Garamond",Georgia,serif;font-size:19px;font-weight:600;letter-spacing:.05em;margin:28px 0 8px;border-bottom:1px solid var(--brass);padding-bottom:4px}}
 .header{{display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:4px}} .header .logo{{width:260px;max-width:100%;border:1px solid var(--brass);border-radius:4px;display:block}}
 .head-text{{flex:1 1 260px;min-width:0}}
-.meta{{color:var(--muted);font-size:13px}} .resume{{margin:6px 0 0;font-size:13px;color:var(--fg);border-left:3px solid var(--brass);padding:2px 0 2px 8px}} .resume b{{color:var(--muted);font-weight:600;font-size:11px;letter-spacing:.06em;text-transform:uppercase}} .clock{{font-family:ui-monospace,monospace;font-size:14px;font-variant-numeric:tabular-nums;margin:6px 0}}
+.meta{{color:var(--muted);font-size:13px}} .clock{{font-family:ui-monospace,monospace;font-size:14px;font-variant-numeric:tabular-nums;margin:6px 0}}
 table{{border-collapse:collapse;width:100%;max-width:100%}} td,th{{text-align:left;padding:4px 8px;border-bottom:1px solid var(--line);vertical-align:top}} th{{color:var(--muted);font-weight:600;font-size:12px;letter-spacing:.04em;text-transform:uppercase}}
 tr.group th{{background:color-mix(in srgb,var(--brass) 18%,transparent);color:var(--fg);font-family:"Cormorant SC","Cormorant Garamond",Georgia,serif;font-weight:600;font-size:14px;letter-spacing:.12em;text-transform:uppercase;border-top:2px solid var(--brass);padding:6px 8px}}
 .muted{{color:var(--muted)}} .warn{{color:var(--dl);font-size:12px}}
@@ -799,6 +1075,32 @@ details summary{{cursor:pointer}} details[open] summary{{margin-bottom:4px}}
 .req code{{font-family:ui-monospace,monospace;font-size:12px}} .req .evidence{{grid-column:2;color:var(--muted);font-size:12px}} .req .box{{font-variant-numeric:tabular-nums}}
 .hist{{list-style:none;margin:4px 0 2px;padding:0 0 0 10px;border-left:2px solid var(--line);font-size:12px;line-height:1.5;color:var(--muted);display:grid;gap:3px}}
 .hist li{{display:grid;grid-template-columns:3em 1fr;gap:8px}} .hist time{{font-family:ui-monospace,monospace;font-variant-numeric:tabular-nums;color:var(--fg)}}
+.graph{{margin:0}} .graph h2{{margin-top:22px}} .graph>.meta{{margin:-2px 0 6px}}
+.graph summary{{list-style:none;cursor:pointer;display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 8px;padding:2px 0}}
+.graph summary::-webkit-details-marker{{display:none}} .graph summary::before{{content:"\u25b8";color:var(--muted);font-size:10px;flex:none;width:.7em}} .graph details[open]>summary::before{{content:"\u25be"}}
+.peers{{list-style:none;margin:2px 0 0;padding:0 0 0 14px;border-left:1px solid var(--line)}} .peers>li{{padding:1px 0}}
+.kids{{list-style:none;margin:2px 0 6px;padding:0 0 0 22px;font-size:12px;color:var(--muted);display:flex;flex-wrap:wrap;gap:0 14px}} .kids li::before{{content:"\u2514\u2009";color:var(--line)}}
+.facts{{margin:2px 0 4px;padding:0 0 0 22px;display:grid;grid-template-columns:auto 1fr;gap:1px 8px;font-size:12px}} .facts dt{{color:var(--muted);text-transform:uppercase;letter-spacing:.05em;font-size:10px;padding-top:2px}} .facts dd{{margin:0;min-width:0;overflow-wrap:anywhere}}
+.who{{font-size:13px}} .edge{{color:var(--muted);font-size:12px}}
+.stamp{{margin-left:auto;font-size:11px;font-variant-numeric:tabular-nums;color:var(--muted);white-space:nowrap}}
+/* The claim fades, the name never does: a stale node is the one you most need to read. */
+.stamp.stale{{color:var(--dl)}} .stamp.never,.stamp.unparsed{{color:var(--dl)}} .node[data-band="aging"]>summary .chip{{opacity:.66}} .node[data-band="stale"]>summary .chip{{opacity:.4}}
+.chip{{flex:none;font-size:10px;letter-spacing:.07em;text-transform:uppercase;padding:1px 7px;border-radius:9px;border:1px solid var(--line);color:var(--fg);background:var(--surface)}}
+.chip.planning{{background:repeating-linear-gradient(45deg,var(--noest) 0 2px,transparent 2px 5px),var(--surface)}}
+.chip.working{{background:repeating-linear-gradient(90deg,var(--running) 0 3px,transparent 3px 5px),var(--surface)}}
+.chip.waiting{{background:repeating-linear-gradient(-45deg,var(--brass) 0 2px,transparent 2px 6px),var(--surface)}}
+.chip.idle{{background:repeating-linear-gradient(0deg,var(--done) 0 2px,transparent 2px 4px),var(--surface)}}
+.chip.starting{{background:repeating-radial-gradient(circle at 2px 2px,var(--open) 0 1.4px,transparent 1.4px 5px),var(--surface)}}
+.chip.ready{{background:repeating-linear-gradient(135deg,var(--now) 0 3px,transparent 3px 7px),var(--surface)}}
+.chip.unknown{{background:repeating-linear-gradient(45deg,var(--dl) 0 1.5px,transparent 1.5px 5px),repeating-linear-gradient(-45deg,var(--dl) 0 1.5px,transparent 1.5px 5px),var(--surface)}}
+.chip.unreported{{background:repeating-radial-gradient(circle at 3px 3px,var(--muted) 0 1px,transparent 1px 7px),var(--surface)}}
+.chip.gone{{background:repeating-linear-gradient(0deg,var(--dl) 0 1px,transparent 1px 3px),repeating-linear-gradient(90deg,var(--dl) 0 1px,transparent 1px 3px),var(--surface)}}
+.chip.coordinator{{background:repeating-linear-gradient(90deg,var(--brass) 0 1px,transparent 1px 4px),var(--surface)}}
+.resume{{margin:6px 0 0;font-size:13px;color:var(--fg);border-left:3px solid var(--brass);padding:2px 0 2px 8px;display:grid;grid-template-columns:auto 1fr;gap:2px 10px}}
+.resume dt{{color:var(--muted);font-weight:600;font-size:10px;letter-spacing:.06em;text-transform:uppercase;padding-top:3px;white-space:nowrap}}
+.resume dd{{margin:0;min-width:0;overflow-wrap:anywhere}} .resume dd.long-field{{border-bottom:1px dotted var(--brass)}}
+.resume details.long>summary{{color:var(--fg)}} .resume details.long[open]>summary{{color:var(--muted)}}
+@media (max-width:520px){{.resume{{grid-template-columns:1fr;gap:0}} .resume dt{{padding-top:4px}}}}
 @media (max-width:520px){{.strip{{--name-w:36%}}}}
 </style>
 <div class="board" data-rendered-at="{_iso(now)}" data-tz="{_esc(cfg.tz)}" data-deadline="{_iso(nearest.at)}" data-deadline-name="{_esc(nearest.name)}">
@@ -808,6 +1110,7 @@ details summary{{cursor:pointer}} details[open] summary{{margin-bottom:4px}}
 <div class="meta">tracker as of {now.strftime('%H:%M')} {_esc(tzname)} <span id="ago"></span> · kept by chief-of-stuff · board {_esc(url or 'not yet published')}{long_note}</div>
 {resume_strip(parse_resume(tracker_text))}</div></div>
 
+{session_graph(tracker.sessions, cfg, now, gone_sessions(tracker.lanes, tracker.sessions))}
 {unassigned_html}<h2>{_esc(cfg.user)}'s queue</h2>
 <table><tr><th>item</th><th>due</th><th>state</th></tr>
 {queue_rows}
@@ -885,14 +1188,17 @@ def main(argv: list[str] | None = None) -> Path:
     parsed = parse_tracker(tracker_text)
     bars = [day_bar(lane, cfg, now) for lane in parsed.lanes]
     no_est = sum(1 for b in bars if b.label == NO_ESTIMATE)
-    warnings = sum(1 for lane in parsed.lanes if lane.warning)
     long_items = sum(1 for lane in parsed.lanes if len(lane.item) > LONG_ITEM)
+    block = parse_resume(tracker_text)
+    resume_long = sum(1 for k in resume_fields(block) if len(block[k]) > RESUME_LINE)
+    # A count printed beside a warning count but not counted as one reads as telemetry: `resume_long=4`
+    # sat next to `warnings=0` for three hours while the block degraded, and was read past every time.
+    warnings = sum(1 for lane in parsed.lanes if lane.warning) + sum(1 for s in parsed.sessions if s.warning) + resume_long
     print(out)
     req_counts = ",".join(f"{name}:{sum(r.done for _, rs in parse_requirements(t) for r in rs)}/{sum(len(rs) for _, rs in parse_requirements(t))}" for name, t in req_texts.items() if t is not None)
     missing = sum(1 for t in req_texts.values() if t is None)
-    block = parse_resume(tracker_text)
-    resume_long = sum(1 for v in block.values() if len(v) > RESUME_LINE)
-    resume_note = f"{len(block)} fields" if block else "none"
+    drawn = resume_fields(block)
+    resume_note = f"{len(drawn)} fields" if drawn else "none"
     print(f"lanes={len(parsed.lanes)} no_estimate={no_est} warnings={warnings} long_items={long_items} resume={resume_note} resume_long={resume_long} requirements={req_counts or 'none'} requirements_missing={missing} tracker_sha256={hashlib.sha256(tracker_text.encode()).hexdigest()[:12]}")
     return out
 

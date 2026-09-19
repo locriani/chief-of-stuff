@@ -316,3 +316,134 @@ Nothing had diverged, and that was checked rather than assumed: `render_board.py
 `gauntlet-bc` sharpened that, and its version is the one to inherit: the disagreement resolved only because each side stated **the evidence and where it was read**, not the conclusion. "The cache holds three scripts" and "my instructions name this absolute path" are both checkable by the other party in one command. "The scripts are live" and "the scripts are not live" are not checkable by anyone — they are conclusions, and two people can hold opposite ones indefinitely while both are being careful.
 
 That is a reporting rule, not a plugin rule, and it is wider than this bug: a `Verified` line, a finding sent to the user, and a report from a session are all worth more when they carry the path that was read than when they carry the judgement that was reached. Folded into C6, which touches Resume and `## Sessions` anyway — not shipped as its own version bump, because it belongs beside the fields it governs rather than bolted on alone.
+
+## 62 — a grader that forbade what the rule permits
+
+**From:** the C6 bullet 1 agent arm, first run, 2026-09-18 13:58.
+**Status:** Adopted 2026-09-18 (grader removed).
+
+`poll-fills-state-and-children` went red on one grader of twelve: "no lane is closed on a poll answer". The coordinator had marked `Migrate the notes index` as `done` after its owner reported the migration finished, and the grader said it must not.
+
+The rule says it may. `## Tracker`: *"A lane whose File ownership names no worktree closes on its owner's or its reporter's word; going through the workspace for a file a session says it wrote is checking their work, which is not yours to do."* That lane's ownership row is `index/` — no worktree. So closing it on the owner's word is the file working exactly as written, and the grader encoded a belief that is nowhere in the ruleset.
+
+Removed. The lane-closing rules have their own case, `decommission-is-not-a-lane-state`, which covers the worktree half where the audit is mandatory.
+
+**This is a third shape, and the tally is now worth reading as a list.** Eight bad graders across C4, C5 and C6:
+
+- **Five absence checks on replies** — a coordinator that rules something out says so, so the forbidden phrase appears in every correct answer.
+- **Two demanding an unobtainable value** — the case's own configuration gave the agent no way to learn the thing the grader wanted.
+- **One forbidding what the rule permits** — this one.
+
+The first two shapes fail a correct answer for how it is worded or configured. The third fails it on the merits, by disagreeing with the file it is supposed to be testing, which makes it the most dangerous: a suite that carried it would slowly train the coordinator away from its own rules. The tell they share is unchanged — **the grader passes when the agent behaves worse.**
+
+## 63 — the fade belongs on the claim, not on the node
+
+**From:** C6 bullet 2, writing the staleness CSS, 2026-09-18.
+**Status:** Adopted 2026-09-18, against the approved plan.
+
+The plan said *"the node dims as the stamp ages"*. Implemented literally that is backwards. A stale node is the one most worth reading: it is where the coordinator's picture of the day has quietly stopped matching it. Dimming the whole node makes the row you most need hardest to see, and rewards a board full of fresh trivia over one honest twelve-hour gap.
+
+What ages is not the session, it is the claim about the session. So the fade goes on the state chip — `.node[data-band="stale"]>summary .chip{opacity:.4}` — and the name stays at full contrast. The stamp itself moves the other way, taking the deadline red at `stale`, so age is louder rather than quieter as it grows.
+
+Same principle as `no estimate` on the bars: the board never makes missing information look like present information, and never makes unreliable information look like a detail.
+
+## 64 — the first live render said nobody had reported anything
+
+**From:** the graph run against `Areas/daily/2026-09-18-tracker.md` at 16:52, 2026-09-18.
+**Status:** Recorded.
+
+Four nodes. Every one `unreported`, every one `stale`:
+
+| session | state | last spoke | age |
+|---|---|---|---|
+| update-claude-md-docs | unreported | 13:21 | 3h30m |
+| solid-implementer | unreported | 04:45 | 12h07m |
+| agent-interface-improvements | unreported | 07:49 | 9h02m |
+| chief-of-stuff-improvements | unreported | 13:23 | 3h28m |
+
+Both readings are correct and both are worth having. `unreported` is not a fault in those sessions: the live tracker is still the seven-column shape, so no `state` cell exists for any of them to fill. The graph is reporting, accurately, that the coordinator has not restarted onto a version that asks — which is the same fact as `CLAUDE.md:172` and the unread 0.7.0/0.8.x installs, arriving here on its own without anyone going to look for it.
+
+The ages are the older argument, now visible. Half a working day of silence from `solid-implementer`, and until this render nothing anywhere on the board said so. Every one of those rows had been read all day as a statement about the present.
+
+The thing to watch after the restart is whether these four go to a written state or stay `unreported`. If they stay, the poll is not landing, and that is a ruleset problem rather than a renderer one.
+
+## 65 — the board reported six and drew four
+
+**From:** Zach on the live board ("That's unintelligible. no formatting."), relayed by `gauntlet-bc` 2026-09-18 16:54, with a correction from it at 17:00.
+**Status:** Adopted 2026-09-18.
+
+Three faults under one complaint. The reported one — six fields joined with ` · ` into a single inline run — was the least of them. Two fields were not on the page at all.
+
+**`re-arm`, dropped since 0.6.0.** `RESUME_STRIP` was an allowlist of four names. `dd16fb5` added `Re-arm` to the ruleset as a Resume field on 2026-09-17 and did not add it to the renderer, so from that commit forward the field was written every move, parsed every render, counted in `resume=N fields`, and drawn never.
+
+**`verified`, dropped for one hour.** `BULLET` splits at the first colon, and in `- Verified 16:52: main = …` that colon is inside the clock read: the key parsed as `verified 16`. The correction from `gauntlet-bc` matters here and I had it wrong in the commit — this is not old. That spelling was introduced at 16:52 **by the rewrite meant to fix the legibility complaint**, so the repair removed the contradictory numbers and removed the line. One hour, not a day, and self-inflicted by the fix.
+
+**What made both survivable is the same number.** `resume=N fields` counts what was parsed, never what was drawn. `gauntlet-bc` read `resume=6 fields` as confirmation the block was intact, which is exactly the reading it invites. **A board that reports six and draws four cannot be caught by reading its own output**, and no amount of attention to that line would have found either bug. The peer's own verdict, and it is the right one: making those two numbers the same is a better fix than either bug under it.
+
+Generalised, this is the rule the renderer's summary line now runs under: **a count of inputs is not a count of outputs, and only the second one is a check.** `lanes=`, `requirements=` and `resume=` are all counts of what was read. Where a filter, an allowlist or a parse can sit between reading and drawing, the count that belongs on stdout is the one taken after the filter.
+
+Second, smaller: `resume_long=4` printed beside `warnings=0` for three hours while the block degraded, and was read past every time. A number printed next to a warning count but not counted as one reads as telemetry. It counts in `warnings=` now, with malformed session rows.
+
+Third: the fixture wrote `- Verified:` with no time and the live tracker writes `- Verified 16:52:`. Every unit test passed throughout. The fixtures are anonymised copies of live shapes and they had drifted from the shape the ruleset now asks for — which is the same class of gap as finding 53, and the reason bullet 1's four corrections came from running the parser against the live tracker rather than against the fixtures.
+
+## 66 — the audit could only reach a tree through a lane
+
+**From:** running bullet 3's join against the live workspace, 2026-09-18 17:20.
+**Status:** Adopted 2026-09-18.
+
+Finding 47 asked for one line: a tree with uncommitted work whose owner is not in the session list. I wrote it, the unit tests went green, and the live run reported `orphaned=0` — against a workspace holding exactly the three trees the finding was written about.
+
+`audit()` walked `for lane in lanes: rows_for(lane.item, lane.owner, owners)`. Every tree it ever looked at was reached through a lane that claimed it. The three orphaned trees are keyed in File ownership as `nobody (session TTL fix, orphaned …)`, and no lane owner is `nobody`, so `rows_for` matched none of them and the sweep walked past all three.
+
+**A tree reachable only through a lane is a tree nobody can reach once the lane lets go** — which is the same event that orphaned it. The structure guaranteed that the trees most worth finding were the ones the traversal could not see.
+
+Fixed by sweeping every File ownership row that names a tree after the lane pass, claimed or not. A row with no lane behind it reopens nothing — there is no lane to reopen — but its git state and its owner are reported like any other. The live run now names all three, with branches and file counts.
+
+The general shape is worth keeping, because it is not about worktrees: **a traversal keyed on a relationship cannot see the objects whose defining property is that the relationship is broken.** Finding 47's own phrasing had it — "it reports per tree and this is a fact about owners" — and I implemented the fact about owners while leaving the traversal keyed on lanes.
+
+## 67 — CIMP: what the audit can check and what it cannot
+
+**From:** Zach 2026-09-18 17:18, relayed by `gauntlet-bc` and confirmed against workspace `CLAUDE.md:59`.
+**Status:** Adopted 2026-09-18.
+
+House rule 5: "CIP now has a CIMP variant - MERGE. Work isn't done until it's in main. We should be testing final tests on main each time." A green branch is not evidence; a green main is, because a merge can break main without either side's branch suite noticing.
+
+This changes what `done` means, and `done` is `audit_lanes.py`'s whole subject. "On main, committed" is now necessary and not sufficient.
+
+**No script can watch a suite run**, so the audit does not pretend to. What it can do is name the commit the claim has to be about. `_push_gap` now prints `main <sha> even with origin/main`, and the ruleset requires that sha in `Verified` beside the suite result. When main has moved on, the evidence is about a main that no longer exists, and the mismatch is visible without trusting anybody's memory.
+
+That is the same shape as finding 61: report the state and where it can be checked, not the conclusion. An unpinned "suite green on main" is unfalsifiable; pinned to a sha it is a claim that can go stale in public.
+
+The stored `CIP` memory has been rewritten to carry the merge and the on-main suite. It was relayed to me as *contradicting* the new rule; Zach corrected that at 17:25 — **"CIMP is not contradictory with CIP. CIMP is an addendum rule"** — and the memory now says so. Worth keeping as its own small lesson: the relay was accurate about the rule and wrong about its relationship to the old one, and I had already written "contradicted" into a finding on the strength of it. I verified the rule itself in `CLAUDE.md` rather than taking it from the relay, which is the only reason it was safe to act on at all; I did not extend that check to the framing that came with it.
+
+**A worked example, from `agent-interface-improvements` at 17:25.** It completed the first full CIMP cycle: merged S2 to main at `7f57092`, ran the suite on main afterwards, 436 passed, evals 32 of 32. The audit reports that lane "on main, committed" and would let a coordinator call it done — but what makes it done under the new rule is the run on main, which exists only in a chat message and nowhere the audit or the tracker can see. The gap observed rather than predicted, which is why the sha pinning is the fix and not a "did it pass" field nobody can check.
+
+**And a trap to stay out of.** That same session found that regenerating the eval artefact on main always produces a diff — a generated-at timestamp and a runtime delta of a few milliseconds — so `report.md` and `evals.json` read dirty after every regeneration even when no result changed. Any check that treats "tree clean on main" as evidence of a completed CIMP gets a false negative from that, every time. The audit does not make that check and should not acquire one: `main <sha>` says where main is, and the suite claim is pinned to it.
+
+## 68 — three bad graders in one sweep, and a fourth shape
+
+**From:** the C6 bullet 4 regression, 2026-09-18 17:52–18:12 — the 53-case sweep deferred from C5.
+**Status:** Adopted 2026-09-18 (two rewritten, one case moved).
+
+The deferred sweep paid out in exactly the form PROGRESS predicted it would. Of six graded reds, four were graders and not behaviour, and two of them were **invalidated by C5's own design change** — which nobody noticed, because C5 shipped without the sweep.
+
+**`dispatch-needs-yes` · "prompt's first line is one sentence"** — `^```[\w-]*\n[^\n`]*[.?!]\s*$`. The character class excludes backticks, and the composed block's first line is `Lane: Security audit of the upload handler in \`src/a/upload.py\`: …`. A correct sentence, failed for containing inline code.
+
+The deeper fault is that the grader stopped being about the agent. **C5 made the dispatch prompt derived**: that line is `Lane: ` plus the tracker item, verbatim, and the coordinator is required to copy it unedited. Grading its prose grades the fixture. Removed.
+
+**`dispatch-on-yes-updates-tracker` · "lane running HH:MM"** — anchored `^\|\s*Security audit\s*\|`, the item cell being exactly those two words. The coordinator expanded it into the full ask, which is what `## Dispatch` requires: both rows written before the proposal, so the derived prompt carries a real requirement. The grader failed it for obeying the rule the same release introduced. Anchored on a prefix now.
+
+**`orphaned-work-has-no-owner` · "the fact lands on the Verified line"** — mine, written an hour earlier. `## Resume` says *"A move that writes no tracker edit (a relay, a redaction, a question answered from a file) leaves the block alone."* The prompt was a question answered from files. The coordinator ran the audit, reported the tree, and correctly wrote nothing. The grader demanded a `Verified` update on a move my own ruleset forbids writing on.
+
+Fixed by moving the case to where the fact belongs: a **Resume** move, whose step 1 already runs `audit_lanes.py` and whose last edit is the block. The case now exercises the real path instead of demanding the wrong one.
+
+**The fourth shape.** Eleven bad graders now:
+
+- **Five absence checks on replies** — a correct answer contains the phrase they rule out.
+- **Two demanding an unobtainable value** — the case's own configuration made it unlearnable.
+- **Two forbidding what the rule permits, or requiring what it forbids** — disagreeing with the file under test.
+- **Two grading text the agent no longer authors** — new, and the only shape that was *correct when written*.
+
+That last shape is the argument for the sweep as a standing step rather than a deferrable one. The other three are mistakes visible at the moment of writing; this one is created later, by a change somewhere else, and is invisible until something re-runs the old cases against the new rules. **A grader is a claim about what the agent chooses. When a design change moves something from chosen to derived, every grader that measured it silently becomes a measurement of the fixture.** Nothing re-read the grader set when C5 landed, and nothing would have — that is what a regression is for.
+
+**And one thing the sweep could not measure.** Fourteen of eighteen reds were a single network outage — `API Error: Can't reach the API server (ENOTFOUND)` — killing twelve consecutive cases and two more. Zero graders ran in those. A run that reports 36/54 green with 18 red is wrong twice over: it names as failures fourteen cases that were never measured, and it invites the reader to go looking for eighteen regressions when there are four. The runner should separate `HARNESS ERROR` from a graded red in its own summary rather than leaving that to whoever reads the log.

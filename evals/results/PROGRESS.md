@@ -917,3 +917,45 @@ That is seven graders across C4 and C5 that passed the wrong answer or failed th
 Kept as a regression guard and named here rather than quietly counted as evidence. The sharp version, for C6: the session registers claiming a **different lane** than the one it was dispatched to. `:184` says update the row from its direct replies, and the lane is the tracker's — so the rule writes the ref, leaves the lane, and flags the discrepancy, while a baseline "helpfully" corrects the lane to match what the session said. That is a distinction a bare agent gets wrong, which is the only kind worth grading.
 
 This is the second time C4's lesson has had to be relearned: `newborn-is-not-orphaned` was non-discriminating for the same reason and was fixed by grading the *distinction* rather than the outcome. A case whose graders describe what should happen will be passed by anyone sensible. A case that earns its place describes what someone sensible gets wrong.
+
+---
+
+## C6 — the session graph (0.9.0)
+
+The board drew lanes on a time axis and said nothing at all about who was working. `parse_tracker` returned `board_url` and `lanes`; nothing in the system had ever read `## Sessions`. Zach asked for the tree — coordinator, lane agents, their subagents — each node clickable with a status summary.
+
+The live tracker was the argument for building it. Four sessions sat in the table with `last reply` times eight hours old, and nothing anywhere said so. Every one of those rows was being read all day as a statement about the present.
+
+### What shipped
+
+**The data.** `## Sessions` gained a closed-set `state` column (`planning`, `working`, `waiting`, `idle`) and a `children` column, and the poll gained a sixth line asking about subagents. `starting`, `ready` and `gone` are derived and never written, because a session cannot report that it is gone and `ready for decommissioning` is a `doing` value. A 7-versus-9 column discriminator keeps every tracker written before today parsing.
+
+**The graph.** `session_graph()` emits one disclosure tree — nested `<details>`, CSS only, no handlers. Nine state chips, each a pattern as well as a hue, pairwise distinct under the same test the bars already live under. Every node cites its row: `data-ref`, `data-state`, `data-as-of`, `data-age`, `data-band`, `data-waits-on`. A subagent gets a list item and never a node: it has no ref, is in no listing, answers no poll and cannot be sent to, and a node beside its peers would say all four were false.
+
+**The join.** `audit_lanes.py` reads `## Sessions` for the first time and reports a tree with uncommitted work whose owner is not in the session list (finding 47), classifies a missing tree three ways instead of one (finding 46), and `gone_sessions()` puts the same join in the renderer.
+
+### What the fixtures could not have told us
+
+Four corrections in bullet 1 came from running the parser against the **live** tracker rather than the fixtures: `unreported` is not `unknown`; `waiting on: nothing` is not an edge to a node called "nothing"; one session separates who from why with a comma and three sessions had not agreed on the separator; the name cell accretes provenance (`update-claude-md-docs (third name, same ref)`).
+
+The plan put a pause here — check the vocabulary against a real night's replies before the renderer hardens it. **That pause could not be taken as designed**, because the coordinator has not restarted and nobody has ever answered the new poll. The live tracker was the nearest available evidence and is what produced the four corrections. Recorded as a substitution rather than counted as the pause.
+
+### Three faults the board had been hiding
+
+Zach, reading the live board: *"That's unintelligible. no formatting."* Relayed with two findings; a third was underneath them, and **two of six Resume fields were not on the page at all**. `re-arm` had been dropped since `dd16fb5` yesterday, when the ruleset gained the field and the renderer's allowlist did not. `verified` had been dropped for one hour, by the rewrite meant to fix the legibility complaint: `- Verified 16:52:` splits at the first colon, which is inside the clock read.
+
+Both survived because **`resume=6 fields` counted what was parsed and never what was drawn**, and a board that reports six and draws four cannot be caught by reading its own output. Generalised as finding 65 and applied to the rest of the summary line: a count of inputs is not a count of outputs, and only the second one is a check.
+
+### The traversal that could not see what it was looking for
+
+Bullet 3's join went green on units and reported `orphaned=0` against a live workspace holding exactly the three trees finding 47 was written about. Every tree the audit could reach was reached through a lane that claimed it, and those three are keyed `nobody` in File ownership, which no lane owner matches.
+
+**A tree reachable only through a lane is a tree nobody can reach once the lane lets go** — which is the same event that orphaned it. The structure guaranteed the trees most worth finding were the ones the traversal could not see. Finding 66, and the general form is not about worktrees: a traversal keyed on a relationship cannot see the objects whose defining property is that the relationship is broken.
+
+### CIMP arrived mid-stage
+
+House rule 5 landed at 17:18: work is not done until it is on main, and the suite has to have been run **on main** after the merge. That changes what `done` means, and `done` is `audit_lanes.py`'s whole subject.
+
+No script can watch a suite run. The audit names the commit the claim must pin to instead — `main <sha> even with origin/main` — and the ruleset requires that sha in `Verified` beside the suite result. Unpinned, "suite green on main" is unfalsifiable; pinned, it goes stale in public. A "tree clean on main" check was considered and rejected: regenerating an eval artefact always produces a generated-at and runtime diff, so it would return a false negative after every correct CIMP.
+
+One relay error worth keeping. The rule reached me through a peer, and I verified the rule itself against `CLAUDE.md:59` before acting — then took the framing that arrived with it, "contradicts CIP", without the same check. Zach corrected it at 17:25: *"CIMP is not contradictory with CIP. CIMP is an addendum rule."* Verifying a claim and verifying the story told about it are two different checks.
