@@ -864,6 +864,21 @@ def grid_marks(axis_a: datetime, axis_b: datetime, kind: str) -> list[tuple[date
     return marks
 
 
+def _bar_row(b: Bar, axis_a: datetime, axis_b: datetime, row_class: str = "row") -> str:
+    """One lane as a positioned row. A top-level bar and a sublane inside a fold are the same markup."""
+    left, right = _pct(b.start, axis_a, axis_b), _pct(b.end, axis_a, axis_b)
+    edge = (" clamped" if b.end > axis_b else "") + (" clamped-left" if b.end < axis_a else "")
+    classes = f"bar {b.kind}" + (" open-end" if b.end_src == "deadline" else "") + (" derived" if b.end_src == "derived" else "") + edge
+    label = f' data-label="{_esc(b.label)}"' if b.label else ""
+    title = f' title="{_esc(b.est.title(b.owner))}"' if b.est else ""
+    text = f"<em>{_esc(b.label)}</em>" if b.label else ""
+    return (
+        f'<div class="{row_class}"><div class="name">{_esc(short_name(b.item))}</div><div class="track">'
+        f'<div class="{classes}" data-item="{_esc(b.item)}" data-start="{_iso(b.start)}" data-end="{_iso(b.end)}" '
+        f'data-start-src="{b.start_src}" data-end-src="{b.end_src}"{label}{_est_attrs(b)}{title} style="left:{left:.2f}%;width:{max(right - left, 0.6):.2f}%">{text}</div></div></div>'
+    )
+
+
 def _strip(rows: list[Bar | Summary], axis_a: datetime, axis_b: datetime, events: list[Event], deadlines: list[Deadline], ticks: list[tuple[datetime, str]], kind: str) -> str:
     out = [f'<div class="strip" data-strip="{kind}" data-axis-start="{_iso(axis_a)}" data-axis-end="{_iso(axis_b)}">']
     out.append('<div class="axis">')
@@ -875,22 +890,14 @@ def _strip(rows: list[Bar | Summary], axis_a: datetime, axis_b: datetime, events
         left, right = _pct(row.start, axis_a, axis_b), _pct(row.end, axis_a, axis_b)
         edge = (" clamped" if row.end > axis_b else "") + (" clamped-left" if row.end < axis_a else "")
         if isinstance(row, Bar):
-            b = row
-            classes = f"bar {b.kind}" + (" open-end" if b.end_src == "deadline" else "") + (" derived" if b.end_src == "derived" else "") + edge
-            label = f' data-label="{_esc(b.label)}"' if b.label else ""
-            title = f' title="{_esc(b.est.title(b.owner))}"' if b.est else ""
-            text = f"<em>{_esc(b.label)}</em>" if b.label else ""
-            out.append(
-                f'<div class="row"><div class="name">{_esc(short_name(b.item))}</div><div class="track">'
-                f'<div class="{classes}" data-item="{_esc(b.item)}" data-start="{_iso(b.start)}" data-end="{_iso(b.end)}" '
-                f'data-start-src="{b.start_src}" data-end-src="{b.end_src}"{label}{_est_attrs(b)}{title} style="left:{left:.2f}%;width:{max(right - left, 0.6):.2f}%">{text}</div></div></div>'
-            )
+            out.append(_bar_row(row, axis_a, axis_b))
             continue
         sm = row
         names = " · ".join(short_name(m.item) for m in sm.members)
         hatch = " open-end" if sm.attr == "summary" else ""
         # The folded names were always in the html as empty `.member` spans, readable by a grader and
-        # by nobody else. The disclosure gives them to a person without moving the citations.
+        # by nobody else. The disclosure opens onto the members drawn as rows on the same axis — sublanes,
+        # not a list of names (Zach, 2026-09-18 12:55) — and the citations stay on the summary bar.
         out.append(
             '<details class="folded"><summary>'
             f'<div class="row {sm.attr}-row"><div class="name">{_esc(sm.name or _lanes(len(sm.members)))}</div><div class="track">'
@@ -898,9 +905,8 @@ def _strip(rows: list[Bar | Summary], axis_a: datetime, axis_b: datetime, events
             f'style="left:{left:.2f}%;width:{max(right - left, 0.6):.2f}%" title="{_esc(names)}"><em>{_esc(sm.label)}</em>'
             + "".join(_member(m) for m in sm.members)
             + "</div></div></div></summary>"
-            + '<ul class="folded-list">'
-            + "".join(f"<li>{_esc(short_name(m.item))}</li>" for m in sm.members)
-            + "</ul></details>"
+            + "".join(_bar_row(m, axis_a, axis_b, "row sub") for m in sm.members)
+            + "</details>"
         )
     out.append('<div class="overlay">')
     for at, major in grid_marks(axis_a, axis_b, kind):
@@ -1144,7 +1150,7 @@ tr.group th{{background:color-mix(in srgb,var(--brass) 18%,transparent);color:va
 .muted{{color:var(--muted)}} .warn{{color:var(--dl);font-size:12px}}
 .strip{{position:relative;margin:8px 0 4px;--name-w:30%}} .axis{{position:relative;height:18px;margin-left:var(--name-w);font-size:11px;color:var(--muted)}} .tick{{position:absolute;transform:translateX(-50%);white-space:nowrap}}
 .rows{{position:relative}} .row{{display:flex;align-items:center;height:26px}} .name{{width:var(--name-w);flex:none;padding-right:8px;box-sizing:border-box;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}} .track{{position:relative;flex:1;height:18px;border-left:1px solid var(--line)}}
-.summary-row .name{{color:var(--muted)}} details.folded>summary{{list-style:none;cursor:pointer}} details.folded>summary::-webkit-details-marker{{display:none}} details.folded>summary .name::before{{content:"\u25b8 "}} details.folded[open]>summary .name::before{{content:"\u25be "}} .folded-list{{list-style:none;margin:0 0 6px var(--name-w);padding:4px 8px;background:var(--surface);border-radius:4px;display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:2px 12px;font-size:12px;color:var(--muted)}}
+.summary-row .name{{color:var(--muted)}} details.folded>summary{{list-style:none;cursor:pointer}} details.folded>summary::-webkit-details-marker{{display:none}} details.folded>summary .name::before{{content:"\u25b8 "}} details.folded[open]>summary .name::before{{content:"\u25be "}} .row.sub{{height:22px}} .row.sub .name{{padding-left:18px;color:var(--muted);font-size:12px}} .row.sub .bar{{height:14px;line-height:14px;font-size:10px;top:2px}}
 .bar{{position:absolute;top:0;height:18px;border-radius:3px;background:var(--open);color:var(--bar-ink);font-size:11px;line-height:18px;padding:0 6px;overflow:hidden;white-space:nowrap;box-sizing:border-box}}
 .bar.running{{background:var(--running)}} .bar.orphaned{{background:var(--surface);color:var(--fg);outline:2px dashed var(--dl);outline-offset:-2px}} .bar.open-end{{background:var(--noest)}} .bar.derived{{background:var(--est)}} .bar.summary{{background:var(--fold)}} .bar.clamped{{border-right:3px solid var(--dl)}} .bar.clamped-left{{border-left:3px solid var(--dl)}} .group-row .name{{font-weight:600}} .bar em{{font-style:normal;opacity:.85}} .member{{display:none}}
 .overlay{{position:absolute;top:0;bottom:0;left:var(--name-w);right:0;pointer-events:none}}

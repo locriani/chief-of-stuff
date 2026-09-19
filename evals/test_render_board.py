@@ -331,6 +331,11 @@ class RenderTest(unittest.TestCase):
         self.assertIn("2 cells", self.html)
 
 
+def _top_row(item: str) -> str:
+    """A regex for `item` drawn as a top-level row. A sub row inside a fold (`row sub`) is not one."""
+    return rf'<div class="row"><div class="name">[^<]*</div><div class="track"><div class="bar[^"]*"[^>]*data-item="{re.escape(item)}"'
+
+
 def _strip_html(page: str, kind: str) -> str:
     start = page.index(f'data-strip="{kind}"')
     end = page.find('data-strip="week"', start + 1) if kind == "day" else page.index("<h2>Lanes", start)
@@ -408,7 +413,7 @@ class DensityTest(unittest.TestCase):
         self.assertRegex(day, r'class="bar[^"]*"[^>]*data-item="Write eval README"')
         self.assertRegex(day, r'class="bar running[^"]*"[^>]*data-item="Security audit"')
         self.assertRegex(day, r'class="member"[^>]*data-item="Review deploy config"')
-        self.assertNotRegex(day, r'class="bar[^"]*"[^>]*data-item="Review deploy config"')
+        self.assertNotRegex(day, _top_row("Review deploy config"))
         # Two of the four unscheduled lanes are owned, so 0.10.0 derives their ends inside today and draws them.
         self.assertRegex(day, r'data-summary="today"[^>]*data-count="2"')
         self.assertNotIn("Draft release notes", day)
@@ -421,17 +426,18 @@ class DensityTest(unittest.TestCase):
         self.assertIsNotNone(final)
         self.assertIn('data-end="2026-09-20T12:00:00-05:00"', final.group(0))
         self.assertRegex(week, r'class="member"[^>]*data-item="Review deploy config"')
-        self.assertNotRegex(week, r'class="bar[^"]*"[^>]*data-item="Review deploy config"')
+        self.assertNotRegex(week, _top_row("Review deploy config"))
 
     def test_item_text_bounded(self) -> None:
         esc = html_escape(LONG_ITEM)
         # The size cap is about item text, not the inlined logo asset.
         self.html = re.sub(r"data:image/webp;base64,[A-Za-z0-9+/=]+", "", self.html)
-        self.assertLessEqual(self.html.count(esc), 2)
+        # The lane table, the fold's `.member` citation, and the sub row the fold opens onto (0.10.0).
+        self.assertLessEqual(self.html.count(esc), 3)
         visible = re.sub(r"<[^>]+>", "", self.html.split("</style>", 1)[1].split("<script>", 1)[0])
         self.assertEqual(visible.count(esc), 0)
         self.assertEqual(visible.count("the worker left the registry"), 1)
-        self.assertLess(len(self.html), 30_000)  # the page without the logo asset; brand CSS, gridlines, the legend and the folded-row names add ~4 KB, and the session graph ~4.8 (2.6 markup, 2.2 CSS: nine chip fills). The guard is against the 67 KB regression, not against a kilobyte
+        self.assertLess(len(self.html), 32_000)  # 0.10.0: each fold opens onto a sub row per member, ~1 KB on this fixture;  # the page without the logo asset; brand CSS, gridlines, the legend and the folded-row names add ~4 KB, and the session graph ~4.8 (2.6 markup, 2.2 CSS: nine chip fills). The guard is against the 67 KB regression, not against a kilobyte
 
     def test_history_is_one_line_per_clause(self) -> None:
         body = re.search(r"<details><summary>Service architecture refactor</summary>(.*?)</details>", self.html, re.S).group(1)
@@ -603,7 +609,7 @@ class WeekByDayTest(unittest.TestCase):
         self.assertEqual(row.group(1), "Fri 18 · 3 lanes")
         self.assertEqual(row.group(2).count('class="member"'), 3)
         for item in ("Fix A", "Fix B", "Fix C"):
-            self.assertNotRegex(self.week, rf'class="bar[^"]*"[^>]*data-item="{item}"')
+            self.assertNotRegex(self.week, _top_row(item))
             self.assertRegex(row.group(2), rf'class="member" data-item="{item}"')
         self.assertIn("3 due", row.group(2))
 
@@ -1017,19 +1023,44 @@ class StateLegibilityTest(unittest.TestCase):
 
 
 class FoldedRowsExpandTest(unittest.TestCase):
-    """45 of 58 lanes behind one strip, with nothing to open it. The names were in the html all along."""
+    """45 of 58 lanes behind one strip, with nothing to open it. The names were in the html all along.
+
+    0.6.2 opened the fold onto a list of names. Zach, 2026-09-18 12:55: "lane expansion must show sublanes,
+    not a wierd text listing of lanes". The body is now the members drawn as rows on the same axis.
+    """
 
     def setUp(self) -> None:
         self.html = rb.render(TRACKER, LOG, rb.parse_coordinator(CLAUDE_MD, today=NOW.date()), NOW)
 
+    def folded(self) -> str:
+        m = re.search(r'<details class="folded">(.*?)</details>', self.html, re.S)
+        self.assertIsNotNone(m, "no folded disclosure in the rendered board")
+        return m.group(1)
+
     def test_a_folded_row_is_wrapped_in_a_disclosure(self) -> None:
         self.assertIn('<details class="folded">', self.html)
 
-    def test_the_folded_names_are_readable_text_not_only_data_attributes(self) -> None:
-        folded = re.search(r'<details class="folded">(.*?)</details>', self.html, re.S)
-        self.assertIsNotNone(folded, "no folded disclosure in the rendered board")
-        self.assertIn('<ul class="folded-list">', folded.group(1))
-        self.assertRegex(folded.group(1), r"<li[^>]*>[^<]+</li>")
+    def test_the_fold_opens_onto_one_positioned_bar_per_member(self) -> None:
+        folded = self.folded()
+        count = int(re.search(r'data-count="(\d+)"', folded).group(1))
+        body = folded.split("</summary>", 1)[1]
+        rows = re.findall(r'<div class="row sub"><div class="name">([^<]+)</div><div class="track"><div class="bar [^"]*" data-item="([^"]+)" data-start="[^"]+" data-end="[^"]+" data-start-src="[^"]+" data-end-src="[^"]+"[^>]*style="left:[0-9.]+%;width:[0-9.]+%">', body)
+        self.assertEqual(len(rows), count, body)
+        self.assertNotIn("folded-list", self.html)
+        self.assertNotIn("<li", body)
+
+    def test_the_member_citations_stay_on_the_summary_bar(self) -> None:
+        summary = self.folded().split("</summary>", 1)[0]
+        self.assertEqual(summary.count('class="member"'), int(re.search(r'data-count="(\d+)"', summary).group(1)))
+        css = self.html.split("<style>")[1].split("</style>")[0]
+        self.assertIn(".member{display:none}", css)
+
+    def test_a_sub_row_carries_the_same_state_and_citations_as_a_top_row(self) -> None:
+        body = self.folded().split("</summary>", 1)[1]
+        sub = re.search(r'<div class="row sub">.*?<div class="bar ([^"]*)" data-item="Review deploy config"[^>]*>', body)
+        self.assertIsNotNone(sub, body)
+        self.assertIn("open", sub.group(1).split())
+        self.assertIn('data-end-src="due"', sub.group(0))
 
     def test_one_disclosure_per_folded_row_and_none_otherwise(self) -> None:
         folded = self.html.count('<details class="folded">')
@@ -1487,7 +1518,7 @@ class DrawnEstimateTest(unittest.TestCase):
         rows = "".join(f"| L{i} | many | open | 2026-09-16 |  | c |\n" for i in range(12))
         text = QUEUE_TRACKER.replace("| K done |", rows + "| K done |")
         day = _strip_html(rb.render(text, LOG, self.cfg, NOW), "day")
-        self.assertNotRegex(day, r'<div class="bar[^"]*"[^>]*data-item="L3"')
+        self.assertNotRegex(day, _top_row("L3"))
         member = re.search(r'<span class="member" data-item="L3"[^>]*>', day)
         self.assertIsNotNone(member)
         self.assertIn('data-end-src="derived"', member.group(0))
