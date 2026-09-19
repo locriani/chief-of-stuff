@@ -755,7 +755,6 @@ def session_graph(sessions: tuple[Session, ...], cfg: Config, now: datetime, gon
         notes.append(f"{unheard} never replied")
     return f"""<section class="graph" data-sessions="{len(sessions)}">
 <h2>Sessions · {len(sessions)}</h2>
-<div class="meta">a poll, with an age, and not a fact · every node is stamped with when that session last spoke, and reads stale past two hours · subagents hang under their owner and cannot be addressed</div>
 <details class="node coordinator" open>
 <summary><span class="chip coordinator">coordinator</span><span class="who">chief-of-stuff</span><span class="stamp fresh">{" · ".join(notes)}</span></summary>
 <ul class="peers">
@@ -1051,8 +1050,8 @@ tr.group th{{background:color-mix(in srgb,var(--brass) 18%,transparent);color:va
 .strip{{position:relative;margin:8px 0 4px;--name-w:30%}} .axis{{position:relative;height:18px;margin-left:var(--name-w);font-size:11px;color:var(--muted)}} .tick{{position:absolute;transform:translateX(-50%);white-space:nowrap}}
 .rows{{position:relative}} .row{{display:flex;align-items:center;height:26px}} .name{{width:var(--name-w);flex:none;padding-right:8px;box-sizing:border-box;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}} .track{{position:relative;flex:1;height:18px;border-left:1px solid var(--line)}}
 .summary-row .name{{color:var(--muted)}} details.folded>summary{{list-style:none;cursor:pointer}} details.folded>summary::-webkit-details-marker{{display:none}} details.folded>summary .name::before{{content:"\u25b8 "}} details.folded[open]>summary .name::before{{content:"\u25be "}} .folded-list{{list-style:none;margin:0 0 6px var(--name-w);padding:4px 8px;background:var(--surface);border-radius:4px;display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:2px 12px;font-size:12px;color:var(--muted)}}
-.bar{{position:absolute;top:0;height:18px;border-radius:3px;background:repeating-linear-gradient(45deg,var(--open),var(--open) 7px,rgba(127,127,127,.28) 7px,rgba(127,127,127,.28) 11px);color:var(--bar-ink);font-size:11px;line-height:18px;padding:0 6px;overflow:hidden;white-space:nowrap;box-sizing:border-box}}
-.bar.running{{background:var(--running)}} .bar.orphaned{{background:repeating-linear-gradient(45deg,var(--dl) 0 2px,transparent 2px 8px),repeating-linear-gradient(-45deg,var(--dl) 0 2px,transparent 2px 8px);outline:2px dashed var(--dl);outline-offset:-2px}} .bar.open-end{{background:repeating-linear-gradient(90deg,var(--noest),var(--noest) 3px,rgba(127,127,127,.30) 3px,rgba(127,127,127,.30) 7px);color:var(--fg)}} .bar.summary{{background:repeating-linear-gradient(90deg,var(--fold),var(--fold) 2px,rgba(127,127,127,.34) 2px,rgba(127,127,127,.34) 9px);color:var(--fg)}} .bar.clamped{{border-right:3px solid var(--dl)}} .bar.clamped-left{{border-left:3px solid var(--dl)}} .group-row .name{{font-weight:600}} .bar em{{font-style:normal;opacity:.85}} .member{{display:none}}
+.bar{{position:absolute;top:0;height:18px;border-radius:3px;background:var(--open);color:var(--bar-ink);font-size:11px;line-height:18px;padding:0 6px;overflow:hidden;white-space:nowrap;box-sizing:border-box}}
+.bar.running{{background:var(--running)}} .bar.orphaned{{background:var(--surface);color:var(--fg);outline:2px dashed var(--dl);outline-offset:-2px}} .bar.open-end{{background:var(--noest)}} .bar.summary{{background:var(--fold)}} .bar.clamped{{border-right:3px solid var(--dl)}} .bar.clamped-left{{border-left:3px solid var(--dl)}} .group-row .name{{font-weight:600}} .bar em{{font-style:normal;opacity:.85}} .member{{display:none}}
 .overlay{{position:absolute;top:0;bottom:0;left:var(--name-w);right:0;pointer-events:none}}
 .band{{position:absolute;top:0;bottom:0;background:var(--band)}}
 .grid{{position:absolute;top:0;bottom:0;border-left:1px solid var(--line)}} .grid.half{{border-left:1px dotted var(--line);opacity:.6}}
@@ -1061,8 +1060,8 @@ tr.group th{{background:color-mix(in srgb,var(--brass) 18%,transparent);color:va
 .legend .key{{position:static;flex:none;display:inline-block;width:18px;height:10px;border-radius:2px;top:auto;bottom:auto;left:auto;right:auto}}
 .legend .key.nowline{{width:0;height:12px;border-radius:0;border-left:2px solid var(--now)}} .legend .key.dline{{width:0;height:12px;border-radius:0;border-left:2px dashed var(--dl);transform:none}}
 .legend .key.band{{height:12px;background:var(--band);border:1px solid var(--line)}}
-.key{{display:inline-block;width:18px;height:10px;border-radius:2px}} .key.bar{{position:static;background:repeating-linear-gradient(45deg,var(--open),var(--open) 7px,rgba(127,127,127,.28) 7px,rgba(127,127,127,.28) 11px);padding:0}}
-.key.bar.running{{background:var(--running)}} .key.bar.orphaned{{background:repeating-linear-gradient(45deg,var(--dl) 0 2px,transparent 2px 8px),repeating-linear-gradient(-45deg,var(--dl) 0 2px,transparent 2px 8px)}} .key.bar.open-end{{background:repeating-linear-gradient(90deg,var(--noest),var(--noest) 3px,rgba(127,127,127,.30) 3px,rgba(127,127,127,.30) 7px)}} .key.bar.summary{{background:repeating-linear-gradient(90deg,var(--fold),var(--fold) 2px,rgba(127,127,127,.34) 2px,rgba(127,127,127,.34) 9px)}}
+.key{{display:inline-block;width:18px;height:10px;border-radius:2px}} .key.bar{{position:static;background:var(--open);padding:0}}
+.key.bar.running{{background:var(--running)}} .key.bar.orphaned{{background:var(--surface);outline:2px dashed var(--dl);outline-offset:-2px}} .key.bar.open-end{{background:var(--noest)}} .key.bar.summary{{background:var(--fold)}}
 .key.band{{background:var(--band);border:1px solid var(--line)}} .key.nowline{{width:0;height:12px;border-left:2px solid var(--now);border-radius:0}} .key.dline{{width:0;height:12px;border-left:2px dashed var(--dl);border-radius:0}}
 .dline{{position:absolute;top:0;bottom:0;border-left:2px dashed var(--dl);transform:translateX(-1px)}}
 .callouts{{margin-left:var(--name-w);margin-top:2px}} .callout{{position:relative;height:16px;font-size:11px;line-height:16px;color:var(--dl);white-space:nowrap}}
@@ -1086,16 +1085,16 @@ details summary{{cursor:pointer}} details[open] summary{{margin-bottom:4px}}
 /* The claim fades, the name never does: a stale node is the one you most need to read. */
 .stamp.stale{{color:var(--dl)}} .stamp.never,.stamp.unparsed{{color:var(--dl)}} .node[data-band="aging"]>summary .chip{{opacity:.66}} .node[data-band="stale"]>summary .chip{{opacity:.4}}
 .chip{{flex:none;font-size:10px;letter-spacing:.07em;text-transform:uppercase;padding:1px 7px;border-radius:9px;border:1px solid var(--line);color:var(--fg);background:var(--surface)}}
-.chip.planning{{background:repeating-linear-gradient(45deg,var(--noest) 0 2px,transparent 2px 5px),var(--surface)}}
-.chip.working{{background:repeating-linear-gradient(90deg,var(--running) 0 3px,transparent 3px 5px),var(--surface)}}
-.chip.waiting{{background:repeating-linear-gradient(-45deg,var(--brass) 0 2px,transparent 2px 6px),var(--surface)}}
-.chip.idle{{background:repeating-linear-gradient(0deg,var(--done) 0 2px,transparent 2px 4px),var(--surface)}}
-.chip.starting{{background:repeating-radial-gradient(circle at 2px 2px,var(--open) 0 1.4px,transparent 1.4px 5px),var(--surface)}}
-.chip.ready{{background:repeating-linear-gradient(135deg,var(--now) 0 3px,transparent 3px 7px),var(--surface)}}
-.chip.unknown{{background:repeating-linear-gradient(45deg,var(--dl) 0 1.5px,transparent 1.5px 5px),repeating-linear-gradient(-45deg,var(--dl) 0 1.5px,transparent 1.5px 5px),var(--surface)}}
-.chip.unreported{{background:repeating-radial-gradient(circle at 3px 3px,var(--muted) 0 1px,transparent 1px 7px),var(--surface)}}
-.chip.gone{{background:repeating-linear-gradient(0deg,var(--dl) 0 1px,transparent 1px 3px),repeating-linear-gradient(90deg,var(--dl) 0 1px,transparent 1px 3px),var(--surface)}}
-.chip.coordinator{{background:repeating-linear-gradient(90deg,var(--brass) 0 1px,transparent 1px 4px),var(--surface)}}
+.chip.planning{{background:var(--noest);color:var(--bar-ink);border-color:var(--noest)}}
+.chip.working{{background:var(--running);color:var(--bar-ink);border-color:var(--running)}}
+.chip.waiting{{background:var(--brass);color:var(--bar-ink);border-color:var(--brass)}}
+.chip.idle{{background:var(--done);color:var(--fg);border-color:var(--done)}}
+.chip.starting{{background:var(--open);color:var(--bar-ink);border-color:var(--open)}}
+.chip.ready{{background:var(--now);color:var(--bar-ink);border-color:var(--now)}}
+.chip.unknown{{background:var(--dl);color:var(--bar-ink);border-color:var(--dl)}}
+.chip.unreported{{background:var(--muted);color:var(--bar-ink);border-color:var(--muted)}}
+.chip.gone{{background:var(--surface);color:var(--dl);border:1px dashed var(--dl)}}
+.chip.coordinator{{background:var(--bg);color:var(--brass);border-color:var(--brass)}}
 .resume{{margin:6px 0 0;font-size:13px;color:var(--fg);border-left:3px solid var(--brass);padding:2px 0 2px 8px;display:grid;grid-template-columns:auto 1fr;gap:2px 10px}}
 .resume dt{{color:var(--muted);font-weight:600;font-size:10px;letter-spacing:.06em;text-transform:uppercase;padding-top:3px;white-space:nowrap}}
 .resume dd{{margin:0;min-width:0;overflow-wrap:anywhere}} .resume dd.long-field{{border-bottom:1px dotted var(--brass)}}

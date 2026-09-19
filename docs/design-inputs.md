@@ -145,7 +145,7 @@ The strip is now a `<summary>` inside a `<details>`, with the names in a list be
 ## 51 — colour was the only carrier
 
 **From:** Zach, same message.
-**Status:** Adopted 2026-09-18 (0.6.2).
+**Status:** Adopted 2026-09-18 (0.6.2). **Withdrawn 2026-09-18 (0.9.1)** — see finding 69.
 
 "the colors alone are not colorblind friendly". Under deuteranopia the olive states and grey `done` converge; in greyscale nothing separated any of them.
 
@@ -447,3 +447,16 @@ Fixed by moving the case to where the fact belongs: a **Resume** move, whose ste
 That last shape is the argument for the sweep as a standing step rather than a deferrable one. The other three are mistakes visible at the moment of writing; this one is created later, by a change somewhere else, and is invisible until something re-runs the old cases against the new rules. **A grader is a claim about what the agent chooses. When a design change moves something from chosen to derived, every grader that measured it silently becomes a measurement of the fixture.** Nothing re-read the grader set when C5 landed, and nothing would have — that is what a regression is for.
 
 **And one thing the sweep could not measure.** Fourteen of eighteen reds were a single network outage — `API Error: Can't reach the API server (ENOTFOUND)` — killing twelve consecutive cases and two more. Zero graders ran in those. A run that reports 36/54 green with 18 red is wrong twice over: it names as failures fourteen cases that were never measured, and it invites the reader to go looking for eighteen regressions when there are four. The runner should separate `HARNESS ERROR` from a graded red in its own summary rather than leaving that to whoever reads the log.
+
+## 69 — the patterns came off
+
+**From:** Zach, 2026-09-18 21:12, after one day with a patterned board.
+**Status:** Adopted 2026-09-18 (0.9.1).
+
+"let's back out the colorblind changes for now as they've visually made things worse. do this as an immediate step, install, deploy as it's affecting usability".
+
+Finding 51 put a hatch or stripe on every bar state, and C6 did the same for every session chip. Two things went wrong at once. A pattern reads at legend-swatch size as a texture, and on a strip of fifty bars a page of textures is noise where a page of flat colour was a chart. And the pattern was carried by the bar's own fill, so the one thing a bar has to do — show its extent — competed with the thing that named its state.
+
+Every fill is flat again: bars and legend keys are one hue each, `orphaned` is an empty bar with a dashed edge, chips are a hue and a word. The pairwise-distinct tests stay, because a hue per state was the half of finding 51 that worked; the two "carries a pattern" tests are inverted so a pattern cannot regrow one state at a time. The greyscale and deuteranopia case those tests made is still real and still unanswered; the board is legible to the reader it has today, and that is the reader who asked.
+
+The graph's caption line went at the same time, at Zach's word ("is terrible delete it"): three clauses of hedging under a heading, explaining the section to a reader who can already see it.

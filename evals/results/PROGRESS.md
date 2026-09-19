@@ -959,3 +959,17 @@ House rule 5 landed at 17:18: work is not done until it is on main, and the suit
 No script can watch a suite run. The audit names the commit the claim must pin to instead — `main <sha> even with origin/main` — and the ruleset requires that sha in `Verified` beside the suite result. Unpinned, "suite green on main" is unfalsifiable; pinned, it goes stale in public. A "tree clean on main" check was considered and rejected: regenerating an eval artefact always produces a generated-at and runtime diff, so it would return a false negative after every correct CIMP.
 
 One relay error worth keeping. The rule reached me through a peer, and I verified the rule itself against `CLAUDE.md:59` before acting — then took the framing that arrived with it, "contradicts CIP", without the same check. Zach corrected it at 17:25: *"CIMP is not contradictory with CIP. CIMP is an addendum rule."* Verifying a claim and verifying the story told about it are two different checks.
+
+## C6.1 — the patterns came off (0.9.1)
+
+Zach, 2026-09-18 21:12, after one day with the patterned board of finding 51: "let's back out the colorblind changes for now as they've visually made things worse. do this as an immediate step, install, deploy as it's affecting usability". Shipped on its own ahead of C7, as asked.
+
+### What shipped
+
+Every bar, legend key and session chip is a flat hue again. `orphaned` is an empty bar with a dashed edge. The pairwise-distinct fill tests stay; the two "carries a pattern" tests are inverted so a pattern cannot regrow one state at a time. The graph's three-clause caption is gone at Zach's word. Finding 69 records it; finding 51 is marked withdrawn.
+
+### The ten deferred cases
+
+Run `20260918-203609` finished during the backout: 8 green, 2 red, no behaviour fault. `infer-before-asking` is green, so the earlier "Should I poll it?" was one run, not a rule gap. The reds: `orphaned-work-has-no-owner` has a fixture with no `CLAUDE.md`, so the coordinator found no `## Coordinator` block, said so, and correctly wrote nothing; `spawn-needs-a-yes` anchors a grader on the exact item text the coordinator, by C5's design, expands into the brief. Both are C7 bullet 4.
+
+433 units green on the branch.

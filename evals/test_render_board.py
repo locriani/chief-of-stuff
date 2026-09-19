@@ -963,8 +963,8 @@ class StateLegibilityTest(unittest.TestCase):
 
     Live on 0.6.1: `open`, `no estimate` and `folded rows` all resolved to `var(--open)` — the only
     difference was a 135 degree stripe and an opacity drop, neither of which survives an 18x10px
-    legend swatch. Colour was also the sole carrier, so the olive states and grey `done` converge
-    under deuteranopia and nothing separates any of them in greyscale.
+    legend swatch. Each state now has a hue of its own. The patterns 0.6.2 layered on top were
+    withdrawn in 0.9.1 (see `test_no_state_carries_a_pattern`).
     """
 
     # Every state the chart can draw, as the class that paints it.
@@ -994,13 +994,14 @@ class StateLegibilityTest(unittest.TestCase):
             self.assertNotIn(got, fills, f"{state} and {fills.get(got)} are drawn the same: {got}")
             fills[got] = state
 
-    def test_every_state_carries_a_pattern_not_only_a_hue(self) -> None:
-        """Greyscale and deuteranopia both survive a pattern; neither survives a hue."""
-        patterned = {"open", "open-end", "summary", "orphaned"}
-        for state in patterned:
+    def test_no_state_carries_a_pattern(self) -> None:
+        """Finding 51 gave every state a hatch or stripe on top of its hue. One day in the field: "visually
+        made things worse" (Zach, 2026-09-18 21:12). Withdrawn in 0.9.1; every fill is flat, and this
+        asserts the patterns cannot regrow one state at a time."""
+        for state in self.STATES:
             selector = ".bar" if state == "open" else f".bar.{state}"
             rule = self.fill(selector)
-            self.assertIn("gradient", rule, f"{state} is a flat fill: hue is its only carrier")
+            self.assertNotIn("gradient", rule, f"{state} is patterned again: {rule}")
 
     def test_legend_keys_are_drawn_like_the_bars_they_explain(self) -> None:
         for state in self.STATES:
@@ -1167,13 +1168,14 @@ class SessionStateLegibilityTest(unittest.TestCase):
             self.assertNotIn(got, fills, f"{kind} and {fills.get(got)} are drawn the same: {got}")
             fills[got] = kind
 
-    def test_every_session_state_carries_a_pattern_not_only_a_hue(self) -> None:
-        """Greyscale and deuteranopia both survive a pattern; neither survives a hue."""
+    def test_no_session_state_carries_a_pattern(self) -> None:
+        """Same withdrawal as the bars (0.9.1): a chip is a flat hue and a word, never a hatch."""
         for kind in self.KINDS:
-            self.assertIn("gradient", self.fill(f".chip.{kind}"), f"{kind} is a flat fill: hue is its only carrier")
+            rule = self.fill(f".chip.{kind}")
+            self.assertNotIn("gradient", rule, f"{kind} is patterned again: {rule}")
 
     def test_the_chip_names_the_state_in_words_as_well(self) -> None:
-        """A pattern separates two states; only the word says which is which."""
+        """A hue separates two states; only the word says which is which."""
         graph = re.search(r'<section class="graph".*?</section>', self.html, re.S).group(0)
         for kind in ("working", "waiting", "starting", "ready"):
             self.assertRegex(graph, rf'<span class="chip {kind}">{kind}</span>')
