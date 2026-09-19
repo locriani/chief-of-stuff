@@ -879,7 +879,9 @@ So a run of N cases against a tree somebody edits mid-run is not one verdict. Ca
 
 The hazard is collision between two correct sessions. One runs a suite; the other edits a file the suite is reading; the first one's results are silently half-and-half. Nothing in the harness declares the lock it is effectively taking, so the second session has no way to know it exists.
 
-The fix is to make a run a verdict on a snapshot: copy the scripts into the run's temp dir at launch and allowlist the copies, so the checkout stays writable and every case in a run exercises identical code. Deliberately not done at 06:16 — board-ux's run depends on current behaviour being stable for another hour, and changing the harness under a live run is the same mistake pointed the other way.
+The fix is to make a run a verdict on a snapshot: copy the scripts into the run's temp dir at launch and allowlist the copies, so the checkout stays writable and every case in a run exercises identical code.
+
+**06:57, board-ux again, and it widens the rule:** the hold is not on *editing*, it is on anything that changes `scripts/` — and a CIMP merge of main into the sweeping worktree is such a thing. So a session running a sweep cannot take a merge either, which is a constraint nobody would infer from "do not edit during a run". Worth stating because it binds the session that is behaving best: one holding a fix rather than splitting its run is also holding its merge. Deliberately not done at 06:16 — board-ux's run depends on current behaviour being stable for another hour, and changing the harness under a live run is the same mistake pointed the other way.
 
 Beside it, the lesson that goes with 112 and 113: a fix whose join key nothing on today's tracker exercises leaves the live board byte-identical, and that is the expected result rather than a failed fix. Zero of 129 lane owners carry emphasis. Proven by the red test or not proven at all.
 
@@ -984,3 +986,23 @@ Three mechanisms, one shape: a view that was partial for a reason none of us cou
 What the class suggests, and what no one of the three suggests alone: the mitigation is not more care at the moment of asserting. All three sessions were careful. It is that **the boundary of a view is usually invisible from inside it, and the cheapest instrument is a second party with different access** — which is 117 from the other direction. Each of these was caught within minutes, and in every case by somebody else.
 
 Recorded without a mechanism attached, deliberately. Three instances in two hours is enough to name a class and not enough to know what would catch it, and a rule invented here would be a fourth partial view.
+
+### 116c — one line per fact (0.12.7)
+
+`gauntlet-b2`'s third option, handed on by `board-ux-improvements`, which declined to build it for three stated reasons — its loop does not design while it runs, `audit_lanes.py` is this lane's active file, and its own sweep holds `scripts/` anyway.
+
+`visit()` asks git **once per tree** — its docstring has said "One tree, once" since it was written — and then fans that single answer across every lane the tree owns. That is the whole mechanism of the noise: thirteen lines carrying three facts, with the ratio being lines per tree, so it degraded exactly as a session closed more lanes in one stable worktree.
+
+Grouping the rendering per tree is not what 116a was. Nothing about detection changes: the finding list is untouched, the exit code is untouched, every tree that was flagged is still flagged, and every lane still appears by name on its tree's line. The distinguishing evidence is the suite — 116a turned four deliberate tests red because lanes stopped being reported; this turned none, because none stop. The live invariant was checked too: thirteen lane names before, thirteen present after, none dropped.
+
+    before:  13 lines
+    after:   reopen: openemr-arch (arch/frank): not on main — 6 done lanes: …
+             reopen: openemr-research-1 (research/r1): not on main — 2 done lanes: …
+             reopen: openemr-agent-brief (feat/rules-s0-prereq): not on main — 5 done lanes: …
+             lanes=131 trees=10 reopen=3 trees/13 lanes
+
+It answers "how many things are true". A per-lane sha answers "which lane failed to merge". Those are different questions and Zach should still have the second one; this one needed no new written field to answer, which is why it could be built tonight and that cannot.
+
+**It also exposed a latent defect it did not cause.** Six grouped lanes rendered as six ellipses, because `short_name` cuts inside a `**` pair and returns a bare ellipsis — the same defect fixed for the decision queue earlier tonight and never carried across. The old per-lane output had been doing it all along; one ellipsis a line reads as a long item, six on a line reads as a bug. `_unmark` first, and the lanes are legible for the first time.
+
+**And a warning from board-ux that belongs with option (a), not this one:** if a per-lane sha is ever built, a sha that fails validation must resolve to **unknown**, never to clear. Every failure mode of the instrument today is a false reopen — noisy, self-clearing, and visible. A sha-based check introduces a false *clear*, which is silent and permanent. `rows_for` already holds that line for tree attribution, refusing to guess when a lane matches no row; (a) would invert it unless it is built with that rule in front.

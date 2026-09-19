@@ -1136,3 +1136,14 @@ Three names on one ref, and not one session: the tracker writes `impl-1 [4cd339]
 A/B on the live tracker, same minute: `reopen=2` before, `reopen=8` after. Six real lanes marked done whose branches are not on main.
 
 615 units green on the branch. Findings 114, 115.
+
+
+## C13g — one line per fact (0.12.7)
+
+`visit()` asks git once per tree and fans the answer across the tree's lanes, so thirteen reopen lines on the live tracker carried three facts, and the ratio — lines per tree — degraded as sessions closed more lanes in one worktree.
+
+Grouped the rendering. Detection, the finding list and the exit code are all untouched; every tree still flagged, every lane still named. No existing test moved, which is what separates this from the time heuristic in 116a that turned four deliberate tests red. Live invariant checked: thirteen lane names before, thirteen after.
+
+It exposed a latent defect it did not cause — `short_name` cutting inside a `**` pair, so six grouped lanes rendered as six ellipses. `_unmark` first.
+
+620 units green on the branch. Findings 116c, and 114 widened: the hold covers a merge, not just an edit.

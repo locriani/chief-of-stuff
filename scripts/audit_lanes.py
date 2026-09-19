@@ -334,6 +334,36 @@ def _state(worktree: Path) -> tuple[str, str]:
     return branch, "; ".join(reasons)
 
 
+def group_reopens(reopens: list[Reopen]) -> list[str]:
+    """One line per fact, not per lane. Finding 116(c).
+
+    `visit()` asks git once per tree — "One tree, once" — and then fans that single answer across
+    every lane the tree owns, so a session that closes six lanes in one worktree and holds its merges
+    to a cadence produces six identical lines. Thirteen lines carried three facts on the live tracker
+    at 06:46, and the ratio is lines per tree, so it degraded as sessions worked well in a stable
+    place.
+
+    This changes the rendering and nothing else: the finding list is untouched, the exit code is
+    untouched, and every lane still appears by name on the line for its tree. It answers "how many
+    things are true", where a per-lane sha would answer "which lane failed to merge" — different
+    questions, and this one needs no new written field to answer.
+    """
+    order: list[tuple[str, str]] = []
+    lanes: dict[tuple[str, str], list[str]] = {}
+    for r in reopens:
+        key = (r.worktree, r.why)
+        if key not in lanes:
+            order.append(key)
+            lanes[key] = []
+        lanes[key].append(short_name(_unmark(r.lane)))
+    out = []
+    for worktree, why in order:
+        names = lanes[(worktree, why)]
+        head = f"reopen: {worktree}: {why} — {len(names)} done lane{'' if len(names) == 1 else 's'}"
+        out.append(f"{head}: {', '.join(names)}")
+    return out
+
+
 def _push_gap(worktree: Path) -> str:
     """Local main against origin/main, and the commit main is at.
 
@@ -515,15 +545,17 @@ def audit(root: Path, day: str) -> Report:
     if order:
         # One clone behind every worktree; the gap is a property of the repo, not the tree.
         report.lines.append(_push_gap(order[0]))
-    report.lines.extend(str(r) for r in report.reopen)
+    report.lines.extend(group_reopens(report.reopen))
     report.lines.extend(str(o) for o in report.orphans)
     report.lines.extend(str(s) for s in report.stopped)
     faults, queue_lines, queued = queue_faults(tracker_text)
     report.queue.extend(faults)
     report.lines.extend(queue_lines)
     report.lines.extend(str(q) for q in report.queue)
+    facts = len({(r.worktree, r.why) for r in report.reopen})
+    reopen = f"{facts} tree{'' if facts == 1 else 's'}/{len(report.reopen)} lane{'' if len(report.reopen) == 1 else 's'}" if report.reopen else "0"
     report.lines.append(
-        f"lanes={len(lanes)} trees={len(seen)} reopen={len(report.reopen)} orphaned={len(report.orphans)} "
+        f"lanes={len(lanes)} trees={len(seen)} reopen={reopen} orphaned={len(report.orphans)} "
         f"stopped={len(report.stopped)}" + (f" queued={queued}" if queue_lines or faults or queued else ""))
     return report
 
