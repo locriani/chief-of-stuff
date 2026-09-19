@@ -1157,27 +1157,35 @@ def main(argv: list[str]) -> int:
         return 2
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     harness_error = any_fail = False
+    tally = {"green": 0, "red": 0, "unmeasured": 0}
     for case in cases:
         case_pass = True
+        unmeasured = False
         for n in range(1, args.runs + 1):
             out = EVALS / "results" / stamp / case.name / args.arm / str(n)
             results, error, meta = run_one(case, args.arm, args.model, out)
             print(f"\n{case.name}  arm={args.arm}  model={args.model}  run={n}  {meta}")
             if error:
-                harness_error = True
-                case_pass = False
+                harness_error = unmeasured = True
                 print(f"  HARNESS ERROR  {error}")
                 continue
             for name, passed, why in results:
                 print(f"  {'PASS' if passed else 'FAIL'}  {name}  — {why}")
                 case_pass &= passed
-        if args.arm == "baseline":
-            verdict = "NON-DISCRIMINATING (baseline passes)" if case_pass else "RED"
+        # A case that never ran is not a case that failed. One network outage killed fourteen of the
+        # fifty-four in the 0.9.0 sweep — no grader ran in any of them — and the log said RED for all
+        # fourteen, which reads as fourteen regressions to look for.
+        if unmeasured:
+            verdict, key = "UNMEASURED (no grader ran)", "unmeasured"
+        elif args.arm == "baseline":
+            verdict, key = ("NON-DISCRIMINATING (baseline passes)", "green") if case_pass else ("RED", "red")
         else:
-            verdict = "GREEN" if case_pass else "RED"
+            verdict, key = ("GREEN", "green") if case_pass else ("RED", "red")
             any_fail |= not case_pass
+        tally[key] += 1
         print(f"=> {case.name}: {verdict}")
-    print(f"\nresults: {EVALS / 'results' / stamp}")
+    print(f"\n{len(cases)} case(s): {tally['green']} green, {tally['red']} red, {tally['unmeasured']} unmeasured")
+    print(f"results: {EVALS / 'results' / stamp}")
     if harness_error:
         return 2
     return 1 if any_fail else 0

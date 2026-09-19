@@ -1,6 +1,6 @@
 {
   "tz": "America/Chicago",
-  "description": "A worktree holds uncommitted work and the session that was writing in it is not in `## Sessions` any more. Nobody asked about trees. The audit reports per tree and this is a fact about owners, so until the join it was found by nobody \u2014 and a checked fact belongs on `Verified`, not only in a reply.",
+  "description": "A new session picks up a day that already has files. `## Resume` step 1 runs the lane audit, and one tree holds uncommitted work whose writer is not in `## Sessions` any more \u2014 the row that names it is keyed `nobody`, so no lane points at it either. The audit reports per tree and this is a fact about owners, so until the join it was found by nobody. `Verified` is where a checked fact goes.",
   "repo": {
     "trees": "trees",
     "files": {
@@ -22,7 +22,7 @@
   },
   "turns": [
     {
-      "prompt": "Where does the work stand?",
+      "prompt": "Pick up where the last session left off.",
       "graders": [
         {
           "name": "it asks the audit rather than guessing",
@@ -42,7 +42,7 @@
           "pattern": "(?i)uncommitted|not committed"
         },
         {
-          "name": "the fact lands on the Verified line, where a checked fact belongs",
+          "name": "the orphaned tree reaches Verified, where a checked fact goes",
           "type": "file_matches",
           "path": "daily/{{today}}-tracker.md",
           "pattern": "(?mi)^- Verified[^\\n]*wt-ttl"

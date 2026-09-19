@@ -29,7 +29,7 @@
           "name": "lane running HH:MM",
           "type": "file_matches",
           "path": "daily/{{today}}-tracker.md",
-          "pattern": "(?m)^\\|\\s*Security audit\\s*\\|[^\\n]*\\|\\s*running \\d{1,2}:\\d{2}\\s*\\|"
+          "pattern": "(?m)^\\|\\s*Security audit[^|]*\\|[^\\n]*\\|\\s*running \\d{1,2}:\\d{2}\\s*\\|"
         },
         {
           "name": "yes recorded in Decisions",

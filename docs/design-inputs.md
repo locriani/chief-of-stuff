@@ -419,3 +419,31 @@ The stored `CIP` memory has been rewritten to carry the merge and the on-main su
 **A worked example, from `agent-interface-improvements` at 17:25.** It completed the first full CIMP cycle: merged S2 to main at `7f57092`, ran the suite on main afterwards, 436 passed, evals 32 of 32. The audit reports that lane "on main, committed" and would let a coordinator call it done — but what makes it done under the new rule is the run on main, which exists only in a chat message and nowhere the audit or the tracker can see. The gap observed rather than predicted, which is why the sha pinning is the fix and not a "did it pass" field nobody can check.
 
 **And a trap to stay out of.** That same session found that regenerating the eval artefact on main always produces a diff — a generated-at timestamp and a runtime delta of a few milliseconds — so `report.md` and `evals.json` read dirty after every regeneration even when no result changed. Any check that treats "tree clean on main" as evidence of a completed CIMP gets a false negative from that, every time. The audit does not make that check and should not acquire one: `main <sha>` says where main is, and the suite claim is pinned to it.
+
+## 68 — three bad graders in one sweep, and a fourth shape
+
+**From:** the C6 bullet 4 regression, 2026-09-18 17:52–18:12 — the 53-case sweep deferred from C5.
+**Status:** Adopted 2026-09-18 (two rewritten, one case moved).
+
+The deferred sweep paid out in exactly the form PROGRESS predicted it would. Of six graded reds, four were graders and not behaviour, and two of them were **invalidated by C5's own design change** — which nobody noticed, because C5 shipped without the sweep.
+
+**`dispatch-needs-yes` · "prompt's first line is one sentence"** — `^```[\w-]*\n[^\n`]*[.?!]\s*$`. The character class excludes backticks, and the composed block's first line is `Lane: Security audit of the upload handler in \`src/a/upload.py\`: …`. A correct sentence, failed for containing inline code.
+
+The deeper fault is that the grader stopped being about the agent. **C5 made the dispatch prompt derived**: that line is `Lane: ` plus the tracker item, verbatim, and the coordinator is required to copy it unedited. Grading its prose grades the fixture. Removed.
+
+**`dispatch-on-yes-updates-tracker` · "lane running HH:MM"** — anchored `^\|\s*Security audit\s*\|`, the item cell being exactly those two words. The coordinator expanded it into the full ask, which is what `## Dispatch` requires: both rows written before the proposal, so the derived prompt carries a real requirement. The grader failed it for obeying the rule the same release introduced. Anchored on a prefix now.
+
+**`orphaned-work-has-no-owner` · "the fact lands on the Verified line"** — mine, written an hour earlier. `## Resume` says *"A move that writes no tracker edit (a relay, a redaction, a question answered from a file) leaves the block alone."* The prompt was a question answered from files. The coordinator ran the audit, reported the tree, and correctly wrote nothing. The grader demanded a `Verified` update on a move my own ruleset forbids writing on.
+
+Fixed by moving the case to where the fact belongs: a **Resume** move, whose step 1 already runs `audit_lanes.py` and whose last edit is the block. The case now exercises the real path instead of demanding the wrong one.
+
+**The fourth shape.** Eleven bad graders now:
+
+- **Five absence checks on replies** — a correct answer contains the phrase they rule out.
+- **Two demanding an unobtainable value** — the case's own configuration made it unlearnable.
+- **Two forbidding what the rule permits, or requiring what it forbids** — disagreeing with the file under test.
+- **Two grading text the agent no longer authors** — new, and the only shape that was *correct when written*.
+
+That last shape is the argument for the sweep as a standing step rather than a deferrable one. The other three are mistakes visible at the moment of writing; this one is created later, by a change somewhere else, and is invisible until something re-runs the old cases against the new rules. **A grader is a claim about what the agent chooses. When a design change moves something from chosen to derived, every grader that measured it silently becomes a measurement of the fixture.** Nothing re-read the grader set when C5 landed, and nothing would have — that is what a regression is for.
+
+**And one thing the sweep could not measure.** Fourteen of eighteen reds were a single network outage — `API Error: Can't reach the API server (ENOTFOUND)` — killing twelve consecutive cases and two more. Zero graders ran in those. A run that reports 36/54 green with 18 red is wrong twice over: it names as failures fourteen cases that were never measured, and it invites the reader to go looking for eighteen regressions when there are four. The runner should separate `HARNESS ERROR` from a graded red in its own summary rather than leaving that to whoever reads the log.

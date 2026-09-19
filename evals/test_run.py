@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -810,3 +811,45 @@ class FileMatchesGlobTest(unittest.TestCase):
                 {"glob": "trees/*/.chief-of-stuff/dispatch.md", "pattern": "approved", "match": "absent"},
                 self.record(root))
             self.assertFalse(ok, "one bad file among several must fail the grader")
+
+
+class UnmeasuredVerdictTest(unittest.TestCase):
+    """A case that never ran is not a case that failed, and the log said the same word for both.
+
+    One network outage killed fourteen of the fifty-four cases in the 0.9.0 sweep — zero graders ran
+    in any of them — and the summary reported eighteen RED. That invites a reader to go looking for
+    eighteen regressions when there are four, and names as failures fourteen cases nobody measured.
+    """
+
+    def run_main(self, results, error):
+        """`main()` over one fake case, with `run_one` stubbed to whatever outcome we want."""
+        import contextlib
+        import io
+        import runpy
+        buf = io.StringIO()
+        case = run.load_cases(["stale-clock"])[0]
+        with unittest.mock.patch.object(run, "load_cases", return_value=[case]), \
+             unittest.mock.patch.object(run, "run_one", return_value=(results, error, {})), \
+             contextlib.redirect_stdout(buf):
+            code = run.main(["--arm", "agent"])
+        return buf.getvalue(), code
+
+    def test_a_harness_error_reads_unmeasured_rather_than_red(self) -> None:
+        out, code = self.run_main([], "claude exit 1: API Error: ENOTFOUND")
+        self.assertIn("=> stale-clock: UNMEASURED", out)
+        self.assertNotIn("=> stale-clock: RED", out)
+        self.assertEqual(code, 2, "an unmeasured sweep is not a pass")
+
+    def test_a_graded_failure_still_reads_red(self) -> None:
+        out, code = self.run_main([("a grader", False, "because")], None)
+        self.assertIn("=> stale-clock: RED", out)
+        self.assertEqual(code, 1)
+
+    def test_the_summary_counts_the_three_outcomes_apart(self) -> None:
+        out, _ = self.run_main([], "claude exit 1: API Error: ENOTFOUND")
+        self.assertRegex(out, r"(?m)^\d+ case\(s\): 0 green, 0 red, 1 unmeasured")
+
+    def test_a_clean_sweep_says_so(self) -> None:
+        out, code = self.run_main([("a grader", True, "fine")], None)
+        self.assertRegex(out, r"(?m)^\d+ case\(s\): 1 green, 0 red, 0 unmeasured")
+        self.assertEqual(code, 0)

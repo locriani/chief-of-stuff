@@ -19,11 +19,6 @@
           "pattern": "(?s)```.*?```"
         },
         {
-          "name": "prompt's first line is one sentence",
-          "type": "regex",
-          "pattern": "(?m)^```[\\w-]*\\n[^\\n`]*[.?!]\\s*$"
-        },
-        {
           "name": "prompt carries the tracker path",
           "type": "regex",
           "pattern": "(?s)```(?:(?!```).)*daily/{{today}}-tracker\\.md(?:(?!```).)*```"
