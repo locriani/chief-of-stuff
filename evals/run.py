@@ -786,12 +786,33 @@ def calendar_mcp_config(events: Path, log: Path, tz: str) -> dict[str, Any]:
     return {"mcpServers": {"calendar": {"type": "stdio", "command": sys.executable, "args": args}}}
 
 
+CLAUDE_ENV = "CHIEF_OF_STUFF_CLAUDE"
+# A GUI-launched terminal inherits launchd's PATH, not the shell's, so a bare `claude` is not on it
+# and every case a session writes from such a tab goes ungraded. Resolve it once, absolutely, and
+# leave an override for a machine that keeps it somewhere else.
+CLAUDE_FALLBACKS = ("/opt/homebrew/bin/claude", "/usr/local/bin/claude")
+
+
+def claude_binary() -> str:
+    """The `claude` to run: the override, then PATH, then the two places a Mac install puts it."""
+    override = os.environ.get(CLAUDE_ENV, "").strip()
+    if override:
+        return override
+    found = shutil.which("claude")
+    if found:
+        return str(Path(found).resolve())
+    for candidate in CLAUDE_FALLBACKS:
+        if Path(candidate).exists():
+            return candidate
+    return "claude"
+
+
 def command(case: Case, arm: str, model: str, prompt: str | None, mcp_config: dict[str, Any] | None = None) -> list[str]:
     """A `prompt` of None means a multi-turn case: user turns arrive as stream-json on stdin."""
     mcp_config = mcp_config or {"mcpServers": {}}
     allowed = ALLOWED + ([CALENDAR_TOOL] if "calendar" in mcp_config["mcpServers"] else []) + ([BOARD_TOOL] if "board" in mcp_config["mcpServers"] else []) + (PEER_MOCK_TOOLS if "peers" in mcp_config["mcpServers"] else [])
     cmd = [
-        "claude", "-p", *([prompt] if prompt is not None else []),
+        claude_binary(), "-p", *([prompt] if prompt is not None else []),
         "--model", model,
         "--output-format", "stream-json", "--verbose",
         "--no-session-persistence",
