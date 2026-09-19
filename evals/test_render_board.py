@@ -1170,6 +1170,57 @@ class SectionOrderTest(unittest.TestCase):
             self.body.index(m) for m in ("Due next", "Blocked", "<h2>Lanes", 'class="reqs"', "<h2>Sessions")))
 
 
+class PhoneTest(unittest.TestCase):
+    """Stage 6: the page at 390px, which is where it is read in the morning.
+
+    Laptop first was the decision, so nothing here changes the wide layout. What it fixes is the
+    three places that cannot survive a 390px viewport: the due row's fixed owner and time columns,
+    the strip's percentage name column (36% of 390 is 140px of name against 218px of axis), and the
+    six-column lane table, which is wider than the screen whatever the CSS says.
+
+    A table is allowed to scroll sideways inside its own box. The page body is not — a board that
+    slides under the thumb is the failure this stage exists to prevent.
+    """
+
+    def setUp(self) -> None:
+        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.html = rb.render(TRACKER, BODY_LOG, self.cfg, NOW)
+        self.css = self.html.split("<style>")[1].split("</style>")[0]
+        at = self.css.index("@media (max-width:420px)")
+        self.phone = self.css[at:]
+
+    def test_there_is_a_phone_block_at_all(self) -> None:
+        self.assertRegex(self.css, r"@media \(max-width:420px\)")
+
+    def test_the_due_row_stacks_instead_of_holding_five_columns(self) -> None:
+        self.assertRegex(self.phone, r"\.due-row\{[^}]*flex-wrap:wrap")
+        self.assertRegex(self.phone, r"\.due-row \.what\{[^}]*flex:1 1 100%")
+
+    def test_the_strip_name_column_is_pixels_not_a_third_of_the_screen(self) -> None:
+        self.assertRegex(self.phone, r"\.strip\{--name-w:9[0-9]px\}")
+
+    def test_the_lane_table_scrolls_inside_its_own_box(self) -> None:
+        self.assertIn('<div class="scroll">', self.html.split("<h2>Lanes", 1)[1])
+        self.assertRegex(self.css, r"\.scroll\{[^}]*overflow-x:auto")
+
+    def test_nothing_forces_the_body_wider_than_a_phone(self) -> None:
+        """A min-width wider than the screen is the usual way a page starts sliding sideways."""
+        for m in re.finditer(r"min-width:(\d+)px", self.css):
+            self.assertLessEqual(int(m.group(1)), 390, m.group(0))
+
+    def test_the_last_axis_tick_is_pulled_inside_the_axis(self) -> None:
+        """Only the render caught this. Every tick is centred on its time with translateX(-50%), so
+        the one at left:100% hangs half its label past the right edge — 1px of horizontal scroll on
+        a 390px screen, and the whole page slides under the thumb. The last tick right-aligns."""
+        self.assertRegex(self.phone, r"\.axis \.tick:last-child\{transform:translateX\(-100%\)\}")
+
+    def test_the_wide_layout_is_untouched(self) -> None:
+        """Laptop first: every phone rule lives inside a max-width query and none outside one."""
+        outside = re.sub(r"@media[^{]*\{(?:[^{}]|\{[^{}]*\})*\}", "", self.css)
+        self.assertNotIn("--name-w:96px", outside)
+        self.assertNotIn("flex:1 1 100%", outside)
+
+
 class GridlinesTest(unittest.TestCase):
     def setUp(self) -> None:
         self.cfg = rb.parse_coordinator(CLAUDE_MD_FAR, today=NOW2.date())

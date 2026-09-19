@@ -1659,6 +1659,7 @@ tr.group th{{background:color-mix(in srgb,var(--brass) 18%,transparent);color:va
 .load-cell .col{{display:flex;flex-direction:column-reverse;height:48px;background:var(--line);border-radius:3px 3px 0 0;overflow:hidden}}
 .fill{{display:block;width:100%}} .fill.due{{background:var(--now)}} .fill.derived{{background:var(--est)}} .fill.over{{background:var(--dl)}}
 .key.fill{{display:inline-block;width:18px;height:10px;border-radius:2px}} .key.fill.free{{background:var(--line)}}
+.scroll{{overflow-x:auto;max-width:100%}}
 .muted{{color:var(--muted)}} .warn{{color:var(--dl);font-size:12px}}
 .strip{{position:relative;margin:8px 0 4px;--name-w:30%}} .axis{{position:relative;height:18px;margin-left:var(--name-w);font-size:11px;color:var(--muted)}} .tick{{position:absolute;transform:translateX(-50%);white-space:nowrap}}
 .rows{{position:relative}} .row{{display:flex;align-items:center;height:26px}} .name{{width:var(--name-w);flex:none;padding-right:8px;box-sizing:border-box;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}} .track{{position:relative;flex:1;height:18px;border-left:1px solid var(--line)}}
@@ -1720,6 +1721,21 @@ details summary{{cursor:pointer}} details[open] summary{{margin-bottom:4px}}
 .resume details.long>summary{{color:var(--fg)}} .resume details.long[open]>summary{{color:var(--muted)}}
 @media (max-width:520px){{.resume{{grid-template-columns:1fr;gap:0}} .resume dt{{padding-top:4px}}}}
 @media (max-width:520px){{.strip{{--name-w:36%}}}}
+@media (max-width:420px){{
+body{{padding:12px 12px 36px}}
+.strip{{--name-w:96px}}
+.cards,.cards.due{{grid-template-columns:1fr}}
+.due-row{{flex-wrap:wrap;gap:0 8px;align-items:flex-start;padding:5px 0;border-top:1px dotted var(--line)}}
+.due-row .at{{width:44px}}
+.due-row .what{{flex:1 1 100%;white-space:normal;order:1;min-width:0}}
+.due-row .who,.due-row .state,.due-row .size{{order:2;width:auto;flex:0 0 auto;margin-left:52px}}
+.due-row .who{{margin-left:52px}} .due-row .state,.due-row .size{{margin-left:0}}
+.due-row .who::after,.due-row .state::after{{content:" ·";color:var(--muted)}}
+.load{{height:58px}} .load-cell .col{{height:40px}} .load-cell .at{{font-size:9.5px}}
+.lanes>label{{font-size:12px;padding:3px 9px}}
+.row.body .name,.strip .name{{font-size:11px}}
+.axis .tick:last-child{{transform:translateX(-100%)}}
+}}
 </style>
 <div class="board" data-rendered-at="{_iso(now)}" data-tz="{_esc(cfg.tz)}" data-deadline="{_iso(nearest.at)}" data-deadline-name="{_esc(nearest.name)}">
 <div class="header">{logo_tag()}<div class="head-text">
@@ -1744,14 +1760,14 @@ details summary{{cursor:pointer}} details[open] summary{{margin-bottom:4px}}
 <h2>Lanes</h2>
 <div class="lanes">
 {chips}
-<table><tr><th>item</th><th>owner</th><th>state</th><th>since</th><th>due</th><th>size</th></tr>
+<div class="scroll"><table><tr><th>item</th><th>owner</th><th>state</th><th>since</th><th>due</th><th>size</th></tr>
 {group_head("running", running)}
 {lane_rows(running)}{orphan_group}
 {group_head("open · waiting", waiting)}
 {lane_rows(waiting)}
 {group_head("done", done)}
 {lane_rows(done)}
-</table>
+</table></div>
 </div>
 {session_graph(tracker.sessions, cfg, now, gone_sessions(tracker.lanes, tracker.sessions))}
 </div>
