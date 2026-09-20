@@ -158,8 +158,12 @@ def _owns(text: str, item: str, relative: str) -> str:
     accepted too.
     """
     # Three spellings, all writable by hand: the item entire, the name before its first colon, and
-    # the board's own short name. `short_name` ellipsises anything long and ignores a head under
-    # twelve characters, so on its own it can name a key nobody could type.
+    # the board's own short name. `short_name` no longer ellipsises -- that cut moved to `clip_name`
+    # when the lane cell stopped truncating -- so it now returns a structural split or the name
+    # whole, and it can no longer name a key nobody could type. It CAN return the item unchanged,
+    # in which case these are two spellings and not three: a head under twelve characters is left
+    # alone, so `Ready probe: **...**` is addressable as the item or as `Ready probe`, and by
+    # nothing shorter. That is the spelling to write in the File ownership context cell.
     head = item.split(": ", 1)[0].strip()
     keys = {item.strip(), head, short_name(item).strip()} - {""}
     for line in _section(text, "## File ownership"):
