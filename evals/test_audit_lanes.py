@@ -897,3 +897,65 @@ class ReopenGroupsByTreeTest(unittest.TestCase):
         line = [l for l in al.audit(root, "2026-09-17").lines if l.startswith("reopen:")][0]
         self.assertIn("A lane whose item is bold", line)
         self.assertNotIn("**", line)
+
+
+class ShaClosesTheLaneTest(unittest.TestCase):
+    """Finding 116(a). `reopen` asks whether the owner's *tree* is on main; `done` claims that *this
+    lane's change* reached main. A session working continuously in one worktree always has unmerged
+    work, so every lane it ever closed reopened — six of arch's did on the live tracker, and every
+    one of their changes was already on main.
+
+    A `done` state may name the commit that carried it: `done 21:16–22:05 54b7eb3`. Only positive
+    proof clears a lane. Absent, malformed, unknown to git, or git itself failing all fall back to
+    exactly today's behaviour, which is noisy, self-clearing and visible — the property 116a's time
+    heuristic did not have, and why it was discarded after this suite falsified it.
+    """
+
+    OWNS = "| robin | worktree wt-unmerged (feat/open) |"
+    DIRTY = "| sam | worktree wt-dirty (feat/dirty) |"
+
+    def tracker(self, state: str, ownership: str | None = None, sessions: str = "", owner: str = "robin"):
+        tmp, root = workspace(f"| Landed work | {owner} | @STATE@ | 09:00 |  | Checklist: Landed work |",
+                              ownership or self.OWNS, sessions)
+        self.addCleanup(tmp.cleanup)
+        repo = root / "repo"
+        state = state.replace("@main@", git("rev-parse", "--short", "main", cwd=repo).strip())
+        state = state.replace("@open@", git("rev-parse", "--short", "feat/open", cwd=repo).strip())
+        p = root / "daily" / "2026-09-17-tracker.md"
+        p.write_text(p.read_text().replace("@STATE@", state))
+        return al.audit(root, "2026-09-17")
+
+    def test_a_sha_on_main_closes_the_lane_though_its_tree_is_not(self) -> None:
+        """The whole point: the tree's other unmerged work is not evidence about this lane."""
+        report = self.tracker("done 10:00 @main@")
+        self.assertEqual(report.reopen, [], report.lines)
+
+    def test_a_sha_not_on_main_reopens_and_the_line_names_it(self) -> None:
+        report = self.tracker("done 10:00 @open@")
+        self.assertEqual(len(report.reopen), 1, report.lines)
+        self.assertIn("is not on main", report.reopen[0].why)
+
+    def test_a_lane_with_no_sha_reopens_exactly_as_before(self) -> None:
+        """The regression guard against 116a: no sha is no evidence, and no evidence clears nothing."""
+        report = self.tracker("done 10:00")
+        self.assertEqual(len(report.reopen), 1, report.lines)
+        self.assertIn("not on main", report.reopen[0].why)
+
+    def test_a_malformed_sha_falls_back_and_says_so(self) -> None:
+        report = self.tracker("done 10:00 not-a-sha")
+        self.assertEqual(len(report.reopen), 1, report.lines)
+        self.assertTrue(any("not-a-sha" in l for l in report.lines), report.lines)
+
+    def test_a_sha_no_repo_knows_falls_back_and_says_so(self) -> None:
+        """Stale evidence is not proof. A sha nothing can resolve must never clear a lane."""
+        report = self.tracker("done 10:00 deadbee")
+        self.assertEqual(len(report.reopen), 1, report.lines)
+        self.assertTrue(any("deadbee" in l for l in report.lines), report.lines)
+
+    def test_a_closed_lane_is_still_checked_for_orphaned_work(self) -> None:
+        """This rule touches `reopen` and nothing else."""
+        # `sam`, not the fixture's user: the user is exempt from the orphan join by design.
+        report = self.tracker("done 10:00 @main@", ownership=self.DIRTY,
+                              sessions=session_row("kim"), owner="sam")
+        self.assertEqual(report.reopen, [], report.lines)
+        self.assertEqual(len(report.orphans), 1, report.lines)

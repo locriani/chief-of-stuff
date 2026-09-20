@@ -25,7 +25,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from render_board import BULLET, ConfigError, _cells, _is_separator, _section, _unmark, _unquote, clip_name, parse_coordinator, parse_tracker  # noqa: E402
+from render_board import BULLET, HHMM, RAN, ConfigError, _cells, _is_separator, _section, _unmark, _unquote, clip_name, parse_coordinator, parse_tracker  # noqa: E402
 from dispatch_prompt import PROMPT_DIR, STOP_FILE  # noqa: E402
 
 # The branch is written in the parenthetical right after the tree name — `worktree wt-x (feat/y)` —
@@ -40,6 +40,10 @@ REF = re.compile(r"\s*\[[0-9a-f]{4,}\]\s*$")
 # The same ref, anywhere in the cell rather than at the end of it: `coordinator (`gauntlet-b2`
 # [028827])` carries it inside the parenthetical, and that cell is a context like any other.
 ANY_REF = re.compile(r"\[([0-9a-f]{4,})\]")
+# The commit a `done` state may name. Git's own shape, not a guess: abbreviated to seven or written
+# in full, and nothing else is read as one.
+SHA = re.compile(r"^[0-9a-f]{7,40}$")
+LANDED, NOT_LANDED, UNKNOWN_SHA = "landed", "not-landed", "unknown"
 PAREN = re.compile(r"\((.*?)\)")
 TOKEN = re.compile(r"[A-Za-z0-9]+")
 # Words that say nothing about which lane a row is about.
@@ -364,6 +368,49 @@ def group_reopens(reopens: list[Reopen]) -> list[str]:
     return out
 
 
+def lane_sha(state: str) -> str:
+    """The token a `done` state carries beyond its clock: `done 21:16\u201322:05 54b7eb3` \u2192 `54b7eb3`.
+
+    Returned sha or not — whether it is a commit id is `landed`'s question, because a lane that wrote
+    something unreadable there has still tried to cite evidence and the difference between that and
+    citing none is worth a line.
+    """
+    parts = state.split()
+    if not parts or parts[0].lower() != DONE:
+        return ""
+    rest = [p for p in parts[1:] if not HHMM.match(p) and not RAN.match(p)]
+    return rest[0] if rest else ""
+
+
+def landed(sha: str, worktree: Path) -> tuple[str, str]:
+    """Did the change this lane claimed actually reach main? Finding 116(a). Returns a verdict and,
+    where the citation itself is the problem, the complaint to print.
+
+    Three-valued, and only `LANDED` may clear a lane. `reopen` asks whether the owner's *tree* is on
+    main and `done` claims that *this lane's change* did; a session working continuously in one
+    worktree always has unmerged work, so every lane it ever closed reopened — six of arch's did on
+    the live tracker, all six already on main. Asking about the named commit is asking the question
+    the state actually makes.
+
+    Every other outcome is `UNKNOWN_SHA`, which means today's behaviour exactly: the tree decides,
+    and a lane reopens if the tree gives a reason. No sha, an unreadable one, one no repository can
+    resolve, git failing or timing out \u2014 none of them is proof, and none of them clears anything. That
+    is the whole safety argument. The instrument's failures today are false *reopens*: noisy,
+    self-clearing, visible. A false *clear* is silent and permanent, so it is reachable only from a
+    `merge-base` that answered yes.
+
+    `main`, never `HEAD` \u2014 finding 109: this runs inside a worktree whose HEAD is its own branch.
+    """
+    if not sha:
+        return UNKNOWN_SHA, ""
+    if not SHA.match(sha.lower()):
+        return UNKNOWN_SHA, f"{sha!r} is not a commit id"
+    if git(["cat-file", "-e", f"{sha}^{{commit}}"], worktree)[0] != 0:
+        return UNKNOWN_SHA, f"no commit {sha} here, so the citation cannot be checked"
+    code, _ = git(["merge-base", "--is-ancestor", sha, "main"], worktree)
+    return (LANDED if code == 0 else NOT_LANDED), ""
+
+
 def _push_gap(worktree: Path) -> str:
     """Local main against origin/main, and the commit main is at.
 
@@ -490,6 +537,7 @@ def audit(root: Path, day: str) -> Report:
     order: list[Path] = []
     refused: set[str] = set()
     noted: set[str] = set()
+    sha_said: set[str] = set()
     orphaned: set[str] = set()
     stopped_at: set[str] = set()
     gone: dict[str, str] = {}
@@ -509,8 +557,16 @@ def audit(root: Path, day: str) -> Report:
             seen.add(path)
             order.append(path)
             report.lines.append(f"{name} ({branch}): {why or 'on main, committed'}")
-        if lane is not None and lane.kind == DONE and why:
-            report.reopen.append(Reopen(lane.item, lane.owner, f"{name} ({branch})", why))
+        if lane is not None and lane.kind == DONE:
+            sha = lane_sha(lane.state)
+            verdict, complaint = landed(sha, path)
+            if complaint and complaint not in sha_said:
+                sha_said.add(complaint)
+                report.lines.append(f"sha: {clip_name(_unmark(lane.item))} \u2014 {complaint}; read as it was before")
+            if verdict == NOT_LANDED:
+                report.reopen.append(Reopen(lane.item, lane.owner, f"{name} ({branch})", f"its sha {sha} is not on main"))
+            elif verdict == UNKNOWN_SHA and why:
+                report.reopen.append(Reopen(lane.item, lane.owner, f"{name} ({branch})", why))
         # Finding 47: the audit reports per tree, and this is a fact about owners. Only uncommitted
         # work counts — an unmerged branch is recoverable by name, a dirty tree nobody is writing in
         # is not.
