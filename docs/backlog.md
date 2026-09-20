@@ -70,3 +70,25 @@ backlog: 0 open, 1 closed
 ```
 
 Issue #1 stays closed on the project rather than being deleted. It is the record that the client works.
+
+## Migrating what is still live
+
+`scripts/migrate_backlog.py`. Two steps, and a human between them.
+
+```
+python3 migrate_backlog.py --tracker <tracker.md> --report <file.md>     # proposes; creates nothing
+…Zach edits the disposition column…
+python3 migrate_backlog.py --tracker <tracker.md> --apply <file.md> --commit
+```
+
+**Nothing here decides.** The coordinator measured the rows' freshness at 04:00 and found several that had closed themselves during the night and at least two that were wrong about their own state. A confident disposition would have carried those into GitLab as written. So every row gets a proposed word and the reason it was proposed, and Zach corrects the column.
+
+Four words: `move` (create it, drop the tracker row), `keep` (it is being worked), `closed` (already finished; the tracker keeps the record), `check` (the row disputes itself).
+
+`check` fires when the state cell says open or waiting while the row's own prose **shouts** a completion — `**FINISHED 00:12**`, `CLEARED 01:05`, `DELIVERED 00:02`. The match is case-sensitive on purpose: matching case-insensitively flagged seventeen rows, most of them for the word "resolved" in an ordinary sentence. It is still deliberately over-inclusive — one of the three it catches on the live tracker turns out to be a row whose *blocker* was cleared, not the row. That is the right trade: `check` costs one human glance, and the alternative is a wrong row in GitLab.
+
+**Two hashes, because the tracker moves while the report is being read.** Each row is keyed by a hash of its own text, so a row edited after the report gets a new key and is skipped rather than migrated as something else — *no disposition is not consent*. And the report records a fingerprint of the whole tracker, so the apply step can say the triage is stale instead of quietly working from it.
+
+The table is read through `render_board`'s splitter, which is mark-aware — a `|` inside a code span is a pipe, not a cell edge (finding 100). Writing a second splitter here would have reintroduced that bug; `short_name` and `clip_name` are borrowed the same way, and for the same reason.
+
+First run on the live tracker, 165 rows: **82 move, 34 keep, 46 closed, 3 check.**
