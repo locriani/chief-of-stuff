@@ -2918,3 +2918,66 @@ Coordinator: Robin. Board: board-7.
         """`.hist li` is a 3em column and a 1fr column. A clause with no time was given the 3em
         anyway, so it started 56px right of the name it belongs to, indented past nothing."""
         self.assertNotIn("<time></time>", self.html)
+
+
+class StateDisputesProseTest(unittest.TestCase):
+    """3a: a lane whose state cell and whose own prose disagree about whether it is finished.
+
+    Found because four of eleven live lanes carried a stale state at 03:56 (two overstating
+    progress, two understating it) and no reader could see any of them: `LANE_STATE` is used
+    only as a stray-pipe anchor, never as validation, so a lane's state is checked by nothing.
+    A freshness check needs to know about the world. This one does not — the row already
+    carries its own contradiction, and comparing the state cell against `item` is pure text
+    available at render time.
+
+    The vocabulary is `migrate_backlog.DONE_WORDS`, matched case-sensitively on purpose: a
+    shouted DONE is a claim about this row, `resolved by the release` is an ordinary sentence.
+    Case-insensitive matching flagged 17 rows in the migration report, mostly the latter.
+    """
+
+    LANES = (
+        "## Lanes\n\n"
+        "| item | owner | state | since | due | checklist |\n"
+        "|---|---|---|---|---|---|\n"
+    )
+
+    def lane(self, item: str, state: str) -> "rb.Lane":
+        text = f"# T\nBoard: b\n\n{self.LANES}| {item} | Robin | {state} | 09:00 |  | c |\n"
+        return rb.parse_tracker(text).lanes[0]
+
+    def test_an_active_lane_whose_item_shouts_done_is_flagged(self) -> None:
+        w = self.lane("Rules engine split — LANDED on main", "open").warning
+        self.assertIn("open", w)
+        self.assertIn("LANDED", w)
+
+    def test_a_closed_lane_saying_the_same_thing_agrees_with_itself(self) -> None:
+        """`done` plus a shouted DONE is a row in agreement, not a dispute."""
+        self.assertEqual(self.lane("Rules engine split — LANDED", "done 11:15").warning, "")
+
+    def test_ordinary_prose_is_not_a_claim_about_this_row(self) -> None:
+        """The whole reason the match is case-sensitive."""
+        self.assertEqual(self.lane("Blocked until the loader bug is resolved", "open").warning, "")
+
+    def test_every_active_state_is_checked_not_only_open(self) -> None:
+        """Two of the four stale cells said `waiting` and one said `orphaned`."""
+        for state in ("waiting", "orphaned", "running 10:30"):
+            with self.subTest(state=state):
+                self.assertIn("DONE", self.lane("Ship it — DONE", state).warning)
+
+    def test_a_lane_that_does_not_dispute_itself_is_untouched(self) -> None:
+        self.assertEqual(self.lane("Write eval README", "open").warning, "")
+
+    def test_the_dispute_reaches_the_printed_warning_count(self) -> None:
+        """A warning nothing counts is telemetry, not a warning (`:1914`)."""
+        text = (
+            f"# T\nBoard: b\n\n{self.LANES}"
+            "| Ship it — DONE | Robin | open | 09:00 |  | c |\n"
+            "| Write eval README | Robin | open | 09:00 |  | c |\n"
+        )
+        lanes = rb.parse_tracker(text).lanes
+        self.assertEqual(sum(1 for lane in lanes if lane.warning), 1)
+
+    def test_the_vocabulary_does_not_drift_from_the_migration_report(self) -> None:
+        """Two lists of done-words would diverge silently; this is the only thing watching."""
+        import migrate_backlog as mb
+        self.assertEqual(rb.DONE_WORDS.pattern, mb.DONE_WORDS.pattern)

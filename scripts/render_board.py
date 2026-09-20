@@ -171,6 +171,26 @@ LANE_STATE = re.compile(
     r"(?i)^(?:open|waiting|orphaned|running\s+\d{1,2}:\d{2}"
     r"|done(?:\s+\d{1,2}:\d{2}(?:[\u2013-]\d{1,2}:\d{2})?)?(?:\s+[0-9a-f]{7,40})?)$")
 READY = re.compile(r"(?i)\bready for decommissioning\b")
+
+# A lane whose state says it is still going while its own item cell shouts DONE disputes itself.
+# Nothing else reads a lane's state: LANE_STATE anchors a stray pipe (`_anchor`) and validates
+# nothing, so four of eleven live lanes carried a stale state at 03:56 — two overstating progress,
+# two understating it — and no instrument saw one of them. A freshness check would need to know
+# about the world; this needs only the row, which already carries its own contradiction.
+# Case-sensitive, and the same vocabulary `scripts/migrate_backlog.py` uses: a shouted DONE is a
+# claim about this row, `resolved by the release` is an ordinary sentence. Matching case-insensitively
+# flagged 17 rows there, mostly the latter. A false flag is noisy and self-clearing; a false clear
+# is silent and permanent, so this errs loud.
+DONE_WORDS = re.compile(r"\b(?:DONE|FINISHED|LANDED|CLEARED|CANCELLED|SUPERSEDED|RESOLVED|DELIVERED)\b")
+
+
+def _disputes_itself(state: str, item: str) -> str:
+    """A lane's state cell read against the lane's own prose. Empty when the row agrees with itself."""
+    if state.strip().lower().startswith("done"):
+        return ""
+    said = DONE_WORDS.search(item)
+    return f"state {state.strip()!r} but the item says {said.group(0)}" if said else ""
+
 # `Zach — A2, A3, B`: the target, then why. An em dash, an en dash or a hyphen, because three
 # different sessions have written this cell and they did not agree.
 WAITS = re.compile(r"\s+[—–-]\s+|,\s+")
@@ -721,6 +741,9 @@ def parse_tracker(text: str) -> Tracker:
             fixed = _anchor(raw, cols)
             cells = [c.strip() for c in fixed] if fixed else cells
         fields = dict(zip(cols, (cells + [""] * len(cols))[:len(cols)]))
+        dispute = _disputes_itself(fields.get("state", ""), fields.get("item", ""))
+        if dispute:
+            warning = (warning + "; " if warning else "") + dispute
         lanes.append(Lane(**fields, warning=warning))
     sessions: list[Session] = []
     for row in [line for line in _section(text, "## Sessions") if line.strip().startswith("|")][1:]:
