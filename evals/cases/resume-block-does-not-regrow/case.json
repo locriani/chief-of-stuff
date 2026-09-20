@@ -9,10 +9,8 @@
   "graders": [
     {
       "name": "no resume field runs on",
-      "type": "file_matches",
-      "path": "daily/{{today}}-tracker.md",
-      "pattern": "(?m)^- (?:As of|In flight|Next|Waiting on|Re-arm|Verified)\\b[^\\n]{300,}$",
-      "match": "absent"
+      "type": "resume_fields_bounded",
+      "tracker": "daily/{{today}}-tracker.md"
     },
     {
       "name": "the block did not absorb the log",

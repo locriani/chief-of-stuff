@@ -547,6 +547,52 @@ def _lane_names_unchanged(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]
     return True, f"{g['path']}: {len(before)} lane name(s) unchanged"
 
 
+_RENDERER_CACHE: list[Any] = []
+
+
+def _renderer():
+    """The board renderer, imported once. The rule and its enforcer must not drift apart.
+
+    A grader that re-implements `parse_resume` with a regex is a second definition of the field,
+    and two definitions of one number do not argue -- they produce a confident answer each, in
+    different directions, with nothing to force the reconciliation until a value lands in the gap.
+    """
+    import importlib.util
+    if _RENDERER_CACHE:
+        return _RENDERER_CACHE[0]
+    spec = importlib.util.spec_from_file_location("_render_board", BOARD_RENDERER)
+    mod = importlib.util.module_from_spec(spec)
+    # Registered BEFORE exec: the renderer defines dataclasses, and @dataclass resolves its own
+    # module out of sys.modules. Without this the import dies inside dataclasses, not here.
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    _RENDERER_CACHE.append(mod)
+    return mod
+
+
+def _resume_fields_bounded(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
+    """Every `## Resume` field is within the renderer's own cap, measured by the renderer's parse.
+
+    Not `^- (As of|…)\b[^\n]{300,}$`: that counts from the end of the label WORD, so it charges
+    the writer for the `: ` and fails a conforming field at 298, 299 and 300. It is also blind to
+    the eight characters `parse_resume` inserts when the label carries a clock (`- Verified 19:39:`
+    becomes the value `19:39 · …`), which is a real part of what the board measures.
+    """
+    text = _read(rec.fixture_dir, g["tracker"])
+    if text is None:
+        return False, f"{g['tracker']}: not found"
+    r = _renderer()
+    block = r.parse_resume(text)
+    if not block:
+        return True, "no Resume block"
+    cap = int(g.get("cap", r.RESUME_CAP))
+    over = sorted(((k, len(v)) for k, v in block.items() if len(v) > cap), key=lambda kv: -kv[1])
+    if over:
+        return False, "over %d: %s" % (cap, "; ".join(f"{k} {n}" for k, n in over))
+    widest = max(((k, len(v)) for k, v in block.items()), key=lambda kv: kv[1])
+    return True, f"{len(block)} field(s) within {cap}, widest {widest[0]} {widest[1]}"
+
+
 FILE_GRADERS = {
     "file_moved": _file_moved,
     "file_unchanged": _file_unchanged,
@@ -555,6 +601,7 @@ FILE_GRADERS = {
     "lines_preserved": _lines_preserved,
     "lane_names_unchanged": _lane_names_unchanged,
     "checklist_ticks_only": _checklist_ticks_only,
+    "resume_fields_bounded": _resume_fields_bounded,
 }
 
 

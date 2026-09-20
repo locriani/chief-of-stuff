@@ -148,6 +148,49 @@ class ModelGuardTest(unittest.TestCase):
         self.assertIn("model: opus", front)
 
 
+class ResumeFieldsBoundedTest(unittest.TestCase):
+    """The 300-char rule, measured the way the thing that enforces it measures.
+
+    Three cases graded this with `^- (As of|…)\\b[^\\n]{300,}$`, which counts from the end of the
+    LABEL WORD and so swallows the `: ` -- two characters the writer did not write. That is a
+    three-character window (298, 299, 300) where a field obeying the rule exactly is failed by the
+    grader. gauntlet-b2 spent a day trimming real content out of a live block over the same class
+    of error with different constants, and reported it before I found it here.
+
+    The fix is not a better offset. An offset is a second definition wearing the first one's
+    clothes. The grader asks `render_board.parse_resume` what the field is and measures that.
+    """
+
+    def _rec(self, line: str):
+        d = Path(tempfile.mkdtemp())
+        (d / "t.md").write_text("# T\n\n## Resume\n\n" + line + "\n\n## Lanes\n")
+        return run.RunRecord(stream=None, t_start=datetime.now(), t_end=datetime.now(),
+                             tz="America/Chicago", fixture_dir=d)
+
+    def test_a_conforming_field_passes_at_the_boundary(self) -> None:
+        for n in (298, 299, 300):
+            ok, why = run.grade({"type": "resume_fields_bounded", "tracker": "t.md"},
+                                self._rec("- Verified: " + "y" * n))
+            self.assertTrue(ok, f"{n} chars called a breach: {why}")
+
+    def test_an_over_field_fails(self) -> None:
+        ok, why = run.grade({"type": "resume_fields_bounded", "tracker": "t.md"},
+                            self._rec("- Verified: " + "y" * 301))
+        self.assertFalse(ok)
+        self.assertIn("301", why)
+
+    def test_a_clock_label_is_measured_as_the_renderer_assembles_it(self) -> None:
+        """`- Verified 19:39: x` becomes the value `19:39 · x` -- eight characters the writer
+        never typed, and the reason a strip-the-label count reads 8 low on exactly these fields."""
+        ok, why = run.grade({"type": "resume_fields_bounded", "tracker": "t.md"},
+                            self._rec("- Verified 19:39: " + "y" * 295))
+        self.assertFalse(ok, why)
+        self.assertIn("303", why)
+
+    def test_it_is_registered_as_a_file_grader(self) -> None:
+        self.assertIn("resume_fields_bounded", run.GRADER_TYPES)
+
+
 class GoldenSetTest(unittest.TestCase):
     """The opus set. Zach, 2026-09-19: sonnet to iterate, opus on the golden cases only for green.
 

@@ -4,15 +4,13 @@
   "board": {
     "url": "board-known"
   },
-  "description": "A resuming session inherits a `## Resume` block whose `As of` runs to 600 characters and carries three facts the block has no room for: the audit's finding, a pair of ingest measurements, and the two unanswered asks. Every lane already has a short name in the `name` column. The facts have to leave the block, and the cell they must not land in is `name` — the only cell the board draws on a bar and in the lane table.",
+  "description": "A resuming session inherits a `## Resume` block whose `As of` runs to 600 characters and carries three facts the block has no room for: the audit's finding, a pair of ingest measurements, and the two unanswered asks. Every lane already has a short name in the `name` column. The facts have to leave the block, and the cell they must not land in is `name` \u2014 the only cell the board draws on a bar and in the lane table.",
   "prompt": "resume",
   "graders": [
     {
       "name": "no resume field runs on",
-      "type": "file_matches",
-      "path": "daily/{{today}}-tracker.md",
-      "pattern": "(?m)^- (?:As of|In flight|Next|Waiting on|Re-arm|Verified)\\b[^\\n]{300,}$",
-      "match": "absent"
+      "type": "resume_fields_bounded",
+      "tracker": "daily/{{today}}-tracker.md"
     },
     {
       "name": "every lane keeps the name it had",
