@@ -1206,3 +1206,18 @@ Proved live on project 1991, not only against fixtures. Clean slate `0 open, 0 c
 0.14.1 came four minutes later and out of the verification step, not a test: the real config line carries a parenthetical, and `token env <NAME>` had taken everything after `env`. Finding 122 is about how quietly that class of bug fails — a fallback turns a wrong answer into a working one, on this machine only.
 
 716 units green on main. Bullet 3, the migration of what is still live, is next and is the expensive half: the triage, not the moving.
+
+
+## C18 — propose a disposition for every backlog row, decide none (0.15.0)
+
+Bullet 3, and the expensive half of the plan: the triage, not the moving. Zach at 22:52 — migrate only what is still live.
+
+The rows are not trustworthy about themselves. The coordinator measured them at 04:00: several had closed themselves overnight, at least two were wrong about their own state. A confident disposition would have carried those into GitLab as written, so `scripts/migrate_backlog.py` proposes a word and the reason for it, and Zach edits the column. Four words — `move`, `keep`, `closed`, `check`.
+
+`check` is the row disputing itself: the state cell says open or waiting while the prose SHOUTS a completion. Case-sensitive on purpose. Matching case-insensitively flagged seventeen rows, most for the word "resolved" in an ordinary sentence — the pattern was finding English, not finding sessions closing their own work. Still deliberately over-inclusive: of the three it catches on the live tracker, one turns out to be a row whose *blocker* was cleared rather than the row. One glance is cheaper than a wrong row in GitLab, and that asymmetry is the same one finding 116d settles for `reopen` — a false flag is noisy and self-clearing, a false clear is silent and permanent.
+
+Two hashes, because the tracker moves while the report is being read. Each row is keyed by a hash of its own text, so a row edited after the report gets a new key and is skipped rather than migrated as something else — **no disposition is not consent**. The report also fingerprints the whole tracker, so the apply step can say the triage is stale instead of quietly working from it.
+
+The table is read through `render_board`'s mark-aware splitter, and `short_name`/`clip_name` with it. A second splitter would have reintroduced finding 100, where a `|` inside a code span is a pipe — and the `short_name`/`clip_name` pairing is exactly what board-ux split apart in 0.12.9: the clause-boundary name for the title, the hard mark-safe cut for the width. Read-only import of another lane's file, no edit.
+
+734 units green on main. First run on the live tracker, 165 rows: 82 move, 34 keep, 46 closed, 3 check. Nothing created. The report is Zach's to correct.
