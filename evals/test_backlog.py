@@ -7,6 +7,7 @@ the Keychain lookup is injected, because a test that passes only on Zach's lapto
 """
 
 import json
+import os
 import socket
 import sys
 import tempfile
@@ -14,6 +15,8 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import NamedTuple
+from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
@@ -22,16 +25,29 @@ import backlog as bl  # noqa: E402
 TOKEN = "glpat-test-not-a-real-token"
 
 
-class Handler(BaseHTTPRequestHandler):
-    """Serves the response its server was told to serve for (path, state, page), and records the ask."""
+class Ask(NamedTuple):
+    method: str
+    path: str
+    headers: object
+    body: dict
 
-    def do_GET(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler's name)
+
+class Handler(BaseHTTPRequestHandler):
+    """Serves what its server was told to serve for (method, path, state, page), and records the ask."""
+
+    def _handle(self, method: str) -> None:
         parts = urlsplit(self.path)
         query = parse_qs(parts.query)
-        key = (parts.path, query.get("state", [""])[0], query.get("page", ["1"])[0])
+        key = (method, parts.path, query.get("state", [""])[0], query.get("page", ["1"])[0])
+        length = int(self.headers.get("Content-Length") or 0)
+        raw_in = self.rfile.read(length) if length else b""
+        try:
+            sent = json.loads(raw_in) if raw_in else {}
+        except ValueError:
+            sent = {"_raw": raw_in.decode("utf-8", "replace")}
         # The Message itself, not a dict of it: header names are case-insensitive and urllib
         # sends `Private-Token`. A dict lookup would fail a request GitLab accepts.
-        self.server.seen.append((self.path, self.headers))
+        self.server.seen.append(Ask(method, self.path, self.headers, sent))
         status, body, headers = self.server.plan.get(key, (404, '{"message":"404 Not found"}', {}))
         raw = body.encode()
         self.send_response(status)
@@ -41,6 +57,15 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header(name, value)
         self.end_headers()
         self.wfile.write(raw)
+
+    def do_GET(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler's names)
+        self._handle("GET")
+
+    def do_POST(self) -> None:  # noqa: N802
+        self._handle("POST")
+
+    def do_PUT(self) -> None:  # noqa: N802
+        self._handle("PUT")
 
     def log_message(self, *_a) -> None:
         return
@@ -161,7 +186,7 @@ class TokenTest(unittest.TestCase):
 class IssuesTest(unittest.TestCase):
     def test_reads_one_page_and_parses_the_fields(self):
         body = json.dumps([issue(3, "PHQ-9-teen wired dead", labels=["defect"])])
-        server, base = serve({(ISSUES, "opened", "1"): (200, body, {})})
+        server, base = serve({("GET", ISSUES, "opened", "1"): (200, body, {})})
         self.addCleanup(stop, server)
         got = bl.issues(cfg(base), token=TOKEN)
         self.assertEqual(got.error, "")
@@ -171,17 +196,16 @@ class IssuesTest(unittest.TestCase):
         self.assertEqual(one.labels, ("defect",))
 
     def test_sends_the_token_as_a_private_token_header(self):
-        server, base = serve({(ISSUES, "opened", "1"): (200, "[]", {})})
+        server, base = serve({("GET", ISSUES, "opened", "1"): (200, "[]", {})})
         self.addCleanup(stop, server)
         bl.issues(cfg(base), token=TOKEN)
-        _path, headers = server.seen[0]
-        self.assertEqual(headers.get("PRIVATE-TOKEN"), TOKEN)
+        self.assertEqual(server.seen[0].headers.get("PRIVATE-TOKEN"), TOKEN)
 
     def test_follows_x_next_page_to_the_end(self):
         """A page cap that silently truncates would read as a shorter backlog, which is 116(a) again."""
         plan = {
-            (ISSUES, "opened", "1"): (200, json.dumps([issue(1, "one")]), {"X-Next-Page": "2"}),
-            (ISSUES, "opened", "2"): (200, json.dumps([issue(2, "two")]), {"X-Next-Page": ""}),
+            ("GET", ISSUES, "opened", "1"): (200, json.dumps([issue(1, "one")]), {"X-Next-Page": "2"}),
+            ("GET", ISSUES, "opened", "2"): (200, json.dumps([issue(2, "two")]), {"X-Next-Page": ""}),
         }
         server, base = serve(plan)
         self.addCleanup(stop, server)
@@ -197,14 +221,14 @@ class IssuesTest(unittest.TestCase):
         self.assertEqual(server.seen, [])
 
     def test_an_http_error_is_a_value_not_an_exception(self):
-        server, base = serve({(ISSUES, "opened", "1"): (401, '{"message":"401 Unauthorized"}', {})})
+        server, base = serve({("GET", ISSUES, "opened", "1"): (401, '{"message":"401 Unauthorized"}', {})})
         self.addCleanup(stop, server)
         got = bl.issues(cfg(base), token=TOKEN)
         self.assertIn("401", got.error)
         self.assertEqual(got.issues, ())
 
     def test_malformed_json_is_a_value_not_an_exception(self):
-        server, base = serve({(ISSUES, "opened", "1"): (200, "not json", {})})
+        server, base = serve({("GET", ISSUES, "opened", "1"): (200, "not json", {})})
         self.addCleanup(stop, server)
         got = bl.issues(cfg(base), token=TOKEN)
         self.assertTrue(got.error)
@@ -216,17 +240,17 @@ class IssuesTest(unittest.TestCase):
         self.assertEqual(got.issues, ())
 
     def test_labels_narrow_the_ask(self):
-        server, base = serve({(ISSUES, "opened", "1"): (200, "[]", {})})
+        server, base = serve({("GET", ISSUES, "opened", "1"): (200, "[]", {})})
         self.addCleanup(stop, server)
         bl.issues(cfg(base), token=TOKEN, labels=("agent-layer", "defect"))
-        self.assertIn("labels=agent-layer%2Cdefect", server.seen[0][0])
+        self.assertIn("labels=agent-layer%2Cdefect", server.seen[0].path)
 
 
 class CountsTest(unittest.TestCase):
     def test_counts_open_and_closed(self):
         plan = {
-            (ISSUES, "opened", "1"): (200, "[]", {"X-Total": "93"}),
-            (ISSUES, "closed", "1"): (200, "[]", {"X-Total": "7"}),
+            ("GET", ISSUES, "opened", "1"): (200, "[]", {"X-Total": "93"}),
+            ("GET", ISSUES, "closed", "1"): (200, "[]", {"X-Total": "7"}),
         }
         server, base = serve(plan)
         self.addCleanup(stop, server)
@@ -249,6 +273,178 @@ class CountsTest(unittest.TestCase):
         rendered = bl.line(bl.counts(cfg(base), token=""))
         self.assertIn("unknown", rendered)
         self.assertNotIn("0 open", rendered)
+
+
+LABELS = "/api/v4/projects/zachgardner%2Fopenemr/labels"
+
+
+def key(method: str, path: str) -> tuple:
+    """A write carries no `state` or `page`, so its plan key is the defaults the handler reads."""
+    return (method, path, "", "1")
+
+
+def made(iid: int, title: str) -> str:
+    return json.dumps(issue(iid, title))
+
+
+class WriteTest(unittest.TestCase):
+    def test_dry_run_is_the_default_and_touches_nothing(self):
+        """A write is outward-facing. The default has to be the one that cannot do damage."""
+        server, base = serve({})
+        self.addCleanup(stop, server)
+        got = bl.create(cfg(base), "seed data has no cohort", token=TOKEN)
+        self.assertEqual(server.seen, [])
+        self.assertFalse(got.done)
+        self.assertTrue(got.ok)
+        self.assertIn("would create", bl.write_line(got))
+
+    def test_commit_posts_the_issue_and_reads_back_what_gitlab_made(self):
+        plan = {("GET", LABELS, "", "1"): (200, json.dumps([{"name": "defect"}]), {}),
+                key("POST", ISSUES): (201, made(12, "seed data has no cohort"), {})}
+        server, base = serve(plan)
+        self.addCleanup(stop, server)
+        got = bl.create(cfg(base), "seed data has no cohort", body="three rules cannot fire",
+                        labels=("defect",), token=TOKEN, commit=True)
+        self.assertTrue(got.done, got.error)
+        self.assertEqual(got.iid, 12)
+        self.assertIn("/-/issues/12", got.url)
+        sent = server.seen[-1]
+        self.assertEqual(sent.method, "POST")
+        self.assertEqual(sent.body["title"], "seed data has no cohort")
+        self.assertEqual(sent.body["description"], "three rules cannot fire")
+        self.assertEqual(sent.body["labels"], "defect")
+        self.assertEqual(sent.headers.get("PRIVATE-TOKEN"), TOKEN)
+        self.assertIn("created #12", bl.write_line(got))
+
+    def test_a_create_without_a_token_never_reaches_the_network(self):
+        server, base = serve({})
+        self.addCleanup(stop, server)
+        got = bl.create(cfg(base), "t", token="", commit=True)
+        self.assertEqual(server.seen, [])
+        self.assertIn("no token", got.error)
+        self.assertFalse(got.done)
+
+    def test_a_refused_write_never_reads_as_a_write_that_happened(self):
+        """116(a) for the write side: `failed` and `created` must not be the same sentence."""
+        server, base = serve({key("POST", ISSUES): (403, '{"message":"403 Forbidden"}', {})})
+        self.addCleanup(stop, server)
+        got = bl.create(cfg(base), "t", token=TOKEN, commit=True)
+        self.assertFalse(got.done)
+        self.assertIn("403", got.error)
+        rendered = bl.write_line(got)
+        self.assertIn("failed", rendered)
+        self.assertNotIn("created #", rendered)
+
+    def test_close_sends_the_state_event(self):
+        server, base = serve({key("PUT", f"{ISSUES}/12"): (200, made(12, "t"), {})})
+        self.addCleanup(stop, server)
+        got = bl.close(cfg(base), 12, token=TOKEN, commit=True)
+        self.assertTrue(got.done, got.error)
+        sent = server.seen[-1]
+        self.assertEqual(sent.method, "PUT")
+        self.assertEqual(sent.body["state_event"], "close")
+
+    def test_close_dry_run_touches_nothing(self):
+        server, base = serve({})
+        self.addCleanup(stop, server)
+        got = bl.close(cfg(base), 12, token=TOKEN)
+        self.assertEqual(server.seen, [])
+        self.assertIn("would close", bl.write_line(got))
+
+    def test_a_closed_issue_is_named_once(self):
+        """`closed #1: #1` is what naming the issue in both halves of the line looks like."""
+        server, base = serve({key("PUT", f"{ISSUES}/12"): (200, made(12, "t"), {})})
+        self.addCleanup(stop, server)
+        self.assertEqual(bl.write_line(bl.close(cfg(base), 12, token=TOKEN, commit=True)), "closed #12")
+
+    def test_comment_posts_a_note_on_the_issue(self):
+        server, base = serve({key("POST", f"{ISSUES}/12/notes"): (201, '{"id": 99}', {})})
+        self.addCleanup(stop, server)
+        got = bl.comment(cfg(base), 12, "landed on main as 3c8476e", token=TOKEN, commit=True)
+        self.assertTrue(got.done, got.error)
+        sent = server.seen[-1]
+        self.assertEqual((sent.method, sent.body["body"]), ("POST", "landed on main as 3c8476e"))
+
+
+class LabelTest(unittest.TestCase):
+    """Labels are created on demand from what a write asks for. No vocabulary is baked in:
+    Zach, 2026-09-19 22:47 — "lanes are also going to be changeable over time"."""
+
+    def test_creates_only_the_labels_that_are_missing(self):
+        plan = {
+            ("GET", LABELS, "", "1"): (200, json.dumps([{"name": "defect"}]), {}),
+            key("POST", LABELS): (201, '{"name": "agent-layer"}', {}),
+        }
+        server, base = serve(plan)
+        self.addCleanup(stop, server)
+        got = bl.ensure_labels(cfg(base), ("defect", "agent-layer"), token=TOKEN, commit=True)
+        posted = [a for a in server.seen if a.method == "POST"]
+        self.assertEqual([a.body["name"] for a in posted], ["agent-layer"])
+        self.assertEqual([w.what for w in got if w.done], ["agent-layer"])
+
+    def test_a_label_that_already_exists_is_not_created_again(self):
+        plan = {("GET", LABELS, "", "1"): (200, json.dumps([{"name": "defect"}]), {})}
+        server, base = serve(plan)
+        self.addCleanup(stop, server)
+        got = bl.ensure_labels(cfg(base), ("defect",), token=TOKEN, commit=True)
+        self.assertEqual([a for a in server.seen if a.method == "POST"], [])
+        self.assertEqual(got, ())
+
+    def test_dry_run_creates_no_label(self):
+        plan = {("GET", LABELS, "", "1"): (200, "[]", {})}
+        server, base = serve(plan)
+        self.addCleanup(stop, server)
+        got = bl.ensure_labels(cfg(base), ("agent-layer",), token=TOKEN)
+        self.assertEqual([a for a in server.seen if a.method == "POST"], [])
+        self.assertIn("would create label", bl.write_line(got[0]))
+
+    def test_a_label_list_that_fails_is_a_value_not_an_exception(self):
+        server, base = serve({("GET", LABELS, "", "1"): (500, '{"message":"500"}', {})})
+        self.addCleanup(stop, server)
+        got = bl.ensure_labels(cfg(base), ("agent-layer",), token=TOKEN, commit=True)
+        self.assertTrue(got[0].error)
+        self.assertFalse(got[0].done)
+
+    def test_create_makes_its_labels_before_it_makes_the_issue(self):
+        """An issue POSTed with an unknown label silently drops it on some GitLab versions."""
+        plan = {
+            ("GET", LABELS, "", "1"): (200, "[]", {}),
+            key("POST", LABELS): (201, '{"name": "seed-data"}', {}),
+            key("POST", ISSUES): (201, made(13, "t"), {}),
+        }
+        server, base = serve(plan)
+        self.addCleanup(stop, server)
+        bl.create(cfg(base), "t", labels=("seed-data",), token=TOKEN, commit=True)
+        posts = [a.path.split("?")[0] for a in server.seen if a.method == "POST"]
+        self.assertEqual(posts, [LABELS, ISSUES])
+
+
+class CliWriteTest(unittest.TestCase):
+    def config_at(self, base: str) -> str:
+        return str(written(config_text(
+            f"- Backlog: GitLab; host {base}; project zachgardner/openemr;"
+            " token env CHIEF_OF_STUFF_GITLAB_TOKEN\n"
+        )))
+
+    def test_create_without_commit_writes_nothing(self):
+        """There is deliberately no `--token` flag: argv is readable by `ps`, so the CLI reads the
+        environment and the Keychain and nothing else."""
+        server, base = serve({})
+        self.addCleanup(stop, server)
+        with patch.dict(os.environ, {"CHIEF_OF_STUFF_GITLAB_TOKEN": TOKEN}):
+            code = bl.main(["--config", self.config_at(base), "--create", "a title"])
+        self.assertEqual(code, 0)
+        self.assertEqual(server.seen, [])
+
+    def test_create_with_commit_writes(self):
+        plan = {("GET", LABELS, "", "1"): (200, "[]", {}),
+                key("POST", ISSUES): (201, made(14, "a title"), {})}
+        server, base = serve(plan)
+        self.addCleanup(stop, server)
+        with patch.dict(os.environ, {"CHIEF_OF_STUFF_GITLAB_TOKEN": TOKEN}):
+            code = bl.main(["--config", self.config_at(base), "--create", "a title", "--commit"])
+        self.assertEqual(code, 0)
+        self.assertEqual([a.method for a in server.seen if a.method == "POST"], ["POST"])
 
 
 if __name__ == "__main__":

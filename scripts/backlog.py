@@ -177,25 +177,32 @@ def token(cfg: Backlog, environ: dict | None = None, keychain=keychain_token) ->
         return ""
 
 
-def _get(url: str, private_token: str, timeout: float) -> tuple[object, dict, str]:
-    """One GET. Returns (parsed body, headers, error) and raises nothing the caller has to catch."""
-    request = urllib.request.Request(
-        url, method="GET",
-        headers={"PRIVATE-TOKEN": private_token, "User-Agent": "chief-of-stuff/backlog",
-                 "Accept": "application/json"},
-    )
+def _call(method: str, url: str, private_token: str, timeout: float,
+          payload: dict | None = None) -> tuple[object, dict, str]:
+    """One request. Returns (parsed body, headers, error) and raises nothing the caller has to catch."""
+    headers = {"PRIVATE-TOKEN": private_token, "User-Agent": "chief-of-stuff/backlog",
+               "Accept": "application/json"}
+    data = None
+    if payload is not None:
+        data = json.dumps(payload).encode()
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(url, method=method, data=data, headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 (scheme checked in parse_backlog)
             raw = response.read()
-            headers = {k.lower(): v for k, v in response.headers.items()}
+            got = {k.lower(): v for k, v in response.headers.items()}
     except urllib.error.HTTPError as exc:
         return None, {}, f"HTTP {exc.code} from GitLab"
     except Exception as exc:  # timeout, refused, DNS, TLS
         return None, {}, f"{type(exc).__name__}: {exc}"
     try:
-        return json.loads(raw.decode("utf-8", "replace")), headers, ""
+        return json.loads(raw.decode("utf-8", "replace")), got, ""
     except ValueError:
-        return None, headers, "GitLab did not answer with JSON"
+        return None, got, "GitLab did not answer with JSON"
+
+
+def _get(url: str, private_token: str, timeout: float) -> tuple[object, dict, str]:
+    return _call("GET", url, private_token, timeout)
 
 
 def _issue(row: dict) -> Issue:
@@ -260,6 +267,146 @@ def counts(cfg: Backlog, token: str | None = None, timeout: float = TIMEOUT) -> 
     return Counts(open=opened, closed=closed)
 
 
+# ---- the write side -------------------------------------------------------------------------
+#
+# `--dry-run` is the default and `--commit` is required, because a write is outward-facing and the
+# GitLab *web UI* is on the coordinator's human-only list. The API is not the web UI, but the
+# caution transfers: the default has to be the mode that cannot do damage.
+
+CREATE, CLOSE, COMMENT, LABEL = "create", "close", "comment", "label"
+LABEL_COLOR = "#428bca"
+FUTURE = {CREATE: "create", CLOSE: "close", COMMENT: "comment", LABEL: "create label"}
+PAST = {CREATE: "created", CLOSE: "closed", COMMENT: "commented on", LABEL: "created label"}
+
+
+@dataclass(frozen=True)
+class Written:
+    """What a write did, or would do, or could not do. `done` is the only thing that means it happened."""
+
+    action: str
+    what: str
+    done: bool = False
+    iid: int | None = None
+    url: str = ""
+    error: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return not self.error
+
+
+def write_line(one: Written) -> str:
+    """A refusal never borrows a success's wording — 116(a), on the write side."""
+    if one.error:
+        return f"{one.action} failed: {one.what} — {one.error}"
+    if not one.done:
+        return f"would {FUTURE[one.action]}: {one.what}"
+    if one.what == f"#{one.iid}":   # close and comment name the issue and nothing else
+        return f"{PAST[one.action]} {one.what}"
+    where = f" #{one.iid}" if one.iid else ""
+    return f"{PAST[one.action]}{where}: {one.what}" if where else f"{PAST[one.action]} {one.what}"
+
+
+def _secret(cfg: Backlog, token: str | None) -> str:
+    return token if token is not None else globals()["token"](cfg)
+
+
+def existing_labels(cfg: Backlog, token: str | None = None, timeout: float = TIMEOUT) -> tuple[set[str], str]:
+    """Every label the project has, or the reason we do not know. Empty-and-unknown are different."""
+    secret = _secret(cfg, token)
+    if not secret:
+        return set(), f"no token: set ${cfg.env} or add it to the Keychain as {cfg.service}"
+    names: set[str] = set()
+    page = "1"
+    for _ in range(MAX_PAGES):
+        url = f"{cfg.host.rstrip('/')}/api/v4/projects/{quote(cfg.project, safe='')}/labels"
+        body, headers, error = _get(f"{url}?{urlencode({'per_page': PER_PAGE, 'page': page})}", secret, timeout)
+        if error:
+            return set(), error
+        if not isinstance(body, list):
+            return set(), "GitLab answered with something that is not a list of labels"
+        names.update(str(row.get("name", "")) for row in body if isinstance(row, dict))
+        page = (headers.get("x-next-page") or "").strip()
+        if not page:
+            return names, ""
+    return set(), f"more than {MAX_PAGES} pages of labels"
+
+
+def ensure_labels(cfg: Backlog, names: tuple[str, ...], token: str | None = None,
+                  commit: bool = False, timeout: float = TIMEOUT) -> tuple[Written, ...]:
+    """Create the labels a write needs and no others.
+
+    No vocabulary is baked in. Zach, 2026-09-19 22:47 — "lanes are also going to be changeable over
+    time" — so the caller names the labels and this creates whichever of them GitLab has not seen.
+    """
+    wanted = tuple(n for n in dict.fromkeys(n.strip() for n in names) if n)
+    if not wanted:
+        return ()
+    secret = _secret(cfg, token)
+    have, error = existing_labels(cfg, token=secret, timeout=timeout)
+    if error:
+        return (Written(LABEL, ", ".join(wanted), error=error),)
+    out: list[Written] = []
+    url = f"{cfg.host.rstrip('/')}/api/v4/projects/{quote(cfg.project, safe='')}/labels"
+    for name in wanted:
+        if name in have:
+            continue
+        if not commit:
+            out.append(Written(LABEL, name))
+            continue
+        _body, _headers, failed = _call("POST", url, secret, timeout, {"name": name, "color": LABEL_COLOR})
+        out.append(Written(LABEL, name, done=not failed, error=failed))
+    return tuple(out)
+
+
+def create(cfg: Backlog, title: str, body: str = "", labels: tuple[str, ...] = (),
+           token: str | None = None, commit: bool = False, timeout: float = TIMEOUT) -> Written:
+    """One issue. Its labels are made first: GitLab drops an unknown label rather than refusing it."""
+    secret = _secret(cfg, token)
+    if not secret:
+        return Written(CREATE, title, error=f"no token: set ${cfg.env} or add it to the Keychain as {cfg.service}")
+    if labels:
+        for made in ensure_labels(cfg, labels, token=secret, commit=commit, timeout=timeout):
+            if made.error:
+                return Written(CREATE, title, error=f"label {made.what}: {made.error}")
+    if not commit:
+        return Written(CREATE, title)
+    payload = {"title": title}
+    if body:
+        payload["description"] = body
+    if labels:
+        payload["labels"] = ",".join(labels)
+    got, _headers, error = _call("POST", cfg.issues_url, secret, timeout, payload)
+    if error:
+        return Written(CREATE, title, error=error)
+    row = got if isinstance(got, dict) else {}
+    return Written(CREATE, title, done=True, iid=int(row.get("iid", 0)) or None, url=str(row.get("web_url", "")))
+
+
+def close(cfg: Backlog, iid: int, token: str | None = None, commit: bool = False,
+          timeout: float = TIMEOUT) -> Written:
+    secret = _secret(cfg, token)
+    what = f"#{iid}"
+    if not secret:
+        return Written(CLOSE, what, error=f"no token: set ${cfg.env} or add it to the Keychain as {cfg.service}")
+    if not commit:
+        return Written(CLOSE, what)
+    _got, _headers, error = _call("PUT", f"{cfg.issues_url}/{iid}", secret, timeout, {"state_event": "close"})
+    return Written(CLOSE, what, done=not error, iid=iid, error=error)
+
+
+def comment(cfg: Backlog, iid: int, body: str, token: str | None = None, commit: bool = False,
+            timeout: float = TIMEOUT) -> Written:
+    secret = _secret(cfg, token)
+    what = f"#{iid}"
+    if not secret:
+        return Written(COMMENT, what, error=f"no token: set ${cfg.env} or add it to the Keychain as {cfg.service}")
+    if not commit:
+        return Written(COMMENT, what)
+    _got, _headers, error = _call("POST", f"{cfg.issues_url}/{iid}/notes", secret, timeout, {"body": body})
+    return Written(COMMENT, what, done=not error, iid=iid, error=error)
+
+
 def line(got: Counts) -> str:
     """One line for the board. Unknown says unknown — it never borrows zero's wording."""
     if not got.ok or got.open is None:
@@ -279,6 +426,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--state", default=OPEN, choices=(OPEN, CLOSED, "all"), help="which issues")
     parser.add_argument("--labels", default="", help="comma-separated labels to narrow the ask")
     parser.add_argument("--timeout", type=float, default=TIMEOUT, help="seconds per request")
+    parser.add_argument("--create", metavar="TITLE", help="file one issue")
+    parser.add_argument("--body", default="", help="the issue body, or the comment's text")
+    parser.add_argument("--close", type=int, metavar="IID", help="close one issue")
+    parser.add_argument("--comment", type=int, metavar="IID", help="comment on one issue")
+    # No `--token`: argv is readable by `ps`, so the token comes from the environment or the
+    # Keychain and from nowhere a shell history can keep it.
+    parser.add_argument("--commit", action="store_true",
+                        help="actually write. Without it every write is printed and not made.")
     args = parser.parse_args(argv)
 
     config = Path(args.config)
@@ -294,12 +449,27 @@ def main(argv: list[str] | None = None) -> int:
         print("backlog: none configured", file=sys.stderr)
         return 2
 
+    labels = tuple(p.strip() for p in args.labels.split(",") if p.strip())
+    writes: list[Written] = []
+    if args.create:
+        writes.append(create(cfg, args.create, body=args.body, labels=labels,
+                             commit=args.commit, timeout=args.timeout))
+    if args.close:
+        writes.append(close(cfg, args.close, commit=args.commit, timeout=args.timeout))
+    if args.comment:
+        writes.append(comment(cfg, args.comment, args.body, commit=args.commit, timeout=args.timeout))
+    if writes:
+        for one in writes:
+            print(write_line(one))
+        if not args.commit:
+            print("nothing was written: add --commit to make these real", file=sys.stderr)
+        return 0 if all(w.ok for w in writes) else 1
+
     if not args.list:
         got = counts(cfg, timeout=args.timeout)
         print(line(got))
         return 0 if got.ok else 1
 
-    labels = tuple(p.strip() for p in args.labels.split(",") if p.strip())
     fetched = issues(cfg, state=args.state, labels=labels, timeout=args.timeout)
     if not fetched.ok:
         print(f"backlog: unknown — {fetched.error}", file=sys.stderr)

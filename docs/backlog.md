@@ -38,6 +38,16 @@ Finding 116(a)'s rule reaches the client. An absent token, an unreachable host, 
 
 The same rule governs pagination: a truncated read is refused rather than returned, because a short list reads as a short backlog.
 
+## Writing
+
+`create`, `close`, `comment`. **`--dry-run` is the default and `--commit` is required**, because a write is outward-facing and the GitLab *web UI* is on the coordinator's human-only list. The API is not the web UI, but the caution transfers: the default has to be the mode that cannot do damage. A run without `--commit` prints every write it would make and says on stderr that nothing was written.
+
+There is deliberately **no `--token` flag**. `argv` is readable by `ps` and lands in shell history; the token comes from the environment or the Keychain and from nowhere else.
+
+Labels are created on demand from whatever a write asks for. **No vocabulary is baked in** — Zach, 2026-09-19 22:47: *"lanes are also going to be changeable over time."* Hardcoding the seven workstream names would have frozen a list he had already said would move, and deriving labels from lane prose would repeat finding 121, where the prose is the join key. The caller names the labels; `ensure_labels` reads the project's labels and creates only the ones GitLab has not seen. A `create` makes its labels *before* the issue, because GitLab drops an unknown label rather than refusing the request.
+
+A refused write never borrows a success's wording: `create failed: … — HTTP 403 from GitLab`, and `done` is the only field that means it happened.
+
 ## Proved against the live project
 
 - 21 unit tests against a loopback server; the suite never touches the network and never reads the real Keychain.
@@ -46,3 +56,17 @@ The same rule governs pagination: a truncated read is refused rather than return
 - No token: `backlog: unknown — no token: set $… or add it to the Keychain as gitlab-labs.gauntletai.com`, exit 1.
 
 The negative controls are what make the zero meaningful.
+
+Write side, one real round trip on project 1991 — a fixture cannot prove the header, the verb and the label creation all land the way GitLab expects:
+
+```
+would create: Backlog client round trip        # the default, and it wrote nothing
+created #1: Backlog client round trip          # with --commit; `tooling` created on demand
+backlog: 1 open, 0 closed
+#1 Backlog client round trip [tooling]
+commented on #1
+closed #1
+backlog: 0 open, 1 closed
+```
+
+Issue #1 stays closed on the project rather than being deleted. It is the record that the client works.
