@@ -46,13 +46,13 @@
       "name": "tracker lane: README",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",
-      "pattern": "(?m)^\\|\\s*Write eval README\\s*\\|"
+      "pattern": "(?m)^\\|(?:[^|\\n]*\\|)?\\s*Write eval README\\s*\\|"
     },
     {
       "name": "tracker lane: deploy review",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",
-      "pattern": "(?m)^\\|\\s*Review deploy config\\s*\\|"
+      "pattern": "(?m)^\\|(?:[^|\\n]*\\|)?\\s*Review deploy config\\s*\\|"
     },
     {
       "name": "tracker has Decisions",
