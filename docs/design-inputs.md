@@ -1035,3 +1035,29 @@ CIMP is a standing authorisation and it is mine for work I wrote. It does not ex
 The rule between sessions sharing a repo: **each pushes only what it wrote, and neither pushes on the other's behalf without being asked.** If main sitting ahead of origin bothers the session that notices, the move is to say so, not to resolve it.
 
 The same test reaches further than git. A second session's unfinished outward-facing step — a push, a publish, a message to someone outside the fleet — is not a loose end to tidy. It is that session's decision, unmade.
+
+### 116d — a lane carries the sha that closed it (0.13.0)
+
+The option that survived. 116a's time heuristic was built and falsified by this suite; 116c grouped thirteen lines into three but left them wrong about six of the thirteen lanes. This asks the question the state actually makes.
+
+A `done` state may name the commit that carried it: `done 21:16–22:05 54b7eb3`, or `done 54b7eb3` where no times were kept. Not a new column — the sha is an attribute of *doneness*, not of the lane, and 131 rows would otherwise need a cell they will never fill. The renderer already tolerates it: `Lane.kind`, `Lane.state_time` and `Lane.ran` all parse the three-token form today, and `render_board.py:1575` prints `lane.state` raw, so the sha shows on the board as the evidence it is.
+
+`landed()` is three-valued and **only `landed` may clear a lane**:
+
+| condition | verdict |
+|---|---|
+| no sha written | `unknown` |
+| not `^[0-9a-f]{7,40}$` | `unknown`, and the row is named |
+| `git cat-file -e <sha>^{commit}` non-zero | `unknown`, and the row is named |
+| `git merge-base --is-ancestor <sha> main` == 0 | `landed` |
+| otherwise | `not-landed` |
+
+That asymmetry is the whole safety argument and it is board-ux's rule made structural rather than advisory. Every failure mode of this instrument today is a false *reopen* — noisy, self-clearing, visible. A false *clear* is silent and permanent. So a clear is reachable only from a `merge-base` that answered yes; absent, unreadable, unresolvable, or git itself failing all fall back to exactly today's behaviour, where the tree decides. This is what 116a lacked: it suppressed on an inference about time, and the inference was false in the case the instrument exists for.
+
+Proved twice before it shipped. **A/B on the live tracker, same minute, old script and new: byte-identical**, 157 lanes, `reopen=3 trees/13 lanes` both sides — with no lane yet carrying a sha, `unknown` demonstrably *is* today's behaviour. And against the real `openemr-arch` worktree, the one the audit calls "not on main": the five shas the coordinator hand-verified at 06:25 — `150276a`, `54b7eb3`, `5a3a383`, `05060ee`, `4d43f85` — all return `landed`, while that tree's own unmerged tip `b5dda43` returns `not-landed`. Five of the six arch reopens clear the moment those shas are written, on a tree whose state does not change at all.
+
+`not-landed` is also a better line than the one it replaces: `its sha 54b7eb3 is not on main` is about the lane, where `not on main` was about the neighbour's tree.
+
+**What it does not claim.** `done` asserts two things — the change is on main, *and* the suite was run on main after the merge. The sha settles the first mechanically. The second stays where the ruleset already puts it: "No script can watch a suite run, so the evidence is a claim with a citation." The gap is not narrowed and should not be described as closed. Treeless lanes never reach `visit()` and never reopened; a sha on one is not read.
+
+**The writer half is not built and is not mine.** Three edits make a coordinator write the sha — the Lanes grammar sentence at `agents/chief-of-stuff.md:215`, `LANE_STATE` at `render_board.py:165` (anchored, so it rejects a trailing sha and `_anchor`'s over-wide row recovery misses such a row), and one clause in `_tracker-template.md`. Two of the three are `board-ux-improvements`' files and it was mid-sweep when this was written. Until they land, every lane reads `unknown` and nothing changes — which is why this half could ship alone.
