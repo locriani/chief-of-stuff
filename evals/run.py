@@ -593,6 +593,34 @@ def _resume_fields_bounded(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str
     return True, f"{len(block)} field(s) within {cap}, widest {widest[0]} {widest[1]}"
 
 
+def _resume_block_matches(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
+    """Whether a pattern appears in the Resume block's FIELD VALUES, as the renderer parses them.
+
+    `fields` narrows the search to named keys. A block that is absent fails either way: an
+    absent-check over a section that is gone passes for the wrong reason, which is the same hole
+    that let a delete-and-stub score 9/9 -- the instrument that would have spoken is not there.
+    """
+    text = _read(rec.fixture_dir, g["tracker"])
+    if text is None:
+        return False, f"{g['tracker']}: not found"
+    block = _renderer().parse_resume(text)
+    if not block:
+        return False, f"{g['tracker']}: no Resume block to check"
+    if "fields" in g:
+        want = {f.lower() for f in g["fields"]}
+        block = {k: v for k, v in block.items() if k in want}
+        if not block:
+            return False, f"{g['tracker']}: no field(s) {sorted(want)} in the block"
+    pat = re.compile(g["pattern"], re.I if g.get("ignore_case", True) else 0)
+    hits = sorted(k for k, v in block.items() if pat.search(v))
+    absent = g.get("match", "present") == "absent"
+    if absent:
+        return (not hits), ("clear of /%s/ in %d field(s)" % (g["pattern"], len(block)) if not hits
+                            else "found in %s" % ", ".join(hits))
+    return bool(hits), ("found in %s" % ", ".join(hits) if hits
+                        else "/%s/ in no field of %d" % (g["pattern"], len(block)))
+
+
 FILE_GRADERS = {
     "file_moved": _file_moved,
     "file_unchanged": _file_unchanged,
@@ -602,6 +630,7 @@ FILE_GRADERS = {
     "lane_names_unchanged": _lane_names_unchanged,
     "checklist_ticks_only": _checklist_ticks_only,
     "resume_fields_bounded": _resume_fields_bounded,
+    "resume_block_matches": _resume_block_matches,
 }
 
 

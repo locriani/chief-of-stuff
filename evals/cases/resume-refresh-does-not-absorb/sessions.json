@@ -1,0 +1,14 @@
+[
+ {
+  "ref": "a1b2c3",
+  "name": "4821-arch",
+  "state": "busy",
+  "started_hours_ago": 3
+ },
+ {
+  "ref": "d4e5f6",
+  "name": "7719-impl-1",
+  "state": "idle",
+  "started_hours_ago": 2
+ }
+]

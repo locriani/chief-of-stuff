@@ -191,6 +191,65 @@ class ResumeFieldsBoundedTest(unittest.TestCase):
         self.assertIn("resume_fields_bounded", run.GRADER_TYPES)
 
 
+class ResumeBlockMatchesTest(unittest.TestCase):
+    """Does a fact appear in the Resume block itself -- in the FIELDS, not the section text.
+
+    The alternative was six per-field regexes per assertion. Two false reds today came from
+    hand-written anchors that were a shade too tight, and a regex over the whole `## Resume`
+    section cannot tell a field's own text from a heading or a blank line.
+    """
+
+    def _rec(self, *lines: str):
+        d = Path(tempfile.mkdtemp())
+        (d / "t.md").write_text("# T\n\n## Resume\n\n" + "\n".join(lines) + "\n\n## Lanes\n")
+        return run.RunRecord(stream=None, t_start=datetime.now(), t_end=datetime.now(),
+                             tz="America/Chicago", fixture_dir=d)
+
+    def _g(self, **kw):
+        return {"type": "resume_block_matches", "tracker": "t.md", **kw}
+
+    def test_absent_passes_when_the_fact_is_not_in_any_field(self) -> None:
+        rec = self._rec("- As of: 19:40 - a session", "- Next: read the audit reply")
+        ok, why = run.grade(self._g(pattern="trace span", match="absent"), rec)
+        self.assertTrue(ok, why)
+
+    def test_absent_fails_and_names_the_field_that_absorbed_it(self) -> None:
+        rec = self._rec("- As of: 19:40 - a session; arch says the trace spans are inflated",
+                        "- Next: read the audit reply")
+        ok, why = run.grade(self._g(pattern="trace spans", match="absent"), rec)
+        self.assertFalse(ok)
+        self.assertIn("as of", why)
+
+    def test_present_is_the_other_jaw(self) -> None:
+        rec = self._rec("- Next: read the audit reply")
+        ok, _ = run.grade(self._g(pattern="trace spans", match="present"), rec)
+        self.assertFalse(ok)
+
+    def test_fields_narrows_which_fields_are_searched(self) -> None:
+        rec = self._rec("- As of: 19:40 - a session", "- Verified 19:40: main 7daf71f, trace spans")
+        ok, _ = run.grade(self._g(pattern="trace spans", match="absent", fields=["as of"]), rec)
+        self.assertTrue(ok)
+        ok, why = run.grade(self._g(pattern="trace spans", match="absent", fields=["verified"]), rec)
+        self.assertFalse(ok, why)
+
+    def test_a_missing_block_is_not_silently_absent(self) -> None:
+        """An absent-check over a block that is not there passes for the wrong reason.
+
+        Same hole as the delete-and-stub: the thing that would have told you is gone, so its
+        silence reads as good news.
+        """
+        d = Path(tempfile.mkdtemp())
+        (d / "t.md").write_text("# T\n\n## Lanes\n")
+        rec = run.RunRecord(stream=None, t_start=datetime.now(), t_end=datetime.now(),
+                            tz="America/Chicago", fixture_dir=d)
+        ok, why = run.grade(self._g(pattern="trace spans", match="absent"), rec)
+        self.assertFalse(ok)
+        self.assertIn("no Resume block", why)
+
+    def test_it_is_registered_as_a_file_grader(self) -> None:
+        self.assertIn("resume_block_matches", run.GRADER_TYPES)
+
+
 class GoldenSetTest(unittest.TestCase):
     """The opus set. Zach, 2026-09-19: sonnet to iterate, opus on the golden cases only for green.
 
