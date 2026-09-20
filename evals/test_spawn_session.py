@@ -233,9 +233,12 @@ class BootstrapTest(unittest.TestCase):
     """The argv carries a constant. Nothing the coordinator composed travels on the command line."""
 
     def test_the_last_argv_token_is_the_bootstrap_and_points_at_the_dispatch_file(self):
+        """`BOOTSTRAP` became a template when the paths went absolute, so the token is the filled
+        form rather than the constant. The invariant it guards is unchanged: one token, naming the
+        assignment, and nothing the coordinator composed."""
         argv = ss.argv(ss.DEFAULT_LAUNCHER, agent_type="implementer", cwd="/tmp/wt", title="wt-docs")
-        self.assertEqual(argv[-1], ss.BOOTSTRAP)
-        self.assertIn(ss.PROMPT_FILE, ss.BOOTSTRAP)
+        self.assertIn(ss.PROMPT_FILE, argv[-1])
+        self.assertIn("/tmp/wt", argv[-1])
 
     def test_the_argv_is_the_same_whatever_the_lane_is(self):
         """There is no per-dispatch text on the command line, so there is nothing to expand."""
@@ -293,7 +296,10 @@ class GhosttyTabTest(unittest.TestCase):
     def test_the_command_is_quoted_per_token(self):
         """Ghostty parses `command` shell-style, so the bootstrap stays one argument or it is nonsense."""
         s = self.script()
-        self.assertIn(shlex.quote(ss.BOOTSTRAP), s)
+        # The filled bootstrap, since it carries paths now; still exactly one shell token.
+        filled = [t for t in shlex.split(s.split("set command of cfg to ")[1].split("\n")[0].strip('"').replace('\\"', '"'))
+                  if t.startswith("Read the file ")]
+        self.assertEqual(len(filled), 1, filled)
 
     def test_no_agent_type_drops_the_flag_and_its_value_together(self):
         self.assertNotIn("--agent", self.script(agent_type=None))
@@ -488,3 +494,47 @@ class LaunchEnvironmentTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BootstrapNamesItsPathsTest(unittest.TestCase):
+    """Zach, 23:33-23:34: the bootstrap said "in this directory" and Ghostty does not reliably give
+    the tab the directory it was asked for, so "this directory" was sometimes not the worktree and
+    the session could not find its own assignment.
+
+    Two fixes, because one of them is the cause and the other is the belt. `env -C` pins the working
+    directory in the command itself rather than trusting a surface configuration field — shell-free,
+    and it exits 125 loudly on a bad path instead of starting a session somewhere arbitrary. And the
+    bootstrap names both paths absolutely, so a session that lands in the wrong place can still read
+    its assignment and knows where it was supposed to be.
+    """
+
+    def argv(self, cwd="/tmp/wt"):
+        return ss.argv(ss.DEFAULT_LAUNCHER, agent_type="implementer", cwd=cwd, title="wt-docs")
+
+    def test_the_bootstrap_names_the_dispatch_file_absolutely(self):
+        self.assertIn(f"/tmp/wt/{ss.PROMPT_FILE}", self.argv()[-1])
+
+    def test_the_bootstrap_names_the_working_directory_absolutely(self):
+        self.assertIn("/tmp/wt", self.argv()[-1])
+
+    def test_it_no_longer_says_in_this_directory(self):
+        """The phrase that made the assignment unfindable whenever the cwd was not the worktree."""
+        self.assertNotIn("in this directory", self.argv()[-1])
+
+    def test_a_relative_cwd_is_resolved_before_it_reaches_the_session(self):
+        """A session cannot resolve a relative path against a directory it may not be standing in."""
+        token = self.argv(cwd=".")[-1]
+        self.assertNotIn(" ./", token)
+        self.assertIn(str(Path(".").resolve()), token)
+
+    def test_the_bootstrap_carries_no_shell_metacharacter(self):
+        """It is a launcher token like any other and the guard runs on the template."""
+        self.assertIsNone(ss.METACHARACTERS.search(ss.BOOTSTRAP))
+
+    def test_the_ghostty_command_pins_the_directory_with_env(self):
+        s = ss.ghostty_script(cwd="/tmp/wt", agent_type="implementer", claude=Path("/opt/homebrew/bin/claude"))
+        self.assertIn("/usr/bin/env -C /tmp/wt /opt/homebrew/bin/claude", s)
+
+    def test_the_ghostty_bootstrap_names_the_paths_too(self):
+        s = ss.ghostty_script(cwd="/tmp/wt", agent_type="implementer", claude=Path("/opt/homebrew/bin/claude"))
+        self.assertIn(shlex.quote(f"/tmp/wt/{ss.PROMPT_FILE}"), s.replace("\\", ""))

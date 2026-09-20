@@ -1180,3 +1180,12 @@ One caveat carried forward rather than resolved, in the newest commit's own word
 Proved before shipping. A/B on the live tracker, same minute: byte-identical, 157 lanes, `reopen=3 trees/13 lanes` both sides — with no sha written yet, `unknown` *is* today's behaviour. Against the real arch worktree, the one called "not on main": all five hand-verified shas return `landed`, its own unmerged tip returns `not-landed`.
 
 667 units green on the branch. Finding 116d. The writer half — three edits, two in board-ux's files — is not built and is named as a handoff.
+
+
+## C16 — the dispatch prompt names its paths (0.13.1)
+
+Zach at 23:33: the bootstrap should not say "in this directory". gauntlet-b2 at 23:36 with why it mattered — two dispatches lost thirteen minutes apart, one that never started and one that started in the workspace root and found its assignment by mtime.
+
+The cause was `--cwd` meaning two things: resolved for `compose`, raw for the launcher, so a relative value wrote the dispatch correctly and asked Ghostty for a directory it resolved against its own. Resolved once at parse time now. The bootstrap names the assignment file and the working directory absolutely, and `/usr/bin/env -C` pins the directory in the command rather than in a field the terminal may ignore — exit 125 and a reason on a bad path, where the old failure was a tab that closed itself.
+
+679 units green on the branch. Findings 120, 121.
