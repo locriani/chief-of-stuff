@@ -133,13 +133,16 @@ def parse_backlog(spec: str) -> Backlog:
         elif key == "project":
             project = value
         elif key == "token":
-            kind, _, name = value.partition(" ")
-            if kind.lower() != "env" or not name.strip():
+            kind, _, rest = value.partition(" ")
+            # An environment variable's name has no spaces, so the name ends at the first one and
+            # whatever follows is prose. The live line carries a parenthetical after it.
+            name = rest.split()[0] if rest.split() else ""
+            if kind.lower() != "env" or not name:
                 raise BacklogError(
                     "a `Backlog:` line names an environment variable, never a token: write "
                     "`token env NAME`"
                 )
-            env = name.strip()
+            env = name
     if not host:
         raise BacklogError(f"backlog needs a host: {spec!r}")
     if urlsplit(host).scheme not in SCHEMES:

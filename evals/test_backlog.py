@@ -154,6 +154,14 @@ class ConfigTest(unittest.TestCase):
             bl.backlog_from_config(path)
         self.assertNotIn(TOKEN, str(caught.exception))
 
+    def test_the_env_name_ends_at_the_first_space(self):
+        """The live config line carries a parenthetical after the name, and an env var has no spaces."""
+        path = written(config_text(
+            "- Backlog: GitLab; host https://labs.gauntletai.com; project a/b;"
+            " token env CHIEF_OF_STUFF_GITLAB_TOKEN (in the Keychain, never in this file)\n"
+        ))
+        self.assertEqual(bl.backlog_from_config(path).env, "CHIEF_OF_STUFF_GITLAB_TOKEN")
+
     def test_keychain_service_is_derived_from_the_host(self):
         self.assertEqual(cfg("https://labs.gauntletai.com").service, "gitlab-labs.gauntletai.com")
 
