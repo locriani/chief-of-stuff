@@ -1061,3 +1061,36 @@ Proved twice before it shipped. **A/B on the live tracker, same minute, old scri
 **What it does not claim.** `done` asserts two things — the change is on main, *and* the suite was run on main after the merge. The sha settles the first mechanically. The second stays where the ruleset already puts it: "No script can watch a suite run, so the evidence is a claim with a citation." The gap is not narrowed and should not be described as closed. Treeless lanes never reach `visit()` and never reopened; a sha on one is not read.
 
 **The writer half is not built and is not mine.** Three edits make a coordinator write the sha — the Lanes grammar sentence at `agents/chief-of-stuff.md:215`, `LANE_STATE` at `render_board.py:165` (anchored, so it rejects a trailing sha and `_anchor`'s over-wide row recovery misses such a row), and one clause in `_tracker-template.md`. Two of the three are `board-ux-improvements`' files and it was mid-sweep when this was written. Until they land, every lane reads `unknown` and nothing changes — which is why this half could ship alone.
+
+## 120 — one `--cwd`, two meanings, and a prompt that said "this directory"
+
+**From:** Zach, 23:33–23:34, and `gauntlet-b2` at 23:36 with two verified reproductions of the same defect.
+**Status:** Fixed 2026-09-19 (0.13.1).
+
+The bootstrap read `Read .chief-of-stuff/dispatch.md in this directory and follow it.` That is only true if the session is standing in the worktree, and twice tonight it was not.
+
+**The cause is not the terminal. The two consumers of `--cwd` disagreed about what it meant.** `main()` passed `Path(args.cwd).resolve()` to `compose`, so the dispatch was written into the right tree, and handed the **raw** value to `argv()` and `ghostty_script()`. With a relative `--cwd`, Ghostty resolved it against its own GUI working directory. One argument, two readings, and the file and the session ended up in different places.
+
+Both failures came from the same call shape thirteen minutes apart:
+
+- **23:19, `openemr-readyprobe`.** No session ever started. The lane read `running` for fifteen minutes with nothing running — and that failure is silent by construction, because Ghostty treats a sub-second exit as a launch failure and closes the tab, as the comment at `spawn_session.py:175` already said.
+- **23:32, `openemr-graderpath`.** A session started **in the workspace root**, named `gauntlet-3d` because Ghostty names a tab after the directory it actually opened in. Its prompt told it to read a file "in this directory" that was not there, and it found its assignment by **matching the file's mtime against its own invocation time**. Its own words: mtime is not a safe disambiguator when several dispatches land close together. Two landed thirteen minutes apart; a third could have read the wrong one.
+
+Three changes, and the first is the fix:
+
+- **`args.cwd = os.path.abspath(args.cwd)` once at parse time.** One value, one meaning, and the call sites cannot disagree afterwards. `gauntlet-b2` proposed exactly this and it is a better fix than resolving in each consumer, which is what I had written first.
+- **The bootstrap names both paths absolutely** — the assignment file and the working directory — so a session that lands in the wrong place can still read its assignment and knows where it was meant to be. `abspath`, not `resolve`: absolute is what a session needs, and resolving symlinks would rewrite the path the user gave, turning `/tmp/wt` into `/private/tmp/wt`.
+- **`/usr/bin/env -C <cwd>` in front of `claude`.** The working directory is pinned by the command rather than by a surface-configuration field the terminal may ignore. Shell-free, so the launcher's no-shell rule holds, and a bad path exits **125** with a reason instead of starting a session somewhere arbitrary — which the tab's `wait after command` leaves on screen. That turns the silent 23:19 failure loud.
+
+The naming tell is worth keeping and is `gauntlet-b2`'s: **a correctly launched dispatch is named after its worktree, and a `gauntlet-*` name means it opened in the workspace root.** A free check on every launch, costing nothing.
+
+`BOOTSTRAP` is a template now rather than a constant, and the invariant it was built for survives: the two values are paths the launcher already held, not text the coordinator composed, so there is still nothing per-dispatch on the command line for a shell to expand.
+
+## 121 — decorating a lane item after launch breaks the next dispatch of it
+
+**From:** `gauntlet-b2`, 23:36, reporting its own bug that the script correctly refused.
+**Status:** Open — recorded, not built.
+
+After dispatching, it appended `(**LAUNCHED 23:19**, tree …)` to the lane item. That moved the first `": "`, which destroyed the head `_owns` matches on, and the next dispatch of that lane was refused.
+
+The refusal was right. The invitation is the problem: the ruleset asks the coordinator to keep the item current, and the item is also a join key. `dispatch_prompt._owns` keys on `{item, head, short_name(item)}` and all three are text, so any edit to the item is an edit to the key. Same shape as the name/ref join in finding 112, and the same answer is available — the lane's `name` column, or its ref, is a key that does not move when the prose does.

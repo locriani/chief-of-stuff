@@ -41,7 +41,20 @@ PROMPT_FILE = f"{PROMPT_DIR}/dispatch.md"
 # for a shell to expand on the way here.
 # No punctuation the metacharacter guard rejects: the bootstrap is a launcher token like any other,
 # and exempting it would be exempting the one token that reaches every session.
-BOOTSTRAP = f"Read {PROMPT_FILE} in this directory and follow it. It is your assignment."
+# Both paths absolute, and the reason is a real failure: Ghostty does not reliably give a tab the
+# directory its surface configuration asked for, so "in this directory" sometimes named a directory
+# that was not the worktree and the session could not find its own assignment. A session that lands
+# in the wrong place can still read an absolute path, and is told where it was meant to be standing.
+# Still one constant template with no per-dispatch text in it: the two values are paths the launcher
+# already had, not anything the coordinator composed.
+BOOTSTRAP = ("Read the file {dispatch} — that is your assignment, in full, and read it before you do "
+             "anything else. Your working directory is {cwd}. Start there and stay there: every path "
+             "the assignment names is inside it.")
+# `env -C` changes directory before exec and needs no shell, so the working directory is pinned by the
+# command itself rather than by a field a terminal may ignore. A bad path exits 125 and says why,
+# which the tab's `wait after command` leaves on screen — a loud failure instead of a session quietly
+# running in the wrong tree.
+ENV_BIN = "/usr/bin/env"
 # What the tab runs. `--permission-mode plan` is the plan-first gate, enforced at launch rather than
 # asked for in the assignment text: a dispatched session cannot write before it has shown its plan.
 CLAUDE_ARGV = ["claude", "--agent", "{type}", "--permission-mode", "plan", BOOTSTRAP]
@@ -69,7 +82,7 @@ OSASCRIPT = "/usr/bin/osascript"
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "fish", "env", "eval", "exec", "xargs"}
 METACHARACTERS = re.compile(r"[;&|`$<>\n]")
 PLACEHOLDER = re.compile(r"\{(\w+)\}")
-FIELDS = ("cwd", "title", "type")
+FIELDS = ("cwd", "title", "type", "dispatch")
 
 
 class RefusedError(ValueError):
@@ -120,11 +133,25 @@ def _without_agent(template: list[str]) -> list[str]:
     return out
 
 
+def _paths(cwd: str) -> tuple[str, str]:
+    """The working directory and the assignment inside it, both absolute.
+
+    Resolved here rather than left to the session: a relative path can only be resolved against the
+    directory you are standing in, and the whole reason these are absolute is that the session may
+    not be standing where the launcher intended.
+    """
+    # `abspath`, not `resolve`: absolute is what a session needs, and resolving symlinks would
+    # rewrite the path the user gave — `/tmp/wt` silently becoming `/private/tmp/wt` on a Mac.
+    root = Path(os.path.abspath(cwd))
+    return str(root), str(root / PROMPT_FILE)
+
+
 def argv(template: list[str], *, agent_type: str | None, cwd: str, title: str) -> list[str]:
     """Substitute per whole token. A value never becomes more argv entries than the token it fills."""
     if agent_type is None:
         template = _without_agent(template)
-    values = {"cwd": cwd, "title": title, "type": agent_type or ""}
+    root, dispatch = _paths(cwd)
+    values = {"cwd": root, "title": title, "type": agent_type or "", "dispatch": dispatch}
     out = []
     for token in template:
         unknown = [name for name in PLACEHOLDER.findall(token) if name not in values]
@@ -160,7 +187,12 @@ def ghostty_script(*, cwd: str, agent_type: str | None, claude: Path | None, tit
     if claude is None:
         raise RefusedError("cannot find `claude` on PATH; a GUI-launched terminal cannot look it up either")
     template = CLAUDE_ARGV if agent_type else _without_agent(CLAUDE_ARGV)
-    tokens = [str(claude)] + [t.replace("{type}", agent_type or "") for t in template[1:]]
+    root, dispatch = _paths(cwd)
+    values = {"cwd": root, "title": title or "", "type": agent_type or "", "dispatch": dispatch}
+    rest = [PLACEHOLDER.sub(lambda m: values.get(m.group(1), m.group(0)), t) for t in template[1:]]
+    # `env -C` first: the directory is pinned by the command, not by the field below, which Ghostty
+    # does not reliably honour when a command is set.
+    tokens = [ENV_BIN, "-C", root, str(claude)] + rest
     command = " ".join(shlex.quote(tok) for tok in tokens)
     # `set_tab_title:` is how a tab gets a name — a surface configuration has no title field, and
     # without this the tab is called after whatever the process last wrote.
@@ -224,11 +256,17 @@ def main(argv_in: list[str] | None = None) -> int:
     ap.add_argument("--date", help="YYYY-MM-DD; default: today in the workspace timezone")
     ap.add_argument("--dry-run", action="store_true", help="print the argv and start nothing")
     args = ap.parse_args(argv_in)
+    # Resolved once, here, because the two consumers used to disagree: `compose` was given a resolved
+    # worktree while the launcher was handed the raw value, so a relative `--cwd` wrote the dispatch
+    # into the right tree and then asked Ghostty for a directory it resolved against its own GUI
+    # working directory. That produced a session in the workspace root, hunting for an assignment by
+    # file mtime, and before that a tab that died silently. One value, one meaning, both callers.
+    args.cwd = os.path.abspath(args.cwd)
 
     override = os.environ.get(ENV)
     try:
         body = dispatch_prompt.compose(Path(args.root), args.date, args.lane,
-                                      worktree=Path(args.cwd).resolve(), coordinator=args.coordinator)
+                                      worktree=Path(args.cwd), coordinator=args.coordinator)
         # The override is the eval harness's recorder and the only path that still builds an argv.
         command = (argv(launcher(), agent_type=args.agent_type, cwd=args.cwd, title=args.title)
                    if override else [OSASCRIPT, "-"])
