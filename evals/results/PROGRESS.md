@@ -1169,3 +1169,14 @@ What landed, from the commits themselves: the resume strip reads as a strip rath
 One caveat carried forward rather than resolved, in the newest commit's own words: `resume-block-stays-short` has not been run on opus, and the case needs `--model opus --runs 3` before anything in it is called green. Not run here — a sweep is hours and makes the worktree read-only, and it is not what CIMP asked for.
 
 641 units green on main. This lane's own change is one stale comment: `clip_name` handles the mark pair itself since the split, so the `_unmark` beside it is no longer load-bearing for that reason, and the comment said it was. The guard stays — it also strips backticks.
+
+
+## C15 — a lane carries the sha that closed it (0.13.0)
+
+116(a), the option that survived after the time heuristic was falsified by this suite and grouping only compressed the wrong answer.
+
+`done 21:16–22:05 54b7eb3`. `landed()` is three-valued and only `landed` clears a lane: absent, unreadable, unresolvable, or git failing all fall back to today's tree-decides behaviour. A false reopen is noisy and self-clearing; a false clear is silent and permanent, so a clear is reachable only from a `merge-base` that answered yes.
+
+Proved before shipping. A/B on the live tracker, same minute: byte-identical, 157 lanes, `reopen=3 trees/13 lanes` both sides — with no sha written yet, `unknown` *is* today's behaviour. Against the real arch worktree, the one called "not on main": all five hand-verified shas return `landed`, its own unmerged tip returns `not-landed`.
+
+667 units green on the branch. Finding 116d. The writer half — three edits, two in board-ux's files — is not built and is named as a handoff.
