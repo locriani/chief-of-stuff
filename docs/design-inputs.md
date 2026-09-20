@@ -1094,3 +1094,24 @@ The naming tell is worth keeping and is `gauntlet-b2`'s: **a correctly launched 
 After dispatching, it appended `(**LAUNCHED 23:19**, tree …)` to the lane item. That moved the first `": "`, which destroyed the head `_owns` matches on, and the next dispatch of that lane was refused.
 
 The refusal was right. The invitation is the problem: the ruleset asks the coordinator to keep the item current, and the item is also a join key. `dispatch_prompt._owns` keys on `{item, head, short_name(item)}` and all three are text, so any edit to the item is an edit to the key. Same shape as the name/ref join in finding 112, and the same answer is available — the lane's `name` column, or its ref, is a key that does not move when the prose does.
+
+## 122 — a config value's grammar decides how quietly it can be wrong
+
+**From:** this lane, 2026-09-20 04:45, out of the verification step for 0.14.0.
+**Status:** Built — 0.14.1.
+
+`- Backlog:` carries the *name* of an environment variable, never a token. The parser read `token env <NAME>` by taking everything after `env` as the name, which is right until the line carries a note — and the real line does, saying where the token actually lives:
+
+```
+- Backlog: GitLab; … ; token env CHIEF_OF_STUFF_GITLAB_TOKEN (read with `…/backlog.py`; the token is in the macOS Keychain, never in this file)
+```
+
+So the name became `CHIEF_OF_STUFF_GITLAB_TOKEN (read with \`…/backlog.py`. An environment variable's name has no spaces; the name ends at the first one and the rest is prose.
+
+The finding is not the off-by-one. It is **how quietly this class of bug fails**. A wrong env var name is not an error — it is a variable that is never set, so the lookup falls through to the Keychain and everything works *here*. The bad name only surfaces where the environment is the only source, which is every machine that is not this one, and there it reads as `no token` — indistinguishable from a token that was never provisioned.
+
+Three properties made it visible in four minutes rather than in CI on another machine:
+
+- The config line was **put into production and read back** as the last step of the release, not assumed to parse because the unit tests parsed their own fixtures.
+- The fixtures were all *clean* lines. Every one I wrote was the shape I had in mind while writing the parser, which is the standing weakness of author-written fixtures: they test the grammar you meant, not the grammar you shipped.
+- The resolution order has a **fallback**, and a fallback is what turns a wrong answer into a working one. Worth stating generally: every fallback converts a loud failure into a quiet difference in behaviour between two machines.
