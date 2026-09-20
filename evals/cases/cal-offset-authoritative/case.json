@@ -1,4 +1,6 @@
 {
+  "golden": true,
+  "golden_why": "calendar: the offset, i.e. every time on the board",
   "description": "A program event's dateTime offset (-05:00) disagrees with its timeZone field. The offset is authoritative: 16:00 in the workspace timezone, not 15:00 or 17:00.",
   "tz": "America/Chicago",
   "prompt": "What's on my calendar today?",

@@ -6,6 +6,8 @@ The stream fixture is a real `claude -p --output-format stream-json --verbose` c
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -129,8 +131,55 @@ class ModelGuardTest(unittest.TestCase):
         ok, _ = run.check_arm(dict(init, model="claude-opus-5"), "baseline", model="opus")
         self.assertTrue(ok)
 
-    def test_run_py_default_model_is_opus(self) -> None:
-        self.assertEqual(run.DEFAULT_MODEL, "opus")
+    def test_run_py_default_model_is_sonnet(self) -> None:
+        # Zach, 2026-09-19: the runner's default moved. What ships did not -- see the next test.
+        self.assertEqual(run.DEFAULT_MODEL, "sonnet")
+
+    def test_the_agent_frontmatter_still_pins_opus(self) -> None:
+        """The half that matters, and the half nothing watched until the two could disagree.
+
+        `DEFAULT_MODEL` is a cost decision about how cases are MEASURED. The frontmatter is what a
+        live session RUNS on. They were the same string, so one test appeared to cover both; the
+        day they diverged, the covered one was the cheaper one. `--model` beats the frontmatter --
+        that is why a sonnet sweep is possible at all -- so the frontmatter could drift to sonnet
+        and every case would stay green while the shipped agent quietly changed model.
+        """
+        front = (run.PLUGIN_ROOT / "agents" / f"{run.AGENT}.md").read_text().split("---", 2)[1]
+        self.assertIn("model: opus", front)
+
+
+class GoldenSetTest(unittest.TestCase):
+    """The opus set. Zach, 2026-09-19: sonnet to iterate, opus on the golden cases only for green.
+
+    The mechanism is separate from the selection on purpose: which cases are golden is a policy
+    call that will change, and it lives in the case files. What must not change is that asking for
+    the golden set cannot quietly hand back nothing.
+    """
+
+    def test_golden_only_selects_marked_cases(self) -> None:
+        marked = {c.name for c in run.load_cases([], golden_only=True)}
+        self.assertTrue(marked, "no case is marked golden")
+        for c in run.load_cases([]):
+            self.assertEqual(c.spec.get("golden", False) is True, c.name in marked, c.name)
+
+    def test_golden_intersects_with_a_case_pattern(self) -> None:
+        one = sorted(c.name for c in run.load_cases([], golden_only=True))[0]
+        self.assertEqual([c.name for c in run.load_cases([one], golden_only=True)], [one])
+        # A pattern matching nothing golden yields nothing, rather than falling back to all golden.
+        self.assertEqual(run.load_cases(["no-such-case-*"], golden_only=True), [])
+
+    def test_an_empty_golden_set_is_an_error_not_a_pass(self) -> None:
+        """The absent-check shape, one more time.
+
+        `--golden` over zero cases would print "0 green, 0 red" and exit 0, which reads exactly
+        like success and is the same hole that let a delete-and-stub score 9/9 last week. The
+        selector that finds nothing has to say so.
+        """
+        with unittest.mock.patch.object(run, "load_cases", return_value=[]):
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                rc = run.main(["--arm", "agent", "--golden"])
+        self.assertNotEqual(rc, 0)
+        self.assertIn("golden", err.getvalue().lower())
 
 
 class RenderTest(unittest.TestCase):

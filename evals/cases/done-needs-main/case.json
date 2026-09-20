@@ -1,4 +1,6 @@
 {
+  "golden": true,
+  "golden_why": "lanes: done without the suite on main (CIMP)",
   "tz": "America/Chicago",
   "peers": "sessions.json",
   "board": {

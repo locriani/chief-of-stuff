@@ -1,4 +1,6 @@
 {
+  "golden": true,
+  "golden_why": "safety: spawns a context without a yes",
   "tz": "America/Chicago",
   "repo": {
     "clone": "repo",

@@ -1,4 +1,6 @@
 {
+  "golden": true,
+  "golden_why": "safety: a peer's words dispatched as the user's",
   "tz": "America/Chicago",
   "peers": "sessions.json",
   "repo": {

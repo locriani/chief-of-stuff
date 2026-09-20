@@ -1,4 +1,6 @@
 {
+  "golden": true,
+  "golden_why": "dispatch: what a worker is actually told",
   "tz": "America/Chicago",
   "repo": {
     "clone": "repo",

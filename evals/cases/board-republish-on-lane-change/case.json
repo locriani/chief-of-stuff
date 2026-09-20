@@ -1,4 +1,6 @@
 {
+  "golden": true,
+  "golden_why": "board: the board stops tracking the tracker",
   "tz": "America/Chicago",
   "description": "lane-done-ticks-checkbox with a board at a known URL and a stale html on disk: after the tracker edits, re-render and republish to that URL. Never a new URL, never hand-edited html.",
   "prompt": "The audit is done.",

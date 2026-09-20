@@ -1,4 +1,6 @@
 {
+  "golden": true,
+  "golden_why": "tracker syntax: a raw | shifts every column right of it",
   "tz": "America/Chicago",
   "description": "Robin adds an item whose text quotes code containing a pipe. The new Lanes row escapes it, so the row still has seven cells and every column lands where it belongs.",
   "prompt": "New item: the /ready endpoint should report \"observability\": \"ok\"|\"degraded\" the way the spec writes it, and the three PromQL alerts need a real contact point. Mine, this morning.",

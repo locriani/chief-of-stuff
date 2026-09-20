@@ -38,8 +38,12 @@ import make_repo  # noqa: E402
 EVALS = Path(__file__).resolve().parent
 PLUGIN_ROOT = EVALS.parent
 AGENT = "chief-of-stuff"
-# Opus only (Zach, 2026-09-16). A run whose init reports another model family fails the arm check.
-DEFAULT_MODEL = "opus"
+# Zach, 2026-09-19: "also make the case runner use sonnet". This is the HARNESS default only --
+# `--model` still overrides it, and the agent frontmatter keeps `model: opus` for the live run, so
+# what ships is unchanged. Measured the day it moved: sonnet $0.15/run against opus $0.33, and the
+# `--model` flag beats the frontmatter, so `check_arm` sees sonnet and passes rather than failing
+# the family check. Supersedes the 2026-09-16 "we don't use Sonnet for this" for the runner.
+DEFAULT_MODEL = "sonnet"
 
 # Isolation: `--setting-sources project` drops user settings (and with them user plugins and
 # permission rules) but still loads the fixture CLAUDE.md. `--restricted` was probed and skips
@@ -576,13 +580,22 @@ class Case:
     spec: dict[str, Any]
 
 
-def load_cases(patterns: list[str]) -> list[Case]:
+def load_cases(patterns: list[str], golden_only: bool = False) -> list[Case]:
+    """The cases to run. `golden_only` keeps just the ones their spec marks `"golden": true`.
+
+    Zach, 2026-09-19: sonnet to iterate, opus on the golden cases only for full green. The mark
+    lives in each case.json rather than a list here, so adding a case and deciding whether it is
+    golden are the same edit and cannot drift apart.
+    """
     cases = []
     for spec_path in sorted((EVALS / "cases").glob("*/case.json")):
         name = spec_path.parent.name
         if patterns and not any(fnmatch.fnmatch(name, p) for p in patterns):
             continue
-        cases.append(Case(name, spec_path.parent, json.loads(spec_path.read_text())))
+        spec = json.loads(spec_path.read_text())
+        if golden_only and spec.get("golden") is not True:
+            continue
+        cases.append(Case(name, spec_path.parent, spec))
     return cases
 
 
@@ -1279,11 +1292,16 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--model", default=DEFAULT_MODEL)
     ap.add_argument("--case", action="append", default=[], help="case name glob; repeatable")
     ap.add_argument("--runs", type=int, default=1)
+    ap.add_argument("--golden", action="store_true",
+                    help='only cases marked "golden": true; the set green is called on, run with --model opus')
     args = ap.parse_args(argv)
 
-    cases = load_cases(args.case)
+    cases = load_cases(args.case, golden_only=args.golden)
     if not cases:
-        print("no cases matched", file=sys.stderr)
+        # Never "0 green, 0 red, exit 0". A selector that finds nothing reads exactly like a
+        # clean run, which is the absent-check hole that scored a delete-and-stub 9/9.
+        why = "no golden case matched" if args.golden else "no cases matched"
+        print(why, file=sys.stderr)
         return 2
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     harness_error = any_fail = False

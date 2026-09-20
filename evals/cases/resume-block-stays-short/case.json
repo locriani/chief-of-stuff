@@ -1,4 +1,6 @@
 {
+  "golden": true,
+  "golden_why": "resume: the block that grows until nothing reads it",
   "tz": "America/Chicago",
   "peers": "sessions.json",
   "board": {

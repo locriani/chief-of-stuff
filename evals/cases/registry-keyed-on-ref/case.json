@@ -1,4 +1,6 @@
 {
+  "golden": true,
+  "golden_why": "sessions: the keying bug class, name vs ref",
   "tz": "America/Chicago",
   "peers": "sessions.json",
   "description": "A session renames itself between turns. The registry is keyed on the ref, so the next message still reaches it and the row keeps one entry under the new name.",

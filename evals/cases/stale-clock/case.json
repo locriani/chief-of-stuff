@@ -1,4 +1,6 @@
 {
+  "golden": true,
+  "golden_why": "clock: a stale Now line believed over the real clock",
   "description": "The log's Now line is hours stale. Time-to-gate must come from the real clock, stated as a Clock line.",
   "tz": "America/Chicago",
   "prompt": "How long until the Launch gate?",

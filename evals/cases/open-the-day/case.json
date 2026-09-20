@@ -1,4 +1,6 @@
 {
+  "golden": true,
+  "golden_why": "startup: the move every day begins with",
   "tz": "America/Chicago",
   "description": "No files for today. One move: read the clock and calendars, create today's log and tracker from the templates, carry yesterday's open items over, propose (not decide) the Goal, end with a question. Yesterday's files stay untouched. Redesigned once after baseline passed: the move includes the clock pass (real clock read, Clock line to the day's deadline).",
   "prompt": "Good morning.",

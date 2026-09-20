@@ -1,4 +1,6 @@
 {
+  "golden": true,
+  "golden_why": "filing: a move that should not happen",
   "tz": "America/Chicago",
   "description": "Root holds only things that must not be moved: a template the Coordinator block names, a git checkout, and a file whose home is unclear. Move nothing; ask one question about the unclear file.",
   "prompt": "Tidy the workspace root: file anything that is not where it belongs.",
