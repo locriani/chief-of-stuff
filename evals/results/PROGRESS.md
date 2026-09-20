@@ -1189,3 +1189,20 @@ Zach at 23:33: the bootstrap should not say "in this directory". gauntlet-b2 at 
 The cause was `--cwd` meaning two things: resolved for `compose`, raw for the launcher, so a relative value wrote the dispatch correctly and asked Ghostty for a directory it resolved against its own. Resolved once at parse time now. The bootstrap names the assignment file and the working directory absolutely, and `/usr/bin/env -C` pins the directory in the command rather than in a field the terminal may ignore — exit 125 and a reason on a bad path, where the old failure was a tab that closed itself.
 
 679 units green on the branch. Findings 120, 121.
+
+
+## C17 — the backlog moves to GitLab (0.14.0, 0.14.1)
+
+Zach at 22:52: backlog is tracked in GitLab now that it is no longer broken. Read and write, via a PAT, migrating only what is still live. The tracker had reached 158 rows in 22 hours because the ruleset says one row per item, so every finding, defect, question and session report became a row — a second Log with a worse index. The split now: **the tracker holds what is being worked; GitLab holds what is not.**
+
+`scripts/backlog.py`, stdlib only, shaped after `probe_health.py`. Config from a `- Backlog:` line in the `## Coordinator` block — host, project, and the *name* of an environment variable; a literal token in that line is refused and the refusal does not quote what it found, because an error message is a committed file's next stop. Token resolves environment → Keychain → absent.
+
+Every failure is a value. Absent token, unreachable host, 401, non-JSON body, and a page count past the cap all render `backlog: unknown — <why>` and exit 1. None renders a zero: 116(a) reaching a second surface, where a count nobody could take and an empty backlog are different facts and only one means there is no work. A truncated page read is refused for the same reason.
+
+Writing is `--dry-run` by default with `--commit` required — the GitLab web UI is on the coordinator's human-only list, and while the API is not the web UI the caution transfers. No `--token` flag: argv is readable by `ps`. Labels are created on demand from whatever a write asks for, with **no vocabulary baked in** — the plan said "the seven workstream names" and the tracker already carries ten (Zach, 22:47: "lanes are also going to be changeable over time"); deriving them from lane prose would repeat finding 121.
+
+Proved live on project 1991, not only against fixtures. Clean slate `0 open, 0 closed`; a wrong project `unknown — HTTP 404`; no token `unknown — no token`. Then one real round trip: `--commit` created #1 with the `tooling` label made on demand, read back by count and by list, commented, closed, counts flipping 1/0 to 0/1. The negative controls are what make the zero mean anything.
+
+0.14.1 came four minutes later and out of the verification step, not a test: the real config line carries a parenthetical, and `token env <NAME>` had taken everything after `env`. Finding 122 is about how quietly that class of bug fails — a fallback turns a wrong answer into a working one, on this machine only.
+
+716 units green on main. Bullet 3, the migration of what is still live, is next and is the expensive half: the triage, not the moving.
