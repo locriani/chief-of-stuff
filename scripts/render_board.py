@@ -162,7 +162,14 @@ class Lane:
 SESSION_STATES = ("planning", "working", "waiting", "idle")
 # The Lanes rule's own vocabulary, as a whole cell. It is what makes an over-wide row recoverable: every other
 # lane column is prose, a date or blank, and none of them can be told apart from the item they drifted out of.
-LANE_STATE = re.compile(r"(?i)^(?:open|waiting|orphaned|done|running\s+\d{1,2}:\d{2}|done\s+\d{1,2}:\d{2}(?:[\u2013-]\d{1,2}:\d{2})?)$")
+# A `done` state may carry the sha that landed it (`done 21:16–22:05 db4aa3b`), which `audit_lanes.py` needs to
+# clear a lane from `merge-base --is-ancestor` rather than from the owner's tree. Without this the one lane
+# carrying its own evidence would be the one lane `_anchor` could not recover from a stray pipe.
+# Hex and 7–40 wide, so it stays recognisable ON SIGHT: `done, merged by impl-2` is prose, and admitting prose
+# here would let an item cell claim the anchor.
+LANE_STATE = re.compile(
+    r"(?i)^(?:open|waiting|orphaned|running\s+\d{1,2}:\d{2}"
+    r"|done(?:\s+\d{1,2}:\d{2}(?:[\u2013-]\d{1,2}:\d{2})?)?(?:\s+[0-9a-f]{7,40})?)$")
 READY = re.compile(r"(?i)\bready for decommissioning\b")
 # `Zach — A2, A3, B`: the target, then why. An em dash, an en dash or a hyphen, because three
 # different sessions have written this cell and they did not agree.

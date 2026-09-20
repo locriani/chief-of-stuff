@@ -2793,6 +2793,52 @@ class LaneAnchorTest(unittest.TestCase):
         self.assertIn("3 cells", lane.warning)
 
 
+class LaneStateCarriesAShaTest(unittest.TestCase):
+    """`done HH:MM–HH:MM <sha>` — the commit that carried the lane's change onto main.
+
+    chief-of-stuff-improvements 0.13.0 (`3c8476e`) makes `landed()` three-valued, and only a
+    `merge-base --is-ancestor` that answers yes clears a lane. That needs the sha written in the
+    state cell. `LANE_STATE` is the vocabulary as a WHOLE cell, so a sha-bearing state stops being
+    recognisable — and its one caller is `_anchor`, the recovery for a row that grew a stray pipe.
+    A lane that carries evidence would be the one lane that cannot be recovered.
+    """
+
+    SHA = "db4aa3b"
+
+    def test_the_vocabulary_admits_a_trailing_sha(self) -> None:
+        for cell in (f"done 21:16–22:05 {self.SHA}", f"done 21:16 {self.SHA}", f"done {self.SHA}"):
+            self.assertTrue(rb.LANE_STATE.match(cell), cell)
+
+    def test_it_still_admits_every_state_without_one(self) -> None:
+        for cell in ("open", "waiting", "orphaned", "done", "running 09:00",
+                     "done 21:16", "done 21:16–22:05"):
+            self.assertTrue(rb.LANE_STATE.match(cell), cell)
+
+    def test_it_does_not_admit_prose_after_the_state(self) -> None:
+        """The cell is recognisable on sight or it is not an anchor. `done, merged by impl-2` is
+        prose, and admitting it would let an item cell claim the anchor."""
+        for cell in ("done, merged by impl-2", "done 21:16 by hand", "running 09:00 slowly",
+                     "done zzzz", "done 21:16–22:05 not-a-sha!"):
+            self.assertIsNone(rb.LANE_STATE.match(cell), cell)
+
+    def test_a_sha_bearing_row_with_a_stray_pipe_still_recovers(self) -> None:
+        text = SIZED_TRACKER.replace("| A oldest | worker | open | 2026-09-15 |  | M | c |",
+                                     f"| A|B plain | worker | done 09:00–10:00 {self.SHA} | 2026-09-15 |  | M | c |")
+        lane = {l.item: l for l in rb.parse_tracker(text).lanes}["A|B plain"]
+        self.assertEqual(lane.owner, "worker")
+        self.assertEqual(lane.state, f"done 09:00–10:00 {self.SHA}")
+        self.assertEqual(lane.size, "M")
+
+    def test_the_sha_reaches_the_board_as_written(self) -> None:
+        """Confirmed against the rendered artifact, not the call graph: chief-of-stuff-improvements
+        read the code and said the sha would show; it also said its own read was a hypothesis."""
+        text = SIZED_TRACKER.replace("| A oldest | worker | open | 2026-09-15 |  | M | c |",
+                                     f"| A oldest | worker | done 09:00–10:00 {self.SHA} | 2026-09-15 |  | M | c |")
+        cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        html = rb.render(text, LOG, cfg, NOW)
+        self.assertIn(self.SHA, html)
+
+
 class TruncationAndPositionTest(unittest.TestCase):
     """A lane's name is not cut, and nothing on the board moves because a fold opened.
 
