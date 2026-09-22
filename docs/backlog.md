@@ -1,10 +1,28 @@
-# The backlog lives in GitLab
+# The backlog lives in an issue tracker
 
 The tracker reached 158 rows in 22 hours because the ruleset says one row per item, so every finding, defect, question and session report became a row. It had become a second Log with a worse index. Zach, 2026-09-19 22:52: the backlog is tracked in GitLab now that it is no longer broken.
 
 The split: **the tracker holds what is being worked; GitLab holds what is not.**
 
-## Where it is
+## GitHub
+
+Zach, 2026-09-22 13:40: *"for all future issue tracking, I want it to be stored in https://github.com/locriani/GauntletIssues as github issues."* The GitLab sections below stay because the client still reads GitLab lines unchanged.
+
+```
+- Backlog: GitHub issues; repo https://github.com/locriani/GauntletIssues (private); …
+```
+
+A first part starting with `GitHub` selects GitHub. `repo` takes a URL or `owner/name`; the repo ends at the first space, so a parenthetical and any trailing prose are ignored. There is no token part: `gh` holds the login.
+
+Reads go through `gh issue list --json`. The GitLab rules carry over: a failure is `backlog: unknown — <why>` and never a zero, and a result that fills `GH_LIMIT` (5000, the same ceiling as `MAX_PAGES` pages) is refused as partial.
+
+**`backlog.py` reads and closes GitHub issues; it does not file or comment.** GitHub issue text is held to two rules — no issue cited in prose, linked with native relationships instead; and a body that is a filled issue template whose field types set the caps. `gh-issue new` in ai-additions' `github-utilities` is the filing surface and its PreToolUse guard holds raw `gh issue` writes to the same rules. A second writer here would be the way around both, so `--create` and `--comment` fail and name the tool to use. `--close` works, dry-run by default like every write.
+
+`migrate_backlog.py` is GitLab-era: against a GitHub line, `--apply` reports a refusal per row and writes nothing.
+
+Proved live against `locriani/GauntletIssues`: `backlog: 3 open, 2 closed`; `--list` and `--state closed --list` match `gh issue list`; `--create` exits 1 with the refusal.
+
+## Where it is (GitLab)
 
 `labs.gauntletai.com`, project `zachgardner/openemr` (id 1991), issues enabled. That host is the only authorized one for this project — workspace `CLAUDE.md` house rule 2 — and it is also the one the fork already pushes to.
 

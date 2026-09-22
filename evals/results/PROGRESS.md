@@ -1221,3 +1221,15 @@ Two hashes, because the tracker moves while the report is being read. Each row i
 The table is read through `render_board`'s mark-aware splitter, and `short_name`/`clip_name` with it. A second splitter would have reintroduced finding 100, where a `|` inside a code span is a pipe — and the `short_name`/`clip_name` pairing is exactly what board-ux split apart in 0.12.9: the clause-boundary name for the title, the hard mark-safe cut for the width. Read-only import of another lane's file, no edit.
 
 734 units green on main. First run on the live tracker, 165 rows: 82 move, 34 keep, 46 closed, 3 check. Nothing created. The report is Zach's to correct.
+
+
+## C19 — the backlog reads GitHub (0.16.0)
+
+Zach at 13:40 moved all future issue tracking to `locriani/GauntletIssues`, and the new `- Backlog:` line broke the client: the first part was ignored, so it was read as GitLab and exited 2 with "backlog needs a host".
+
+A first part starting with `GitHub` now takes `repo <url|owner/name>` and reads through `gh issue list --json`, injected like the Keychain lookup. Both GitLab rules carry over — unknown is never zero, and a list that fills the limit is refused as partial.
+
+GitHub writes stop here. Issue text there is held to two rules — no issue cited in prose, a body that is a filled template — by `gh-issue` and its PreToolUse guard in ai-additions' `github-utilities`. A second writer would be the way around both, so `--create` and `--comment` fail and name `gh-issue`; `--close` works.
+
+Proved live: `backlog: 3 open, 2 closed`, the lists match `gh issue list`, `--create` exits 1 with the refusal. 21 new units, no socket. The full suite has one failure that predates this change: `test_render_board.RequirementsTest.test_cli_reads_files_and_summarises` fails identically on untouched `90c6a45`.
+
