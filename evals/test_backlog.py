@@ -455,5 +455,186 @@ class CliWriteTest(unittest.TestCase):
         self.assertEqual([a.method for a in server.seen if a.method == "POST"], ["POST"])
 
 
+# ---- GitHub -------------------------------------------------------------------------------------
+#
+# Zach, 2026-09-22 13:40: "for all future issue tracking, I want it to be stored in
+# https://github.com/locriani/GauntletIssues as github issues." `gh` carries the auth; the runner is
+# injected, so none of these touch the network or a socket.
+
+LIVE_LINE = (
+    "- Backlog: GitHub issues; repo https://github.com/locriani/GauntletIssues (private); read and write "
+    "with `gh issue` (Zach, 2026-09-22 13:40: \"for all future issue tracking, I want it to be stored in "
+    "https://github.com/locriani/GauntletIssues as github issues.\")\n"
+)
+REPO = "locriani/GauntletIssues"
+GH = bl.GitHubBacklog(repo=REPO)
+
+
+def gh_issue(number: int, title: str, state: str = "OPEN", labels=()) -> dict:
+    return {"number": number, "title": title, "state": state, "labels": [{"name": n} for n in labels],
+            "url": f"https://github.com/{REPO}/issues/{number}", "updatedAt": "2026-09-22T19:24:55Z"}
+
+
+class FakeGh:
+    """Answers `gh issue list` per --state from `rows`, `gh issue close` with `close_rc`. Records argv."""
+
+    def __init__(self, rows: dict | None = None, fail: dict | None = None, close_rc: int = 0):
+        self.rows = rows or {}
+        self.fail = fail or {}
+        self.close_rc = close_rc
+        self.calls: list[list[str]] = []
+
+    def __call__(self, args: list[str]) -> tuple[int, str, str]:
+        self.calls.append(list(args))
+        if args[:2] == ["issue", "list"]:
+            state = args[args.index("--state") + 1]
+            if state in self.fail:
+                return self.fail[state]
+            return 0, json.dumps(self.rows.get(state, [])), ""
+        if args[:2] == ["issue", "close"]:
+            return (self.close_rc, "", "could not close") if self.close_rc else (0, "", "")
+        raise AssertionError(f"unexpected gh call: {args}")
+
+
+class GitHubConfigTest(unittest.TestCase):
+    def test_live_line_parses_as_written(self):
+        self.assertEqual(bl.backlog_from_config(written(config_text(LIVE_LINE))), GH)
+
+    def test_stage_five_suffix_is_ignored(self):
+        line = LIVE_LINE.rstrip("\n") + "; file with `gh-issue new`\n"
+        self.assertEqual(bl.backlog_from_config(written(config_text(line))), GH)
+
+    def test_repo_forms(self):
+        for spec in ("GitHub; repo o/n", "github; repo https://github.com/o/n.git", "GitHub issues; repo `o/n`"):
+            with self.subTest(spec=spec):
+                self.assertEqual(bl.parse_backlog(spec), bl.GitHubBacklog(repo="o/n"))
+
+    def test_repo_is_required_and_shaped(self):
+        for spec in ("GitHub issues", "GitHub; repo", "GitHub; repo just-a-name", "GitHub; repo a/b/c"):
+            with self.subTest(spec=spec):
+                with self.assertRaises(bl.BacklogError):
+                    bl.parse_backlog(spec)
+
+    def test_gitlab_line_is_still_gitlab(self):
+        got = bl.parse_backlog("GitLab; host https://labs.gauntletai.com; project zachgardner/openemr")
+        self.assertIsInstance(got, bl.Backlog)
+
+
+class GitHubReadTest(unittest.TestCase):
+    def test_list_argv_and_mapping(self):
+        gh = FakeGh(rows={"open": [gh_issue(3, "inbox.py", labels=("bug",))]})
+        got = bl.issues(GH, gh=gh)
+        self.assertTrue(got.ok, got.error)
+        self.assertEqual(gh.calls, [["issue", "list", "-R", REPO, "--state", "open", "--json",
+                                     "number,title,state,labels,url,updatedAt", "--limit", "5000"]])
+        self.assertEqual(got.issues, (bl.Issue(iid=3, title="inbox.py", state=bl.OPEN, labels=("bug",),
+                                                web_url=f"https://github.com/{REPO}/issues/3",
+                                                updated_at="2026-09-22T19:24:55Z"),))
+
+    def test_closed_and_all(self):
+        gh = FakeGh(rows={"closed": [gh_issue(4, "p", "CLOSED")], "all": [gh_issue(1, "a"), gh_issue(4, "p", "CLOSED")]})
+        self.assertEqual([i.state for i in bl.issues(GH, state=bl.CLOSED, gh=gh).issues], [bl.CLOSED])
+        self.assertEqual([i.state for i in bl.issues(GH, state="all", gh=gh).issues], [bl.OPEN, bl.CLOSED])
+
+    def test_labels_narrow(self):
+        gh = FakeGh()
+        bl.issues(GH, labels=("bug", "agent"), gh=gh)
+        self.assertEqual(gh.calls[0][-4:], ["--label", "bug", "--label", "agent"])
+
+    def test_limit_reached_is_not_a_whole_list(self):
+        gh = FakeGh(rows={"open": [gh_issue(n, "t") for n in range(bl.GH_LIMIT)]})
+        got = bl.issues(GH, gh=gh)
+        self.assertFalse(got.ok)
+        self.assertIn("partial", got.error)
+
+    def test_failures_are_unknown_never_empty(self):
+        for fail, needle in (((1, "", "HTTP 404: Not Found"), "HTTP 404"), ((0, "not json", ""), "JSON"),
+                             ((127, "", "gh not found"), "gh not found")):
+            with self.subTest(needle=needle):
+                got = bl.issues(GH, gh=FakeGh(fail={"open": fail}))
+                self.assertFalse(got.ok)
+                self.assertIn(needle, got.error)
+                self.assertEqual(got.issues, ())
+
+    def test_run_gh_without_gh_installed(self):
+        with patch("subprocess.run", side_effect=FileNotFoundError("gh")):
+            self.assertEqual(bl.run_gh(["issue", "list"]), (127, "", "gh not found"))
+
+    def test_counts(self):
+        gh = FakeGh(rows={"open": [gh_issue(n, "t") for n in (1, 2, 3)], "closed": [gh_issue(4, "t", "CLOSED")]})
+        self.assertEqual(bl.counts(GH, gh=gh), bl.Counts(open=3, closed=1))
+        self.assertEqual([c[c.index("--json") + 1] for c in gh.calls], ["number", "number"])
+
+    def test_counts_half_known_is_unknown(self):
+        gh = FakeGh(rows={"open": [gh_issue(1, "t")]}, fail={"closed": (1, "", "rate limited")})
+        got = bl.counts(GH, gh=gh)
+        self.assertEqual((got.open, got.closed), (None, None))
+        self.assertIn("rate limited", got.error)
+
+
+class GitHubWriteTest(unittest.TestCase):
+    def test_create_is_refused_and_names_gh_issue(self):
+        gh = FakeGh()
+        got = bl.create(GH, "a title", body="b", labels=("bug",), commit=True, gh=gh)
+        self.assertFalse(got.ok)
+        self.assertIn("gh-issue new", got.error)
+        self.assertEqual(gh.calls, [])
+
+    def test_comment_is_refused_and_names_gh_issue_comment(self):
+        gh = FakeGh()
+        got = bl.comment(GH, 3, "b", commit=True, gh=gh)
+        self.assertFalse(got.ok)
+        self.assertIn("gh issue comment", got.error)
+        self.assertEqual(gh.calls, [])
+
+    def test_close_dry_run(self):
+        gh = FakeGh()
+        got = bl.close(GH, 5, gh=gh)
+        self.assertEqual(bl.write_line(got), "would close: #5")
+        self.assertEqual(gh.calls, [])
+
+    def test_close_commit(self):
+        gh = FakeGh()
+        got = bl.close(GH, 5, commit=True, gh=gh)
+        self.assertEqual(gh.calls, [["issue", "close", "5", "-R", REPO]])
+        self.assertEqual(bl.write_line(got), "closed #5")
+
+    def test_close_failure(self):
+        got = bl.close(GH, 5, commit=True, gh=FakeGh(close_rc=1))
+        self.assertIn("could not close", got.error)
+
+
+class GitHubCliTest(unittest.TestCase):
+    def setUp(self):
+        self.config = str(written(config_text(LIVE_LINE)))
+        self.gh = FakeGh(rows={"open": [gh_issue(n, f"t{n}", labels=("bug",)) for n in (1, 2, 3)],
+                               "closed": [gh_issue(n, f"t{n}", "CLOSED") for n in (4, 5)]})
+        patcher = patch.object(bl, "run_gh", self.gh)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def run_main(self, *argv: str) -> tuple[int, str]:
+        from contextlib import redirect_stdout
+        import io
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = bl.main(["--config", self.config, *argv])
+        return code, out.getvalue()
+
+    def test_count(self):
+        self.assertEqual(self.run_main(), (0, "backlog: 3 open, 2 closed\n"))
+
+    def test_list(self):
+        code, out = self.run_main("--list")
+        self.assertEqual(code, 0)
+        self.assertEqual(out.splitlines(), ["#1 t1 [bug]", "#2 t2 [bug]", "#3 t3 [bug]"])
+
+    def test_create_exits_one_with_the_refusal(self):
+        code, out = self.run_main("--create", "a title", "--commit")
+        self.assertEqual(code, 1)
+        self.assertIn("create failed: a title", out)
+        self.assertIn("gh-issue new", out)
+
+
 if __name__ == "__main__":
     unittest.main()

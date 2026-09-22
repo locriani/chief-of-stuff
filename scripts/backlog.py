@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Read the backlog out of GitLab, so the tracker can hold what is being worked and nothing else.
+"""Read the backlog out of GitLab or GitHub, so the tracker can hold what is being worked and nothing else.
+
+Zach moved the tracker to GitHub on 2026-09-22 13:40: "for all future issue tracking, I want it to be
+stored in https://github.com/locriani/GauntletIssues as github issues." A `- Backlog:` line whose
+first part starts with `GitHub` names a `repo`, is read through `gh`, and is written only by
+`gh-issue` (see GH_FILE_WITH). Every other line is the GitLab client below, unchanged.
 
 The tracker grew to 158 rows in 22 hours because the ruleset says one row per item, so every
 finding, defect and question became a row and the file became a second Log with a worse index.
@@ -66,6 +71,30 @@ class Backlog:
 
 
 @dataclass(frozen=True)
+class GitHubBacklog:
+    """A GitHub repo's issues, read through `gh`. `gh` holds the login, so there is no token to name."""
+
+    repo: str
+
+
+# `gh issue list` has no pages to follow, only a limit. The same ceiling as GitLab's pages: a result
+# that fills it may have been cut, and a cut list is refused rather than read as the whole backlog.
+GH_LIMIT = PER_PAGE * MAX_PAGES
+GH_FIELDS = "number,title,state,labels,url,updatedAt"
+GH_STATE = {OPEN: "open", CLOSED: "closed", "all": "all"}
+GH_REPO = re.compile(r"^[\w.-]+/[\w.-]+$")
+
+
+def run_gh(args: list[str]) -> tuple[int, str, str]:
+    """One `gh` call. Raises nothing: a missing `gh` is an answer like any other failure."""
+    try:
+        done = subprocess.run(["gh", *args], capture_output=True, text=True, check=False)
+    except FileNotFoundError:
+        return 127, "", "gh not found"
+    return done.returncode, done.stdout, done.stderr
+
+
+@dataclass(frozen=True)
 class Issue:
     iid: int
     title: str
@@ -123,6 +152,8 @@ def parse_backlog(spec: str) -> Backlog:
     next stop.
     """
     parts = [p.strip() for p in spec.split(";") if p.strip()]
+    if parts and parts[0].lower().startswith("github"):
+        return _parse_github(parts)
     host = project = ""
     env = DEFAULT_ENV
     for part in parts[1:]:
@@ -152,7 +183,21 @@ def parse_backlog(spec: str) -> Backlog:
     return Backlog(host=host, project=project, env=env)
 
 
-def backlog_from_config(path: Path) -> Backlog | None:
+def _parse_github(parts: list[str]) -> GitHubBacklog:
+    """`GitHub…; repo <url|owner/name>`. The repo ends at the first space; a parenthetical is prose."""
+    repo = ""
+    for part in parts[1:]:
+        key, _, value = part.partition(" ")
+        if key.lower() == "repo":
+            words = value.split()
+            repo = words[0].strip("`") if words else ""
+    repo = re.sub(r"^https?://(?:www\.)?github\.com/", "", repo).removesuffix(".git").strip("/")
+    if not GH_REPO.match(repo):
+        raise BacklogError(f"backlog needs a repo owner/name: {repo or 'none given'}")
+    return GitHubBacklog(repo=repo)
+
+
+def backlog_from_config(path: Path) -> Backlog | GitHubBacklog | None:
     """The `Backlog:` line inside `## Coordinator`, or None. No line is a workspace without a backlog."""
     body = "\n".join(_section(Path(path).read_text(), "## Coordinator"))
     m = BACKLOG.search(body)
@@ -219,9 +264,41 @@ def _issue(row: dict) -> Issue:
     )
 
 
-def issues(cfg: Backlog, token: str | None = None, state: str = OPEN, labels: tuple[str, ...] = (),
-           per_page: int = PER_PAGE, timeout: float = TIMEOUT) -> Fetch:
+def _gh_list(cfg: GitHubBacklog, state: str, fields: str, labels: tuple[str, ...], gh) -> tuple[list, str]:
+    args = ["issue", "list", "-R", cfg.repo, "--state", GH_STATE[state], "--json", fields, "--limit", str(GH_LIMIT)]
+    for label in labels:
+        args += ["--label", label]
+    rc, out, err = gh(args)
+    if rc != 0:
+        return [], f"gh: {(err.strip().splitlines() or ['exit ' + str(rc)])[-1]}"
+    try:
+        rows = json.loads(out)
+    except ValueError:
+        return [], "GitHub did not answer with JSON"
+    if not isinstance(rows, list):
+        return [], "GitHub answered with something that is not a list of issues"
+    if len(rows) >= GH_LIMIT:
+        return [], f"{GH_LIMIT} issues or more; refusing to read a partial backlog as whole"
+    return rows, ""
+
+
+def _gh_issue(row: dict) -> Issue:
+    return Issue(
+        iid=int(row.get("number", 0)),
+        title=str(row.get("title", "")),
+        state=CLOSED if str(row.get("state", "")).upper() == "CLOSED" else OPEN,
+        labels=tuple(str(x.get("name", "")) for x in row.get("labels", ()) if isinstance(x, dict)),
+        web_url=str(row.get("url", "")),
+        updated_at=str(row.get("updatedAt", "")),
+    )
+
+
+def issues(cfg: Backlog | GitHubBacklog, token: str | None = None, state: str = OPEN,
+           labels: tuple[str, ...] = (), per_page: int = PER_PAGE, timeout: float = TIMEOUT, gh=None) -> Fetch:
     """Every page of `state` issues, or the reason there are none. Never a partial list read as whole."""
+    if isinstance(cfg, GitHubBacklog):
+        rows, error = _gh_list(cfg, state, GH_FIELDS, labels, gh or run_gh)
+        return Fetch(error=error) if error else Fetch(issues=tuple(_gh_issue(r) for r in rows if isinstance(r, dict)))
     secret = token if token is not None else globals()["token"](cfg)
     if not secret:
         return Fetch(error=f"no token: set ${cfg.env} or add it to the Keychain as {cfg.service}")
@@ -256,8 +333,16 @@ def _total(cfg: Backlog, secret: str, state: str, timeout: float) -> tuple[int |
     return (len(fetched.issues), "") if fetched.ok else (None, fetched.error)
 
 
-def counts(cfg: Backlog, token: str | None = None, timeout: float = TIMEOUT) -> Counts:
+def counts(cfg: Backlog | GitHubBacklog, token: str | None = None, timeout: float = TIMEOUT, gh=None) -> Counts:
     """Open and closed. One failure makes both unknown: half a count is a count nobody can act on."""
+    if isinstance(cfg, GitHubBacklog):
+        got = {}
+        for state in (OPEN, CLOSED):
+            rows, error = _gh_list(cfg, state, "number", (), gh or run_gh)
+            if error:
+                return Counts(error=error)
+            got[state] = len(rows)
+        return Counts(open=got[OPEN], closed=got[CLOSED])
     secret = token if token is not None else globals()["token"](cfg)
     if not secret:
         return Counts(error=f"no token: set ${cfg.env} or add it to the Keychain as {cfg.service}")
@@ -362,9 +447,21 @@ def ensure_labels(cfg: Backlog, names: tuple[str, ...], token: str | None = None
     return tuple(out)
 
 
-def create(cfg: Backlog, title: str, body: str = "", labels: tuple[str, ...] = (),
-           token: str | None = None, commit: bool = False, timeout: float = TIMEOUT) -> Written:
+# GitHub issue text is held to two rules — no issue cited in prose, and a body that is a filled
+# template — by `gh-issue` and its PreToolUse guard in ai-additions' github-utilities. A second writer
+# here would be a way around both, so on GitHub this module reads and closes, and names the tool
+# that writes.
+GH_FILE_WITH = ("GitHub issues are filed with gh-issue new (templates and native relationships); "
+                "backlog.py does not write them")
+GH_COMMENT_WITH = ("GitHub comments go through gh issue comment, which github-utilities checks; "
+                   "backlog.py does not write them")
+
+
+def create(cfg: Backlog | GitHubBacklog, title: str, body: str = "", labels: tuple[str, ...] = (),
+           token: str | None = None, commit: bool = False, timeout: float = TIMEOUT, gh=None) -> Written:
     """One issue. Its labels are made first: GitLab drops an unknown label rather than refusing it."""
+    if isinstance(cfg, GitHubBacklog):
+        return Written(CREATE, title, error=GH_FILE_WITH)
     secret = _secret(cfg, token)
     if not secret:
         return Written(CREATE, title, error=f"no token: set ${cfg.env} or add it to the Keychain as {cfg.service}")
@@ -386,10 +483,15 @@ def create(cfg: Backlog, title: str, body: str = "", labels: tuple[str, ...] = (
     return Written(CREATE, title, done=True, iid=int(row.get("iid", 0)) or None, url=str(row.get("web_url", "")))
 
 
-def close(cfg: Backlog, iid: int, token: str | None = None, commit: bool = False,
-          timeout: float = TIMEOUT) -> Written:
-    secret = _secret(cfg, token)
+def close(cfg: Backlog | GitHubBacklog, iid: int, token: str | None = None, commit: bool = False,
+          timeout: float = TIMEOUT, gh=None) -> Written:
     what = f"#{iid}"
+    if isinstance(cfg, GitHubBacklog):
+        if not commit:
+            return Written(CLOSE, what)
+        rc, _out, err = (gh or run_gh)(["issue", "close", str(iid), "-R", cfg.repo])
+        return Written(CLOSE, what, done=rc == 0, iid=iid, error="" if rc == 0 else f"gh: {err.strip()}")
+    secret = _secret(cfg, token)
     if not secret:
         return Written(CLOSE, what, error=f"no token: set ${cfg.env} or add it to the Keychain as {cfg.service}")
     if not commit:
@@ -398,10 +500,12 @@ def close(cfg: Backlog, iid: int, token: str | None = None, commit: bool = False
     return Written(CLOSE, what, done=not error, iid=iid, error=error)
 
 
-def comment(cfg: Backlog, iid: int, body: str, token: str | None = None, commit: bool = False,
-            timeout: float = TIMEOUT) -> Written:
-    secret = _secret(cfg, token)
+def comment(cfg: Backlog | GitHubBacklog, iid: int, body: str, token: str | None = None, commit: bool = False,
+            timeout: float = TIMEOUT, gh=None) -> Written:
     what = f"#{iid}"
+    if isinstance(cfg, GitHubBacklog):
+        return Written(COMMENT, what, error=GH_COMMENT_WITH)
+    secret = _secret(cfg, token)
     if not secret:
         return Written(COMMENT, what, error=f"no token: set ${cfg.env} or add it to the Keychain as {cfg.service}")
     if not commit:
@@ -423,7 +527,7 @@ def issue_line(one: Issue) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Read the GitLab backlog named in a ## Coordinator block.")
+    parser = argparse.ArgumentParser(description="Read the GitLab or GitHub backlog named in a ## Coordinator block.")
     parser.add_argument("--config", default="CLAUDE.md", help="workspace CLAUDE.md holding the block")
     parser.add_argument("--list", action="store_true", help="one line per issue instead of a count")
     parser.add_argument("--state", default=OPEN, choices=(OPEN, CLOSED, "all"), help="which issues")
