@@ -6,11 +6,12 @@ The board is a view of the tracker and nothing else: every bar start and end cit
 instant, and the deadline instants, and draws its own clock and now-lines client-side.
 
 The charts draw the schedule only. Today: running lanes and lanes that end today get a bar; every
-other active lane folds into one summary row. Week: running lanes and lanes with a concrete due get
+other active lane folds into one summary row, and lanes done inside the window are drawn under a Done
+swimlane. The Today axis runs 8 hours behind this hour and 16 ahead. Week: running lanes and lanes with a concrete due get
 a bar, grouped into one row per due day when several share it (overdue and past-the-week lanes get one row
 each); the rest fold into one row per deadline. The Week axis spans at most 7 days; later deadlines are an
 edge marker. Folded lanes keep their citations as `.member`
-spans. Done lanes and full item text appear only in the Lanes table.
+spans. Full item text appears only in the Lanes table.
 
 A deadline line may name a requirements file (`- Final: 2026-09-20 12:00; requirements `path``): checkbox
 lines under `## ` headings, evidence after ` — evidence: `. The board shows it, with a done count, for
@@ -69,6 +70,10 @@ REQ_LINE = re.compile(r"^(\s*)- \[([ xX])\]\s+(.*?)\s*$")
 EVIDENCE = " — evidence: "
 TICK_STEPS_H = (1, 2, 3, 4, 6)
 WEEK_DAYS = 7
+# The day strip's window around this hour (Zach, 2026-09-22: "the full rolling 24 hour period - 8 hours
+# before, 16 after").
+DAY_BEHIND = timedelta(hours=8)
+DAY_AHEAD = timedelta(hours=16)
 MAX_TICKS = 9
 
 
@@ -1069,6 +1074,7 @@ LEGEND = [
     ("key bar open-end", "no estimate"),
     ("key bar derived", "estimated"),
     ("key bar summary", "folded rows"),
+    ("key bar done", "done"),
     ("key seg sleep", "sleep"),
     ("key seg eat", "eat"),
     ("key seg gym", "gym"),
@@ -1438,6 +1444,31 @@ def today_rows(active: list[Lane], cfg: Config, now: datetime, axis_b: datetime,
     return own, folded
 
 
+def done_rows(done: list[Lane], cfg: Config, now: datetime, axis_a: datetime) -> list[Bar]:
+    """Lanes finished inside the strip's past: `done HH:MM`, or `done HH:MM–HH:MM` for the whole run.
+
+    The tracker writes clock times with no date, so a done time later than now is yesterday's. The start is
+    the range's start, else a same-day `since` that is not after the end, else the end itself, drawn as the
+    narrowest bar. A bare `done` has no position and is not drawn.
+    """
+    today, zone = now.date(), cfg.zone
+    bars = []
+    for lane in done:
+        if not (t := lane.state_time) or (end := _hhmm(t, today, zone)) is None:
+            continue
+        if end > now:
+            end -= timedelta(days=1)
+        if not axis_a <= end <= now:
+            continue
+        start, start_src = end, "state"
+        if lane.ran and (s := _hhmm(lane.ran[0], end.date(), zone)):
+            start, start_src = (s if s <= end else s - timedelta(days=1)), "ran"
+        elif (s := _hhmm(lane.since, end.date(), zone)) and s <= end:
+            start, start_src = s, "since"
+        bars.append(Bar(lane.item, lane.owner, lane.label, "done", start, end, start_src, "state", None, size=lane.size.strip().upper()))
+    return sorted(bars, key=lambda b: b.end)
+
+
 def week_axis_end(cfg: Config, week_a: datetime) -> datetime:
     last = max([d.at for d in cfg.deadlines] + [week_a])
     day_after_last = datetime.combine(last.date() + timedelta(days=1), time(0, 0), tzinfo=week_a.tzinfo)
@@ -1539,14 +1570,13 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
     nearest = nearest_deadline(cfg, now)
     url = tracker.board_url or cfg.board_url
 
-    # Day strip: a rolling 24 hours from this hour. It used to end at the nearest deadline or midnight,
-    # which meant that at 23:00 only an hour of it lay ahead of now, however much work was scheduled past
-    # it — the strip answered "what is left of today" when the question is "what do I have in the next 24
-    # hours" (Zach, 2026-09-19). Tonight's sleep and tomorrow morning are always on it now; a bar that
-    # started before the axis draws clamped-left, as a carried bar always has.
-    day_start = datetime.combine(today, time(0, 0), tzinfo=zone)
-    axis_a = now.replace(minute=0, second=0, microsecond=0)
-    axis_b = axis_a + timedelta(hours=24)
+    # Day strip: a rolling 24 hours, 8 behind this hour and 16 ahead of it (Zach, 2026-09-22). It first
+    # ended at the nearest deadline or midnight, so at 23:00 only an hour of it lay ahead of now; then it
+    # ran 24 hours forward from this hour (2026-09-19), so nothing already done was on it. The past third
+    # carries last night's sleep, today's earlier events and the lanes done in it; a bar that started
+    # before the axis draws clamped-left, as a carried bar always has.
+    hour = now.replace(minute=0, second=0, microsecond=0)
+    axis_a, axis_b = hour - DAY_BEHIND, hour + DAY_AHEAD
     est = estimates(active, cfg, now, history(lanes, cfg, now))
     day_bars, day_folded = today_rows(active, cfg, now, axis_b, est, _tick_step(axis_b - axis_a))
     step = _tick_step(axis_b - axis_a)
@@ -1558,7 +1588,10 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
     day_events = [e for e in events if e.end > axis_a and e.start < axis_b]
     on_axis = sorted((e for e in body_events if e.end > axis_a and e.start < axis_b), key=lambda e: e.start)
     day_body: list[Body] = [Body(tuple(on_axis))] if on_axis else []
-    day_summaries = [Summary("today", "no estimate, or due or estimated after today", axis_a, axis_b, tuple(day_folded))] if day_folded else []
+    # Folded work is still to do, so its row starts at this hour, not at the axis's past edge.
+    day_summaries = [Summary("today", "no estimate, or due or estimated after today", hour, axis_b, tuple(day_folded))] if day_folded else []
+    day_done = done_rows(done, cfg, now, axis_a)
+    day_done_rows: list[Swim | Bar] = [Swim("Done", len(day_done)), *day_done] if day_done else []
 
     # Week strip: today to the day after the last deadline, at most 7 days, one column per day.
     week_a = datetime.combine(today, time(0, 0), tzinfo=zone)
@@ -1771,7 +1804,7 @@ tr.group th{{background:color-mix(in srgb,var(--brass) 18%,transparent);color:va
 .seg em{{font-style:normal;opacity:.85}}
 .key.seg{{position:static;padding:0;display:inline-block;width:18px;height:10px;border-radius:2px}}
 .bar{{position:absolute;top:0;height:18px;border-radius:3px;background:var(--open);color:var(--bar-ink);font-size:11px;line-height:18px;padding:0 6px;overflow:hidden;white-space:nowrap;box-sizing:border-box}}
-.bar.running{{background:var(--running)}} .bar.orphaned{{background:var(--surface);color:var(--fg);outline:2px dashed var(--dl);outline-offset:-2px}} .bar.open-end{{background:var(--noest)}} .bar.derived{{background:var(--est)}} .bar.summary{{background:var(--fold)}} .bar.clamped{{border-right:3px solid var(--dl)}} .bar.clamped-left{{border-left:3px solid var(--dl)}} .group-row .name{{font-weight:600}} .bar em{{font-style:normal;opacity:.85}} .member{{display:none}}
+.bar.running{{background:var(--running)}} .bar.orphaned{{background:var(--surface);color:var(--fg);outline:2px dashed var(--dl);outline-offset:-2px}} .bar.open-end{{background:var(--noest)}} .bar.derived{{background:var(--est)}} .bar.summary{{background:var(--fold)}} .bar.done{{background:var(--done);color:var(--fg)}} .bar.clamped{{border-right:3px solid var(--dl)}} .bar.clamped-left{{border-left:3px solid var(--dl)}} .group-row .name{{font-weight:600}} .bar em{{font-style:normal;opacity:.85}} .member{{display:none}}
 .overlay{{position:absolute;top:0;bottom:0;left:var(--name-w);right:0;pointer-events:none}}
 .band{{position:absolute;top:0;bottom:0;background:var(--band)}}
 .grid{{position:absolute;top:0;bottom:0;border-left:1px solid var(--line)}} .grid.half{{border-left:1px dotted var(--line);opacity:.6}}
@@ -1781,7 +1814,7 @@ tr.group th{{background:color-mix(in srgb,var(--brass) 18%,transparent);color:va
 .legend .key.nowline{{width:0;height:12px;border-radius:0;border-left:2px solid var(--now)}} .legend .key.dline{{width:0;height:12px;border-radius:0;border-left:2px dashed var(--dl);transform:none}}
 .legend .key.band{{height:12px;background:var(--band);border:1px solid var(--line)}}
 .key{{display:inline-block;width:18px;height:10px;border-radius:2px}} .key.bar{{position:static;background:var(--open);padding:0}}
-.key.bar.running{{background:var(--running)}} .key.bar.orphaned{{background:var(--surface);outline:2px dashed var(--dl);outline-offset:-2px}} .key.bar.open-end{{background:var(--noest)}} .key.bar.derived{{background:var(--est)}} .key.bar.summary{{background:var(--fold)}}
+.key.bar.running{{background:var(--running)}} .key.bar.orphaned{{background:var(--surface);outline:2px dashed var(--dl);outline-offset:-2px}} .key.bar.open-end{{background:var(--noest)}} .key.bar.derived{{background:var(--est)}} .key.bar.summary{{background:var(--fold)}} .key.bar.done{{background:var(--done)}}
 .key.band{{background:var(--band);border:1px solid var(--line)}} .key.nowline{{width:0;height:12px;border-left:2px solid var(--now);border-radius:0}} .key.dline{{width:0;height:12px;border-left:2px dashed var(--dl);border-radius:0}}
 .dline{{position:absolute;top:0;bottom:0;border-left:2px dashed var(--dl);transform:translateX(-1px)}}
 .callouts{{margin-left:var(--name-w);margin-top:2px}} .callout{{position:relative;height:16px;font-size:11px;line-height:16px;color:var(--dl);white-space:nowrap}}
@@ -1848,8 +1881,8 @@ body{{padding:12px 12px 36px}}
 {due_html}{blocked_html}
 
 <h2>Today</h2>
-<div class="meta">{len(day_bars)} scheduled · {len(day_folded)} folded into one row (no estimate, or due or estimated after today) · bands are calendar events · green line is now{orphan_note}</div>
-{legend()}{_strip(day_body + swimlanes(day_bars) + day_summaries, axis_a, axis_b, day_events, [nearest], day_ticks, "day")}
+<div class="meta">{len(day_done)} done · {len(day_bars)} scheduled · {len(day_folded)} folded into one row (no estimate, or due or estimated after today) · bands are calendar events · green line is now{orphan_note}</div>
+{legend()}{_strip(day_body + day_done_rows + swimlanes(day_bars) + day_summaries, axis_a, axis_b, day_events, [nearest], day_ticks, "day")}
 
 <h2>Week</h2>
 <div class="meta">{len(week_bars)} bars · {len(week_groups)} rows grouped by due day · the rest folded into one row per deadline · dashed lines are deadlines</div>

@@ -324,10 +324,12 @@ class RenderTest(unittest.TestCase):
         self.assertNotIn("mine", rows["Security audit"])
 
     def test_calendar_bands_and_week_deadline_lines(self) -> None:
-        # The day strip is the next 24 hours, so it draws the events inside them: Standup at 09:00
-        # is behind us at 14:30 and no longer on it. Table meeting at 15:00 is.
+        # The day strip runs 06:00 to 06:00 at 14:30, so it draws the events inside it: Standup at 09:00
+        # is behind us and still on it, and so is Table meeting at 15:00.
         self.assertIn('data-band="Table meeting"', self.html)
-        self.assertNotIn('data-band="Standup (work)"', self.html)
+        self.assertIn('data-band="Standup (work)"', self.html)
+        late = rb.render(TRACKER, LOG, self.cfg, datetime(2026, 9, 16, 18, 30, tzinfo=CT))
+        self.assertNotIn('data-band="Standup (work)"', late, "at 18:30 the window opens at 10:00, after Standup")
         self.assertIn('data-deadline-name="Final"', self.html)
 
     def test_escapes_html(self) -> None:
@@ -427,7 +429,7 @@ class DensityTest(unittest.TestCase):
         self.html = rb.render(TRACKER, LOG, self.cfg, NOW)
         self.html2 = rb.render(TRACKER, LOG, self.cfg, NOW2)
 
-    def test_day_axis_is_the_next_twenty_four_hours_with_few_ticks(self) -> None:
+    def test_day_axis_is_twenty_four_hours_around_now_with_few_ticks(self) -> None:
         for page, now in ((self.html, NOW), (self.html2, NOW2)):
             day = _strip_html(page, "day")
             start = datetime.fromisoformat(re.search(r'data-axis-start="([^"]+)"', day).group(1))
@@ -457,7 +459,9 @@ class DensityTest(unittest.TestCase):
         self.assertNotRegex(day, _top_row("Review deploy config"))
         # Two of the four unscheduled lanes are owned, so 0.10.0 derives their ends inside today and draws them.
         self.assertRegex(day, r'data-summary="today"[^>]*data-count="2"')
-        self.assertNotIn("Draft release notes", day)
+        # Done at 11:15, inside the 06:00 window: drawn as finished work, never as work still to do.
+        self.assertRegex(day, r'class="bar done[^"]*"[^>]*data-item="Draft release notes"')
+        self.assertNotRegex(day, r'class="member"[^>]*data-item="Draft release notes"')
         self.assertNotIn("Draft release notes", _strip_html(self.html, "week"))
 
     def test_week_folds_deadline_due(self) -> None:
@@ -1324,6 +1328,7 @@ class LegendTest(unittest.TestCase):
             ("key bar open-end", "no estimate"),
             ("key bar derived", "estimated"),
             ("key bar summary", "folded rows"),
+            ("key bar done", "done"),
             ("key seg sleep", "sleep"),
             ("key seg eat", "eat"),
             ("key seg gym", "gym"),
@@ -1557,8 +1562,12 @@ class StateLegibilityTest(unittest.TestCase):
             self.assertEqual(key, bar, f"the {state} legend key does not match its bar")
 
     def test_the_legend_never_shows_a_state_the_chart_cannot_draw(self) -> None:
-        """`done` lanes are filtered out before any bar is built, so a `done` key explains nothing."""
-        self.assertNotIn(("key bar done", "done"), rb.LEGEND)
+        """Every bar key names a kind the day strip draws. `done` joined them on 2026-09-22, when lanes
+        finished in the strip's eight hours behind now started being drawn."""
+        drawn = {"running", "open", "orphaned", "open-end", "derived", "summary", "done"}
+        for cls, _ in rb.LEGEND:
+            if cls.startswith("key bar "):
+                self.assertIn(cls.removeprefix("key bar "), drawn, cls)
 
 
 class FoldedRowsExpandTest(unittest.TestCase):
@@ -2573,9 +2582,9 @@ class TracerTest(unittest.TestCase):
         day = _strip_html(self.html, "day")
         a = datetime.fromisoformat(re.search(r'data-axis-start="([^"]+)"', day).group(1))
         b = datetime.fromisoformat(re.search(r'data-axis-end="([^"]+)"', day).group(1))
-        self.assertEqual(b - a, timedelta(hours=24))
-        self.assertLessEqual(a, NOW)
-        self.assertGreaterEqual(b, NOW + timedelta(hours=23))
+        hour = NOW.replace(minute=0)
+        self.assertEqual(a, hour - timedelta(hours=8), "eight hours behind this hour (Zach, 2026-09-22)")
+        self.assertEqual(b, hour + timedelta(hours=16), "sixteen ahead")
 
     def test_late_at_night_the_axis_is_still_twenty_four_hours(self) -> None:
         """The bug this replaces: the axis end clamped to midnight, so at 23:00 only one hour of
@@ -2585,6 +2594,7 @@ class TracerTest(unittest.TestCase):
         a = datetime.fromisoformat(re.search(r'data-axis-start="([^"]+)"', day).group(1))
         b = datetime.fromisoformat(re.search(r'data-axis-end="([^"]+)"', day).group(1))
         self.assertEqual(b - a, timedelta(hours=24))
+        self.assertEqual((a, b), (datetime(2026, 9, 16, 15, 0, tzinfo=CT), datetime(2026, 9, 17, 15, 0, tzinfo=CT)))
 
     def test_the_bar_sits_under_a_deadline_swimlane_and_names_its_owner(self) -> None:
         day = _strip_html(self.html, "day")
@@ -2981,3 +2991,65 @@ class StateDisputesProseTest(unittest.TestCase):
         """Two lists of done-words would diverge silently; this is the only thing watching."""
         import migrate_backlog as mb
         self.assertEqual(rb.DONE_WORDS.pattern, mb.DONE_WORDS.pattern)
+
+
+class DoneOnTheDayStripTest(unittest.TestCase):
+    """The day strip runs eight hours behind this hour, and lanes finished inside them are drawn
+    (Zach, 2026-09-22: "8 hours before, 16 after", and done lanes on it). NOW is 14:30, so the
+    window opens at 06:00."""
+
+    @staticmethod
+    def tracker(*rows: str) -> str:
+        return "# Tracker 2026-09-16\n\n## Lanes\n\n| item | owner | state | since | due | checklist |\n|---|---|---|---|---|---|\n" + "\n".join(rows) + "\n"
+
+    def setUp(self) -> None:
+        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+
+    def day(self, *rows: str, now: datetime = NOW) -> str:
+        return _strip_html(rb.render(self.tracker(*rows), LOG, self.cfg, now), "day")
+
+    def bar(self, day: str, name: str) -> str | None:
+        m = re.search(rf'<div class="bar done[^"]*" data-name="{re.escape(name)}"[^>]*>', day)
+        return m.group(0) if m else None
+
+    def test_a_ranged_done_lane_draws_its_range_under_a_done_swimlane(self) -> None:
+        day = self.day("| Ranged | Robin | done 09:10–10:40 |  |  | x |", "| Ahead | Robin | open | 09:00 | 17:00 | x |")
+        bar = self.bar(day, "Ranged")
+        self.assertIsNotNone(bar)
+        self.assertIn(f'data-start="{datetime(2026, 9, 16, 9, 10, tzinfo=CT).isoformat()}"', bar)
+        self.assertIn(f'data-end="{datetime(2026, 9, 16, 10, 40, tzinfo=CT).isoformat()}"', bar)
+        self.assertIn('data-start-src="ran"', bar)
+        self.assertRegex(day, r'data-swimlane="Done" data-count="1"')
+        self.assertLess(day.index('data-swimlane="Done"'), day.index('data-name="Ranged"'))
+        self.assertLess(day.index('data-name="Ranged"'), day.index('data-name="Ahead"'), "finished work sits above the work ahead")
+
+    def test_a_done_lane_without_a_range_starts_at_since_or_at_its_end(self) -> None:
+        day = self.day("| Since | Robin | done 11:00 | 10:15 |  | x |", "| Bare end | Robin | done 11:00 |  |  | x |")
+        since = self.bar(day, "Since")
+        self.assertIn(f'data-start="{datetime(2026, 9, 16, 10, 15, tzinfo=CT).isoformat()}"', since)
+        self.assertIn('data-start-src="since"', since)
+        bare = self.bar(day, "Bare end")
+        self.assertIn(f'data-start="{datetime(2026, 9, 16, 11, 0, tzinfo=CT).isoformat()}"', bare)
+        self.assertIn('data-start-src="state"', bare)
+
+    def test_outside_the_window_or_without_a_time_a_done_lane_is_not_drawn(self) -> None:
+        day = self.day("| Early | Robin | done 05:30 |  |  | x |", "| Untimed | Robin | done |  |  | x |", "| Ahead | Robin | open | 09:00 | 17:00 | x |")
+        self.assertIsNone(self.bar(day, "Early"), "05:30 is before the 06:00 window")
+        self.assertIsNone(self.bar(day, "Untimed"))
+        self.assertNotIn('data-swimlane="Done"', day, "no done bars, no header")
+
+    def test_a_done_time_after_now_is_yesterdays(self) -> None:
+        at_two = datetime(2026, 9, 16, 2, 0, tzinfo=CT)  # window 18:00 yesterday to 18:00 today
+        day = self.day("| Late | Robin | done 23:10 |  |  | x |", "| Afternoon | Robin | done 15:00 |  |  | x |", now=at_two)
+        late = self.bar(day, "Late")
+        self.assertIn(f'data-end="{datetime(2026, 9, 15, 23, 10, tzinfo=CT).isoformat()}"', late)
+        self.assertIsNone(self.bar(day, "Afternoon"), "15:00 yesterday is before the 18:00 window")
+
+    def test_the_folded_row_starts_at_this_hour_not_the_axis(self) -> None:
+        day = self.day("| No estimate | unassigned | open |  |  | x |")  # no owner, no queue, no estimate: it folds
+        start = re.search(r'data-summary="today"[^>]*data-start="([^"]+)"', day).group(1)
+        self.assertEqual(datetime.fromisoformat(start), NOW.replace(minute=0))
+
+    def test_the_meta_line_counts_the_done_bars(self) -> None:
+        page = rb.render(self.tracker("| Ranged | Robin | done 09:10–10:40 |  |  | x |"), LOG, self.cfg, NOW)
+        self.assertRegex(page, r'<div class="meta">[^<]*\b1 done ·')

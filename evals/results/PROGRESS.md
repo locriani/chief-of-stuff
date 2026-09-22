@@ -1233,3 +1233,17 @@ GitHub writes stop here. Issue text there is held to two rules — no issue cite
 
 Proved live: `backlog: 3 open, 2 closed`, the lists match `gh issue list`, `--create` exits 1 with the refusal. 21 new units, no socket. The full suite has one failure that predates this change: `test_render_board.RequirementsTest.test_cli_reads_files_and_summarises` fails identically on untouched `90c6a45`.
 
+
+## C20 — the day strip runs 8 hours behind and 16 ahead, and done lanes are drawn (0.17.0)
+
+Zach at 17:04: "I would like the gantt chart for today to show the full rolling 24 hour period - 8 hours before, 16 after." Asked whether lanes finished inside those 8 hours belong on it, he chose "Also draw done lanes".
+
+The day axis runs from this hour minus 8 to this hour plus 16 (`DAY_BEHIND`, `DAY_AHEAD`), still 24 hours, so ticks and the grid are unchanged, and the client-side now-line sits about a third of the way across without a JavaScript change. The folded row is work still to do and starts at this hour, not at the axis's past edge. Last night's sleep and today's earlier calendar events are on the strip now through the existing overlap filter.
+
+`done_rows` draws each lane whose done time falls in the window under a `Done` swimlane above the deadline swimlanes. The start is the `done HH:MM–HH:MM` range's start, else a same-day `since`, else the end itself. A done time after now is yesterday's, because the tracker writes clock times without dates. A bare `done` has no position and is not drawn. `.bar.done` uses the existing `--done` token, and the legend gains `done`.
+
+Three tests encoded the old behaviour and were rewritten to the new one: Standup at 09:00 is on the 14:30 strip (and off the 18:30 one), `Draft release notes` is drawn as done rather than absent, and the legend test now checks that every bar key names a kind the strip draws.
+
+Red: 8 of the new or rewritten tests failed before the change. Green: all of `test_render_board` except the known `test_cli_reads_files_and_summarises`, which fails identically on untouched `90c6a45`. Proved live: today's tracker at 17:xx renders an axis of 09:00 to 09:00, with 27 done lanes in the Done swimlane and the now-line at 34%. It was checked in light and dark themes.
+
+Only today's tracker and log are read, so before 08:00 the part of the window before midnight carries no body events or done lanes, apart from carried rows.
