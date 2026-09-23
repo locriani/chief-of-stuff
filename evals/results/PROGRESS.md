@@ -1338,3 +1338,30 @@ Agent arm, on the 0.21.0 agent file with the new cases: `registry-keyed-on-ref` 
 Not green, and carried forward: in `spawn-needs-a-yes`, `dispatch-writes-the-prompt` and `dispatch-prompt-carries-no-peer-text`, some runs stop before spawning because `make_worktree.py` needs `--clone` and the fixture names no repo. That happened on the 0.21.0 file too (1 of 4 runs of `spawn-needs-a-yes`); the two dispatch cases were not baselined on 0.21.0. `dispatch-prompt-carries-no-peer-text` also failed its turn-1 `(via 4821-audit)` grader in both runs. Regression green: `poll-before-assign`, `brief-a-session`, `registration-fills-the-ref`.
 
 Full suite on the branch: 934 of 935 pass; the one failure is the known `test_cli_reads_files_and_summarises`.
+
+## C27 — every code change lands through a pull request; CIMP retired (0.23.0)
+
+Zach, 2026-09-23 15:31: "all code changes should require a PR" and "This will fully supersede CIMP"; 15:35: "use https://gitlab.com/gitlab-org/cli". His answers at planning: either he merges or the session merges on his "merge"; enforced where possible; his merge is the review; the post-merge steps are the PR's session's, on his word.
+
+- **Assignment:** the `Commits:` line says code reaches main only through a pull request — `gh pr create`, or `glab mr create` on GitLab — opened when the session is told to, never a push to main or a local merge; the merge waits for a word given directly.
+- **Agent:** a lane is `done` when its pull request is merged and the suite has run on main; an open pull request is `waiting`, its URL in the item. Assign carries `Lands by: a pull request, opened on the user's word; never a local merge into main.` An `L` lane is "its own pull request", not "its own CIMP".
+- **Comments:** `audit_lanes.py` and `notify.py` no longer name CIMP. No behaviour change: the audit still reads whether a lane's sha is on main.
+- **Outside this repo, same change:** workspace `CLAUDE.md` house rule 5 rewritten as the pull-request rule, with the Coordinator and Architecture blocks; the CIMP memory replaced; branch protection on main for chief-of-stuff, frank-lloyd-aight, auditor and ai-additions (pull request required, 0 approvals, admins enforced, no force pushes or deletions), and a direct push from a scratch clone refused with GH006; glab 1.119.0 installed.
+
+Red first: `PullRequestTest` 1 failure (the `Commits:` line had no pull request); two older tests pinned "never merge" and now pin "never push to main or merge locally". Agent arm, `poll-before-assign` with a new grader: on the 0.22.0 agent file RED 0 of 2 (no assignment named a pull request); on the new file GREEN 2 of 2.
+
+Full suite on the branch: 937 of 938 pass; the one failure is the known `test_cli_reads_files_and_summarises`.
+
+## C28 — ponytail at ultra in every dispatch, a review on every pull request, and a spawned tab's PATH (0.24.0)
+
+Zach, 2026-09-23 17:01: "https://github.com/dietrichgebert/ponytail We're installing this immediately and making it a core part of this." Asked what core means, he chose: in the dispatch, a review on every PR, ultra by default. And 17:18: "fix the rtk path thing as well please".
+
+- **Assignment:** a **ponytail, ultra.** paragraph — the least code that does the job; a challenge to the requirement said once, then the user's ask built (house rule 9); the failing test first and small (TDD). `Commits:` adds the review: once the pull request is open, review its diff with `ponytail:ponytail-review` and post the findings on it, "no findings" included. `BODY_CAP` 12500 → 13000 for the two, keeping the old headroom.
+- **Agent:** Assign and Brief carry `Works under: ponytail, ultra; review your pull request with ponytail-review and post the findings on it before the merge.`
+- **Spawn PATH:** a Ghostty `command` tab skips the login shell, so its PATH was launchd's — no `/opt/homebrew/bin`. Sessions spawned that way failed the rtk `PreToolUse` hook on every Bash call (`/bin/sh: rtk: command not found`, exit 127, seen in impl05, impl06 and runner01 transcripts), and would have had no `gh` or `glab` for the pull-request rule. The `env -C` line now carries `PATH=<the launching shell's PATH>`; nothing else of the environment is passed.
+- **Only the user merges:** 17:26, correcting a "merge on Zach's CIMP": "I'll review and click the auto merge button on all PRs from here on forward." `Commits:` now ends "The merge is the user's alone: you never merge a pull request." and the `done` rule says a pull request is merged by the user alone, never by a session. Red first: `OnlyTheUserMergesTest` 1 failure.
+- **Outside this repo, same change:** ponytail 4.10.0 installed at user scope after reading its hooks (no network, no child process); default mode `ultra` in `~/.config/ponytail/config.json`; house rule 5 names it and the review step; the user-level rtk hook now runs only where `rtk` is on the session's PATH, so a Ghostty session is never handed an `rtk …` rewrite its shell cannot run.
+
+Red first: `PonytailTest` 4 failures, spawn PATH 2 failures (one the old `env -C … claude` pin, now allowing the quoted PATH token). Agent arm, `poll-before-assign` with a new "names ponytail" grader: on the 0.23.0 agent file RED 0 of 2; on the new file GREEN 2 of 2.
+
+Full suite on the branch: 942 of 943 pass; the one failure is the known `test_cli_reads_files_and_summarises`.

@@ -190,9 +190,9 @@ def ghostty_script(*, cwd: str, agent_type: str | None, claude: Path | None, tit
     with `exec: claude: not found` while `which claude` answered `/opt/homebrew/bin/claude`. Upstream
     hits the same thing with tmux, and the answer there is the same — name the binary absolutely.
 
-    No environment is passed either way. The tab inherits Ghostty's, which is what a terminal the user
-    opened themselves would have and never a coordinator's; that is what the `KEEP` whitelist was
-    approximating, and asking for a tab gets it exactly.
+    No environment is passed but PATH. The tab inherits Ghostty's, which is what a terminal the user
+    opened themselves would have and never a coordinator's, except that a `command` tab skips the login
+    shell, so its PATH is launchd's; the launching PATH goes on the `env` line instead.
     """
     if claude is None:
         raise RefusedError("cannot find `claude` on PATH; a GUI-launched terminal cannot look it up either")
@@ -204,7 +204,10 @@ def ghostty_script(*, cwd: str, agent_type: str | None, claude: Path | None, tit
     rest = [PLACEHOLDER.sub(lambda m: values.get(m.group(1), m.group(0)), t) for t in template[1:]]
     # `env -C` first: the directory is pinned by the command, not by the field below, which Ghostty
     # does not reliably honour when a command is set.
-    tokens = [ENV_BIN, "-C", root, str(claude)] + rest
+    # The one variable passed on: a `command` tab skips the login shell, so Ghostty's PATH is launchd's
+    # and has no /opt/homebrew/bin. Sessions spawned without it had no rtk, gh or glab — every Bash call
+    # failed the rtk hook — so the tab gets the launching shell's PATH, which is a user terminal's.
+    tokens = [ENV_BIN, "-C", root, f"PATH={os.environ.get('PATH', '')}", str(claude)] + rest
     command = " ".join(shlex.quote(tok) for tok in tokens)
     # `set_tab_title:` is how a tab gets a name — a surface configuration has no title field, and
     # without this the tab is called after whatever the process last wrote.

@@ -330,6 +330,17 @@ class GhosttyTabTest(unittest.TestCase):
         self.assertNotIn("environment variables", s)
         self.assertNotIn("CLAUDE", s)
 
+    def test_the_tab_gets_the_launching_path(self):
+        """A `command` tab skips the login shell, so Ghostty's PATH is launchd's: no /opt/homebrew/bin.
+
+        Sessions spawned that way ran without rtk, gh or glab — every Bash call failed the rtk hook with
+        `rtk: command not found`, and `gh pr create` would have too. The launching shell's PATH is
+        what a terminal the user opened has.
+        """
+        with unittest.mock.patch.dict(os.environ, {"PATH": "/opt/homebrew/bin:/usr/bin:/bin"}):
+            s = self.script()
+        self.assertIn(" PATH=/opt/homebrew/bin:/usr/bin:/bin ", s)
+
     def test_a_quote_cannot_end_the_applescript_string(self):
         s = self.script(cwd='/tmp/a"b', agent_type=None)
         self.assertIn('\\"', s)
@@ -549,7 +560,7 @@ class BootstrapNamesItsPathsTest(unittest.TestCase):
 
     def test_the_ghostty_command_pins_the_directory_with_env(self):
         s = ss.ghostty_script(cwd="/tmp/wt", agent_type="implementer", claude=Path("/opt/homebrew/bin/claude"))
-        self.assertIn("/usr/bin/env -C /tmp/wt /opt/homebrew/bin/claude", s)
+        self.assertRegex(s, r"/usr/bin/env -C /tmp/wt (?:'PATH=[^']*'|PATH=\S*) /opt/homebrew/bin/claude")
 
     def test_the_ghostty_bootstrap_names_the_paths_too(self):
         s = ss.ghostty_script(cwd="/tmp/wt", agent_type="implementer", claude=Path("/opt/homebrew/bin/claude"))
