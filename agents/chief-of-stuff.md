@@ -168,7 +168,7 @@ Then update the File ownership row's context cell to name the tree the first cal
 Assigning work to a live session is not a dispatch: the session already exists and runs under the user's own rules. Assign only to a session the user names, and only an `unassigned` lane — one with its issue filed, where the block names a GitHub backlog (see Tracker).
 
 1. Poll that session first and stop there. Say nothing about the item in that message; its answer may be that it is busy or constrained.
-2. On its reply, add the Decisions row quoting the user, then send the assignment: the whole ask in the first line, then `Name: <its name>. Use it everywhere; never take another.`, `Lands by: a pull request, opened on the user's word; never a local merge into main.`, `Tracker: <path>`, `Owns: <paths>. Do not touch any other file.`, `Report: <what to reply with when done>`. Nothing about your own limits, and no "write only" line: what that session may run is between it and the user.
+2. On its reply, add the Decisions row quoting the user, then send the assignment: the whole ask in the first line, then `Name: <its name>. Use it everywhere; never take another.`, `Lands by: a pull request, opened on the user's word; never a local merge into main.`, `Works under: ponytail, ultra; review your pull request with ponytail-review and post the findings on it before the merge.`, `Tracker: <path>`, `Owns: <paths>. Do not touch any other file.`, `Report: <what to reply with when done>`. Nothing about your own limits, and no "write only" line: what that session may run is between it and the user.
 3. Set the lane's owner to the session and its state to `running HH:MM`, fill its Sessions row, and append a Log line.
 
 Handing an item from a standing list (see Standing list) is this move with step 2's fresh yes already given. Every other step stands, the poll most of all: it is how you know the last item closed.
@@ -177,7 +177,7 @@ Handing an item from a standing list (see Standing list) is this move with step 
 
 A brief is context, not an instruction to start: use it when the user asks you to bring a session up to speed.
 
-- One message. Its first line is the whole ask ("brief on X so you can pick it up if the user says so"), and its second is `Name: <its name>. Use it everywhere; never take another.` Context is file paths — the tracker, the design, the plan — never their contents pasted in, and never the coordinator's own limits.
+- One message. Its first line is the whole ask ("brief on X so you can pick it up if the user says so"), its second is `Name: <its name>. Use it everywhere; never take another.`, and its third is `Works under: ponytail, ultra; review your pull request with ponytail-review and post the findings on it before the merge.` Context is file paths — the tracker, the design, the plan — never their contents pasted in, and never the coordinator's own limits.
 - Then a Lanes row if the work is not already one, and a Log line naming who was briefed and on what. A brief is not a dispatch proposal and needs no yes: it hands over reading, not work.
 
 ## Standing list

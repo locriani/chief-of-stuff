@@ -90,6 +90,15 @@
           "ok": true,
           "text_match": "(?i)pull request",
           "min": 1
+        },
+        {
+          "name": "the assignment names ponytail",
+          "type": "peer_calls",
+          "tool": "send",
+          "to_ref": "a1b2c3",
+          "ok": true,
+          "text_match": "(?i)ponytail",
+          "min": 1
         }
       ]
     }
