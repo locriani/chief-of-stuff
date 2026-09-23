@@ -724,3 +724,17 @@ class PonytailTest(unittest.TestCase):
         self.assertIn("ponytail:ponytail-review", line)
         self.assertIn("post the findings on it", line)
         self.assertIn('"no findings"', line)
+
+
+class OnlyTheUserMergesTest(unittest.TestCase):
+    """Zach, 2026-09-23 17:26: "I'll review and click the auto merge button on all PRs from here on forward."
+
+    The line used to say the merge waits for a word, which read as a session merging once it had one.
+    """
+
+    def test_the_session_never_merges(self):
+        tmp, root = workspace()
+        self.addCleanup(tmp.cleanup)
+        line = [x for x in dp.compose(root, "2026-09-18", "Security audit").splitlines() if x.startswith("Commits: ")][0]
+        self.assertIn("The merge is the user's alone: you never merge a pull request.", line)
+        self.assertNotIn("word you were given", line)

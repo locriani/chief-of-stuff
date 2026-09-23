@@ -162,13 +162,14 @@ REPORT = ("Report: when the lane is finished, reply to the coordinator with what
 # supposed to carry: every session makes meaningful small commits, because uncommitted work is how
 # work gets lost. The gate was never the commit; it is the merge. Since 0.23.0 the merge is a pull
 # request's (Zach, 2026-09-23 15:31: "all code changes should require a PR" … "This will fully
-# supersede CIMP"), and the GitHub repos refuse a direct push to main.
+# supersede CIMP"), and the GitHub repos refuse a direct push to main. Who merges: the user, always
+# (17:26: "I'll review and click the auto merge button on all PRs from here on forward").
 COMMITS = ("Commits: Commit small and often on your own branch — uncommitted work is how work gets "
            "lost. Code reaches main only through a pull request: push the branch and open one "
            "(`gh pr create`, or `glab mr create` on GitLab) when you are told to, and never push to main "
            "or merge locally. Once it is open, review its diff (`gh pr diff`, `glab mr diff`) with the "
            "`ponytail:ponytail-review` skill and post the findings on it — \"no findings\" included. The "
-           "merge waits for a word you were given directly.")
+           "merge is the user's alone: you never merge a pull request.")
 
 
 def _clean(label: str, value: str) -> str:
