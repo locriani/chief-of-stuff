@@ -434,8 +434,13 @@ class InboxMetadataLineTest(unittest.TestCase):
         self.body = dp.compose(self.root, "2026-09-18", "Security audit")
 
     def test_inbox_metadata_line_is_present_in_compose_output(self):
-        expected_line = f"Inbox: {(self.root / 'scripts/inbox.py').resolve()}"
+        expected_line = f"Inbox: {Path(inbox.__file__).resolve()}"
         self.assertIn(expected_line, self.body)
+
+    def test_the_inbox_line_names_a_script_that_exists(self):
+        """It named `<workspace>/scripts/inbox.py`, which a workspace never has; the script ships in the plugin."""
+        line = next(x for x in self.body.splitlines() if x.startswith("Inbox: "))
+        self.assertTrue(Path(line.removeprefix("Inbox: ")).is_file(), line)
 
     def test_inbox_metadata_line_format(self):
         self.assertRegex(self.body, r"(?m)^Inbox: .*/scripts/inbox\.py$")
@@ -570,3 +575,60 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         self.assertIn("Dual-transport registration", self.content)
         self.assertIn("python3 ${CLAUDE_PLUGIN_ROOT}/scripts/inbox.py list --recipient coordinator --unread", self.content)
 
+
+# Zach, 2026-09-22 22:20: each task "is actually backed by an entry in github"; a task with none is refused.
+ISSUE_CLAUDE = CLAUDE + "- Backlog: GitHub issues; repo https://github.com/o/backlog (private)\n"
+
+ISSUE_TRACKER = """# Tracker 2026-09-18
+
+## Lanes
+
+| name | item | owner | state | since | due | size | issue | checklist |
+|---|---|---|---|---|---|---|---|---|
+| Audit | Security audit | unassigned | open | 09:00 |  | M | #12 | Checklist: Security audit of the upload handler |
+| Bare | Unfiled task | unassigned | open | 09:00 |  | S |  | Checklist: unfiled |
+| Garbled | Garbled task | unassigned | open | 09:00 |  | S | soon | Checklist: garbled |
+
+## File ownership
+
+| context | paths |
+|---|---|
+| Security audit | `src/a/` |
+| Unfiled task | `src/b/` |
+| Garbled task | `src/c/` |
+
+## Log
+
+- 09:00 opened the day
+"""
+
+
+class IssueDispatchTest(unittest.TestCase):
+    def test_the_assignment_names_its_issue(self):
+        tmp, root = workspace(ISSUE_TRACKER, ISSUE_CLAUDE)
+        self.addCleanup(tmp.cleanup)
+        lines = dp.compose(root, "2026-09-18", "Security audit").splitlines()
+        self.assertIn("Issue: https://github.com/o/backlog/issues/12", lines)
+        self.assertEqual(lines.index("Issue: https://github.com/o/backlog/issues/12"),
+                         next(i for i, x in enumerate(lines) if x.startswith("Requirement: ")) + 1)
+
+    def test_a_task_with_no_issue_is_refused(self):
+        tmp, root = workspace(ISSUE_TRACKER, ISSUE_CLAUDE)
+        self.addCleanup(tmp.cleanup)
+        with self.assertRaises(dp.RefusedError) as e:
+            dp.compose(root, "2026-09-18", "Unfiled task")
+        self.assertIn("names no issue", str(e.exception))
+        self.assertIn("gh-issue new", str(e.exception))
+
+    def test_a_cell_that_is_not_an_issue_is_refused(self):
+        tmp, root = workspace(ISSUE_TRACKER, ISSUE_CLAUDE)
+        self.addCleanup(tmp.cleanup)
+        with self.assertRaises(dp.RefusedError) as e:
+            dp.compose(root, "2026-09-18", "Garbled task")
+        self.assertIn('"soon"', str(e.exception))
+
+    def test_no_backlog_line_means_no_requirement(self):
+        tmp, root = workspace(ISSUE_TRACKER, CLAUDE)
+        self.addCleanup(tmp.cleanup)
+        body = dp.compose(root, "2026-09-18", "Unfiled task")
+        self.assertNotIn("Issue: ", body)

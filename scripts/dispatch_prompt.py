@@ -20,6 +20,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from backlog import issue_ref  # noqa: E402
 from render_board import ConfigError, _cells, _is_separator, _section, parse_coordinator, parse_tracker, short_name  # noqa: E402
 
 
@@ -56,7 +57,9 @@ SESSION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}(?: \[[0-9a-f]{6}\])?
 # past. `spawn_session` re-exports these, and `audit_lanes` reads the second.
 PROMPT_DIR = ".chief-of-stuff"
 STOP_FILE = f"{PROMPT_DIR}/stop.md"
-INBOX_SCRIPT = "scripts/inbox.py"
+# The plugin's own copy, beside this file. A workspace has no `scripts/inbox.py`; the line used to
+# name one anyway, and a session following it found nothing there.
+INBOX_SCRIPT = Path(__file__).resolve().parent / "inbox.py"
 
 HEADER = """# Assignment
 
@@ -208,6 +211,17 @@ def compose(root: Path, day: str | None, lane: str, worktree: Path | None = None
     if owner.lower() != UNASSIGNED:
         raise RefusedError(
             f"lane {rows[0].item.strip()!r} is already {owner}'s, not {UNASSIGNED}; it is not a lane to dispatch")
+    # Zach, 2026-09-22 22:20: each task "is actually backed by an entry in github". Where the block names
+    # a GitHub backlog, a task with no issue is not handed out. Whether the issue is open is the audit's.
+    issue = None
+    if cfg.backlog_repo:
+        cell = rows[0].issue.strip()
+        if not cell:
+            raise RefusedError(
+                f"lane {rows[0].item.strip()!r} names no issue; file one with gh-issue new and write its number in the issue column")
+        issue = issue_ref(cell, cfg.backlog_repo)
+        if not issue:
+            raise RefusedError(f'lane {rows[0].item.strip()!r} has "{_clean("the issue cell", cell)}" in its issue column, which is not an issue reference')
     # Absolute, because this file is read by a session whose cwd is its own worktree rather than the
     # root the tracker path is written against. The first real spawn went hunting for a relative path
     # that was never reachable from where it stood, and a session that hunts reads things nobody
@@ -218,7 +232,7 @@ def compose(root: Path, day: str | None, lane: str, worktree: Path | None = None
     if coordinator and not who:
         raise RefusedError(f"{coordinator!r} is not a session name; pass the name a listing shows")
     coord_mailbox = "coordinator"
-    inbox_script = (root / INBOX_SCRIPT).resolve()
+    inbox_script = INBOX_SCRIPT
 
     header_text = HEADER.replace("\\\n", "").format(
         user=cfg.user,
@@ -237,6 +251,8 @@ def compose(root: Path, day: str | None, lane: str, worktree: Path | None = None
     lines = [header_text, f"Lane: {item}"]
     if rows[0].checklist.strip():
         lines.append(f"Requirement: {_clean('the checklist cell', rows[0].checklist.strip())}")
+    if issue:
+        lines.append(f"Issue: {issue.url}")
     if worktree is not None:
         # So a session can tell whether the assignment it is reading was addressed to it.
         lines.append(f"Worktree: {worktree}")
