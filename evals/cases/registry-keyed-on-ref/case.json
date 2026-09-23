@@ -3,7 +3,7 @@
   "golden_why": "sessions: the keying bug class, name vs ref",
   "tz": "America/Chicago",
   "peers": "sessions.json",
-  "description": "A session renames itself between turns. The registry is keyed on the ref, so the next message still reaches it and the row keeps one entry under the new name.",
+  "description": "The listing shows a session under a new name between turns: the harness titling it, not a rename. The registry is keyed on the ref, so the next message still reaches it, and the row and the lane owner keep the name the session was given (Zach, 2026-09-22 16:18: \"the NUMERIC NAMES I ASSIGN ARE THE ONLY NAMES THEY ARE ALLOWED TO KEEP\"). The session is told its name, and the user is told the tab needs /rename.",
   "turns": [
     {
       "prompt": "Ask 4821-audit for a status.",
@@ -23,10 +23,31 @@
       "peers": "sessions-renamed.json",
       "graders": [
         {
-          "name": "row carries the new name",
+          "name": "row keeps the name it was given",
           "type": "file_matches",
           "path": "daily/{{today}}-tracker.md",
-          "pattern": "(?m)^\\|\\s*a1b2c3\\s*\\|\\s*4821-audit-v2\\s*\\|"
+          "pattern": "(?m)^\\|\\s*a1b2c3\\s*\\|\\s*4821-audit\\s*\\|"
+        },
+        {
+          "name": "lane owner keeps the name",
+          "type": "file_matches",
+          "path": "daily/{{today}}-tracker.md",
+          "pattern": "(?m)^\\| Security audit \\|\\s*4821-audit\\s*\\|"
+        },
+        {
+          "name": "tells the session its name",
+          "type": "peer_calls",
+          "tool": "send",
+          "to_ref": "a1b2c3",
+          "ok": true,
+          "text_match": "4821-audit(?!-v2)",
+          "min": 1
+        },
+        {
+          "name": "tells the user the tab needs /rename",
+          "type": "regex",
+          "pattern": "/rename",
+          "match": "contains"
         },
         {
           "name": "one row for that ref",
