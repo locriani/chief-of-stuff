@@ -57,7 +57,12 @@ BOOTSTRAP = ("Read the file {dispatch} — that is your assignment, in full, and
 ENV_BIN = "/usr/bin/env"
 # What the tab runs. `--permission-mode plan` is the plan-first gate, enforced at launch rather than
 # asked for in the assignment text: a dispatched session cannot write before it has shown its plan.
-CLAUDE_ARGV = ["claude", "--agent", "{type}", "--permission-mode", "plan", BOOTSTRAP]
+# `--name` is the session's name, not the tab's. Without it the harness names a session after its
+# directory and then retitles it from its first task, so impl07 was listed as
+# `lab-write-patient-check-merge` by its second turn. A launch name registers as the user's, which the
+# harness never retitles (Zach, 2026-09-22 16:18: "the NUMERIC NAMES I ASSIGN ARE THE ONLY NAMES THEY
+# ARE ALLOWED TO KEEP").
+CLAUDE_ARGV = ["claude", "--agent", "{type}", "--name", "{title}", "--permission-mode", "plan", BOOTSTRAP]
 # The override the eval harness sets, and the only path that still builds an argv. Nothing else uses
 # it: the real launcher asks Ghostty for a tab.
 DEFAULT_LAUNCHER = ["ghostty", "--working-directory={cwd}", "--title={title}", "-e", *CLAUDE_ARGV]
@@ -113,20 +118,23 @@ def launcher(template: list[str] | None = None) -> list[str]:
     return template
 
 
-def _without_agent(template: list[str]) -> list[str]:
-    """Drop `--agent {type}` as a pair, so the session gets the default agent and skills.
+def _without(template: list[str], field: str) -> list[str]:
+    """Drop a flag and its `{field}` value as a pair: `--agent {type}` gives the default agent and
+    skills, and `--name {title}` gives a session no name rather than an empty one.
 
     Removal rather than an empty substitution: a token that expands to zero or two argv entries is
-    the one thing per-token substitution exists to prevent.
+    the one thing per-token substitution exists to prevent. Tokens that merely embed the field, like
+    Ghostty's `--title={title}`, are dropped with it.
     """
+    mark = "{" + field + "}"
     out, skip = [], False
     for i, token in enumerate(template):
         if skip:
             skip = False
             continue
-        if "{type}" in token:
+        if mark in token:
             continue
-        if token == "--agent" and i + 1 < len(template) and "{type}" in template[i + 1]:
+        if token.startswith("--") and i + 1 < len(template) and mark in template[i + 1]:
             skip = True
             continue
         out.append(token)
@@ -149,7 +157,9 @@ def _paths(cwd: str) -> tuple[str, str]:
 def argv(template: list[str], *, agent_type: str | None, cwd: str, title: str) -> list[str]:
     """Substitute per whole token. A value never becomes more argv entries than the token it fills."""
     if agent_type is None:
-        template = _without_agent(template)
+        template = _without(template, "type")
+    if not title:
+        template = _without(template, "title")
     root, dispatch = _paths(cwd)
     values = {"cwd": root, "title": title, "type": agent_type or "", "dispatch": dispatch}
     out = []
@@ -186,7 +196,9 @@ def ghostty_script(*, cwd: str, agent_type: str | None, claude: Path | None, tit
     """
     if claude is None:
         raise RefusedError("cannot find `claude` on PATH; a GUI-launched terminal cannot look it up either")
-    template = CLAUDE_ARGV if agent_type else _without_agent(CLAUDE_ARGV)
+    template = CLAUDE_ARGV if agent_type else _without(CLAUDE_ARGV, "type")
+    if not title:
+        template = _without(template, "title")
     root, dispatch = _paths(cwd)
     values = {"cwd": root, "title": title or "", "type": agent_type or "", "dispatch": dispatch}
     rest = [PLACEHOLDER.sub(lambda m: values.get(m.group(1), m.group(0)), t) for t in template[1:]]
@@ -249,7 +261,8 @@ def main(argv_in: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--type", dest="agent_type", help="an agent type from the Coordinator block; omitted runs the default agent")
     ap.add_argument("--cwd", required=True, help="the worktree the session starts in")
-    ap.add_argument("--title", required=True, help="the terminal tab's title, so a human can find it")
+    ap.add_argument("--name", "--title", dest="title", required=True,
+                    help="the session's name, e.g. impl07; the listing, the prompt box and the tab all show it")
     ap.add_argument("--lane", required=True, help="the Lanes row this dispatch owns; the assignment is read back from it")
     ap.add_argument("--root", default=".", help="workspace root holding CLAUDE.md")
     ap.add_argument("--coordinator", help="your own session name as a listing shows it, so the session knows who to register with")
@@ -266,7 +279,7 @@ def main(argv_in: list[str] | None = None) -> int:
     override = os.environ.get(ENV)
     try:
         body = dispatch_prompt.compose(Path(args.root), args.date, args.lane,
-                                      worktree=Path(args.cwd), coordinator=args.coordinator)
+                                      worktree=Path(args.cwd), coordinator=args.coordinator, name=args.title)
         # The override is the eval harness's recorder and the only path that still builds an argv.
         command = (argv(launcher(), agent_type=args.agent_type, cwd=args.cwd, title=args.title)
                    if override else [OSASCRIPT, "-"])
