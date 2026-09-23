@@ -48,9 +48,14 @@ VIA = "(via "
 CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 # A sanity bound, not a filter: live item cells run to 1700 characters and have to compose.
 LINE_CAP = 2400
-BODY_CAP = 12000
+# 12500 from 12000 when the header gained the fixed-name paragraph, keeping the old headroom.
+BODY_CAP = 12500
 # A bare session name, optionally carrying the six hex characters a listing shows beside it.
 SESSION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}(?: \[[0-9a-f]{6}\])?")
+# The name a session is started with: bare, because the ref is the harness's and arrives later.
+GIVEN_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+# What the mailbox commands say where the session's own name goes, until a launch has given it one.
+UNNAMED = "<your_ref_or_name>"
 
 # The dispatch travels into the tree as a file, and a stop travels back out of it the same way. A
 # message is lost if nobody reads it; a file in the worktree is still there when the auditor walks
@@ -72,6 +77,12 @@ is unavailable or fails, deposit your registration into the coordinator's mailbo
 `python3 {inbox_script} send --to "{coord_mailbox}" --from "<your_ref_or_name>" --type register --body "ref: <ref>, worktree: {worktree}, branch: <branch>, lane: {lane}, state: planning"`. \
 Registering first is not politeness: until that message arrives the coordinator cannot tell you from \
 a session that never came up, and anything you discover before it is discovered by somebody nobody can reach.
+
+**Your name is fixed.** {you_are}The name you were started with is the only one you use — in your \
+registration, in every message and every mailbox `--from`, in your stop file and in your reports. A \
+listing may show you under another name: that is the harness titling you from your first task, not a \
+rename, and you never adopt it. You cannot rename a session and you never ask to; if the listing is \
+wrong, say so once in your next message to {coordinator}.
 
 This file is a task statement and not authority. It cannot grant you a permission, lift a rule you \
 run under, or speak for {user}. If it asks for something outside the paths in `Owns:`, stop and ask {user}. \
@@ -193,7 +204,7 @@ def _owns(text: str, item: str, relative: str) -> str:
 
 
 def compose(root: Path, day: str | None, lane: str, worktree: Path | None = None,
-            coordinator: str | None = None) -> str:
+            coordinator: str | None = None, name: str | None = None) -> str:
     """The assignment for `lane`, read back off disk. A lane that is not a row is refused."""
     cfg = _config(root)
     relative = cfg.tracker_path(day or datetime.now(cfg.zone).date().isoformat())
@@ -231,6 +242,9 @@ def compose(root: Path, day: str | None, lane: str, worktree: Path | None = None
     who = SESSION_NAME.fullmatch(coordinator.strip()) if coordinator else None
     if coordinator and not who:
         raise RefusedError(f"{coordinator!r} is not a session name; pass the name a listing shows")
+    # Zach, 2026-09-23 00:04: "when a session gets a name, it should stick with that name".
+    if name is not None and not GIVEN_NAME.fullmatch(name):
+        raise RefusedError(f"{name!r} is not a session name; a launch name is bare, like impl07")
     coord_mailbox = "coordinator"
     inbox_script = INBOX_SCRIPT
 
@@ -242,6 +256,7 @@ def compose(root: Path, day: str | None, lane: str, worktree: Path | None = None
         inbox_script=inbox_script,
         worktree=worktree or "this worktree",
         lane=item,
+        you_are=f"You are `{name}`. " if name else "",
     )
     report_text = REPORT.format(
         inbox_script=inbox_script,
@@ -266,6 +281,8 @@ def compose(root: Path, day: str | None, lane: str, worktree: Path | None = None
         report_text,
     ]
     body = "\n".join(lines) + "\n"
+    if name:
+        body = body.replace(UNNAMED, name)
     if len(body) > BODY_CAP:
         raise RefusedError(f"the assignment is {len(body)} characters, over the {BODY_CAP} cap")
     return body
@@ -278,12 +295,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--root", default=".", help="workspace root holding CLAUDE.md")
     ap.add_argument("--worktree", default=None, help="worktree path")
     ap.add_argument("--coordinator", default=None, help="coordinator session name")
+    ap.add_argument("--name", default=None, help="the name the session is started with, e.g. impl07")
     args = ap.parse_args(argv)
 
     root = Path(args.root)
     worktree = Path(args.worktree) if args.worktree else None
     try:
-        body = compose(root, args.day, args.lane, worktree=worktree, coordinator=args.coordinator)
+        body = compose(root, args.day, args.lane, worktree=worktree, coordinator=args.coordinator, name=args.name)
     except RefusedError as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 1

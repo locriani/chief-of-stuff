@@ -157,43 +157,59 @@ class RunTest(unittest.TestCase):
     def test_the_dry_run_line_cannot_be_read_as_a_shell_line(self):
         """The argv is right, but a human reads the printed line — and may paste it into a shell.
 
-        A title carrying a space and a semicolon must print with its boundaries visible, or the
-        preview of a harmless one-token title reads as `... ; rm -rf ~ ...` and is true when pasted.
+        A path carrying a space and a semicolon must print with its boundaries visible, or the
+        preview reads as `... ; rm -rf ~ ...` and is true when pasted. This used a hostile title until
+        the title became the session's name, which is refused unless it is a bare session name.
         """
-        title = "--dangerous ; rm -rf ~"
+        cwd = "/tmp/--dangerous ; rm -rf ~"
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             (root / "CLAUDE.md").write_text(CLAUDE)
             (root / "daily").mkdir()
             (root / "daily" / "2026-09-18-tracker.md").write_text(TRACKER)
             out = subprocess.run(
-                [sys.executable, str(Path(ss.__file__)), "--type", "implementer", "--cwd", "/tmp", "--title", title,
+                [sys.executable, str(Path(ss.__file__)), "--type", "implementer", "--cwd", cwd, "--name", "t",
                  "--root", str(root), "--date", "2026-09-18", "--lane", "Security audit", "--dry-run"],
                 capture_output=True, text=True, timeout=30,
             )
             self.assertEqual(out.returncode, 0, out.stderr)
-        self.assertNotIn("; rm -rf ~ -e", out.stdout, "the title's tokens run into the rest of the argv")
-        # Ghostty names a tab from its process, so there is no --title on the real path at all: the
-        # hostile value now reaches nothing. It still must not be able to run off the end of a line.
-        self.assertNotIn("rm -rf", out.stdout.split("would write")[0].split("would ask")[0],
-                         "a title must not reach the launcher argv")
+        self.assertNotIn("; rm -rf ~ -e", out.stdout, "the path's tokens run into the rest of the argv")
+        self.assertIn(shlex.quote(cwd), out.stdout, "one path must print as one quoted word")
 
-    def test_the_override_path_still_quotes_every_argv_entry(self):
-        """The eval harness builds an argv, so the per-token invariant still has to hold there."""
-        title = "--dangerous ; rm -rf ~"
-        env = dict(os.environ, **{ss.ENV: json.dumps(["ghostty", "--title={title}", "-e", "claude"])})
+    def test_a_hostile_name_starts_nothing(self):
+        """The name reaches `claude --name`, so it is a bare session name or it is refused."""
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             (root / "CLAUDE.md").write_text(CLAUDE)
             (root / "daily").mkdir()
             (root / "daily" / "2026-09-18-tracker.md").write_text(TRACKER)
             out = subprocess.run(
-                [sys.executable, str(Path(ss.__file__)), "--type", "implementer", "--cwd", "/tmp", "--title", title,
+                [sys.executable, str(Path(ss.__file__)), "--type", "implementer", "--cwd", "/tmp",
+                 "--name=--dangerous ; rm -rf ~", "--root", str(root), "--date", "2026-09-18",
+                 "--lane", "Security audit", "--dry-run"],
+                capture_output=True, text=True, timeout=30,
+            )
+        self.assertEqual(out.returncode, 1)
+        self.assertIn("refused", out.stderr)
+        self.assertNotIn("would run", out.stdout)
+
+    def test_the_override_path_still_quotes_every_argv_entry(self):
+        """The eval harness builds an argv, so the per-token invariant still has to hold there."""
+        cwd = "/tmp/--dangerous ; rm -rf ~"
+        env = dict(os.environ, **{ss.ENV: json.dumps(["ghostty", "--working-directory={cwd}", "-e", "claude"])})
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "CLAUDE.md").write_text(CLAUDE)
+            (root / "daily").mkdir()
+            (root / "daily" / "2026-09-18-tracker.md").write_text(TRACKER)
+            out = subprocess.run(
+                [sys.executable, str(Path(ss.__file__)), "--type", "implementer", "--cwd", cwd, "--name", "t",
                  "--root", str(root), "--date", "2026-09-18", "--lane", "Security audit", "--dry-run"],
                 capture_output=True, text=True, timeout=30, env=env,
             )
             self.assertEqual(out.returncode, 0, out.stderr)
-        self.assertIn("'--title=--dangerous ; rm -rf ~'", out.stdout, "one argv entry must print as one quoted word")
+        self.assertIn("'--working-directory=/tmp/--dangerous ; rm -rf ~'", out.stdout,
+                      "one argv entry must print as one quoted word")
 
     def test_a_refusal_exits_nonzero_and_says_why(self):
         env = dict(os.environ, **{ss.ENV: json.dumps(["sh", "-c", "claude"])})
@@ -538,3 +554,48 @@ class BootstrapNamesItsPathsTest(unittest.TestCase):
     def test_the_ghostty_bootstrap_names_the_paths_too(self):
         s = ss.ghostty_script(cwd="/tmp/wt", agent_type="implementer", claude=Path("/opt/homebrew/bin/claude"))
         self.assertIn(shlex.quote(f"/tmp/wt/{ss.PROMPT_FILE}"), s.replace("\\", ""))
+
+
+class SessionNameTest(unittest.TestCase):
+    """Zach, 2026-09-22 16:18: "the NUMERIC NAMES I ASSIGN ARE THE ONLY NAMES THEY ARE ALLOWED TO KEEP".
+
+    The tab title was all `--title` ever set. `claude` itself got no name, so the harness named the
+    session after its directory and then retitled it from its first task: impl07 was listed as
+    `lab-write-patient-check-merge` by its second turn. A name given at launch registers as the
+    user's, and the harness never retitles one of those.
+    """
+
+    setUp = DispatchFileTest.setUp
+    spawn = DispatchFileTest.spawn
+
+    def test_the_launch_names_the_session(self):
+        argv = ss.argv(ss.DEFAULT_LAUNCHER, agent_type="implementer", cwd="/tmp/wt", title="impl07")
+        self.assertEqual(argv[argv.index("--name") + 1], "impl07")
+
+    def test_the_ghostty_command_names_the_session(self):
+        s = ss.ghostty_script(cwd="/tmp/wt", agent_type="implementer", claude=Path("/opt/homebrew/bin/claude"),
+                              title="impl07")
+        self.assertIn(" --name impl07 ", s)
+
+    def test_no_name_drops_the_flag_and_its_value_together(self):
+        """Removed as a pair, never substituted empty: `--name ''` would be a session named nothing."""
+        s = ss.ghostty_script(cwd="/tmp/wt", agent_type="implementer", claude=Path("/opt/homebrew/bin/claude"))
+        self.assertNotIn("--name", s)
+
+    def test_name_is_the_flag_and_title_still_means_it(self):
+        out, calls = self.spawn(extra=["--name", "impl07"])
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(calls[0]["argv"][1], "impl07")
+
+    def test_the_assignment_carries_the_name_the_launch_gave(self):
+        self.spawn(extra=["--name", "impl07"])
+        self.assertIn("You are `impl07`.", (self.tree / ss.PROMPT_FILE).read_text())
+
+    def test_a_name_that_is_not_a_session_name_writes_nothing_and_starts_nothing(self):
+        for bad in ("impl 07", "-x", "a;b", "impl07 [abc123]", "$(whoami)"):
+            with self.subTest(bad=bad):
+                out, calls = self.spawn(extra=[f"--name={bad}"])
+                self.assertEqual(out.returncode, 1, bad)
+                self.assertIn("refused", out.stderr)
+                self.assertFalse((self.tree / ss.PROMPT_FILE).exists())
+                self.assertEqual(calls, [])

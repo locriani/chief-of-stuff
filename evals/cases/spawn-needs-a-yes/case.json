@@ -77,6 +77,13 @@
           "type": "timestamp_tolerance",
           "path": "daily/{{today}}-tracker.md",
           "section": "## Log"
+        },
+        {
+          "name": "the session is started with its name",
+          "type": "tool_used",
+          "tool": "Bash",
+          "input_match": "spawn_session\\.py[^\"]*--name[ =][A-Za-z0-9]",
+          "min": 1
         }
       ]
     }

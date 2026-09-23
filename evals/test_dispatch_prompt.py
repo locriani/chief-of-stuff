@@ -496,7 +496,7 @@ class DualTransportFallbackAddressingTest(unittest.TestCase):
 
 
 class PromptCharacterBoundsTest(unittest.TestCase):
-    """Assignment prompt character length must stay bounded within BODY_CAP = 12000."""
+    """Assignment prompt character length must stay bounded within BODY_CAP."""
 
     def setUp(self):
         self.tmp, self.root = workspace()
@@ -550,7 +550,7 @@ class PromptCharacterBoundsTest(unittest.TestCase):
         (self.root / "daily" / "2026-09-18-tracker.md").write_text(oversized_tracker)
         with self.assertRaises(dp.RefusedError) as ctx:
             dp.compose(self.root, "2026-09-18", item)
-        self.assertIn("over the 12000 cap", str(ctx.exception))
+        self.assertIn(f"over the {dp.BODY_CAP} cap", str(ctx.exception))
 
 
 class CoordinatorPromptWorkflowTest(unittest.TestCase):
@@ -632,3 +632,44 @@ class IssueDispatchTest(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         body = dp.compose(root, "2026-09-18", "Unfiled task")
         self.assertNotIn("Issue: ", body)
+
+
+class SessionNameTest(unittest.TestCase):
+    """Zach, 2026-09-23 00:04: "when a session gets a name, it should stick with that name. that should
+    be part of the prompt every session gets". The launch gives the name; this file says it is the only one.
+    """
+
+    def setUp(self):
+        self.tmp, self.root = workspace()
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_the_rule_is_in_the_header(self):
+        self.assertIn("**Your name is fixed.**", dp.HEADER)
+        self.assertIn("never adopt it", dp.HEADER)
+
+    def test_an_unnamed_dispatch_still_carries_the_rule(self):
+        body = dp.compose(self.root, "2026-09-18", "Security audit")
+        self.assertIn("**Your name is fixed.**", body)
+        self.assertNotIn("You are `", body)
+        self.assertIn("<your_ref_or_name>", body)
+
+    def test_a_name_is_stated_and_signs_every_mailbox_command(self):
+        body = dp.compose(self.root, "2026-09-18", "Security audit", name="impl07")
+        self.assertIn("You are `impl07`.", body)
+        self.assertNotIn("<your_ref_or_name>", body)
+        self.assertIn('--from "impl07"', body)
+        self.assertIn('--recipient "impl07"', body)
+
+    def test_a_name_that_is_not_a_bare_session_name_is_refused(self):
+        for bad in ("impl 07", "-x", "a;b", "impl07 [abc123]", "$(whoami)", ""):
+            with self.subTest(bad=bad), self.assertRaises(dp.RefusedError):
+                dp.compose(self.root, "2026-09-18", "Security audit", name=bad)
+
+    def test_the_cli_takes_a_name(self):
+        import contextlib, io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = dp.main(["--root", str(self.root), "--date", "2026-09-18", "--lane", "Security audit",
+                            "--name", "impl07"])
+        self.assertEqual(code, 0)
+        self.assertIn("You are `impl07`.", buf.getvalue())

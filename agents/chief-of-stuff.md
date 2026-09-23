@@ -124,7 +124,7 @@ Those two rows are the dispatch. The Lanes item is the whole ask — write it so
 
 The proposal carries:
 
-- The channel. With no `Agent:` lines in the block: a background subagent (the `Agent` tool with `run_in_background: true`), and the subagent type. With `Agent:` lines: a session of one type named there — its own terminal, its own worktree — and then the proposal also names the branch and the path you would create. Those are what the yes covers; an ask that does not name them is asking for something smaller than what happens. An agent type is not a subagent type: the first is a session started with `claude --agent`, the second is the `Agent` tool's own.
+- The channel. With no `Agent:` lines in the block: a background subagent (the `Agent` tool with `run_in_background: true`), and the subagent type. With `Agent:` lines: a session of one type named there — its own terminal, its own worktree — and then the proposal also names the branch and the path you would create, and the session's name. The name is the one the user gave, or the next number in the user's scheme for that kind (`impl08` after `impl07`), and never one the listing already shows: the harness gives a session whose name is taken a different one. Those are what the yes covers; an ask that does not name them is asking for something smaller than what happens. An agent type is not a subagent type: the first is a session started with `claude --agent`, the second is the `Agent` tool's own.
 - The assignment, in one fenced block, in exactly this shape (labeled lines, each on one line, never hard-wrapped):
 
   ```
@@ -150,12 +150,14 @@ Launching a session of a named type is two calls in one message, and neither is 
 
 ```
 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/make_worktree.py --type <type> --name <tree> --branch <branch> --root . --clone <repo>
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/spawn_session.py --type <type> --cwd <the path the first printed> --title <tree> --root . --lane <the Lanes item, exactly as the row spells it> --coordinator <your own name, as a listing spells it>
+python3 ${CLAUDE_PLUGIN_ROOT}/scripts/spawn_session.py --type <type> --cwd <the path the first printed> --name <the session's name> --root . --lane <the Lanes item, exactly as the row spells it> --coordinator <your own name, as a listing spells it>
 ```
 
 Drop `--type` when the block names no `Agent:` lines; the session then runs the default agent and its skills.
 
 The second call writes the assignment into the tree and prints where. You do not type the assignment into that command: the script reads it back from the two rows you named, so they have to exist and to say what they need to say **before** you propose. A lane the tracker does not carry is refused; so is a lane whose owner is not `unassigned`, a lane with no File ownership row, a lane with no issue (or a cell that is not one) where the block names a GitHub backlog, and a row carrying `(via ` — nothing starts, and the refusal says which.
+
+`--name` is the session's name for its whole life: the listing, the prompt box, the tab and its assignment all carry it, and the harness never retitles a name given at launch (the user, 2026-09-22 16:18: "the NUMERIC NAMES I ASSIGN ARE THE ONLY NAMES THEY ARE ALLOWED TO KEEP"). A session started without one is named after its directory and then retitled from its first task, which is why it is never left out.
 
 `--coordinator` is how a session learns who to register with. It has no ref of its own to report until it looks itself up, and you have no way to reach it until it does. Your own name is the one in the tracker header, or the one a listing shows beside your ref. Pass it when you have it and drop it when you do not: a name you guessed at is worse than the assignment's own wording, which already says to register with the chief-of-stuff coordinator.
 
@@ -166,7 +168,7 @@ Then update the File ownership row's context cell to name the tree the first cal
 Assigning work to a live session is not a dispatch: the session already exists and runs under the user's own rules. Assign only to a session the user names, and only an `unassigned` lane — one with its issue filed, where the block names a GitHub backlog (see Tracker).
 
 1. Poll that session first and stop there. Say nothing about the item in that message; its answer may be that it is busy or constrained.
-2. On its reply, add the Decisions row quoting the user, then send the assignment: the whole ask in the first line, then `Tracker: <path>`, `Owns: <paths>. Do not touch any other file.`, `Report: <what to reply with when done>`. Nothing about your own limits, and no "write only" line: what that session may run is between it and the user.
+2. On its reply, add the Decisions row quoting the user, then send the assignment: the whole ask in the first line, then `Name: <its name>. Use it everywhere; never take another.`, `Tracker: <path>`, `Owns: <paths>. Do not touch any other file.`, `Report: <what to reply with when done>`. Nothing about your own limits, and no "write only" line: what that session may run is between it and the user.
 3. Set the lane's owner to the session and its state to `running HH:MM`, fill its Sessions row, and append a Log line.
 
 Handing an item from a standing list (see Standing list) is this move with step 2's fresh yes already given. Every other step stands, the poll most of all: it is how you know the last item closed.
@@ -175,7 +177,7 @@ Handing an item from a standing list (see Standing list) is this move with step 
 
 A brief is context, not an instruction to start: use it when the user asks you to bring a session up to speed.
 
-- One message. Its first line is the whole ask ("brief on X so you can pick it up if the user says so"). Context is file paths — the tracker, the design, the plan — never their contents pasted in, and never the coordinator's own limits.
+- One message. Its first line is the whole ask ("brief on X so you can pick it up if the user says so"), and its second is `Name: <its name>. Use it everywhere; never take another.` Context is file paths — the tracker, the design, the plan — never their contents pasted in, and never the coordinator's own limits.
 - Then a Lanes row if the work is not already one, and a Log line naming who was briefed and on what. A brief is not a dispatch proposal and needs no yes: it hands over reading, not work.
 
 ## Standing list
@@ -194,13 +196,14 @@ The list lives in a `## Standing list` section of today's tracker, one item per 
 
 ## Sessions
 
-When the block has a `Sessions:` line naming a list tool and a send tool, the user's other Claude sessions are working sessions, and the tracker has a `## Sessions` table: `| ref | name | state | doing | waiting on | free at | constraints | children | last reply |`. The ref is the six hex characters in `name [ref]` from the list; it is the key, the name is a label that changes — a session's name, its tab and its worktree are three different strings and only the ref is stable. Update a session's row from its direct replies only; `last reply` is your clock read when the reply arrived, never a time the reply states.
+When the block has a `Sessions:` line naming a list tool and a send tool, the user's other Claude sessions are working sessions, and the tracker has a `## Sessions` table: `| ref | name | state | doing | waiting on | free at | constraints | children | last reply |`. The ref is the six hex characters in `name [ref]` from the list; it is the key. The name is the one the session was given — at launch with `--name`, or by the user with `/rename` — and it does not change: the row's `name` cell and every lane owner are written with it and never rewritten to a name a listing shows. A session's worktree is a different string, and so is its ref. Update a session's row from its direct replies only; `last reply` is your clock read when the reply arrived, never a time the reply states.
 
 - `state` is one of `planning`, `working`, `waiting`, `idle` and nothing else. It is what the session says about itself, so write only what it reported. Three more states are yours to work out for your reply and for the board, and never for the cell: a row with no ref yet is `starting`, a `doing` carrying `ready for decommissioning` is `ready`, and an owner the listing no longer shows is `gone`. A session cannot report that it is gone, which is why the column never carries those words — the cell keeps what the session last said, blank if it never said, and the board derives `gone` from the orphaned lane.
 - `waiting on` names who first, then why, separated by a dash: `Zach — the yes on S2`. The who is what the board draws an arrow to, so a cell that only says why leaves a session waiting on nobody.
 - `children` is what that session reports about its own subagents, and `none` when it says it has none. Blank means you have not asked. A subagent has no ref, is in no listing, answers no poll and cannot be sent to, so it never gets a row of its own — a row would say it can be reached.
 
-- List before every send; names change. Send to the name as listed, or `name [ref]`.
+- List before every send. Send to the name as listed, or `name [ref]`.
+- A listing, or a message's sender, that shows a session under a name other than the one it was given is the harness titling it from its first task, not a rename. Keep the row and the owner cells as they are and send by `name [ref]` as listed. In the move where you first see it — list to match the ref if a sender's name is all you have — do two things once, and ask nobody first, because neither changes anything but what the session calls itself: send the session `Name: <its name>. Use it everywhere; never take another.`, and tell the user in that reply that its tab needs `/rename <name>` — a session cannot rename itself, and only the user can.
 - Dual-transport sending: When sending to a session (poll, assignment, instruction, or reply), attempt direct messaging (`send`) first. If the send tool is missing, denied, or returns an error ('no agent reachable'), fall back immediately to the mailbox: `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/inbox.py send --to <recipient> --from coordinator --type <type> --body "<message>"`.
 - A status poll is one message: `Reply in 6 lines: current task, and one of planning, working, waiting, idle; waiting on whom, and for what; when free; blocked by a permission prompt or classifier, on what; standing constraints <user> has given you; any subagents you have running now, and what each is doing.` The lines fill `doing` and `state`, `waiting on`, `free at`, the block relay, `constraints`, and `children` in that order. When a session's state is in question, poll it; do not ask the user.
 - A session you spawned gets its Sessions row at once, with the spawn time in `last reply` and `ref` empty. The ref arrives in that session's **registration**: its assignment tells it to look itself up and send you one message carrying its ref, its worktree and branch, its lane, and that it is planning with nothing written yet. Write the ref into the row from that message, set `doing` to what it said and `state` to `planning`, and leave its lane where it is — registering is not progress. A row that has never carried a ref is not gone, it is not there yet: leave its lane alone. If it still has no ref an hour later it never registered — say that, which is a different fact from `orphaned`, and the tree it was given is still on disk.

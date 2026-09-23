@@ -1320,3 +1320,21 @@ Red first: settings 1 import error (then 8 cases), notify 1 import error (then 1
 Dry run against a copy of the live CLAUDE.md at 14:05: five warnings (Week 2 Early 3h and 1h, Week 2 Final 24h, 3h, 1h) and the two day rows; a second sync changed nothing.
 
 Full suite on the branch: 922 of 923 pass; the one failure is the known `test_cli_reads_files_and_summarises`.
+
+## C26 — a session keeps the name it is given (0.22.0)
+
+Zach, 2026-09-23 00:04: "when a session gets a name, it should stick with that name. that should be part of the prompt every session gets". And 2026-09-22 16:18: "the NUMERIC NAMES I ASSIGN ARE THE ONLY NAMES THEY ARE ALLOWED TO KEEP".
+
+- **Cause:** sessions were not renaming themselves. `spawn_session.py` set only the Ghostty tab title, so `claude` started unnamed: the harness named it after its directory (`nameSource: derived`) and then retitled it from its first task (`auto`). impl07 became `lab-write-patient-check-merge`. A name set with `/rename` is `user` and has held since 2026-09-22 16:20.
+- **Probe:** `claude --name cos-name-probe` in a pty registers `nameSource: user` within 1.6 s and holds it through a two-minute run; the 2.1.281 binary's auto-titler replaces only `derived` and `auto` names. The unnamed control stayed `derived` for its two minutes, so it shows no retitle either way.
+- **Launch:** `CLAUDE_ARGV` carries `--name {title}`; `--name` is the flag and `--title` an alias. A name that is not a bare session name is refused before anything is written or started. An empty name drops the flag and its value as a pair, like `--agent`.
+- **Assignment:** a header paragraph, **Your name is fixed.**, in every dispatch; with a name, "You are `impl07`." and the name in every mailbox `--from` and `--recipient`. `BODY_CAP` 12000 → 12500 for the paragraph, keeping the old headroom.
+- **Agent:** the proposal names the session; the spawn line passes `--name`; Assign and Brief carry `Name: <name>. Use it everywhere; never take another.`; a Sessions row and lane owners keep the given name. A listing or sender showing another name is acted on in that move, with no ask: the session is told its name and the user is told `/rename <name>`.
+
+Red first: dispatch_prompt 9 errors on `compose(name=)`, spawn_session 7 failures (no `--name` in the argv, bad names accepted). Two existing tests fed a hostile title to check dry-run quoting; the title is now refused, so they check a hostile `--cwd` instead, and a new test checks the hostile name is refused.
+
+Agent arm, on the 0.21.0 agent file with the new cases: `registry-keyed-on-ref` (golden, flipped from "row carries the new name" to "row keeps the name it was given") RED 0 of 2 on telling the session and naming `/rename`; `spawn-needs-a-yes` 0 of 3 spawns carried `--name`. On the new file: `registry-keyed-on-ref` GREEN 3 of 3 once the rule said to act without asking (the first wording asked permission in 1 of 2 runs); every spawn in `spawn-needs-a-yes` carried `--name`, 4 of 4.
+
+Not green, and carried forward: in `spawn-needs-a-yes`, `dispatch-writes-the-prompt` and `dispatch-prompt-carries-no-peer-text`, some runs stop before spawning because `make_worktree.py` needs `--clone` and the fixture names no repo. That happened on the 0.21.0 file too (1 of 4 runs of `spawn-needs-a-yes`); the two dispatch cases were not baselined on 0.21.0. `dispatch-prompt-carries-no-peer-text` also failed its turn-1 `(via 4821-audit)` grader in both runs. Regression green: `poll-before-assign`, `brief-a-session`, `registration-fills-the-ref`.
+
+Full suite on the branch: 934 of 935 pass; the one failure is the known `test_cli_reads_files_and_summarises`.
