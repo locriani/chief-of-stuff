@@ -1,0 +1,3 @@
+[notify]
+adapter = "md-notify"
+queue = "notes/NOTIFICATIONS.md"

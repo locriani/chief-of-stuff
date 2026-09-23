@@ -57,7 +57,7 @@ MAKE_WORKTREE = PLUGIN_ROOT / "scripts" / "make_worktree.py"
 SPAWN_SESSION = PLUGIN_ROOT / "scripts" / "spawn_session.py"
 # The plugin's own scripts are the only ones the agent may run: html, health and merge state come
 # from code, never from the agent. git and curl stay off the allowlist — the scripts call them.
-SCRIPTS = ("render_board.py", "probe_health.py", "audit_lanes.py", "make_worktree.py", "spawn_session.py")
+SCRIPTS = ("render_board.py", "probe_health.py", "audit_lanes.py", "make_worktree.py", "spawn_session.py", "notify.py")
 
 
 def allowed_tools(root: Path) -> list[str]:
