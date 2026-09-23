@@ -1374,3 +1374,14 @@ Zach, 2026-09-23 18:15: "fix the failing test".
 - **Fix, test only:** the test patches `render_board.datetime` with a subclass whose `now` returns the fixture's `NOW` (2026-09-16 14:30 CT). The script is unchanged: the agent always passes `--date <today>`, so the clock and the date agree in use. The other `main` callers in the suite assert nothing date-dependent.
 
 Red: the failure itself, on main at 3b96eaf. Full suite on the branch: 944 of 944 pass.
+
+## C30 — agy (Antigravity) sessions, mailbox only, and `<role>-<class>-<NN>` names (0.25.0)
+
+Zach, 2026-09-23 18:42: "within the next hour I need agy instances going"; relayed by gauntlet-e5 the same minute, his "yes." to launching agy sessions with registration and reporting through the mailbox only; relayed at 18:36, his naming style `[name]-[class]-[num]`.
+
+- **Launch:** `spawn_session.py --runtime agy --model <id from agy models>`. The tab runs `env -C <tree> PATH=… agy --model <id> --mode plan -i <bootstrap>`: no `--agent`, no `--name` (the tab title and the assignment carry the name), `--mode plan` as the plan-first gate. The bootstrap adds "Then read <workspace>/CLAUDE.md: its house rules bind you.", because agy does not load it. `--runtime agy` without a model, or with one outside `[A-Za-z0-9._-]`, is refused.
+- **Assignment:** for agy, a paragraph after the first line: it cannot list or message sessions, so every registration, ask, report and stop goes through the mailbox with `--from <name>`, its ref is its name, it checks its mailbox before each step and after each commit, and `ponytail-review` is handed over as the newest installed SKILL.md path.
+- **Mailbox root, a real fault found on the way:** `inbox.py` resolves its mailbox through git's common dir, so a session in a fork worktree wrote to `openemr-base-clean/.chief-of-stuff/mailbox` while the coordinator, at a workspace root that is no repo, reads `Gauntlet/.chief-of-stuff/mailbox`. Every inbox command in every assignment now carries `--mailbox-dir <workspace>/.chief-of-stuff/mailbox`. For Claude sessions this was masked by direct messaging; for a mailbox-only session it would have been total. `BODY_CAP` 13000 → 14200.
+- **Agent:** Dispatch names sessions `<role>-<class>-<NN>` (class = `C`/`G`/`O` + model + `H`/`M`/`L`; `NN` the lowest free), and a `G`/`O` class launches on agy. Sessions: an agy row carries `agy` in `ref`, is sent to only through the inbox, and is alive while `pgrep -f <worktree>` finds it — the orphan check reads that, never the listing.
+
+Red first: `AgyTest` 7 (3 failures, 4 errors), `AgyRuntimeTest` 2 errors, `MailboxRootTest` 1 failure. Full suite on the branch: 954 of 954. The agent arm was not run this hour (one ~10-minute run per case); `spawn-needs-a-yes` is owed on the new agent file.

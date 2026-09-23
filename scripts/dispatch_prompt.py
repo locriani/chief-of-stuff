@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import shlex
 import sys
 from datetime import date, datetime
 from pathlib import Path
@@ -49,8 +50,9 @@ CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 # A sanity bound, not a filter: live item cells run to 1700 characters and have to compose.
 LINE_CAP = 2400
 # 12500 from 12000 when the header gained the fixed-name paragraph, and 13000 when it gained ponytail
-# and the review step: each time keeping the old headroom.
-BODY_CAP = 13000
+# and the review step, and 14200 when an agy session gained its mailbox-only paragraph and every inbox
+# command its mailbox path: each time keeping the old headroom.
+BODY_CAP = 14200
 # A bare session name, optionally carrying the six hex characters a listing shows beside it.
 SESSION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}(?: \[[0-9a-f]{6}\])?")
 # The name a session is started with: bare, because the ref is the harness's and arrives later.
@@ -66,6 +68,19 @@ STOP_FILE = f"{PROMPT_DIR}/stop.md"
 # The plugin's own copy, beside this file. A workspace has no `scripts/inbox.py`; the line used to
 # name one anyway, and a session following it found nothing there.
 INBOX_SCRIPT = Path(__file__).resolve().parent / "inbox.py"
+# An agy (Antigravity) session has no session listing, no direct messages and no Claude skills, so the
+# mailbox is its only channel (Zach, 2026-09-23 18:42) and the review skill is handed over as a file.
+AGY = ("**You run under Antigravity, not Claude Code.** You cannot list sessions or message one: every "
+       "registration, ask, progress report and stop below goes through the mailbox commands, with "
+       "`--from \"{name}\"`, and your ref is your name. Check your mailbox "
+       "(`python3 {inbox_script} list --recipient \"{name}\" --unread`) before each step and after each "
+       "commit. `ponytail-review` is not a skill here: {review}")
+REVIEW_GLOB = ".claude/plugins/cache/ponytail/ponytail/*/skills/ponytail-review/SKILL.md"
+
+
+def _review_skill() -> str:
+    found = sorted(Path.home().glob(REVIEW_GLOB), key=lambda p: [int(x) if x.isdigit() else x for x in p.parts[-4].split(".")])
+    return f"read `{found[-1]}` and follow it." if found else "its instructions were not found on this machine; say so in your pull request instead of posting a review."
 
 HEADER = """# Assignment
 
@@ -216,7 +231,7 @@ def _owns(text: str, item: str, relative: str) -> str:
 
 
 def compose(root: Path, day: str | None, lane: str, worktree: Path | None = None,
-            coordinator: str | None = None, name: str | None = None) -> str:
+            coordinator: str | None = None, name: str | None = None, runtime: str = "claude") -> str:
     """The assignment for `lane`, read back off disk. A lane that is not a row is refused."""
     cfg = _config(root)
     relative = cfg.tracker_path(day or datetime.now(cfg.zone).date().isoformat())
@@ -258,7 +273,10 @@ def compose(root: Path, day: str | None, lane: str, worktree: Path | None = None
     if name is not None and not GIVEN_NAME.fullmatch(name):
         raise RefusedError(f"{name!r} is not a session name; a launch name is bare, like impl07")
     coord_mailbox = "coordinator"
-    inbox_script = INBOX_SCRIPT
+    # Named explicitly: the inbox finds its mailbox through git's common dir, so from a fork worktree it
+    # resolved the fork's mailbox while the coordinator, at a workspace root that is no repo, read the
+    # workspace's. A mailbox-only (agy) session would never have been heard.
+    inbox_script = f"{INBOX_SCRIPT} --mailbox-dir {shlex.quote(str(root.resolve() / PROMPT_DIR / 'mailbox'))}"
 
     header_text = HEADER.replace("\\\n", "").format(
         user=cfg.user,
@@ -270,6 +288,9 @@ def compose(root: Path, day: str | None, lane: str, worktree: Path | None = None
         lane=item,
         you_are=f"You are `{name}`. " if name else "",
     )
+    if runtime == "agy":
+        agy = AGY.format(name=name or UNNAMED, inbox_script=inbox_script, review=_review_skill())
+        header_text = header_text.replace("\n\n**Register first", f"\n\n{agy}\n\n**Register first", 1)
     report_text = REPORT.format(
         inbox_script=inbox_script,
         coord_mailbox=coord_mailbox,
@@ -286,7 +307,7 @@ def compose(root: Path, day: str | None, lane: str, worktree: Path | None = None
     lines += [
         f"Workspace: {root.resolve()}",
         f"Tracker: {(root / relative).resolve()}",
-        f"Inbox: {inbox_script}",
+        f"Inbox: {INBOX_SCRIPT}",
         f"Owns: {owns}" + ("" if owns.lower() == "none" else
                            " — yours to keep true; drift left in them is your error. Do not touch any other file."),
         COMMITS,
