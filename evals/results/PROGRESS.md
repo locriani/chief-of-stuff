@@ -1338,3 +1338,16 @@ Agent arm, on the 0.21.0 agent file with the new cases: `registry-keyed-on-ref` 
 Not green, and carried forward: in `spawn-needs-a-yes`, `dispatch-writes-the-prompt` and `dispatch-prompt-carries-no-peer-text`, some runs stop before spawning because `make_worktree.py` needs `--clone` and the fixture names no repo. That happened on the 0.21.0 file too (1 of 4 runs of `spawn-needs-a-yes`); the two dispatch cases were not baselined on 0.21.0. `dispatch-prompt-carries-no-peer-text` also failed its turn-1 `(via 4821-audit)` grader in both runs. Regression green: `poll-before-assign`, `brief-a-session`, `registration-fills-the-ref`.
 
 Full suite on the branch: 934 of 935 pass; the one failure is the known `test_cli_reads_files_and_summarises`.
+
+## C27 — every code change lands through a pull request; CIMP retired (0.23.0)
+
+Zach, 2026-09-23 15:31: "all code changes should require a PR" and "This will fully supersede CIMP"; 15:35: "use https://gitlab.com/gitlab-org/cli". His answers at planning: either he merges or the session merges on his "merge"; enforced where possible; his merge is the review; the post-merge steps are the PR's session's, on his word.
+
+- **Assignment:** the `Commits:` line says code reaches main only through a pull request — `gh pr create`, or `glab mr create` on GitLab — opened when the session is told to, never a push to main or a local merge; the merge waits for a word given directly.
+- **Agent:** a lane is `done` when its pull request is merged and the suite has run on main; an open pull request is `waiting`, its URL in the item. Assign carries `Lands by: a pull request, opened on the user's word; never a local merge into main.` An `L` lane is "its own pull request", not "its own CIMP".
+- **Comments:** `audit_lanes.py` and `notify.py` no longer name CIMP. No behaviour change: the audit still reads whether a lane's sha is on main.
+- **Outside this repo, same change:** workspace `CLAUDE.md` house rule 5 rewritten as the pull-request rule, with the Coordinator and Architecture blocks; the CIMP memory replaced; branch protection on main for chief-of-stuff, frank-lloyd-aight, auditor and ai-additions (pull request required, 0 approvals, admins enforced, no force pushes or deletions), and a direct push from a scratch clone refused with GH006; glab 1.119.0 installed.
+
+Red first: `PullRequestTest` 1 failure (the `Commits:` line had no pull request); two older tests pinned "never merge" and now pin "never push to main or merge locally". Agent arm, `poll-before-assign` with a new grader: on the 0.22.0 agent file RED 0 of 2 (no assignment named a pull request); on the new file GREEN 2 of 2.
+
+Full suite on the branch: 937 of 938 pass; the one failure is the known `test_cli_reads_files_and_summarises`.
