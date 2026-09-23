@@ -185,7 +185,7 @@ class AssignmentTest(unittest.TestCase):
         workspace rule the assignment exists to carry — every session makes meaningful small commits,
         because uncommitted work is how work gets lost (Zach, 2026-09-18 23:00). The gate is the merge."""
         self.assertRegex(self.body(), r"(?m)^Commits: Commit small and often\b")
-        self.assertIn("never merge", self.body())
+        self.assertIn("never push to main or merge locally", self.body())
 
     def test_it_says_what_to_reply_with(self):
         self.assertRegex(self.body(), r"(?m)^Report: \S")
@@ -332,7 +332,7 @@ class PositiveHalfTest(unittest.TestCase):
         """Zach, 2026-09-18 23:00: every session makes meaningful small commits; uncommitted work is how work gets lost."""
         self.assertNotIn("do not commit", self.body)
         self.assertIn("Commit small and often", self.body)
-        self.assertIn("never merge", self.body)
+        self.assertIn("never push to main or merge locally", self.body)
 
     def test_owns_is_a_duty_with_a_failure_mode(self):
         self.assertIn("yours to keep true", self.body)
@@ -673,3 +673,29 @@ class SessionNameTest(unittest.TestCase):
                             "--name", "impl07"])
         self.assertEqual(code, 0)
         self.assertIn("You are `impl07`.", buf.getvalue())
+
+
+class PullRequestTest(unittest.TestCase):
+    """Zach, 2026-09-23 15:31: "all code changes should require a PR" … "This will fully supersede CIMP".
+
+    The assignment is the only rulebook a dispatched session is handed, so the route to main is in it.
+    """
+
+    def setUp(self):
+        self.tmp, self.root = workspace()
+        self.addCleanup(self.tmp.cleanup)
+        self.body = dp.compose(self.root, "2026-09-18", "Security audit")
+
+    def test_code_reaches_main_only_through_a_pull_request(self):
+        line = [x for x in self.body.splitlines() if x.startswith("Commits: ")][0]
+        self.assertIn("only through a pull request", line)
+        self.assertIn("gh pr create", line)
+        self.assertIn("glab mr create", line)
+        self.assertIn("never push to main or merge locally", line)
+
+    def test_the_commit_rule_survives(self):
+        self.assertIn("Commit small and often", self.body)
+
+    def test_cimp_is_not_named(self):
+        self.assertNotIn("CIMP", self.body)
+        self.assertNotRegex(self.body, r"\bCIP\b")

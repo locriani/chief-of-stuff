@@ -465,13 +465,13 @@ def landed(sha: str, worktree: Path) -> tuple[str, str]:
 def _push_gap(worktree: Path) -> str:
     """Local main against origin/main, and the commit main is at.
 
-    House rule 5 (CIMP): the suite has to have been run on main after the merge, and no script can
+    House rule 5 (pull requests): the suite has to have been run on main after the merge, and no script can
     watch that happen. Naming main's commit is what makes the claim checkable rather than
     unfalsifiable — a `Verified` line pinned to a sha that is no longer main's is stale evidence.
     """
     # `main`, not `HEAD`: this runs in whichever worktree the scan reached first, and a worktree's
     # HEAD is its own branch. The count below always resolved the ref correctly, so a right number
-    # vouched for a wrong name — the failure mode a reader cannot catch, on the one line the CIMP
+    # vouched for a wrong name — the failure mode a reader cannot catch, on the one line the post-merge
     # gate rests on.
     code, sha = git(["rev-parse", "--short", "main"], worktree)
     at = f"main {sha} " if code == 0 and sha and " " not in sha else "main "

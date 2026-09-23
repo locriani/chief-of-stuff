@@ -155,9 +155,13 @@ REPORT = ("Report: when the lane is finished, reply to the coordinator with what
           '`python3 {inbox_script} send --to "{coord_mailbox}" --from "<your_ref_or_name>" --type progress --body "<report>"`.')
 # This line said "Write only: do not commit or push." until 0.12.0, against the workspace rule it was
 # supposed to carry: every session makes meaningful small commits, because uncommitted work is how
-# work gets lost. The gate was never the commit; it is the merge.
+# work gets lost. The gate was never the commit; it is the merge. Since 0.23.0 the merge is a pull
+# request's (Zach, 2026-09-23 15:31: "all code changes should require a PR" … "This will fully
+# supersede CIMP"), and the GitHub repos refuse a direct push to main.
 COMMITS = ("Commits: Commit small and often on your own branch — uncommitted work is how work gets "
-           "lost — and never merge: that one waits for a word you were given directly.")
+           "lost. Code reaches main only through a pull request: push the branch and open one "
+           "(`gh pr create`, or `glab mr create` on GitLab) when you are told to, and never push to main "
+           "or merge locally. The merge waits for a word you were given directly.")
 
 
 def _clean(label: str, value: str) -> str:

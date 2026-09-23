@@ -7,7 +7,7 @@ point." So md-notify is an adapter behind `adapter_for`, and a Todo adapter repl
 changing. Todo's `compile` rewrites its whole queue file: the two must never share one.
 
     python3 notify.py --root . sync                                   # deadline warnings, day open and close
-    python3 notify.py --root . add --kind awaiting --what "CIMP 0.21.0" [--message M] [--when now|YYYY-MM-DD HH:MM]
+    python3 notify.py --root . add --kind awaiting --what "PR 0.23.0" [--message M] [--when now|YYYY-MM-DD HH:MM]
 
 md-notify reads a markdown table every minute (MNCore `NotificationSchedule.parse`). What that parser does
 decides what this writer does:
