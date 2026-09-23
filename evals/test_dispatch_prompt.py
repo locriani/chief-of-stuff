@@ -13,6 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import dispatch_prompt as dp  # noqa: E402
+import inbox  # noqa: E402
 
 CLAUDE = """# Workspace
 
@@ -422,3 +423,150 @@ class ReportIsNotAStateChangeTest(unittest.TestCase):
 
     def test_an_unnamed_next_reads_as_idle_rather_than_as_working(self):
         self.assertIn("assume you are idle", self.body)
+
+
+class InboxMetadataLineTest(unittest.TestCase):
+    """Dual-transport metadata line pointing to the inbox utility."""
+
+    def setUp(self):
+        self.tmp, self.root = workspace()
+        self.addCleanup(self.tmp.cleanup)
+        self.body = dp.compose(self.root, "2026-09-18", "Security audit")
+
+    def test_inbox_metadata_line_is_present_in_compose_output(self):
+        expected_line = f"Inbox: {(self.root / 'scripts/inbox.py').resolve()}"
+        self.assertIn(expected_line, self.body)
+
+    def test_inbox_metadata_line_format(self):
+        self.assertRegex(self.body, r"(?m)^Inbox: .*/scripts/inbox\.py$")
+
+
+class DualTransportFallbackAddressingTest(unittest.TestCase):
+    """Fallback CLI commands must always target the role-based 'coordinator' mailbox."""
+
+    def setUp(self):
+        self.tmp, self.root = workspace()
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_fallback_commands_target_coordinator_when_no_coordinator_specified(self):
+        body = dp.compose(self.root, "2026-09-18", "Security audit")
+        self.assertIn('send --to "coordinator" --from "<your_ref_or_name>" --type register', body)
+        self.assertIn('send --to "coordinator" --from "<your_ref_or_name>" --type ask', body)
+        self.assertIn('send --to "coordinator" --from "<your_ref_or_name>" --type stop', body)
+        self.assertIn('send --to "coordinator" --from "<your_ref_or_name>" --type progress', body)
+
+    def test_fallback_commands_always_target_coordinator_when_coordinator_session_passed(self):
+        coord_session = "my-coord [123456]"
+        body = dp.compose(self.root, "2026-09-18", "Security audit", coordinator=coord_session)
+        # IPC prose retains the specific session name
+        self.assertIn(f"the chief-of-stuff coordinator `{coord_session}`", body)
+        # Mailbox fallback CLI commands always specify --to "coordinator"
+        self.assertIn('send --to "coordinator" --from "<your_ref_or_name>" --type register', body)
+        self.assertIn('send --to "coordinator" --from "<your_ref_or_name>" --type ask', body)
+        self.assertIn('send --to "coordinator" --from "<your_ref_or_name>" --type stop', body)
+        self.assertIn('send --to "coordinator" --from "<your_ref_or_name>" --type progress', body)
+        # Ensure the ephemeral session name is never used as mailbox address
+        self.assertNotIn('--to "my-coord', body)
+        self.assertNotIn(f'--to "{coord_session}"', body)
+
+    def test_all_four_fallback_command_types_present_with_coordinator_recipient(self):
+        body = dp.compose(self.root, "2026-09-18", "Security audit", coordinator="coord-alpha [abcdef]")
+        for msg_type in ("register", "ask", "stop", "progress"):
+            pattern = rf'send --to "coordinator" --from "<your_ref_or_name>" --type {msg_type}'
+            self.assertRegex(body, pattern)
+
+    def test_fallback_command_delivers_to_coordinator_mailbox(self):
+        mailbox_dir = self.root / ".chief-of-stuff" / "mailbox"
+        inbox.send_message(
+            recipient="coordinator",
+            sender="worker-test [999999]",
+            msg_type="register",
+            body="ref: worker-test, lane: Security audit, state: planning",
+            mailbox_dir=mailbox_dir,
+        )
+        unread = inbox.list_messages(recipient="coordinator", mailbox_dir=mailbox_dir, unread_only=True)
+        self.assertEqual(len(unread), 1)
+        self.assertEqual(unread[0].type, "register")
+        self.assertEqual(unread[0].sender, "worker-test [999999]")
+
+
+class PromptCharacterBoundsTest(unittest.TestCase):
+    """Assignment prompt character length must stay bounded within BODY_CAP = 12000."""
+
+    def setUp(self):
+        self.tmp, self.root = workspace()
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_standard_assignment_is_well_under_body_cap(self):
+        body = dp.compose(self.root, "2026-09-18", "Security audit")
+        self.assertLess(len(body), dp.BODY_CAP)
+        self.assertGreater(len(body), 5000)
+
+    def test_large_assignment_with_max_realistic_content_stays_under_cap(self):
+        item = "Security audit " + ("x" * 1600)
+        chk = "Checklist: " + ("y" * 1000)
+        owns = "`src/" + ("z" * 500) + "`"
+        large_tracker = f"""# Tracker 2026-09-18
+## Lanes
+| item | owner | state | since | due | checklist |
+|---|---|---|---|---|---|
+| {item} | unassigned | open | 09:00 |  | {chk} |
+
+## File ownership
+| context | paths |
+|---|---|
+| {item} | {owns} |
+
+## Log
+- 09:00 opened
+"""
+        (self.root / "daily" / "2026-09-18-tracker.md").write_text(large_tracker)
+        body = dp.compose(self.root, "2026-09-18", item)
+        self.assertLessEqual(len(body), dp.BODY_CAP)
+
+    def test_excessive_assignment_exceeding_cap_raises_refused_error(self):
+        item = "Security audit " + ("x" * 2000)
+        chk = "Checklist: " + ("y" * 2000)
+        owns = "`src/" + ("z" * 2000) + "`"
+        oversized_tracker = f"""# Tracker 2026-09-18
+## Lanes
+| item | owner | state | since | due | checklist |
+|---|---|---|---|---|---|
+| {item} | unassigned | open | 09:00 |  | {chk} |
+
+## File ownership
+| context | paths |
+|---|---|
+| {item} | {owns} |
+
+## Log
+- 09:00 opened
+"""
+        (self.root / "daily" / "2026-09-18-tracker.md").write_text(oversized_tracker)
+        with self.assertRaises(dp.RefusedError) as ctx:
+            dp.compose(self.root, "2026-09-18", item)
+        self.assertIn("over the 12000 cap", str(ctx.exception))
+
+
+class CoordinatorPromptWorkflowTest(unittest.TestCase):
+    """Coordinator prompt workflow rules in agents/chief-of-stuff.md."""
+
+    def setUp(self):
+        self.agent_file = Path(__file__).resolve().parent.parent / "agents" / "chief-of-stuff.md"
+        self.assertTrue(self.agent_file.exists(), f"Missing {self.agent_file}")
+        self.content = self.agent_file.read_text()
+
+    def test_resume_step_2_script_paths_are_fully_qualified(self):
+        self.assertIn("python3 ${CLAUDE_PLUGIN_ROOT}/scripts/inbox.py read <id> --ack", self.content)
+        self.assertIn("python3 ${CLAUDE_PLUGIN_ROOT}/scripts/inbox.py drain --recipient coordinator", self.content)
+
+    def test_resume_step_2_lane_state_uses_waiting_or_orphaned_not_stopped(self):
+        self.assertIn("stops update lane state to `waiting` or `orphaned`", self.content)
+        self.assertNotIn("stops update lane state to `stopped` or `orphaned`", self.content)
+
+    def test_dual_transport_sending_and_registration_rules(self):
+        self.assertIn("Dual-transport sending", self.content)
+        self.assertIn("python3 ${CLAUDE_PLUGIN_ROOT}/scripts/inbox.py send --to <recipient> --from coordinator", self.content)
+        self.assertIn("Dual-transport registration", self.content)
+        self.assertIn("python3 ${CLAUDE_PLUGIN_ROOT}/scripts/inbox.py list --recipient coordinator --unread", self.content)
+

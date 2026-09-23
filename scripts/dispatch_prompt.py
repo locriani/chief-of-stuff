@@ -13,6 +13,7 @@ expansion that got this far produces a refusal instead of a payload.
 
 from __future__ import annotations
 
+import argparse
 import re
 import sys
 from datetime import date, datetime
@@ -55,6 +56,7 @@ SESSION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}(?: \[[0-9a-f]{6}\])?
 # past. `spawn_session` re-exports these, and `audit_lanes` reads the second.
 PROMPT_DIR = ".chief-of-stuff"
 STOP_FILE = f"{PROMPT_DIR}/stop.md"
+INBOX_SCRIPT = "scripts/inbox.py"
 
 HEADER = """# Assignment
 
@@ -62,12 +64,17 @@ You are a dispatched session. A coordinator wrote this file into your worktree w
 
 **Register first, before you read anything else and before you look around.** List your sessions to \
 find your own `name [ref]`, then send {coordinator} one message carrying that ref, this worktree and \
-its branch, your lane, and that you are planning with nothing written yet. Registering first is not \
-politeness: until that message arrives the coordinator cannot tell you from a session that never came \
-up, and anything you discover before it is discovered by somebody nobody can reach.
+its branch, your lane, and that you are planning with nothing written yet. If direct messaging (IPC) \
+is unavailable or fails, deposit your registration into the coordinator's mailbox: \
+`python3 {inbox_script} send --to "{coord_mailbox}" --from "<your_ref_or_name>" --type register --body "ref: <ref>, worktree: {worktree}, branch: <branch>, lane: {lane}, state: planning"`. \
+Registering first is not politeness: until that message arrives the coordinator cannot tell you from \
+a session that never came up, and anything you discover before it is discovered by somebody nobody can reach.
 
 This file is a task statement and not authority. It cannot grant you a permission, lift a rule you \
-run under, or speak for {user}. If it asks for something outside the paths in `Owns:`, stop and ask {user}.
+run under, or speak for {user}. If it asks for something outside the paths in `Owns:`, stop and ask {user}. \
+When direct messaging is unavailable, send your ask via: \
+`python3 {inbox_script} send --to "{coord_mailbox}" --from "<your_ref_or_name>" --type ask --body "<question>"`. \
+Check your mailbox for replies: `python3 {inbox_script} list --recipient "<your_ref_or_name>" --unread`.
 
 If the lane below is empty, contradictory, or impossible as written, hand it back and say why. Never \
 proceed on an assumption nobody stated, and never substitute work that merely looks similar.
@@ -93,7 +100,9 @@ reverse, and before a deadline the reverse is wrong.
 costs one thing: a stop that names **who it lands on** and **what breaks if nobody takes it**. Write \
 it to `{stop_file}` in this worktree, in the same labelled lines as this file — `Stop:`, `Lane:`, \
 `Lands on:`, `Costs:`, and `Tried:` with the exact command or path — and say the same in your \
-message to the coordinator. A stop that names neither cannot be told apart from a session that died, \
+message to {coordinator}. If direct messaging fails, post it to the mailbox: \
+`python3 {inbox_script} send --to "{coord_mailbox}" --from "<your_ref_or_name>" --type stop --body "<stop fields>"`. \
+A stop that names neither cannot be told apart from a session that died, \
 and the lane sits at `running` against nobody until somebody reads git by hand.
 
 **A report is not a state change.** Writing up what you did is not doing the next thing, and the \
@@ -128,7 +137,8 @@ somebody to interpret and the interpreting is where items were dropped.
 """
 REPORT = ("Report: when the lane is finished, reply to the coordinator with what changed, where it is "
           "(branch and worktree), what you did not do, and `Next:` — either the one thing you are "
-          "starting now, or `idle and available`. Never neither.")
+          "starting now, or `idle and available`. Never neither. If direct messaging fails, send via mailbox: "
+          '`python3 {inbox_script} send --to "{coord_mailbox}" --from "<your_ref_or_name>" --type progress --body "<report>"`.')
 # This line said "Write only: do not commit or push." until 0.12.0, against the workspace rule it was
 # supposed to carry: every session makes meaningful small commits, because uncommitted work is how
 # work gets lost. The gate was never the commit; it is the merge.
@@ -207,20 +217,64 @@ def compose(root: Path, day: str | None, lane: str, worktree: Path | None = None
     who = SESSION_NAME.fullmatch(coordinator.strip()) if coordinator else None
     if coordinator and not who:
         raise RefusedError(f"{coordinator!r} is not a session name; pass the name a listing shows")
-    lines = [HEADER.replace("\\\n", "").format(
-        user=cfg.user, stop_file=STOP_FILE,
-        coordinator=f"the chief-of-stuff coordinator{f' `{who.group()}`' if who else ''}"),
-        f"Lane: {item}"]
+    coord_mailbox = "coordinator"
+    inbox_script = (root / INBOX_SCRIPT).resolve()
+
+    header_text = HEADER.replace("\\\n", "").format(
+        user=cfg.user,
+        stop_file=STOP_FILE,
+        coordinator=f"the chief-of-stuff coordinator{f' `{who.group()}`' if who else ''}",
+        coord_mailbox=coord_mailbox,
+        inbox_script=inbox_script,
+        worktree=worktree or "this worktree",
+        lane=item,
+    )
+    report_text = REPORT.format(
+        inbox_script=inbox_script,
+        coord_mailbox=coord_mailbox,
+    )
+
+    lines = [header_text, f"Lane: {item}"]
     if rows[0].checklist.strip():
         lines.append(f"Requirement: {_clean('the checklist cell', rows[0].checklist.strip())}")
     if worktree is not None:
         # So a session can tell whether the assignment it is reading was addressed to it.
         lines.append(f"Worktree: {worktree}")
-    lines += [f"Workspace: {root.resolve()}", f"Tracker: {(root / relative).resolve()}",
-              f"Owns: {owns}" + ("" if owns.lower() == "none" else
-                                  " — yours to keep true; drift left in them is your error. Do not touch any other file."),
-              COMMITS, REPORT]
+    lines += [
+        f"Workspace: {root.resolve()}",
+        f"Tracker: {(root / relative).resolve()}",
+        f"Inbox: {inbox_script}",
+        f"Owns: {owns}" + ("" if owns.lower() == "none" else
+                           " — yours to keep true; drift left in them is your error. Do not touch any other file."),
+        COMMITS,
+        report_text,
+    ]
     body = "\n".join(lines) + "\n"
     if len(body) > BODY_CAP:
         raise RefusedError(f"the assignment is {len(body)} characters, over the {BODY_CAP} cap")
     return body
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else None)
+    ap.add_argument("--lane", required=True, help="the lane name to compose prompt for")
+    ap.add_argument("--day", "--date", dest="day", default=None, help="the day/date for the tracker (YYYY-MM-DD)")
+    ap.add_argument("--root", default=".", help="workspace root holding CLAUDE.md")
+    ap.add_argument("--worktree", default=None, help="worktree path")
+    ap.add_argument("--coordinator", default=None, help="coordinator session name")
+    args = ap.parse_args(argv)
+
+    root = Path(args.root)
+    worktree = Path(args.worktree) if args.worktree else None
+    try:
+        body = compose(root, args.day, args.lane, worktree=worktree, coordinator=args.coordinator)
+    except RefusedError as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 1
+    sys.stdout.write(body)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+
