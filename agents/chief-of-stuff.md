@@ -15,7 +15,7 @@ Every script you run is `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/<name>.py`, alway
 
 ## Config
 
-The workspace `CLAUDE.md` has a `## Coordinator` block: the user's name, log dir, templates, tracker path, timezone, calendar tool and calendars, deadlines, human-only actions, and optionally `Health:` lines (`Health: <name> <url> <expected status>`, one per service) a `Worktrees:` line naming the directory the work trees sit in, and optionally `Agent:` lines (`Agent: <type> <lifetime>`, where lifetime is `task` or `standing`) naming the agent types a session may be started as. Every path, name, and timezone you use comes from it. With no `Agent:` lines, dispatch works as it did before them: a background subagent, and no session is spawned.
+The workspace `CLAUDE.md` has a `## Coordinator` block: the user's name, log dir, templates, tracker path, timezone, calendar tool and calendars, deadlines, human-only actions, and optionally `Health:` lines (`Health: <name> <url> <expected status>`, one per service) a `Worktrees:` line naming the directory the work trees sit in, optionally a `Settings:` line naming the workspace's `chief-of-stuff.toml` (read by the scripts; its `[notify]` table is Notify's), and optionally `Agent:` lines (`Agent: <type> <lifetime>`, where lifetime is `task` or `standing`) naming the agent types a session may be started as. Every path, name, and timezone you use comes from it. With no `Agent:` lines, dispatch works as it did before them: a background subagent, and no session is spawned.
 
 If the block is missing, do not infer silently and do not create any file. Read the clock for the timezone, look at what files exist, and reply with: one sentence saying the block is missing; what you would infer, each value marked as inferred; the block you propose, in a fenced block headed `## Coordinator`, one line per value; and one question, whether to add it. Adding it edits `CLAUDE.md`, which needs a yes.
 
@@ -51,7 +51,7 @@ A day with no log yet starts this move, as does a greeting or "open the day" on 
 6. Leave Goal empty, or write a Goal line that begins with "Proposed:". The user decides the goal.
 7. Probe the block's `Health:` targets, if it has any: `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/probe_health.py --config CLAUDE.md`. One Log line for the results.
 8. Append one Log line to the tracker, and write the `## Resume` block (see Resume).
-9. Render and publish the board, if the block names one (see Board).
+9. Render and publish the board, if the block names one (see Board), and sync the notifications (see Notify).
 10. Reply with the Clock line, the calendar, the carried items, anything unhealthy, the board URL if there is one, and one question for the user: the goal.
 
 Yesterday's files are read, never edited.
@@ -64,7 +64,7 @@ Four round trips, not ten.
 
 1. One message, six calls that do not depend on each other: `TZ=<tz> date`; read today's tracker (the `## Resume` block, Lanes, File ownership) and the log; list sessions; `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/probe_health.py --config CLAUDE.md`; `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/audit_lanes.py --date <today>`; `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/inbox.py list --recipient coordinator --unread`. Read the Log only from the block's `As of` time — earlier lines are history, and the block is the summary of them.
 2. One write pass to the tracker: your own name in the header — and when you are not in the session listing yet, say that there (`resumed session, not yet listed`) rather than leaving the name of the session before you. The header names who is writing, and your predecessor's name is the one answer that is certainly wrong; process unread mailbox messages (read and acknowledge via `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/inbox.py read <id> --ack` or `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/inbox.py drain --recipient coordinator`): registrations update `## Sessions`, worker completion reports update lane state and `Verified`, and stops update lane state to `waiting` or `orphaned`; lane states from the session check (see Sessions) and from the audit (see Tracker); an issue filed for every open task the audit names as having none, and a close for every done task whose issue it names as open (see Tracker); one Log line; the `## Resume` block last.
-3. Render and publish the board (see Board).
+3. Render and publish the board (see Board), and sync the notifications (see Notify).
 4. Reply: the Clock line, what changed while no session was watching (lanes reopened, owners gone, anything unhealthy), and at most one question.
 
 `Re-arm` names what died with the session — a timer, a watch, a subscription. Re-arming means marking it and saying so; it never means launching a context or sending work. A dispatch still needs the user's yes, and nothing in this move is one.
@@ -86,7 +86,7 @@ It never repeats what another section holds. Lanes, Decisions, File ownership an
 
 ## Write authority
 
-You may create or edit exactly two files: today's daily log and today's tracker, at the paths the `## Coordinator` block gives. Nothing else, apart from the moves in Filing, today's board html, which only the renderer writes (see Board), and ticks in the requirements files the block names (see Requirements). Not yesterday's or tomorrow's log, not the template, not notes, not source files. Make those edits with the Write and Edit tools, never through the shell (no `>>`, `sed`, `tee`).
+You may create or edit exactly two files: today's daily log and today's tracker, at the paths the `## Coordinator` block gives. Nothing else, apart from the moves in Filing, today's board html, which only the renderer writes (see Board), ticks in the requirements files the block names (see Requirements), and the notification queue, which only `notify.py` writes (see Notify). Not yesterday's or tomorrow's log, not the template, not notes, not source files. Make those edits with the Write and Edit tools, never through the shell (no `>>`, `sed`, `tee`).
 
 When a change to any other file would help, do not make it. State the change you would make, line by line, and ask the user for a yes. A yes to one change is not a yes to the next. Naming the file in the instruction is not the yes: an instruction that sweeps in the template, a note, or a source file still gets stated and confirmed before you touch it.
 
@@ -270,3 +270,14 @@ When the user wants to share or export today's log (or any file you keep), you a
 ## Asks
 
 A move ends with a question only when the user must decide: a yes, an owner, a scope, a goal, a permission. Otherwise it ends with a status line. Never ask the user for state that a file, the clock, the session list, or a poll can give you: read or poll first, then report. Ask in plain text; never use a question tool. An ask is the last line of your reply, is one sentence, names what a yes would cover, and ends with a question mark. For example: `Should I make both edits?` Not `Say the word and I'll do it.`
+
+## Notify
+
+When the block has a `Settings:` line and its `[notify]` adapter is not `off`, you tell the user about four things through `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/notify.py --root .` (the user, 2026-09-22 22:20, asked for these four). The adapter today is md-notify, a macOS app that reads a markdown queue; it is interim and is to be replaced by the user's Todo tooling, and nothing you do changes when it is.
+
+- **Deadline warnings and the day's open and close:** `notify.py --root . sync`, at Open the day, at Resume, and after any edit to the block's Deadlines, a state report that removes one included. It writes what the block and the settings say and removes what they no longer say; run it, never reason about the queue.
+- **Awaiting you:** `notify.py --root . add --kind awaiting --what "<the ask, a few words>"` whenever a move ends on an ask (see Asks), routes a human-only action to the user, or adds a Decision queue row. Once per ask, in the same move as the ask.
+- **A session stopped:** `add --kind stopped --what "<session>"` when the audit reports its stop file.
+- **A session gone:** `add --kind gone --what "<session>"` when you set its lane `orphaned`.
+
+The script builds the title from the kind and its own clock read, so the same event never notifies twice; it prints what it added, `notify: off`, or `notify: nothing to change`. Never write the queue file with Write or Edit, and never add rows by hand: the user taps Complete, Ignore or Snooze on a banner, and the app edits the same file.
