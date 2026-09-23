@@ -1351,3 +1351,16 @@ Zach, 2026-09-23 15:31: "all code changes should require a PR" and "This will fu
 Red first: `PullRequestTest` 1 failure (the `Commits:` line had no pull request); two older tests pinned "never merge" and now pin "never push to main or merge locally". Agent arm, `poll-before-assign` with a new grader: on the 0.22.0 agent file RED 0 of 2 (no assignment named a pull request); on the new file GREEN 2 of 2.
 
 Full suite on the branch: 937 of 938 pass; the one failure is the known `test_cli_reads_files_and_summarises`.
+
+## C28 — ponytail at ultra in every dispatch, a review on every pull request, and a spawned tab's PATH (0.24.0)
+
+Zach, 2026-09-23 17:01: "https://github.com/dietrichgebert/ponytail We're installing this immediately and making it a core part of this." Asked what core means, he chose: in the dispatch, a review on every PR, ultra by default. And 17:18: "fix the rtk path thing as well please".
+
+- **Assignment:** a **ponytail, ultra.** paragraph — the least code that does the job; a challenge to the requirement said once, then the user's ask built (house rule 9); the failing test first and small (TDD). `Commits:` adds the review: once the pull request is open, review its diff with `ponytail:ponytail-review` and post the findings on it, "no findings" included. `BODY_CAP` 12500 → 13000 for the two, keeping the old headroom.
+- **Agent:** Assign and Brief carry `Works under: ponytail, ultra; review your pull request with ponytail-review and post the findings on it before the merge.`
+- **Spawn PATH:** a Ghostty `command` tab skips the login shell, so its PATH was launchd's — no `/opt/homebrew/bin`. Sessions spawned that way failed the rtk `PreToolUse` hook on every Bash call (`/bin/sh: rtk: command not found`, exit 127, seen in impl05, impl06 and runner01 transcripts), and would have had no `gh` or `glab` for the pull-request rule. The `env -C` line now carries `PATH=<the launching shell's PATH>`; nothing else of the environment is passed.
+- **Outside this repo, same change:** ponytail 4.10.0 installed at user scope after reading its hooks (no network, no child process); default mode `ultra` in `~/.config/ponytail/config.json`; house rule 5 names it and the review step; the user-level rtk hook now runs only where `rtk` is on the session's PATH, so a Ghostty session is never handed an `rtk …` rewrite its shell cannot run.
+
+Red first: `PonytailTest` 4 failures, spawn PATH 2 failures (one the old `env -C … claude` pin, now allowing the quoted PATH token). Agent arm, `poll-before-assign` with a new "names ponytail" grader: on the 0.23.0 agent file RED 0 of 2; on the new file GREEN 2 of 2.
+
+Full suite on the branch: 942 of 943 pass; the one failure is the known `test_cli_reads_files_and_summarises`.

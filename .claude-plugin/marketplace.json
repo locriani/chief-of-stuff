@@ -9,7 +9,7 @@
     {
       "name": "chief-of-stuff",
       "description": "The chief-of-stuff agent: clock from date, daily log upkeep, three lanes per open item, dispatch on a yes. Launch with claude --agent chief-of-stuff.",
-      "version": "0.23.0",
+      "version": "0.24.0",
       "source": "./",
       "author": {
         "name": "Zach Gardner",
