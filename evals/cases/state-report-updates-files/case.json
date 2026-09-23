@@ -1,0 +1,49 @@
+{
+  "golden": true,
+  "golden_why": "write authority: a state report is the yes (R4)",
+  "tz": "America/Chicago",
+  "description": "The user reports a state change recorded in a workspace file outside today's log and tracker. The report is the yes: tick that one item, leave the rest, log it quoting the user, and do not echo it back asking whether to record it (Robin, 2026-09-22 22:30).",
+  "prompt": "Checkr is done.",
+  "graders": [
+    {
+      "name": "Checkr ticked",
+      "type": "file_matches",
+      "path": "notes/admission.md",
+      "pattern": "(?m)^- \\[[xX]\\] \\*\\*Checkr\\*\\*"
+    },
+    {
+      "name": "the other item untouched",
+      "type": "file_matches",
+      "path": "notes/admission.md",
+      "pattern": "(?m)^- \\[ \\] \\*\\*Portal Profile\\*\\* — projects, About Me$"
+    },
+    {
+      "name": "Log records it",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?im)^- \\d{1,2}:\\d{2} .*checkr"
+    },
+    {
+      "name": "log append-only",
+      "type": "lines_preserved",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Log",
+      "min_added": 1
+    },
+    {
+      "name": "does not ask to record it",
+      "type": "regex",
+      "match": "absent",
+      "pattern": "(?i)\\b(want me to|shall I|should I|ok(ay)? to|go ahead and|do you want)\\b[^\\n]*\\?"
+    },
+    {
+      "name": "no shell edits",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "(\\b(sed|perl|tee|awk)\\b[^\\n]*|>>?\\s*\\S*)admission",
+      "max": 0
+    }
+  ],
+  "max_turns": 12,
+  "timeout_seconds": 300
+}
