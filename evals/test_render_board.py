@@ -461,7 +461,8 @@ class DensityTest(unittest.TestCase):
         self.assertRegex(day, r'data-summary="today"[^>]*data-count="2"')
         # Done at 11:15, inside the 06:00 window: drawn as finished work, never as work still to do.
         self.assertRegex(day, r'class="bar done[^"]*"[^>]*data-item="Draft release notes"')
-        self.assertNotRegex(day, r'class="member"[^>]*data-item="Draft release notes"')
+        today = re.search(r'data-summary="today".*?</summary>', day, re.S).group(0)
+        self.assertNotIn('data-item="Draft release notes"', today, "never folded in with the work still to do")
         self.assertNotIn("Draft release notes", _strip_html(self.html, "week"))
 
     def test_week_folds_deadline_due(self) -> None:
@@ -1581,7 +1582,8 @@ class FoldedRowsExpandTest(unittest.TestCase):
         self.html = rb.render(TRACKER, LOG, rb.parse_coordinator(CLAUDE_MD, today=NOW.date()), NOW)
 
     def folded(self) -> str:
-        m = re.search(r'<details class="folded">(.*?)</details>', self.html, re.S)
+        # The day strip's summary fold, not the Done fold drawn above it.
+        m = re.search(r'<details class="folded">((?:(?!</details>).)*?data-summary="today".*?)</details>', self.html, re.S)
         self.assertIsNotNone(m, "no folded disclosure in the rendered board")
         return m.group(1)
 
@@ -1615,7 +1617,7 @@ class FoldedRowsExpandTest(unittest.TestCase):
 
     def test_one_disclosure_per_folded_row_and_none_otherwise(self) -> None:
         folded = self.html.count('<details class="folded">')
-        rows = self.html.count('class="row summary-row"') + self.html.count('class="row group-row"')
+        rows = sum(self.html.count(f'class="row {kind}-row"') for kind in ("summary", "group", "done"))
         self.assertEqual(folded, rows, "every folded row opens, and a board with none has no stray disclosure")
 
 
@@ -3012,15 +3014,15 @@ class DoneOnTheDayStripTest(unittest.TestCase):
         m = re.search(rf'<div class="bar done[^"]*" data-name="{re.escape(name)}"[^>]*>', day)
         return m.group(0) if m else None
 
-    def test_a_ranged_done_lane_draws_its_range_under_a_done_swimlane(self) -> None:
+    def test_a_ranged_done_lane_draws_its_range_inside_the_done_fold(self) -> None:
         day = self.day("| Ranged | Robin | done 09:10–10:40 |  |  | x |", "| Ahead | Robin | open | 09:00 | 17:00 | x |")
         bar = self.bar(day, "Ranged")
         self.assertIsNotNone(bar)
         self.assertIn(f'data-start="{datetime(2026, 9, 16, 9, 10, tzinfo=CT).isoformat()}"', bar)
         self.assertIn(f'data-end="{datetime(2026, 9, 16, 10, 40, tzinfo=CT).isoformat()}"', bar)
         self.assertIn('data-start-src="ran"', bar)
-        self.assertRegex(day, r'data-swimlane="Done" data-count="1"')
-        self.assertLess(day.index('data-swimlane="Done"'), day.index('data-name="Ranged"'))
+        self.assertRegex(day, r'data-done="done" data-count="1"')
+        self.assertLess(day.index('data-done="done"'), day.index('data-name="Ranged"'))
         self.assertLess(day.index('data-name="Ranged"'), day.index('data-name="Ahead"'), "finished work sits above the work ahead")
 
     def test_a_done_lane_without_a_range_starts_at_since_or_at_its_end(self) -> None:
@@ -3036,7 +3038,7 @@ class DoneOnTheDayStripTest(unittest.TestCase):
         day = self.day("| Early | Robin | done 05:30 |  |  | x |", "| Untimed | Robin | done |  |  | x |", "| Ahead | Robin | open | 09:00 | 17:00 | x |")
         self.assertIsNone(self.bar(day, "Early"), "05:30 is before the 06:00 window")
         self.assertIsNone(self.bar(day, "Untimed"))
-        self.assertNotIn('data-swimlane="Done"', day, "no done bars, no header")
+        self.assertNotIn('data-done="done"', day, "no done bars, no fold")
 
     def test_a_done_time_after_now_is_yesterdays(self) -> None:
         at_two = datetime(2026, 9, 16, 2, 0, tzinfo=CT)  # window 18:00 yesterday to 18:00 today
@@ -3053,3 +3055,18 @@ class DoneOnTheDayStripTest(unittest.TestCase):
     def test_the_meta_line_counts_the_done_bars(self) -> None:
         page = rb.render(self.tracker("| Ranged | Robin | done 09:10–10:40 |  |  | x |"), LOG, self.cfg, NOW)
         self.assertRegex(page, r'<div class="meta">[^<]*\b1 done ·')
+
+    def test_done_lanes_collapse_into_one_expandable_row(self) -> None:
+        """Zach, 2026-09-22 18:57: "have done collapse down to an expandable row too". 27 done rows pushed
+        the scheduled work off the first screen; the fold is closed until opened, like the folded lanes."""
+        day = self.day("| First | Robin | done 09:10–10:40 |  |  | x |", "| Second | Robin | done 12:00–13:30 |  |  | x |")
+        fold = re.search(r'<details class="folded"><summary>(.*?)</summary>(.*?)</details>', day, re.S)
+        self.assertIsNotNone(fold)
+        head, members = fold.groups()
+        bar = re.search(r'<div class="bar done"[^>]*data-done="done"[^>]*>', head).group(0)
+        self.assertIn('data-count="2"', bar)
+        self.assertIn(f'data-start="{datetime(2026, 9, 16, 9, 10, tzinfo=CT).isoformat()}"', bar)
+        self.assertIn(f'data-end="{datetime(2026, 9, 16, 13, 30, tzinfo=CT).isoformat()}"', bar)
+        self.assertIn(">Done · 2 lanes<", head)
+        self.assertEqual(members.count('class="row sub"'), 2, "each done lane is a sublane inside the fold")
+        self.assertNotIn('data-swimlane="Done"', day, "the fold replaces the swimlane header")

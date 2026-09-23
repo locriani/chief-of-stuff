@@ -6,8 +6,8 @@ The board is a view of the tracker and nothing else: every bar start and end cit
 instant, and the deadline instants, and draws its own clock and now-lines client-side.
 
 The charts draw the schedule only. Today: running lanes and lanes that end today get a bar; every
-other active lane folds into one summary row, and lanes done inside the window are drawn under a Done
-swimlane. The Today axis runs 8 hours behind this hour and 16 ahead. Week: running lanes and lanes with a concrete due get
+other active lane folds into one summary row, and lanes done inside the window fold into one Done row
+that opens onto them. The Today axis runs 8 hours behind this hour and 16 ahead. Week: running lanes and lanes with a concrete due get
 a bar, grouped into one row per due day when several share it (overdue and past-the-week lanes get one row
 each); the rest fold into one row per deadline. The Week axis spans at most 7 days; later deadlines are an
 edge marker. Folded lanes keep their citations as `.member`
@@ -1591,7 +1591,9 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
     # Folded work is still to do, so its row starts at this hour, not at the axis's past edge.
     day_summaries = [Summary("today", "no estimate, or due or estimated after today", hour, axis_b, tuple(day_folded))] if day_folded else []
     day_done = done_rows(done, cfg, now, axis_a)
-    day_done_rows: list[Swim | Bar] = [Swim("Done", len(day_done)), *day_done] if day_done else []
+    # One closed row, opening onto the done lanes as sublanes: 27 of them pushed the work still ahead off the
+    # first screen (Zach, 2026-09-22 18:57: "have done collapse down to an expandable row too").
+    day_done_rows = [Summary("done", f"{len(day_done)} done", min(b.start for b in day_done), max(b.end for b in day_done), tuple(day_done), f"Done · {_lanes(len(day_done))}", "done")] if day_done else []
 
     # Week strip: today to the day after the last deadline, at most 7 days, one column per day.
     week_a = datetime.combine(today, time(0, 0), tzinfo=zone)

@@ -1247,3 +1247,13 @@ Three tests encoded the old behaviour and were rewritten to the new one: Standup
 Red: 8 of the new or rewritten tests failed before the change. Green: all of `test_render_board` except the known `test_cli_reads_files_and_summarises`, which fails identically on untouched `90c6a45`. Proved live: today's tracker at 17:xx renders an axis of 09:00 to 09:00, with 27 done lanes in the Done swimlane and the now-line at 34%. It was checked in light and dark themes.
 
 Only today's tracker and log are read, so before 08:00 the part of the window before midnight carries no body events or done lanes, apart from carried rows.
+
+## C21 — done lanes fold into one expandable row (0.17.1)
+
+Zach at 18:57, during the C20 CIMP: "have done collapse down to an expandable row too". With C20's Done swimlane, today's 27 done rows pushed the work still ahead below the first screen.
+
+The done lanes are now one `Summary` (`attr="done"`) spanning the first start to the last end. `_strip` renders it as the same closed `<details class="folded">` the folded lanes use, and it opens onto each done lane as a `row sub`, drawn and cited as before. The Done swimlane header is gone.
+
+Three tests assumed the only fold on the day strip was the `today` summary and were retargeted to it by name: `FoldedRowsExpandTest.folded()`, the disclosure count (which now counts `done-row` too), and `DensityTest`'s check that a done lane is never folded in with the work still to do.
+
+Red: the two new fold tests failed. Green: the full suite passes except the known `test_cli_reads_files_and_summarises`. Proved live: today's tracker renders `Done · 27 lanes` and `15 lanes` as the day strip's two folds, with 8 top-level bar rows.
