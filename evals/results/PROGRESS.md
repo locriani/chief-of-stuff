@@ -1365,3 +1365,12 @@ Zach, 2026-09-23 17:01: "https://github.com/dietrichgebert/ponytail We're instal
 Red first: `PonytailTest` 4 failures, spawn PATH 2 failures (one the old `env -C … claude` pin, now allowing the quoted PATH token). Agent arm, `poll-before-assign` with a new "names ponytail" grader: on the 0.23.0 agent file RED 0 of 2; on the new file GREEN 2 of 2.
 
 Full suite on the branch: 942 of 943 pass; the one failure is the known `test_cli_reads_files_and_summarises`.
+
+## C29 — the board CLI test no longer reads the wall clock (0.24.1)
+
+Zach, 2026-09-23 18:15: "fix the failing test".
+
+- **Cause:** `test_render_board.RequirementsTest.test_cli_reads_files_and_summarises` calls `render_board.main(["--date", "2026-09-16", …])`. `--date` names the tracker and the output file; `now` is `datetime.now()`. The fixture's Final deadline is 2026-09-20 12:00, and `render` omits a passed deadline's requirements (`test_passed_deadline_and_no_file_are_omitted`), so from that moment on the page had no "Final requirements · 2 of 6". The summary line counts every file regardless, which is why its two assertions kept passing.
+- **Fix, test only:** the test patches `render_board.datetime` with a subclass whose `now` returns the fixture's `NOW` (2026-09-16 14:30 CT). The script is unchanged: the agent always passes `--date <today>`, so the clock and the date agree in use. The other `main` callers in the suite assert nothing date-dependent.
+
+Red: the failure itself, on main at 3b96eaf. Full suite on the branch: 944 of 944 pass.

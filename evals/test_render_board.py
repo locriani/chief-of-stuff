@@ -8,6 +8,7 @@ import re
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from datetime import datetime, timedelta
 from html import escape as html_escape
 from pathlib import Path
@@ -614,7 +615,13 @@ class RequirementsTest(unittest.TestCase):
         (root / "daily" / "2026-09-16-tracker.md").write_text(TRACKER)
         (root / "daily" / "final-reqs.md").write_text(REQS)
         buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
+
+        class Frozen(datetime):  # the Final deadline is 2026-09-20; the wall clock passed it
+            @classmethod
+            def now(cls, tz=None):
+                return NOW.astimezone(tz)
+
+        with mock.patch.object(rb, "datetime", Frozen), contextlib.redirect_stdout(buf):
             out = rb.main(["--date", "2026-09-16", "--root", str(root)])
         self.assertIn("requirements=Final:2/6", buf.getvalue())
         self.assertIn("requirements_missing=1", buf.getvalue())
