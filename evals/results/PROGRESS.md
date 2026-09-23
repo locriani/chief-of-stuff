@@ -1257,3 +1257,19 @@ The done lanes are now one `Summary` (`attr="done"`) spanning the first start to
 Three tests assumed the only fold on the day strip was the `today` summary and were retargeted to it by name: `FoldedRowsExpandTest.folded()`, the disclosure count (which now counts `done-row` too), and `DensityTest`'s check that a done lane is never folded in with the work still to do.
 
 Red: the two new fold tests failed. Green: the full suite passes except the known `test_cli_reads_files_and_summarises`. Proved live: today's tracker renders `Done · 27 lanes` and `15 lanes` as the day strip's two folds, with 8 top-level bar rows.
+
+## C22 — the board shows tasks; a standing session's row is not one (0.18.0)
+
+Zach at 19:28: "standing lanes with NO TASKS should not show up in the task list. A task can either be unassigned or in a lane. we don't finish LANES, we finish TASKS". He chose the full model in three stages, with the word "lane" kept off the board. This is stage 1, the board.
+
+Five of today's rows were `<session> — standing <role>` placeholders ("Register with the coordinator, then wait idle for an assignment"). They exist because `spawn_session.py` cannot start a session without a Lanes row. Each was `running 14:08`, so it drew a bar on both strips, sat on the Due next card, took first place in its owner's estimate queue (pushing every real task's `est. i/N` off by one) and added load to the week.
+
+`Lane.standing` recognises such a row by its item (`impl02: standing …`) or its name (`impl02 — standing …`), owned by that same session. `render` drops these rows once, just after parsing, so every task surface is built without them. `gone_sessions` still reads every row, so an orphaned placeholder still marks its session gone. The Sessions graph, built from `## Sessions`, is where standing sessions appear. The Tasks table says how many it left out.
+
+The board's visible text no longer says "lane": the heading reads Tasks, and counts read "N tasks" in the folds, week groups, Due-card meta, the quiet line, the long-item note and the estimate titles. Markup names (`lane_rows`, `.lanes`, `data-*`) are unchanged.
+
+Rewritten assertions: 18 test lookups of `<h2>Lanes` became `<h2>Tasks`, and eleven wording assertions went from lanes to tasks: the section headings, the long-item note, "Fri 18 · 3 tasks", the Overdue and Later rows, the Due-card meta, the quiet line, three estimate-title checks and "Done · 2 tasks".
+
+Red: 6 of the 8 new tests failed; the Sessions graph and gone-session tests already held. Green: the full suite passes except the known `test_cli_reads_files_and_summarises`. Proved live on today's tracker: all five placeholders are recognised and gone from the table and strips; the Sessions graph still draws all five; impl02's queue drops from 4 to 3 and impl03's from 3 to 2; the Due next card goes from 28 to 23.
+
+Stages 2 (standing sessions spawn with no row) and 3 (`## Lanes` becomes `## Tasks`) follow.

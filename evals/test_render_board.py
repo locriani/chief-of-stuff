@@ -306,7 +306,7 @@ class RenderTest(unittest.TestCase):
         self.assertIn('data-end-src="due"', readme.group(0))
 
     def test_sections_and_cuts(self) -> None:
-        for heading in ("Today", "Week", "Lanes"):
+        for heading in ("Today", "Week", "Tasks"):
             self.assertIn(heading, self.html)
         for cut in ("Decisions", "File ownership", "release notes done"):
             self.assertNotIn(cut, self.html)
@@ -316,7 +316,7 @@ class RenderTest(unittest.TestCase):
     def test_the_yours_chip_selects_robins_lanes(self) -> None:
         """What `Robin's queue` was: her lanes, and nobody else's. It is a filter of the one table
         now, so a done lane of hers is kept by the chip and separated by the `done` group instead."""
-        lanes = self.html.split("<h2>Lanes", 1)[1]
+        lanes = self.html.split("<h2>Tasks", 1)[1]
         rows = {re.search(r"<td>(?:<details><summary>)?([^<]*)", r).group(1): r
                 for r in re.findall(r"<tr data-state=.*?</tr>", lanes, re.S)}
         self.assertIn("mine", rows["Write eval README"])
@@ -351,7 +351,7 @@ def _top_row(item: str) -> str:
 
 def _strip_html(page: str, kind: str) -> str:
     start = page.index(f'data-strip="{kind}"')
-    end = page.find('data-strip="week"', start + 1) if kind == "day" else page.index("<h2>Lanes", start)
+    end = page.find('data-strip="week"', start + 1) if kind == "day" else page.index("<h2>Tasks", start)
     return page[start:end]
 
 
@@ -513,7 +513,7 @@ class DensityTest(unittest.TestCase):
         self.assertIn("<details><summary>Service architecture refactor</summary>", self.html)
 
     def test_long_item_count(self) -> None:
-        self.assertIn("1 lane carries history in the item cell", self.html)
+        self.assertIn("1 task carries history in the item cell", self.html)
 
 
 CLAUDE_MD_REQ = CLAUDE_MD.replace("  - Launch: 2026-09-16 23:59", "  - Launch: 2026-09-16 23:59; requirements `daily/launch-reqs.md`").replace(
@@ -584,7 +584,7 @@ class RequirementsTest(unittest.TestCase):
         # Stage 5 moved requirements out of the first screen: it answers "is the deck ready",
         # which is a question about the week, so it follows the week and precedes the lanes.
         self.assertGreater(page.index('class="reqs"'), page.index('data-strip="week"'))
-        self.assertLess(page.index('class="reqs"'), page.index("<h2>Lanes"))
+        self.assertLess(page.index('class="reqs"'), page.index("<h2>Tasks"))
         sha = hashlib.sha256(REQS.encode()).hexdigest()
         self.assertIn(f'<meta name="requirements-sha256" data-deadline="Final" content="{sha}">', page)
 
@@ -667,7 +667,7 @@ class WeekByDayTest(unittest.TestCase):
     def test_same_day_lanes_group(self) -> None:
         row = re.search(r'<div class="row group-row"><div class="name">([^<]*)</div><div class="track"><div class="bar[^"]*" data-group="2026-09-18" data-count="3"(.*?)</div></div></div>', self.week)
         self.assertIsNotNone(row)
-        self.assertEqual(row.group(1), "Fri 18 · 3 lanes")
+        self.assertEqual(row.group(1), "Fri 18 · 3 tasks")
         self.assertEqual(row.group(2).count('class="member"'), 3)
         for item in ("Fix A", "Fix B", "Fix C"):
             self.assertNotRegex(self.week, _top_row(item))
@@ -682,8 +682,8 @@ class WeekByDayTest(unittest.TestCase):
     def test_overdue_and_later_rows(self) -> None:
         self.assertRegex(self.week, r'data-group="overdue" data-count="1"')
         self.assertRegex(self.week, r'data-group="later" data-count="1"')
-        self.assertRegex(self.week, r'<div class="name">Overdue · 1 lane</div>')
-        self.assertRegex(self.week, r'<div class="name">Later · 1 lane</div>')
+        self.assertRegex(self.week, r'<div class="name">Overdue · 1 task</div>')
+        self.assertRegex(self.week, r'<div class="name">Later · 1 task</div>')
         order = [self.week.index(k) for k in ('data-group="overdue"', 'data-item="Refactor"', 'data-group="2026-09-18"', 'data-item="Docs pass"', 'data-group="later"', 'data-summary="Final"')]
         self.assertEqual(order, sorted(order))
 
@@ -782,14 +782,14 @@ class OrphanAndUnassignedTest(unittest.TestCase):
         self.assertIn(".bar.orphaned{", self.html)
 
     def test_orphaned_has_its_own_table_group(self) -> None:
-        table = self.html.split("<h2>Lanes</h2>", 1)[1]
+        table = self.html.split("<h2>Tasks</h2>", 1)[1]
         self.assertIn('<tr class="group" data-in="all orphaned"><th colspan="6">orphaned · 1 · nobody owns these</th></tr>', table)
         self.assertLess(table.index("nobody owns these"), table.index("Security audit"))
         self.assertLess(table.index("Security audit"), table.index("open · waiting"))
         self.assertIn("1 orphaned", self.html)
 
     def test_unassigned_is_a_chip_over_the_one_table(self) -> None:
-        lanes = self.html.split("<h2>Lanes", 1)[1]
+        lanes = self.html.split("<h2>Tasks", 1)[1]
         self.assertIn('<label for="lf-unassigned">unassigned <b>1</b></label>', lanes)
         row = next(r for r in re.findall(r"<tr data-state=.*?</tr>", lanes, re.S) if "Pick a deploy window" in r)
         self.assertIn('data-in="all unassigned"', row)
@@ -833,7 +833,7 @@ class OneLaneTableTest(unittest.TestCase):
     def setUp(self) -> None:
         self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
         self.html = rb.render(self.TRACKER, LOG, self.cfg, NOW)
-        self.lanes = self.html.split("<h2>Lanes", 1)[1]
+        self.lanes = self.html.split("<h2>Tasks", 1)[1]
         self.css = self.html.split("<style>")[1].split("</style>")[0]
 
     def test_the_queue_and_unassigned_tables_are_gone(self) -> None:
@@ -841,7 +841,7 @@ class OneLaneTableTest(unittest.TestCase):
         # `Robin's queue` survives as an estimate basis on a bar's hover text — it is the heading,
         # and the table under it, that go.
         self.assertNotIn("queue</h2>", self.html)
-        self.assertEqual(self.html.count("<h2>Lanes"), 1)
+        self.assertEqual(self.html.count("<h2>Tasks"), 1)
         self.assertEqual(self.html.count("<th>item</th>"), 1)
 
     def test_every_lane_is_in_the_one_table_exactly_once(self) -> None:
@@ -1023,7 +1023,7 @@ class DueNextCardsTest(unittest.TestCase):
     def test_the_head_counts_the_group_and_its_unestimated(self) -> None:
         metas = re.findall(r'<div class="card-head">.*?<span class="meta">([^<]*)</span>', self.due, re.S)
         self.assertTrue(metas)
-        self.assertTrue(all(re.fullmatch(r"\d+ lanes? · \d+ with no estimate", m) for m in metas), metas)
+        self.assertTrue(all(re.fullmatch(r"\d+ tasks? · \d+ with no estimate", m) for m in metas), metas)
 
     def test_a_row_carries_the_clock_the_name_the_owner_the_state_and_the_size(self) -> None:
         row = re.search(r'<div class="due-row"[^>]*>.*?</div>\s*</div>', self.due, re.S).group(0)
@@ -1088,7 +1088,7 @@ class BlockedCardsTest(unittest.TestCase):
     def test_not_reporting_says_how_long_and_how_many_lanes(self) -> None:
         card = self.cards()["Not reporting"]
         self.assertRegex(card, r'(silent \d+h\d+m|never reported)')
-        self.assertRegex(card, r'\d+ lanes?</span>')
+        self.assertRegex(card, r'\d+ tasks?</span>')
 
 
 class WeekLoadTest(unittest.TestCase):
@@ -1206,13 +1206,13 @@ class SectionOrderTest(unittest.TestCase):
 
     def test_the_page_reads_in_the_approved_order(self) -> None:
         marks = ["Due next", "Blocked", 'data-strip="day"', 'data-load="week"',
-                 'data-strip="week"', 'class="reqs"', "<h2>Lanes", "<h2>Sessions"]
+                 'data-strip="week"', 'class="reqs"', "<h2>Tasks", "<h2>Sessions"]
         at = [self.body.index(m) for m in marks]
         self.assertEqual(at, sorted(at), [m for _, m in sorted(zip(at, marks))])
 
     def test_requirements_sit_between_the_week_and_the_lanes(self) -> None:
         self.assertGreater(self.body.index('class="reqs"'), self.body.index('data-strip="week"'))
-        self.assertLess(self.body.index('class="reqs"'), self.body.index("<h2>Lanes"))
+        self.assertLess(self.body.index('class="reqs"'), self.body.index("<h2>Tasks"))
 
     def test_every_deck_still_renders_with_its_meter(self) -> None:
         self.assertEqual(self.body.count('<section class="reqs"'), 2)
@@ -1221,7 +1221,7 @@ class SectionOrderTest(unittest.TestCase):
 
     def test_sessions_is_last(self) -> None:
         self.assertEqual(self.body.index("<h2>Sessions"), max(
-            self.body.index(m) for m in ("Due next", "Blocked", "<h2>Lanes", 'class="reqs"', "<h2>Sessions")))
+            self.body.index(m) for m in ("Due next", "Blocked", "<h2>Tasks", 'class="reqs"', "<h2>Sessions")))
 
 
 class PhoneTest(unittest.TestCase):
@@ -1258,7 +1258,7 @@ class PhoneTest(unittest.TestCase):
         self.assertRegex(self.phone, r"\.strip\{--name-w:9[0-9]px\}")
 
     def test_the_lane_table_scrolls_inside_its_own_box(self) -> None:
-        self.assertIn('<div class="scroll">', self.html.split("<h2>Lanes", 1)[1])
+        self.assertIn('<div class="scroll">', self.html.split("<h2>Tasks", 1)[1])
         self.assertRegex(self.css, r"\.scroll\{[^}]*overflow-x:auto")
 
     def test_nothing_forces_the_body_wider_than_a_phone(self) -> None:
@@ -1350,7 +1350,7 @@ class LaneGroupHeaderTest(unittest.TestCase):
     def setUp(self) -> None:
         self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
         self.html = rb.render(OrphanAndUnassignedTest.TRACKER, LOG, self.cfg, NOW)
-        self.table = self.html.split("<h2>Lanes</h2>", 1)[1]
+        self.table = self.html.split("<h2>Tasks</h2>", 1)[1]
 
     def test_group_rows_are_marked_and_counted(self) -> None:
         heads = re.findall(r'<tr class="group" data-in="[^"]*"><th colspan="6">([^<]*)</th></tr>', self.table)
@@ -1646,7 +1646,7 @@ class SessionGraphTest(unittest.TestCase):
         blocked (Zach, 2026-09-19); a session that has stopped reporting is called out in BLOCKED,
         so the full roster is reference and reads last."""
         self.assertGreater(self.html.index('<section class="graph"'), self.html.index("<h2>Today</h2>"))
-        self.assertGreater(self.html.index('<section class="graph"'), self.html.index("<h2>Lanes</h2>"))
+        self.assertGreater(self.html.index('<section class="graph"'), self.html.index("<h2>Tasks</h2>"))
 
     def test_every_session_is_a_node_citing_its_row(self) -> None:
         """`data-ref`/`data-state`/`data-as-of`, so a grader cites structure rather than prose."""
@@ -2317,7 +2317,7 @@ class SizedEstimateTest(unittest.TestCase):
     def test_the_title_says_what_the_mean_rests_on(self) -> None:
         t = self.est["A oldest"].title("worker")
         self.assertIn("size M", t)
-        self.assertIn("2 M lanes", t)
+        self.assertIn("2 M tasks", t)
         self.assertIn("2nd of 4", t)
         self.assertIn("worker", t)
         t = self.est["C newer"].title("worker")
@@ -2330,7 +2330,7 @@ class SizedEstimateTest(unittest.TestCase):
         est = rb.estimates([l for l in lanes if l.kind != "done"], self.cfg, NOW, rb.history(lanes, self.cfg, NOW))
         self.assertEqual(est["C newer"].end, NOW + self.m + self.unsized)
         self.assertEqual(est["C newer"].label, "est. XL ~1h07m")
-        self.assertIn("no XL lane has closed with a range", est["C newer"].title("worker"))
+        self.assertIn("no XL task has closed with a range", est["C newer"].title("worker"))
 
     def test_unowned_lanes_get_nothing_even_when_sized(self) -> None:
         self.assertNotIn("E unassigned", self.est)
@@ -2360,7 +2360,7 @@ class DrawnSizedEstimateTest(unittest.TestCase):
         self.assertIn('data-est-basis="history"', a)
         self.assertIn('data-est="2/4"', a)
         self.assertIn('data-label="est. M ~1h30m"', a)
-        self.assertRegex(a, r'title="[^"]*2 M lanes[^"]*"')
+        self.assertRegex(a, r'title="[^"]*2 M tasks[^"]*"')
 
     def test_the_queue_fallback_says_so_on_the_bar(self) -> None:
         day = _strip_html(rb.render(QUEUE_TRACKER, LOG, self.cfg, NOW), "day")
@@ -2373,7 +2373,7 @@ class DrawnSizedEstimateTest(unittest.TestCase):
         self.assertRegex(self.day, r'data-item="E unassigned"[^>]*data-size="M"[^>]*data-label="no estimate"|data-item="E unassigned"[^>]*data-label="no estimate"[^>]*data-size="M"')
 
     def test_the_lanes_table_has_a_size_column(self) -> None:
-        lanes = self.html.split("<h2>Lanes</h2>")[1]
+        lanes = self.html.split("<h2>Tasks</h2>")[1]
         self.assertIn("<th>item</th><th>owner</th><th>state</th><th>since</th><th>due</th><th>size</th>", lanes)
         self.assertRegex(lanes, r'<tr data-state="open"[^>]*data-size="M">.*?<td>M</td>')
 
@@ -2621,7 +2621,7 @@ class TracerTest(unittest.TestCase):
 
     def test_the_page_reads_due_next_then_blocked_then_the_day(self) -> None:
         body = self.html.split("</style>", 1)[1]
-        order = [body.index(h) for h in ("Due next", "Blocked", 'data-strip="day"', 'data-strip="week"', "<h2>Lanes")]
+        order = [body.index(h) for h in ("Due next", "Blocked", 'data-strip="day"', 'data-strip="week"', "<h2>Tasks")]
         self.assertEqual(order, sorted(order), "sections in the order they are read")
 
 
@@ -2649,17 +2649,17 @@ class InlineMarksTest(unittest.TestCase):
         for name in names:
             self.assertNotIn("*", name, name)
         self.assertTrue(any(n.startswith("Deploy main.") for n in names), names)
-        lanes_table = self.html.split("<h2>Lanes", 1)[1].split("</table>")[0]
+        lanes_table = self.html.split("<h2>Tasks", 1)[1].split("</table>")[0]
         self.assertIn("<summary>Session TTL fix, orphaned.", lanes_table)
         self.assertNotIn("**", lanes_table)
-        lanes = self.html.split("<h2>Lanes</h2>")[1]
+        lanes = self.html.split("<h2>Tasks</h2>")[1]
         self.assertRegex(lanes, r"<summary>Deploy main\.[^<*]*</summary>")
 
     def test_the_citation_stays_raw(self) -> None:
         self.assertIn('data-item="**Deploy main.** Deployed tips', self.day)
 
     def test_history_renders_code_and_bold(self) -> None:
-        lanes = self.html.split("<h2>Lanes</h2>")[1]
+        lanes = self.html.split("<h2>Tasks</h2>")[1]
         hist = re.findall(r'<ul class="hist">(.*?)</ul>', lanes, re.S)
         self.assertTrue(hist)
         joined = "".join(hist)
@@ -3067,6 +3067,83 @@ class DoneOnTheDayStripTest(unittest.TestCase):
         self.assertIn('data-count="2"', bar)
         self.assertIn(f'data-start="{datetime(2026, 9, 16, 9, 10, tzinfo=CT).isoformat()}"', bar)
         self.assertIn(f'data-end="{datetime(2026, 9, 16, 13, 30, tzinfo=CT).isoformat()}"', bar)
-        self.assertIn(">Done · 2 lanes<", head)
+        self.assertIn(">Done · 2 tasks<", head)
         self.assertEqual(members.count('class="row sub"'), 2, "each done lane is a sublane inside the fold")
         self.assertNotIn('data-swimlane="Done"', day, "the fold replaces the swimlane header")
+
+
+class StandingRowsAreNotTasksTest(unittest.TestCase):
+    """Zach, 2026-09-22 19:28: "standing lanes with NO TASKS should not show up in the task list. A task can
+    either be unassigned or in a lane. we don't finish LANES, we finish TASKS". A standing session's row
+    exists only because spawn_session.py cannot start a session without one; it is not work."""
+
+    TRACKER = """# Tracker 2026-09-16
+
+## Lanes
+
+| name | item | owner | state | since | due | size | checklist |
+|---|---|---|---|---|---|---|---|
+| impl02 — standing implementer | impl02: standing implementer. Register with the coordinator, then wait idle for an assignment; write nothing until one arrives. | impl02 | running 10:00 | 2026-09-16 |  | S |  |
+| Fix the parser | Fix the parser: make it strict | impl02 | open | 11:00 |  | M |  |
+
+## Sessions
+
+| ref | name | state | doing | waiting on | free at | constraints | children | last reply |
+|---|---|---|---|---|---|---|---|---|
+| a1b2c3 | impl02 | working | the parser | | | | none | 14:20 |
+"""
+
+    def setUp(self) -> None:
+        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.html = rb.render(self.TRACKER, LOG, self.cfg, NOW)
+
+    @staticmethod
+    def row(name: str, item: str, owner: str, state: str = "running 10:00") -> "rb.Lane":
+        return rb.Lane(item, owner, state, "2026-09-16", "", "", name=name)
+
+    def test_a_standing_row_is_recognised_by_its_item_or_its_name(self) -> None:
+        self.assertTrue(self.row("", "impl02: standing implementer. Register with the coordinator.", "impl02").standing)
+        self.assertTrue(self.row("reviewer01 — standing reviewer", "Wait for a review.", "reviewer01").standing)
+        self.assertTrue(self.row("docs01 - standing docs", "Wait.", "docs01").standing)
+        self.assertTrue(self.row("", "**impl03**: standing implementer.", "impl03 [f7b55f]").standing, "the owner's ref is not part of its name")
+
+    def test_a_real_task_or_another_owners_name_is_not_standing(self) -> None:
+        self.assertFalse(self.row("Review lab trend", "Review lab trend: review feat/lab-trend", "reviewer01").standing)
+        self.assertFalse(self.row("impl02 — standing implementer", "impl02: standing implementer.", "impl03").standing)
+        self.assertFalse(self.row("Standing desk", "Order a standing desk", "Robin").standing)
+
+    def test_the_standing_row_is_on_no_task_surface(self) -> None:
+        for part in (_strip_html(self.html, "day"), _strip_html(self.html, "week"), self.html.split('<h2>Tasks</h2>', 1)[1].split('<section class="graph"', 1)[0]):
+            self.assertNotIn("standing implementer", part)
+        due = re.search(r'<div class="cards due">.*?</div>\n</div>', self.html, re.S).group(0)
+        self.assertNotIn("standing implementer", due)
+        self.assertIn("Fix the parser", due)
+
+    def test_the_real_task_is_alone_in_its_owners_queue(self) -> None:
+        bar = re.search(r'<div class="bar[^"]*" data-name="Fix the parser"[^>]*>', _strip_html(self.html, "day")).group(0)
+        self.assertIn('data-est="1/1"', bar, "the standing row no longer takes a place in impl02's queue")
+
+    def test_the_session_is_still_drawn_under_sessions(self) -> None:
+        graph = self.html.split('<section class="graph"', 1)[1]
+        self.assertIn("impl02", graph)
+
+    def test_the_tasks_table_says_what_it_left_out(self) -> None:
+        self.assertRegex(self.html, r"1 standing session with no task is not a task; see Sessions")
+
+    def test_an_orphaned_standing_row_still_marks_its_session_gone(self) -> None:
+        tracker = rb.parse_tracker(self.TRACKER.replace("running 10:00", "orphaned"))
+        self.assertIn("impl02", rb.gone_sessions(tracker.lanes, tracker.sessions))
+        page = rb.render(self.TRACKER.replace("running 10:00", "orphaned"), LOG, self.cfg, NOW)
+        self.assertRegex(page, r'data-state="gone"|chip gone', "the graph still draws impl02 as gone")
+
+    def test_no_visible_text_says_lane(self) -> None:
+        """Keep the word off the board (Zach, 2026-09-22). Item text is the tracker's and is left out."""
+        for tracker in (self.TRACKER, TRACKER, TRACKER_NAMED):
+            page = rb.render(tracker, LOG, self.cfg, NOW)
+            # History lines are the tracker's own words, like the item they came from.
+            body = re.sub(r'<(style|script)\b.*?</\1>|<ul class="hist">.*?</ul>', "", page, flags=re.S)
+            for item in rb.parse_tracker(tracker).lanes:
+                body = body.replace(html_escape(item.item), "").replace(html_escape(item.label), "")
+            titles = " ".join(re.findall(r'title="([^"]*)"', body))
+            text = re.sub(r"<[^>]+>", " ", body)
+            self.assertNotRegex(text + " " + titles, r"(?i)\blanes?\b")

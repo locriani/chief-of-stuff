@@ -5,13 +5,14 @@ The board is a view of the tracker and nothing else: every bar start and end cit
 `## Coordinator` block, labelled "no estimate". The page carries the tracker's sha256, the render
 instant, and the deadline instants, and draws its own clock and now-lines client-side.
 
-The charts draw the schedule only. Today: running lanes and lanes that end today get a bar; every
-other active lane folds into one summary row, and lanes done inside the window fold into one Done row
-that opens onto them. The Today axis runs 8 hours behind this hour and 16 ahead. Week: running lanes and lanes with a concrete due get
-a bar, grouped into one row per due day when several share it (overdue and past-the-week lanes get one row
+The charts draw the schedule only. Today: running tasks and tasks that end today get a bar; every
+other active task folds into one summary row, and tasks done inside the window fold into one Done row
+that opens onto them. The Today axis runs 8 hours behind this hour and 16 ahead. Week: running tasks and tasks with a concrete due get
+a bar, grouped into one row per due day when several share it (overdue and past-the-week tasks get one row
 each); the rest fold into one row per deadline. The Week axis spans at most 7 days; later deadlines are an
-edge marker. Folded lanes keep their citations as `.member`
-spans. Full item text appears only in the Lanes table.
+edge marker. Folded tasks keep their citations as `.member`
+spans. Full item text appears only in the Tasks table. A standing session's
+placeholder row (`impl02: standing implementer …`) is not a task and appears only on the Sessions graph.
 
 A deadline line may name a requirements file (`- Final: 2026-09-20 12:00; requirements `path``): checkbox
 lines under `## ` headings, evidence after ` — evidence: `. The board shows it, with a done count, for
@@ -154,6 +155,17 @@ class Lane:
         return m.group(2) if m else None
 
     @property
+    def standing(self) -> bool:
+        """A standing session's placeholder, not a task: `impl02: standing implementer. … wait idle`, or a name
+        `impl02 — standing implementer`, owned by that same session. spawn_session.py cannot start a session
+        without a row, so a session spawned with no task was given one (design inputs #83, #93, #94)."""
+        owner = _bare_name(self.owner)
+        if not owner:
+            return False
+        heads = (STANDING_ITEM.match(_unmark(self.item).strip()), STANDING_NAME.match(self.name.strip()))
+        return any(m and m.group(1).lower() == owner for m in heads)
+
+    @property
     def ran(self) -> tuple[str, str] | None:
         """`done 21:16–22:05` → ("21:16", "22:05"): the running start kept on close. None when it was dropped."""
         parts = self.state.split()
@@ -175,6 +187,9 @@ SESSION_STATES = ("planning", "working", "waiting", "idle")
 LANE_STATE = re.compile(
     r"(?i)^(?:open|waiting|orphaned|running\s+\d{1,2}:\d{2}"
     r"|done(?:\s+\d{1,2}:\d{2}(?:[\u2013-]\d{1,2}:\d{2})?)?(?:\s+[0-9a-f]{7,40})?)$")
+# A standing session's row is not a task (Zach, 2026-09-22 19:28: "we don't finish LANES, we finish TASKS").
+STANDING_ITEM = re.compile(r"(?i)^([\w.-]+):\s+standing\b")
+STANDING_NAME = re.compile(r"(?i)^([\w.-]+)\s+[\u2014\u2013-]\s+standing\b")
 READY = re.compile(r"(?i)\bready for decommissioning\b")
 
 # A lane whose state says it is still going while its own item cell shouts DONE disputes itself.
@@ -877,14 +892,14 @@ class Estimate:
     def title(self, owner: str) -> str:
         if self.basis == "history":
             if not self.size:
-                rests = f"unsized: the mean of all {self.count} lanes closed with a range, {_dur(self.slot)}"
+                rests = f"unsized: the mean of all {self.count} tasks closed with a range, {_dur(self.slot)}"
             elif self.borrowed:
-                rests = f"size {self.size}: no {self.size} lane has closed with a range, so the mean of all {self.count} closed lanes stands in, {_dur(self.slot)}"
+                rests = f"size {self.size}: no {self.size} task has closed with a range, so the mean of all {self.count} closed tasks stands in, {_dur(self.slot)}"
             else:
-                rests = f"size {self.size}: mean of {self.count} {self.size} lanes closed with a range, {_dur(self.slot)} each"
+                rests = f"size {self.size}: mean of {self.count} {self.size} tasks closed with a range, {_dur(self.slot)} each"
             return (f"{self.label}: {rests}; {_ordinal(self.i)} of {self.n} in {owner}'s queue, running first, then oldest first. "
                     "Set a due to override.")
-        return (f"{self.label}: where this lane lands if {owner}'s queue of {self.n} drains evenly by {self.of}, "
+        return (f"{self.label}: where this task lands if {owner}'s queue of {self.n} drains evenly by {self.of}, "
                 "running first, then oldest first. Not a claim about effort; set a due to override.")
 
 
@@ -1063,8 +1078,8 @@ def _member(b: Bar) -> str:
     return f'<span class="member" data-item="{_esc(b.item)}" data-start-src="{b.start_src}" data-end-src="{b.end_src}"{label}{_est_attrs(b)}></span>'
 
 
-def _lanes(n: int) -> str:
-    return f"{n} {'lane' if n == 1 else 'lanes'}"
+def _tasks(n: int) -> str:
+    return f"{n} {'task' if n == 1 else 'tasks'}"
 
 
 LEGEND = [
@@ -1365,7 +1380,7 @@ def _strip(rows: list["Body | Swim | Bar | Summary"], axis_a: datetime, axis_b: 
         # not a list of names (Zach, 2026-09-18 12:55) — and the citations stay on the summary bar.
         out.append(
             '<details class="folded"><summary>'
-            f'<div class="row {sm.attr}-row"><div class="name">{_esc(sm.name or _lanes(len(sm.members)))}</div><div class="track">'
+            f'<div class="row {sm.attr}-row"><div class="name">{_esc(sm.name or _tasks(len(sm.members)))}</div><div class="track">'
             f'<div class="bar{hatch} {sm.attr}{edge}" data-{sm.attr}="{_esc(sm.key)}" data-count="{len(sm.members)}" data-start="{_iso(sm.start)}" data-end="{_iso(sm.end)}" '
             f'style="left:{left:.2f}%;width:{max(right - left, 0.6):.2f}%" title="{_esc(names)}"><em>{_esc(sm.label)}</em>'
             + "".join(_member(m) for m in sm.members)
@@ -1499,7 +1514,7 @@ def week_rows(active: list[Lane], cfg: Config, now: datetime, week_a: datetime, 
         else:
             groups.setdefault(_deadline_for(lane, b, cfg, now), []).append(b)
     if overdue:
-        keyed.append(((0,), Summary("overdue", f"due {min(b.end for b in overdue):%a %d}", week_a, max(b.end for b in overdue), tuple(overdue), f"Overdue · {_lanes(len(overdue))}", "group")))
+        keyed.append(((0,), Summary("overdue", f"due {min(b.end for b in overdue):%a %d}", week_a, max(b.end for b in overdue), tuple(overdue), f"Overdue · {_tasks(len(overdue))}", "group")))
     for day, bars in days.items():
         if len(bars) == 1:
             keyed.append(((2, bars[0].end), bars[0]))
@@ -1507,9 +1522,9 @@ def week_rows(active: list[Lane], cfg: Config, now: datetime, week_a: datetime, 
         end = max(b.end for b in bars)
         due_n, est_n = sum(b.end_src == "due" for b in bars), sum(b.end_src == "derived" for b in bars)
         label = " · ".join(part for part, n in ((f"{due_n} due", due_n), (f"{est_n} est.", est_n)) if n)
-        keyed.append(((2, end), Summary(day.isoformat(), label, max(week_a, min(b.start for b in bars)), end, tuple(bars), f"{day:%a %d} · {_lanes(len(bars))}", "group")))
+        keyed.append(((2, end), Summary(day.isoformat(), label, max(week_a, min(b.start for b in bars)), end, tuple(bars), f"{day:%a %d} · {_tasks(len(bars))}", "group")))
     if later:
-        keyed.append(((3,), Summary("later", f"due {min(b.end for b in later):%a %d}", week_a, max(b.end for b in later), tuple(later), f"Later · {_lanes(len(later))}", "group")))
+        keyed.append(((3,), Summary("later", f"due {min(b.end for b in later):%a %d}", week_a, max(b.end for b in later), tuple(later), f"Later · {_tasks(len(later))}", "group")))
     for d, bars in groups.items():
         label = f"→ {d.name}" + (f" {d.at:%a %d}" if d.at > week_b else "")
         keyed.append(((4, d.at), Summary(d.name, label, week_a, d.at, tuple(bars))))
@@ -1564,7 +1579,10 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
     # read as two things happening at once. Every other event stays the band it was.
     body_events = [e for e in events if e.kind]
     events = [e for e in events if not e.kind]
-    lanes = list(tracker.lanes)
+    # Only tasks from here on. A standing session with no task is on the Sessions graph, which reads
+    # `## Sessions`; `gone_sessions` still reads every row, so its orphaned placeholder still marks it gone.
+    lanes = [lane for lane in tracker.lanes if not lane.standing]
+    standing = len(tracker.lanes) - len(lanes)
     active = [lane for lane in lanes if lane.kind != "done"]
     done = [lane for lane in lanes if lane.kind == "done"]
     nearest = nearest_deadline(cfg, now)
@@ -1593,7 +1611,7 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
     day_done = done_rows(done, cfg, now, axis_a)
     # One closed row, opening onto the done lanes as sublanes: 27 of them pushed the work still ahead off the
     # first screen (Zach, 2026-09-22 18:57: "have done collapse down to an expandable row too").
-    day_done_rows = [Summary("done", f"{len(day_done)} done", min(b.start for b in day_done), max(b.end for b in day_done), tuple(day_done), f"Done · {_lanes(len(day_done))}", "done")] if day_done else []
+    day_done_rows = [Summary("done", f"{len(day_done)} done", min(b.start for b in day_done), max(b.end for b in day_done), tuple(day_done), f"Done · {_tasks(len(day_done))}", "done")] if day_done else []
 
     # Week strip: today to the day after the last deadline, at most 7 days, one column per day.
     week_a = datetime.combine(today, time(0, 0), tzinfo=zone)
@@ -1700,7 +1718,7 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
         ) or '<div class="due-row muted"><span class="what">nothing with a time on it</span></div>'
         head = f"{_esc(name)} · {_clock(at)}" if at else _esc(name)
         return (f'<div class="card due-card"><div class="card-head"><b>{head}</b>'
-                f'<span class="meta">{len(group)} lane{"" if len(group) == 1 else "s"} · {no_est} with no estimate</span>'
+                f'<span class="meta">{_tasks(len(group))} · {no_est} with no estimate</span>'
                 f"</div>\n{rows}</div>")
 
     due_html = f"""<h2>Due next</h2>
@@ -1734,7 +1752,7 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
         silence = f"silent {_dur(timedelta(minutes=minutes))}" if minutes is not None else "never reported"
         held = sum(1 for l in active if _bare_name(l.owner) == _bare_name(s.name))
         return (f"{_esc(s.name)} <span class='warn'>· {silence}</span> "
-                f"<span class='muted'>· {held} lane{'' if held == 1 else 's'}</span>")
+                f"<span class='muted'>· {_tasks(held)}</span>")
 
     blocked_html = f"""<h2>Blocked</h2>
 <div class="cards">
@@ -1753,7 +1771,9 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
     )
     long_items = sum(1 for lane in lanes if len(lane.item) > LONG_ITEM)
     orphan_note = f" · {sum(1 for l in active if l.kind == 'orphaned')} orphaned" if any(l.kind == "orphaned" for l in active) else ""
-    long_note = f" · {long_items} {'lane carries' if long_items == 1 else 'lanes carry'} history in the item cell" if long_items else ""
+    long_note = f" · {long_items} {'task carries' if long_items == 1 else 'tasks carry'} history in the item cell" if long_items else ""
+    standing_note = (f'<div class="meta">{standing} standing {"session" if standing == 1 else "sessions"} with no task '
+                     f'{"is not a task" if standing == 1 else "are not tasks"}; see Sessions</div>\n') if standing else ""
     tzname = now.strftime("%Z")
 
     return f"""<meta charset="utf-8">
@@ -1893,8 +1913,8 @@ body{{padding:12px 12px 36px}}
 
 {req_html}
 
-<h2>Lanes</h2>
-<div class="lanes">
+<h2>Tasks</h2>
+{standing_note}<div class="lanes">
 {chips}
 <div class="scroll"><table><tr><th>item</th><th>owner</th><th>state</th><th>since</th><th>due</th><th>size</th></tr>
 {group_head("running", running)}
