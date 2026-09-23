@@ -3147,3 +3147,96 @@ class StandingRowsAreNotTasksTest(unittest.TestCase):
             titles = " ".join(re.findall(r'title="([^"]*)"', body))
             text = re.sub(r"<[^>]+>", " ", body)
             self.assertNotRegex(text + " " + titles, r"(?i)\blanes?\b")
+
+
+# Zach, 2026-09-22 22:20: "each entry in the task tracker is actually backed by an entry in github".
+CLAUDE_MD_ISSUES = CLAUDE_MD.replace(
+    "- Human-only actions: spending money",
+    "- Backlog: GitHub issues; repo https://github.com/o/backlog (private)\n- Human-only actions: spending money")
+
+TRACKER_ISSUED = """# Tracker 2026-09-16
+
+Coordinator: coordinator. Board: board-7.
+
+## Lanes
+
+| name | item | owner | state | since | due | size | issue | checklist |
+|---|---|---|---|---|---|---|---|---|
+| Cut the release | Cut the release branch | impl-2 | running 10:30 | 10:30 | 23:00 | M | #9 | Checklist: cut |
+| Write README | Write eval README | Robin | open | 09:00 | 17:00 | S |  | Checklist: readme |
+| Elsewhere | Fix the other repo | Robin | open | 09:00 | 17:00 | S | https://github.com/x/y/issues/4 | Checklist: other |
+| Garbled | Garbled issue cell | Robin | waiting | 09:00 | 17:00 | S | TBD | Checklist: g |
+| Old done | Shipped before the rule | Robin | done 08:00–09:00 | 08:00 |  | S |  | Checklist: old |
+| impl-3 — standing implementer | impl-3: standing implementer; wait idle | impl-3 | open | 09:00 |  |  |  |  |
+
+## Sessions
+
+## Log
+
+- 09:00 opened the day
+"""
+
+
+class IssueColumnTest(unittest.TestCase):
+    """The tracker's `issue` column, and the board's reading of it: a link, or a warning where a task has none."""
+
+    def setUp(self) -> None:
+        self.cfg = rb.parse_coordinator(CLAUDE_MD_ISSUES, today=NOW.date())
+        self.html = rb.render(TRACKER_ISSUED, LOG, self.cfg, NOW)
+        self.tasks = self.html.split("<h2>Tasks</h2>")[1].split("</table>")[0]
+
+    def row(self, item: str) -> str:
+        m = re.search(r"<tr data-state[^>]*>(?:(?!</tr>).)*" + re.escape(item) + r"(?:(?!</tr>).)*</tr>", self.tasks, re.S)
+        self.assertIsNotNone(m, item)
+        return m.group(0)
+
+    def test_nine_columns_parse(self) -> None:
+        lanes = rb.parse_tracker(TRACKER_ISSUED).lanes
+        self.assertEqual([l.issue for l in lanes[:4]], ["#9", "", "https://github.com/x/y/issues/4", "TBD"])
+        self.assertEqual(lanes[0].checklist, "Checklist: cut")
+        self.assertEqual(lanes[0].warning, "")
+
+    def test_a_stray_pipe_is_anchored_in_a_nine_column_row(self) -> None:
+        text = TRACKER_ISSUED.replace("| #9 | Checklist: cut |", "| #9 | Checklist: cut | then tag |", 1)
+        lane = rb.parse_tracker(text).lanes[0]
+        self.assertEqual((lane.item, lane.state, lane.issue, lane.checklist), ("Cut the release branch", "running 10:30", "#9", "Checklist: cut | then tag"))
+
+    def test_backlog_repo_is_read_from_the_block(self) -> None:
+        self.assertEqual(self.cfg.backlog_repo, "o/backlog")
+        self.assertIsNone(rb.parse_coordinator(CLAUDE_MD, today=NOW.date()).backlog_repo)
+
+    def test_a_gitlab_backlog_is_no_github_repo(self) -> None:
+        text = CLAUDE_MD.replace("- Human-only", "- Backlog: GitLab; host https://gl.example; project g/p\n- Human-only")
+        self.assertIsNone(rb.parse_coordinator(text, today=NOW.date()).backlog_repo)
+
+    def test_an_unreadable_backlog_line_is_a_config_error(self) -> None:
+        with self.assertRaises(rb.ConfigError):
+            rb.parse_coordinator(CLAUDE_MD.replace("- Human-only", "- Backlog: GitHub issues\n- Human-only"), today=NOW.date())
+
+    def test_the_table_has_an_issue_column(self) -> None:
+        self.assertIn("<th>due</th><th>size</th><th>issue</th></tr>", self.tasks)
+        self.assertIn('colspan="7"', self.tasks)
+        self.assertNotIn('colspan="6"', self.tasks)
+
+    def test_links(self) -> None:
+        self.assertIn('<a href="https://github.com/o/backlog/issues/9">#9</a>', self.row("Cut the release"))
+        self.assertIn('<a href="https://github.com/x/y/issues/4">x/y#4</a>', self.row("Elsewhere"))
+
+    def test_an_open_task_with_no_issue_warns(self) -> None:
+        self.assertIn('<span class="warn">no issue</span>', self.row("Write README"))
+
+    def test_a_cell_that_is_not_an_issue_warns(self) -> None:
+        self.assertIn('<span class="warn">not an issue: TBD</span>', self.row("Garbled"))
+
+    def test_a_done_row_from_before_the_rule_is_quiet(self) -> None:
+        self.assertNotIn("no issue", self.row("Old done"))
+
+    def test_standing_rows_are_not_on_the_table(self) -> None:
+        self.assertNotIn("standing implementer", self.tasks)
+
+    def test_no_backlog_line_means_no_column(self) -> None:
+        html = rb.render(TRACKER_ISSUED, LOG, rb.parse_coordinator(CLAUDE_MD, today=NOW.date()), NOW)
+        tasks = html.split("<h2>Tasks</h2>")[1].split("</table>")[0]
+        self.assertNotIn("<th>issue</th>", tasks)
+        self.assertNotIn("no issue", tasks)
+        self.assertNotIn('colspan="7"', tasks)

@@ -36,6 +36,9 @@ from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from backlog import BacklogError, GitHubBacklog, issue_ref, parse_backlog  # noqa: E402
+
 HHMM = re.compile(r"^(\d{1,2}):(\d{2})$")
 # `done 21:16–22:05`: the running start kept on close. An en dash or a hyphen, because two hands write it.
 RAN = re.compile(r"^(\d{1,2}:\d{2})[–-](\d{1,2}:\d{2})$")
@@ -44,8 +47,11 @@ ALL_SIZES = "all"
 LANE_COLS = ("item", "owner", "state", "since", "due", "checklist")
 LANE_COLS_SIZED = ("item", "owner", "state", "since", "due", "size", "checklist")
 LANE_COLS_NAMED = ("name", "item", "owner", "state", "since", "due", "size", "checklist")
-# Widest first: a header is matched whole, and the live tracker carries all three while it is rewritten.
-LANE_HEADERS = (LANE_COLS_NAMED, LANE_COLS_SIZED, LANE_COLS)
+# Zach, 2026-09-22 22:20: each task "is actually backed by an entry in github". The issue sits inside the
+# span `_anchor` fixes, between `state` and `checklist`, so a stray pipe still re-reads the same way.
+LANE_COLS_ISSUED = ("name", "item", "owner", "state", "since", "due", "size", "issue", "checklist")
+# Widest first: a header is matched whole, and the live tracker carries every width while it is rewritten.
+LANE_HEADERS = (LANE_COLS_ISSUED, LANE_COLS_NAMED, LANE_COLS_SIZED, LANE_COLS)
 DATE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{1,2}):(\d{2}))?$")
 BULLET = re.compile(r"^(\s*)-\s*([^:]+?):\s*(.*?)\s*$")
 CAL_LIST = re.compile(r"^\s*-\s*(\d{1,2}:\d{2})\s*[–—-]\s*(\d{1,2}:\d{2})\s*(?:[A-Z]{2,5}\s+)?(.+?)\s*$")
@@ -109,6 +115,9 @@ class Config:
     deadlines: tuple[Deadline, ...]
     board_tool: str | None
     board_url: str | None
+    # The `Backlog:` line's GitHub repo, `owner/name`. None when there is no line or it names GitLab: the
+    # issue rule binds only where there is a tracker to back a task with, and GitHub is the one adapter.
+    backlog_repo: str | None = None
 
     @property
     def zone(self) -> ZoneInfo:
@@ -132,6 +141,12 @@ class Lane:
     warning: str = ""
     size: str = ""
     name: str = ""
+    issue: str = ""
+
+    @property
+    def needs_issue(self) -> bool:
+        """A task not yet done. A done row with no issue was closed before the rule and is left alone."""
+        return self.kind != "done" and not self.standing
 
     @property
     def label(self) -> str:
@@ -573,6 +588,13 @@ def parse_coordinator(text: str, today: date) -> Config:
             m = re.match(r"(?i)url\s+(\S+)", p)
             if m:
                 board_url = m.group(1)
+    backlog_repo = None
+    if "Backlog" in top:
+        try:
+            backlog = parse_backlog(top["Backlog"])
+        except BacklogError as e:
+            raise ConfigError(f"`Backlog:` line: {e}") from None
+        backlog_repo = backlog.repo if isinstance(backlog, GitHubBacklog) else None
     return Config(
         user=_unquote(top["User"]),
         log_dir=_unquote(top["Daily log dir"]),
@@ -581,6 +603,7 @@ def parse_coordinator(text: str, today: date) -> Config:
         deadlines=tuple(sorted(deadlines, key=lambda d: d.at)),
         board_tool=board_tool,
         board_url=board_url,
+        backlog_repo=backlog_repo,
     )
 
 
@@ -1649,14 +1672,35 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
             tokens.append(lane.kind)
         return tokens
 
+    # The issue column exists only where the block names a GitHub backlog; the board reads the cell and
+    # never the network, so whether the issue is open is audit_lanes.py's to say.
+    issued = cfg.backlog_repo is not None
+    span = 7 if issued else 6
+    issue_head = "<th>issue</th>" if issued else ""
+
+    def issue_cell(lane: Lane) -> str:
+        if not issued:
+            return ""
+        cell = lane.issue.strip()
+        ref = issue_ref(cell, cfg.backlog_repo) if cell else None
+        if ref:
+            body = f'<a href="{_esc(ref.url)}">{_esc(ref.label(cfg.backlog_repo))}</a>'
+        elif cell:
+            body = f'<span class="warn">not an issue: {_esc(cell)}</span>'
+        elif lane.needs_issue:
+            body = '<span class="warn">no issue</span>'
+        else:
+            body = ""
+        return f"<td>{body}</td>"
+
     def lane_rows(group: list[Lane]) -> str:
         rows = []
         for lane in group:
             warn = f' <span class="warn">{_esc(lane.warning)}</span>' if lane.warning else ""
             size = f' data-size="{_esc(lane.size)}"' if lane.size.strip() else ""
             keeps = " ".join(lane_filters(lane))
-            rows.append(f'<tr data-state="{_esc(lane.kind)}" data-in="{keeps}"{size}><td>{item_cell(lane.item, lane.label)}{warn}</td><td>{_esc(lane.owner)}</td><td>{_esc(lane.state)}</td><td>{_esc(lane.since)}</td><td>{_esc(lane.due)}</td><td>{_esc(lane.size)}</td></tr>')
-        return "\n".join(rows) or '<tr data-in="all"><td colspan="6" class="muted">none</td></tr>'
+            rows.append(f'<tr data-state="{_esc(lane.kind)}" data-in="{keeps}"{size}><td>{item_cell(lane.item, lane.label)}{warn}</td><td>{_esc(lane.owner)}</td><td>{_esc(lane.state)}</td><td>{_esc(lane.since)}</td><td>{_esc(lane.due)}</td><td>{_esc(lane.size)}</td>{issue_cell(lane)}</tr>')
+        return "\n".join(rows) or f'<tr data-in="all"><td colspan="{span}" class="muted">none</td></tr>'
 
     running = [l for l in active if l.kind == "running"]
     orphaned = [l for l in active if l.kind == "orphaned"]
@@ -1665,7 +1709,7 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
     def group_head(label: str, group: list[Lane], note: str = "") -> str:
         keeps = " ".join(f for f in FILTERS if f == "all" or any(f in lane_filters(l) for l in group))
         tail = f" · {_esc(note)}" if note else ""
-        return f'<tr class="group" data-in="{keeps}"><th colspan="6">{_esc(label)} · {len(group)}{tail}</th></tr>'
+        return f'<tr class="group" data-in="{keeps}"><th colspan="{span}">{_esc(label)} · {len(group)}{tail}</th></tr>'
 
     orphan_group = f'\n{group_head("orphaned", orphaned, "nobody owns these")}\n{lane_rows(orphaned)}' if orphaned else ""
     # Unassigned and `<user>'s queue` were the Lanes table printed twice more. They are chips over
@@ -1916,7 +1960,7 @@ body{{padding:12px 12px 36px}}
 <h2>Tasks</h2>
 {standing_note}<div class="lanes">
 {chips}
-<div class="scroll"><table><tr><th>item</th><th>owner</th><th>state</th><th>since</th><th>due</th><th>size</th></tr>
+<div class="scroll"><table><tr><th>item</th><th>owner</th><th>state</th><th>since</th><th>due</th><th>size</th>{issue_head}</tr>
 {group_head("running", running)}
 {lane_rows(running)}{orphan_group}
 {group_head("open · waiting", waiting)}
