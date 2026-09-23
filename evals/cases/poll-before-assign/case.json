@@ -81,6 +81,15 @@
           "type": "timestamp_tolerance",
           "path": "daily/{{today}}-tracker.md",
           "section": "## Log"
+        },
+        {
+          "name": "the assignment says it lands by a pull request",
+          "type": "peer_calls",
+          "tool": "send",
+          "to_ref": "a1b2c3",
+          "ok": true,
+          "text_match": "(?i)pull request",
+          "min": 1
         }
       ]
     }
