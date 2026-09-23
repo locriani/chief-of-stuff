@@ -699,3 +699,28 @@ class PullRequestTest(unittest.TestCase):
     def test_cimp_is_not_named(self):
         self.assertNotIn("CIMP", self.body)
         self.assertNotRegex(self.body, r"\bCIP\b")
+
+
+class PonytailTest(unittest.TestCase):
+    """Zach, 2026-09-23 17:01: ponytail "a core part of this" — in the dispatch, a review on every PR, ultra."""
+
+    def setUp(self):
+        self.tmp, self.root = workspace()
+        self.addCleanup(self.tmp.cleanup)
+        self.body = dp.compose(self.root, "2026-09-18", "Security audit")
+
+    def test_the_header_names_ponytail_at_ultra(self):
+        self.assertIn("**ponytail, ultra.**", self.body)
+
+    def test_the_users_ask_is_still_built(self):
+        """House rule 9: a challenge is said once, then the instruction is built."""
+        self.assertIn("then build what Robin asked", self.body)
+
+    def test_the_failing_test_still_comes_first(self):
+        self.assertIn("The failing test comes first", self.body)
+
+    def test_every_pull_request_gets_a_ponytail_review_comment(self):
+        line = [x for x in self.body.splitlines() if x.startswith("Commits: ")][0]
+        self.assertIn("ponytail:ponytail-review", line)
+        self.assertIn("post the findings on it", line)
+        self.assertIn('"no findings"', line)
