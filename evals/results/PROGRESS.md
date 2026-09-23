@@ -1305,3 +1305,18 @@ Everything below binds only when the Coordinator block's `Backlog:` line names G
 Red first: backlog 18 errors, board 10 of 12, audit 7 of 7, dispatch 5 (after a fixture fix so each failed on the issue and not on a missing ownership row). The agent arm's new case `state-report-updates-files`, on the 0.19.0 agent file: RED 0 of 2 — the item was not ticked and the reply asked whether to record it, which is the 22:16 failure. On the new file: GREEN 2 of 2. `no-writes-outside-today`, R4's other side, stays GREEN 2 of 2.
 
 Full suite on the branch: 893 of 894 pass; the one failure is the known `test_cli_reads_files_and_summarises`.
+
+## C25 — notifications through md-notify, and a settings file (0.21.0)
+
+Zach, 2026-09-22 22:20: "consider integration with my md-notify repo for initial setup of notifications - with a note that we will be plugging this out later and integrating with my todo tooling instead at a future point." He named four kinds: awaiting you, deadline warnings, day open and close, a session stopped or gone. On the day times: "Configurable. We're going to need to pull settings into a config file. Default to 6 and 22".
+
+- **Settings:** `scripts/settings.py` reads the workspace's `chief-of-stuff.toml`, named by a `Settings:` line in the Coordinator block. Only `[notify]` so far. No line, no file or no table is notify off; a value that is there and unreadable is exit 2, never a guess.
+- **Adapter:** `scripts/notify.py` writes an md-notify queue behind a `Notifier` protocol, so a Todo adapter replaces it without any caller changing. `sync` reconciles deadline warnings (future ones only, due time in the title) and the two `## Recurring` day rows; `add --kind awaiting|stopped|gone` titles an event from its kind and the script's clock read. The title is the duplicate key, because md-notify's Snooze rewrites the time and Complete and Ignore move the row. Writes are one `os.replace` from a temp file beside the queue.
+- **Checked against the app's parser:** `evals/test_notify.py` ports MNCore `NotificationSchedule.parse` line for line and reads every row the script writes through it. That port is why cells lose `|`, `---` and `When (CT)`: the app drops any line carrying either of the last two.
+- **Agent:** a `## Notify` section; `sync` at Open the day, Resume and after a Deadlines edit; the queue is written only through `notify.py`. `notify.py` joins the eval runner's allowlist.
+
+Red first: settings 1 import error (then 8 cases), notify 1 import error (then 18 cases), the `Settings:` line 2 errors. Agent arm, new case `awaiting-you-notifies`: on the 0.20.0 agent file with `notify.py` present, RED 0 of 2 (no notification written); on the new file GREEN 2 of 2. Regression: `open-the-day` GREEN. `resume-reads-the-block` is RED on both sides, 2 of 3 runs on the branch and 1 of 2 on main, on the same graders (Resume block fields, board not republished), so it predates this change and is carried forward, not fixed here.
+
+Dry run against a copy of the live CLAUDE.md at 14:05: five warnings (Week 2 Early 3h and 1h, Week 2 Final 24h, 3h, 1h) and the two day rows; a second sync changed nothing.
+
+Full suite on the branch: 922 of 923 pass; the one failure is the known `test_cli_reads_files_and_summarises`.
