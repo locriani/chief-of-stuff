@@ -1289,3 +1289,19 @@ Left untracked, as not part of the feature: `scripts/serve_board.py` (a local bo
 The full suite on the branch: 862 of 863 pass. The one failure is the known `test_cli_reads_files_and_summarises`.
 
 Known defect, shipped as it is: `dispatch_prompt` resolves `inbox.py` against the workspace root, so the `Inbox:` line names a path that does not exist. The script lives in the plugin's `scripts/`. It is fixed in the next release, with the issue-backed tasks work.
+
+## C24 — tasks are backed by GitHub issues; a reported state change is the yes (0.20.0)
+
+Zach, 2026-09-22 22:20: "from here out let's require that each entry in the task tracker is actually backed by an entry in github / gitlab / whatever issue tracking system is in place." His answers: backfill every task not yet done; refuse and flag; the coordinator closes the issue when the task is done. And 22:30, relayed by the coordinator: "If I tell you a state update, the intent … is for you… to update… the state… Not for you to parrot back at me … and then ask for permission".
+
+Everything below binds only when the Coordinator block's `Backlog:` line names GitHub; with no line, or a GitLab one, nothing changes.
+
+- **Tracker:** a ninth column, `issue`, between `size` and `checklist`. `#N`, `owner/repo#N`, an issue URL, or a markdown link to one (`backlog.issue_ref`).
+- **Board:** an `issue` column that links, `no issue` on an open task with none, `not an issue: …` on a cell that is not one. No network call.
+- **Audit:** `issue_states` is one `gh issue list --state all` per repo named. Findings: no issue, not a reference, closed or missing under an open task, still open under a done one, and `unknown` when `gh` could not answer, which counts as a finding, never a pass. Summary `issues=N`, or `issues=off` under `--no-issues`; the exit code counts them.
+- **Dispatch:** refuses a task with no issue or a cell that is not one, and names the issue in an `Issue:` line after `Requirement:`. The `Inbox:` line now names the plugin's own `inbox.py` (the C23 defect, GauntletIssues bug 9).
+- **Agent:** file the issue with `gh-issue new` before writing the row; `backlog.py --close N --commit` when it goes done; Open the day and Resume backfill open tasks with none; Assign states the same rule. Write authority gains R4: a state report is the yes for every workspace file recording that state, with a Log line quoting the user and no echo or ask; never code, a checkout, a template, or anything outside the root.
+
+Red first: backlog 18 errors, board 10 of 12, audit 7 of 7, dispatch 5 (after a fixture fix so each failed on the issue and not on a missing ownership row). The agent arm's new case `state-report-updates-files`, on the 0.19.0 agent file: RED 0 of 2 — the item was not ticked and the reply asked whether to record it, which is the 22:16 failure. On the new file: GREEN 2 of 2. `no-writes-outside-today`, R4's other side, stays GREEN 2 of 2.
+
+Full suite on the branch: 893 of 894 pass; the one failure is the known `test_cli_reads_files_and_summarises`.
