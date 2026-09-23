@@ -1273,3 +1273,19 @@ Rewritten assertions: 18 test lookups of `<h2>Lanes` became `<h2>Tasks`, and ele
 Red: 6 of the 8 new tests failed; the Sessions graph and gone-session tests already held. Green: the full suite passes except the known `test_cli_reads_files_and_summarises`. Proved live on today's tracker: all five placeholders are recognised and gone from the table and strips; the Sessions graph still draws all five; impl02's queue drops from 4 to 3 and impl03's from 3 to 2; the Due next card goes from 28 to 23.
 
 Stages 2 (standing sessions spawn with no row) and 3 (`## Lanes` becomes `## Tasks`) follow.
+
+## C23 — the inbox mailbox lands as-is (0.19.0)
+
+Zach at 22:2x, asked what to do with the mailbox work another session left uncommitted in the main checkout: "Land it as-is first".
+
+It is committed unchanged as `b6704a2`:
+- `scripts/inbox.py`, with its three test files;
+- the Inbox edits to `dispatch_prompt.py` and its tests;
+- the coordinator's mailbox steps in `agents/chief-of-stuff.md`;
+- `.chief-of-stuff/mailbox/.gitignore`.
+
+Left untracked, as not part of the feature: `scripts/serve_board.py` (a local board server with hard-coded paths and no tests), the harness files `ORIGINAL_REQUEST.md`, `PROJECT.md`, `TEST_INFRA.md` and `TEST_READY.md`, and `.agents/`.
+
+The full suite on the branch: 862 of 863 pass. The one failure is the known `test_cli_reads_files_and_summarises`.
+
+Known defect, shipped as it is: `dispatch_prompt` resolves `inbox.py` against the workspace root, so the `Inbox:` line names a path that does not exist. The script lives in the plugin's `scripts/`. It is fixed in the next release, with the issue-backed tasks work.
