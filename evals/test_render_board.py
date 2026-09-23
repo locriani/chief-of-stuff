@@ -3240,3 +3240,18 @@ class IssueColumnTest(unittest.TestCase):
         self.assertNotIn("<th>issue</th>", tasks)
         self.assertNotIn("no issue", tasks)
         self.assertNotIn('colspan="7"', tasks)
+
+
+class SettingsLineTest(unittest.TestCase):
+    """`Settings: <path>` names the workspace's chief-of-stuff.toml (Zach, 2026-09-22 22:20)."""
+
+    def test_read(self) -> None:
+        text = CLAUDE_MD.replace("- Human-only", "- Settings: `chief-of-stuff.toml`\n- Human-only")
+        self.assertEqual(rb.parse_coordinator(text, today=NOW.date()).settings_path, "chief-of-stuff.toml")
+
+    def test_absent(self) -> None:
+        self.assertIsNone(rb.parse_coordinator(CLAUDE_MD, today=NOW.date()).settings_path)
+
+    def test_prose_after_the_path_is_ignored(self) -> None:
+        text = CLAUDE_MD.replace("- Human-only", "- Settings: chief-of-stuff.toml (notify, day times)\n- Human-only")
+        self.assertEqual(rb.parse_coordinator(text, today=NOW.date()).settings_path, "chief-of-stuff.toml")

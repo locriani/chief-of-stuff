@@ -118,6 +118,8 @@ class Config:
     # The `Backlog:` line's GitHub repo, `owner/name`. None when there is no line or it names GitLab: the
     # issue rule binds only where there is a tracker to back a task with, and GitHub is the one adapter.
     backlog_repo: str | None = None
+    # `Settings:` — the workspace's chief-of-stuff.toml, relative to the root (settings.py reads it).
+    settings_path: str | None = None
 
     @property
     def zone(self) -> ZoneInfo:
@@ -549,6 +551,13 @@ def _unquote(value: str) -> str:
     return value.strip().strip("`").strip()
 
 
+def _first_path(value: str) -> str | None:
+    """The path a line names: its first backtick span, else its first word. What follows is prose."""
+    m = re.search(r"`([^`]+)`", value)
+    words = value.split()
+    return m.group(1).strip() if m else (words[0] if words else None)
+
+
 def parse_coordinator(text: str, today: date) -> Config:
     body = _section(text, "## Coordinator")
     if not body:
@@ -604,6 +613,7 @@ def parse_coordinator(text: str, today: date) -> Config:
         board_tool=board_tool,
         board_url=board_url,
         backlog_repo=backlog_repo,
+        settings_path=_first_path(top.get("Settings", "")),
     )
 
 
