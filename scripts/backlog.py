@@ -320,6 +320,52 @@ def issues(cfg: Backlog | GitHubBacklog, token: str | None = None, state: str = 
     return Fetch(error=f"more than {MAX_PAGES} pages of issues; refusing to read a partial backlog as whole")
 
 
+def issue_states(cfg: GitHubBacklog, gh=None) -> dict[int, Issue]:
+    """Every issue in the repo, open and closed, by number: one list call, not one per tracker row.
+    A failed or partial read raises. An empty map would read as "none of these issues exist"."""
+    got = issues(cfg, state="all", gh=gh)
+    if not got.ok:
+        raise BacklogError(got.error)
+    return {i.iid: i for i in got.issues}
+
+
+@dataclass(frozen=True)
+class IssueRef:
+    """What a tracker's `issue` cell points at."""
+
+    repo: str
+    number: int
+
+    @property
+    def url(self) -> str:
+        return f"https://github.com/{self.repo}/issues/{self.number}"
+
+    def label(self, home: str | None) -> str:
+        """`#N` in the Backlog repo, `owner/repo#N` anywhere else."""
+        return f"#{self.number}" if self.repo == home else f"{self.repo}#{self.number}"
+
+
+_REF_SHORT = re.compile(r"^([\w.-]+/[\w.-]+)?#(\d+)$")
+_REF_URL = re.compile(r"^https://github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)/?$")
+_REF_LINK = re.compile(r"^\[[^\]]*\]\((https://[^)\s]+)\)$")
+
+
+def issue_ref(cell: str, repo: str | None) -> IssueRef | None:
+    """`#N` (in `repo`), `owner/repo#N`, an issue URL, or a markdown link to one. Anything else is None,
+    and a bare `#N` with no Backlog repo to resolve it against is None too."""
+    text = cell.strip()
+    link = _REF_LINK.match(text)
+    if link:
+        text = link.group(1)
+    m = _REF_URL.match(text)
+    if m:
+        return IssueRef(m.group(1), int(m.group(2)))
+    m = _REF_SHORT.match(text)
+    if not m or not (m.group(1) or repo):
+        return None
+    return IssueRef(m.group(1) or repo, int(m.group(2)))
+
+
 def _total(cfg: Backlog, secret: str, state: str, timeout: float) -> tuple[int | None, str]:
     """GitLab's `X-Total` for one state, or a full count when it withholds the header."""
     body, headers, error = _get(f"{cfg.issues_url}?{urlencode({'state': state, 'per_page': 1, 'page': 1})}",

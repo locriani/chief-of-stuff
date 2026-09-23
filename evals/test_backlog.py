@@ -572,6 +572,50 @@ class GitHubReadTest(unittest.TestCase):
         self.assertIn("rate limited", got.error)
 
 
+class IssueRefTest(unittest.TestCase):
+    """A tracker's `issue` cell. Zach, 2026-09-22 22:20: each task "is actually backed by an entry in github"."""
+
+    def test_forms(self):
+        for cell, want in (("#9", (REPO, 9)), (" #12 ", (REPO, 12)), ("o/n#4", ("o/n", 4)),
+                           ("https://github.com/o/n/issues/7", ("o/n", 7)),
+                           (f"[#9](https://github.com/{REPO}/issues/9)", (REPO, 9))):
+            with self.subTest(cell=cell):
+                self.assertEqual(bl.issue_ref(cell, REPO), bl.IssueRef(*want))
+
+    def test_rejects(self):
+        for cell in ("", "TBD", "9", "#", "#x", "issue 9", "https://github.com/o/n/pull/7", "#9 #10"):
+            with self.subTest(cell=cell):
+                self.assertIsNone(bl.issue_ref(cell, REPO))
+
+    def test_bare_number_needs_a_repo(self):
+        self.assertIsNone(bl.issue_ref("#9", None))
+        self.assertEqual(bl.issue_ref("o/n#9", None), bl.IssueRef("o/n", 9))
+
+    def test_url_and_label(self):
+        ref = bl.IssueRef(REPO, 9)
+        self.assertEqual(ref.url, f"https://github.com/{REPO}/issues/9")
+        self.assertEqual(ref.label(REPO), "#9")
+        self.assertEqual(ref.label("o/n"), f"{REPO}#9")
+
+
+class IssueStatesTest(unittest.TestCase):
+    def test_one_list_call_all_states(self):
+        gh = FakeGh(rows={"all": [gh_issue(9, "a"), gh_issue(4, "b", "CLOSED")]})
+        got = bl.issue_states(GH, gh=gh)
+        self.assertEqual({n: i.state for n, i in got.items()}, {9: bl.OPEN, 4: bl.CLOSED})
+        self.assertEqual(len(gh.calls), 1)
+        self.assertEqual(gh.calls[0][gh.calls[0].index("--state") + 1], "all")
+
+    def test_failure_raises_never_empty(self):
+        with self.assertRaisesRegex(bl.BacklogError, "rate limited"):
+            bl.issue_states(GH, gh=FakeGh(fail={"all": (1, "", "rate limited")}))
+
+    def test_partial_raises(self):
+        gh = FakeGh(rows={"all": [gh_issue(n, "t") for n in range(bl.GH_LIMIT)]})
+        with self.assertRaisesRegex(bl.BacklogError, "partial"):
+            bl.issue_states(GH, gh=gh)
+
+
 class GitHubWriteTest(unittest.TestCase):
     def test_create_is_refused_and_names_gh_issue(self):
         gh = FakeGh()
