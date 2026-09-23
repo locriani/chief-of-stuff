@@ -5,6 +5,7 @@ Repos here are real: a bare origin, a clone that has fetched it, and worktrees o
 script is that its answer is git's answer.
 """
 
+import json
 import subprocess
 import sys
 import tempfile
@@ -959,3 +960,119 @@ class ShaClosesTheLaneTest(unittest.TestCase):
                               sessions=session_row("kim"), owner="sam")
         self.assertEqual(report.reopen, [], report.lines)
         self.assertEqual(len(report.orphans), 1, report.lines)
+
+
+# Zach, 2026-09-22 22:20: each task "is actually backed by an entry in github". The audit is where the
+# issue's state is read; `gh` is injected, so nothing here touches the network.
+ISSUE_CLAUDE = CLAUDE + "- Backlog: GitHub issues; repo https://github.com/o/backlog (private)\n"
+
+ISSUE_TRACKER = """# Tracker 2026-09-17
+
+## Lanes
+
+| name | item | owner | state | since | due | size | issue | checklist |
+|---|---|---|---|---|---|---|---|---|
+| Bare | Bare task | robin | open | 09:00 |  | S |  | c |
+| Garbled | Garbled task | robin | open | 09:00 |  | S | TBD | c |
+| Closed under it | Task whose issue closed | robin | waiting | 09:00 |  | S | #5 | c |
+| Missing | Task whose issue is missing | robin | running 09:10 | 09:00 |  | S | #6 | c |
+| Done open | Finished, issue still open | robin | done 09:00–10:00 | 09:00 |  | S | #7 | c |
+| Backed | Backed task | robin | open | 09:00 |  | S | #8 | c |
+| Old done | Closed before the rule | robin | done 08:00 | 08:00 |  | S |  | c |
+| Elsewhere | Task in another repo | robin | open | 09:00 |  | S | x/y#2 | c |
+| impl-3 — standing implementer | impl-3: standing implementer; wait idle | impl-3 | open | 09:00 |  |  |  |  |
+
+## Log
+
+- 09:00 opened the day
+"""
+
+
+class FakeGh:
+    """`gh issue list --state all -R <repo>`, answered per repo. Records argv."""
+
+    def __init__(self, repos: dict | None = None, fail: tuple | None = None):
+        self.repos = repos or {}
+        self.fail = fail
+        self.calls: list[list[str]] = []
+
+    def __call__(self, args: list[str]) -> tuple[int, str, str]:
+        self.calls.append(list(args))
+        assert args[:2] == ["issue", "list"], args
+        if self.fail:
+            return self.fail
+        repo = args[args.index("-R") + 1]
+        rows = [{"number": n, "title": "t", "state": st, "labels": [], "url": "", "updatedAt": ""}
+                for n, st in self.repos.get(repo, {}).items()]
+        return 0, json.dumps(rows), ""
+
+
+LIVE = {"o/backlog": {5: "CLOSED", 7: "OPEN", 8: "OPEN"}, "x/y": {2: "OPEN"}}
+
+
+def issue_workspace(claude: str = ISSUE_CLAUDE) -> tuple[tempfile.TemporaryDirectory, Path]:
+    tmp = tempfile.TemporaryDirectory()
+    root = Path(tmp.name)
+    (root / "daily").mkdir()
+    (root / "CLAUDE.md").write_text(claude)
+    (root / "daily" / "2026-09-17-tracker.md").write_text(ISSUE_TRACKER)
+    return tmp, root
+
+
+class IssueAuditTest(unittest.TestCase):
+    def setUp(self):
+        tmp, self.root = issue_workspace()
+        self.addCleanup(tmp.cleanup)
+
+    def run_audit(self, gh, **kw):
+        return al.audit(self.root, "2026-09-17", gh=gh, **kw)
+
+    def test_each_finding(self):
+        report = self.run_audit(FakeGh(LIVE))
+        got = [str(f) for f in report.issues]
+        self.assertEqual(got, [
+            "issue: Bare — no issue; file it with gh-issue new",
+            'issue: Garbled — "TBD" is not an issue reference',
+            "issue: Closed under it — #5 is closed",
+            "issue: Missing — #6 not found in o/backlog",
+            "issue: Done open — done but #7 is open; backlog.py --close 7 --commit",
+        ])
+        for line in got:
+            self.assertIn(line, report.lines)
+        self.assertIn("issues=5", report.lines[-1])
+
+    def test_one_call_per_repo(self):
+        gh = FakeGh(LIVE)
+        self.run_audit(gh)
+        self.assertEqual(sorted(c[c.index("-R") + 1] for c in gh.calls), ["o/backlog", "x/y"])
+        for call in gh.calls:
+            self.assertEqual(call[call.index("--state") + 1], "all")
+
+    def test_unknown_is_a_finding_never_a_pass(self):
+        report = self.run_audit(FakeGh(fail=(1, "", "rate limited")))
+        unknown = [str(f) for f in report.issues if str(f).startswith("issue: unknown — ")]
+        self.assertEqual(len(unknown), 1, report.lines)
+        self.assertIn("rate limited", unknown[0])
+        self.assertNotIn("issues=0", report.lines[-1])
+
+    def test_off(self):
+        gh = FakeGh(LIVE)
+        report = self.run_audit(gh, check_issues=False)
+        self.assertEqual((gh.calls, report.issues), ([], []))
+        self.assertIn("issues=off", report.lines[-1])
+
+    def test_no_backlog_line_is_no_check(self):
+        tmp, root = issue_workspace(CLAUDE)
+        self.addCleanup(tmp.cleanup)
+        gh = FakeGh(LIVE)
+        report = al.audit(root, "2026-09-17", gh=gh)
+        self.assertEqual((gh.calls, report.issues), ([], []))
+        self.assertNotIn("issues=", report.lines[-1])
+
+    def test_exit_code_counts_issue_findings(self):
+        self.assertEqual(al.main(["--root", str(self.root), "--date", "2026-09-17"], gh=FakeGh(LIVE)), 5)
+
+    def test_cli_off(self):
+        gh = FakeGh(LIVE)
+        self.assertEqual(al.main(["--root", str(self.root), "--date", "2026-09-17", "--no-issues"], gh=gh), 0)
+        self.assertEqual(gh.calls, [])

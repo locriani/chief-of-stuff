@@ -27,6 +27,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from render_board import BULLET, HHMM, RAN, ConfigError, _cells, _is_separator, _section, _unmark, _unquote, clip_name, parse_coordinator, parse_tracker  # noqa: E402
 from dispatch_prompt import PROMPT_DIR, STOP_FILE  # noqa: E402
+from backlog import CLOSED, BacklogError, GitHubBacklog, issue_ref, issue_states  # noqa: E402
 
 # The branch is written in the parenthetical right after the tree name — `worktree wt-x (feat/y)` —
 # which is the only place it survives when the tree itself is gone. Finding 46 turns on that.
@@ -125,6 +126,55 @@ class QueueFault:
         return f"decision queue: {self.row} — {self.why}"
 
 
+@dataclass(frozen=True)
+class IssueFault:
+    """A task the issue tracker does not back, or a done task whose issue is still open.
+
+    Zach, 2026-09-22 22:20: "each entry in the task tracker is actually backed by an entry in github".
+    """
+
+    task: str
+    why: str
+
+    def __str__(self) -> str:
+        return f"issue: {self.task} — {self.why}"
+
+
+def issue_faults(lanes, repo: str, gh=None) -> list[IssueFault]:
+    """One `gh issue list --state all` per repo the tracker names, then each task against it. A read that
+    fails is one `unknown` finding: an issue nobody could look up is not an issue known to be open."""
+    refs = {}
+    faults: list[IssueFault] = []
+    for lane in lanes:
+        if lane.standing:
+            continue
+        cell = lane.issue.strip()
+        ref = issue_ref(cell, repo) if cell else None
+        name = clip_name(lane.label)
+        if not cell:
+            if lane.needs_issue:
+                faults.append(IssueFault(name, "no issue; file it with gh-issue new"))
+        elif not ref:
+            faults.append(IssueFault(name, f'"{cell}" is not an issue reference'))
+        else:
+            refs[lane] = ref
+    states: dict[str, dict] = {}
+    for want in sorted({r.repo for r in refs.values()}):
+        try:
+            states[want] = issue_states(GitHubBacklog(repo=want), gh=gh)
+        except BacklogError as e:
+            return faults + [IssueFault("unknown", str(e))]
+    for lane, ref in refs.items():
+        name, found, tag = clip_name(lane.label), states[ref.repo].get(ref.number), ref.label(repo)
+        if lane.needs_issue and found is None:
+            faults.append(IssueFault(name, f"{tag} not found in {ref.repo}"))
+        elif lane.needs_issue and found.state == CLOSED:
+            faults.append(IssueFault(name, f"{tag} is closed"))
+        elif lane.kind == "done" and found is not None and found.state != CLOSED:
+            faults.append(IssueFault(name, f"done but {tag} is open; backlog.py --close {ref.number} --commit"))
+    return faults
+
+
 @dataclass
 class Report:
     lines: list[str] = field(default_factory=list)
@@ -132,6 +182,7 @@ class Report:
     orphans: list[Orphan] = field(default_factory=list)
     stopped: list[Stop] = field(default_factory=list)
     queue: list[QueueFault] = field(default_factory=list)
+    issues: list[IssueFault] = field(default_factory=list)
 
 
 def worktrees_dir(claude_md: str) -> str:
@@ -513,7 +564,7 @@ def queue_faults(tracker_text: str) -> tuple[list[QueueFault], list[str], int]:
     return faults, lines, len(open_rows)
 
 
-def audit(root: Path, day: str) -> Report:
+def audit(root: Path, day: str, gh=None, check_issues: bool = True) -> Report:
     claude_md = (root / "CLAUDE.md").read_text()
     cfg = parse_coordinator(claude_md, today=date.today())
     trees = worktrees_dir(claude_md)
@@ -609,18 +660,27 @@ def audit(root: Path, day: str) -> Report:
     report.queue.extend(faults)
     report.lines.extend(queue_lines)
     report.lines.extend(str(q) for q in report.queue)
+    issues = ""
+    if cfg.backlog_repo:
+        if check_issues:
+            report.issues.extend(issue_faults(lanes, cfg.backlog_repo, gh))
+            report.lines.extend(str(f) for f in report.issues)
+            issues = f" issues={len(report.issues)}"
+        else:
+            issues = " issues=off"
     facts = len({(r.worktree, r.why) for r in report.reopen})
     reopen = f"{facts} tree{'' if facts == 1 else 's'}/{len(report.reopen)} lane{'' if len(report.reopen) == 1 else 's'}" if report.reopen else "0"
     report.lines.append(
         f"lanes={len(lanes)} trees={len(seen)} reopen={reopen} orphaned={len(report.orphans)} "
-        f"stopped={len(report.stopped)}" + (f" queued={queued}" if queue_lines or faults or queued else ""))
+        f"stopped={len(report.stopped)}" + (f" queued={queued}" if queue_lines or faults or queued else "") + issues)
     return report
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, gh=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--date", help="YYYY-MM-DD; default: today in the workspace timezone")
     ap.add_argument("--root", default=".", help="workspace root holding CLAUDE.md")
+    ap.add_argument("--no-issues", action="store_true", help="skip the issue check (offline); the summary says issues=off")
     args = ap.parse_args(argv)
     root = Path(args.root)
     if not (root / "CLAUDE.md").is_file():
@@ -636,10 +696,10 @@ def main(argv: list[str] | None = None) -> int:
     if not tracker.is_file():
         print(f"audit_lanes: tracker not found at {tracker}", file=sys.stderr)
         return 2
-    report = audit(root, day)
+    report = audit(root, day, gh=gh, check_issues=not args.no_issues)
     for line in report.lines:
         print(line)
-    return len(report.reopen) + len(report.stopped) + len(report.queue)
+    return len(report.reopen) + len(report.stopped) + len(report.queue) + len(report.issues)
 
 
 if __name__ == "__main__":
