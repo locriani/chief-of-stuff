@@ -51,8 +51,8 @@ A day with no log yet starts this move, as does a greeting or "open the day" on 
 6. Leave Goal empty, or write a Goal line that begins with "Proposed:". The user decides the goal.
 7. Probe the block's `Health:` targets, if it has any: `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/probe_health.py --config CLAUDE.md`. One Log line for the results.
 8. Append one Log line to the tracker, and write the `## Resume` block (see Resume).
-9. Render and publish the board, if the block names one (see Board), sync the notifications (see Notify), and arm the check: `CronList`, then `CronCreate` only when no job's prompt starts `[Scheduled check]` (see Check).
-10. Reply with the Clock line, the calendar, the carried items, anything unhealthy, the board URL if there is one, and one question for the user: the goal.
+9. Serve and render the board, if the block names one: `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/pages.py --ensure`, then the renderer (see Board); sync the notifications (see Notify), and arm the check: `CronList`, then `CronCreate` only when no job's prompt starts `[Scheduled check]` (see Check).
+10. Reply with the Clock line, the calendar, the carried items, anything unhealthy, the board URL `--ensure` printed if there is one, and one question for the user: the goal.
 
 Yesterday's files are read, never edited.
 
@@ -64,7 +64,7 @@ Four round trips, not ten.
 
 1. One message, six calls that do not depend on each other: `TZ=<tz> date`; read today's tracker (the `## Resume` block, Tasks, File ownership) and the log; list sessions; `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/probe_health.py --config CLAUDE.md`; `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/audit_tasks.py --date <today>`; `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/inbox.py list --recipient coordinator --unread`. Read the Log only from the block's `As of` time — earlier lines are history, and the block is the summary of them.
 2. One write pass to the tracker: your own name in the header — and when you are not in the session listing yet, say that there (`resumed session, not yet listed`) rather than leaving the name of the session before you. The header names who is writing, and your predecessor's name is the one answer that is certainly wrong; process unread mailbox messages (read and acknowledge via `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/inbox.py read <id> --ack` or `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/inbox.py drain --recipient coordinator`): registrations update `## Sessions`, worker completion reports update task state and `Verified`, and stops update task state to `waiting` or `orphaned`; task states from the session check (see Sessions) and from the audit (see Tracker); an issue filed for every open task the audit names as having none, and a close for every done task whose issue it names as open (see Tracker); one Log line; the `## Resume` block last.
-3. Render and publish the board (see Board), sync the notifications (see Notify), and arm the check: `CronList`, then `CronCreate` only when no job's prompt starts `[Scheduled check]` (see Check).
+3. Serve and render the board: `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/pages.py --ensure`, then the renderer (see Board); sync the notifications (see Notify), and arm the check: `CronList`, then `CronCreate` only when no job's prompt starts `[Scheduled check]` (see Check).
 4. Reply: the Clock line, what changed while no session was watching (tasks reopened, owners gone, anything unhealthy), and at most one question.
 
 `Re-arm` names what dies with a session — the check's cron job, a watch, a subscription. Step 3 arms the check again; anything else is marked and said. Re-arming never launches a context or sends work: a dispatch still needs the user's yes, and nothing in this move is one.
@@ -209,7 +209,7 @@ A check keeps work moving between the user's messages (the user, 2026-09-24 01:3
   - Process the mailbox and the audit as Resume step 2 does, and check owners against the list (see Sessions).
   - Poll each live session whose row says `idle` or whose task closed (Assign step 1). Its reply hands it the next task that fits; a busy reply hands it nothing.
   - An `unassigned` task no live session fits gets one dispatch proposal (see Dispatch). A proposal already waiting on its yes is not asked again; it stays in the Resume block's `Waiting on:`.
-  - After any tracker edit, render and publish the board.
+  - Run `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/pages.py --ensure`, so a server that died with a reboot is back within one check. After any tracker edit, render the board.
 - A check ends on one status line, or on an ask only for a reason Asks names. A check that finds nothing writes no Log line (see Tracker).
 
 ## Sessions
@@ -267,13 +267,14 @@ An item the user owns is theirs. Never propose a dispatch for it, not even as an
 
 ## Board
 
-When the `## Coordinator` block has a `Board:` line naming a publish tool, the tracker has a board: a web page rendered from the tracker, never written by hand.
+When the `## Coordinator` block has a `Board:` line (`- Board: self-hosted; URL http://127.0.0.1:<port>/; dir \`<pages dir>\``), the tracker has a board: a web page rendered from the tracker, never written by hand, and served from this Mac (the user, 2026-09-24 14:07: "we should host our own webserver and ensure they are set up as part of the agent's boot loop").
 
-- After the last tracker edit of any move, run `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/render_board.py --date <today>` from the workspace root. It writes `<log dir>/<date>-board.html` beside the tracker. Then publish that file with the tool the block names, passing the file path. A republish updates the page in place; the user already has it open. Never call the tool's `open` action on the board, and never ask to open it (the user, 2026-09-23 21:34: "it keeps relaunching the artifact on me. UPDATE the artifact. I know how to open it.").
-- Republish to the URL in the tracker header (`Board: <url>`), or the block's URL when the header has none, never to a new one; write it into the header if it is missing. In a new session, read that artifact once before the first publish. With no URL anywhere: publish once, write `Board: <url>` into the tracker header, then render and publish again so the board matches the tracker it names, and say the block should carry the URL too (that edit needs a yes). **Publishing with no `url` argument is publishing to a new board.** The no-url path is what a FIRST publish uses, and it mints one; so a republish passes the url every time, and a publish that omitted it has not refreshed the board, it has created a second one while the board the user has open goes quietly stale. The header is the record of which board this tracker owns, never a scratchpad: do not rewrite it to agree with what a publish returned, and a URL the workspace `CLAUDE.md` declares is not a placeholder waiting to be filled in. If a publish comes back with a URL that is not the one named, say so and stop. Do not reconcile it: the URL that came back is the evidence of what went wrong, and editing the header to match destroys the only record of which board the day's work actually reached.
-- Never Write or Edit the html and never pass html text to the tool. Never add a time to the tracker so the board looks complete: a task with no `due` draws to an end the board derives from its owner's queue — labelled `est. M ~1h20m` once tasks of that size have closed with a range, and `est. i/N → <deadline>` before then, running first then oldest first — or, with no owner to derive from, open to the deadline labelled "no estimate". Both are right; the `due` cell is the override, and it stays blank until a person fills it.
+- `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/pages.py --ensure` starts the page server unless it already answers, and prints the URL. It serves the pages dir on 127.0.0.1 only, and `<url>` is always the newest board. Open the day, Resume and every check run it.
+- After the last tracker edit of any move, run `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/render_board.py --date <today>` from the workspace root. It writes `<pages dir>/<date>-board.html`, and that is the whole update: the open tab reloads itself when the file changes. Never open the page and never ask to open it; the user has it open.
+- The pages dir is any session's to publish into: a page a session writes there is at `<url>/<name>.html`, and `<url>/all` lists every page.
+- Never Write or Edit the html. Never add a time to the tracker so the board looks complete: a task with no `due` draws to an end the board derives from its owner's queue — labelled `est. M ~1h20m` once tasks of that size have closed with a range, and `est. i/N → <deadline>` before then, running first then oldest first — or, with no owner to derive from, open to the deadline labelled "no estimate". Both are right; the `due` cell is the override, and it stays blank until a person fills it.
 - The board draws `## Sessions` as a tree under the coordinator, each node stamped with when that session last spoke and reading `stale` past two hours. A session that has never filled its `state` cell draws as `unreported`, and a `waiting on` cell that names no one draws no arrow. Both are visible on the board, so a poll that is not landing shows up as a row of unreported nodes rather than as nothing at all.
-- If the renderer or the tool fails or is missing, finish the move and say the board was not republished and why. Never patch the html by hand to get around it. The tracker is the truth; the board is a view of it.
+- If the renderer or `pages.py` fails or is missing, finish the move and say the board is not rendered or not served, and why. Never start the server on another port: the URL is the board's address. Never patch the html by hand to get around it. The tracker is the truth; the board is a view of it.
 
 ## Requirements
 
@@ -281,7 +282,7 @@ A deadline line in the `## Coordinator` block may name a requirements file (`- F
 
 - The file is the user's list. Your only edit is a tick: flip `- [ ]` to `- [x]` and append ` — evidence: <commit, URL, or Log HH:MM>`, with Edit. Never add, remove, reorder, or reword an item, never untick one, and never tick without evidence.
 - When a task goes `done`, read the requirements files. If the task's report is evidence for exactly one item, tick it and add a Log line `HH:MM ticked <deadline> requirement: <item>`. If it could be evidence for several, or the report gives no evidence, tick nothing and name the item in your reply. A task that matches no item ticks nothing.
-- A tick is part of the move: render and republish the board after it, like any tracker edit.
+- A tick is part of the move: render the board after it, like any tracker edit.
 - When the user asks for a goal's requirements checklist and no file exists, writing it is work from the source documents: a task and a dispatch proposal, never inline. Adding the `requirements` path to the block is a `CLAUDE.md` edit and needs a yes.
 
 ## Share
