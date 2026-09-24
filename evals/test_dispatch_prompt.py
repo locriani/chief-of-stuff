@@ -594,6 +594,31 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         # A sonnet run sent the placeholder itself; the reviewer runs in another tree, so only an absolute path lands.
         self.assertIn("`<workspace root>` written out as an absolute path", pipeline)
 
+    def _section(self, name):
+        return self.content.split(f"## {name}\n", 1)[1].split("\n## ", 1)[0]
+
+    def test_the_coordinator_hands_off_and_asks_only_for_the_users_reasons(self):
+        # The user, 2026-09-24 01:35: "You shouldn't be asking me to give things to things - your role is exactly to do that."
+        asks = self._section("Asks")
+        for reason in ("A plan needs review", "An architectural decision needs review", "wedged, blocked, or stuck", "time-critical"):
+            self.assertIn(reason, asks)
+        self.assertIn("Never ask who should take a task", asks)
+        self.assertIn("launching a new session", asks)
+        self.assertNotIn("an owner, a scope", self.content)
+        self.assertNotIn("only to a session the user names", self._section("Assign"))
+
+    def test_there_is_no_standing_list(self):
+        # A standing list stood in for a hand-off yes the coordinator no longer needs.
+        self.assertNotIn("Standing list", self.content)
+
+    def test_the_check_is_armed_every_fifteen_minutes(self):
+        # The user, 2026-09-24 01:35: "a 15 minute timer loop that kicks you to check, evaluate state each time and hand off things again if needed".
+        check = self._section("Check")
+        self.assertIn("`7,22,37,52 * * * *`", check)
+        self.assertIn("[Scheduled check]", check)
+        self.assertIn("CronList", self._section("Resume"))
+        self.assertIn("CronList", self._section("Open the day"))
+
     def test_a_clean_verify_pass_goes_to_merge(self):
         # An opus run read a clean verify pass as a new triage and asked for R1's disposition again.
         triage = self.content.split("## Triage", 1)[1].split("\n## ", 1)[0]
