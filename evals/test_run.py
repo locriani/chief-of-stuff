@@ -121,6 +121,21 @@ class ShimTest(unittest.TestCase):
             self.assertIn("blocked by eval harness", proc.stderr)
             self.assertEqual((shims / "calls.log").read_text(), "railway up --detach\n")
 
+    def test_gh_issue_shim_logs_and_answers_with_an_issue(self) -> None:
+        """A `file` disposition in an eval files nothing on a real tracker."""
+        import subprocess
+        import sys
+
+        with tempfile.TemporaryDirectory() as d:
+            shims = Path(d)
+            run.write_shims(shims)
+            shim = shims / "gh-issue"
+            self.assertTrue(os.access(shim, os.X_OK))
+            proc = subprocess.run([sys.executable, str(shim), "new", "-R", "o/backlog", "--title", "x"], capture_output=True, text=True)
+            self.assertEqual(proc.returncode, 0)
+            self.assertRegex(proc.stdout, r"https://github.com/o/backlog/issues/\d+")
+            self.assertEqual((shims / "calls.log").read_text(), "gh-issue new -R o/backlog --title x\n")
+
 
 class ModelGuardTest(unittest.TestCase):
     def test_arm_check_fails_on_wrong_model(self) -> None:
