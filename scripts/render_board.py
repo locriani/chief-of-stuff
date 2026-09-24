@@ -2091,6 +2091,13 @@ def main(argv: list[str] | None = None) -> Path:
     drawn = resume_fields(block)
     resume_note = f"{len(drawn)} fields" if drawn else "none"
     print(f"tasks={len(parsed.tasks)} no_estimate={no_est} derived={derived} warnings={warnings} long_items={long_items} resume={resume_note} resume_long={resume_long} requirements={req_counts or 'none'} requirements_missing={missing} history={hist_note} horizon={horizon_name} tracker_sha256={hashlib.sha256(tracker_text.encode()).hexdigest()[:12]}")
+    if cfg.pages_dir:
+        # Every render ensures the server: a board written where nothing serves it is said on the move that wrote it.
+        import pages
+        try:
+            print(pages.ensure(*pages.from_config(root), root / ".chief-of-stuff" / "pages.log"))
+        except pages.PagesError as e:
+            print(f"pages: not served — {e}")
     return out
 
 

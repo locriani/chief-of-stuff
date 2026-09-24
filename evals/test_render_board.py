@@ -3,10 +3,15 @@
 import base64
 import contextlib
 import hashlib
+import http.server
 import io
+import os
 import re
+import signal
+import socket
 import sys
 import tempfile
+import threading
 import unittest
 from unittest import mock
 from datetime import datetime, timedelta
@@ -1375,7 +1380,14 @@ class TaskGroupHeaderTest(unittest.TestCase):
         self.assertRegex(self.table, r'<tr class="group" data-in="all"><th colspan="6">running · 0</th></tr>\s*<tr data-in="all"><td colspan="6" class="muted">none</td></tr>')
 
 
-CLAUDE_MD_PAGES = re.sub(r"(?m)^- Board: .*$", "- Board: self-hosted; URL http://127.0.0.1:8787/; dir `pages/`", CLAUDE_MD)
+def claude_md_pages(port: int) -> str:
+    return re.sub(r"(?m)^- Board: .*$", f"- Board: self-hosted; URL http://127.0.0.1:{port}/; dir `pages/`", CLAUDE_MD)
+
+
+def free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 
 class CliTest(unittest.TestCase):
@@ -1390,20 +1402,42 @@ class CliTest(unittest.TestCase):
         self.assertTrue(out.exists())
         self.assertIn('name="tracker-sha256"', out.read_text())
 
-    def test_a_board_dir_takes_the_board(self) -> None:
-        # Zach, 2026-09-24 14:07: "we should host our own webserver"; the board goes where pages.py serves.
+    def pages_root(self, port: int) -> Path:
         root = Path(tempfile.mkdtemp())
-        (root / "CLAUDE.md").write_text(CLAUDE_MD_PAGES)
+        (root / "CLAUDE.md").write_text(claude_md_pages(port))
         (root / "daily").mkdir()
         (root / "daily" / "2026-09-16-tracker.md").write_text(TRACKER)
-        out = rb.main(["--date", "2026-09-16", "--root", str(root)])
+        return root
+
+    def test_a_board_dir_takes_the_board(self) -> None:
+        # Zach, 2026-09-24 14:07: "we should host our own webserver"; the board goes where pages.py serves.
+        port = free_port()
+        root = self.pages_root(port)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            out = rb.main(["--date", "2026-09-16", "--root", str(root)])
+        self.addCleanup(lambda: os.kill(int((root / "pages" / ".pid").read_text()), signal.SIGTERM))
         self.assertEqual(out, root / "pages" / "2026-09-16-board.html")
         page = out.read_text()
         self.assertIn("Last-Modified", page)
         # The baseline is the served page itself, so a render between load and the first poll still reloads.
         self.assertIn("document.lastModified", page)
         self.assertIn("visibilitychange", page)
-        self.assertIn('board http://127.0.0.1:8787/', page)
+        self.assertIn(f"board http://127.0.0.1:{port}/", page)
+        # Every render ensures the server, so no move can render a board nobody is serving without hearing so.
+        self.assertIn(f"pages: started http://127.0.0.1:{port}/", buf.getvalue())
+
+    def test_a_render_says_when_the_board_is_not_served(self) -> None:
+        other = http.server.ThreadingHTTPServer(("127.0.0.1", 0), http.server.SimpleHTTPRequestHandler)
+        threading.Thread(target=other.serve_forever, daemon=True).start()
+        self.addCleanup(other.server_close)
+        self.addCleanup(other.shutdown)
+        root = self.pages_root(other.server_address[1])
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            out = rb.main(["--date", "2026-09-16", "--root", str(root)])
+        self.assertTrue(out.exists())
+        self.assertIn(f"pages: not served — port {other.server_address[1]} answers as", buf.getvalue())
 
     def test_summary_line_counts_long_items(self) -> None:
         root = Path(tempfile.mkdtemp())
