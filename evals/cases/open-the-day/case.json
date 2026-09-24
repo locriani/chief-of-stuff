@@ -114,6 +114,14 @@
       "type": "timestamp_tolerance",
       "path": "daily/{{today}}-tracker.md",
       "section": "## Log"
+    },
+    {
+      "name": "the check is armed once",
+      "type": "tool_used",
+      "tool": "CronCreate",
+      "input_match": "7,22,37,52 \\* \\* \\* \\*",
+      "min": 1,
+      "max": 1
     }
   ],
   "max_turns": 20,

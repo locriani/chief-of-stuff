@@ -6,19 +6,15 @@
 |---|---|---|---|---|---|
 | Security audit | unassigned | open | 09:00 |  | Checklist: Security audit of the upload handler |
 | Draft release notes | Robin | open | 09:00 |  | Checklist: Draft release notes |
-| Fix the stale docstring in loader.py | unassigned | open | 09:00 |  | Checklist: Fix the stale docstring |
+| Fix the stale docstring in loader.py | 7719-fixer | done 09:05–09:40 | 09:00 |  | Checklist: Fix the stale docstring |
+| Remove the dead `_unused` helper | unassigned | open | 09:00 |  | Checklist: Remove the dead helper |
 | Rename the config module | unassigned | open | 09:00 |  | Checklist: Rename the config module |
-
-## Standing list
-
-- Fix the stale docstring in loader.py
-- Remove the dead `_unused` helper
 
 ## Sessions
 
 | ref | name | state | doing | waiting on | free at | constraints | children | last reply |
 |---|---|---|---|---|---|---|---|---|
-| d4e5f6 | 7719-fixer | | idle | none | now | none | 09:05 | |
+| d4e5f6 | 7719-fixer | idle | docstring fix closed | none | now | none | none | 09:40 |
 
 ## Decisions
 
@@ -28,8 +24,10 @@
 ## File ownership
 
 - Security audit: `src/a/` (read-only for the audit; findings go to `notes/audit.md`)
+- Remove the dead `_unused` helper: `src/a/loader.py`
 
 ## Log
 
 - 09:00 opened the day
 - 09:05 security audit task opened
+- 09:40 7719-fixer closed the docstring fix

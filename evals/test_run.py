@@ -92,6 +92,11 @@ class SandboxGuardTest(unittest.TestCase):
         self.assertNotIn("Bash(rm:*)", run.ALLOWED)
         self.assertNotIn("Bash(cp:*)", run.ALLOWED)
 
+    def test_the_check_timer_is_allowlisted(self) -> None:
+        # Open the day and Resume arm the 15-minute check; the job is session-only and dies with the eval's session.
+        self.assertIn("CronCreate", run.ALLOWED)
+        self.assertIn("CronList", run.ALLOWED)
+
     def test_the_gh_issue_shim_is_allowlisted(self) -> None:
         # A `file` disposition runs `gh-issue templates` then `gh-issue new`; the shim on PATH answers every argv, so no real tracker is reached.
         self.assertIn("Bash(gh-issue:*)", run.ALLOWED)

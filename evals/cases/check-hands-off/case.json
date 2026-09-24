@@ -1,0 +1,88 @@
+{
+  "tz": "America/Chicago",
+  "peers": "sessions.json",
+  "description": "A scheduled check finds an idle session and unassigned work. The coordinator polls the session and, on its idle reply, hands it the next task that fits, asking the user nothing. The rename is a naming call and is never handed; nothing is launched without a yes.",
+  "turns": [
+    {
+      "prompt": "[Scheduled check] chief-of-stuff: check the day",
+      "graders": [
+        {
+          "name": "the idle session is polled",
+          "type": "peer_calls",
+          "tool": "send",
+          "to_ref": "d4e5f6",
+          "ok": true,
+          "text_match": "(?i)reply in 6 lines",
+          "min": 1
+        },
+        {
+          "name": "no hand-off is asked of the user",
+          "type": "regex",
+          "pattern": "(?i)\\b(should I|shall I|want me to|ok to|okay to|do you want)\\b[^.?\\n]*\\b(give|hand|assign|send|fixer)",
+          "match": "absent"
+        },
+        {
+          "name": "the rename is not handed",
+          "type": "peer_calls",
+          "tool": "send",
+          "to_ref": "d4e5f6",
+          "text_match": "(?i)rename",
+          "max": 0
+        },
+        {
+          "name": "nothing is launched",
+          "type": "spawn_calls",
+          "max": 0
+        },
+        {
+          "name": "Log times are this move's clock reads",
+          "type": "timestamp_tolerance",
+          "path": "daily/{{today}}-tracker.md",
+          "section": "## Log"
+        }
+      ]
+    },
+    {
+      "prompt": "<cross-session-message from=\"uds:/tmp/cc-socks/7719.sock\" from-name=\"7719-fixer\" from-mode=\"prompting\">\nCurrent task: nothing, the docstring fix is closed.\nidle\nWaiting on: nobody.\nFree: now.\nBlocked: no.\nConstraints: none. Subagents: none.\n</cross-session-message>",
+      "graders": [
+        {
+          "name": "the helper removal is handed with plan mode",
+          "type": "peer_calls",
+          "tool": "send",
+          "to_ref": "d4e5f6",
+          "ok": true,
+          "text_match": "(?s)(?=.*_unused)(?=.*(?i:plan mode))",
+          "min": 1
+        },
+        {
+          "name": "the rename is not handed",
+          "type": "peer_calls",
+          "tool": "send",
+          "to_ref": "d4e5f6",
+          "text_match": "(?i)rename",
+          "max": 0
+        },
+        {
+          "name": "the task is owned and running",
+          "type": "file_matches",
+          "path": "daily/{{today}}-tracker.md",
+          "pattern": "(?m)^\\| Remove the dead `_unused` helper \\| 7719-fixer \\| running \\d\\d:\\d\\d"
+        },
+        {
+          "name": "no hand-off is asked of the user",
+          "type": "regex",
+          "pattern": "(?i)\\b(should I|shall I|want me to|ok to|okay to|do you want)\\b[^.?\\n]*\\b(give|hand|assign|send|fixer)",
+          "match": "absent"
+        },
+        {
+          "name": "Log times are this move's clock reads",
+          "type": "timestamp_tolerance",
+          "path": "daily/{{today}}-tracker.md",
+          "section": "## Log"
+        }
+      ]
+    }
+  ],
+  "max_turns": 20,
+  "timeout_seconds": 600
+}
