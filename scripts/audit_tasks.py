@@ -21,13 +21,14 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from render_board import BULLET, HHMM, RAN, ConfigError, _cells, _is_separator, _section, _unmark, _unquote, clip_name, parse_coordinator, parse_tracker  # noqa: E402
+from render_board import BULLET, HHMM, RAN, ConfigError, _dur, _cells, _is_separator, _section, _unmark, _unquote, clip_name, parse_coordinator, parse_tracker  # noqa: E402
 from dispatch_prompt import PROMPT_DIR, STOP_FILE  # noqa: E402
 from backlog import CLOSED, BacklogError, GitHubBacklog, issue_ref, issue_states  # noqa: E402
+from settings import SettingsError, load as load_settings  # noqa: E402
 
 # The branch is written in the parenthetical right after the tree name — `worktree wt-x (feat/y)` —
 # which is the only place it survives when the tree itself is gone. Finding 46 turns on that.
@@ -175,6 +176,58 @@ def issue_faults(tasks, repo: str, gh=None) -> list[IssueFault]:
     return faults
 
 
+@dataclass(frozen=True)
+class LaneFault:
+    """A task whose lane the settings file does not name, or whose stage is not one of its lane's (#33)."""
+
+    task: str
+    why: str
+
+    def __str__(self) -> str:
+        return f"lane: {self.task} — {self.why}"
+
+
+def lane_faults(tasks, lanes: dict, settings_path: str | None) -> list[LaneFault]:
+    faults: list[LaneFault] = []
+    for task in tasks:
+        if not task.lane.strip():
+            continue
+        name, stage, lane = clip_name(task.label), task.stage.strip(), lanes.get(task.lane.strip())
+        if lane is None:
+            faults.append(LaneFault(name, f"lane {task.lane.strip()} is not in {settings_path or 'the settings file'}"))
+        elif not stage:
+            faults.append(LaneFault(name, f"lane {task.lane.strip()} but no stage"))
+        elif stage not in lane.stages:
+            faults.append(LaneFault(name, f"stage {stage} is not a stage of {task.lane.strip()}"))
+    return faults
+
+
+@dataclass(frozen=True)
+class OverBudget:
+    """A running task past its size's budget (#33 stage 3). The coordinator polls its session and tells the user;
+    it never stops the session."""
+
+    task: str
+    ran: timedelta
+    size: str
+    budget: timedelta
+
+    def __str__(self) -> str:
+        return f"over budget: {self.task} running {_dur(self.ran)} ({self.size} {_dur(self.budget)})"
+
+
+def over_budget(tasks, budgets: dict, day: str, now: datetime) -> list[OverBudget]:
+    over: list[OverBudget] = []
+    for task in tasks:
+        budget, start = budgets.get(task.size.strip()), task.state_time
+        if task.kind != "running" or budget is None or not start:
+            continue
+        ran = now - datetime.combine(date.fromisoformat(day), datetime.strptime(start, "%H:%M").time(), tzinfo=now.tzinfo)
+        if ran > budget:
+            over.append(OverBudget(clip_name(task.label), ran, task.size.strip(), budget))
+    return over
+
+
 @dataclass
 class Report:
     lines: list[str] = field(default_factory=list)
@@ -183,6 +236,8 @@ class Report:
     stopped: list[Stop] = field(default_factory=list)
     queue: list[QueueFault] = field(default_factory=list)
     issues: list[IssueFault] = field(default_factory=list)
+    lanes: list[LaneFault] = field(default_factory=list)
+    over: list[OverBudget] = field(default_factory=list)
 
 
 def worktrees_dir(claude_md: str) -> str:
@@ -564,7 +619,7 @@ def queue_faults(tracker_text: str) -> tuple[list[QueueFault], list[str], int]:
     return faults, lines, len(open_rows)
 
 
-def audit(root: Path, day: str, gh=None, check_issues: bool = True) -> Report:
+def audit(root: Path, day: str, gh=None, check_issues: bool = True, now: datetime | None = None) -> Report:
     claude_md = (root / "CLAUDE.md").read_text()
     cfg = parse_coordinator(claude_md, today=date.today())
     trees = worktrees_dir(claude_md)
@@ -668,11 +723,18 @@ def audit(root: Path, day: str, gh=None, check_issues: bool = True) -> Report:
             issues = f" issues={len(report.issues)}"
         else:
             issues = " issues=off"
+    settings = load_settings(root, cfg.settings_path)
+    report.lanes.extend(lane_faults(tasks, settings.lanes, cfg.settings_path))
+    report.over.extend(over_budget(tasks, settings.budgets, day, now or datetime.now(cfg.zone)))
+    report.lines.extend(str(o) for o in report.over)
+    budgeted = f" over={len(report.over)}" if settings.budgets else ""
+    report.lines.extend(str(f) for f in report.lanes)
+    laned = f" lanes={len(report.lanes)}" if any(t.lane.strip() for t in tasks) else ""
     facts = len({(r.worktree, r.why) for r in report.reopen})
     reopen = f"{facts} tree{'' if facts == 1 else 's'}/{len(report.reopen)} task{'' if len(report.reopen) == 1 else 's'}" if report.reopen else "0"
     report.lines.append(
         f"tasks={len(tasks)} trees={len(seen)} reopen={reopen} orphaned={len(report.orphans)} "
-        f"stopped={len(report.stopped)}" + (f" queued={queued}" if queue_lines or faults or queued else "") + issues)
+        f"stopped={len(report.stopped)}" + (f" queued={queued}" if queue_lines or faults or queued else "") + issues + laned + budgeted)
     return report
 
 
@@ -696,10 +758,14 @@ def main(argv: list[str] | None = None, gh=None) -> int:
     if not tracker.is_file():
         print(f"audit_tasks: tracker not found at {tracker}", file=sys.stderr)
         return 2
-    report = audit(root, day, gh=gh, check_issues=not args.no_issues)
+    try:
+        report = audit(root, day, gh=gh, check_issues=not args.no_issues)
+    except SettingsError as e:
+        print(f"audit_tasks: {e}", file=sys.stderr)
+        return 2
     for line in report.lines:
         print(line)
-    return len(report.reopen) + len(report.stopped) + len(report.queue) + len(report.issues)
+    return len(report.reopen) + len(report.stopped) + len(report.queue) + len(report.issues) + len(report.lanes)
 
 
 if __name__ == "__main__":

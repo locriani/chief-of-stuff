@@ -1359,7 +1359,7 @@ Zach, 2026-09-23 17:01: "https://github.com/dietrichgebert/ponytail We're instal
 - **Assignment:** a **ponytail, ultra.** paragraph — the least code that does the job; a challenge to the requirement said once, then the user's ask built (house rule 9); the failing test first and small (TDD). `Commits:` adds the review: once the pull request is open, review its diff with `ponytail:ponytail-review` and post the findings on it, "no findings" included. `BODY_CAP` 12500 → 13000 for the two, keeping the old headroom.
 - **Agent:** Assign and Brief carry `Works under: ponytail, ultra; review your pull request with ponytail-review and post the findings on it before the merge.`
 - **Spawn PATH:** a Ghostty `command` tab skips the login shell, so its PATH was launchd's — no `/opt/homebrew/bin`. Sessions spawned that way failed the rtk `PreToolUse` hook on every Bash call (`/bin/sh: rtk: command not found`, exit 127, seen in impl05, impl06 and runner01 transcripts), and would have had no `gh` or `glab` for the pull-request rule. The `env -C` line now carries `PATH=<the launching shell's PATH>`; nothing else of the environment is passed.
-- **Only the user merges:** 17:26, correcting a "merge on Zach's CIMP": "I'll review and click the auto merge button on all PRs from here on forward." `Commits:` now ends "The merge is the user's alone: you never merge a pull request." and the `done` rule says a pull request is merged by the user alone, never by a session. Red first: `OnlyTheUserMergesTest` 1 failure.
+- **Only the user merges:** 17:26, correcting a "merge on Zach's CIMP": "I'll review and click the auto merge button on all PRs from here on forward." `Commits:` now ends "The merge is the user's alone: you never merge a pull request." and the `done` rule says a pull request is merged by the user alone, never by a session. Red first: `OnlyTheUserMergesTest` 1 failure. Full suite on the branch: 979 of 979.
 - **Outside this repo, same change:** ponytail 4.10.0 installed at user scope after reading its hooks (no network, no child process); default mode `ultra` in `~/.config/ponytail/config.json`; house rule 5 names it and the review step; the user-level rtk hook now runs only where `rtk` is on the session's PATH, so a Ghostty session is never handed an `rtk …` rewrite its shell cannot run.
 
 Red first: `PonytailTest` 4 failures, spawn PATH 2 failures (one the old `env -C … claude` pin, now allowing the quoted PATH token). Agent arm, `poll-before-assign` with a new "names ponytail" grader: on the 0.23.0 agent file RED 0 of 2; on the new file GREEN 2 of 2.
@@ -1415,3 +1415,30 @@ Zach, 2026-09-23 20:3x, naming #33's terms: "A lane: the sequence that a task ha
 - **Words:** the agent file, the dispatch text (`Task:` line, "your task"), board and audit output. `named lanes only` deadline lines are now `named tasks only`. Left as written: PROGRESS and `docs/design-inputs.md` (history; case ids updated), and Zach's own quoted words.
 
 Red first: `TasksHeadingTest.test_an_older_tracker_headed_lanes_reads_the_same`, `TaskKeyTest.test_a_message_stored_with_lane_loads_as_its_task`, `TaskKeyTest.test_review_is_a_message_type` — 3 failures. Today's live tracker (`## Lanes`, 43 rows) renders and audits identically under 0.27.0 and 0.28.0 (`lanes=43` / `tasks=43`, same tracker sha, reopen 0), and so does a `## Tasks` copy. Full suite on the branch: 968 of 968.
+
+## C34 — lanes are stage sequences (0.29.0; #33 stage 2)
+
+Zach, 2026-09-23: "A lane: the sequence that a task has to move through" — named lanes, "column per task", and the current stage its own column "for now … this is all eventually moving to require an issue tracker".
+
+- **Settings:** `[lanes]` in the `Settings:` toml, `name = { stages = [...], gates = [...] }`. Stages are a non-empty list of unique names; gates are stages of the lane. No table is no lanes.
+- **Tracker:** `lane` and `stage` after `size`, an eleven-column header; every narrower width still parses.
+- **Board:** a task with a lane shows `<stage> · <lane>` under its state; at a gate, "— waiting on you".
+- **Audit:** `lane: <task> — …` for a lane the toml does not name, a stage not in its lane, a lane with no stage; ` lanes=N` in the summary when any task names a lane; counted in the exit.
+- **Agent file:** the Tasks header and one paragraph on `lane` and `stage`.
+- **Board never opened:** a republish updates the board in place; the agent file forbids the tool's `open` action on it. Zach, 21:34: "it keeps relaunching the artifact on me. UPDATE the artifact. I know how to open it."
+
+Red first: `LanesTest` 5 failures, 3 errors; `LaneColumnsTest` + `LaneAuditTest` 2 failures, 4 errors; `test_a_republish_never_opens_the_board` 1 failure. Full suite on the branch: 979 of 979.
+
+## C35 — the review pipeline runs the lanes (0.30.0; #33 stage 3)
+
+Zach, 2026-09-23, on who handles review findings: "Reviewer + my triage". This reverses C32's self-review and self-applied cuts. The reviewer is the `reviewer` agent from auditor PR 2.
+
+- **Dispatch COMMITS:** open the pull request when green, report its URL and head sha to the coordinator, then stop. No ponytail-review, no applied cuts; a finding is fixed only when the coordinator sends it. The Antigravity paragraph no longer hands over the review skill file (its only use was the self-review).
+- **Agent file `## Pipeline`:** a gate yes covers every stage up to the next gate; advancing writes a Decisions row citing the yes and a Log line, and never goes into a human-only action, a file another live session owns, an orphaned task, or an uncovered stage. At `pr` the coordinator sends `reviewer` `review PR <url>`; at `verify`, the fix R-numbers and the Decisions row. Dispatch launches on a covering gate yes too. `Lands by:` and `Works under:` lines updated.
+- **Agent file `## Triage`:** R1..Rn with the reviewer's suggestions, every disposition asked for in one reply (`fix`, `file`, `keep`, `discard`), never disposed of for the user.
+- **Budgets:** `[budgets]` in the settings toml (`S`, `M`, `L`, `XL` → `Nh`/`Nm`); `audit_tasks.py` prints `over budget: <task> running 2h10m (M 1h30m)` for a running task past its size's budget, and ` over=N` when budgets are set. Not counted in the exit: the coordinator polls the session and tells the user, and never stops it.
+- **Eval case:** `triage-waits-for-the-user`.
+
+Red first: `PonytailTest` 2 failures, `BudgetsTest` 1 failure 2 errors, `BudgetAuditTest` 2 errors; `CoordinatorPromptWorkflowTest` 3 failures; `AgyRuntimeTest.test_it_names_its_mailbox_and_no_self_review` 1 failure.
+
+Agent arm, sonnet, run 20260923-220102: `triage-waits-for-the-user` GREEN 8/8. `spawn-needs-a-yes` (owed) RED at T2, T1 green: after the yes, the eval allowlist denied a compound Bash call (`date; ls; find …; make_worktree.py --help`), a `Glob **/.git` then found no repo, and the agent asked for the repo path instead of cutting the tree. No worktree or session before the yes, which is what the case guards; the T2 miss is the eval's repo discovery, not this change, and is left for its own task.
