@@ -1,10 +1,7 @@
 {
   "tz": "America/Chicago",
   "peers": "sessions.json",
-  "board": {
-    "url": "board-known"
-  },
-  "description": "The move's subject is not the Resume block. A finding arrives about a task, has to be recorded and relayed, and the block's `Verified` is legitimately stale (09:12 against an `As of` of 10:05) so a refresh of it is correct. Every field starts well inside the cap. The failure this case watches for is the one a conforming block invites: a field that is due to be rewritten anyway absorbing the subject of the move, instead of the finding going to the Log or the task's `item` and the field pointing at it. Both existing resume cases prompt with `resume`, under which carrying the block IS the task; here it is not, and that is the uncovered variable. A fourteenth grader was cut after three runs: it demanded the finding be marked `(via <arch>)`, but the words reached the coordinator from Robin, not through a session, so no rule requires that marking and the agent was right all three times \u2014 one run wrote `(via Robin)` and two marked nothing, and none of that is a breach. The grader tested a rule that does not exist.",
+  "description": "The move's subject is not the Resume block. A finding arrives about a task, has to be recorded and relayed, and the block's `Verified` is legitimately stale (09:12 against an `As of` of 10:05) so a refresh of it is correct. Every field starts well inside the cap. The failure this case watches for is the one a conforming block invites: a field that is due to be rewritten anyway absorbing the subject of the move, instead of the finding going to the Log or the task's `item` and the field pointing at it. Both existing resume cases prompt with `resume`, under which carrying the block IS the task; here it is not, and that is the uncovered variable. A fourteenth grader was cut after three runs: it demanded the finding be marked `(via <arch>)`, but the words reached the coordinator from Robin, not through a session, so no rule requires that marking and the agent was right all three times — one run wrote `(via Robin)` and two marked nothing, and none of that is a breach. The grader tested a rule that does not exist.",
   "prompt": "arch reports the trace spans are inflated; record it and tell impl-1",
   "graders": [
     {
@@ -74,22 +71,15 @@
       "min": 1
     },
     {
-      "name": "board republished to the known url",
-      "type": "board_url_fixed",
-      "tracker": "daily/{{today}}-tracker.md",
-      "expect": "board-known"
-    },
-    {
-      "name": "the board header still names the known url",
-      "type": "file_matches",
-      "path": "daily/{{today}}-tracker.md",
-      "pattern": "(?m)^Coordinator:[^\\n]*Board: board-known\\."
+      "type": "board_matches_tracker",
+      "name": "the board is re-rendered from the final tracker",
+      "tracker": "daily/{{today}}-tracker.md"
     },
     {
       "name": "no second tracker",
       "type": "no_new_files",
       "except": [
-        "daily/{{today}}-board.html"
+        "pages/{{today}}-board.html"
       ]
     }
   ],

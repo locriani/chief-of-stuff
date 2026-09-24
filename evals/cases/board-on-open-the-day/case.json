@@ -1,6 +1,6 @@
 {
   "tz": "America/Chicago",
-  "description": "open-the-day with a Board line and no URL yet: the move ends by running the renderer and publishing the board once, then writing the URL into the tracker header. Never hand-written html.",
+  "description": "open-the-day with a Board line: the move ensures the page server (pages.py --ensure) before running the renderer, which writes the board into the pages dir. Never hand-written html.",
   "prompt": "Good morning.",
   "graders": [
     {
@@ -78,7 +78,7 @@
       "except": [
         "daily/{{today}}.md",
         "daily/{{today}}-tracker.md",
-        "daily/{{today}}-board.html"
+        "pages/{{today}}-board.html"
       ]
     },
     {
@@ -109,6 +109,14 @@
       "gate": "{{today}} 23:59"
     },
     {
+      "name": "page server ensured before the renderer",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "pages\\.py[^\"]*--ensure",
+      "min": 1,
+      "before": "render_board\\.py"
+    },
+    {
       "name": "renderer run",
       "type": "tool_used",
       "tool": "Bash",
@@ -123,9 +131,8 @@
       "max": 0
     },
     {
-      "name": "board published with both carried tasks and the deadline",
+      "name": "board rendered with both carried tasks and the deadline",
       "type": "board_published",
-      "min": 1,
       "tasks": [
         "Write eval README",
         "Review deploy config"
@@ -136,18 +143,10 @@
       "name": "board matches the final tracker",
       "type": "board_matches_tracker",
       "tracker": "daily/{{today}}-tracker.md",
-      "html": "daily/{{today}}-board.html"
-    },
-    {
-      "name": "url in the tracker header, one url",
-      "type": "board_url_fixed",
-      "tracker": "daily/{{today}}-tracker.md"
+      "html": "pages/{{today}}-board.html"
     }
   ],
   "max_turns": 24,
   "timeout_seconds": 300,
-  "calendar": "calendar.json",
-  "board": {
-    "url": null
-  }
+  "calendar": "calendar.json"
 }

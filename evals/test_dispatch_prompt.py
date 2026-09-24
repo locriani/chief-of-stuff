@@ -576,9 +576,16 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         self.assertIn("Dual-transport registration", self.content)
         self.assertIn("python3 ${CLAUDE_PLUGIN_ROOT}/scripts/inbox.py list --recipient coordinator --unread", self.content)
 
-    def test_a_republish_never_opens_the_board(self):
-        # Zach, 2026-09-23 21:34: "it keeps relaunching the artifact on me. UPDATE the artifact. I know how to open it."
-        self.assertIn("Never call the tool's `open` action on the board", self.content)
+    def test_the_board_is_served_from_this_mac(self):
+        # Zach, 2026-09-24 14:07: "we should host our own webserver and ensure they are set up as part of the agent's boot loop."
+        ensure = "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/pages.py --ensure"
+        for move in ("## Open the day", "## Resume", "## Check"):
+            section = self.content.split(move, 1)[1].split("\n## ", 1)[0]
+            self.assertIn(ensure, section, move)
+        board = self.content.split("## Board", 1)[1].split("\n## ", 1)[0]
+        self.assertIn("<url>/all", board)
+        for gone in ("publish tool", "`url` argument", "`open` action", "Board: <url>"):
+            self.assertNotIn(gone, board)
 
     def test_the_pipeline_sends_the_reviewer_the_pr(self):
         # #33 stage 3: a lane runs through the reviewer session and the user's gates.

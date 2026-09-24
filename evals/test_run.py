@@ -364,6 +364,13 @@ class ToolUsedTest(unittest.TestCase):
         ok, _ = run.grade({"type": "tool_used", "tool": "Agent", "min": 1}, self.rec)
         self.assertFalse(ok)
 
+    def test_before_needs_the_first_hit_ahead_of_the_other_call(self) -> None:
+        g = {"type": "tool_used", "tool": "Bash", "min": 1}
+        self.assertTrue(run.grade({**g, "input_match": r"git\s+commit", "before": r"\bdate\b"}, self.rec)[0])
+        ok, detail = run.grade({**g, "input_match": r"\bdate\b", "before": r"git\s+commit"}, self.rec)
+        self.assertFalse(ok)
+        self.assertIn("not before", detail)
+
     def test_tool_name_is_a_regex(self) -> None:
         ok, _ = run.grade({"type": "tool_used", "tool": "Write|Edit", "max": 0}, self.rec)
         self.assertTrue(ok)

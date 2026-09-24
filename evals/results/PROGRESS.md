@@ -1523,3 +1523,29 @@ Live, from the branch, against the real workspace:
 - `backlog.py` counted 162 open and 40 closed on glab's token alone.
 
 Agent arm: `triage-acts-on-the-reply`, `triage-waits-for-the-user` and `open-the-day` were GREEN on sonnet (20260924-131112) and on opus (20260924-131258).
+
+## C40 — the board is served from this Mac (0.35.0)
+
+Zach, 2026-09-24 14:07: "we should host our own webserver and ensure they are set up as part of the agent's boot loop." His answers: this Mac only, any session's pages, and the claude.ai Artifact board replaced.
+
+- **Server:** `scripts/pages.py` is a stdlib `ThreadingHTTPServer` on 127.0.0.1. A request whose Host is not `127.0.0.1:<port>` or `localhost:<port>` gets 403 (DNS rebinding). Dotfiles 404, every response is `no-cache`, `/` is the newest `*-board.html` served in place, and `/all` lists every page. `--ensure` starts it detached unless it already answers, and never moves to another port.
+- **Config:** the `Board:` line becomes `self-hosted; URL http://127.0.0.1:<port>/; dir \`<pages dir>\``. The renderer writes the board there, and the block's URL wins over the tracker header.
+- **Every render ensures the server** and prints `pages: …`. Sonnet on `board-publish-unavailable` rendered mid-move without `--ensure` and never learned the port was held; putting it in the renderer means no move can skip it.
+- **Reload:** the page polls HEAD on its own path every 5s and on `visibilitychange`, against `document.lastModified`. The first cut baselined on its first poll and missed a render in the 5s after load; a hidden tab's timers are throttled, so a tab coming back into view checks at once.
+- **Agent file:** Open the day, Resume and every check run `pages.py --ensure`. The Artifact publish, the republish-URL paragraph and the tracker-header URL rule are deleted. Any session may write a page into the pages dir; it is at `<url>/<name>.html`, listed at `<url>/all`.
+- **Evals:** `mock_board.py` and `board_url_fixed` are gone; `board_published` and `board_matches_tracker` read the rendered file. Each run gets a free `pages_port`, and the runner kills the server by its pid. `tool_used` gains `before`, used to grade that `--ensure` runs before the renderer. `board-publish-unavailable` is now a foreign server holding the port (`pages_taken`).
+
+Red first:
+- `test_pages` failed to import.
+- `test_run.ToolUsedTest` gave 1 failure on `before`.
+- `test_dispatch_prompt` gave 1 failure on the served board.
+- `test_render_board` failed on `document.lastModified`, on `visibilitychange`, and on the render-time ensure (2 failures, 1 error).
+
+Live, from the branch, on a scratch copy of the workspace on port 8788:
+- `--ensure` started the server, and a second run reported it already serving.
+- `/` answered 200 with the newest board. `Host: evil.test` got 403 and `/.pid` got 404.
+- In Chrome, the tab at `/` reloaded after a re-render (sha b32ee0bcfc44 → a9bf8745c259), and moved to a new day's board (bce74aa69cab) on `visibilitychange`.
+
+Agent arm: `board-on-open-the-day`, `board-republish-on-task-change`, `board-publish-unavailable` and `resume-reads-the-block` were GREEN on sonnet (20260924-150643) and on opus (20260924-150758).
+
+A sonnet and an opus run started in the same second share one results directory (`20260924-150032`), and the second overwrote the first. Run the models one after the other until the directory name carries the model.
