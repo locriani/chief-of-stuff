@@ -613,6 +613,11 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         # A standing list stood in for a hand-off yes the coordinator no longer needs.
         self.assertNotIn("Standing list", self.content)
 
+    def test_the_issue_rule_is_for_any_backlog_and_gitlab_files_with_backlog_py(self):
+        # The user, 2026-09-23 22:40: "remove the github issue remote and make everything use gitlab now that we have that going".
+        self.assertNotRegex(self.content, r"GitHub `?[Bb]acklog")
+        self.assertIn("backlog.py --create", self._section("Tracker"))
+
     def test_the_check_is_armed_every_fifteen_minutes(self):
         # The user, 2026-09-24 01:35: "a 15 minute timer loop that kicks you to check, evaluate state each time and hand off things again if needed".
         check = self._section("Check")
