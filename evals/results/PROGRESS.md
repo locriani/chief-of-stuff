@@ -1453,3 +1453,28 @@ Zach, 2026-09-23 22:25: "something that is a miss that keeps happening: tasks pa
 - **Eval:** `poll-before-assign` grades that the assignment send says plan mode.
 
 Red first: `test_every_handed_task_opens_plan_mode`, `test_a_new_task_is_a_new_plan` — 2 failures. Full suite on the branch: 988 of 988. Agent arm (sonnet): `poll-before-assign` GREEN 13/13, the new plan-mode grader included.
+
+## C37 — triage acts on the reply, and the reviewer hand-off carries its inbox (0.32.0)
+
+autonomous-review-pipeline-design, 22:45: the reviewer dry run passed. Its report, though, landed in the reviewed repo's mailbox, because the hand-off gave it no `--mailbox-dir`. Separately, no case covered the coordinator acting on a triage reply. Zach approved the plan.
+
+- **Hand-off:** `## Pipeline` sends the reviewer a `Report by:` line: `inbox.py --mailbox-dir <workspace root>/.chief-of-stuff/mailbox send --to coordinator --from reviewer --type review --task "<task>"`. `<workspace root>` must be written out as an absolute path, because a sonnet run sent the placeholder literally. The same line goes with the `verify` hand-off, and the inbox fallback for the hand-off uses the same `--mailbox-dir`.
+- **Triage:** a verify pass puts only open findings to the user. A `fix` finding it reports resolved needs no disposition, and a verify pass with nothing open moves the task to `merge`. Before this, the rule sent every `Reviewer pass:` to `triage`, which contradicted the Pipeline's merge line. An opus run followed it literally and asked for R1's disposition again.
+- **Filing:** `gh-issue` is run by name, and the plugin-cache copy is used only when the shell answers `command not found`. Every eval run had first probed PATH with `which`/`ls`, and the probe was the step that needed approval.
+- **Eval harness:**
+  - a `gh-issue` shim in `write_shims`, which logs its argv and answers with an issue URL;
+  - `Bash(gh-issue:*)` on the allowlist, since models run `gh-issue templates` before `new`.
+- **Eval case `triage-acts-on-the-reply`, three turns:**
+  - T1, Robin's "R1 fix, R2 file, R3 discard": R1 goes to the implementer in plan mode; R2 is filed once and also goes to frank-lloyd-aight; R3 is not sent; stage `fix`.
+  - T2, the fix report: the verify pass goes to the reviewer with an absolute `--mailbox-dir`, with no second yes; stage `verify`.
+  - T3, a clean verify pass: stage `merge`, no merge run, and the merge left to Robin.
+
+Red first: `test_gh_issue_shim_logs_and_answers_with_an_issue` and `test_the_reviewer_hand_off_names_its_mailbox` (2 failures). After the first agent-arm runs: `test_the_gh_issue_shim_is_allowlisted`, the absolute-path assertion, `test_a_clean_verify_pass_goes_to_merge` and `test_gh_issue_is_run_before_it_is_looked_for` (2 + 2 failures). Full suite on the branch: 993 of 993.
+
+Agent arm:
+
+| run | result | why |
+|---|---|---|
+| first sonnet and opus runs | RED | R2 never filed (no allowlist entry); opus also failed the R3 grader, which matched "leave PathPolicy as is" |
+| rerun | RED | the PATH probe was denied, so again no filing; opus reopened triage on the clean verify pass; sonnet sent `<workspace root>` literally |
+| final | GREEN | `triage-acts-on-the-reply` and `triage-waits-for-the-user`, both on sonnet and on opus (results 20260923-225853 and -225856); the shim logged `gh-issue templates` and one `gh-issue new -R o/backlog` in each run |

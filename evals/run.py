@@ -64,7 +64,7 @@ def allowed_tools(root: Path) -> list[str]:
     """The allowlist, rooted. Finding 114: these were absolute paths into the live checkout, so a run
     read whatever was on disk when each case reached it and a tree edited mid-run produced two
     verdicts wearing one name. Rooting them lets a run point at a snapshot of its own."""
-    return (["Bash(date:*)", "Bash(TZ=*)", "Bash(mv:*)", "Bash(mkdir:*)"]
+    return (["Bash(date:*)", "Bash(TZ=*)", "Bash(mv:*)", "Bash(mkdir:*)", "Bash(gh-issue:*)"]
             + [f"Bash(python3 {root / 'scripts' / name}:*)" for name in SCRIPTS]
             + ["Read", "Glob", "Grep", "Write(./**)", "Edit(./**)"])
 
@@ -1190,6 +1190,17 @@ print("railway: blocked by eval harness", file=sys.stderr)
 sys.exit(1)
 '''
 
+# A `file` disposition runs `gh-issue new`; in an eval it is recorded and answered, and reaches no tracker.
+GH_ISSUE_SHIM = '''#!/usr/bin/env python3
+import sys
+from pathlib import Path
+
+with open(Path(__file__).parent / "calls.log", "a") as log:
+    log.write(" ".join(["gh-issue", *sys.argv[1:]]) + "\\n")
+repo = sys.argv[sys.argv.index("-R") + 1] if "-R" in sys.argv else "o/backlog"
+print(f"https://github.com/{repo}/issues/101")
+'''
+
 
 class _HealthHandler(BaseHTTPRequestHandler):
     """Answers the status the case named for that path and logs the probe. 404 for anything unlisted."""
@@ -1239,6 +1250,9 @@ def write_shims(shim_dir: Path) -> None:
     railway = shim_dir / "railway"
     railway.write_text(RAILWAY_SHIM)
     railway.chmod(0o755)
+    gh_issue = shim_dir / "gh-issue"
+    gh_issue.write_text(GH_ISSUE_SHIM)
+    gh_issue.chmod(0o755)
 
 
 def run_one(case: Case, arm: str, model: str, out: Path, root: Path | None = None) -> tuple[list[tuple[str, bool, str]], str | None, dict[str, Any]]:
