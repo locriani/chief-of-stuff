@@ -591,6 +591,17 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         pipeline = self.content.split("## Pipeline", 1)[1].split("\n## ", 1)[0]
         self.assertIn("`Report by: python3 ${CLAUDE_PLUGIN_ROOT}/scripts/inbox.py --mailbox-dir <workspace root>/.chief-of-stuff/mailbox send --to coordinator --from reviewer --type review --task \"<task>\"`", pipeline)
         self.assertNotIn("`inbox.py send --to reviewer", pipeline)
+        # A sonnet run sent the placeholder itself; the reviewer runs in another tree, so only an absolute path lands.
+        self.assertIn("`<workspace root>` written out as an absolute path", pipeline)
+
+    def test_a_clean_verify_pass_goes_to_merge(self):
+        # An opus run read a clean verify pass as a new triage and asked for R1's disposition again.
+        triage = self.content.split("## Triage", 1)[1].split("\n## ", 1)[0]
+        self.assertIn("A verify pass with nothing open moves the task to `merge`", triage)
+
+    def test_gh_issue_is_run_before_it_is_looked_for(self):
+        # Every eval run probed PATH with `which`/`ls` first; the probe is the step that needs approval.
+        self.assertIn("run it by name, and only when the shell answers `command not found`", self.content)
 
     def test_triage_is_the_users(self):
         self.assertIn("## Triage", self.content)

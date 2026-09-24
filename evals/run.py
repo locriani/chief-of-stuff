@@ -64,7 +64,7 @@ def allowed_tools(root: Path) -> list[str]:
     """The allowlist, rooted. Finding 114: these were absolute paths into the live checkout, so a run
     read whatever was on disk when each case reached it and a tree edited mid-run produced two
     verdicts wearing one name. Rooting them lets a run point at a snapshot of its own."""
-    return (["Bash(date:*)", "Bash(TZ=*)", "Bash(mv:*)", "Bash(mkdir:*)"]
+    return (["Bash(date:*)", "Bash(TZ=*)", "Bash(mv:*)", "Bash(mkdir:*)", "Bash(gh-issue:*)"]
             + [f"Bash(python3 {root / 'scripts' / name}:*)" for name in SCRIPTS]
             + ["Read", "Glob", "Grep", "Write(./**)", "Edit(./**)"])
 

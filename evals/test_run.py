@@ -92,6 +92,10 @@ class SandboxGuardTest(unittest.TestCase):
         self.assertNotIn("Bash(rm:*)", run.ALLOWED)
         self.assertNotIn("Bash(cp:*)", run.ALLOWED)
 
+    def test_the_gh_issue_shim_is_allowlisted(self) -> None:
+        # A `file` disposition runs `gh-issue templates` then `gh-issue new`; the shim on PATH answers every argv, so no real tracker is reached.
+        self.assertIn("Bash(gh-issue:*)", run.ALLOWED)
+
     def test_runner_tools_exclude_peer_tools(self) -> None:
         for name in self.PEER_TOOLS:
             self.assertNotIn(name, run.TOOLS)
