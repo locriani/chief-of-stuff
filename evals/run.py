@@ -66,7 +66,7 @@ def allowed_tools(root: Path) -> list[str]:
     verdicts wearing one name. Rooting them lets a run point at a snapshot of its own."""
     return (["Bash(date:*)", "Bash(TZ=*)", "Bash(mv:*)", "Bash(mkdir:*)", "Bash(gh-issue:*)"]
             + [f"Bash(python3 {root / 'scripts' / name}:*)" for name in SCRIPTS]
-            + ["Read", "Glob", "Grep", "Write(./**)", "Edit(./**)", "CronCreate", "CronList"])
+            + ["Read", "Glob", "Grep", "Write(./**)", "Edit(./**)"])
 
 
 ALLOWED = allowed_tools(PLUGIN_ROOT)
