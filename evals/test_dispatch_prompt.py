@@ -710,6 +710,12 @@ class PullRequestTest(unittest.TestCase):
         self.assertIn("glab mr create", line)
         self.assertIn("never push to main or merge locally", line)
 
+    def test_the_session_opens_it_when_green(self):
+        """Zach, 2026-09-23 19:40: "I don't want to stop for PR … PRs should be autononmous"."""
+        line = [x for x in self.body.splitlines() if x.startswith("Commits: ")][0]
+        self.assertIn("when the work is finished and its suite is green", line)
+        self.assertNotIn("when you are told to", line)
+
     def test_the_commit_rule_survives(self):
         self.assertIn("Commit small and often", self.body)
 
@@ -741,6 +747,13 @@ class PonytailTest(unittest.TestCase):
         self.assertIn("ponytail:ponytail-review", line)
         self.assertIn("post the findings on it", line)
         self.assertIn('"no findings"', line)
+
+    def test_the_cuts_are_applied(self):
+        """Zach, 2026-09-23 19:51: "I want ponytail cuts to be automatically applied, I think"."""
+        line = [x for x in self.body.splitlines() if x.startswith("Commits: ")][0]
+        self.assertIn("apply the cuts as a commit on the same branch", line)
+        self.assertIn("`applied in <sha>`", line)
+        self.assertIn("would break a test or undo what the user asked for", line)
 
 
 class OnlyTheUserMergesTest(unittest.TestCase):

@@ -1395,3 +1395,12 @@ Zach, 2026-09-23 19:22, relaying the coordinator's dry run on `implementer-COpus
 - **Agent:** one sentence in Dispatch: a `C` class launches with `--model <fable|opus|sonnet> --effort <high|medium|low>`; a standing placeholder needs no issue.
 
 Red first: `IssueDispatchTest` 1 error, `ClaudeModelTest` 2 errors and 1 failure, `AgyTest.test_effort_is_claude_only` 1 failure. Full suite on the branch: 961 of 961.
+
+## C32 — pull requests open autonomously and ponytail cuts are applied (0.27.0)
+
+Zach, 2026-09-23 19:40: "I don't want to stop for PR - PR is the perfect way for me to be able to review things. PRs should be autononmous"; 19:51: "I want ponytail cuts to be automatically applied, I think".
+
+- **Dispatch:** the `Commits:` line said to open the pull request "when you are told to". It now says when the work is finished and its suite is green, and after the review comment: apply the cuts as a commit on the same branch, suite green, and comment `applied in <sha>`; a cut that would break a test or undo what the user asked for is named in that comment instead. The merge stays the user's alone.
+- **Agent:** Assign's `Lands by:` and both `Works under:` lines, and the tracker rule's "opened on the user's "PR"", say the same.
+
+Red first: `PullRequestTest.test_the_session_opens_it_when_green` 1 failure, `PonytailTest.test_the_cuts_are_applied` 1 failure. Full suite on the branch: 963 of 963.

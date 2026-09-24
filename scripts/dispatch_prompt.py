@@ -178,13 +178,17 @@ REPORT = ("Report: when the lane is finished, reply to the coordinator with what
 # work gets lost. The gate was never the commit; it is the merge. Since 0.23.0 the merge is a pull
 # request's (Zach, 2026-09-23 15:31: "all code changes should require a PR" … "This will fully
 # supersede CIMP"), and the GitHub repos refuse a direct push to main. Who merges: the user, always
-# (17:26: "I'll review and click the auto merge button on all PRs from here on forward").
+# (17:26: "I'll review and click the auto merge button on all PRs from here on forward"). Opening it
+# and applying the cuts are the session's own since 0.27.0 (19:40: "PRs should be autononmous"; 19:51:
+# "I want ponytail cuts to be automatically applied, I think").
 COMMITS = ("Commits: Commit small and often on your own branch — uncommitted work is how work gets "
            "lost. Code reaches main only through a pull request: push the branch and open one "
-           "(`gh pr create`, or `glab mr create` on GitLab) when you are told to, and never push to main "
-           "or merge locally. Once it is open, review its diff (`gh pr diff`, `glab mr diff`) with the "
-           "`ponytail:ponytail-review` skill and post the findings on it — \"no findings\" included. The "
-           "merge is the user's alone: you never merge a pull request.")
+           "(`gh pr create`, or `glab mr create` on GitLab) when the work is finished and its suite is "
+           "green, and never push to main or merge locally. Once it is open, review its diff (`gh pr diff`, "
+           "`glab mr diff`) with the `ponytail:ponytail-review` skill and post the findings on it — \"no "
+           "findings\" included — then apply the cuts as a commit on the same branch, suite green, and "
+           "comment `applied in <sha>`; a cut that would break a test or undo what the user asked for is "
+           "named in that comment instead. The merge is the user's alone: you never merge a pull request.")
 
 
 def _clean(label: str, value: str) -> str:
