@@ -292,11 +292,8 @@ def main(argv_in: list[str] | None = None) -> int:
                     help="claude only; agy's effort is in its model id")
     ap.add_argument("--dry-run", action="store_true", help="print the argv and start nothing")
     args = ap.parse_args(argv_in)
-    if args.runtime == "agy" and not MODEL.fullmatch(args.model):
-        print(f"refused: --runtime agy needs --model <an id from `agy models`>, not {args.model!r}", file=sys.stderr)
-        return 1
-    if args.model and not MODEL.fullmatch(args.model):
-        print(f"refused: {args.model!r} is not a model id", file=sys.stderr)
+    if (args.model or args.runtime == "agy") and not MODEL.fullmatch(args.model):
+        print(f"refused: --model needs a model id (agy: one from `agy models`, and it is required), not {args.model!r}", file=sys.stderr)
         return 1
     if args.runtime == "agy" and args.effort:
         print("refused: --effort is claude only; an agy model id carries its own effort (gemini-3.8-flash-high)", file=sys.stderr)

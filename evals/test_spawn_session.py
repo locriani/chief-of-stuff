@@ -612,6 +612,19 @@ class SessionNameTest(unittest.TestCase):
                 self.assertEqual(calls, [])
 
 
+def run_main(*extra):
+    """A dry-run launch against a throwaway workspace; the process result."""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "CLAUDE.md").write_text(CLAUDE)
+        (root / "daily").mkdir()
+        (root / "daily" / "2026-09-18-tracker.md").write_text(TRACKER)
+        return subprocess.run(
+            [sys.executable, str(Path(ss.__file__)), "--cwd", "/tmp", "--name", "implementer-GFlash38H-01",
+             "--root", str(root), "--date", "2026-09-18", "--lane", "Security audit", "--dry-run", *extra],
+            capture_output=True, text=True, timeout=30)
+
+
 class AgyTest(unittest.TestCase):
     """Zach, 2026-09-23 18:42: "within the next hour I need agy instances going"; registration and reporting
     through the mailbox only. agy has no `--agent` and no `--name`; `--mode plan` is its plan-first gate."""
@@ -639,36 +652,26 @@ class AgyTest(unittest.TestCase):
     def test_the_tab_is_still_titled_with_the_name(self):
         self.assertIn("set_tab_title:implementer-GFlash38H-01", self.script())
 
-    def run_main(self, *extra):
-        with tempfile.TemporaryDirectory() as d:
-            root = Path(d)
-            (root / "CLAUDE.md").write_text(CLAUDE)
-            (root / "daily").mkdir()
-            (root / "daily" / "2026-09-18-tracker.md").write_text(TRACKER)
-            return subprocess.run(
-                [sys.executable, str(Path(ss.__file__)), "--cwd", "/tmp", "--name", "implementer-GFlash38H-01",
-                 "--root", str(root), "--date", "2026-09-18", "--lane", "Security audit", "--dry-run", *extra],
-                capture_output=True, text=True, timeout=30)
 
     def test_agy_without_a_model_is_refused(self):
-        out = self.run_main("--runtime", "agy")
+        out = run_main("--runtime", "agy")
         self.assertEqual(out.returncode, 1)
         self.assertIn("--model", out.stderr)
 
     def test_a_hostile_model_is_refused(self):
-        out = self.run_main("--runtime", "agy", "--model", "x;rm -rf ~")
+        out = run_main("--runtime", "agy", "--model", "x;rm -rf ~")
         self.assertEqual(out.returncode, 1)
 
     def test_effort_is_claude_only(self):
-        out = self.run_main("--runtime", "agy", "--model", "gemini-3.8-flash-high", "--effort", "high")
+        out = run_main("--runtime", "agy", "--model", "gemini-3.8-flash-high", "--effort", "high")
         self.assertEqual(out.returncode, 1)
         self.assertIn("--effort", out.stderr)
 
-
     def test_the_dry_run_shows_the_agy_tab(self):
-        out = self.run_main("--runtime", "agy", "--model", "gemini-3.8-flash-high")
+        out = run_main("--runtime", "agy", "--model", "gemini-3.8-flash-high")
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertIn("--mode plan", out.stdout)
+
 
 class ClaudeModelTest(unittest.TestCase):
     """The class in a name (`COpusM`) is the model and effort a Claude session launches on."""
@@ -696,4 +699,4 @@ class ClaudeModelTest(unittest.TestCase):
     def test_a_bad_effort_or_model_is_refused(self):
         for extra in (["--effort", "extreme"], ["--model", "x;rm -rf ~"]):
             with self.subTest(extra=extra):
-                self.assertEqual(AgyTest.run_main(AgyTest(), *extra).returncode, 1 if "--model" in extra else 2)
+                self.assertEqual(run_main(*extra).returncode, 1 if "--model" in extra else 2)
