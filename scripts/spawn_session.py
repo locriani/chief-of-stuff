@@ -86,7 +86,7 @@ AS_ESCAPE = str.maketrans({'"': '\\"', "\\": "\\\\"})
 # project instead of its own worktree, and turned its transcript off. A dispatched session that
 # leaves no transcript is one whose account of its work dies when the tab closes.
 # `SSH_AUTH_SOCK` stays deliberately. The dispatch says "do not commit or push", but that is a rule
-# and not a missing capability: a session under the user's own rules may commit and push its lane
+# and not a missing capability: a session under the user's own rules may commit and push its task
 # when the user has said so, and a limit that binds the coordinator binds nobody else. A dispatched
 # session gets what a terminal the user opened would have, minus the coordinator's identity.
 KEEP = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "TERM_PROGRAM", "TMPDIR",
@@ -252,7 +252,7 @@ def ghostty_script(*, cwd: str, agent_type: str | None, claude: Path | None, tit
 def launch_env(parent: dict[str, str] | None = None) -> dict[str, str]:
     """The environment the new session starts in: a whitelist, never the coordinator's own.
 
-    The same discipline `audit_lanes.git()` applies to a read-only git call, applied to the one call
+    The same discipline `audit_tasks.git()` applies to a read-only git call, applied to the one call
     that starts a session — and it matters more here, because what leaks is an identity rather than
     a config.
     """
@@ -281,7 +281,7 @@ def main(argv_in: list[str] | None = None) -> int:
     ap.add_argument("--cwd", required=True, help="the worktree the session starts in")
     ap.add_argument("--name", "--title", dest="title", required=True,
                     help="the session's name, e.g. impl07; the listing, the prompt box and the tab all show it")
-    ap.add_argument("--lane", required=True, help="the Lanes row this dispatch owns; the assignment is read back from it")
+    ap.add_argument("--task", required=True, help="the Tasks row this dispatch owns; the assignment is read back from it")
     ap.add_argument("--root", default=".", help="workspace root holding CLAUDE.md")
     ap.add_argument("--coordinator", help="your own session name as a listing shows it, so the session knows who to register with")
     ap.add_argument("--date", help="YYYY-MM-DD; default: today in the workspace timezone")
@@ -307,7 +307,7 @@ def main(argv_in: list[str] | None = None) -> int:
 
     override = os.environ.get(ENV)
     try:
-        body = dispatch_prompt.compose(Path(args.root), args.date, args.lane,
+        body = dispatch_prompt.compose(Path(args.root), args.date, args.task,
                                       worktree=Path(args.cwd), coordinator=args.coordinator, name=args.title,
                                       runtime=args.runtime)
         # The override is the eval harness's recorder and the only path that still builds an argv.

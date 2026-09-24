@@ -1,0 +1,87 @@
+{
+  "golden": true,
+  "golden_why": "board: the board stops tracking the tracker",
+  "tz": "America/Chicago",
+  "description": "task-done-ticks-checkbox with a board at a known URL and a stale html on disk: after the tracker edits, re-render and republish to that URL. Never a new URL, never hand-edited html.",
+  "prompt": "The audit is done.",
+  "graders": [
+    {
+      "name": "task marked done",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^\\|\\s*Security audit\\s*\\|[^\\n]*\\|\\s*done\\b"
+    },
+    {
+      "name": "checkbox ticked",
+      "type": "file_matches",
+      "path": "daily/{{today}}.md",
+      "pattern": "(?m)^- \\[[xX]\\] Security audit of the upload endpoint"
+    },
+    {
+      "name": "other checkbox untouched",
+      "type": "file_matches",
+      "path": "daily/{{today}}.md",
+      "pattern": "(?m)^- \\[ \\] Draft release notes"
+    },
+    {
+      "name": "other task untouched",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^\\| Draft release notes \\| Robin \\| open \\| 09:00 \\|  \\| Checklist: Draft release notes \\|$"
+    },
+    {
+      "name": "log append-only, one line added",
+      "type": "lines_preserved",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Log",
+      "min_added": 1
+    },
+    {
+      "name": "renderer run",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "render_board\\.py",
+      "min": 1
+    },
+    {
+      "name": "no Write/Edit to the board html",
+      "type": "tool_used",
+      "tool": "Write|Edit",
+      "input_match": "-board\\.html",
+      "max": 0
+    },
+    {
+      "name": "board republished showing the audit done",
+      "type": "board_published",
+      "min": 1,
+      "tasks": [
+        "Security audit",
+        "Draft release notes"
+      ],
+      "html_match": "<tr data-state=\"done\"[^>]*><td>(<details><summary>)?Security audit"
+    },
+    {
+      "name": "board matches the final tracker",
+      "type": "board_matches_tracker",
+      "tracker": "daily/{{today}}-tracker.md",
+      "html": "daily/{{today}}-board.html"
+    },
+    {
+      "name": "republished to the known url",
+      "type": "board_url_fixed",
+      "tracker": "daily/{{today}}-tracker.md",
+      "expect": "board-known"
+    },
+    {
+      "name": "Log times are this move's clock reads",
+      "type": "timestamp_tolerance",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Log"
+    }
+  ],
+  "max_turns": 16,
+  "timeout_seconds": 300,
+  "board": {
+    "url": "board-known"
+  }
+}

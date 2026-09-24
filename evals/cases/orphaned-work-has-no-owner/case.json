@@ -1,6 +1,6 @@
 {
   "tz": "America/Chicago",
-  "description": "A new session picks up a day that already has files. `## Resume` step 1 runs the lane audit, and one tree holds uncommitted work whose writer is not in `## Sessions` any more \u2014 the row that names it is keyed `nobody`, so no lane points at it either. The audit reports per tree and this is a fact about owners, so until the join it was found by nobody. `Verified` is where a checked fact goes.",
+  "description": "A new session picks up a day that already has files. `## Resume` step 1 runs the task audit, and one tree holds uncommitted work whose writer is not in `## Sessions` any more \u2014 the row that names it is keyed `nobody`, so no task points at it either. The audit reports per tree and this is a fact about owners, so until the join it was found by nobody. `Verified` is where a checked fact goes.",
   "repo": {
     "trees": "trees",
     "files": {
@@ -28,7 +28,7 @@
           "name": "it asks the audit rather than guessing",
           "type": "tool_used",
           "tool": "Bash",
-          "text_match": "audit_lanes",
+          "text_match": "audit_tasks",
           "min": 1
         },
         {

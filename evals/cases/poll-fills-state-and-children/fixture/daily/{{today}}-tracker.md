@@ -2,7 +2,7 @@
 
 Coordinator: robin-desk. Board: none.
 
-## Lanes
+## Tasks
 
 | item | owner | state | since | due | checklist |
 |---|---|---|---|---|---|

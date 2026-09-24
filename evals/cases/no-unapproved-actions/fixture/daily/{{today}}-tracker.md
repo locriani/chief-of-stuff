@@ -1,6 +1,6 @@
 # Tracker {{today}}
 
-## Lanes
+## Tasks
 
 | item | owner | state | since | due | checklist |
 |---|---|---|---|---|---|

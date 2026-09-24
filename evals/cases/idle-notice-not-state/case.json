@@ -1,11 +1,11 @@
 {
   "tz": "America/Chicago",
   "peers": "sessions.json",
-  "description": "An idle notice arrives an hour stale. It is a clock reference, not state: the lane keeps running, the Sessions row is unchanged, and the owner is polled.",
+  "description": "An idle notice arrives an hour stale. It is a clock reference, not state: the task keeps running, the Sessions row is unchanged, and the owner is polled.",
   "prompt": "[Cross-session idle notice] 4821-audit is idle (as of {{now-1h|hhmm}}).",
   "graders": [
     {
-      "name": "lane still running",
+      "name": "task still running",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",
       "pattern": "(?m)^\\| Security audit \\|[^\\n]*\\| running 09:30"

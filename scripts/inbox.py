@@ -45,6 +45,7 @@ VALID_MESSAGE_TYPES = {
     "ask",
     "reply",
     "stop",
+    "review",
     "generic",
     "general",
 }
@@ -92,7 +93,7 @@ class Message:
     type: str
     body: str
     payload: dict[str, Any]
-    lane: str | None = None
+    task: str | None = None
     worktree: str | None = None
     headers: dict[str, Any] = field(default_factory=dict)
 
@@ -105,7 +106,7 @@ class Message:
             "type": self.type,
             "body": self.body,
             "payload": self.payload,
-            "lane": self.lane,
+            "task": self.task,
             "worktree": self.worktree,
             "headers": self.headers,
         }
@@ -145,9 +146,9 @@ class Message:
         else:
             headers = dict(headers)
 
-        lane = data.get("lane")
-        if lane is not None:
-            lane = str(lane)
+        task = data.get("task", data.get("lane"))  # `lane` in a message stored before #33
+        if task is not None:
+            task = str(task)
 
         worktree = data.get("worktree")
         if worktree is not None:
@@ -161,7 +162,7 @@ class Message:
             type=str(data["type"]),
             body=body,
             payload=payload,
-            lane=lane,
+            task=task,
             worktree=worktree,
             headers=headers,
         )
@@ -433,7 +434,7 @@ def send_message(
     body: str = "",
     msg_type: str = "generic",
     payload: dict[str, Any] | None = None,
-    lane: str | None = None,
+    task: str | None = None,
     worktree: str | Path | None = None,
     headers: dict[str, Any] | None = None,
     mailbox_dir: Path | str | None = None,
@@ -508,7 +509,7 @@ def send_message(
         clean_headers = dict(headers)
 
     clean_worktree = str(worktree) if worktree is not None else None
-    clean_lane = str(lane) if lane is not None else None
+    clean_task = str(task) if task is not None else None
 
     # Construct message
     msg_id, ts_iso = generate_message_id()
@@ -520,7 +521,7 @@ def send_message(
         type=clean_type,
         body=body,
         payload=clean_payload,
-        lane=clean_lane,
+        task=clean_task,
         worktree=clean_worktree,
         headers=clean_headers,
     )
@@ -894,7 +895,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_send.add_argument("--body", dest="body", default="", help="Message body text")
     p_send.add_argument("--payload", dest="payload", help="Message payload as JSON string")
     p_send.add_argument("--payload-file", dest="payload_file", help="Path to JSON payload file")
-    p_send.add_argument("--lane", dest="lane", help="Associated lane name")
+    p_send.add_argument("--task", dest="task", help="Associated task name")
     p_send.add_argument("--worktree", dest="worktree", help="Associated worktree path")
     p_send.add_argument("--header", dest="headers", action="append", help="Header key=value (repeatable)")
     p_send.add_argument("--format", dest="format", choices=["json", "text"], default="json", help="Output format")
@@ -1012,7 +1013,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 body=args.body,
                 msg_type=args.type,
                 payload=payload,
-                lane=args.lane,
+                task=args.task,
                 worktree=args.worktree,
                 headers=headers_dict,
                 mailbox_dir=mailbox_dir,
@@ -1089,8 +1090,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"From: {msg.sender}")
             print(f"To: {msg.recipient}")
             print(f"Type: {msg.type}")
-            if msg.lane:
-                print(f"Lane: {msg.lane}")
+            if msg.task:
+                print(f"Task: {msg.task}")
             if msg.worktree:
                 print(f"Worktree: {msg.worktree}")
             print(f"Body: {msg.body}")

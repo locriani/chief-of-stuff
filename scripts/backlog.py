@@ -470,7 +470,7 @@ def ensure_labels(cfg: Backlog, names: tuple[str, ...], token: str | None = None
                   commit: bool = False, timeout: float = TIMEOUT) -> tuple[Written, ...]:
     """Create the labels a write needs and no others.
 
-    No vocabulary is baked in. Zach, 2026-09-19 22:47 — "lanes are also going to be changeable over
+    No vocabulary is baked in. Zach, 2026-09-19 22:47 — "tasks are also going to be changeable over
     time" — so the caller names the labels and this creates whichever of them GitLab has not seen.
     """
     wanted = tuple(n for n in dict.fromkeys(n.strip() for n in names) if n)

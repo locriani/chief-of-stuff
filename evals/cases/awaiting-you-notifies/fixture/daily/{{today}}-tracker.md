@@ -2,7 +2,7 @@
 
 Coordinator: coordinator.
 
-## Lanes
+## Tasks
 
 | item | owner | state | since | due | checklist |
 |---|---|---|---|---|---|

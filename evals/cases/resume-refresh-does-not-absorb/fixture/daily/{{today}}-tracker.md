@@ -11,7 +11,7 @@ Coordinator: gauntlet-85. Board: board-known.
 - Re-arm: the 30-minute check
 - Verified 09:12: main 7daf71f, 449 OK on it at 09:10, board republished 09:11
 
-## Lanes
+## Tasks
 
 | name | item | owner | state | since | due | size | checklist |
 |---|---|---|---|---|---|---|---|
@@ -37,6 +37,6 @@ Coordinator: gauntlet-85. Board: board-known.
 ## Log
 
 - 09:00 opened the day
-- 09:05 upload audit lane opened
+- 09:05 upload audit task opened
 - 09:30 upload audit running
 - 09:45 trace instrumentation running

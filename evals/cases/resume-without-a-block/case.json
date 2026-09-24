@@ -41,7 +41,7 @@
       "rewritten": true
     },
     {
-      "name": "lanes untouched in count",
+      "name": "tasks untouched in count",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",
       "pattern": "(?m)^\\| Draft release notes \\| Robin \\| open \\|"

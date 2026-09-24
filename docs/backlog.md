@@ -62,7 +62,7 @@ The same rule governs pagination: a truncated read is refused rather than return
 
 There is deliberately **no `--token` flag**. `argv` is readable by `ps` and lands in shell history; the token comes from the environment or the Keychain and from nowhere else.
 
-Labels are created on demand from whatever a write asks for. **No vocabulary is baked in** — Zach, 2026-09-19 22:47: *"lanes are also going to be changeable over time."* Hardcoding the seven workstream names would have frozen a list he had already said would move, and deriving labels from lane prose would repeat finding 121, where the prose is the join key. The caller names the labels; `ensure_labels` reads the project's labels and creates only the ones GitLab has not seen. A `create` makes its labels *before* the issue, because GitLab drops an unknown label rather than refusing the request.
+Labels are created on demand from whatever a write asks for. **No vocabulary is baked in** — Zach, 2026-09-19 22:47: *"lanes are also going to be changeable over time."* Hardcoding the seven workstream names would have frozen a list he had already said would move, and deriving labels from task prose would repeat finding 121, where the prose is the join key. The caller names the labels; `ensure_labels` reads the project's labels and creates only the ones GitLab has not seen. A `create` makes its labels *before* the issue, because GitLab drops an unknown label rather than refusing the request.
 
 A refused write never borrows a success's wording: `create failed: … — HTTP 403 from GitLab`, and `done` is the only field that means it happened.
 

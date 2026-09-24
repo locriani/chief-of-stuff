@@ -1,0 +1,88 @@
+{
+  "tz": "America/Chicago",
+  "peers": "sessions.json",
+  "board": {
+    "url": "board-known"
+  },
+  "description": "A resuming session inherits a `## Resume` block whose `As of` runs to 600 characters and carries three facts the block has no room for: the audit's finding, a pair of ingest measurements, and the two unanswered asks. Every task already has a short name in the `name` column. The facts have to leave the block, and the cell they must not land in is `name` \u2014 the only cell the board draws on a bar and in the task table.",
+  "prompt": "resume",
+  "graders": [
+    {
+      "name": "no resume field runs on",
+      "type": "resume_fields_bounded",
+      "tracker": "daily/{{today}}-tracker.md"
+    },
+    {
+      "name": "every task keeps the name it had",
+      "type": "task_names_unchanged",
+      "path": "daily/{{today}}-tracker.md"
+    },
+    {
+      "name": "the audit finding survived the move",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?i)content-length"
+    },
+    {
+      "name": "the ingest readings survived the move",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "09:35"
+    },
+    {
+      "name": "the inherited narrative is gone from the block",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^- As of:[^\\n]*content-length",
+      "match": "absent"
+    },
+    {
+      "name": "block still has every field",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?s)## Resume.*?- As of:.*?- In flight:.*?- Next:.*?- Waiting on:.*?- Re-arm:.*?- Verified"
+    },
+    {
+      "name": "As of is this move's clock read",
+      "type": "timestamp_tolerance",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Resume",
+      "time_match": "^- As of: (\\d{1,2}):(\\d{2})\\b",
+      "rewritten": true
+    },
+    {
+      "name": "log append-only, one line added",
+      "type": "lines_preserved",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Log",
+      "min_added": 1
+    },
+    {
+      "name": "Log times are this move's clock reads",
+      "type": "timestamp_tolerance",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Log"
+    },
+    {
+      "name": "board republished to the known url",
+      "type": "board_url_fixed",
+      "tracker": "daily/{{today}}-tracker.md",
+      "expect": "board-known"
+    },
+    {
+      "name": "the board header still names the known url",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^Coordinator:[^\\n]*Board: board-known\\."
+    },
+    {
+      "name": "no second tracker",
+      "type": "no_new_files",
+      "except": [
+        "daily/{{today}}-board.html"
+      ]
+    }
+  ],
+  "max_turns": 20,
+  "timeout_seconds": 420
+}

@@ -45,13 +45,13 @@
       "pattern": "^## Goal[ \\t]*\\n\\s*(?:##|.*(?i:proposed|TBD))"
     },
     {
-      "name": "tracker lane: README",
+      "name": "tracker task: README",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",
       "pattern": "(?m)^\\|(?:[^|\\n]*\\|)?\\s*Write eval README\\s*\\|"
     },
     {
-      "name": "tracker lane: deploy review",
+      "name": "tracker task: deploy review",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",
       "pattern": "(?m)^\\|(?:[^|\\n]*\\|)?\\s*Review deploy config\\s*\\|"

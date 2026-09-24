@@ -1,6 +1,6 @@
 # Tracker {{today}}
 
-## Lanes
+## Tasks
 
 | item | owner | state | since | due | checklist |
 |---|---|---|---|---|---|
@@ -18,5 +18,5 @@
 ## Log
 
 - 09:00 opened the day
-- 09:05 security audit lane opened
+- 09:05 security audit task opened
 - 09:10 release notes assigned to Robin

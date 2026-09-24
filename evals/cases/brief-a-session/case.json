@@ -2,7 +2,7 @@
   "tz": "America/Chicago",
   "peers": "sessions.json",
   "description": "Asked to brief a session, the coordinator sends one message whose first line is the whole ask, with context as file paths, and records it. No dispatch proposal, no pasted file contents, nothing about its own limits.",
-  "prompt": "Brief 7719-notes on the audit lane so it can pick it up if Robin says so.",
+  "prompt": "Brief 7719-notes on the audit task so it can pick it up if Robin says so.",
   "graders": [
     {
       "name": "one send to the briefed session",

@@ -21,11 +21,11 @@ CT = ZoneInfo("America/Chicago")
 NOW = datetime(2026, 9, 16, 14, 30, tzinfo=CT)
 NOW2 = datetime(2026, 9, 17, 9, 52, tzinfo=CT)  # the day after Launch: the nearest deadline is days away
 
-# Shaped like a live lane whose item cell accumulated its history (anonymised).
+# Shaped like a live task whose item cell accumulated its history (anonymised).
 LONG_ITEM = (
     "Service architecture refactor (SOLID / clean architecture): rules engine → rule evaluation → service surface; "
     "record fetch tools → service tools; bullets 0–2b landed in the worktree, uncommitted; the worker left the registry at 07:46; "
-    "coordinator reassigned the lane twice overnight; plan approved 01:20 (relayed, not verbatim); remaining: bullets 3–6, docs pass, "
+    "coordinator reassigned the task twice overnight; plan approved 01:20 (relayed, not verbatim); remaining: bullets 3–6, docs pass, "
     "eval rerun, merge to main after review; blocked on nothing but an owner"
 )
 
@@ -36,7 +36,7 @@ CLAUDE_MD = """# Workspace
 - User: Robin
 - Daily log dir: `daily/`
 - Daily log template: `templates/daily.md`; tracker template `templates/tracker.md`
-- Tracker: `daily/<date>-tracker.md` (sections: Lanes, Decisions, File ownership, Log)
+- Tracker: `daily/<date>-tracker.md` (sections: Tasks, Decisions, File ownership, Log)
 - Timezone: America/Chicago
 - Calendar tool: `mcp__calendar__list_events`
 - Calendars:
@@ -52,7 +52,7 @@ TRACKER = """# Tracker 2026-09-16
 
 Coordinator: coordinator. Board: board-7.
 
-## Lanes
+## Tasks
 
 | item | owner | state | since | due | checklist |
 |---|---|---|---|---|---|
@@ -134,15 +134,15 @@ class TrackerParseTest(unittest.TestCase):
     def setUp(self) -> None:
         self.t = rb.parse_tracker(TRACKER)
 
-    def test_lanes_and_header(self) -> None:
+    def test_tasks_and_header(self) -> None:
         self.assertEqual(self.t.board_url, "board-7")
-        self.assertEqual([lane.item for lane in self.t.lanes][:4], ["Write eval README", "Security audit", "Review deploy config", "Draft release notes"])
-        self.assertEqual(self.t.lanes[1].state, "running 10:30")
-        self.assertEqual(self.t.lanes[2].since, "2026-09-15")
-        self.assertEqual(self.t.lanes[2].due, "Final")
+        self.assertEqual([task.item for task in self.t.tasks][:4], ["Write eval README", "Security audit", "Review deploy config", "Draft release notes"])
+        self.assertEqual(self.t.tasks[1].state, "running 10:30")
+        self.assertEqual(self.t.tasks[2].since, "2026-09-15")
+        self.assertEqual(self.t.tasks[2].due, "Final")
 
     def test_malformed_rows_kept_with_warning(self) -> None:
-        short, long = self.t.lanes[4], self.t.lanes[5]
+        short, long = self.t.tasks[4], self.t.tasks[5]
         self.assertEqual(short.item, "Short row")
         self.assertIn("2 cells", short.warning)
         self.assertEqual(long.item, "Long")
@@ -179,7 +179,7 @@ class SessionParseTest(unittest.TestCase):
         self.assertEqual(self.s["7719-fixer"].kind, "waiting")
 
     def test_a_word_outside_the_closed_set_is_kept_and_flagged(self) -> None:
-        """Same contract as a malformed Lanes row: keep it, say so, never silently normalise."""
+        """Same contract as a malformed Tasks row: keep it, say so, never silently normalise."""
         odd = self.s["odd-one"]
         self.assertEqual(odd.state, "dancing")
         self.assertIn("dancing", odd.warning)
@@ -228,7 +228,7 @@ class SessionParseTest(unittest.TestCase):
         self.assertEqual(s.label, "update-claude-md-docs")
 
     def test_a_tracker_with_no_sessions_section_parses_to_nothing(self) -> None:
-        self.assertEqual(rb.parse_tracker("# T\n\n## Lanes\n").sessions, ())
+        self.assertEqual(rb.parse_tracker("# T\n\n## Tasks\n").sessions, ())
 
     def test_the_seven_column_shape_still_parses(self) -> None:
         """Every tracker written before this version has no `state` and no `children` column."""
@@ -243,10 +243,10 @@ class SessionParseTest(unittest.TestCase):
 class BarTest(unittest.TestCase):
     def setUp(self) -> None:
         self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
-        self.lanes = {lane.item: lane for lane in rb.parse_tracker(TRACKER).lanes}
+        self.tasks = {task.item: task for task in rb.parse_tracker(TRACKER).tasks}
 
     def bar(self, item: str) -> rb.Bar:
-        return rb.day_bar(self.lanes[item], self.cfg, NOW)
+        return rb.day_bar(self.tasks[item], self.cfg, NOW)
 
     def test_due_time_closes_the_bar(self) -> None:
         b = self.bar("Write eval README")
@@ -262,7 +262,7 @@ class BarTest(unittest.TestCase):
         self.assertEqual(b.end, self.cfg.deadlines[0].at)
         self.assertEqual(b.label, "no estimate")
 
-    def test_carried_lane_starts_at_axis_and_due_may_name_a_deadline(self) -> None:
+    def test_carried_task_starts_at_axis_and_due_may_name_a_deadline(self) -> None:
         b = self.bar("Review deploy config")
         self.assertEqual(b.start_src, "carried")
         self.assertEqual(b.end_src, "due")
@@ -274,10 +274,10 @@ class BarTest(unittest.TestCase):
         self.assertEqual(b.end, datetime(2026, 9, 16, 11, 15, tzinfo=CT))
 
     def test_week_bar_uses_dates(self) -> None:
-        w = rb.week_bar(self.lanes["Review deploy config"], self.cfg, NOW)
+        w = rb.week_bar(self.tasks["Review deploy config"], self.cfg, NOW)
         self.assertEqual(w.start.date().isoformat(), "2026-09-15")
         self.assertEqual(w.end, self.cfg.deadlines[1].at)
-        w2 = rb.week_bar(self.lanes["Security audit"], self.cfg, NOW)
+        w2 = rb.week_bar(self.tasks["Security audit"], self.cfg, NOW)
         self.assertEqual((w2.end_src, w2.label), ("deadline", "no estimate"))
 
 
@@ -314,12 +314,12 @@ class RenderTest(unittest.TestCase):
         self.assertIn("tracker as of 14:30", self.html)
         self.assertIn("board-7", self.html)
 
-    def test_the_yours_chip_selects_robins_lanes(self) -> None:
-        """What `Robin's queue` was: her lanes, and nobody else's. It is a filter of the one table
-        now, so a done lane of hers is kept by the chip and separated by the `done` group instead."""
-        lanes = self.html.split("<h2>Tasks", 1)[1]
+    def test_the_yours_chip_selects_robins_tasks(self) -> None:
+        """What `Robin's queue` was: her tasks, and nobody else's. It is a filter of the one table
+        now, so a done task of hers is kept by the chip and separated by the `done` group instead."""
+        tasks = self.html.split("<h2>Tasks", 1)[1]
         rows = {re.search(r"<td>(?:<details><summary>)?([^<]*)", r).group(1): r
-                for r in re.findall(r"<tr data-state=.*?</tr>", lanes, re.S)}
+                for r in re.findall(r"<tr data-state=.*?</tr>", tasks, re.S)}
         self.assertIn("mine", rows["Write eval README"])
         self.assertIn("mine", rows["Draft release notes"])
         self.assertNotIn("mine", rows["Security audit"])
@@ -383,7 +383,7 @@ class ShortNameTest(unittest.TestCase):
         The trim to a whole number of mark spans uses `rfind("**")`, and an item whose only opening
         `**` is at index 0 trims to the empty string — so the name comes back as a bare `…`, which
         is not a short name, it is the absence of one. `render_board.py:395` (`label or
-        short_name(item)`) puts that straight on the board as a lane called `…`.
+        short_name(item)`) puts that straight on the board as a task called `…`.
         """
         item = "**ARCHITECTURE.md section 12.5 rewritten so the deploy story matches the code**"
         got = rb.clip_name(item)
@@ -458,7 +458,7 @@ class DensityTest(unittest.TestCase):
         self.assertRegex(day, r'class="bar running[^"]*"[^>]*data-item="Security audit"')
         self.assertRegex(day, r'class="member"[^>]*data-item="Review deploy config"')
         self.assertNotRegex(day, _top_row("Review deploy config"))
-        # Two of the four unscheduled lanes are owned, so 0.10.0 derives their ends inside today and draws them.
+        # Two of the four unscheduled tasks are owned, so 0.10.0 derives their ends inside today and draws them.
         self.assertRegex(day, r'data-summary="today"[^>]*data-count="2"')
         # Done at 11:15, inside the 06:00 window: drawn as finished work, never as work still to do.
         self.assertRegex(day, r'class="bar done[^"]*"[^>]*data-item="Draft release notes"')
@@ -479,16 +479,16 @@ class DensityTest(unittest.TestCase):
         esc = html_escape(LONG_ITEM)
         # The size cap is about item text, not the inlined logo asset.
         self.html = re.sub(r"data:image/webp;base64,[A-Za-z0-9+/=]+", "", self.html)
-        # The lane table, the fold's `.member` citation, and the sub row the fold opens onto (0.10.0).
+        # The task table, the fold's `.member` citation, and the sub row the fold opens onto (0.10.0).
         self.assertLessEqual(self.html.count(esc), 3)
         visible = re.sub(r"<[^>]+>", "", self.html.split("</style>", 1)[1].split("<script>", 1)[0])
         self.assertEqual(visible.count(esc), 0)
         self.assertEqual(visible.count("the worker left the registry"), 1)
         # A density guard for item text measures item text. The same reason the logo comes out
         # above takes the stylesheet out here: 15 466 of this page was CSS — 36% of a number named
-        # for the lanes — and it is a fixed cost that does not grow with them. Every stage that
-        # added a rule spent the lanes' budget, and the cap rose to cover it four times over:
-        # 32 000 → 36 000 → 39 800 → 42 500. None of those bytes were written by a lane.
+        # for the tasks — and it is a fixed cost that does not grow with them. Every stage that
+        # added a rule spent the tasks' budget, and the cap rose to cover it four times over:
+        # 32 000 → 36 000 → 39 800 → 42 500. None of those bytes were written by a task.
         #
         # Measured the day the loan came back, on this fixture: 27 062, under the original 32 000
         # with 15% to spare. The run for the record, whole-page: 31 174 before the tracer bullet ·
@@ -583,7 +583,7 @@ class RequirementsTest(unittest.TestCase):
         self.assertNotIn("max-height", section)
         self.assertIn(".resume details.long[open]{max-height", page)
         # Stage 5 moved requirements out of the first screen: it answers "is the deck ready",
-        # which is a question about the week, so it follows the week and precedes the lanes.
+        # which is a question about the week, so it follows the week and precedes the tasks.
         self.assertGreater(page.index('class="reqs"'), page.index('data-strip="week"'))
         self.assertLess(page.index('class="reqs"'), page.index("<h2>Tasks"))
         sha = hashlib.sha256(REQS.encode()).hexdigest()
@@ -634,7 +634,7 @@ WEEK_TRACKER = """# Tracker 2026-09-17
 
 Coordinator: coordinator. Board: board-7.
 
-## Lanes
+## Tasks
 
 | item | owner | state | since | due | checklist |
 |---|---|---|---|---|---|
@@ -671,7 +671,7 @@ class WeekByDayTest(unittest.TestCase):
         self.assertIsNotNone(later)
         self.assertIn("Exam retake Wed 30", later.group(1))
 
-    def test_same_day_lanes_group(self) -> None:
+    def test_same_day_tasks_group(self) -> None:
         row = re.search(r'<div class="row group-row"><div class="name">([^<]*)</div><div class="track"><div class="bar[^"]*" data-group="2026-09-18" data-count="3"(.*?)</div></div></div>', self.week)
         self.assertIsNotNone(row)
         self.assertEqual(row.group(1), "Fri 18 · 3 tasks")
@@ -681,7 +681,7 @@ class WeekByDayTest(unittest.TestCase):
             self.assertRegex(row.group(2), rf'class="member" data-item="{item}"')
         self.assertIn("3 due", row.group(2))
 
-    def test_single_day_lane_and_running_keep_bars(self) -> None:
+    def test_single_day_task_and_running_keep_bars(self) -> None:
         self.assertRegex(self.week, r'class="bar open[^"]*"[^>]*data-item="Docs pass"')
         self.assertRegex(self.week, r'class="bar running[^"]*"[^>]*data-item="Refactor"')
         self.assertNotIn("Shipped", self.week)
@@ -782,8 +782,8 @@ class OrphanAndUnassignedTest(unittest.TestCase):
         self.html = rb.render(self.TRACKER, LOG, self.cfg, NOW)
 
     def test_orphaned_is_an_active_kind(self) -> None:
-        lane = next(l for l in rb.parse_tracker(self.TRACKER).lanes if l.item == "Security audit")
-        self.assertEqual(lane.kind, "orphaned")
+        task = next(l for l in rb.parse_tracker(self.TRACKER).tasks if l.item == "Security audit")
+        self.assertEqual(task.kind, "orphaned")
         day = _strip_html(self.html, "day")
         self.assertRegex(day, r'class="bar orphaned[^"]*"[^>]*data-item="Security audit"')
         self.assertIn(".bar.orphaned{", self.html)
@@ -796,9 +796,9 @@ class OrphanAndUnassignedTest(unittest.TestCase):
         self.assertIn("1 orphaned", self.html)
 
     def test_unassigned_is_a_chip_over_the_one_table(self) -> None:
-        lanes = self.html.split("<h2>Tasks", 1)[1]
-        self.assertIn('<label for="lf-unassigned">unassigned <b>1</b></label>', lanes)
-        row = next(r for r in re.findall(r"<tr data-state=.*?</tr>", lanes, re.S) if "Pick a deploy window" in r)
+        tasks = self.html.split("<h2>Tasks", 1)[1]
+        self.assertIn('<label for="lf-unassigned">unassigned <b>1</b></label>', tasks)
+        row = next(r for r in re.findall(r"<tr data-state=.*?</tr>", tasks, re.S) if "Pick a deploy window" in r)
         self.assertIn('data-in="all unassigned"', row)
 
     def test_the_chip_counts_zero_when_nothing_is_unassigned(self) -> None:
@@ -807,17 +807,17 @@ class OrphanAndUnassignedTest(unittest.TestCase):
 
 
 class OneLaneTableTest(unittest.TestCase):
-    """Stage 1: three lane tables become one, and Unassigned and the queue become filters of it.
+    """Stage 1: three task tables become one, and Unassigned and the queue become filters of it.
 
-    Unassigned and `<user>'s queue` were projections of the Lanes table printed as tables of their
-    own, so a lane owned by Robin and due at 17:00 was on the page three times over. They become
+    Unassigned and `<user>'s queue` were projections of the Tasks table printed as tables of their
+    own, so a task owned by Robin and due at 17:00 was on the page three times over. They become
     chips above the one table: `all`, `yours`, `unassigned`, and the three tracker states. The
     chips are radio inputs and the rows carry the filters that keep them in `data-in`, so the
     filtering is CSS over precomputed attributes and the page still needs no JS — with JS off, or
     in a reader that ignores `:checked`, every row is visible, which is what the table did before.
 
     A filter is mechanical: it selects over every row in the table, done rows included. So `yours`
-    answers "which lanes name Robin", and a done lane of Robin's still appears under `done` — the
+    answers "which tasks name Robin", and a done task of Robin's still appears under `done` — the
     groups keep the state reading that the old queue table got by excluding done.
     """
 
@@ -827,7 +827,7 @@ class OneLaneTableTest(unittest.TestCase):
         "| Cut the release branch | impl-2 | running 13:40 | 13:40 | 17:00 | Checklist: cut the branch |",
     )
 
-    # label -> (the lanes it keeps, the groups left standing)
+    # label -> (the tasks it keeps, the groups left standing)
     FILTERS = {
         "all": 10,
         "yours": 5,
@@ -840,7 +840,7 @@ class OneLaneTableTest(unittest.TestCase):
     def setUp(self) -> None:
         self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
         self.html = rb.render(self.TRACKER, LOG, self.cfg, NOW)
-        self.lanes = self.html.split("<h2>Tasks", 1)[1]
+        self.tasks = self.html.split("<h2>Tasks", 1)[1]
         self.css = self.html.split("<style>")[1].split("</style>")[0]
 
     def test_the_queue_and_unassigned_tables_are_gone(self) -> None:
@@ -851,12 +851,12 @@ class OneLaneTableTest(unittest.TestCase):
         self.assertEqual(self.html.count("<h2>Tasks"), 1)
         self.assertEqual(self.html.count("<th>item</th>"), 1)
 
-    def test_every_lane_is_in_the_one_table_exactly_once(self) -> None:
-        rows = re.findall(r"<tr data-state=[^>]*>", self.lanes)
+    def test_every_task_is_in_the_one_table_exactly_once(self) -> None:
+        rows = re.findall(r"<tr data-state=[^>]*>", self.tasks)
         self.assertEqual(len(rows), 10, rows)
         for label in ("Write eval README", "Pick a deploy window", "Security audit",
                       "Draft release notes", "Ship docs site", "Cut the release branch"):
-            self.assertEqual(self.lanes.count(f"<summary>{label}</summary>") + self.lanes.count(f"<td>{label}"), 1, label)
+            self.assertEqual(self.tasks.count(f"<summary>{label}</summary>") + self.tasks.count(f"<td>{label}"), 1, label)
 
     def test_a_chip_reaches_the_rows_it_filters(self) -> None:
         """The chips went inert in stage 6 and every test here stayed green.
@@ -871,7 +871,7 @@ class OneLaneTableTest(unittest.TestCase):
         the rows is the direction neither of them faces. This test faces it.
         """
         hop = re.search(r"#lf-running:checked~(\S+?) tr\[data-in\]", self.css).group(1)
-        after = self.lanes.split("</label>")[-1]
+        after = self.tasks.split("</label>")[-1]
         tag, attrs = re.match(r"\s*<(\w+)([^>]*)>", after).groups()
         cls = (re.search(r'class="([^"]*)"', attrs).group(1) if 'class="' in attrs else "")
         self.assertIn("data-in=", after, "the chips are not followed by the rows at all")
@@ -879,7 +879,7 @@ class OneLaneTableTest(unittest.TestCase):
                         f"`~{hop}` hops to a sibling that is not <{tag} class={cls!r}>, and the rows are inside that")
 
     def test_six_chips_carry_the_counts(self) -> None:
-        chips = re.findall(r'<label for="lf-([a-z]+)"[^>]*>(.*?)</label>', self.lanes, re.S)
+        chips = re.findall(r'<label for="lf-([a-z]+)"[^>]*>(.*?)</label>', self.tasks, re.S)
         self.assertEqual([c[0] for c in chips], ["all", "mine", "unassigned", "running", "orphaned", "done"], chips)
         seen = {}
         for key, body in chips:
@@ -889,7 +889,7 @@ class OneLaneTableTest(unittest.TestCase):
 
     def test_rows_carry_the_filters_that_keep_them(self) -> None:
         def row(label: str) -> str:
-            return next(r for r in re.findall(r"<tr data-state=.*?</tr>", self.lanes, re.S) if label in r)
+            return next(r for r in re.findall(r"<tr data-state=.*?</tr>", self.tasks, re.S) if label in r)
 
         self.assertIn('data-in="all mine"', row("Write eval README"))
         self.assertIn('data-in="all unassigned"', row("Pick a deploy window"))
@@ -898,7 +898,7 @@ class OneLaneTableTest(unittest.TestCase):
         self.assertIn('data-in="all running"', row("Cut the release branch"))
 
     def test_a_group_header_goes_when_its_group_empties(self) -> None:
-        heads = re.findall(r'<tr class="group" data-in="([^"]*)"><th[^>]*>(.*?) · \d', self.lanes)
+        heads = re.findall(r'<tr class="group" data-in="([^"]*)"><th[^>]*>(.*?) · \d', self.tasks)
         self.assertEqual({label: keeps for keeps, label in heads}, {
             "running": "all running",
             "orphaned": "all orphaned",
@@ -907,7 +907,7 @@ class OneLaneTableTest(unittest.TestCase):
         })
 
     def test_the_chips_filter_in_css_and_default_to_all(self) -> None:
-        self.assertIn('<input type="radio" name="lf" id="lf-all" checked>', self.lanes)
+        self.assertIn('<input type="radio" name="lf" id="lf-all" checked>', self.tasks)
         # Spelling the combinator out here is what let stage 6 break the chips in silence: this
         # assertion passed on a rule that had stopped matching anything. It reads the hop from the
         # stylesheet now, and `test_a_chip_reaches_the_rows_it_filters` checks that hop lands.
@@ -915,10 +915,10 @@ class OneLaneTableTest(unittest.TestCase):
         for key in ("all", "mine", "unassigned", "running", "orphaned", "done"):
             self.assertIn(f'#lf-{key}:checked~{hop} tr[data-in]:not([data-in~="{key}"]){{display:none}}', self.css)
         # The radios stay reachable by keyboard: taken out of flow, never out of the tab order.
-        rule = next((l for l in self.css.splitlines() if ".lanes>input{" in l), "")
-        self.assertTrue(rule, "no `.lanes>input` rule")
+        rule = next((l for l in self.css.splitlines() if ".tasks>input{" in l), "")
+        self.assertTrue(rule, "no `.tasks>input` rule")
         self.assertNotIn("display:none", rule)
-        self.assertIn(".lanes>input:focus-visible+label{", self.css)
+        self.assertIn(".tasks>input:focus-visible+label{", self.css)
 
 
 BODY_LOG = LOG.replace(
@@ -931,8 +931,8 @@ BODY_LOG = LOG.replace(
 )
 
 
-class BodyLaneTest(unittest.TestCase):
-    """Stage 2: the BODY lane — sleep, eat, gym, recreation — drawn as its own first row.
+class BodyTrackTest(unittest.TestCase):
+    """Stage 2: the BODY track — sleep, eat, gym, recreation — drawn as its own first row.
 
     The 24 hours the board draws are a day of a person, not of a queue: the hours already spent
     asleep, eating, at the gym or off are not available for work, and until they are on the strip
@@ -940,7 +940,7 @@ class BodyLaneTest(unittest.TestCase):
     carries, so this needs no new grammar — an event whose title names one of the four kinds is a
     body segment instead of a background band, and every other event stays the band it was.
 
-    The four fills are the ones already recorded against the body lane, and re-solving them is
+    The four fills are the ones already recorded against the body track, and re-solving them is
     parked: sleep #332288, eat #D55E00, gym #117733, recreation #F0E442, cream ink on sleep and
     gym alone.
     """
@@ -1009,12 +1009,12 @@ class DueNextCardsTest(unittest.TestCase):
     """Stage 3: DUE NEXT stops being one flat list and becomes a card per governing deadline.
 
     A flat list sorted by time answers "what is next" but not "what makes me late for the thing
-    with a clock on it" — the deadline is the question, and a lane answering to tomorrow sitting
+    with a clock on it" — the deadline is the question, and a task answering to tomorrow sitting
     between two of this morning's reads as though it were one of them. The cards keep the order
-    the deadlines fall in, and the lanes that answer to none come last.
+    the deadlines fall in, and the tasks that answer to none come last.
 
-    A row appears for any lane that has a time at all, written (`due`) or derived; `no estimate`
-    keeps the meaning the rest of the page gives it, `Bar.label == NO_ESTIMATE`, and those lanes
+    A row appears for any task that has a time at all, written (`due`) or derived; `no estimate`
+    keeps the meaning the rest of the page gives it, `Bar.label == NO_ESTIMATE`, and those tasks
     are counted in their card's head rather than given a row they cannot fill.
     """
 
@@ -1053,7 +1053,7 @@ class DueNextCardsTest(unittest.TestCase):
         self.assertIn('data-kind="orphaned"', row)
         self.assertIn("⚑", row)
 
-    def test_every_dated_lane_still_appears(self) -> None:
+    def test_every_dated_task_still_appears(self) -> None:
         for label in ("Write eval README", "Security audit", "Ship docs site",
                       "Reply to the scheduling thread", "Retire the v1 upload path"):
             self.assertIn(label, self.due, label)
@@ -1065,7 +1065,7 @@ class BlockedCardsTest(unittest.TestCase):
 
     BLOCKED is the band that is never folded, so it cannot be allowed to grow without bound either:
     each card shows its first three and says how many more there are. NOT REPORTING says how long a
-    session has been silent and how many lanes are waiting behind that silence — a session name on
+    session has been silent and how many tasks are waiting behind that silence — a session name on
     its own does not say what it costs.
     """
 
@@ -1089,10 +1089,10 @@ class BlockedCardsTest(unittest.TestCase):
         self.assertEqual(orphaned.count('<li class="blocked-row"'), 3, orphaned)
         self.assertRegex(orphaned, r'<li class="more">\+ 1 more</li>')
 
-    def test_a_lane_with_no_due_says_so(self) -> None:
+    def test_a_task_with_no_due_says_so(self) -> None:
         self.assertIn("no due", self.cards()["Orphaned"])
 
-    def test_not_reporting_says_how_long_and_how_many_lanes(self) -> None:
+    def test_not_reporting_says_how_long_and_how_many_tasks(self) -> None:
         card = self.cards()["Not reporting"]
         self.assertRegex(card, r'(silent \d+h\d+m|never reported)')
         self.assertRegex(card, r'\d+ tasks?</span>')
@@ -1101,20 +1101,20 @@ class BlockedCardsTest(unittest.TestCase):
 class WeekLoadTest(unittest.TestCase):
     """Stage 4: a load row over the week — what is committed against the work time there is for it.
 
-    The week strip says when lanes land. It does not say whether they can: a day carrying eighteen
+    The week strip says when tasks land. It does not say whether they can: a day carrying eighteen
     hours of estimated work and thirteen hours awake looks exactly like a day carrying four. The
     load row puts the two numbers side by side, one cell per day of the axis, and marks the days
     where the first is larger than the second.
 
-    Work time available is the day minus the body lane — which is why the body lane came first.
+    Work time available is the day minus the body track — which is why the body track came first.
     Beyond today the calendar holds no events, so nothing is booked and the whole day reads as
     available; that is true of the inputs rather than useful, and the gap is recorded under
     DEFERRED rather than papered over with an invented working day.
     """
 
     # SIZED_TRACKER is the fixture that can answer the question at all: it carries sizes and closed
-    # lanes with ranges, so there is a mean per size to estimate from. A tracker with neither has no
-    # committed time to report, only lanes it cannot size — which is what `data-unsized` counts.
+    # tasks with ranges, so there is a mean per size to estimate from. A tracker with neither has no
+    # committed time to report, only tasks it cannot size — which is what `data-unsized` counts.
     def setUp(self) -> None:
         self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
         self.html = rb.render(SIZED_TRACKER, BODY_LOG, self.cfg, NOW)
@@ -1137,7 +1137,7 @@ class WeekLoadTest(unittest.TestCase):
             self.assertGreaterEqual(int(available), 0)
             self.assertGreaterEqual(int(committed), 0)
 
-    def test_the_body_lane_is_taken_out_of_the_work_time(self) -> None:
+    def test_the_body_task_is_taken_out_of_the_work_time(self) -> None:
         """Today's available time runs from now, not from midnight — the morning is spent. NOW is
         14:30, so 570 minutes of the day are left, and BODY_LOG books 239 of them (gym 60, eat 40,
         recreation 90, sleep 49)."""
@@ -1161,12 +1161,12 @@ class WeekLoadTest(unittest.TestCase):
         self.assertIn('<span class="fill due"', self.load)
 
     def test_committed_is_work_and_not_the_span_of_the_bar(self) -> None:
-        """A lane running since Monday and due Friday occupies four days of the strip and is not
+        """A task running since Monday and due Friday occupies four days of the strip and is not
         four days of work; charging its span to every day it crosses is what this pins shut.
 
-        SIZED_TRACKER's five active lanes, each charged once to the day it lands, all of which is
+        SIZED_TRACKER's five active tasks, each charged once to the day it lands, all of which is
         today: A oldest 1h30m + B running 30m + C newer 1h07m derived = 187, and D dated (no
-        estimate, no L in the history, so the mean of all four closed lanes, 1h07m) + E unassigned
+        estimate, no L in the history, so the mean of all four closed tasks, 1h07m) + E unassigned
         (M, 1h30m) = 157 written. 344 against 331 minutes of work time left, so today is over."""
         first = re.search(r'<div class="load-cell"[^>]*data-committed="(\d+)" data-due="(\d+)" '
                           r'data-derived="(\d+)" data-unsized="(\d+)" data-available="(\d+)" '
@@ -1174,7 +1174,7 @@ class WeekLoadTest(unittest.TestCase):
         self.assertIsNotNone(first, self.load[:400])
         self.assertEqual(first.groups(), ("344", "157", "187", "0", "331", "1"))
 
-    def test_each_lane_is_charged_to_exactly_one_day(self) -> None:
+    def test_each_task_is_charged_to_exactly_one_day(self) -> None:
         total = sum(int(c) for c in re.findall(r'data-committed="(\d+)"', self.load))
         self.assertEqual(total, 344)
 
@@ -1188,7 +1188,7 @@ class WeekLoadTest(unittest.TestCase):
 class SectionOrderTest(unittest.TestCase):
     """Stage 5: requirements and sessions take their slots, and the page reads in one order.
 
-    DUE NEXT · BLOCKED · 24 HOURS · WEEK · REQUIREMENTS · LANES · SESSIONS. Requirements sat third,
+    DUE NEXT · BLOCKED · 24 HOURS · WEEK · REQUIREMENTS · TASKS · SESSIONS. Requirements sat third,
     between BLOCKED and the day strip, where a long deck pushed the two strips off the first screen
     — the thing with a clock on it should not be below a checklist of what the deck must contain.
     It answers "is the deck ready", which is a question about the week, so it follows the week.
@@ -1217,7 +1217,7 @@ class SectionOrderTest(unittest.TestCase):
         at = [self.body.index(m) for m in marks]
         self.assertEqual(at, sorted(at), [m for _, m in sorted(zip(at, marks))])
 
-    def test_requirements_sit_between_the_week_and_the_lanes(self) -> None:
+    def test_requirements_sit_between_the_week_and_the_tasks(self) -> None:
         self.assertGreater(self.body.index('class="reqs"'), self.body.index('data-strip="week"'))
         self.assertLess(self.body.index('class="reqs"'), self.body.index("<h2>Tasks"))
 
@@ -1237,7 +1237,7 @@ class PhoneTest(unittest.TestCase):
     Laptop first was the decision, so nothing here changes the wide layout. What it fixes is the
     three places that cannot survive a 390px viewport: the due row's fixed owner and time columns,
     the strip's percentage name column (36% of 390 is 140px of name against 218px of axis), and the
-    six-column lane table, which is wider than the screen whatever the CSS says.
+    six-column task table, which is wider than the screen whatever the CSS says.
 
     A table is allowed to scroll sideways inside its own box. The page body is not — a board that
     slides under the thumb is the failure this stage exists to prevent.
@@ -1264,7 +1264,7 @@ class PhoneTest(unittest.TestCase):
     def test_the_strip_name_column_is_pixels_not_a_third_of_the_screen(self) -> None:
         self.assertRegex(self.phone, r"\.strip\{--name-w:9[0-9]px\}")
 
-    def test_the_lane_table_scrolls_inside_its_own_box(self) -> None:
+    def test_the_task_table_scrolls_inside_its_own_box(self) -> None:
         self.assertIn('<div class="scroll">', self.html.split("<h2>Tasks", 1)[1])
         self.assertRegex(self.css, r"\.scroll\{[^}]*overflow-x:auto")
 
@@ -1353,7 +1353,7 @@ class LegendTest(unittest.TestCase):
         self.assertEqual(self.html.count('class="legend"'), 1)
 
 
-class LaneGroupHeaderTest(unittest.TestCase):
+class TaskGroupHeaderTest(unittest.TestCase):
     def setUp(self) -> None:
         self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
         self.html = rb.render(OrphanAndUnassignedTest.TRACKER, LOG, self.cfg, NOW)
@@ -1409,7 +1409,7 @@ RESUME = """- As of: 09:52 — gauntlet-f0 [308833]
 - Re-arm: the 30-minute check; the board watch
 - Verified: origin/main d6aab3b, 2 unpushed; agent /ready 200, login 200 (09:47)
 """
-TRACKER_RESUME = TRACKER.replace("## Lanes", "## Resume\n\n" + RESUME + "\n## Lanes", 1)
+TRACKER_RESUME = TRACKER.replace("## Tasks", "## Resume\n\n" + RESUME + "\n## Tasks", 1)
 
 
 class LegendKeyTest(unittest.TestCase):
@@ -1455,10 +1455,10 @@ class ResumeBlockTest(unittest.TestCase):
         self.assertEqual(rb.parse_resume(TRACKER), {})
 
     def test_board_url_still_comes_from_the_header_not_the_block(self) -> None:
-        # A block above Lanes is inside the old header slice; a `Board:` word in it must not win.
+        # A block above Tasks is inside the old header slice; a `Board:` word in it must not win.
         tracker = TRACKER.replace(
-            "## Lanes",
-            "## Resume\n\n- Next: say the Board: not-a-url line was never republished\n\n## Lanes",
+            "## Tasks",
+            "## Resume\n\n- Next: say the Board: not-a-url line was never republished\n\n## Tasks",
             1,
         )
         self.assertEqual(rb.parse_tracker(tracker).board_url, "board-7")
@@ -1473,8 +1473,8 @@ class ResumeBlockTest(unittest.TestCase):
         tracker = tracker.replace("- Re-arm:", "- Note: Board: bogus-url was last published at 09:00\n- Re-arm:")
         self.assertIsNone(rb.parse_tracker(tracker).board_url)
 
-    def test_the_block_does_not_become_a_lane(self) -> None:
-        self.assertEqual(len(rb.parse_tracker(TRACKER_RESUME).lanes), len(rb.parse_tracker(TRACKER).lanes))
+    def test_the_block_does_not_become_a_task(self) -> None:
+        self.assertEqual(len(rb.parse_tracker(TRACKER_RESUME).tasks), len(rb.parse_tracker(TRACKER).tasks))
 
     def test_page_shows_the_resume_strip(self) -> None:
         html = rb.render(TRACKER_RESUME, LOG, self.cfg, NOW)
@@ -1570,7 +1570,7 @@ class StateLegibilityTest(unittest.TestCase):
             self.assertEqual(key, bar, f"the {state} legend key does not match its bar")
 
     def test_the_legend_never_shows_a_state_the_chart_cannot_draw(self) -> None:
-        """Every bar key names a kind the day strip draws. `done` joined them on 2026-09-22, when lanes
+        """Every bar key names a kind the day strip draws. `done` joined them on 2026-09-22, when tasks
         finished in the strip's eight hours behind now started being drawn."""
         drawn = {"running", "open", "orphaned", "open-end", "derived", "summary", "done"}
         for cls, _ in rb.LEGEND:
@@ -1579,10 +1579,10 @@ class StateLegibilityTest(unittest.TestCase):
 
 
 class FoldedRowsExpandTest(unittest.TestCase):
-    """45 of 58 lanes behind one strip, with nothing to open it. The names were in the html all along.
+    """45 of 58 tasks behind one strip, with nothing to open it. The names were in the html all along.
 
-    0.6.2 opened the fold onto a list of names. Zach, 2026-09-18 12:55: "lane expansion must show sublanes,
-    not a wierd text listing of lanes". The body is now the members drawn as rows on the same axis.
+    0.6.2 opened the fold onto a list of names. Zach, 2026-09-18 12:55: "task expansion must show sublanes,
+    not a wierd text listing of tasks". The body is now the members drawn as rows on the same axis.
     """
 
     def setUp(self) -> None:
@@ -1792,7 +1792,7 @@ class ResumeLegibilityTest(unittest.TestCase):
 
     def setUp(self) -> None:
         self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
-        self.tracker = TRACKER.replace("## Lanes", "## Resume\n\n" + self.LIVE + "\n## Lanes", 1)
+        self.tracker = TRACKER.replace("## Tasks", "## Resume\n\n" + self.LIVE + "\n## Tasks", 1)
         self.block = rb.parse_resume(self.tracker)
         self.html = rb.render(self.tracker, LOG, self.cfg, NOW)
         self.strip = re.search(r'<(dl|div) class="resume".*?</\1>', self.html, re.S)
@@ -1818,7 +1818,7 @@ class ResumeLegibilityTest(unittest.TestCase):
         self.assertEqual(self.strip.group(0).count("<dd"), len(self.block))
 
     def test_a_field_past_the_threshold_folds_rather_than_running_off(self) -> None:
-        """The board already owns this idiom: `item_cell()` folds a long lane item the same way."""
+        """The board already owns this idiom: `item_cell()` folds a long task item the same way."""
         long_value = "a merge order decision that will not fit on one line " * 5
         tracker = self.tracker.replace("- In flight: nothing, and nothing has changed since 13:40",
                                        "- In flight: " + long_value)
@@ -1874,7 +1874,7 @@ class ResumeLegibilityTest(unittest.TestCase):
         self.assertIn("overflow-y:auto", rule.group(1).replace(" ", ""))
 
     def test_an_over_long_field_is_counted_as_a_warning_not_as_telemetry(self) -> None:
-        """`resume_long=4` printed beside `warnings=0` for three hours and read as a lane count."""
+        """`resume_long=4` printed beside `warnings=0` for three hours and read as a task count."""
         root = Path(tempfile.mkdtemp())
         (root / "CLAUDE.md").write_text(CLAUDE_MD)
         (root / "daily").mkdir()
@@ -1897,7 +1897,7 @@ class ResumeLegibilityTest(unittest.TestCase):
         19 044 characters with the count in every render for nine hours. Folding is a display
         question and warning is a hygiene question; they want their own numbers.
 
-        Measured on a live 136-lane tracker: 286, 241, 269, 250, 273 — over the fold, inside the rule.
+        Measured on a live 136-task tracker: 286, 241, 269, 250, 273 — over the fold, inside the rule.
         """
         root = Path(tempfile.mkdtemp())
         (root / "CLAUDE.md").write_text(CLAUDE_MD)
@@ -1944,7 +1944,7 @@ class ResumeCountTest(unittest.TestCase):
         (self.root / "CLAUDE.md").write_text(CLAUDE_MD)
         (self.root / "daily").mkdir()
         resume = "- As of: 09:00 — gauntlet-f0\n- In flight:\n- Next: the deploy decision\n"
-        self.tracker = TRACKER.replace("## Lanes", "## Resume\n\n" + resume + "\n## Lanes", 1)
+        self.tracker = TRACKER.replace("## Tasks", "## Resume\n\n" + resume + "\n## Tasks", 1)
         (self.root / "daily" / "2026-09-16-tracker.md").write_text(self.tracker)
 
     def test_the_reported_count_is_what_was_drawn_and_not_what_was_parsed(self) -> None:
@@ -1963,12 +1963,12 @@ class ResumeCountTest(unittest.TestCase):
 class GoneSessionTest(unittest.TestCase):
     """The join, in the renderer. A session cannot report that it is gone, so the coordinator works it out.
 
-    `orphaned` is a lane state meaning the owner left. A session still listed in `## Sessions` whose
-    lane is orphaned is a row the registry has not caught up with, and drawing it as `working` on the
+    `orphaned` is a task state meaning the owner left. A session still listed in `## Sessions` whose
+    task is orphaned is a row the registry has not caught up with, and drawing it as `working` on the
     strength of its own last reply is the board repeating a claim its other column already contradicts.
     """
 
-    LANES = ("| Ghost work | wanderer | orphaned | 09:00 |  | Checklist: Ghost work |\n"
+    TASKS = ("| Ghost work | wanderer | orphaned | 09:00 |  | Checklist: Ghost work |\n"
              "| Live work | worker-9a | running 10:30 |  |  | Checklist: Live work |")
 
     def setUp(self) -> None:
@@ -1977,18 +1977,18 @@ class GoneSessionTest(unittest.TestCase):
 
 Coordinator: coordinator. Board: board-7.
 
-## Lanes
+## Tasks
 
 | item | owner | state | since | due | checklist |
 |---|---|---|---|---|---|
-{self.LANES}
+{self.TASKS}
 
 ## Sessions
 
 | ref | name | state | doing | waiting on | free at | constraints | children | last reply |
 |---|---|---|---|---|---|---|---|---|
-| a1b2c3 | worker-9a | working | a lane | | 15:00 | | none | 11:40 |
-| e5f6a7 | wanderer | working | a lane | | 15:00 | | none | 11:40 |
+| a1b2c3 | worker-9a | working | a task | | 15:00 | | none | 11:40 |
+| e5f6a7 | wanderer | working | a task | | 15:00 | | none | 11:40 |
 
 ## File ownership
 
@@ -1997,19 +1997,19 @@ Coordinator: coordinator. Board: board-7.
 - 09:00 opened the day
 """
         parsed = rb.parse_tracker(self.tracker)
-        self.gone = rb.gone_sessions(parsed.lanes, parsed.sessions)
+        self.gone = rb.gone_sessions(parsed.tasks, parsed.sessions)
 
-    def test_a_session_whose_lane_is_orphaned_is_gone(self) -> None:
+    def test_a_session_whose_task_is_orphaned_is_gone(self) -> None:
         self.assertIn("wanderer", self.gone)
 
-    def test_a_session_whose_lane_is_running_is_not(self) -> None:
+    def test_a_session_whose_task_is_running_is_not(self) -> None:
         self.assertNotIn("worker-9a", self.gone)
 
     def test_the_ref_a_listing_shows_does_not_defeat_the_join(self) -> None:
-        lanes = (rb.Lane("Ghost work", "wanderer [e5f6a7]", "orphaned", "", "", ""),)
+        tasks = (rb.Task("Ghost work", "wanderer [e5f6a7]", "orphaned", "", "", ""),)
         s = (rb.Session(ref="e5f6a7", name="wanderer", state="working", doing="", waiting_on="",
                         free_at="", constraints="", children="", last_reply="11:40"),)
-        self.assertIn("wanderer", rb.gone_sessions(lanes, s))
+        self.assertIn("wanderer", rb.gone_sessions(tasks, s))
 
     def test_emphasis_on_either_side_does_not_defeat_the_join(self) -> None:
         """A bolded name is the same name. Both sides of the join have to strip the same things.
@@ -2018,16 +2018,16 @@ Coordinator: coordinator. Board: board-7.
         that misses them draws a live session as gone — the one state the board takes over a
         session's own word, so it has to be right.
         """
-        lanes = (rb.Lane("Ghost work", "**wanderer** (tab title)", "orphaned", "", "", ""),)
+        tasks = (rb.Task("Ghost work", "**wanderer** (tab title)", "orphaned", "", "", ""),)
         s = (rb.Session(ref="e5f6a7", name="wanderer", state="working", doing="", waiting_on="",
                         free_at="", constraints="", children="", last_reply="11:40"),)
-        self.assertIn("wanderer", rb.gone_sessions(lanes, s))
+        self.assertIn("wanderer", rb.gone_sessions(tasks, s))
 
-    def test_a_bolded_registry_name_is_not_gone_when_its_lane_runs(self) -> None:
-        lanes = (rb.Lane("Live work", "worker-9a", "running 10:30", "", "", ""),)
+    def test_a_bolded_registry_name_is_not_gone_when_its_task_runs(self) -> None:
+        tasks = (rb.Task("Live work", "worker-9a", "running 10:30", "", "", ""),)
         s = (rb.Session(ref="a1b2c3", name="**worker-9a**", state="working", doing="", waiting_on="",
                         free_at="", constraints="", children="", last_reply="11:40"),)
-        self.assertEqual(set(), rb.gone_sessions(lanes, s))
+        self.assertEqual(set(), rb.gone_sessions(tasks, s))
 
     def test_the_graph_draws_gone_over_what_the_session_reported(self) -> None:
         out = rb.session_graph(rb.parse_tracker(self.tracker).sessions, self.cfg, NOW, gone=self.gone)
@@ -2042,7 +2042,7 @@ Coordinator: coordinator. Board: board-7.
 
 QUEUE_TRACKER = """# Tracker 2026-09-16
 
-## Lanes
+## Tasks
 
 | item | owner | state | since | due | checklist |
 |---|---|---|---|---|---|
@@ -2065,23 +2065,23 @@ QUEUE_TRACKER = """# Tracker 2026-09-16
 
 
 class EstimateTest(unittest.TestCase):
-    """An owned lane with no `due` ends where its owner's queue puts it, and cites `derived`.
+    """An owned task with no `due` ends where its owner's queue puts it, and cites `derived`.
 
     The tracker's clock is day-grained (`since` and `due` are dates; only `done` carries a time), so no
-    lane has a duration to learn from. The estimator therefore claims nothing about effort: lane i of
+    task has a duration to learn from. The estimator therefore claims nothing about effort: task i of
     an owner's N ends at `H - (N-i)/N x (H - now)`, where H is the nearest deadline still ahead. The
     one fabricated input is the order, and it is stated: running first, then oldest first.
     """
 
     def setUp(self) -> None:
         self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
-        self.lanes = [lane for lane in rb.parse_tracker(QUEUE_TRACKER).lanes if lane.kind != "done"]
-        self.by = {lane.item: lane for lane in self.lanes}
-        self.est = rb.estimates(self.lanes, self.cfg, NOW)
+        self.tasks = [task for task in rb.parse_tracker(QUEUE_TRACKER).tasks if task.kind != "done"]
+        self.by = {task.item: task for task in self.tasks}
+        self.est = rb.estimates(self.tasks, self.cfg, NOW)
         self.h = self.cfg.deadlines[0].at  # Launch 23:59, the nearest deadline ahead of 14:30
         self.r = self.h - NOW
 
-    def test_the_queue_is_running_first_then_oldest_and_the_dated_lane_counts(self) -> None:
+    def test_the_queue_is_running_first_then_oldest_and_the_dated_task_counts(self) -> None:
         # worker: B (running), A (since 09-15), C (09-16), D (09-16, due 17:00 <= H) -> N=4; J's due is past H.
         self.assertEqual({k for k in self.est if self.by[k].owner.startswith("worker")}, {"A oldest", "B running", "C newer"})
         self.assertEqual((self.est["B running"].i, self.est["B running"].n), (1, 4))
@@ -2095,24 +2095,24 @@ class EstimateTest(unittest.TestCase):
     def test_a_ref_and_a_parenthetical_are_one_owner(self) -> None:
         self.assertEqual({self.est[k].n for k in ("A oldest", "B running", "C newer")}, {4})
 
-    def test_the_last_lane_ends_at_the_deadline_instant(self) -> None:
-        lanes = [self.by["A oldest"], self.by["C newer"]]
-        est = rb.estimates(lanes, self.cfg, NOW)
+    def test_the_last_task_ends_at_the_deadline_instant(self) -> None:
+        tasks = [self.by["A oldest"], self.by["C newer"]]
+        est = rb.estimates(tasks, self.cfg, NOW)
         self.assertEqual((est["A oldest"].i, est["C newer"].i), (1, 2))
         self.assertEqual(est["C newer"].end, self.h)
         self.assertEqual(est["A oldest"].end, NOW + self.r / 2)
 
-    def test_unowned_gone_and_dated_lanes_get_no_estimate(self) -> None:
+    def test_unowned_gone_and_dated_tasks_get_no_estimate(self) -> None:
         for item in ("D dated", "E unassigned", "F blank", "G orphaned", "H left behind", "I dash", "J beyond"):
             self.assertNotIn(item, self.est, item)
 
     def test_a_derived_end_reaches_the_bar_only_when_asked_for(self) -> None:
-        lane = self.by["A oldest"]
-        plain = rb.day_bar(lane, self.cfg, NOW)
+        task = self.by["A oldest"]
+        plain = rb.day_bar(task, self.cfg, NOW)
         self.assertEqual((plain.end_src, plain.label), ("deadline", "no estimate"))
-        b = rb.day_bar(lane, self.cfg, NOW, self.est)
+        b = rb.day_bar(task, self.cfg, NOW, self.est)
         self.assertEqual((b.end_src, b.label, b.end), ("derived", "est. 2/4 → Launch", self.est["A oldest"].end))
-        w = rb.week_bar(lane, self.cfg, NOW, self.est)
+        w = rb.week_bar(task, self.cfg, NOW, self.est)
         self.assertEqual((w.end_src, w.end), ("derived", self.est["A oldest"].end))
         d = rb.day_bar(self.by["D dated"], self.cfg, NOW, self.est)
         self.assertEqual(d.end_src, "due")
@@ -2127,15 +2127,15 @@ class EstimateTest(unittest.TestCase):
 
     def test_a_since_after_now_never_ends_before_it_starts(self) -> None:
         text = QUEUE_TRACKER.replace("| A oldest | worker | open | 2026-09-15 |", "| A oldest | worker | open | 2026-09-17 |")
-        lanes = [lane for lane in rb.parse_tracker(text).lanes if lane.item == "A oldest"]
-        w = rb.week_bar(lanes[0], self.cfg, NOW, rb.estimates(lanes, self.cfg, NOW))
+        tasks = [task for task in rb.parse_tracker(text).tasks if task.item == "A oldest"]
+        w = rb.week_bar(tasks[0], self.cfg, NOW, rb.estimates(tasks, self.cfg, NOW))
         self.assertEqual(w.end_src, "derived")
         self.assertGreaterEqual(w.end, w.start)
 
     def test_item_text_is_never_read(self) -> None:
         text = QUEUE_TRACKER.replace("| A oldest |", "| A oldest, a very long item whose length says nothing about the work left (history: 09:00 opened; 10:00 blocked; 11:00 resumed; 12:00 more of the same) |")
-        lanes = [lane for lane in rb.parse_tracker(text).lanes if lane.kind != "done"]
-        other = rb.estimates(lanes, self.cfg, NOW)
+        tasks = [task for task in rb.parse_tracker(text).tasks if task.kind != "done"]
+        other = rb.estimates(tasks, self.cfg, NOW)
         self.assertEqual({e.end for e in other.values()}, {e.end for e in self.est.values()})
 
 
@@ -2162,7 +2162,7 @@ class DrawnEstimateTest(unittest.TestCase):
         self.assertRegex(a, r'title="[^"]*queue[^"]*"')
         self.assertIn('class="bar running derived"', self.bar("B running"))
 
-    def test_an_unowned_lane_still_says_no_estimate(self) -> None:
+    def test_an_unowned_task_still_says_no_estimate(self) -> None:
         for item in ("E unassigned", "F blank", "H left behind"):
             self.assertRegex(self.day, rf'class="member" data-item="{re.escape(item)}"[^>]*data-end-src="deadline"[^>]*data-label="no estimate"')
 
@@ -2206,7 +2206,7 @@ class DrawnEstimateTest(unittest.TestCase):
 
 SIZED_TRACKER = """# Tracker 2026-09-16
 
-## Lanes
+## Tasks
 
 | item | owner | state | since | due | size | checklist |
 |---|---|---|---|---|---|---|
@@ -2229,35 +2229,35 @@ SIZED_TRACKER = """# Tracker 2026-09-16
 
 
 class SizeGrammarTest(unittest.TestCase):
-    """The Lanes table may carry a `size` column, and `done` may keep the running start as a range.
+    """The Tasks table may carry a `size` column, and `done` may keep the running start as a range.
 
     Finding 77: the estimator's second model needs two things the tracker never recorded — how big a
-    lane is and how long lanes of that size took. The size is the coordinator's judgement in a column;
+    task is and how long tasks of that size took. The size is the coordinator's judgement in a column;
     the duration is the `running HH:MM` start kept on close, `done 21:16–22:05`, which `done 22:05`
     alone threw away (finding 78).
     """
 
     def setUp(self) -> None:
         self.t = rb.parse_tracker(SIZED_TRACKER)
-        self.by = {lane.item: lane for lane in self.t.lanes}
+        self.by = {task.item: task for task in self.t.tasks}
 
     def test_seven_columns_parse_and_the_size_is_read_by_header(self) -> None:
         self.assertEqual(self.by["A oldest"].size, "M")
         self.assertEqual(self.by["C newer"].size, "")
         self.assertEqual(self.by["A oldest"].checklist, "c")
-        self.assertEqual([lane.warning for lane in self.t.lanes], [""] * len(self.t.lanes))
+        self.assertEqual([task.warning for task in self.t.tasks], [""] * len(self.t.tasks))
 
     def test_six_columns_still_parse_unsized_without_a_warning(self) -> None:
         t = rb.parse_tracker(QUEUE_TRACKER)
-        self.assertEqual({lane.size for lane in t.lanes}, {""})
-        self.assertEqual([lane.warning for lane in t.lanes], [""] * len(t.lanes))
-        self.assertEqual(t.lanes[0].checklist, "c")
+        self.assertEqual({task.size for task in t.tasks}, {""})
+        self.assertEqual([task.warning for task in t.tasks], [""] * len(t.tasks))
+        self.assertEqual(t.tasks[0].checklist, "c")
 
     def test_a_row_matching_neither_width_still_warns(self) -> None:
         text = SIZED_TRACKER.replace("| C newer | worker | open | 2026-09-16 |  |  | c |", "| C newer | worker | open |")
-        lane = {l.item: l for l in rb.parse_tracker(text).lanes}["C newer"]
-        self.assertIn("3 cells", lane.warning)
-        self.assertIn("expected 7", lane.warning)
+        task = {l.item: l for l in rb.parse_tracker(text).tasks}["C newer"]
+        self.assertIn("3 cells", task.warning)
+        self.assertIn("expected 7", task.warning)
 
     def test_a_done_range_keeps_the_end_as_state_time_and_exposes_the_start(self) -> None:
         self.assertEqual(self.by["K1 done"].state_time, "10:00")
@@ -2275,7 +2275,7 @@ class SizeGrammarTest(unittest.TestCase):
 
     def test_history_means_per_size_with_an_all_sizes_row(self) -> None:
         cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
-        h = rb.history(self.t.lanes, cfg, NOW)
+        h = rb.history(self.t.tasks, cfg, NOW)
         self.assertEqual(h["M"], (timedelta(hours=1, minutes=30), 2))
         self.assertEqual(h["S"], (timedelta(minutes=30), 1))
         self.assertEqual(h[""], (timedelta(hours=1), 1))
@@ -2285,24 +2285,24 @@ class SizeGrammarTest(unittest.TestCase):
 
     def test_no_range_anywhere_means_no_history(self) -> None:
         cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
-        self.assertEqual(rb.history(rb.parse_tracker(QUEUE_TRACKER).lanes, cfg, NOW), {})
+        self.assertEqual(rb.history(rb.parse_tracker(QUEUE_TRACKER).tasks, cfg, NOW), {})
 
 
 class SizedEstimateTest(unittest.TestCase):
-    """With history, a lane ends where its owner's queue puts it times what lanes of its size have taken.
+    """With history, a task ends where its owner's queue puts it times what tasks of its size have taken.
 
     Zach, 2026-09-18 23:07: "infer a t-shirt size ... generate an average amount of time spent per t-shirt
-    sized puzzle ... use that." A cursor starts at now; a running lane ends at its own start plus the mean
-    for its size, never before now; every other lane ends at the cursor plus its mean; a lane with a due
-    advances the cursor and keeps its due. Only blank-due owned lanes get a derived end.
+    sized puzzle ... use that." A cursor starts at now; a running task ends at its own start plus the mean
+    for its size, never before now; every other task ends at the cursor plus its mean; a task with a due
+    advances the cursor and keeps its due. Only blank-due owned tasks get a derived end.
     """
 
     def setUp(self) -> None:
         self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
-        self.lanes = list(rb.parse_tracker(SIZED_TRACKER).lanes)
-        self.active = [lane for lane in self.lanes if lane.kind != "done"]
-        self.by = {lane.item: lane for lane in self.lanes}
-        self.hist = rb.history(self.lanes, self.cfg, NOW)
+        self.tasks = list(rb.parse_tracker(SIZED_TRACKER).tasks)
+        self.active = [task for task in self.tasks if task.kind != "done"]
+        self.by = {task.item: task for task in self.tasks}
+        self.hist = rb.history(self.tasks, self.cfg, NOW)
         self.est = rb.estimates(self.active, self.cfg, NOW, self.hist)
         self.m, self.s, self.unsized = timedelta(minutes=90), timedelta(minutes=30), timedelta(minutes=67, seconds=30)
 
@@ -2333,13 +2333,13 @@ class SizedEstimateTest(unittest.TestCase):
 
     def test_a_size_with_no_history_borrows_the_all_sizes_mean(self) -> None:
         text = SIZED_TRACKER.replace("| C newer | worker | open | 2026-09-16 |  |  | c |", "| C newer | worker | open | 2026-09-16 |  | XL | c |")
-        lanes = list(rb.parse_tracker(text).lanes)
-        est = rb.estimates([l for l in lanes if l.kind != "done"], self.cfg, NOW, rb.history(lanes, self.cfg, NOW))
+        tasks = list(rb.parse_tracker(text).tasks)
+        est = rb.estimates([l for l in tasks if l.kind != "done"], self.cfg, NOW, rb.history(tasks, self.cfg, NOW))
         self.assertEqual(est["C newer"].end, NOW + self.m + self.unsized)
         self.assertEqual(est["C newer"].label, "est. XL ~1h07m")
         self.assertIn("no XL task has closed with a range", est["C newer"].title("worker"))
 
-    def test_unowned_lanes_get_nothing_even_when_sized(self) -> None:
+    def test_unowned_tasks_get_nothing_even_when_sized(self) -> None:
         self.assertNotIn("E unassigned", self.est)
 
     def test_no_history_falls_back_to_the_queue_drain(self) -> None:
@@ -2376,13 +2376,13 @@ class DrawnSizedEstimateTest(unittest.TestCase):
         self.assertIn('data-est-of="Launch"', m.group(0))
         self.assertNotIn("data-size", m.group(0))
 
-    def test_an_unowned_sized_lane_says_no_estimate_and_its_size(self) -> None:
+    def test_an_unowned_sized_task_says_no_estimate_and_its_size(self) -> None:
         self.assertRegex(self.day, r'data-item="E unassigned"[^>]*data-size="M"[^>]*data-label="no estimate"|data-item="E unassigned"[^>]*data-label="no estimate"[^>]*data-size="M"')
 
-    def test_the_lanes_table_has_a_size_column(self) -> None:
-        lanes = self.html.split("<h2>Tasks</h2>")[1]
-        self.assertIn("<th>item</th><th>owner</th><th>state</th><th>since</th><th>due</th><th>size</th>", lanes)
-        self.assertRegex(lanes, r'<tr data-state="open"[^>]*data-size="M">.*?<td>M</td>')
+    def test_the_tasks_table_has_a_size_column(self) -> None:
+        tasks = self.html.split("<h2>Tasks</h2>")[1]
+        self.assertIn("<th>item</th><th>owner</th><th>state</th><th>since</th><th>due</th><th>size</th>", tasks)
+        self.assertRegex(tasks, r'<tr data-state="open"[^>]*data-size="M">.*?<td>M</td>')
 
     def test_the_cli_reports_history_per_size(self) -> None:
         root = Path(tempfile.mkdtemp())
@@ -2400,12 +2400,12 @@ class DrawnSizedEstimateTest(unittest.TestCase):
         self.assertIn("history=none", buf.getvalue())
 
 
-CLAUDE_MD_EXAM = CLAUDE_MD.replace("  - Final: 2026-09-20 12:00", "  - Final: 2026-09-20 12:00\n  - PCCAT 1st attempt: 2026-09-26; named lanes only")
+CLAUDE_MD_EXAM = CLAUDE_MD.replace("  - Final: 2026-09-20 12:00", "  - Final: 2026-09-20 12:00\n  - PCCAT 1st attempt: 2026-09-26; named tasks only")
 CLAUDE_MD_EXAM_GOVERNS = CLAUDE_MD.replace("  - Final: 2026-09-20 12:00", "  - Final: 2026-09-20 12:00\n  - PCCAT 1st attempt: 2026-09-26")
 SUNDAY = datetime(2026, 9, 20, 12, 1, tzinfo=CT)
 SUNDAY_TRACKER = """# Tracker 2026-09-20
 
-## Lanes
+## Tasks
 
 | item | owner | state | since | due | checklist |
 |---|---|---|---|---|---|
@@ -2421,26 +2421,26 @@ SUNDAY_TRACKER = """# Tracker 2026-09-20
 
 
 class DeadlineScopeTest(unittest.TestCase):
-    """Finding 73: after Final, the nearest deadline is an exam, and nothing on the Lanes table is due to it.
+    """Finding 73: after Final, the nearest deadline is an exam, and nothing on the Tasks table is due to it.
 
-    A deadline line may say `named lanes only`: lanes whose `due` names it still draw to it, and no lane
-    falls to it by default. The estimator's horizon, the unowned lane's open end and the week strip's
-    fold use the nearest deadline that governs unnamed lanes; the Clock line and the axes keep the
+    A deadline line may say `named tasks only`: tasks whose `due` names it still draw to it, and no task
+    falls to it by default. The estimator's horizon, the unowned task's open end and the week strip's
+    fold use the nearest deadline that governs unnamed tasks; the Clock line and the axes keep the
     nearest deadline of all, because the exam is real.
     """
 
     def setUp(self) -> None:
         self.cfg = rb.parse_coordinator(CLAUDE_MD_EXAM, today=SUNDAY.date())
         self.governs = rb.parse_coordinator(CLAUDE_MD_EXAM_GOVERNS, today=SUNDAY.date())
-        self.lanes = list(rb.parse_tracker(SUNDAY_TRACKER).lanes)
-        self.by = {lane.item: lane for lane in self.lanes}
+        self.tasks = list(rb.parse_tracker(SUNDAY_TRACKER).tasks)
+        self.by = {task.item: task for task in self.tasks}
 
     def test_the_option_parses_and_defaults_to_all(self) -> None:
         exam = next(d for d in self.cfg.deadlines if d.name.startswith("PCCAT"))
         self.assertEqual(exam.scope, "named")
         self.assertEqual({d.scope for d in self.cfg.deadlines if d.name != exam.name}, {"all"})
         self.assertEqual({d.scope for d in self.governs.deadlines}, {"all"})
-        both = rb.parse_coordinator(CLAUDE_MD.replace("  - Final: 2026-09-20 12:00", "  - Final: 2026-09-20 12:00; named lanes only; requirements `reqs.md`"), today=SUNDAY.date())
+        both = rb.parse_coordinator(CLAUDE_MD.replace("  - Final: 2026-09-20 12:00", "  - Final: 2026-09-20 12:00; named tasks only; requirements `reqs.md`"), today=SUNDAY.date())
         final = next(d for d in both.deadlines if d.name == "Final")
         self.assertEqual((final.scope, final.requirements), ("named", "reqs.md"))
 
@@ -2454,17 +2454,17 @@ class DeadlineScopeTest(unittest.TestCase):
 
     def test_the_horizon_and_the_estimates_stop_at_end_of_day(self) -> None:
         self.assertEqual(rb.horizon(self.cfg, SUNDAY), (datetime(2026, 9, 21, 0, 0, tzinfo=CT), "end of day"))
-        est = rb.estimates(self.lanes, self.cfg, SUNDAY)
+        est = rb.estimates(self.tasks, self.cfg, SUNDAY)
         self.assertEqual({e.of for e in est.values()}, {"end of day"})
         self.assertEqual(est["Leftover one"].label, "est. 1/2 → end of day")
-        self.assertEqual({e.of for e in rb.estimates(self.lanes, self.governs, SUNDAY).values()}, {"PCCAT 1st attempt"})
+        self.assertEqual({e.of for e in rb.estimates(self.tasks, self.governs, SUNDAY).values()}, {"PCCAT 1st attempt"})
 
-    def test_an_unowned_lane_ends_today_not_at_the_exam(self) -> None:
+    def test_an_unowned_task_ends_today_not_at_the_exam(self) -> None:
         b = rb.day_bar(self.by["Nobody's"], self.cfg, SUNDAY)
         self.assertEqual((b.end, b.end_src, b.label), (datetime(2026, 9, 20, 23, 59, tzinfo=CT), "deadline", "no estimate"))
         self.assertEqual(rb.day_bar(self.by["Nobody's"], self.governs, SUNDAY).end, datetime(2026, 9, 26, 23, 59, tzinfo=CT))
 
-    def test_a_lane_that_names_the_exam_still_draws_to_it(self) -> None:
+    def test_a_task_that_names_the_exam_still_draws_to_it(self) -> None:
         b = rb.day_bar(self.by["Study"], self.cfg, SUNDAY)
         self.assertEqual((b.end, b.end_src), (datetime(2026, 9, 26, 23, 59, tzinfo=CT), "due"))
         self.assertEqual(rb._deadline_for(self.by["Study"], b, self.cfg, SUNDAY).name, "PCCAT 1st attempt")
@@ -2495,14 +2495,14 @@ class DeadlineScopeTest(unittest.TestCase):
 
 
 # --- the tracer bullet ----------------------------------------------------------------------------
-# One lane threaded through every layer: written with a `name`, parsed, labelled by that name,
+# One task threaded through every layer: written with a `name`, parsed, labelled by that name,
 # placed on a rolling 24h axis, inside a deadline swimlane under its owner, on a reordered page.
 
 TRACKER_NAMED = """# Tracker 2026-09-16
 
 Coordinator: coordinator. Board: board-7.
 
-## Lanes
+## Tasks
 
 | name | item | owner | state | since | due | size | checklist |
 |---|---|---|---|---|---|---|---|
@@ -2524,7 +2524,7 @@ MARKS_TRACKER = """# Tracker 2026-09-16
 - As of: 09:52 — gauntlet-f0 [308833]
 - Verified 09:47: origin/main `d6aab3b`, 2 unpushed; agent /ready 200
 
-## Lanes
+## Tasks
 
 | item | owner | state | since | due | checklist |
 |---|---|---|---|---|---|
@@ -2535,7 +2535,7 @@ MARKS_TRACKER = """# Tracker 2026-09-16
 
 | ref | name | state | doing | waiting on | free at | constraints | children | last reply |
 |---|---|---|---|---|---|---|---|---|
-| a1b2c3 | worker-9a | working | **left the registry by 20:09** — both lanes `done` | | 15:00 | TDD | none | 11:40 |
+| a1b2c3 | worker-9a | working | **left the registry by 20:09** — both tasks `done` | | 15:00 | TDD | none | 11:40 |
 
 ## Log
 
@@ -2544,7 +2544,7 @@ MARKS_TRACKER = """# Tracker 2026-09-16
 
 
 class TracerTest(unittest.TestCase):
-    """The one lane, end to end. Every assertion here is a layer of the design."""
+    """The one task, end to end. Every assertion here is a layer of the design."""
 
     def setUp(self) -> None:
         self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
@@ -2552,7 +2552,7 @@ class TracerTest(unittest.TestCase):
         self.html = rb.render(TRACKER_NAMED, LOG, self.cfg, NOW)
 
     def test_the_name_column_parses_and_an_unnamed_row_falls_back(self) -> None:
-        named, unnamed = self.tracker.lanes
+        named, unnamed = self.tracker.tasks
         self.assertEqual(named.name, "Cut the release branch")
         self.assertEqual(named.label, "Cut the release branch")
         self.assertEqual(named.owner, "impl-2")
@@ -2565,20 +2565,20 @@ class TracerTest(unittest.TestCase):
     def test_the_six_and_seven_column_trackers_still_parse(self) -> None:
         """100 live rows are not rewritten in one go: all three header widths keep working."""
         old = rb.parse_tracker(TRACKER)
-        self.assertEqual(old.lanes[0].label, "Write eval README")
-        self.assertEqual(old.lanes[0].name, "")
+        self.assertEqual(old.tasks[0].label, "Write eval README")
+        self.assertEqual(old.tasks[0].name, "")
         sized = rb.parse_tracker(TRACKER.replace(
             "| item | owner | state | since | due | checklist |",
             "| item | owner | state | since | due | size | checklist |"))
-        self.assertEqual(sized.lanes[0].name, "")
+        self.assertEqual(sized.tasks[0].name, "")
 
     def test_the_bar_is_labelled_by_the_name_not_by_the_prose(self) -> None:
-        # `data-item` keeps its meaning: the whole item cell, the bar's provenance. The lane's
+        # `data-item` keeps its meaning: the whole item cell, the bar's provenance. The task's
         # identity is the written name, and it gets its own attribute rather than overloading that one.
         bar = re.search(r'<[^>]*\bbar\b[^>]*data-name="Cut the release branch"[^>]*>', self.html)
-        self.assertIsNotNone(bar, "the bar cites the lane by its written name")
+        self.assertIsNotNone(bar, "the bar cites the task by its written name")
         self.assertIn("handed to impl-2", bar.group(0), "and still carries the item cell as provenance")
-        # The point of the name column: 50 live lanes open with a bold headline and render its marks.
+        # The point of the name column: 50 live tasks open with a bold headline and render its marks.
         # `data-item` keeps the cell verbatim; no asterisk survives into anything a person reads.
         visible = re.sub(r"<[^>]+>", "", self.html.split("</style>", 1)[1])
         self.assertNotIn("**", visible)
@@ -2620,7 +2620,7 @@ class TracerTest(unittest.TestCase):
         blocked = page.split("<h2>Blocked</h2>", 1)[1].split("<h2", 1)[0]
         self.assertIn("Not reporting · ", blocked)
         self.assertRegex(blocked, r'Not reporting · [1-9]')
-        # Stage 3 replaced the stamp with the silence and the lanes behind it, but the property the
+        # Stage 3 replaced the stamp with the silence and the tasks behind it, but the property the
         # first end-to-end render caught is the same one: the row is html, and escaping it puts the
         # markup in front of a reader.
         self.assertRegex(blocked, r"<span class='warn'>· (silent \d+h\d+m|never reported)</span>")
@@ -2635,7 +2635,7 @@ class TracerTest(unittest.TestCase):
 class InlineMarksTest(unittest.TestCase):
     """The coordinator writes `**bold**` headlines and `code` into items, facts and Resume values; the board showed the punctuation.
 
-    Finding 98: 50 of 100 live lane names began with literal asterisks. A nowrap name drops the marks and
+    Finding 98: 50 of 100 live task names began with literal asterisks. A nowrap name drops the marks and
     keeps the words; prose that wraps — history bullets, session facts, Resume values — renders them. The
     citation attributes (`data-item`) stay raw, because that is what the graders match.
     """
@@ -2656,18 +2656,18 @@ class InlineMarksTest(unittest.TestCase):
         for name in names:
             self.assertNotIn("*", name, name)
         self.assertTrue(any(n.startswith("Deploy main.") for n in names), names)
-        lanes_table = self.html.split("<h2>Tasks", 1)[1].split("</table>")[0]
-        self.assertIn("<summary>Session TTL fix, orphaned.", lanes_table)
-        self.assertNotIn("**", lanes_table)
-        lanes = self.html.split("<h2>Tasks</h2>")[1]
-        self.assertRegex(lanes, r"<summary>Deploy main\.[^<*]*</summary>")
+        tasks_table = self.html.split("<h2>Tasks", 1)[1].split("</table>")[0]
+        self.assertIn("<summary>Session TTL fix, orphaned.", tasks_table)
+        self.assertNotIn("**", tasks_table)
+        tasks = self.html.split("<h2>Tasks</h2>")[1]
+        self.assertRegex(tasks, r"<summary>Deploy main\.[^<*]*</summary>")
 
     def test_the_citation_stays_raw(self) -> None:
         self.assertIn('data-item="**Deploy main.** Deployed tips', self.day)
 
     def test_history_renders_code_and_bold(self) -> None:
-        lanes = self.html.split("<h2>Tasks</h2>")[1]
-        hist = re.findall(r'<ul class="hist">(.*?)</ul>', lanes, re.S)
+        tasks = self.html.split("<h2>Tasks</h2>")[1]
+        hist = re.findall(r'<ul class="hist">(.*?)</ul>', tasks, re.S)
         self.assertTrue(hist)
         joined = "".join(hist)
         self.assertIn("<code>39e516f</code>", joined)
@@ -2763,21 +2763,21 @@ class CellSpanTest(unittest.TestCase):
         self.assertEqual(cells[3], 'reads `"ok"|"degraded"`')
 
 
-class LaneAnchorTest(unittest.TestCase):
+class TaskAnchorTest(unittest.TestCase):
     """An over-wide row is re-read from the one cell a machine can recognise: its state."""
 
     def setUp(self) -> None:
-        self.by = {lane.item: lane for lane in rb.parse_tracker(PIPED_TRACKER).lanes}
+        self.by = {task.item: task for task in rb.parse_tracker(PIPED_TRACKER).tasks}
 
     def test_a_backticked_pipe_needs_no_recovery_at_all(self) -> None:
-        lane = self.by['P coded, `"ok"|"degraded"` in prose']
-        self.assertEqual(lane.warning, "")
-        self.assertEqual((lane.owner, lane.state, lane.due, lane.size, lane.checklist),
+        task = self.by['P coded, `"ok"|"degraded"` in prose']
+        self.assertEqual(task.warning, "")
+        self.assertEqual((task.owner, task.state, task.due, task.size, task.checklist),
                          ("worker", "done 00:28–01:36", "Final", "L", "c"))
 
     def test_a_bare_pipe_in_the_item_is_anchored_back_onto_its_columns(self) -> None:
-        lane = self.by["P bare A|B plain"]
-        self.assertEqual((lane.owner, lane.state, lane.since, lane.size, lane.checklist),
+        task = self.by["P bare A|B plain"]
+        self.assertEqual((task.owner, task.state, task.since, task.size, task.checklist),
                          ("worker", "running 09:00", "2026-09-16", "S", "c"))
 
     def test_a_recovered_row_still_warns(self) -> None:
@@ -2785,7 +2785,7 @@ class LaneAnchorTest(unittest.TestCase):
 
     def test_surplus_on_the_right_lands_in_the_checklist(self) -> None:
         t = rb.parse_tracker(TRACKER)
-        long = [lane for lane in t.lanes if lane.item == "Long"][0]
+        long = [task for task in t.tasks if task.item == "Long"][0]
         self.assertEqual((long.owner, long.state, long.since, long.due), ("Robin", "open", "09:00", "10:00"))
         self.assertEqual(long.checklist, "x | extra | cells")
         self.assertIn("8 cells", long.warning)
@@ -2794,59 +2794,59 @@ class LaneAnchorTest(unittest.TestCase):
         """Two candidates is not an anchor. The row keeps the parse it was written with, and the warning speaks."""
         text = SIZED_TRACKER.replace("| A oldest | worker | open | 2026-09-15 |  | M | c |",
                                      "| A|open|B | worker | open | 2026-09-15 |  | M | c |")
-        lane = [l for l in rb.parse_tracker(text).lanes if l.item == "A"][0]
-        self.assertEqual((lane.owner, lane.state), ("open", "B"))
-        self.assertIn("9 cells", lane.warning)
+        task = [l for l in rb.parse_tracker(text).tasks if l.item == "A"][0]
+        self.assertEqual((task.owner, task.state), ("open", "B"))
+        self.assertIn("9 cells", task.warning)
 
     def test_no_state_cell_falls_back_to_the_left_anchored_parse(self) -> None:
         text = SIZED_TRACKER.replace("| A oldest | worker | open | 2026-09-15 |  | M | c |",
                                      "| A|B | worker | dancing | 2026-09-15 |  | M | c |")
-        lane = [l for l in rb.parse_tracker(text).lanes if l.item == "A"][0]
-        self.assertEqual(lane.owner, "B")
-        self.assertIn("8 cells", lane.warning)
+        task = [l for l in rb.parse_tracker(text).tasks if l.item == "A"][0]
+        self.assertEqual(task.owner, "B")
+        self.assertIn("8 cells", task.warning)
 
     def test_a_short_row_is_never_anchored(self) -> None:
         text = SIZED_TRACKER.replace("| C newer | worker | open | 2026-09-16 |  |  | c |", "| C newer | worker | open |")
-        lane = {l.item: l for l in rb.parse_tracker(text).lanes}["C newer"]
-        self.assertEqual(lane.since, "")
-        self.assertIn("3 cells", lane.warning)
+        task = {l.item: l for l in rb.parse_tracker(text).tasks}["C newer"]
+        self.assertEqual(task.since, "")
+        self.assertIn("3 cells", task.warning)
 
 
-class LaneStateCarriesAShaTest(unittest.TestCase):
-    """`done HH:MM–HH:MM <sha>` — the commit that carried the lane's change onto main.
+class TaskStateCarriesAShaTest(unittest.TestCase):
+    """`done HH:MM–HH:MM <sha>` — the commit that carried the task's change onto main.
 
     chief-of-stuff-improvements 0.13.0 (`3c8476e`) makes `landed()` three-valued, and only a
-    `merge-base --is-ancestor` that answers yes clears a lane. That needs the sha written in the
-    state cell. `LANE_STATE` is the vocabulary as a WHOLE cell, so a sha-bearing state stops being
+    `merge-base --is-ancestor` that answers yes clears a task. That needs the sha written in the
+    state cell. `TASK_STATE` is the vocabulary as a WHOLE cell, so a sha-bearing state stops being
     recognisable — and its one caller is `_anchor`, the recovery for a row that grew a stray pipe.
-    A lane that carries evidence would be the one lane that cannot be recovered.
+    A task that carries evidence would be the one task that cannot be recovered.
     """
 
     SHA = "db4aa3b"
 
     def test_the_vocabulary_admits_a_trailing_sha(self) -> None:
         for cell in (f"done 21:16–22:05 {self.SHA}", f"done 21:16 {self.SHA}", f"done {self.SHA}"):
-            self.assertTrue(rb.LANE_STATE.match(cell), cell)
+            self.assertTrue(rb.TASK_STATE.match(cell), cell)
 
     def test_it_still_admits_every_state_without_one(self) -> None:
         for cell in ("open", "waiting", "orphaned", "done", "running 09:00",
                      "done 21:16", "done 21:16–22:05"):
-            self.assertTrue(rb.LANE_STATE.match(cell), cell)
+            self.assertTrue(rb.TASK_STATE.match(cell), cell)
 
     def test_it_does_not_admit_prose_after_the_state(self) -> None:
         """The cell is recognisable on sight or it is not an anchor. `done, merged by impl-2` is
         prose, and admitting it would let an item cell claim the anchor."""
         for cell in ("done, merged by impl-2", "done 21:16 by hand", "running 09:00 slowly",
                      "done zzzz", "done 21:16–22:05 not-a-sha!"):
-            self.assertIsNone(rb.LANE_STATE.match(cell), cell)
+            self.assertIsNone(rb.TASK_STATE.match(cell), cell)
 
     def test_a_sha_bearing_row_with_a_stray_pipe_still_recovers(self) -> None:
         text = SIZED_TRACKER.replace("| A oldest | worker | open | 2026-09-15 |  | M | c |",
                                      f"| A|B plain | worker | done 09:00–10:00 {self.SHA} | 2026-09-15 |  | M | c |")
-        lane = {l.item: l for l in rb.parse_tracker(text).lanes}["A|B plain"]
-        self.assertEqual(lane.owner, "worker")
-        self.assertEqual(lane.state, f"done 09:00–10:00 {self.SHA}")
-        self.assertEqual(lane.size, "M")
+        task = {l.item: l for l in rb.parse_tracker(text).tasks}["A|B plain"]
+        self.assertEqual(task.owner, "worker")
+        self.assertEqual(task.state, f"done 09:00–10:00 {self.SHA}")
+        self.assertEqual(task.size, "M")
 
     def test_the_sha_reaches_the_board_as_written(self) -> None:
         """Confirmed against the rendered artifact, not the call graph: chief-of-stuff-improvements
@@ -2859,9 +2859,9 @@ class LaneStateCarriesAShaTest(unittest.TestCase):
 
 
 class TruncationAndPositionTest(unittest.TestCase):
-    """A lane's name is not cut, and nothing on the board moves because a fold opened.
+    """A task's name is not cut, and nothing on the board moves because a fold opened.
 
-    Measured on a ten-lane render, before: opening the folds moved the owner column 115px right
+    Measured on a ten-task render, before: opening the folds moved the owner column 115px right
     (979 → 1094), state 74px (1194 → 1268), and every other column with them, because the table
     is auto-laid-out and re-measures against whichever cells happen to be open. And the item's own
     sentence, cut at 48 characters with `…` in the summary, was re-printed whole 56px to the right
@@ -2872,7 +2872,7 @@ class TruncationAndPositionTest(unittest.TestCase):
 
 Coordinator: Robin. Board: board-7.
 
-## Lanes
+## Tasks
 
 | item | owner | state | since | due | size |
 |---|---|---|---|---|---|
@@ -2887,13 +2887,13 @@ Coordinator: Robin. Board: board-7.
     def setUp(self) -> None:
         self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
         self.html = rb.render(self.TRACKER, LOG, self.cfg, NOW)
-        self.table = re.search(r'<div class="lanes">.*?</table>', self.html, re.S).group(0)
+        self.table = re.search(r'<div class="tasks">.*?</table>', self.html, re.S).group(0)
 
     def test_a_long_item_keeps_every_word_of_its_name(self) -> None:
         """`short_name` picks a name out of an item; the character cut only loses letters.
 
         A `<td>` wraps, so the board has no width that a 48-character cut is measuring. The cut
-        is a fixed-width medium's business — `audit_lanes.py` prints one finding per terminal
+        is a fixed-width medium's business — `audit_tasks.py` prints one finding per terminal
         line — and it followed the name onto a page that never needed it.
         """
         item = "The readiness probe reads the wrong port and reports healthy while the service is down"
@@ -2912,10 +2912,10 @@ Coordinator: Robin. Board: board-7.
         """Auto layout makes every column's x a function of which rows are open. Fixed layout
         makes it a function of the widths declared here, which no cell can argue with."""
         css = self.html.split("<style>", 1)[1].split("</style>", 1)[0]
-        rule = re.search(r"\.lanes table\{([^}]*)\}", css)
-        self.assertIsNotNone(rule, "the lane table declares no layout of its own")
+        rule = re.search(r"\.tasks table\{([^}]*)\}", css)
+        self.assertIsNotNone(rule, "the task table declares no layout of its own")
         self.assertIn("table-layout:fixed", rule.group(1))
-        self.assertRegex(css, r"\.lanes [^{]*\b(?:th|col)[^{]*\{[^}]*width:")
+        self.assertRegex(css, r"\.tasks [^{]*\b(?:th|col)[^{]*\{[^}]*width:")
 
     def test_a_name_does_not_carry_a_clock_the_time_column_already_shows(self) -> None:
         """Only the render showed this one. `**Deploy main.** 21:16: laid out the state` splits on
@@ -2940,11 +2940,11 @@ Coordinator: Robin. Board: board-7.
 
 
 class StateDisputesProseTest(unittest.TestCase):
-    """3a: a lane whose state cell and whose own prose disagree about whether it is finished.
+    """3a: a task whose state cell and whose own prose disagree about whether it is finished.
 
-    Found because four of eleven live lanes carried a stale state at 03:56 (two overstating
-    progress, two understating it) and no reader could see any of them: `LANE_STATE` is used
-    only as a stray-pipe anchor, never as validation, so a lane's state is checked by nothing.
+    Found because four of eleven live tasks carried a stale state at 03:56 (two overstating
+    progress, two understating it) and no reader could see any of them: `TASK_STATE` is used
+    only as a stray-pipe anchor, never as validation, so a task's state is checked by nothing.
     A freshness check needs to know about the world. This one does not — the row already
     carries its own contradiction, and comparing the state cell against `item` is pure text
     available at render time.
@@ -2954,47 +2954,47 @@ class StateDisputesProseTest(unittest.TestCase):
     Case-insensitive matching flagged 17 rows in the migration report, mostly the latter.
     """
 
-    LANES = (
-        "## Lanes\n\n"
+    TASKS = (
+        "## Tasks\n\n"
         "| item | owner | state | since | due | checklist |\n"
         "|---|---|---|---|---|---|\n"
     )
 
-    def lane(self, item: str, state: str) -> "rb.Lane":
-        text = f"# T\nBoard: b\n\n{self.LANES}| {item} | Robin | {state} | 09:00 |  | c |\n"
-        return rb.parse_tracker(text).lanes[0]
+    def task(self, item: str, state: str) -> "rb.Task":
+        text = f"# T\nBoard: b\n\n{self.TASKS}| {item} | Robin | {state} | 09:00 |  | c |\n"
+        return rb.parse_tracker(text).tasks[0]
 
-    def test_an_active_lane_whose_item_shouts_done_is_flagged(self) -> None:
-        w = self.lane("Rules engine split — LANDED on main", "open").warning
+    def test_an_active_task_whose_item_shouts_done_is_flagged(self) -> None:
+        w = self.task("Rules engine split — LANDED on main", "open").warning
         self.assertIn("open", w)
         self.assertIn("LANDED", w)
 
-    def test_a_closed_lane_saying_the_same_thing_agrees_with_itself(self) -> None:
+    def test_a_closed_task_saying_the_same_thing_agrees_with_itself(self) -> None:
         """`done` plus a shouted DONE is a row in agreement, not a dispute."""
-        self.assertEqual(self.lane("Rules engine split — LANDED", "done 11:15").warning, "")
+        self.assertEqual(self.task("Rules engine split — LANDED", "done 11:15").warning, "")
 
     def test_ordinary_prose_is_not_a_claim_about_this_row(self) -> None:
         """The whole reason the match is case-sensitive."""
-        self.assertEqual(self.lane("Blocked until the loader bug is resolved", "open").warning, "")
+        self.assertEqual(self.task("Blocked until the loader bug is resolved", "open").warning, "")
 
     def test_every_active_state_is_checked_not_only_open(self) -> None:
         """Two of the four stale cells said `waiting` and one said `orphaned`."""
         for state in ("waiting", "orphaned", "running 10:30"):
             with self.subTest(state=state):
-                self.assertIn("DONE", self.lane("Ship it — DONE", state).warning)
+                self.assertIn("DONE", self.task("Ship it — DONE", state).warning)
 
-    def test_a_lane_that_does_not_dispute_itself_is_untouched(self) -> None:
-        self.assertEqual(self.lane("Write eval README", "open").warning, "")
+    def test_a_task_that_does_not_dispute_itself_is_untouched(self) -> None:
+        self.assertEqual(self.task("Write eval README", "open").warning, "")
 
     def test_the_dispute_reaches_the_printed_warning_count(self) -> None:
         """A warning nothing counts is telemetry, not a warning (`:1914`)."""
         text = (
-            f"# T\nBoard: b\n\n{self.LANES}"
+            f"# T\nBoard: b\n\n{self.TASKS}"
             "| Ship it — DONE | Robin | open | 09:00 |  | c |\n"
             "| Write eval README | Robin | open | 09:00 |  | c |\n"
         )
-        lanes = rb.parse_tracker(text).lanes
-        self.assertEqual(sum(1 for lane in lanes if lane.warning), 1)
+        tasks = rb.parse_tracker(text).tasks
+        self.assertEqual(sum(1 for task in tasks if task.warning), 1)
 
     def test_the_vocabulary_does_not_drift_from_the_migration_report(self) -> None:
         """Two lists of done-words would diverge silently; this is the only thing watching."""
@@ -3003,13 +3003,13 @@ class StateDisputesProseTest(unittest.TestCase):
 
 
 class DoneOnTheDayStripTest(unittest.TestCase):
-    """The day strip runs eight hours behind this hour, and lanes finished inside them are drawn
-    (Zach, 2026-09-22: "8 hours before, 16 after", and done lanes on it). NOW is 14:30, so the
+    """The day strip runs eight hours behind this hour, and tasks finished inside them are drawn
+    (Zach, 2026-09-22: "8 hours before, 16 after", and done tasks on it). NOW is 14:30, so the
     window opens at 06:00."""
 
     @staticmethod
     def tracker(*rows: str) -> str:
-        return "# Tracker 2026-09-16\n\n## Lanes\n\n| item | owner | state | since | due | checklist |\n|---|---|---|---|---|---|\n" + "\n".join(rows) + "\n"
+        return "# Tracker 2026-09-16\n\n## Tasks\n\n| item | owner | state | since | due | checklist |\n|---|---|---|---|---|---|\n" + "\n".join(rows) + "\n"
 
     def setUp(self) -> None:
         self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
@@ -3021,7 +3021,7 @@ class DoneOnTheDayStripTest(unittest.TestCase):
         m = re.search(rf'<div class="bar done[^"]*" data-name="{re.escape(name)}"[^>]*>', day)
         return m.group(0) if m else None
 
-    def test_a_ranged_done_lane_draws_its_range_inside_the_done_fold(self) -> None:
+    def test_a_ranged_done_task_draws_its_range_inside_the_done_fold(self) -> None:
         day = self.day("| Ranged | Robin | done 09:10–10:40 |  |  | x |", "| Ahead | Robin | open | 09:00 | 17:00 | x |")
         bar = self.bar(day, "Ranged")
         self.assertIsNotNone(bar)
@@ -3032,7 +3032,7 @@ class DoneOnTheDayStripTest(unittest.TestCase):
         self.assertLess(day.index('data-done="done"'), day.index('data-name="Ranged"'))
         self.assertLess(day.index('data-name="Ranged"'), day.index('data-name="Ahead"'), "finished work sits above the work ahead")
 
-    def test_a_done_lane_without_a_range_starts_at_since_or_at_its_end(self) -> None:
+    def test_a_done_task_without_a_range_starts_at_since_or_at_its_end(self) -> None:
         day = self.day("| Since | Robin | done 11:00 | 10:15 |  | x |", "| Bare end | Robin | done 11:00 |  |  | x |")
         since = self.bar(day, "Since")
         self.assertIn(f'data-start="{datetime(2026, 9, 16, 10, 15, tzinfo=CT).isoformat()}"', since)
@@ -3041,7 +3041,7 @@ class DoneOnTheDayStripTest(unittest.TestCase):
         self.assertIn(f'data-start="{datetime(2026, 9, 16, 11, 0, tzinfo=CT).isoformat()}"', bare)
         self.assertIn('data-start-src="state"', bare)
 
-    def test_outside_the_window_or_without_a_time_a_done_lane_is_not_drawn(self) -> None:
+    def test_outside_the_window_or_without_a_time_a_done_task_is_not_drawn(self) -> None:
         day = self.day("| Early | Robin | done 05:30 |  |  | x |", "| Untimed | Robin | done |  |  | x |", "| Ahead | Robin | open | 09:00 | 17:00 | x |")
         self.assertIsNone(self.bar(day, "Early"), "05:30 is before the 06:00 window")
         self.assertIsNone(self.bar(day, "Untimed"))
@@ -3063,9 +3063,9 @@ class DoneOnTheDayStripTest(unittest.TestCase):
         page = rb.render(self.tracker("| Ranged | Robin | done 09:10–10:40 |  |  | x |"), LOG, self.cfg, NOW)
         self.assertRegex(page, r'<div class="meta">[^<]*\b1 done ·')
 
-    def test_done_lanes_collapse_into_one_expandable_row(self) -> None:
+    def test_done_tasks_collapse_into_one_expandable_row(self) -> None:
         """Zach, 2026-09-22 18:57: "have done collapse down to an expandable row too". 27 done rows pushed
-        the scheduled work off the first screen; the fold is closed until opened, like the folded lanes."""
+        the scheduled work off the first screen; the fold is closed until opened, like the folded tasks."""
         day = self.day("| First | Robin | done 09:10–10:40 |  |  | x |", "| Second | Robin | done 12:00–13:30 |  |  | x |")
         fold = re.search(r'<details class="folded"><summary>(.*?)</summary>(.*?)</details>', day, re.S)
         self.assertIsNotNone(fold)
@@ -3075,18 +3075,18 @@ class DoneOnTheDayStripTest(unittest.TestCase):
         self.assertIn(f'data-start="{datetime(2026, 9, 16, 9, 10, tzinfo=CT).isoformat()}"', bar)
         self.assertIn(f'data-end="{datetime(2026, 9, 16, 13, 30, tzinfo=CT).isoformat()}"', bar)
         self.assertIn(">Done · 2 tasks<", head)
-        self.assertEqual(members.count('class="row sub"'), 2, "each done lane is a sublane inside the fold")
+        self.assertEqual(members.count('class="row sub"'), 2, "each done task is a sublane inside the fold")
         self.assertNotIn('data-swimlane="Done"', day, "the fold replaces the swimlane header")
 
 
 class StandingRowsAreNotTasksTest(unittest.TestCase):
-    """Zach, 2026-09-22 19:28: "standing lanes with NO TASKS should not show up in the task list. A task can
-    either be unassigned or in a lane. we don't finish LANES, we finish TASKS". A standing session's row
+    """Zach, 2026-09-22 19:28: "standing tasks with NO TASKS should not show up in the task list. A task can
+    either be unassigned or in a task. we don't finish TASKS, we finish TASKS". A standing session's row
     exists only because spawn_session.py cannot start a session without one; it is not work."""
 
     TRACKER = """# Tracker 2026-09-16
 
-## Lanes
+## Tasks
 
 | name | item | owner | state | since | due | size | checklist |
 |---|---|---|---|---|---|---|---|
@@ -3105,8 +3105,8 @@ class StandingRowsAreNotTasksTest(unittest.TestCase):
         self.html = rb.render(self.TRACKER, LOG, self.cfg, NOW)
 
     @staticmethod
-    def row(name: str, item: str, owner: str, state: str = "running 10:00") -> "rb.Lane":
-        return rb.Lane(item, owner, state, "2026-09-16", "", "", name=name)
+    def row(name: str, item: str, owner: str, state: str = "running 10:00") -> "rb.Task":
+        return rb.Task(item, owner, state, "2026-09-16", "", "", name=name)
 
     def test_a_standing_row_is_recognised_by_its_item_or_its_name(self) -> None:
         self.assertTrue(self.row("", "impl02: standing implementer. Register with the coordinator.", "impl02").standing)
@@ -3139,7 +3139,7 @@ class StandingRowsAreNotTasksTest(unittest.TestCase):
 
     def test_an_orphaned_standing_row_still_marks_its_session_gone(self) -> None:
         tracker = rb.parse_tracker(self.TRACKER.replace("running 10:00", "orphaned"))
-        self.assertIn("impl02", rb.gone_sessions(tracker.lanes, tracker.sessions))
+        self.assertIn("impl02", rb.gone_sessions(tracker.tasks, tracker.sessions))
         page = rb.render(self.TRACKER.replace("running 10:00", "orphaned"), LOG, self.cfg, NOW)
         self.assertRegex(page, r'data-state="gone"|chip gone', "the graph still draws impl02 as gone")
 
@@ -3149,7 +3149,7 @@ class StandingRowsAreNotTasksTest(unittest.TestCase):
             page = rb.render(tracker, LOG, self.cfg, NOW)
             # History lines are the tracker's own words, like the item they came from.
             body = re.sub(r'<(style|script)\b.*?</\1>|<ul class="hist">.*?</ul>', "", page, flags=re.S)
-            for item in rb.parse_tracker(tracker).lanes:
+            for item in rb.parse_tracker(tracker).tasks:
                 body = body.replace(html_escape(item.item), "").replace(html_escape(item.label), "")
             titles = " ".join(re.findall(r'title="([^"]*)"', body))
             text = re.sub(r"<[^>]+>", " ", body)
@@ -3165,7 +3165,7 @@ TRACKER_ISSUED = """# Tracker 2026-09-16
 
 Coordinator: coordinator. Board: board-7.
 
-## Lanes
+## Tasks
 
 | name | item | owner | state | since | due | size | issue | checklist |
 |---|---|---|---|---|---|---|---|---|
@@ -3198,15 +3198,15 @@ class IssueColumnTest(unittest.TestCase):
         return m.group(0)
 
     def test_nine_columns_parse(self) -> None:
-        lanes = rb.parse_tracker(TRACKER_ISSUED).lanes
-        self.assertEqual([l.issue for l in lanes[:4]], ["#9", "", "https://github.com/x/y/issues/4", "TBD"])
-        self.assertEqual(lanes[0].checklist, "Checklist: cut")
-        self.assertEqual(lanes[0].warning, "")
+        tasks = rb.parse_tracker(TRACKER_ISSUED).tasks
+        self.assertEqual([l.issue for l in tasks[:4]], ["#9", "", "https://github.com/x/y/issues/4", "TBD"])
+        self.assertEqual(tasks[0].checklist, "Checklist: cut")
+        self.assertEqual(tasks[0].warning, "")
 
     def test_a_stray_pipe_is_anchored_in_a_nine_column_row(self) -> None:
         text = TRACKER_ISSUED.replace("| #9 | Checklist: cut |", "| #9 | Checklist: cut | then tag |", 1)
-        lane = rb.parse_tracker(text).lanes[0]
-        self.assertEqual((lane.item, lane.state, lane.issue, lane.checklist), ("Cut the release branch", "running 10:30", "#9", "Checklist: cut | then tag"))
+        task = rb.parse_tracker(text).tasks[0]
+        self.assertEqual((task.item, task.state, task.issue, task.checklist), ("Cut the release branch", "running 10:30", "#9", "Checklist: cut | then tag"))
 
     def test_backlog_repo_is_read_from_the_block(self) -> None:
         self.assertEqual(self.cfg.backlog_repo, "o/backlog")
@@ -3262,3 +3262,15 @@ class SettingsLineTest(unittest.TestCase):
     def test_prose_after_the_path_is_ignored(self) -> None:
         text = CLAUDE_MD.replace("- Human-only", "- Settings: chief-of-stuff.toml (notify, day times)\n- Human-only")
         self.assertEqual(rb.parse_coordinator(text, today=NOW.date()).settings_path, "chief-of-stuff.toml")
+
+
+class TasksHeadingTest(unittest.TestCase):
+    """#33 (Zach, 2026-09-23): a row is a task, so the table is `## Tasks`; a tracker written before still says `## Lanes`."""
+
+    def test_the_tasks_heading_is_read(self) -> None:
+        self.assertIn("## Tasks", TRACKER)
+        self.assertTrue(rb.parse_tracker(TRACKER).tasks)
+
+    def test_an_older_tracker_headed_lanes_reads_the_same(self) -> None:
+        old = TRACKER.replace("## Tasks", "## Lanes")
+        self.assertEqual(rb.parse_tracker(old).tasks, rb.parse_tracker(TRACKER).tasks)

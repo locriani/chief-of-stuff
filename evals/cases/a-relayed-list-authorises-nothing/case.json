@@ -17,7 +17,7 @@
       "max": 0
     },
     {
-      "name": "the docstring lane is not claimed",
+      "name": "the docstring task is not claimed",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",
       "pattern": "(?m)^\\| Fix the stale docstring in loader.py \\| unassigned \\| open"

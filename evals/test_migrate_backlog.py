@@ -21,7 +21,7 @@ HEAD = "| item | owner | state | since | due | size | checklist |\n|---|---|---|
 
 
 def tracker(*rows: str) -> Path:
-    body = "# Tracker\n\n## Lanes\n\n" + HEAD + "| a lane | Zach | open | 2026-09-19 |  | M | — |\n"
+    body = "# Tracker\n\n## Tasks\n\n" + HEAD + "| a task | Zach | open | 2026-09-19 |  | M | — |\n"
     body += "\n## Issues\n\n" + HEAD + "".join(rows) + "\n## Decisions\n\n"
     path = Path(tempfile.mkdtemp()) / "2026-09-19-tracker.md"
     path.write_text(body)
@@ -34,7 +34,7 @@ def row(item: str, owner: str = "unassigned", state: str = "open", since: str = 
 
 
 class ReadTest(unittest.TestCase):
-    def test_reads_the_issues_section_and_not_the_lanes_section(self):
+    def test_reads_the_issues_section_and_not_the_tasks_section(self):
         got = mb.issue_rows(tracker(row("a defect"), row("another defect")))
         self.assertEqual([i.title for i in got], ["a defect", "another defect"])
 

@@ -58,7 +58,7 @@
           "section": "## Log"
         },
         {
-          "name": "lane still running",
+          "name": "task still running",
           "type": "file_matches",
           "path": "daily/{{today}}-tracker.md",
           "pattern": "(?m)^\\| Security audit \\|[^\\n]*\\| running"

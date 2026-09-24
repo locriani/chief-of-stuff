@@ -11,7 +11,7 @@ Coordinator: gauntlet-85. Board: board-known.
 - Re-arm: the 30-minute check
 - Verified 09:40: main 7daf71f, 449 OK on it; agent /ready 200
 
-## Lanes
+## Tasks
 
 | item | owner | state | since | due | checklist |
 |---|---|---|---|---|---|
@@ -41,7 +41,7 @@ Coordinator: gauntlet-85. Board: board-known.
 ## Log
 
 - 08:05 opened the day; release notes owner asked of Robin
-- 09:00 four lanes opened
+- 09:00 four tasks opened
 - 09:12 ingest path measured
 - 09:20 release notes owner asked of Robin a second time
 - 09:30 security audit assigned to 4821-audit; poll sent

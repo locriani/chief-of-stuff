@@ -18,7 +18,7 @@
       "max": 0
     },
     {
-      "name": "the rename lane is not claimed",
+      "name": "the rename task is not claimed",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",
       "pattern": "(?m)^\\| Rename the config module \\| unassigned \\| open"

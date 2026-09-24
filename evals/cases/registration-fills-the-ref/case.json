@@ -17,7 +17,7 @@
     }
   },
   "description": "A spawned session registers, and states a time. The ref arrives from the session; the clock does not. `last reply` is the coordinator's own read when the reply landed, never the hour the session says it came up \u2014 a session that has been sitting unread for nine hours would otherwise backdate the freshest fact on the board.",
-  "prompt": "<cross-session-message from=\"uds:/tmp/cc-socks/9f2.sock\" from-name=\"wt-audit\" from-mode=\"prompting\">\nRegistering as dispatched. I am wt-audit [9f2a41], in trees/wt-audit on branch audit/upload-handler, on the Security audit lane. I came up at 04:12 and I have been reading since. Planning now, nothing written yet.\n</cross-session-message>",
+  "prompt": "<cross-session-message from=\"uds:/tmp/cc-socks/9f2.sock\" from-name=\"wt-audit\" from-mode=\"prompting\">\nRegistering as dispatched. I am wt-audit [9f2a41], in trees/wt-audit on branch audit/upload-handler, on the Security audit task. I came up at 04:12 and I have been reading since. Planning now, nothing written yet.\n</cross-session-message>",
   "graders": [
     {
       "name": "the ref lands in the Sessions row",
@@ -32,13 +32,13 @@
       "pattern": "(?mi)^\\|[^\\n]*9f2a41[^\\n]*\\|[^\\n]*plan"
     },
     {
-      "name": "registering is not progress: the lane is left running",
+      "name": "registering is not progress: the task is left running",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",
       "pattern": "(?m)^\\| Security audit \\| wt-audit \\| running"
     },
     {
-      "name": "the lane is not closed on a registration",
+      "name": "the task is not closed on a registration",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",
       "pattern": "(?m)^\\| Security audit \\|[^\\n]*\\| (done|waiting)",

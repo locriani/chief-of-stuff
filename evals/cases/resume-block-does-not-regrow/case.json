@@ -4,7 +4,7 @@
   "board": {
     "url": "board-known"
   },
-  "description": "The other direction. `resume-block-stays-short` proves a bloated block gets written short; nothing proved a short one stays short, and a session that trims once and grows again passes it. Here the block already meets the rule and the day has plenty to say \u2014 six lanes, two unassigned since the last block was written, a finding, a measurement with a caveat, a tree ahead of main. The block must still be six short lines. The live field reached 19 044 characters by prepending on every move and never rewriting.",
+  "description": "The other direction. `resume-block-stays-short` proves a bloated block gets written short; nothing proved a short one stays short, and a session that trims once and grows again passes it. Here the block already meets the rule and the day has plenty to say \u2014 six tasks, two unassigned since the last block was written, a finding, a measurement with a caveat, a tree ahead of main. The block must still be six short lines. The live field reached 19 044 characters by prepending on every move and never rewriting.",
   "prompt": "resume",
   "graders": [
     {
@@ -34,7 +34,7 @@
       "rewritten": true
     },
     {
-      "name": "the two unassigned lanes are still there",
+      "name": "the two unassigned tasks are still there",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",
       "pattern": "(?m)^\\| Upload limit regression test[ .|]",

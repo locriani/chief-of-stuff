@@ -126,7 +126,7 @@ class RunnerBoardWiringTest(unittest.TestCase):
         self.assertEqual(set(run.merge_mcp(None, b)["mcpServers"]), {"board"})
 
 
-TRACKER = "# Tracker\n\nBoard: board-1.\n\n## Lanes\n\n| item | owner | state | since | due | checklist |\n|---|---|---|---|---|---|\n| Audit | coordinator | done 10:00 | 09:00 |  | x |\n| Notes | Robin | open | 09:00 |  | y |\n\n## Log\n\n- 09:00 opened\n"
+TRACKER = "# Tracker\n\nBoard: board-1.\n\n## Tasks\n\n| item | owner | state | since | due | checklist |\n|---|---|---|---|---|---|\n| Audit | coordinator | done 10:00 | 09:00 |  | x |\n| Notes | Robin | open | 09:00 |  | y |\n\n## Log\n\n- 09:00 opened\n"
 
 
 class BoardGraderTest(unittest.TestCase):
@@ -162,13 +162,13 @@ class BoardGraderTest(unittest.TestCase):
         return run.grade(g, self.rec)
 
     def test_board_published(self) -> None:
-        ok, detail = self.grade({"type": "board_published", "min": 1, "lanes": ["Audit", "Notes"], "deadline": "2026-09-16T23:59:00-05:00"})
+        ok, detail = self.grade({"type": "board_published", "min": 1, "tasks": ["Audit", "Notes"], "deadline": "2026-09-16T23:59:00-05:00"})
         self.assertTrue(ok, detail)
         ok, detail = self.grade({"type": "board_published", "min": 2})
         self.assertFalse(ok)
-        ok, detail = self.grade({"type": "board_published", "min": 1, "lanes": ["Missing lane"]})
+        ok, detail = self.grade({"type": "board_published", "min": 1, "tasks": ["Missing task"]})
         self.assertFalse(ok)
-        self.assertIn("Missing lane", detail)
+        self.assertIn("Missing task", detail)
         ok, _ = self.grade({"type": "board_published", "min": 1, "html_match": "bar done[^>]*data-item=\"Audit\""})
         self.assertTrue(ok)
         self.rec.mock_calls = []
