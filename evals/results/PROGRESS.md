@@ -1385,3 +1385,13 @@ Zach, 2026-09-23 18:42: "within the next hour I need agy instances going"; relay
 - **Agent:** Dispatch names sessions `<role>-<class>-<NN>` (class = `C`/`G`/`O` + model + `H`/`M`/`L`; `NN` the lowest free), and a `G`/`O` class launches on agy. Sessions: an agy row carries `agy` in `ref`, is sent to only through the inbox, and is alive while `pgrep -f <worktree>` finds it — the orphan check reads that, never the listing.
 
 Red first: `AgyTest` 7 (3 failures, 4 errors), `AgyRuntimeTest` 2 errors, `MailboxRootTest` 1 failure. Full suite on the branch: 954 of 954. The agent arm was not run this hour (one ~10-minute run per case); `spawn-needs-a-yes` is owed on the new agent file.
+
+## C31 — standing sessions launch without an issue; Claude sessions launch on a chosen model and effort (0.26.0)
+
+Zach, 2026-09-23 19:22, relaying the coordinator's dry run on `implementer-COpusM-01`: "It won't start a session that has no GitHub issue" and "It can't choose the model for Claude sessions"; gauntlet-2f followed up at 19:25 for the model.
+
+- **Standing, no issue:** `dispatch_prompt.compose` refused every lane with a blank `issue` cell, while the agent file's tracker rule says "A standing session's placeholder is not a task and takes no issue". `render_board.Lane.standing_for(name)` holds the existing placeholder match (`impl02: standing …` or `impl02 — standing …`) against a given name; `standing` is `standing_for(owner)`, unchanged. A placeholder launched as its own name composes with no issue; one launched under another name, and every task, still needs one.
+- **Model and effort:** `CLAUDE_ARGV` gains `--model {model} --effort {effort}`, each dropped as a pair when empty (`_unset`, over `_without`), so a launch without them is the same argv as 0.25.0. `--effort` is `low|medium|high|xhigh|max`, claude only; agy's effort is in its model id, so `--effort` with agy is refused. A model outside `[A-Za-z0-9._-]` is refused for either runtime.
+- **Agent:** one sentence in Dispatch: a `C` class launches with `--model <fable|opus|sonnet> --effort <high|medium|low>`; a standing placeholder needs no issue.
+
+Red first: `IssueDispatchTest` 1 error, `ClaudeModelTest` 2 errors and 1 failure, `AgyTest.test_effort_is_claude_only` 1 failure. Full suite on the branch: 961 of 961.

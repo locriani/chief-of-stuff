@@ -62,7 +62,8 @@ ENV_BIN = "/usr/bin/env"
 # `lab-write-patient-check-merge` by its second turn. A launch name registers as the user's, which the
 # harness never retitles (Zach, 2026-09-22 16:18: "the NUMERIC NAMES I ASSIGN ARE THE ONLY NAMES THEY
 # ARE ALLOWED TO KEEP").
-CLAUDE_ARGV = ["claude", "--agent", "{type}", "--name", "{title}", "--permission-mode", "plan", BOOTSTRAP]
+CLAUDE_ARGV = ["claude", "--agent", "{type}", "--name", "{title}", "--model", "{model}", "--effort", "{effort}",
+               "--permission-mode", "plan", BOOTSTRAP]
 # An agy (Antigravity) session: no `--agent`, no `--name` (the tab title and the assignment carry the
 # name), `--mode plan` for the same plan-first gate. agy does not load CLAUDE.md, and the workspace's
 # house rules (GitLab only, above all) have to reach it, so the bootstrap names the file.
@@ -94,7 +95,7 @@ OSASCRIPT = "/usr/bin/osascript"
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "fish", "env", "eval", "exec", "xargs"}
 METACHARACTERS = re.compile(r"[;&|`$<>\n]")
 PLACEHOLDER = re.compile(r"\{(\w+)\}")
-FIELDS = ("cwd", "title", "type", "dispatch", "model", "root")
+FIELDS = ("cwd", "title", "type", "dispatch", "model", "effort", "root")
 
 
 class RefusedError(ValueError):
@@ -161,15 +162,21 @@ def _paths(cwd: str) -> tuple[str, str]:
     return str(root), str(root / PROMPT_FILE)
 
 
-def argv(template: list[str], *, agent_type: str | None, cwd: str, title: str, model: str = "", workspace: str = ".") -> list[str]:
+def _unset(template: list[str], values: dict[str, str]) -> list[str]:
+    """Drop each optional flag whose value is empty, as a pair (see `_without`)."""
+    for field in ("type", "title", "model", "effort"):
+        if not values.get(field):
+            template = _without(template, field)
+    return template
+
+
+def argv(template: list[str], *, agent_type: str | None, cwd: str, title: str, model: str = "", effort: str = "",
+         workspace: str = ".") -> list[str]:
     """Substitute per whole token. A value never becomes more argv entries than the token it fills."""
-    if agent_type is None:
-        template = _without(template, "type")
-    if not title:
-        template = _without(template, "title")
     root, dispatch = _paths(cwd)
     values = {"cwd": root, "title": title, "type": agent_type or "", "dispatch": dispatch,
-              "model": model, "root": os.path.abspath(workspace)}
+              "model": model, "effort": effort, "root": os.path.abspath(workspace)}
+    template = _unset(template, values)
     out = []
     for token in template:
         unknown = [name for name in PLACEHOLDER.findall(token) if name not in values]
@@ -191,7 +198,7 @@ def _as_string(value: str) -> str:
 
 
 def ghostty_script(*, cwd: str, agent_type: str | None, claude: Path | None, title: str | None = None,
-                   runtime: str = "claude", model: str = "", workspace: str = ".") -> str:
+                   runtime: str = "claude", model: str = "", effort: str = "", workspace: str = ".") -> str:
     """Ask Ghostty for a tab running `claude` in `cwd`. The inner layer is Ghostty's own shell-style parse.
 
     `claude` is an absolute path, resolved by the caller. Ghostty is launched from the GUI, so its
@@ -205,14 +212,10 @@ def ghostty_script(*, cwd: str, agent_type: str | None, claude: Path | None, tit
     """
     if claude is None:
         raise RefusedError(f"cannot find `{runtime}` on PATH; a GUI-launched terminal cannot look it up either")
-    template = TEMPLATES[runtime]
-    if not agent_type:
-        template = _without(template, "type")
-    if not title:
-        template = _without(template, "title")
     root, dispatch = _paths(cwd)
     values = {"cwd": root, "title": title or "", "type": agent_type or "", "dispatch": dispatch,
-              "model": model, "root": os.path.abspath(workspace)}
+              "model": model, "effort": effort, "root": os.path.abspath(workspace)}
+    template = _unset(TEMPLATES[runtime], values)
     rest = [PLACEHOLDER.sub(lambda m: values.get(m.group(1), m.group(0)), t) for t in template[1:]]
     # `env -C` first: the directory is pinned by the command, not by the field below, which Ghostty
     # does not reliably honour when a command is set.
@@ -284,11 +287,19 @@ def main(argv_in: list[str] | None = None) -> int:
     ap.add_argument("--date", help="YYYY-MM-DD; default: today in the workspace timezone")
     ap.add_argument("--runtime", choices=sorted(TEMPLATES), default="claude",
                     help="claude (default) or agy (Antigravity), which registers and reports through the mailbox only")
-    ap.add_argument("--model", default="", help="the agy model id, from `agy models`; required with --runtime agy")
+    ap.add_argument("--model", default="", help="claude: an alias (fable, opus, sonnet) or a model id; agy: an id from `agy models`, required")
+    ap.add_argument("--effort", default="", choices=("", "low", "medium", "high", "xhigh", "max"),
+                    help="claude only; agy's effort is in its model id")
     ap.add_argument("--dry-run", action="store_true", help="print the argv and start nothing")
     args = ap.parse_args(argv_in)
     if args.runtime == "agy" and not MODEL.fullmatch(args.model):
         print(f"refused: --runtime agy needs --model <an id from `agy models`>, not {args.model!r}", file=sys.stderr)
+        return 1
+    if args.model and not MODEL.fullmatch(args.model):
+        print(f"refused: {args.model!r} is not a model id", file=sys.stderr)
+        return 1
+    if args.runtime == "agy" and args.effort:
+        print("refused: --effort is claude only; an agy model id carries its own effort (gemini-3.8-flash-high)", file=sys.stderr)
         return 1
     # Resolved once, here, because the two consumers used to disagree: `compose` was given a resolved
     # worktree while the launcher was handed the raw value, so a relative `--cwd` wrote the dispatch
@@ -304,11 +315,11 @@ def main(argv_in: list[str] | None = None) -> int:
                                       runtime=args.runtime)
         # The override is the eval harness's recorder and the only path that still builds an argv.
         command = (argv(launcher(), agent_type=args.agent_type, cwd=args.cwd, title=args.title,
-                        model=args.model, workspace=args.root)
+                        model=args.model, effort=args.effort, workspace=args.root)
                    if override else [OSASCRIPT, "-"])
         script = None if override else ghostty_script(
             cwd=args.cwd, agent_type=args.agent_type, title=args.title, runtime=args.runtime,
-            model=args.model, workspace=args.root,
+            model=args.model, effort=args.effort, workspace=args.root,
             claude=Path(p) if (p := shutil.which(args.runtime)) else None)
     except (RefusedError, dispatch_prompt.RefusedError) as exc:
         print(f"refused: {exc}", file=sys.stderr)

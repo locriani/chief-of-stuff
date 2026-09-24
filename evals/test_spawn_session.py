@@ -659,7 +659,41 @@ class AgyTest(unittest.TestCase):
         out = self.run_main("--runtime", "agy", "--model", "x;rm -rf ~")
         self.assertEqual(out.returncode, 1)
 
+    def test_effort_is_claude_only(self):
+        out = self.run_main("--runtime", "agy", "--model", "gemini-3.8-flash-high", "--effort", "high")
+        self.assertEqual(out.returncode, 1)
+        self.assertIn("--effort", out.stderr)
+
+
     def test_the_dry_run_shows_the_agy_tab(self):
         out = self.run_main("--runtime", "agy", "--model", "gemini-3.8-flash-high")
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertIn("--mode plan", out.stdout)
+
+class ClaudeModelTest(unittest.TestCase):
+    """The class in a name (`COpusM`) is the model and effort a Claude session launches on."""
+
+    CLAUDE_BIN = Path("/opt/homebrew/bin/claude")
+
+    def script(self, **kw):
+        return ss.ghostty_script(cwd="/tmp/wt", agent_type="implementer", claude=self.CLAUDE_BIN,
+                                 title="implementer-COpusM-01", **kw)
+
+    def test_model_and_effort_reach_the_claude_command(self):
+        self.assertRegex(self.script(model="opus", effort="medium"),
+                         r"/opt/homebrew/bin/claude --agent implementer --name implementer-COpusM-01 "
+                         r"--model opus --effort medium --permission-mode plan ")
+
+    def test_without_them_the_command_is_unchanged(self):
+        s = self.script()
+        self.assertNotIn("--model", s)
+        self.assertNotIn("--effort", s)
+
+    def test_the_override_argv_carries_them_too(self):
+        out = ss.argv(ss.CLAUDE_ARGV, agent_type="implementer", cwd="/tmp/wt", title="t", model="sonnet", effort="high")
+        self.assertEqual(out[out.index("--model"):out.index("--model") + 4], ["--model", "sonnet", "--effort", "high"])
+
+    def test_a_bad_effort_or_model_is_refused(self):
+        for extra in (["--effort", "extreme"], ["--model", "x;rm -rf ~"]):
+            with self.subTest(extra=extra):
+                self.assertEqual(AgyTest.run_main(AgyTest(), *extra).returncode, 1 if "--model" in extra else 2)
