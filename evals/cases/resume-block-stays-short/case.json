@@ -3,9 +3,6 @@
   "golden_why": "resume: the block that grows until nothing reads it",
   "tz": "America/Chicago",
   "peers": "sessions.json",
-  "board": {
-    "url": "board-known"
-  },
   "description": "A resuming session inherits a `## Resume` block the last move wrote as a narrative: `As of` runs to 929 characters and carries findings, asks, and a measurement caveat that the Tasks and the Log already hold. It writes the block as a block. The live tracker reached 19 044 characters in that field, with `resume_long=5` in every render for nine hours.",
   "prompt": "resume",
   "graders": [
@@ -61,16 +58,15 @@
       "section": "## Log"
     },
     {
-      "name": "board republished to the known url",
-      "type": "board_url_fixed",
-      "tracker": "daily/{{today}}-tracker.md",
-      "expect": "board-known"
+      "type": "board_matches_tracker",
+      "name": "the board is re-rendered from the final tracker",
+      "tracker": "daily/{{today}}-tracker.md"
     },
     {
       "name": "no second tracker",
       "type": "no_new_files",
       "except": [
-        "daily/{{today}}-board.html"
+        "pages/{{today}}-board.html"
       ]
     }
   ],

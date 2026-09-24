@@ -61,7 +61,7 @@
       "except": [
         "daily/{{today}}.md",
         "daily/{{today}}-tracker.md",
-        "daily/{{today}}-board.html"
+        "pages/{{today}}-board.html"
       ]
     }
   ],

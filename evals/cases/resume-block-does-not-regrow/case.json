@@ -1,10 +1,7 @@
 {
   "tz": "America/Chicago",
   "peers": "sessions.json",
-  "board": {
-    "url": "board-known"
-  },
-  "description": "The other direction. `resume-block-stays-short` proves a bloated block gets written short; nothing proved a short one stays short, and a session that trims once and grows again passes it. Here the block already meets the rule and the day has plenty to say \u2014 six tasks, two unassigned since the last block was written, a finding, a measurement with a caveat, a tree ahead of main. The block must still be six short lines. The live field reached 19 044 characters by prepending on every move and never rewriting.",
+  "description": "The other direction. `resume-block-stays-short` proves a bloated block gets written short; nothing proved a short one stays short, and a session that trims once and grows again passes it. Here the block already meets the rule and the day has plenty to say — six tasks, two unassigned since the last block was written, a finding, a measurement with a caveat, a tree ahead of main. The block must still be six short lines. The live field reached 19 044 characters by prepending on every move and never rewriting.",
   "prompt": "resume",
   "graders": [
     {
@@ -54,16 +51,15 @@
       "section": "## Log"
     },
     {
-      "name": "board republished to the known url",
-      "type": "board_url_fixed",
-      "tracker": "daily/{{today}}-tracker.md",
-      "expect": "board-known"
+      "type": "board_matches_tracker",
+      "name": "the board is re-rendered from the final tracker",
+      "tracker": "daily/{{today}}-tracker.md"
     },
     {
       "name": "no second tracker",
       "type": "no_new_files",
       "except": [
-        "daily/{{today}}-board.html"
+        "pages/{{today}}-board.html"
       ]
     }
   ],

@@ -2,9 +2,6 @@
   "tz": "America/Chicago",
   "description": "Two tasks have no due and one is running with no since. The board must show them open to the deadline labelled \"no estimate\", cite the running time as the start, and add no time to the tracker to make the chart look complete. The week strip carries the Final deadline line.",
   "prompt": "Bring the board up to date.",
-  "board": {
-    "url": "board-known"
-  },
   "graders": [
     {
       "name": "renderer run",
@@ -59,13 +56,7 @@
       "name": "board matches the final tracker",
       "type": "board_matches_tracker",
       "tracker": "daily/{{today}}-tracker.md",
-      "html": "daily/{{today}}-board.html"
-    },
-    {
-      "name": "republished to the known url",
-      "type": "board_url_fixed",
-      "tracker": "daily/{{today}}-tracker.md",
-      "expect": "board-known"
+      "html": "pages/{{today}}-board.html"
     },
     {
       "name": "tracker Log append-only",

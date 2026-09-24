@@ -1,9 +1,6 @@
 {
   "tz": "America/Chicago",
   "peers": "sessions.json",
-  "board": {
-    "url": "board-known"
-  },
   "description": "Two quiet checks then a real change. A check that finds nothing writes no Log line; the line that is finally written names the span.",
   "turns": [
     {
@@ -60,16 +57,9 @@
           "section": "## Log"
         },
         {
-          "name": "board republished to the known url",
-          "type": "board_url_fixed",
-          "tracker": "daily/{{today}}-tracker.md",
-          "expect": "board-known"
-        },
-        {
-          "name": "the board header still names the known url",
-          "type": "file_matches",
-          "path": "daily/{{today}}-tracker.md",
-          "pattern": "(?m)^Coordinator:[^\\n]*Board: board-known\\."
+          "type": "board_matches_tracker",
+          "name": "the board is re-rendered from the final tracker",
+          "tracker": "daily/{{today}}-tracker.md"
         }
       ]
     }
