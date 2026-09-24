@@ -589,6 +589,7 @@ ISSUE_TRACKER = """# Tracker 2026-09-18
 | Audit | Security audit | unassigned | open | 09:00 |  | M | #12 | Checklist: Security audit of the upload handler |
 | Bare | Unfiled task | unassigned | open | 09:00 |  | S |  | Checklist: unfiled |
 | Garbled | Garbled task | unassigned | open | 09:00 |  | S | soon | Checklist: garbled |
+| impl02 — standing implementer | impl02: standing implementer. Wait idle for the next item. | unassigned | open | 09:00 |  | S |  | Checklist: impl02 standing |
 
 ## File ownership
 
@@ -597,6 +598,7 @@ ISSUE_TRACKER = """# Tracker 2026-09-18
 | Security audit | `src/a/` |
 | Unfiled task | `src/b/` |
 | Garbled task | `src/c/` |
+| impl02: standing implementer. Wait idle for the next item. | `src/d/` |
 
 ## Log
 
@@ -627,6 +629,20 @@ class IssueDispatchTest(unittest.TestCase):
         with self.assertRaises(dp.RefusedError) as e:
             dp.compose(root, "2026-09-18", "Garbled task")
         self.assertIn('"soon"', str(e.exception))
+
+    # The tracker rule: "A standing session's placeholder is not a task and takes no issue".
+    def test_a_standing_placeholder_launched_as_its_own_session_needs_no_issue(self):
+        tmp, root = workspace(ISSUE_TRACKER, ISSUE_CLAUDE)
+        self.addCleanup(tmp.cleanup)
+        body = dp.compose(root, "2026-09-18", "impl02: standing implementer. Wait idle for the next item.", name="impl02")
+        self.assertNotIn("Issue: ", body)
+
+    def test_a_standing_placeholder_for_another_session_still_needs_one(self):
+        tmp, root = workspace(ISSUE_TRACKER, ISSUE_CLAUDE)
+        self.addCleanup(tmp.cleanup)
+        with self.assertRaises(dp.RefusedError) as e:
+            dp.compose(root, "2026-09-18", "impl02: standing implementer. Wait idle for the next item.", name="impl03")
+        self.assertIn("names no issue", str(e.exception))
 
     def test_no_backlog_line_means_no_requirement(self):
         tmp, root = workspace(ISSUE_TRACKER, CLAUDE)

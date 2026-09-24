@@ -176,11 +176,14 @@ class Lane:
         """A standing session's placeholder, not a task: `impl02: standing implementer. … wait idle`, or a name
         `impl02 — standing implementer`, owned by that same session. spawn_session.py cannot start a session
         without a row, so a session spawned with no task was given one (design inputs #83, #93, #94)."""
-        owner = _bare_name(self.owner)
-        if not owner:
+        return self.standing_for(_bare_name(self.owner))
+
+    def standing_for(self, session: str | None) -> bool:
+        """This row is `session`'s standing placeholder, whoever owns it yet: at dispatch it is still `unassigned`."""
+        if not session:
             return False
         heads = (STANDING_ITEM.match(_unmark(self.item).strip()), STANDING_NAME.match(self.name.strip()))
-        return any(m and m.group(1).lower() == owner for m in heads)
+        return any(m and m.group(1).lower() == session.lower() for m in heads)
 
     @property
     def ran(self) -> tuple[str, str] | None:

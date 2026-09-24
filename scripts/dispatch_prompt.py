@@ -252,7 +252,8 @@ def compose(root: Path, day: str | None, lane: str, worktree: Path | None = None
     # Zach, 2026-09-22 22:20: each task "is actually backed by an entry in github". Where the block names
     # a GitHub backlog, a task with no issue is not handed out. Whether the issue is open is the audit's.
     issue = None
-    if cfg.backlog_repo:
+    # "A standing session's placeholder is not a task and takes no issue" (the agent file's tracker rule).
+    if cfg.backlog_repo and not rows[0].standing_for(name):
         cell = rows[0].issue.strip()
         if not cell:
             raise RefusedError(
