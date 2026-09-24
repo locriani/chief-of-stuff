@@ -63,6 +63,13 @@ ENV_BIN = "/usr/bin/env"
 # harness never retitles (Zach, 2026-09-22 16:18: "the NUMERIC NAMES I ASSIGN ARE THE ONLY NAMES THEY
 # ARE ALLOWED TO KEEP").
 CLAUDE_ARGV = ["claude", "--agent", "{type}", "--name", "{title}", "--permission-mode", "plan", BOOTSTRAP]
+# An agy (Antigravity) session: no `--agent`, no `--name` (the tab title and the assignment carry the
+# name), `--mode plan` for the same plan-first gate. agy does not load CLAUDE.md, and the workspace's
+# house rules (GitLab only, above all) have to reach it, so the bootstrap names the file.
+AGY_BOOTSTRAP = BOOTSTRAP + " Then read {root}/CLAUDE.md: its house rules bind you."
+AGY_ARGV = ["agy", "--model", "{model}", "--mode", "plan", "-i", AGY_BOOTSTRAP]
+TEMPLATES = {"claude": CLAUDE_ARGV, "agy": AGY_ARGV}
+MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 # The override the eval harness sets, and the only path that still builds an argv. Nothing else uses
 # it: the real launcher asks Ghostty for a tab.
 DEFAULT_LAUNCHER = ["ghostty", "--working-directory={cwd}", "--title={title}", "-e", *CLAUDE_ARGV]
@@ -87,7 +94,7 @@ OSASCRIPT = "/usr/bin/osascript"
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "fish", "env", "eval", "exec", "xargs"}
 METACHARACTERS = re.compile(r"[;&|`$<>\n]")
 PLACEHOLDER = re.compile(r"\{(\w+)\}")
-FIELDS = ("cwd", "title", "type", "dispatch")
+FIELDS = ("cwd", "title", "type", "dispatch", "model", "root")
 
 
 class RefusedError(ValueError):
@@ -154,14 +161,15 @@ def _paths(cwd: str) -> tuple[str, str]:
     return str(root), str(root / PROMPT_FILE)
 
 
-def argv(template: list[str], *, agent_type: str | None, cwd: str, title: str) -> list[str]:
+def argv(template: list[str], *, agent_type: str | None, cwd: str, title: str, model: str = "", workspace: str = ".") -> list[str]:
     """Substitute per whole token. A value never becomes more argv entries than the token it fills."""
     if agent_type is None:
         template = _without(template, "type")
     if not title:
         template = _without(template, "title")
     root, dispatch = _paths(cwd)
-    values = {"cwd": root, "title": title, "type": agent_type or "", "dispatch": dispatch}
+    values = {"cwd": root, "title": title, "type": agent_type or "", "dispatch": dispatch,
+              "model": model, "root": os.path.abspath(workspace)}
     out = []
     for token in template:
         unknown = [name for name in PLACEHOLDER.findall(token) if name not in values]
@@ -182,7 +190,8 @@ def _as_string(value: str) -> str:
     return '"' + value.translate(AS_ESCAPE) + '"'
 
 
-def ghostty_script(*, cwd: str, agent_type: str | None, claude: Path | None, title: str | None = None) -> str:
+def ghostty_script(*, cwd: str, agent_type: str | None, claude: Path | None, title: str | None = None,
+                   runtime: str = "claude", model: str = "", workspace: str = ".") -> str:
     """Ask Ghostty for a tab running `claude` in `cwd`. The inner layer is Ghostty's own shell-style parse.
 
     `claude` is an absolute path, resolved by the caller. Ghostty is launched from the GUI, so its
@@ -195,12 +204,15 @@ def ghostty_script(*, cwd: str, agent_type: str | None, claude: Path | None, tit
     shell, so its PATH is launchd's; the launching PATH goes on the `env` line instead.
     """
     if claude is None:
-        raise RefusedError("cannot find `claude` on PATH; a GUI-launched terminal cannot look it up either")
-    template = CLAUDE_ARGV if agent_type else _without(CLAUDE_ARGV, "type")
+        raise RefusedError(f"cannot find `{runtime}` on PATH; a GUI-launched terminal cannot look it up either")
+    template = TEMPLATES[runtime]
+    if not agent_type:
+        template = _without(template, "type")
     if not title:
         template = _without(template, "title")
     root, dispatch = _paths(cwd)
-    values = {"cwd": root, "title": title or "", "type": agent_type or "", "dispatch": dispatch}
+    values = {"cwd": root, "title": title or "", "type": agent_type or "", "dispatch": dispatch,
+              "model": model, "root": os.path.abspath(workspace)}
     rest = [PLACEHOLDER.sub(lambda m: values.get(m.group(1), m.group(0)), t) for t in template[1:]]
     # `env -C` first: the directory is pinned by the command, not by the field below, which Ghostty
     # does not reliably honour when a command is set.
@@ -270,8 +282,14 @@ def main(argv_in: list[str] | None = None) -> int:
     ap.add_argument("--root", default=".", help="workspace root holding CLAUDE.md")
     ap.add_argument("--coordinator", help="your own session name as a listing shows it, so the session knows who to register with")
     ap.add_argument("--date", help="YYYY-MM-DD; default: today in the workspace timezone")
+    ap.add_argument("--runtime", choices=sorted(TEMPLATES), default="claude",
+                    help="claude (default) or agy (Antigravity), which registers and reports through the mailbox only")
+    ap.add_argument("--model", default="", help="the agy model id, from `agy models`; required with --runtime agy")
     ap.add_argument("--dry-run", action="store_true", help="print the argv and start nothing")
     args = ap.parse_args(argv_in)
+    if args.runtime == "agy" and not MODEL.fullmatch(args.model):
+        print(f"refused: --runtime agy needs --model <an id from `agy models`>, not {args.model!r}", file=sys.stderr)
+        return 1
     # Resolved once, here, because the two consumers used to disagree: `compose` was given a resolved
     # worktree while the launcher was handed the raw value, so a relative `--cwd` wrote the dispatch
     # into the right tree and then asked Ghostty for a directory it resolved against its own GUI
@@ -282,13 +300,16 @@ def main(argv_in: list[str] | None = None) -> int:
     override = os.environ.get(ENV)
     try:
         body = dispatch_prompt.compose(Path(args.root), args.date, args.lane,
-                                      worktree=Path(args.cwd), coordinator=args.coordinator, name=args.title)
+                                      worktree=Path(args.cwd), coordinator=args.coordinator, name=args.title,
+                                      runtime=args.runtime)
         # The override is the eval harness's recorder and the only path that still builds an argv.
-        command = (argv(launcher(), agent_type=args.agent_type, cwd=args.cwd, title=args.title)
+        command = (argv(launcher(), agent_type=args.agent_type, cwd=args.cwd, title=args.title,
+                        model=args.model, workspace=args.root)
                    if override else [OSASCRIPT, "-"])
         script = None if override else ghostty_script(
-            cwd=args.cwd, agent_type=args.agent_type, title=args.title,
-            claude=Path(p) if (p := shutil.which("claude")) else None)
+            cwd=args.cwd, agent_type=args.agent_type, title=args.title, runtime=args.runtime,
+            model=args.model, workspace=args.root,
+            claude=Path(p) if (p := shutil.which(args.runtime)) else None)
     except (RefusedError, dispatch_prompt.RefusedError) as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 1
@@ -326,7 +347,7 @@ def main(argv_in: list[str] | None = None) -> int:
     except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
         print(f"refused: could not start {command[0]}: {exc}", file=sys.stderr)
         return 1
-    print(f"started {args.agent_type or 'the default agent'} in {args.cwd} as {args.title} "
+    print(f"started {args.agent_type or 'the default agent'}{f' on agy {args.model}' if args.runtime == 'agy' else ''} in {args.cwd} as {args.title} "
           f"({where}), assignment in {written}")
     return 0
 

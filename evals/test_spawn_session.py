@@ -610,3 +610,56 @@ class SessionNameTest(unittest.TestCase):
                 self.assertIn("refused", out.stderr)
                 self.assertFalse((self.tree / ss.PROMPT_FILE).exists())
                 self.assertEqual(calls, [])
+
+
+class AgyTest(unittest.TestCase):
+    """Zach, 2026-09-23 18:42: "within the next hour I need agy instances going"; registration and reporting
+    through the mailbox only. agy has no `--agent` and no `--name`; `--mode plan` is its plan-first gate."""
+
+    AGY = Path("/opt/homebrew/bin/agy")
+
+    def script(self, **kw):
+        return ss.ghostty_script(cwd="/tmp/wt", agent_type="implementer", claude=self.AGY, title="implementer-GFlash38H-01",
+                                 runtime="agy", model="gemini-3.8-flash-high", workspace="/tmp/ws", **kw)
+
+    def test_the_tab_runs_agy_in_plan_mode_on_the_named_model(self):
+        self.assertRegex(self.script(), r"/usr/bin/env -C /tmp/wt (?:'PATH=[^']*'|PATH=\S*) /opt/homebrew/bin/agy "
+                                        r"--model gemini-3.8-flash-high --mode plan -i ")
+
+    def test_it_carries_no_claude_flags(self):
+        s = self.script()
+        for flag in ("--agent", "--name", "--permission-mode"):
+            self.assertNotIn(flag, s)
+
+    def test_the_bootstrap_names_the_dispatch_and_the_workspace_rules(self):
+        s = self.script().replace("\\", "")
+        self.assertIn(f"/tmp/wt/{ss.PROMPT_FILE}", s)
+        self.assertIn("/tmp/ws/CLAUDE.md", s)
+
+    def test_the_tab_is_still_titled_with_the_name(self):
+        self.assertIn("set_tab_title:implementer-GFlash38H-01", self.script())
+
+    def run_main(self, *extra):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "CLAUDE.md").write_text(CLAUDE)
+            (root / "daily").mkdir()
+            (root / "daily" / "2026-09-18-tracker.md").write_text(TRACKER)
+            return subprocess.run(
+                [sys.executable, str(Path(ss.__file__)), "--cwd", "/tmp", "--name", "implementer-GFlash38H-01",
+                 "--root", str(root), "--date", "2026-09-18", "--lane", "Security audit", "--dry-run", *extra],
+                capture_output=True, text=True, timeout=30)
+
+    def test_agy_without_a_model_is_refused(self):
+        out = self.run_main("--runtime", "agy")
+        self.assertEqual(out.returncode, 1)
+        self.assertIn("--model", out.stderr)
+
+    def test_a_hostile_model_is_refused(self):
+        out = self.run_main("--runtime", "agy", "--model", "x;rm -rf ~")
+        self.assertEqual(out.returncode, 1)
+
+    def test_the_dry_run_shows_the_agy_tab(self):
+        out = self.run_main("--runtime", "agy", "--model", "gemini-3.8-flash-high")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("--mode plan", out.stdout)

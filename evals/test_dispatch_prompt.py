@@ -6,6 +6,7 @@ in. The one variable argument is the lane name, and a lane name that is not a ro
 shell expansion that reached this far produces a refusal rather than a payload.
 """
 
+import re
 import sys
 import tempfile
 import unittest
@@ -738,3 +739,42 @@ class OnlyTheUserMergesTest(unittest.TestCase):
         line = [x for x in dp.compose(root, "2026-09-18", "Security audit").splitlines() if x.startswith("Commits: ")][0]
         self.assertIn("The merge is the user's alone: you never merge a pull request.", line)
         self.assertNotIn("word you were given", line)
+
+
+class AgyRuntimeTest(unittest.TestCase):
+    """An agy session cannot list sessions or message one: the mailbox is its only channel."""
+
+    NAME = "implementer-GFlash38H-01"
+
+    def setUp(self):
+        self.tmp, self.root = workspace()
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_the_agy_paragraph_is_present_for_agy_only(self):
+        agy = dp.compose(self.root, "2026-09-18", "Security audit", name=self.NAME, runtime="agy")
+        claude = dp.compose(self.root, "2026-09-18", "Security audit", name=self.NAME)
+        self.assertIn("**You run under Antigravity, not Claude Code.**", agy)
+        self.assertNotIn("Antigravity", claude)
+
+    def test_it_names_its_mailbox_and_the_review_instructions(self):
+        body = dp.compose(self.root, "2026-09-18", "Security audit", name=self.NAME, runtime="agy")
+        para = body.split("**You run under Antigravity, not Claude Code.**", 1)[1].split("\n\n", 1)[0]
+        self.assertIn(f'--recipient "{self.NAME}" --unread', para)
+        self.assertIn("ponytail-review", para)
+        self.assertIn(f'--from "{self.NAME}"', body)
+
+
+class MailboxRootTest(unittest.TestCase):
+    """The inbox finds its mailbox through git's common dir, so a session in a fork worktree resolved the
+    fork's mailbox while the coordinator, in a workspace that is no repo, read the workspace's. Every
+    inbox command names the coordinator's mailbox, so a mailbox-only session is heard."""
+
+    def test_every_inbox_command_names_the_workspace_mailbox(self):
+        tmp, root = workspace()
+        self.addCleanup(tmp.cleanup)
+        body = dp.compose(root, "2026-09-18", "Security audit", name="implementer-GFlash38H-01", runtime="agy")
+        want = f"--mailbox-dir {root.resolve() / '.chief-of-stuff' / 'mailbox'}"
+        commands = [c for c in re.findall(r"`python3 [^`]*inbox\.py[^`]*`", body)]
+        self.assertTrue(commands)
+        for c in commands:
+            self.assertIn(want, c)
