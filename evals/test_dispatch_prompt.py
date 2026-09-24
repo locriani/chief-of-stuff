@@ -606,6 +606,8 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         self.assertIn("launching a new session", asks)
         self.assertNotIn("an owner, a scope", self.content)
         self.assertNotIn("only to a session the user names", self._section("Assign"))
+        # An opus run refused a hand-off the user named, on the guardrail meant for the coordinator's own picks.
+        self.assertIn("When you pick, never hand:", self._section("Assign"))
 
     def test_there_is_no_standing_list(self):
         # A standing list stood in for a hand-off yes the coordinator no longer needs.
