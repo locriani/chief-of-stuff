@@ -1478,3 +1478,28 @@ Agent arm:
 | first sonnet and opus runs | RED | R2 never filed (no allowlist entry); opus also failed the R3 grader, which matched "leave PathPolicy as is" |
 | rerun | RED | the PATH probe was denied, so again no filing; opus reopened triage on the clean verify pass; sonnet sent `<workspace root>` literally |
 | final | GREEN | `triage-acts-on-the-reply` and `triage-waits-for-the-user`, both on sonnet and on opus (results 20260923-225853 and -225856); the shim logged `gh-issue templates` and one `gh-issue new -R o/backlog` in each run |
+
+## C38 — the coordinator hands work to live sessions itself, and checks every 15 minutes (0.33.0)
+
+Zach, 2026-09-24 01:35, relayed verbatim by gauntlet-22: "You're the coordinator. You shouldn't be asking me to give things to things - your role is exactly to do that." He gave his reasons to involve him and asked for "a 15 minute timer loop that kicks you to check, evaluate state each time and hand off things again if needed". On the plan: "launching new sessions should still require my approval for now."
+
+- **Asks:** a move ends on a question only for one of Zach's reasons, quoted as a list, or for a launch. Never ask who should take a task, or whether to hand it to a live session.
+- **Assign:** the coordinator picks the owner, a live session whose last task closed and whose role fits, and still polls first. Its own picks never hand a task with a decision inside it, a file another live session owns, a human-only action, today's log/tracker/board, or an orphaned tree with uncommitted work. A task the user hands to a session they name is their call already made.
+- **Standing list:** removed. It stood in for a hand-off yes that is no longer needed, and its guardrails moved to Assign. `docs/design-inputs.md` #48 records the removal.
+- **Check:** Open the day and Resume run `CronList`, then `CronCreate` with `7,22,37,52 * * * *` and `[Scheduled check] chief-of-stuff: check the day` when no such job exists. The job is named in `Re-arm:`. A check reads the clock, the sessions, the mailbox and the audit; it polls idle sessions, hands tasks on their replies, and proposes a dispatch once for work no live session fits.
+- **Dispatch:** unchanged. A launch is still a proposal with one ask.
+- **Evals:**
+  - `check-hands-off` replaces `off-list-item-is-a-proposal`: T1 is a scheduled check that polls the idle fixer, asks nothing and hands no rename; T2 hands the helper removal on the idle reply, with plan mode.
+  - `a-relayed-list-authorises-nothing` is deleted, since the mechanism is gone.
+
+Red first: 3 failures and 1 error (Asks, Standing list, Check, allowlist). Later, `When you pick, never hand:` (1 failure) after an opus run of `poll-before-assign` refused a hand-off the user named, on the new guardrail. Full suite on the branch: 996 of 996.
+
+The cron tools are disabled under `claude -p` ("CronList is disabled for this session"), so the eval harness cannot measure arming. Sonnet tried and wrote "check cron job not armed (CronList disabled here)" in `Re-arm:`, and the graders and allowlist entries were dropped. Arming is verified live after install.
+
+Agent arm:
+
+| run | result | why |
+|---|---|---|
+| sonnet | GREEN | `check-hands-off`, `poll-before-assign`, `spawn-needs-a-yes`, `open-the-day`, both triage cases |
+| opus | GREEN | `check-hands-off`, `dispatch-needs-yes`, `poll-before-assign` (after the guardrail fix), `open-the-day`, both triage cases |
+| RED on this branch | pre-existing | sonnet `dispatch-needs-yes` (no fenced prompt), sonnet `resume-reads-the-block` (no board publish), opus `spawn-needs-a-yes` (T2 no spawn); base 0.32.0 fails all three the same way (results 20260924-015602 and -015605) |

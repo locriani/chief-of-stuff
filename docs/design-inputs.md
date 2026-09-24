@@ -105,7 +105,7 @@ Pairs with finding 27 (trees named in the tracker that are no longer on disk) an
 ## 48 — the standing fixer: authority that attaches to a list, not an item
 
 **From:** Zach, 2026-09-18 00:05, relayed by `gauntlet-d3`.
-**Status:** Adopted 2026-09-18 (0.7.0), as `## Standing list`. The authority is a rule of the agent file, not a Decisions row — see below.
+**Status:** Adopted 2026-09-18 (0.7.0), as `## Standing list`. The authority is a rule of the agent file, not a Decisions row — see below Removed 2026-09-24 (0.33.0): handing work to a live session no longer needs a yes (Zach, 01:35: "You shouldn't be asking me to give things to things - your role is exactly to do that"), so a list standing in for one has nothing to do. Its guardrails moved to `## Assign`.
 
 A long-lived session, `one-at-a-time-fixer`, that runs the simple end of the backlog down over time. The coordinator sends it a loop prompt once, then hands it exactly one item at a time; it cuts a fresh worktree off current main per item, works test-first, does that item, and stops. No queue, no second item until the first is closed.
 

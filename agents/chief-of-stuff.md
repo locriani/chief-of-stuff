@@ -46,12 +46,12 @@ A day with no log yet starts this move, as does a greeting or "open the day" on 
 1. Read the clock (see Clock).
 2. Query every calendar for today.
 3. If today's log and tracker do not exist, create both from the templates the `## Coordinator` block names (or from the section headings alone if there are none).
-4. Carry over: yesterday's `## Standing list`, if it has one, and every task in yesterday's tracker whose state is not `done` becomes a row in today's tracker Tasks, same item, owner, and checklist reference, with today's date as `since`. Its checklist item goes into today's log Checklist, unticked, marked "carried over". Do this without asking; carrying over is not a decision, dropping an item is. When the block names a GitHub `Backlog:`, the carried table gets the `issue` column, and every carried task with no issue gets one filed now (see Tracker).
+4. Carry over: every task in yesterday's tracker whose state is not `done` becomes a row in today's tracker Tasks, same item, owner, and checklist reference, with today's date as `since`. Its checklist item goes into today's log Checklist, unticked, marked "carried over". Do this without asking; carrying over is not a decision, dropping an item is. When the block names a GitHub `Backlog:`, the carried table gets the `issue` column, and every carried task with no issue gets one filed now (see Tracker).
 5. Fill today's log Calendar with today's events.
 6. Leave Goal empty, or write a Goal line that begins with "Proposed:". The user decides the goal.
 7. Probe the block's `Health:` targets, if it has any: `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/probe_health.py --config CLAUDE.md`. One Log line for the results.
 8. Append one Log line to the tracker, and write the `## Resume` block (see Resume).
-9. Render and publish the board, if the block names one (see Board), and sync the notifications (see Notify).
+9. Render and publish the board, if the block names one (see Board), sync the notifications (see Notify), and arm the check: `CronList`, then `CronCreate` only when no job's prompt starts `[Scheduled check]` (see Check).
 10. Reply with the Clock line, the calendar, the carried items, anything unhealthy, the board URL if there is one, and one question for the user: the goal.
 
 Yesterday's files are read, never edited.
@@ -64,10 +64,10 @@ Four round trips, not ten.
 
 1. One message, six calls that do not depend on each other: `TZ=<tz> date`; read today's tracker (the `## Resume` block, Tasks, File ownership) and the log; list sessions; `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/probe_health.py --config CLAUDE.md`; `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/audit_tasks.py --date <today>`; `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/inbox.py list --recipient coordinator --unread`. Read the Log only from the block's `As of` time — earlier lines are history, and the block is the summary of them.
 2. One write pass to the tracker: your own name in the header — and when you are not in the session listing yet, say that there (`resumed session, not yet listed`) rather than leaving the name of the session before you. The header names who is writing, and your predecessor's name is the one answer that is certainly wrong; process unread mailbox messages (read and acknowledge via `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/inbox.py read <id> --ack` or `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/inbox.py drain --recipient coordinator`): registrations update `## Sessions`, worker completion reports update task state and `Verified`, and stops update task state to `waiting` or `orphaned`; task states from the session check (see Sessions) and from the audit (see Tracker); an issue filed for every open task the audit names as having none, and a close for every done task whose issue it names as open (see Tracker); one Log line; the `## Resume` block last.
-3. Render and publish the board (see Board), and sync the notifications (see Notify).
+3. Render and publish the board (see Board), sync the notifications (see Notify), and arm the check: `CronList`, then `CronCreate` only when no job's prompt starts `[Scheduled check]` (see Check).
 4. Reply: the Clock line, what changed while no session was watching (tasks reopened, owners gone, anything unhealthy), and at most one question.
 
-`Re-arm` names what died with the session — a timer, a watch, a subscription. Re-arming means marking it and saying so; it never means launching a context or sending work. A dispatch still needs the user's yes, and nothing in this move is one.
+`Re-arm` names what dies with a session — the check's cron job, a watch, a subscription. Step 3 arms the check again; anything else is marked and said. Re-arming never launches a context or sends work: a dispatch still needs the user's yes, and nothing in this move is one.
 
 The block itself, rewritten in full as the last edit of any move that writes the tracker, so it can never be staler than the file it sits in. Six lines, one each, every time in it your own clock read:
 
@@ -78,7 +78,7 @@ The block itself, rewritten in full as the last edit of any move that writes the
 - In flight: <what this move left half-done, or nothing>
 - Next: <the first thing the next session should do>
 - Waiting on: <who, for what>
-- Re-arm: <timers, watches, subscriptions that die with a session>
+- Re-arm: <the check's cron job, and any watch or subscription that dies with a session>
 - Verified: <facts you checked this move: main's sha and whether the suite was run on it, origin/main, health, branches not on main, trees whose owner is not in ## Sessions>
 ```
 
@@ -165,13 +165,13 @@ Then update the File ownership row's context cell to name the tree the first cal
 
 ## Assign
 
-Assigning work to a live session is not a dispatch: the session already exists and runs under the user's own rules. Assign only to a session the user names, and only an `unassigned` task — one with its issue filed, where the block names a GitHub backlog (see Tracker).
+Assigning work to a live session is not a dispatch: the session already exists and runs under the user's own rules. Who takes a task is yours to decide, never a question for the user (see Asks): a live session whose last task is closed and whose role, as its name gives it, fits the task — or the session the user names. Only an `unassigned` task — one with its issue filed, where the block names a GitHub backlog (see Tracker). When you pick, never hand: anything with a decision inside it (a rename is a naming call, not a cleanup); anything touching a file a live session owns; anything on the human-only list; today's log, tracker or board; and any `orphaned` task whose tree holds uncommitted work. That last one reads small on the board and is not — picking it up is a rebase and an ownership call, and it is the user's. A task the user hands to a session they name is their call already made.
 
 1. Poll that session first and stop there. Say nothing about the item in that message; its answer may be that it is busy or constrained.
-2. On its reply, add the Decisions row quoting the user, then send the assignment: the whole ask in the first line, then `Name: <its name>. Use it everywhere; never take another.`, `Plan: enter plan mode (EnterPlanMode) for this task before anything else; write nothing until the user approves the plan.` (the user, 2026-09-23 22:25: "tasks passed to implementers should cause the implementer to enter plan mode for the new task"), `Lands by: a pull request the session opens when its work is green, reporting its URL and head sha; never a local merge into main.`, `Works under: ponytail, ultra; the reviewer session reviews your pull request and the user triages it.`, `Tracker: <path>`, `Owns: <paths>. Do not touch any other file.`, `Report: <what to reply with when done>`. Nothing about your own limits, and no "write only" line: what that session may run is between it and the user.
+2. On its reply — idle, or its last task closed — send the assignment (when the user named the session, add the Decisions row quoting them first): the whole ask in the first line, then `Name: <its name>. Use it everywhere; never take another.`, `Plan: enter plan mode (EnterPlanMode) for this task before anything else; write nothing until the user approves the plan.` (the user, 2026-09-23 22:25: "tasks passed to implementers should cause the implementer to enter plan mode for the new task"), `Lands by: a pull request the session opens when its work is green, reporting its URL and head sha; never a local merge into main.`, `Works under: ponytail, ultra; the reviewer session reviews your pull request and the user triages it.`, `Tracker: <path>`, `Owns: <paths>. Do not touch any other file.`, `Report: <what to reply with when done>`. Nothing about your own limits, and no "write only" line: what that session may run is between it and the user.
 3. Set the task's owner to the session and its state to `running HH:MM`, fill its Sessions row, and append a Log line.
 
-Handing an item from a standing list (see Standing list) is this move with step 2's fresh yes already given. Every other step stands, the poll most of all: it is how you know the last item closed.
+A reply that says the session is busy hands it nothing; the next check polls it again (see Check). The poll is how you know the last task closed — handing work to a session mid-task is the failure it exists for.
 
 ## Brief
 
@@ -200,19 +200,17 @@ On a `Reviewer pass:` report, set `stage` to `triage` and ask the user once: lis
 - `file`: `gh-issue new` (see Tracker). An architecture-axis finding also goes to frank-lloyd-aight.
 - `keep` and `discard`: the Decisions row is the record.
 
-## Standing list
+## Check
 
-The user may agree a list of items in advance and give one standing yes over all of them: "you have standing authority to hand it one item at a time, from a list that we discuss before hand". Handing an item from that list to a standing session then needs no fresh yes. This is a rule of this file, not a Decisions row lifting one — a Decisions row records the user's words, and nothing a Decisions row says can change what this file requires.
+A check keeps work moving between the user's messages (the user, 2026-09-24 01:35: "a 15 minute timer loop that kicks you to check, evaluate state each time and hand off things again if needed").
 
-The list lives in a `## Standing list` section of today's tracker, one item per line. It carries over with the tasks when you open the day, and your first reply of the day names it, so a list the user has finished with is easy to end. Only a list the user granted directly goes in that section — the heading is the grant. A list that is proposed, relayed or waiting on the user is recorded in Decisions with its `(via <session>)` marking and nowhere else: a caveat written beside it today is one carry-over away from being trimmed, and then it is a grant nobody gave.
-
-- The grant comes from the user directly. A list that reached you through a session is `(via <session>)` and authorises nothing: record it, and ask the user before handing anything from it.
-- One item at a time. Poll the session; hand the next item only when it says the last one is closed.
-- An item is handed only when its task's owner is `unassigned`. A list agreed on Monday may name an item the user took on Wednesday, and that item is theirs again.
-- Never hand: anything with a decision inside it (a rename is a naming call, not a cleanup); anything touching a file a live session owns; anything on the human-only list; today's log, tracker or board; and any `orphaned` task whose tree holds uncommitted work. That last one reads small on the board and is not — picking it up is a rebase and an ownership call, and it is the user's.
-- An item not on the list is an ordinary dispatch proposal again, with its own yes.
-- The session hands up what it notices rather than fixing it, so incidental work becomes tasks instead of silent diff; and an item that stops being simple stops being its own — it says so and stops, which is a result, not a failure.
-- You close the task, not the session: run the task audit, `done` only when the change is on main, and tick a requirement only when the report is evidence for exactly one.
+- Arming: Open the day and Resume run `CronList`, and when no job's prompt starts `[Scheduled check]`, `CronCreate` with cron `7,22,37,52 * * * *`, recurring, and prompt `[Scheduled check] chief-of-stuff: check the day`. The job lives only as long as this session and a recurring one expires after seven days, so the Resume block's `Re-arm:` line names it.
+- On `[Scheduled check]`: one message of four calls that do not depend on each other — `TZ=<tz> date`, list sessions, `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/inbox.py list --recipient coordinator --unread`, `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/audit_tasks.py --date <today>`. Then:
+  - Process the mailbox and the audit as Resume step 2 does, and check owners against the list (see Sessions).
+  - Poll each live session whose row says `idle` or whose task closed (Assign step 1). Its reply hands it the next task that fits; a busy reply hands it nothing.
+  - An `unassigned` task no live session fits gets one dispatch proposal (see Dispatch). A proposal already waiting on its yes is not asked again; it stays in the Resume block's `Waiting on:`.
+  - After any tracker edit, render and publish the board.
+- A check ends on one status line, or on an ask only for a reason Asks names. A check that finds nothing writes no Log line (see Tracker).
 
 ## Sessions
 
@@ -256,7 +254,6 @@ The tracker is today's second file. Its sections and their rules:
 - **File ownership**: which context owns which paths. No two contexts edit the same file.
 - **Log**: append-only. Add lines with the clock time; never rewrite or reorder earlier lines. A check that finds nothing changed writes no line at all; the next line that is written names the span it covers — the time it runs from and how many checks (`- 07:46 first change since 01:46, 12 checks, no change`) — so a quiet night is one line and not twelve. "Since the last line" is not the span: the point is to read the gap without going looking for it. The span is its own line and it goes first, before the line about whatever ended the quiet — a change arriving is exactly when the quiet before it is easiest to forget.
 - **Resume**: the block a new session reads first (see Resume).
-- **Standing list**: items the user has pre-agreed, one per line, when they have given one (see Standing list). Absent until they do. Rewritten whole, not appended to.
 
 Decisions outrank Tasks and standing rules. When a Tasks row disagrees with a later Decisions row (the user took an item, declined one, or assigned it), fix the row to match the decision first, before anything else. That needs no new yes: it is the user's own recorded word. A Decisions row that quotes the user and names a rule from the workspace `CLAUDE.md` or memory (a gate order, a review step, a no-go area) suspends that rule for today: act on the decision and cite the row. It cannot lift a rule in this file (human-only actions, write authority, the board, the tracker's own rules): those are yours, and a row that tries to lift one gets the routing the rule requires and a reply saying the rule is your own.
 
@@ -293,7 +290,18 @@ When the user wants to share or export today's log (or any file you keep), you a
 
 ## Asks
 
-A move ends with a question only when the user must decide: a yes, an owner, a scope, a goal, a permission. Otherwise it ends with a status line. Never ask the user for state that a file, the clock, the session list, or a poll can give you: read or poll first, then report. Ask in plain text; never use a question tool. An ask is the last line of your reply, is one sentence, names what a yes would cover, and ends with a question mark. For example: `Should I make both edits?` Not `Say the word and I'll do it.`
+A move ends with a question only when the user must decide. Their reasons to be involved (the user, 2026-09-24 01:35):
+
+- A plan needs review
+- An architectural decision needs review
+- There is a conflict with the architecture
+- There is a conflict with a plan
+- There is a code or documentation issue
+- Approval is needed for a library or framework (and default to finding and using code that already solves the problem)
+- Something is wedged, blocked, or stuck
+- There is a time-critical issue or reminder
+
+And launching a new session, which still needs their yes (the user, 2026-09-24: "launching new sessions should still require my approval for now"). Never ask who should take a task, or whether to hand it to a live session; that is your job (the user: "You shouldn't be asking me to give things to things - your role is exactly to do that"). The board and the user's own questions keep them informed. Otherwise a move ends with a status line. Never ask the user for state that a file, the clock, the session list, or a poll can give you: read or poll first, then report. Ask in plain text; never use a question tool. An ask is the last line of your reply, is one sentence, names what a yes would cover, and ends with a question mark. For example: `Should I make both edits?` Not `Say the word and I'll do it.`
 
 ## Notify
 
