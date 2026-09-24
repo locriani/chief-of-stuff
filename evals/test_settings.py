@@ -71,3 +71,43 @@ class SettingsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+LANES = """[lanes]
+build = { stages = ["implement", "pr", "review", "triage", "merge"], gates = ["triage", "merge"] }
+"""
+
+
+class LanesTest(unittest.TestCase):
+    """#33 (Zach, 2026-09-23): "A lane: the sequence that a task has to move through" — named, in the toml."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+
+    def load(self, text: str):
+        (self.root / "s.toml").write_text(text)
+        return st.load(self.root, "s.toml")
+
+    def test_no_lanes_table_is_no_lanes(self):
+        self.assertEqual(self.load("[notify]\n").lanes, {})
+
+    def test_a_lane_is_its_stages_and_gates(self):
+        lane = self.load(LANES).lanes["build"]
+        self.assertEqual(lane.stages, ("implement", "pr", "review", "triage", "merge"))
+        self.assertEqual(lane.gates, ("triage", "merge"))
+
+    def test_lanes_do_not_need_notify(self):
+        got = self.load(LANES)
+        self.assertEqual(got.notify.adapter, "off")
+        self.assertIn("build", got.lanes)
+
+    def test_a_lane_that_cannot_be_read_is_refused(self):
+        for bad in ('[lanes]\nx = 1\n',
+                    '[lanes]\nx = { stages = [] }\n',
+                    '[lanes]\nx = { stages = ["a", "a"] }\n',
+                    '[lanes]\nx = { stages = ["a"], gates = ["b"] }\n',
+                    '[lanes]\nx = { stages = ["a", 2] }\n'):
+            with self.subTest(bad=bad), self.assertRaises(st.SettingsError):
+                self.load(bad)

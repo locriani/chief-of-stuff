@@ -49,8 +49,30 @@ class Notify:
 
 
 @dataclass(frozen=True)
+class Lane:
+    """A lane is the sequence of stages a task moves through (Zach, 2026-09-23, #33). A gate is a stage only
+    the user's word passes."""
+    stages: tuple[str, ...]
+    gates: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class Settings:
     notify: Notify = field(default_factory=Notify)
+    lanes: dict[str, Lane] = field(default_factory=dict)
+
+
+def _lane(name: str, table) -> Lane:
+    if not isinstance(table, dict):
+        raise SettingsError(f"[lanes] {name}: a table, like {{ stages = [\"implement\", \"pr\"] }}")
+    stages, gates = table.get("stages"), table.get("gates", [])
+    if not (isinstance(stages, list) and stages and all(isinstance(x, str) and x for x in stages)):
+        raise SettingsError(f"[lanes] {name}: stages is a non-empty list of names")
+    if len(set(stages)) != len(stages):
+        raise SettingsError(f"[lanes] {name}: a stage appears twice")
+    if not isinstance(gates, list) or not set(gates) <= set(stages):
+        raise SettingsError(f"[lanes] {name}: gates must be stages of the lane")
+    return Lane(tuple(stages), tuple(gates))
 
 
 def _notify(table: dict, root: Path) -> Notify:
@@ -87,9 +109,13 @@ def load(root: Path, settings_path: str | None) -> Settings:
         data = tomllib.loads(path.read_text())
     except tomllib.TOMLDecodeError as e:
         raise SettingsError(f"{settings_path}: {e}") from None
+    lanes = data.get("lanes", {})
+    if not isinstance(lanes, dict):
+        raise SettingsError(f"{settings_path}: [lanes] is not a table")
+    lanes = {name: _lane(name, t) for name, t in lanes.items()}
     table = data.get("notify")
     if table is None:
-        return Settings()
+        return Settings(lanes=lanes)
     if not isinstance(table, dict):
         raise SettingsError(f"{settings_path}: [notify] is not a table")
-    return Settings(notify=_notify(table, Path(root)))
+    return Settings(notify=_notify(table, Path(root)), lanes=lanes)
