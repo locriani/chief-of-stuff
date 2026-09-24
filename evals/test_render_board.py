@@ -3,10 +3,15 @@
 import base64
 import contextlib
 import hashlib
+import http.server
 import io
+import os
 import re
+import signal
+import socket
 import sys
 import tempfile
+import threading
 import unittest
 from unittest import mock
 from datetime import datetime, timedelta
@@ -16,6 +21,7 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import render_board as rb  # noqa: E402
+from backlog import Backlog, GitHubBacklog  # noqa: E402
 import settings as st  # noqa: E402
 
 CT = ZoneInfo("America/Chicago")
@@ -1374,6 +1380,16 @@ class TaskGroupHeaderTest(unittest.TestCase):
         self.assertRegex(self.table, r'<tr class="group" data-in="all"><th colspan="6">running · 0</th></tr>\s*<tr data-in="all"><td colspan="6" class="muted">none</td></tr>')
 
 
+def claude_md_pages(port: int) -> str:
+    return re.sub(r"(?m)^- Board: .*$", f"- Board: self-hosted; URL http://127.0.0.1:{port}/; dir `pages/`", CLAUDE_MD)
+
+
+def free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
 class CliTest(unittest.TestCase):
     def test_writes_board_beside_tracker(self) -> None:
         root = Path(tempfile.mkdtemp())
@@ -1385,6 +1401,43 @@ class CliTest(unittest.TestCase):
         self.assertEqual(out, root / "daily" / "2026-09-16-board.html")
         self.assertTrue(out.exists())
         self.assertIn('name="tracker-sha256"', out.read_text())
+
+    def pages_root(self, port: int) -> Path:
+        root = Path(tempfile.mkdtemp())
+        (root / "CLAUDE.md").write_text(claude_md_pages(port))
+        (root / "daily").mkdir()
+        (root / "daily" / "2026-09-16-tracker.md").write_text(TRACKER)
+        return root
+
+    def test_a_board_dir_takes_the_board(self) -> None:
+        # Zach, 2026-09-24 14:07: "we should host our own webserver"; the board goes where pages.py serves.
+        port = free_port()
+        root = self.pages_root(port)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            out = rb.main(["--date", "2026-09-16", "--root", str(root)])
+        self.addCleanup(lambda: os.kill(int((root / "pages" / ".pid").read_text()), signal.SIGTERM))
+        self.assertEqual(out, root / "pages" / "2026-09-16-board.html")
+        page = out.read_text()
+        self.assertIn("Last-Modified", page)
+        # The baseline is the served page itself, so a render between load and the first poll still reloads.
+        self.assertIn("document.lastModified", page)
+        self.assertIn("visibilitychange", page)
+        self.assertIn(f"board http://127.0.0.1:{port}/", page)
+        # Every render ensures the server, so no move can render a board nobody is serving without hearing so.
+        self.assertIn(f"pages: started http://127.0.0.1:{port}/", buf.getvalue())
+
+    def test_a_render_says_when_the_board_is_not_served(self) -> None:
+        other = http.server.ThreadingHTTPServer(("127.0.0.1", 0), http.server.SimpleHTTPRequestHandler)
+        threading.Thread(target=other.serve_forever, daemon=True).start()
+        self.addCleanup(other.server_close)
+        self.addCleanup(other.shutdown)
+        root = self.pages_root(other.server_address[1])
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            out = rb.main(["--date", "2026-09-16", "--root", str(root)])
+        self.assertTrue(out.exists())
+        self.assertIn(f"pages: not served — port {other.server_address[1]} answers as", buf.getvalue())
 
     def test_summary_line_counts_long_items(self) -> None:
         root = Path(tempfile.mkdtemp())
@@ -3209,13 +3262,20 @@ class IssueColumnTest(unittest.TestCase):
         task = rb.parse_tracker(text).tasks[0]
         self.assertEqual((task.item, task.state, task.issue, task.checklist), ("Cut the release branch", "running 10:30", "#9", "Checklist: cut | then tag"))
 
-    def test_backlog_repo_is_read_from_the_block(self) -> None:
-        self.assertEqual(self.cfg.backlog_repo, "o/backlog")
-        self.assertIsNone(rb.parse_coordinator(CLAUDE_MD, today=NOW.date()).backlog_repo)
+    def test_backlog_is_read_from_the_block(self) -> None:
+        self.assertEqual(self.cfg.backlog, GitHubBacklog("o/backlog"))
+        self.assertIsNone(rb.parse_coordinator(CLAUDE_MD, today=NOW.date()).backlog)
 
-    def test_a_gitlab_backlog_is_no_github_repo(self) -> None:
-        text = CLAUDE_MD.replace("- Human-only", "- Backlog: GitLab; host https://gl.example; project g/p\n- Human-only")
-        self.assertIsNone(rb.parse_coordinator(text, today=NOW.date()).backlog_repo)
+    def test_a_gitlab_backlog_keeps_the_column_and_links_to_gitlab(self) -> None:
+        """Zach, 2026-09-23 22:40: "make everything use gitlab now that we have that going"."""
+        text = CLAUDE_MD.replace("- Human-only", "- Backlog: GitLab; host https://gl.example; project o/backlog\n- Human-only")
+        cfg = rb.parse_coordinator(text, today=NOW.date())
+        self.assertEqual(cfg.backlog, Backlog(host="https://gl.example", project="o/backlog"))
+        tasks = rb.render(TRACKER_ISSUED, LOG, cfg, NOW).split("<h2>Tasks</h2>")[1].split("</table>")[0]
+        self.assertIn("<th>issue</th>", tasks)
+        self.assertIn('<a href="https://gl.example/o/backlog/-/issues/9">#9</a>', tasks)
+        self.assertIn('<a href="https://github.com/x/y/issues/4">x/y#4</a>', tasks)
+        self.assertIn('<span class="warn">no issue</span>', tasks)
 
     def test_an_unreadable_backlog_line_is_a_config_error(self) -> None:
         with self.assertRaises(rb.ConfigError):

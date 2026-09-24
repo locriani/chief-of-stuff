@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -1021,6 +1022,71 @@ def issue_workspace(claude: str = ISSUE_CLAUDE) -> tuple[tempfile.TemporaryDirec
     (root / "CLAUDE.md").write_text(claude)
     (root / "daily" / "2026-09-17-tracker.md").write_text(ISSUE_TRACKER)
     return tmp, root
+
+
+# Zach, 2026-09-23 22:40: "remove the github issue remote and make everything use gitlab now that we have that going."
+GITLAB_CLAUDE = CLAUDE + "- Backlog: GitLab; host https://gl.example; project o/backlog\n"
+
+
+class GitLabIssueAuditTest(unittest.TestCase):
+    def test_a_gitlab_backlog_is_audited(self):
+        import backlog as bl
+        tmp, root = issue_workspace(GITLAB_CLAUDE)
+        self.addCleanup(tmp.cleanup)
+        real = bl.issues
+
+        def fake(cfg, state="opened", **kw):
+            if isinstance(cfg, bl.Backlog):
+                self.assertEqual((cfg.host, cfg.project, state), ("https://gl.example", "o/backlog", "all"))
+                return bl.Fetch(issues=tuple(bl.Issue(n, "t", bl.CLOSED if s == "CLOSED" else bl.OPEN)
+                                             for n, s in LIVE["o/backlog"].items()))
+            return real(cfg, state=state, **kw)
+        with patch.object(bl, "issues", fake):
+            report = al.audit(root, "2026-09-17", gh=FakeGh(LIVE))
+        self.assertEqual([str(f) for f in report.issues], [
+            "issue: Bare — no issue; file it with backlog.py --create",
+            'issue: Garbled — "TBD" is not an issue reference',
+            "issue: Closed under it — #5 is closed",
+            "issue: Missing — #6 not found in o/backlog",
+            "issue: Done open — done but #7 is open; backlog.py --close 7 --commit",
+        ])
+
+
+class ForeignHostTest(unittest.TestCase):
+    def test_a_cell_on_another_host_is_never_read(self):
+        # R1 on PR 14: an issue cell of https://evil.example.com/a/b/-/issues/1 sent the Backlog's token to that host.
+        import backlog as bl
+        tmp, root = issue_workspace(GITLAB_CLAUDE)
+        self.addCleanup(tmp.cleanup)
+        tracker = root / "daily" / "2026-09-17-tracker.md"
+        tracker.write_text(tracker.read_text().replace("| x/y#2 |", "| https://evil.example.com/a/b/-/issues/1 |"))
+        asked = []
+
+        def fake(cfg, state="opened", **_kw):
+            asked.append(getattr(cfg, "host", "github"))
+            return bl.Fetch(issues=())
+        with patch.object(bl, "issues", fake):
+            report = al.audit(root, "2026-09-17", gh=FakeGh(LIVE))
+        self.assertNotIn("https://evil.example.com", asked)
+        self.assertIn('issue: Elsewhere — "https://evil.example.com/a/b/-/issues/1" is not an issue reference',
+                      [str(f) for f in report.issues])
+
+
+class SameHostProjectTest(unittest.TestCase):
+    def test_another_project_on_the_backlog_host_is_read_on_that_host(self):
+        import backlog as bl
+        tmp, root = issue_workspace(GITLAB_CLAUDE)
+        self.addCleanup(tmp.cleanup)
+        tracker = root / "daily" / "2026-09-17-tracker.md"
+        tracker.write_text(tracker.read_text().replace("| x/y#2 |", "| https://gl.example/g/other/-/issues/2 |"))
+        asked = []
+
+        def fake(cfg, state="opened", **_kw):
+            asked.append((type(cfg).__name__, getattr(cfg, "host", ""), getattr(cfg, "project", "")))
+            return bl.Fetch(issues=(bl.Issue(2, "t", bl.OPEN),))
+        with patch.object(bl, "issues", fake):
+            al.audit(root, "2026-09-17", gh=FakeGh(LIVE))
+        self.assertIn(("Backlog", "https://gl.example", "g/other"), asked)
 
 
 class IssueAuditTest(unittest.TestCase):

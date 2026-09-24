@@ -1,10 +1,7 @@
 {
   "tz": "America/Chicago",
   "peers": "sessions.json",
-  "board": {
-    "url": "board-known"
-  },
-  "description": "A resuming session inherits a `## Resume` block whose `As of` runs to 600 characters and carries three facts the block has no room for: the audit's finding, a pair of ingest measurements, and the two unanswered asks. Every task already has a short name in the `name` column. The facts have to leave the block, and the cell they must not land in is `name` \u2014 the only cell the board draws on a bar and in the task table.",
+  "description": "A resuming session inherits a `## Resume` block whose `As of` runs to 600 characters and carries three facts the block has no room for: the audit's finding, a pair of ingest measurements, and the two unanswered asks. Every task already has a short name in the `name` column. The facts have to leave the block, and the cell they must not land in is `name` — the only cell the board draws on a bar and in the task table.",
   "prompt": "resume",
   "graders": [
     {
@@ -64,22 +61,15 @@
       "section": "## Log"
     },
     {
-      "name": "board republished to the known url",
-      "type": "board_url_fixed",
-      "tracker": "daily/{{today}}-tracker.md",
-      "expect": "board-known"
-    },
-    {
-      "name": "the board header still names the known url",
-      "type": "file_matches",
-      "path": "daily/{{today}}-tracker.md",
-      "pattern": "(?m)^Coordinator:[^\\n]*Board: board-known\\."
+      "type": "board_matches_tracker",
+      "name": "the board is re-rendered from the final tracker",
+      "tracker": "daily/{{today}}-tracker.md"
     },
     {
       "name": "no second tracker",
       "type": "no_new_files",
       "except": [
-        "daily/{{today}}-board.html"
+        "pages/{{today}}-board.html"
       ]
     }
   ],

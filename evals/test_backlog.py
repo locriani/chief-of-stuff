@@ -183,12 +183,23 @@ class TokenTest(unittest.TestCase):
         self.assertEqual(got, "from-keychain")
 
     def test_absent_everywhere_is_the_empty_string_not_an_exception(self):
-        self.assertEqual(bl.token(cfg("https://h.test"), environ={}, keychain=lambda *_a: ""), "")
+        self.assertEqual(bl.token(cfg("https://h.test"), environ={}, keychain=lambda *_a: "", glab=lambda _h: ""), "")
+
+    def test_glab_answers_when_the_environment_and_keychain_do_not(self):
+        asked = []
+        got = bl.token(cfg("https://h.test"), environ={}, keychain=lambda *_a: "",
+                       glab=lambda host: asked.append(host) or "from-glab")
+        self.assertEqual((got, asked), ("from-glab", ["h.test"]))
+
+    def test_the_keychain_wins_over_glab(self):
+        got = bl.token(cfg("https://h.test"), environ={}, keychain=lambda *_a: "from-keychain",
+                       glab=lambda _h: "from-glab")
+        self.assertEqual(got, "from-keychain")
 
     def test_a_keychain_that_fails_is_absence_not_a_crash(self):
         def boom(*_a):
             raise OSError("security: not found")
-        self.assertEqual(bl.token(cfg("https://h.test"), environ={}, keychain=boom), "")
+        self.assertEqual(bl.token(cfg("https://h.test"), environ={}, keychain=boom, glab=boom), "")
 
 
 class IssuesTest(unittest.TestCase):
@@ -580,12 +591,13 @@ class IssueRefTest(unittest.TestCase):
                            ("https://github.com/o/n/issues/7", ("o/n", 7)),
                            (f"[#9](https://github.com/{REPO}/issues/9)", (REPO, 9))):
             with self.subTest(cell=cell):
-                self.assertEqual(bl.issue_ref(cell, REPO), bl.IssueRef(*want))
+                self.assertEqual(bl.issue_ref(cell, GH), bl.IssueRef(*want))
 
     def test_rejects(self):
-        for cell in ("", "TBD", "9", "#", "#x", "issue 9", "https://github.com/o/n/pull/7", "#9 #10"):
+        for cell in ("", "TBD", "9", "#", "#x", "issue 9", "https://github.com/o/n/pull/7", "#9 #10",
+                     "https://gl.example/g/p/-/merge_requests/7"):
             with self.subTest(cell=cell):
-                self.assertIsNone(bl.issue_ref(cell, REPO))
+                self.assertIsNone(bl.issue_ref(cell, GH))
 
     def test_bare_number_needs_a_repo(self):
         self.assertIsNone(bl.issue_ref("#9", None))
@@ -594,8 +606,58 @@ class IssueRefTest(unittest.TestCase):
     def test_url_and_label(self):
         ref = bl.IssueRef(REPO, 9)
         self.assertEqual(ref.url, f"https://github.com/{REPO}/issues/9")
-        self.assertEqual(ref.label(REPO), "#9")
-        self.assertEqual(ref.label("o/n"), f"{REPO}#9")
+        self.assertEqual(ref.label(GH), "#9")
+        self.assertEqual(ref.label(bl.GitHubBacklog("o/n")), f"{REPO}#9")
+
+
+# Zach, 2026-09-23 22:40: "remove the github issue remote and make everything use gitlab now that we have that going."
+GL = bl.Backlog(host="https://gl.example", project="g/p")
+
+
+class GitLabIssueRefTest(unittest.TestCase):
+    def test_a_bare_number_is_in_the_gitlab_project(self):
+        ref = bl.issue_ref("#9", GL)
+        self.assertEqual(ref, bl.IssueRef("g/p", 9, "gl.example"))
+        self.assertEqual(ref.url, "https://gl.example/g/p/-/issues/9")
+        self.assertEqual(ref.label(GL), "#9")
+
+    def test_gitlab_urls(self):
+        for cell, want in (("https://gl.example/g/p/-/issues/7", ("g/p", 7, "gl.example")),
+                           ("https://gl.example/g/sub/q/-/work_items/3/", ("g/sub/q", 3, "gl.example")),
+                           ("[#7](https://gl.example/g/p/-/issues/7)", ("g/p", 7, "gl.example"))):
+            with self.subTest(cell=cell):
+                self.assertEqual(bl.issue_ref(cell, GL), bl.IssueRef(*want))
+
+    def test_a_gitlab_url_on_another_host_is_no_reference(self):
+        # R1 on PR 14: a cell naming any host sent the Backlog's token there. Only the Backlog's own host is read.
+        for cell in ("https://evil.example.com/g/p/-/issues/1", "https://gl.example.evil.com/g/p/-/issues/1"):
+            with self.subTest(cell=cell):
+                self.assertIsNone(bl.issue_ref(cell, GL))
+        self.assertIsNone(bl.issue_ref("https://gl.example/g/p/-/issues/1", GH))
+        self.assertIsNone(bl.issue_ref("https://gl.example/g/p/-/issues/1", None))
+
+    def test_owner_repo_is_still_github(self):
+        ref = bl.issue_ref("locriani/GauntletIssues#33", GL)
+        self.assertEqual(ref, bl.IssueRef(REPO, 33))
+        self.assertEqual(ref.label(GL), f"{REPO}#33")
+
+    def test_the_same_path_on_another_host_is_not_home(self):
+        self.assertEqual(bl.IssueRef("g/p", 9).label(GL), "g/p#9")
+
+    def test_issue_states_reads_the_gitlab_project(self):
+        seen = []
+
+        def fake(cfg, state="opened", **_kw):
+            seen.append((cfg, state))
+            return bl.Fetch(issues=(bl.Issue(9, "a", bl.OPEN), bl.Issue(4, "b", bl.CLOSED)))
+        with patch.object(bl, "issues", fake):
+            got = bl.issue_states(GL)
+        self.assertEqual({n: i.state for n, i in got.items()}, {9: bl.OPEN, 4: bl.CLOSED})
+        self.assertEqual(seen, [(GL, "all")])
+
+    def test_file_with_names_the_backend_writer(self):
+        self.assertIn("gh-issue new", bl.file_with(GH))
+        self.assertIn("backlog.py --create", bl.file_with(GL))
 
 
 class IssueStatesTest(unittest.TestCase):

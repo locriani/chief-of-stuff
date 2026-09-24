@@ -20,14 +20,14 @@ import argparse
 import re
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from render_board import BULLET, HHMM, RAN, ConfigError, _dur, _cells, _is_separator, _section, _unmark, _unquote, clip_name, parse_coordinator, parse_tracker  # noqa: E402
 from dispatch_prompt import PROMPT_DIR, STOP_FILE  # noqa: E402
-from backlog import CLOSED, BacklogError, GitHubBacklog, issue_ref, issue_states  # noqa: E402
+from backlog import CLOSED, GITHUB, Backlog, BacklogError, GitHubBacklog, file_with, home_of, issue_ref, issue_states  # noqa: E402
 from settings import SettingsError, load as load_settings  # noqa: E402
 
 # The branch is written in the parenthetical right after the tree name — `worktree wt-x (feat/y)` —
@@ -141,32 +141,35 @@ class IssueFault:
         return f"issue: {self.task} — {self.why}"
 
 
-def issue_faults(tasks, repo: str, gh=None) -> list[IssueFault]:
-    """One `gh issue list --state all` per repo the tracker names, then each task against it. A read that
-    fails is one `unknown` finding: an issue nobody could look up is not an issue known to be open."""
+def issue_faults(tasks, home: Backlog | GitHubBacklog, gh=None) -> list[IssueFault]:
+    """One list call per repo the tracker names, then each task against it. A read that fails is one
+    `unknown` finding: an issue nobody could look up is not an issue known to be open."""
     refs = {}
     faults: list[IssueFault] = []
     for task in tasks:
         if task.standing:
             continue
         cell = task.issue.strip()
-        ref = issue_ref(cell, repo) if cell else None
+        ref = issue_ref(cell, home) if cell else None
         name = clip_name(task.label)
         if not cell:
             if task.needs_issue:
-                faults.append(IssueFault(name, "no issue; file it with gh-issue new"))
+                faults.append(IssueFault(name, f"no issue; file it with {file_with(home)}"))
         elif not ref:
             faults.append(IssueFault(name, f'"{cell}" is not an issue reference'))
         else:
             refs[task] = ref
-    states: dict[str, dict] = {}
-    for want in sorted({r.repo for r in refs.values()}):
+    states: dict[tuple[str, str], dict] = {}
+    for want in sorted({(r.host, r.repo) for r in refs.values()}):
+        # issue_ref admits a GitLab URL only on the Backlog's own host, so its token never leaves that host.
+        cfg = (home if want == home_of(home) else GitHubBacklog(repo=want[1]) if want[0] == GITHUB
+               else replace(home, project=want[1]))
         try:
-            states[want] = issue_states(GitHubBacklog(repo=want), gh=gh)
+            states[want] = issue_states(cfg, gh=gh)
         except BacklogError as e:
             return faults + [IssueFault("unknown", str(e))]
     for task, ref in refs.items():
-        name, found, tag = clip_name(task.label), states[ref.repo].get(ref.number), ref.label(repo)
+        name, found, tag = clip_name(task.label), states[(ref.host, ref.repo)].get(ref.number), ref.label(home)
         if task.needs_issue and found is None:
             faults.append(IssueFault(name, f"{tag} not found in {ref.repo}"))
         elif task.needs_issue and found.state == CLOSED:
@@ -716,9 +719,9 @@ def audit(root: Path, day: str, gh=None, check_issues: bool = True, now: datetim
     report.lines.extend(queue_lines)
     report.lines.extend(str(q) for q in report.queue)
     issues = ""
-    if cfg.backlog_repo:
+    if cfg.backlog:
         if check_issues:
-            report.issues.extend(issue_faults(tasks, cfg.backlog_repo, gh))
+            report.issues.extend(issue_faults(tasks, cfg.backlog, gh))
             report.lines.extend(str(f) for f in report.issues)
             issues = f" issues={len(report.issues)}"
         else:

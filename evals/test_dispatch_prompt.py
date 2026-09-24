@@ -576,9 +576,16 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         self.assertIn("Dual-transport registration", self.content)
         self.assertIn("python3 ${CLAUDE_PLUGIN_ROOT}/scripts/inbox.py list --recipient coordinator --unread", self.content)
 
-    def test_a_republish_never_opens_the_board(self):
-        # Zach, 2026-09-23 21:34: "it keeps relaunching the artifact on me. UPDATE the artifact. I know how to open it."
-        self.assertIn("Never call the tool's `open` action on the board", self.content)
+    def test_the_board_is_served_from_this_mac(self):
+        # Zach, 2026-09-24 14:07: "we should host our own webserver and ensure they are set up as part of the agent's boot loop."
+        ensure = "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/pages.py --ensure"
+        for move in ("## Open the day", "## Resume", "## Check"):
+            section = self.content.split(move, 1)[1].split("\n## ", 1)[0]
+            self.assertIn(ensure, section, move)
+        board = self.content.split("## Board", 1)[1].split("\n## ", 1)[0]
+        self.assertIn("<url>/all", board)
+        for gone in ("publish tool", "`url` argument", "`open` action", "Board: <url>"):
+            self.assertNotIn(gone, board)
 
     def test_the_pipeline_sends_the_reviewer_the_pr(self):
         # #33 stage 3: a lane runs through the reviewer session and the user's gates.
@@ -612,6 +619,11 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
     def test_there_is_no_standing_list(self):
         # A standing list stood in for a hand-off yes the coordinator no longer needs.
         self.assertNotIn("Standing list", self.content)
+
+    def test_the_issue_rule_is_for_any_backlog_and_gitlab_files_with_backlog_py(self):
+        # The user, 2026-09-23 22:40: "remove the github issue remote and make everything use gitlab now that we have that going".
+        self.assertNotRegex(self.content, r"GitHub `?[Bb]acklog")
+        self.assertIn("backlog.py --create", self._section("Tracker"))
 
     def test_the_check_is_armed_every_fifteen_minutes(self):
         # The user, 2026-09-24 01:35: "a 15 minute timer loop that kicks you to check, evaluate state each time and hand off things again if needed".
@@ -693,6 +705,17 @@ class IssueDispatchTest(unittest.TestCase):
             dp.compose(root, "2026-09-18", "Unfiled task")
         self.assertIn("names no issue", str(e.exception))
         self.assertIn("gh-issue new", str(e.exception))
+
+    def test_a_gitlab_backlog_refuses_too_and_links_to_gitlab(self):
+        """Zach, 2026-09-23 22:40: "make everything use gitlab now that we have that going"."""
+        claude = CLAUDE + "- Backlog: GitLab; host https://gl.example; project o/backlog\n"
+        tmp, root = workspace(ISSUE_TRACKER, claude)
+        self.addCleanup(tmp.cleanup)
+        with self.assertRaises(dp.RefusedError) as e:
+            dp.compose(root, "2026-09-18", "Unfiled task")
+        self.assertIn("backlog.py --create", str(e.exception))
+        self.assertIn("Issue: https://gl.example/o/backlog/-/issues/12",
+                      dp.compose(root, "2026-09-18", "Security audit").splitlines())
 
     def test_a_cell_that_is_not_an_issue_is_refused(self):
         tmp, root = workspace(ISSUE_TRACKER, ISSUE_CLAUDE)

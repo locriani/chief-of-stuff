@@ -1,9 +1,6 @@
 {
   "tz": "America/Chicago",
   "peers": "sessions.json",
-  "board": {
-    "url": "board-known"
-  },
   "description": "A new session on a day that already has files. It reads the `## Resume` block rather than re-deriving the day from the Log, renames itself in the header, and leaves the block fresh.",
   "prompt": "resume",
   "graders": [
@@ -64,22 +61,16 @@
       "section": "## Log"
     },
     {
-      "name": "board republished to the known url",
-      "type": "board_url_fixed",
-      "tracker": "daily/{{today}}-tracker.md",
-      "expect": "board-known"
-    },
-    {
       "name": "board matches the final tracker",
       "type": "board_matches_tracker",
       "tracker": "daily/{{today}}-tracker.md",
-      "html": "daily/{{today}}-board.html"
+      "html": "pages/{{today}}-board.html"
     },
     {
       "name": "no second tracker",
       "type": "no_new_files",
       "except": [
-        "daily/{{today}}-board.html"
+        "pages/{{today}}-board.html"
       ]
     }
   ],

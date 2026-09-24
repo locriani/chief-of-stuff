@@ -64,13 +64,7 @@
       "name": "board matches the final tracker",
       "type": "board_matches_tracker",
       "tracker": "daily/{{today}}-tracker.md",
-      "html": "daily/{{today}}-board.html"
-    },
-    {
-      "name": "republished to the known url",
-      "type": "board_url_fixed",
-      "tracker": "daily/{{today}}-tracker.md",
-      "expect": "board-known"
+      "html": "pages/{{today}}-board.html"
     },
     {
       "name": "Log times are this move's clock reads",
@@ -80,8 +74,5 @@
     }
   ],
   "max_turns": 16,
-  "timeout_seconds": 300,
-  "board": {
-    "url": "board-known"
-  }
+  "timeout_seconds": 300
 }
