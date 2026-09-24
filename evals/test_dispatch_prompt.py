@@ -591,6 +591,14 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         self.assertIn("every disposition in one reply", self.content)
         self.assertIn("Never dispose of a finding for the user", self.content)
 
+    def test_every_handed_task_opens_plan_mode(self):
+        # Zach, 2026-09-23 22:25: "tasks passed to implementers should cause the implementer to enter plan mode for the new task".
+        line = "`Plan: enter plan mode (EnterPlanMode) for this task before anything else; write nothing until the user approves the plan.`"
+        assign = self.content.split("## Assign", 1)[1].split("\n## ", 1)[0]
+        triage = self.content.split("## Triage", 1)[1].split("\n## ", 1)[0]
+        self.assertIn(line, assign)
+        self.assertIn(line, triage)
+
     def test_no_session_applies_its_own_review(self):
         self.assertNotIn("then apply them on the same branch", self.content)
         self.assertNotIn("review your pull request with ponytail-review", self.content)
@@ -753,6 +761,12 @@ class PonytailTest(unittest.TestCase):
 
     def test_the_header_names_ponytail_at_ultra(self):
         self.assertIn("**ponytail, ultra.**", self.body)
+
+    def test_a_new_task_is_a_new_plan(self):
+        """Zach, 2026-09-23 22:25: a later task handed to this session starts in plan mode too."""
+        self.assertIn("**A new task is a new plan.**", self.body)
+        agy = dp.compose(self.root, "2026-09-18", "Security audit", name="implementer-GFlash38H-01", runtime="agy")
+        self.assertIn("**A new task is a new plan.**", agy)
 
     def test_the_users_ask_is_still_built(self):
         """House rule 9: a challenge is said once, then the instruction is built."""

@@ -57,6 +57,15 @@
           "min": 1
         },
         {
+          "name": "the assignment opens plan mode",
+          "type": "peer_calls",
+          "tool": "send",
+          "to_ref": "a1b2c3",
+          "ok": true,
+          "text_match": "(?i)plan mode",
+          "min": 1
+        },
+        {
           "name": "no coordinator limits in the assignment",
           "type": "peer_calls",
           "tool": "send",

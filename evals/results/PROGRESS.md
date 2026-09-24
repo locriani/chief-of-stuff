@@ -1442,3 +1442,14 @@ Zach, 2026-09-23, on who handles review findings: "Reviewer + my triage". This r
 Red first: `PonytailTest` 2 failures, `BudgetsTest` 1 failure 2 errors, `BudgetAuditTest` 2 errors; `CoordinatorPromptWorkflowTest` 3 failures; `AgyRuntimeTest.test_it_names_its_mailbox_and_no_self_review` 1 failure.
 
 Agent arm, sonnet, run 20260923-220102: `triage-waits-for-the-user` GREEN 8/8. `spawn-needs-a-yes` (owed) RED at T2, T1 green: after the yes, the eval allowlist denied a compound Bash call (`date; ls; find …; make_worktree.py --help`), a `Glob **/.git` then found no repo, and the agent asked for the repo path instead of cutting the tree. No worktree or session before the yes, which is what the case guards; the T2 miss is the eval's repo discovery, not this change, and is left for its own task.
+
+## C36 — every handed task starts in plan mode (0.31.0)
+
+Zach, 2026-09-23 22:25: "something that is a miss that keeps happening: tasks passed to implementers should cause the implementer to enter plan mode for the new task". A spawned session was already plan-first (`spawn_session.py` launches `--permission-mode plan`); a task handed to a session already running was not.
+
+- **Assign:** the assignment carries `Plan: enter plan mode (EnterPlanMode) for this task before anything else; write nothing until the user approves the plan.` after `Name:`. A standing-list handoff is Assign, so it carries it too.
+- **Triage:** a `fix` list goes to the owning session with the same line.
+- **Assignment file:** `**A new task is a new plan.**` — every later task handed to the session starts in plan mode.
+- **Eval:** `poll-before-assign` grades that the assignment send says plan mode.
+
+Red first: `test_every_handed_task_opens_plan_mode`, `test_a_new_task_is_a_new_plan` — 2 failures. Full suite on the branch: 988 of 988. Agent arm (sonnet): `poll-before-assign` GREEN 13/13, the new plan-mode grader included.

@@ -168,7 +168,7 @@ Then update the File ownership row's context cell to name the tree the first cal
 Assigning work to a live session is not a dispatch: the session already exists and runs under the user's own rules. Assign only to a session the user names, and only an `unassigned` task — one with its issue filed, where the block names a GitHub backlog (see Tracker).
 
 1. Poll that session first and stop there. Say nothing about the item in that message; its answer may be that it is busy or constrained.
-2. On its reply, add the Decisions row quoting the user, then send the assignment: the whole ask in the first line, then `Name: <its name>. Use it everywhere; never take another.`, `Lands by: a pull request the session opens when its work is green, reporting its URL and head sha; never a local merge into main.`, `Works under: ponytail, ultra; the reviewer session reviews your pull request and the user triages it.`, `Tracker: <path>`, `Owns: <paths>. Do not touch any other file.`, `Report: <what to reply with when done>`. Nothing about your own limits, and no "write only" line: what that session may run is between it and the user.
+2. On its reply, add the Decisions row quoting the user, then send the assignment: the whole ask in the first line, then `Name: <its name>. Use it everywhere; never take another.`, `Plan: enter plan mode (EnterPlanMode) for this task before anything else; write nothing until the user approves the plan.` (the user, 2026-09-23 22:25: "tasks passed to implementers should cause the implementer to enter plan mode for the new task"), `Lands by: a pull request the session opens when its work is green, reporting its URL and head sha; never a local merge into main.`, `Works under: ponytail, ultra; the reviewer session reviews your pull request and the user triages it.`, `Tracker: <path>`, `Owns: <paths>. Do not touch any other file.`, `Report: <what to reply with when done>`. Nothing about your own limits, and no "write only" line: what that session may run is between it and the user.
 3. Set the task's owner to the session and its state to `running HH:MM`, fill its Sessions row, and append a Log line.
 
 Handing an item from a standing list (see Standing list) is this move with step 2's fresh yes already given. Every other step stands, the poll most of all: it is how you know the last item closed.
@@ -196,7 +196,7 @@ A task with a `lane` moves through that lane's stages (see Tracker). The `review
 On a `Reviewer pass:` report, set `stage` to `triage` and ask the user once: list R1..Rn, each with its axis, severity, what it is, and the reviewer's suggestion, and ask for every disposition in one reply: `fix`, `file`, `keep` or `discard`. Never dispose of a finding for the user, and never read the reviewer's suggestion as the user's word.
 
 - Record the reply as a Decisions row quoting it.
-- `fix`: send those findings to the owning session; the task goes to `fix`, then `verify` (see Pipeline).
+- `fix`: send those findings to the owning session with `Plan: enter plan mode (EnterPlanMode) for this task before anything else; write nothing until the user approves the plan.`; the task goes to `fix`, then `verify` (see Pipeline).
 - `file`: `gh-issue new` (see Tracker). An architecture-axis finding also goes to frank-lloyd-aight.
 - `keep` and `discard`: the Decisions row is the record.
 
