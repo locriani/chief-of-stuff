@@ -37,7 +37,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from backlog import BacklogError, GitHubBacklog, issue_ref, parse_backlog  # noqa: E402
+from backlog import Backlog, BacklogError, GitHubBacklog, issue_ref, parse_backlog  # noqa: E402
 from settings import SettingsError, load as load_settings  # noqa: E402
 
 HHMM = re.compile(r"^(\d{1,2}):(\d{2})$")
@@ -119,9 +119,9 @@ class Config:
     deadlines: tuple[Deadline, ...]
     board_tool: str | None
     board_url: str | None
-    # The `Backlog:` line's GitHub repo, `owner/name`. None when there is no line or it names GitLab: the
-    # issue rule binds only where there is a tracker to back a task with, and GitHub is the one adapter.
-    backlog_repo: str | None = None
+    # The parsed `Backlog:` line, GitLab or GitHub. None when there is no line: the issue rule binds only
+    # where there is a tracker to back a task with.
+    backlog: Backlog | GitHubBacklog | None = None
     # `Settings:` — the workspace's chief-of-stuff.toml, relative to the root (settings.py reads it).
     settings_path: str | None = None
 
@@ -606,13 +606,12 @@ def parse_coordinator(text: str, today: date) -> Config:
             m = re.match(r"(?i)url\s+(\S+)", p)
             if m:
                 board_url = m.group(1)
-    backlog_repo = None
+    backlog = None
     if "Backlog" in top:
         try:
             backlog = parse_backlog(top["Backlog"])
         except BacklogError as e:
             raise ConfigError(f"`Backlog:` line: {e}") from None
-        backlog_repo = backlog.repo if isinstance(backlog, GitHubBacklog) else None
     return Config(
         user=_unquote(top["User"]),
         log_dir=_unquote(top["Daily log dir"]),
@@ -621,7 +620,7 @@ def parse_coordinator(text: str, today: date) -> Config:
         deadlines=tuple(sorted(deadlines, key=lambda d: d.at)),
         board_tool=board_tool,
         board_url=board_url,
-        backlog_repo=backlog_repo,
+        backlog=backlog,
         settings_path=_first_path(top.get("Settings", "")),
     )
 
@@ -1692,9 +1691,9 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
             tokens.append(task.kind)
         return tokens
 
-    # The issue column exists only where the block names a GitHub backlog; the board reads the cell and
+    # The issue column exists only where the block names a backlog; the board reads the cell and
     # never the network, so whether the issue is open is audit_tasks.py's to say.
-    issued = cfg.backlog_repo is not None
+    issued = cfg.backlog is not None
     span = 7 if issued else 6
     issue_head = "<th>issue</th>" if issued else ""
 
@@ -1702,9 +1701,9 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
         if not issued:
             return ""
         cell = task.issue.strip()
-        ref = issue_ref(cell, cfg.backlog_repo) if cell else None
+        ref = issue_ref(cell, cfg.backlog) if cell else None
         if ref:
-            body = f'<a href="{_esc(ref.url)}">{_esc(ref.label(cfg.backlog_repo))}</a>'
+            body = f'<a href="{_esc(ref.url)}">{_esc(ref.label(cfg.backlog))}</a>'
         elif cell:
             body = f'<span class="warn">not an issue: {_esc(cell)}</span>'
         elif task.needs_issue:

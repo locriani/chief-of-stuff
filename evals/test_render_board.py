@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import render_board as rb  # noqa: E402
+from backlog import Backlog, GitHubBacklog  # noqa: E402
 import settings as st  # noqa: E402
 
 CT = ZoneInfo("America/Chicago")
@@ -3209,13 +3210,20 @@ class IssueColumnTest(unittest.TestCase):
         task = rb.parse_tracker(text).tasks[0]
         self.assertEqual((task.item, task.state, task.issue, task.checklist), ("Cut the release branch", "running 10:30", "#9", "Checklist: cut | then tag"))
 
-    def test_backlog_repo_is_read_from_the_block(self) -> None:
-        self.assertEqual(self.cfg.backlog_repo, "o/backlog")
-        self.assertIsNone(rb.parse_coordinator(CLAUDE_MD, today=NOW.date()).backlog_repo)
+    def test_backlog_is_read_from_the_block(self) -> None:
+        self.assertEqual(self.cfg.backlog, GitHubBacklog("o/backlog"))
+        self.assertIsNone(rb.parse_coordinator(CLAUDE_MD, today=NOW.date()).backlog)
 
-    def test_a_gitlab_backlog_is_no_github_repo(self) -> None:
-        text = CLAUDE_MD.replace("- Human-only", "- Backlog: GitLab; host https://gl.example; project g/p\n- Human-only")
-        self.assertIsNone(rb.parse_coordinator(text, today=NOW.date()).backlog_repo)
+    def test_a_gitlab_backlog_keeps_the_column_and_links_to_gitlab(self) -> None:
+        """Zach, 2026-09-23 22:40: "make everything use gitlab now that we have that going"."""
+        text = CLAUDE_MD.replace("- Human-only", "- Backlog: GitLab; host https://gl.example; project o/backlog\n- Human-only")
+        cfg = rb.parse_coordinator(text, today=NOW.date())
+        self.assertEqual(cfg.backlog, Backlog(host="https://gl.example", project="o/backlog"))
+        tasks = rb.render(TRACKER_ISSUED, LOG, cfg, NOW).split("<h2>Tasks</h2>")[1].split("</table>")[0]
+        self.assertIn("<th>issue</th>", tasks)
+        self.assertIn('<a href="https://gl.example/o/backlog/-/issues/9">#9</a>', tasks)
+        self.assertIn('<a href="https://github.com/x/y/issues/4">x/y#4</a>', tasks)
+        self.assertIn('<span class="warn">no issue</span>', tasks)
 
     def test_an_unreadable_backlog_line_is_a_config_error(self) -> None:
         with self.assertRaises(rb.ConfigError):

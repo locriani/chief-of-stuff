@@ -21,7 +21,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from backlog import issue_ref  # noqa: E402
+from backlog import file_with, issue_ref  # noqa: E402
 from render_board import ConfigError, _cells, _is_separator, _section, parse_coordinator, parse_tracker, short_name  # noqa: E402
 
 
@@ -253,15 +253,15 @@ def compose(root: Path, day: str | None, task: str, worktree: Path | None = None
         raise RefusedError(
             f"task {rows[0].item.strip()!r} is already {owner}'s, not {UNASSIGNED}; it is not a task to dispatch")
     # Zach, 2026-09-22 22:20: each task "is actually backed by an entry in github". Where the block names
-    # a GitHub backlog, a task with no issue is not handed out. Whether the issue is open is the audit's.
+    # a backlog, a task with no issue is not handed out. Whether the issue is open is the audit's.
     issue = None
     # "A standing session's placeholder is not a task and takes no issue" (the agent file's tracker rule).
-    if cfg.backlog_repo and not rows[0].standing_for(name):
+    if cfg.backlog and not rows[0].standing_for(name):
         cell = rows[0].issue.strip()
         if not cell:
             raise RefusedError(
-                f"task {rows[0].item.strip()!r} names no issue; file one with gh-issue new and write its number in the issue column")
-        issue = issue_ref(cell, cfg.backlog_repo)
+                f"task {rows[0].item.strip()!r} names no issue; file one with {file_with(cfg.backlog)} and write its number in the issue column")
+        issue = issue_ref(cell, cfg.backlog)
         if not issue:
             raise RefusedError(f'task {rows[0].item.strip()!r} has "{_clean("the issue cell", cell)}" in its issue column, which is not an issue reference')
     # Absolute, because this file is read by a session whose cwd is its own worktree rather than the

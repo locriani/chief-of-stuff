@@ -694,6 +694,17 @@ class IssueDispatchTest(unittest.TestCase):
         self.assertIn("names no issue", str(e.exception))
         self.assertIn("gh-issue new", str(e.exception))
 
+    def test_a_gitlab_backlog_refuses_too_and_links_to_gitlab(self):
+        """Zach, 2026-09-23 22:40: "make everything use gitlab now that we have that going"."""
+        claude = CLAUDE + "- Backlog: GitLab; host https://gl.example; project o/backlog\n"
+        tmp, root = workspace(ISSUE_TRACKER, claude)
+        self.addCleanup(tmp.cleanup)
+        with self.assertRaises(dp.RefusedError) as e:
+            dp.compose(root, "2026-09-18", "Unfiled task")
+        self.assertIn("backlog.py --create", str(e.exception))
+        self.assertIn("Issue: https://gl.example/o/backlog/-/issues/12",
+                      dp.compose(root, "2026-09-18", "Security audit").splitlines())
+
     def test_a_cell_that_is_not_an_issue_is_refused(self):
         tmp, root = workspace(ISSUE_TRACKER, ISSUE_CLAUDE)
         self.addCleanup(tmp.cleanup)

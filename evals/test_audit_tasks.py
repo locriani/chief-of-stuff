@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -1021,6 +1022,34 @@ def issue_workspace(claude: str = ISSUE_CLAUDE) -> tuple[tempfile.TemporaryDirec
     (root / "CLAUDE.md").write_text(claude)
     (root / "daily" / "2026-09-17-tracker.md").write_text(ISSUE_TRACKER)
     return tmp, root
+
+
+# Zach, 2026-09-23 22:40: "remove the github issue remote and make everything use gitlab now that we have that going."
+GITLAB_CLAUDE = CLAUDE + "- Backlog: GitLab; host https://gl.example; project o/backlog\n"
+
+
+class GitLabIssueAuditTest(unittest.TestCase):
+    def test_a_gitlab_backlog_is_audited(self):
+        import backlog as bl
+        tmp, root = issue_workspace(GITLAB_CLAUDE)
+        self.addCleanup(tmp.cleanup)
+        real = bl.issues
+
+        def fake(cfg, state="opened", **kw):
+            if isinstance(cfg, bl.Backlog):
+                self.assertEqual((cfg.host, cfg.project, state), ("https://gl.example", "o/backlog", "all"))
+                return bl.Fetch(issues=tuple(bl.Issue(n, "t", bl.CLOSED if s == "CLOSED" else bl.OPEN)
+                                             for n, s in LIVE["o/backlog"].items()))
+            return real(cfg, state=state, **kw)
+        with patch.object(bl, "issues", fake):
+            report = al.audit(root, "2026-09-17", gh=FakeGh(LIVE))
+        self.assertEqual([str(f) for f in report.issues], [
+            "issue: Bare — no issue; file it with backlog.py --create",
+            'issue: Garbled — "TBD" is not an issue reference',
+            "issue: Closed under it — #5 is closed",
+            "issue: Missing — #6 not found in o/backlog",
+            "issue: Done open — done but #7 is open; backlog.py --close 7 --commit",
+        ])
 
 
 class IssueAuditTest(unittest.TestCase):
