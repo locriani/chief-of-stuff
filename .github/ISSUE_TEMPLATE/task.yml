@@ -1,0 +1,31 @@
+name: Task
+description: One outcome. Link other issues with relationships, never by number.
+labels: [enhancement]
+body:
+  - type: input
+    id: outcome
+    attributes:
+      label: Outcome
+      description: What done looks like. One line, 100 characters at most.
+    validations:
+      required: true
+  - type: input
+    id: why
+    attributes:
+      label: Why
+      description: The reason. One line, 100 characters at most.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance
+      description: "`- [ ]` checks. 6 lines at most, 160 characters each."
+      value: "- [ ] "
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Facts only. 6 lines at most, 160 characters each.
