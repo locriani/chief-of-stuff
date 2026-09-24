@@ -1,0 +1,31 @@
+name: Bug
+description: Something is broken. Link other issues with relationships, never by number.
+labels: [bug]
+body:
+  - type: input
+    id: observed
+    attributes:
+      label: Observed
+      description: What happened. One line, 100 characters at most.
+    validations:
+      required: true
+  - type: input
+    id: expected
+    attributes:
+      label: Expected
+      description: What should have happened. One line, 100 characters at most.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Repro
+      description: Numbered steps. 6 lines at most, 160 characters each.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Log or output, pasted verbatim. 20 lines at most.
+      render: text
