@@ -1375,6 +1375,9 @@ class TaskGroupHeaderTest(unittest.TestCase):
         self.assertRegex(self.table, r'<tr class="group" data-in="all"><th colspan="6">running · 0</th></tr>\s*<tr data-in="all"><td colspan="6" class="muted">none</td></tr>')
 
 
+CLAUDE_MD_PAGES = re.sub(r"(?m)^- Board: .*$", "- Board: self-hosted; URL http://127.0.0.1:8787/; dir `pages/`", CLAUDE_MD)
+
+
 class CliTest(unittest.TestCase):
     def test_writes_board_beside_tracker(self) -> None:
         root = Path(tempfile.mkdtemp())
@@ -1386,6 +1389,21 @@ class CliTest(unittest.TestCase):
         self.assertEqual(out, root / "daily" / "2026-09-16-board.html")
         self.assertTrue(out.exists())
         self.assertIn('name="tracker-sha256"', out.read_text())
+
+    def test_a_board_dir_takes_the_board(self) -> None:
+        # Zach, 2026-09-24 14:07: "we should host our own webserver"; the board goes where pages.py serves.
+        root = Path(tempfile.mkdtemp())
+        (root / "CLAUDE.md").write_text(CLAUDE_MD_PAGES)
+        (root / "daily").mkdir()
+        (root / "daily" / "2026-09-16-tracker.md").write_text(TRACKER)
+        out = rb.main(["--date", "2026-09-16", "--root", str(root)])
+        self.assertEqual(out, root / "pages" / "2026-09-16-board.html")
+        page = out.read_text()
+        self.assertIn("Last-Modified", page)
+        # The baseline is the served page itself, so a render between load and the first poll still reloads.
+        self.assertIn("document.lastModified", page)
+        self.assertIn("visibilitychange", page)
+        self.assertIn('board http://127.0.0.1:8787/', page)
 
     def test_summary_line_counts_long_items(self) -> None:
         root = Path(tempfile.mkdtemp())

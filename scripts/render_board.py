@@ -20,7 +20,8 @@ every deadline that has not passed.
 
     python3 render_board.py --date 2026-09-16 [--root <workspace>]
 
-Writes `<log dir>/<date>-board.html` beside the tracker and prints its path and one summary line.
+Writes `<date>-board.html` into the Board line's `dir` (served by pages.py), or beside the tracker when it names
+none, and prints its path and one summary line.
 """
 
 from __future__ import annotations
@@ -119,6 +120,9 @@ class Config:
     deadlines: tuple[Deadline, ...]
     board_tool: str | None
     board_url: str | None
+    # The `Board:` line's ``dir `X` ``: where the board is written for pages.py to serve. None writes it
+    # beside the tracker.
+    pages_dir: str | None = None
     # The parsed `Backlog:` line, GitLab or GitHub. None when there is no line: the issue rule binds only
     # where there is a tracker to back a task with.
     backlog: Backlog | GitHubBacklog | None = None
@@ -598,7 +602,7 @@ def parse_coordinator(text: str, today: date) -> Config:
             scope = "named" if any(re.match(r"(?i)named tasks only\s*$", o) for o in options) else "all"
             deadlines.append(Deadline(name, datetime(int(m[1]), int(m[2]), int(m[3]), int(m[4] or 23), int(m[5] or 59), tzinfo=zone), reqs, scope))
     tracker = re.search(r"`([^`]+)`", top["Tracker"])
-    board_tool = board_url = None
+    board_tool = board_url = pages_dir = None
     if "Board" in top:
         parts = [p.strip() for p in top["Board"].split(";")]
         board_tool = _unquote(parts[0]) or None
@@ -606,6 +610,9 @@ def parse_coordinator(text: str, today: date) -> Config:
             m = re.match(r"(?i)url\s+(\S+)", p)
             if m:
                 board_url = m.group(1)
+            m = re.match(r"(?i)dir\s+`([^`]+)`", p)
+            if m:
+                pages_dir = m.group(1)
     backlog = None
     if "Backlog" in top:
         try:
@@ -620,6 +627,7 @@ def parse_coordinator(text: str, today: date) -> Config:
         deadlines=tuple(sorted(deadlines, key=lambda d: d.at)),
         board_tool=board_tool,
         board_url=board_url,
+        pages_dir=pages_dir,
         backlog=backlog,
         settings_path=_first_path(top.get("Settings", "")),
     )
@@ -1628,7 +1636,7 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
     active = [task for task in tasks if task.kind != "done"]
     done = [task for task in tasks if task.kind == "done"]
     nearest = nearest_deadline(cfg, now)
-    url = tracker.board_url or cfg.board_url
+    url = cfg.board_url or tracker.board_url
 
     # Day strip: a rolling 24 hours, 8 behind this hour and 16 ahead of it (Zach, 2026-09-22). It first
     # ended at the nearest deadline or midnight, so at 23:00 only an hour of it lay ahead of now; then it
@@ -2017,6 +2025,13 @@ body{{padding:12px 12px 36px}}
     }});
   }}
   tick();setInterval(tick,30000);
+  // Served by pages.py: reload when the file behind this address changes (a re-render, or a new day's board).
+  // A hidden tab's timers are throttled, so coming back to the tab checks at once.
+  if(location.protocol==='http:'){{var seen=Date.parse(document.lastModified);var poll=function(){{
+    fetch(location.pathname,{{method:'HEAD',cache:'no-store'}}).then(function(r){{
+      var t=Date.parse(r.headers.get('Last-Modified'));if(t&&t!==seen)location.reload();
+    }}).catch(function(){{}});
+  }};setInterval(poll,5000);document.onvisibilitychange=poll;}}
 }})();
 </script>
 """
@@ -2046,7 +2061,8 @@ def main(argv: list[str] | None = None) -> Path:
     log = root / cfg.log_path(day)
     log_text = log.read_text() if log.is_file() else ""
     tracker_text = tracker.read_text()
-    out = tracker.with_name(f"{day}-board.html")
+    out = (root / cfg.pages_dir if cfg.pages_dir else tracker.parent) / f"{day}-board.html"
+    out.parent.mkdir(parents=True, exist_ok=True)
     req_texts = {d.name: ((root / d.requirements).read_text() if (root / d.requirements).is_file() else None) for d in cfg.deadlines if d.requirements}
     try:
         lanes = load_settings(root, cfg.settings_path).lanes
