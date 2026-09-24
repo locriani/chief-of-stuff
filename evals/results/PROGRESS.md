@@ -1428,3 +1428,17 @@ Zach, 2026-09-23: "A lane: the sequence that a task has to move through" — nam
 - **Board never opened:** a republish updates the board in place; the agent file forbids the tool's `open` action on it. Zach, 21:34: "it keeps relaunching the artifact on me. UPDATE the artifact. I know how to open it."
 
 Red first: `LanesTest` 5 failures, 3 errors; `LaneColumnsTest` + `LaneAuditTest` 2 failures, 4 errors; `test_a_republish_never_opens_the_board` 1 failure. Full suite on the branch: 979 of 979.
+
+## C35 — the review pipeline runs the lanes (0.30.0; #33 stage 3)
+
+Zach, 2026-09-23, on who handles review findings: "Reviewer + my triage". This reverses C32's self-review and self-applied cuts. The reviewer is the `reviewer` agent from auditor PR 2.
+
+- **Dispatch COMMITS:** open the pull request when green, report its URL and head sha to the coordinator, then stop. No ponytail-review, no applied cuts; a finding is fixed only when the coordinator sends it. The Antigravity paragraph no longer hands over the review skill file (its only use was the self-review).
+- **Agent file `## Pipeline`:** a gate yes covers every stage up to the next gate; advancing writes a Decisions row citing the yes and a Log line, and never goes into a human-only action, a file another live session owns, an orphaned task, or an uncovered stage. At `pr` the coordinator sends `reviewer` `review PR <url>`; at `verify`, the fix R-numbers and the Decisions row. Dispatch launches on a covering gate yes too. `Lands by:` and `Works under:` lines updated.
+- **Agent file `## Triage`:** R1..Rn with the reviewer's suggestions, every disposition asked for in one reply (`fix`, `file`, `keep`, `discard`), never disposed of for the user.
+- **Budgets:** `[budgets]` in the settings toml (`S`, `M`, `L`, `XL` → `Nh`/`Nm`); `audit_tasks.py` prints `over budget: <task> running 2h10m (M 1h30m)` for a running task past its size's budget, and ` over=N` when budgets are set. Not counted in the exit: the coordinator polls the session and tells the user, and never stops it.
+- **Eval case:** `triage-waits-for-the-user`.
+
+Red first: `PonytailTest` 2 failures, `BudgetsTest` 1 failure 2 errors, `BudgetAuditTest` 2 errors; `CoordinatorPromptWorkflowTest` 3 failures; `AgyRuntimeTest.test_it_names_its_mailbox_and_no_self_review` 1 failure.
+
+Agent arm, sonnet, run 20260923-220102: `triage-waits-for-the-user` GREEN 8/8. `spawn-needs-a-yes` (owed) RED at T2, T1 green: after the yes, the eval allowlist denied a compound Bash call (`date; ls; find …; make_worktree.py --help`), a `Glob **/.git` then found no repo, and the agent asked for the repo path instead of cutting the tree. No worktree or session before the yes, which is what the case guards; the T2 miss is the eval's repo discovery, not this change, and is left for its own task.

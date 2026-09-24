@@ -69,18 +69,12 @@ STOP_FILE = f"{PROMPT_DIR}/stop.md"
 # name one anyway, and a session following it found nothing there.
 INBOX_SCRIPT = Path(__file__).resolve().parent / "inbox.py"
 # An agy (Antigravity) session has no session listing, no direct messages and no Claude skills, so the
-# mailbox is its only channel (Zach, 2026-09-23 18:42) and the review skill is handed over as a file.
+# mailbox is its only channel (Zach, 2026-09-23 18:42).
 AGY = ("**You run under Antigravity, not Claude Code.** You cannot list sessions or message one: every "
        "registration, ask, progress report and stop below goes through the mailbox commands, with "
        "`--from \"{name}\"`, and your ref is your name. Check your mailbox "
        "(`python3 {inbox_script} list --recipient \"{name}\" --unread`) before each step and after each "
-       "commit. `ponytail-review` is not a skill here: {review}")
-REVIEW_GLOB = ".claude/plugins/cache/ponytail/ponytail/*/skills/ponytail-review/SKILL.md"
-
-
-def _review_skill() -> str:
-    found = sorted(Path.home().glob(REVIEW_GLOB), key=lambda p: [int(x) if x.isdigit() else x for x in p.parts[-4].split(".")])
-    return f"read `{found[-1]}` and follow it." if found else "its instructions were not found on this machine; say so in your pull request instead of posting a review."
+       "commit.")
 
 HEADER = """# Assignment
 
@@ -181,14 +175,15 @@ REPORT = ("Report: when the task is finished, reply to the coordinator with what
 # (17:26: "I'll review and click the auto merge button on all PRs from here on forward"). Opening it
 # and applying the cuts are the session's own since 0.27.0 (19:40: "PRs should be autononmous"; 19:51:
 # "I want ponytail cuts to be automatically applied, I think").
+# #33 stage 3 (Zach, 2026-09-23: "Reviewer + my triage"): the `reviewer` session reviews every pull request and
+# the user disposes of each finding, so a session no longer reviews or cuts its own.
 COMMITS = ("Commits: Commit small and often on your own branch — uncommitted work is how work gets "
            "lost. Code reaches main only through a pull request: push the branch and open one "
            "(`gh pr create`, or `glab mr create` on GitLab) when the work is finished and its suite is "
-           "green, and never push to main or merge locally. Once it is open, review its diff (`gh pr diff`, "
-           "`glab mr diff`) with the `ponytail:ponytail-review` skill and post the findings on it — \"no "
-           "findings\" included — then apply the cuts as a commit on the same branch, suite green, and "
-           "comment `applied in <sha>`; a cut that would break a test or undo what the user asked for is "
-           "named in that comment instead. The merge is the user's alone: you never merge a pull request.")
+           "green, and never push to main or merge locally. Once it is open, report its URL and head sha to "
+           "the coordinator, then stop: the reviewer session reviews it and the user triages every finding, "
+           "so a finding is fixed only when the coordinator sends it to you, as a commit on the same branch. "
+           "The merge is the user's alone: you never merge a pull request.")
 
 
 def _clean(label: str, value: str) -> str:
@@ -294,7 +289,7 @@ def compose(root: Path, day: str | None, task: str, worktree: Path | None = None
         you_are=f"You are `{name}`. " if name else "",
     )
     if runtime == "agy":
-        agy = AGY.format(name=name or UNNAMED, inbox_script=inbox_script, review=_review_skill())
+        agy = AGY.format(name=name or UNNAMED, inbox_script=inbox_script)
         header_text = header_text.replace("\n\n**Register first", f"\n\n{agy}\n\n**Register first", 1)
     report_text = REPORT.format(
         inbox_script=inbox_script,

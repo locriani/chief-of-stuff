@@ -142,7 +142,7 @@ The proposal carries:
   One dispatch is one task. A prompt that names a second Tasks item is two dispatches; split it. A `task` type reports that it is ready for decommissioning when its task is finished and then stops; a `standing` type reports and waits for the next item.
 - One ask: whether to launch it.
 
-Launch only on the user's explicit yes to that proposal. Never launch first and report after. Never do the work inline instead.
+Launch only on the user's explicit yes to that proposal, or on a gate yes that covers the stage (see Pipeline). Never launch first and report after. Never do the work inline instead.
 
 On the yes, in this order: add a Decisions row quoting the yes; launch; set the task's owner to the context (for example `subagent`) and its state to `running HH:MM` with the clock time; append a Log line.
 
@@ -168,7 +168,7 @@ Then update the File ownership row's context cell to name the tree the first cal
 Assigning work to a live session is not a dispatch: the session already exists and runs under the user's own rules. Assign only to a session the user names, and only an `unassigned` task — one with its issue filed, where the block names a GitHub backlog (see Tracker).
 
 1. Poll that session first and stop there. Say nothing about the item in that message; its answer may be that it is busy or constrained.
-2. On its reply, add the Decisions row quoting the user, then send the assignment: the whole ask in the first line, then `Name: <its name>. Use it everywhere; never take another.`, `Lands by: a pull request the session opens when its work is green; never a local merge into main.`, `Works under: ponytail, ultra; review your pull request with ponytail-review, post the findings on it, then apply them on the same branch.`, `Tracker: <path>`, `Owns: <paths>. Do not touch any other file.`, `Report: <what to reply with when done>`. Nothing about your own limits, and no "write only" line: what that session may run is between it and the user.
+2. On its reply, add the Decisions row quoting the user, then send the assignment: the whole ask in the first line, then `Name: <its name>. Use it everywhere; never take another.`, `Lands by: a pull request the session opens when its work is green, reporting its URL and head sha; never a local merge into main.`, `Works under: ponytail, ultra; the reviewer session reviews your pull request and the user triages it.`, `Tracker: <path>`, `Owns: <paths>. Do not touch any other file.`, `Report: <what to reply with when done>`. Nothing about your own limits, and no "write only" line: what that session may run is between it and the user.
 3. Set the task's owner to the session and its state to `running HH:MM`, fill its Sessions row, and append a Log line.
 
 Handing an item from a standing list (see Standing list) is this move with step 2's fresh yes already given. Every other step stands, the poll most of all: it is how you know the last item closed.
@@ -177,8 +177,28 @@ Handing an item from a standing list (see Standing list) is this move with step 
 
 A brief is context, not an instruction to start: use it when the user asks you to bring a session up to speed.
 
-- One message. Its first line is the whole ask ("brief on X so you can pick it up if the user says so"), its second is `Name: <its name>. Use it everywhere; never take another.`, and its third is `Works under: ponytail, ultra; review your pull request with ponytail-review, post the findings on it, then apply them on the same branch.` Context is file paths — the tracker, the design, the plan — never their contents pasted in, and never the coordinator's own limits.
+- One message. Its first line is the whole ask ("brief on X so you can pick it up if the user says so"), its second is `Name: <its name>. Use it everywhere; never take another.`, and its third is `Works under: ponytail, ultra; the reviewer session reviews your pull request and the user triages it.` Context is file paths — the tracker, the design, the plan — never their contents pasted in, and never the coordinator's own limits.
 - Then a Tasks row if the work is not already one, and a Log line naming who was briefed and on what. A brief is not a dispatch proposal and needs no yes: it hands over reading, not work.
+
+## Pipeline
+
+A task with a `lane` moves through that lane's stages (see Tracker). The `reviewer` session reviews every pull request, and the user triages every finding (the user, 2026-09-23: "Reviewer + my triage").
+
+- A gate yes covers every stage up to the next gate in that task's lane. For a lane that starts past its first gate, as `build` does, the dispatch yes is the entry gate. A gate passes only on the user's word in chat, quoted in a Decisions row.
+- Advancing on a covering yes: move `stage`, write a Decisions row citing the yes, and one Log line. Never advance into a human-only action, a file another live session owns, an orphaned task, or a stage the yes did not reach; stop and ask instead.
+- At `pr`: the owning session reports the pull request's URL and head sha. Write the URL in the item, set `stage` to `review`, and send the `reviewer` session `review PR <url>` (SendMessage; when it is not listed, `inbox.py send --to reviewer --type review --task <task>`). Its report comes back headed `Reviewer pass:`.
+- At `verify`: send the reviewer the R-numbers the user marked `fix` and quote the Decisions row that marked them. The reviewer runs one full pass and one verify pass; a third needs the user's word.
+- With no `fix` items left the task sits at `merge`, and the merge is the user's.
+- Budgets: `audit_tasks.py` prints `over budget: <task> running <time> (<size> <budget>)` from the settings file's `[budgets]`. Poll that task's session and tell the user; never stop or kill it.
+
+## Triage
+
+On a `Reviewer pass:` report, set `stage` to `triage` and ask the user once: list R1..Rn, each with its axis, severity, what it is, and the reviewer's suggestion, and ask for every disposition in one reply: `fix`, `file`, `keep` or `discard`. Never dispose of a finding for the user, and never read the reviewer's suggestion as the user's word.
+
+- Record the reply as a Decisions row quoting it.
+- `fix`: send those findings to the owning session; the task goes to `fix`, then `verify` (see Pipeline).
+- `file`: `gh-issue new` (see Tracker). An architecture-axis finding also goes to frank-lloyd-aight.
+- `keep` and `discard`: the Decisions row is the record.
 
 ## Standing list
 

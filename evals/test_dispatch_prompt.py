@@ -580,6 +580,21 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         # Zach, 2026-09-23 21:34: "it keeps relaunching the artifact on me. UPDATE the artifact. I know how to open it."
         self.assertIn("Never call the tool's `open` action on the board", self.content)
 
+    def test_the_pipeline_sends_the_reviewer_the_pr(self):
+        # #33 stage 3: a lane runs through the reviewer session and the user's gates.
+        self.assertIn("## Pipeline", self.content)
+        self.assertIn("`review PR <url>`", self.content)
+        self.assertIn("A gate yes covers every stage up to the next gate", self.content)
+
+    def test_triage_is_the_users(self):
+        self.assertIn("## Triage", self.content)
+        self.assertIn("every disposition in one reply", self.content)
+        self.assertIn("Never dispose of a finding for the user", self.content)
+
+    def test_no_session_applies_its_own_review(self):
+        self.assertNotIn("then apply them on the same branch", self.content)
+        self.assertNotIn("review your pull request with ponytail-review", self.content)
+
 
 # Zach, 2026-09-22 22:20: each task "is actually backed by an entry in github"; a task with none is refused.
 ISSUE_CLAUDE = CLAUDE + "- Backlog: GitHub issues; repo https://github.com/o/backlog (private)\n"
@@ -746,18 +761,16 @@ class PonytailTest(unittest.TestCase):
     def test_the_failing_test_still_comes_first(self):
         self.assertIn("The failing test comes first", self.body)
 
-    def test_every_pull_request_gets_a_ponytail_review_comment(self):
+    def test_the_session_reports_the_pr_and_stops(self):
+        """#33 stage 3 (Zach, 2026-09-23: "Reviewer + my triage"): the reviewer session reviews, Zach triages."""
         line = [x for x in self.body.splitlines() if x.startswith("Commits: ")][0]
-        self.assertIn("ponytail:ponytail-review", line)
-        self.assertIn("post the findings on it", line)
-        self.assertIn('"no findings"', line)
+        self.assertIn("report its URL and head sha to the coordinator, then stop", line)
 
-    def test_the_cuts_are_applied(self):
-        """Zach, 2026-09-23 19:51: "I want ponytail cuts to be automatically applied, I think"."""
+    def test_no_self_review_and_no_self_applied_cuts(self):
         line = [x for x in self.body.splitlines() if x.startswith("Commits: ")][0]
-        self.assertIn("apply the cuts as a commit on the same branch", line)
-        self.assertIn("`applied in <sha>`", line)
-        self.assertIn("would break a test or undo what the user asked for", line)
+        self.assertNotIn("ponytail-review", line)
+        self.assertNotIn("apply the cuts", line)
+        self.assertIn("a finding is fixed only when the coordinator sends it to you", line)
 
 
 class OnlyTheUserMergesTest(unittest.TestCase):
@@ -789,11 +802,11 @@ class AgyRuntimeTest(unittest.TestCase):
         self.assertIn("**You run under Antigravity, not Claude Code.**", agy)
         self.assertNotIn("Antigravity", claude)
 
-    def test_it_names_its_mailbox_and_the_review_instructions(self):
+    def test_it_names_its_mailbox_and_no_self_review(self):
         body = dp.compose(self.root, "2026-09-18", "Security audit", name=self.NAME, runtime="agy")
         para = body.split("**You run under Antigravity, not Claude Code.**", 1)[1].split("\n\n", 1)[0]
         self.assertIn(f'--recipient "{self.NAME}" --unread', para)
-        self.assertIn("ponytail-review", para)
+        self.assertNotIn("ponytail-review", para)
         self.assertIn(f'--from "{self.NAME}"', body)
 
 

@@ -21,11 +21,11 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from render_board import BULLET, HHMM, RAN, ConfigError, _cells, _is_separator, _section, _unmark, _unquote, clip_name, parse_coordinator, parse_tracker  # noqa: E402
+from render_board import BULLET, HHMM, RAN, ConfigError, _dur, _cells, _is_separator, _section, _unmark, _unquote, clip_name, parse_coordinator, parse_tracker  # noqa: E402
 from dispatch_prompt import PROMPT_DIR, STOP_FILE  # noqa: E402
 from backlog import CLOSED, BacklogError, GitHubBacklog, issue_ref, issue_states  # noqa: E402
 from settings import SettingsError, load as load_settings  # noqa: E402
@@ -202,6 +202,32 @@ def lane_faults(tasks, lanes: dict, settings_path: str | None) -> list[LaneFault
     return faults
 
 
+@dataclass(frozen=True)
+class OverBudget:
+    """A running task past its size's budget (#33 stage 3). The coordinator polls its session and tells the user;
+    it never stops the session."""
+
+    task: str
+    ran: timedelta
+    size: str
+    budget: timedelta
+
+    def __str__(self) -> str:
+        return f"over budget: {self.task} running {_dur(self.ran)} ({self.size} {_dur(self.budget)})"
+
+
+def over_budget(tasks, budgets: dict, day: str, now: datetime) -> list[OverBudget]:
+    over: list[OverBudget] = []
+    for task in tasks:
+        budget, start = budgets.get(task.size.strip()), task.state_time
+        if task.kind != "running" or budget is None or not start:
+            continue
+        ran = now - datetime.combine(date.fromisoformat(day), datetime.strptime(start, "%H:%M").time(), tzinfo=now.tzinfo)
+        if ran > budget:
+            over.append(OverBudget(clip_name(task.label), ran, task.size.strip(), budget))
+    return over
+
+
 @dataclass
 class Report:
     lines: list[str] = field(default_factory=list)
@@ -211,6 +237,7 @@ class Report:
     queue: list[QueueFault] = field(default_factory=list)
     issues: list[IssueFault] = field(default_factory=list)
     lanes: list[LaneFault] = field(default_factory=list)
+    over: list[OverBudget] = field(default_factory=list)
 
 
 def worktrees_dir(claude_md: str) -> str:
@@ -592,7 +619,7 @@ def queue_faults(tracker_text: str) -> tuple[list[QueueFault], list[str], int]:
     return faults, lines, len(open_rows)
 
 
-def audit(root: Path, day: str, gh=None, check_issues: bool = True) -> Report:
+def audit(root: Path, day: str, gh=None, check_issues: bool = True, now: datetime | None = None) -> Report:
     claude_md = (root / "CLAUDE.md").read_text()
     cfg = parse_coordinator(claude_md, today=date.today())
     trees = worktrees_dir(claude_md)
@@ -696,14 +723,18 @@ def audit(root: Path, day: str, gh=None, check_issues: bool = True) -> Report:
             issues = f" issues={len(report.issues)}"
         else:
             issues = " issues=off"
-    report.lanes.extend(lane_faults(tasks, load_settings(root, cfg.settings_path).lanes, cfg.settings_path))
+    settings = load_settings(root, cfg.settings_path)
+    report.lanes.extend(lane_faults(tasks, settings.lanes, cfg.settings_path))
+    report.over.extend(over_budget(tasks, settings.budgets, day, now or datetime.now(cfg.zone)))
+    report.lines.extend(str(o) for o in report.over)
+    budgeted = f" over={len(report.over)}" if settings.budgets else ""
     report.lines.extend(str(f) for f in report.lanes)
     laned = f" lanes={len(report.lanes)}" if any(t.lane.strip() for t in tasks) else ""
     facts = len({(r.worktree, r.why) for r in report.reopen})
     reopen = f"{facts} tree{'' if facts == 1 else 's'}/{len(report.reopen)} task{'' if len(report.reopen) == 1 else 's'}" if report.reopen else "0"
     report.lines.append(
         f"tasks={len(tasks)} trees={len(seen)} reopen={reopen} orphaned={len(report.orphans)} "
-        f"stopped={len(report.stopped)}" + (f" queued={queued}" if queue_lines or faults or queued else "") + issues + laned)
+        f"stopped={len(report.stopped)}" + (f" queued={queued}" if queue_lines or faults or queued else "") + issues + laned + budgeted)
     return report
 
 

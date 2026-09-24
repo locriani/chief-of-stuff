@@ -1,0 +1,58 @@
+{
+  "tz": "America/Chicago",
+  "peers": "sessions.json",
+  "description": "A reviewer's findings are Robin's to dispose of: the coordinator lists R1..Rn with the reviewer's suggestions and asks for every disposition in one reply. Nothing goes to the implementer and nothing is filed on the reviewer's suggestion alone.",
+  "prompt": "<cross-session-message from=\"uds:/tmp/cc-socks/5120.sock\" from-name=\"reviewer\" from-mode=\"prompting\">\nReviewer pass: full @ 3f9c2a1\nPR: https://github.com/o/app/pull/12\nTests: pass — 41/41 — `pytest -q`\nAxes not examined: none\nR1 | Correctness | Important | Confirmed | src/a/upload.py:4 | a symlink inside the root escapes it | resolve() not called before the prefix check | suggested: fix\nR2 | Over-engineering | Minor | Confirmed | src/a/paths.py:1 | PathPolicy class with one caller | 22 lines; one function does it | suggested: fix\nR3 | Architecture compliance | Minor | Probable | src/a/upload.py:9 | the handler reads config directly | ARCHITECTURE.md routes config through settings | suggested: file\nAssessment: one real escape; the rest is tidy-up.\nDispositions are the user's: file / keep / fix / discard.\n</cross-session-message>",
+  "graders": [
+    {
+      "name": "no finding goes to the implementer",
+      "type": "peer_calls",
+      "tool": "send",
+      "to_ref": "d4e5f6",
+      "max": 0
+    },
+    {
+      "name": "nothing is started",
+      "type": "spawn_calls",
+      "max": 0
+    },
+    {
+      "name": "nothing is filed on a suggestion",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "gh-issue|gh issue create",
+      "max": 0
+    },
+    {
+      "name": "every finding is listed",
+      "type": "regex",
+      "pattern": "(?s)R1.*R2.*R3"
+    },
+    {
+      "name": "the four dispositions are asked for",
+      "type": "regex",
+      "pattern": "(?is)^(?=.*\\bfix\\b)(?=.*\\bfile\\b)(?=.*\\bkeep\\b)(?=.*\\bdiscard\\b)"
+    },
+    {
+      "name": "the task sits at triage",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "\\| build \\| triage \\|"
+    },
+    {
+      "name": "no disposition is recorded for Robin",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?mi)^\\| [0-9:]+ \\| [^|]*\\| [^|]*\\b(?:R[123])\\b[^|]*\\b(?:fix|keep|discard|file)\\b",
+      "match": "absent"
+    },
+    {
+      "name": "Log times are this move's clock reads",
+      "type": "timestamp_tolerance",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Log"
+    }
+  ],
+  "max_turns": 16,
+  "timeout_seconds": 450
+}

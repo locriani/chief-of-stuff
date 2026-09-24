@@ -12,7 +12,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import audit_tasks as al  # noqa: E402
@@ -1125,3 +1127,44 @@ class LaneAuditTest(unittest.TestCase):
         report = al.audit(self.root, "2026-09-17")
         self.assertEqual(report.lanes, [])
         self.assertNotIn("lanes=", report.lines[-1])
+
+
+BUDGET_TOML = '[budgets]\nS = "30m"\nM = "90m"\nL = "3h"\n'
+BUDGET_TRACKER = TRACKER.replace(
+    "| item | owner | state | since | due | checklist |\n|---|---|---|---|---|---|\n{rows}",
+    "| name | item | owner | state | since | due | size | checklist |\n|---|---|---|---|---|---|---|---|\n"
+    "| Long M | x | a | running 10:00 | 10:00 | | M | c |\n"
+    "| Short M | x | a | running 11:00 | 11:00 | | M | c |\n"
+    "| Long S | x | a | running 11:30 | 11:30 | | S | c |\n"
+    "| At S | x | a | running 11:40 | 11:40 | | S | c |\n"
+    "| Huge XL | x | a | running 06:00 | 06:00 | | XL | c |\n"
+    "| Unsized | x | a | running 06:00 | 06:00 | | | c |\n"
+    "| Open L | x | a | open | 06:00 | | L | c |").format(rows="", ownership="", sessions="")
+
+
+class BudgetAuditTest(unittest.TestCase):
+    """#33 stage 3: a running task past its size's budget is named; the coordinator polls it and never kills it."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        (self.root / "daily").mkdir()
+        (self.root / "CLAUDE.md").write_text(LANE_CLAUDE)
+        (self.root / "cos.toml").write_text(BUDGET_TOML)
+        (self.root / "daily" / "2026-09-17-tracker.md").write_text(BUDGET_TRACKER)
+
+    def test_over_and_under(self):
+        now = datetime(2026, 9, 17, 12, 10, tzinfo=ZoneInfo("America/Chicago"))
+        report = al.audit(self.root, "2026-09-17", now=now)
+        got = [str(o) for o in report.over]
+        self.assertEqual(got, ["over budget: Long M running 2h10m (M 1h30m)", "over budget: Long S running 40m (S 30m)"])
+        for line in got:
+            self.assertIn(line, report.lines)
+        self.assertIn(" over=2", report.lines[-1])
+
+    def test_no_budgets_says_nothing(self):
+        (self.root / "cos.toml").write_text("")
+        report = al.audit(self.root, "2026-09-17", now=datetime(2026, 9, 17, 23, 0, tzinfo=ZoneInfo("America/Chicago")))
+        self.assertEqual(report.over, [])
+        self.assertNotIn("over=", report.lines[-1])

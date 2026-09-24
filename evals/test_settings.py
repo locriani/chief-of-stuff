@@ -111,3 +111,28 @@ class LanesTest(unittest.TestCase):
                     '[lanes]\nx = { stages = ["a", 2] }\n'):
             with self.subTest(bad=bad), self.assertRaises(st.SettingsError):
                 self.load(bad)
+
+
+class BudgetsTest(unittest.TestCase):
+    """#33 stage 3: a running task's time budget by size; XL has none."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+
+    def load(self, text: str):
+        (self.root / "s.toml").write_text(text)
+        return st.load(self.root, "s.toml")
+
+    def test_no_budgets_table_is_no_budgets(self):
+        self.assertEqual(self.load("").budgets, {})
+
+    def test_budgets_by_size(self):
+        got = self.load('[budgets]\nS = "30m"\nM = "90m"\nL = "3h"\n').budgets
+        self.assertEqual(got, {"S": timedelta(minutes=30), "M": timedelta(minutes=90), "L": timedelta(hours=3)})
+
+    def test_a_budget_that_cannot_be_read_is_refused(self):
+        for bad in ('budgets = 1\n', '[budgets]\nQ = "1h"\n', '[budgets]\nM = "soon"\n', '[budgets]\nM = 90\n'):
+            with self.assertRaises(st.SettingsError, msg=bad):
+                self.load(bad)

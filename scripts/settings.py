@@ -27,10 +27,10 @@ class SettingsError(ValueError):
     """A settings file that is there and cannot be read as written."""
 
 
-def _offset(label: str) -> timedelta:
+def _offset(label: str, where: str = "[notify] deadline_warnings") -> timedelta:
     m = OFFSET.match(label) if isinstance(label, str) else None
     if not m:
-        raise SettingsError(f"[notify] deadline_warnings: {label!r} is not Nh or Nm")
+        raise SettingsError(f"{where}: {label!r} is not Nh or Nm")
     n = int(m.group(1))
     return timedelta(hours=n) if m.group(2) == "h" else timedelta(minutes=n)
 
@@ -60,6 +60,8 @@ class Lane:
 class Settings:
     notify: Notify = field(default_factory=Notify)
     lanes: dict[str, Lane] = field(default_factory=dict)
+    # #33 stage 3: how long a running task of each size goes before the coordinator polls its session. XL has none.
+    budgets: dict[str, timedelta] = field(default_factory=dict)
 
 
 def _lane(name: str, table) -> Lane:
@@ -113,9 +115,13 @@ def load(root: Path, settings_path: str | None) -> Settings:
     if not isinstance(lanes, dict):
         raise SettingsError(f"{settings_path}: [lanes] is not a table")
     lanes = {name: _lane(name, t) for name, t in lanes.items()}
+    budgets = data.get("budgets", {})
+    if not isinstance(budgets, dict) or not set(budgets) <= {"S", "M", "L", "XL"}:
+        raise SettingsError(f"{settings_path}: [budgets] is a table of S, M, L, XL")
+    budgets = {size: _offset(v, f"[budgets] {size}") for size, v in budgets.items()}
     table = data.get("notify")
     if table is None:
-        return Settings(lanes=lanes)
+        return Settings(lanes=lanes, budgets=budgets)
     if not isinstance(table, dict):
         raise SettingsError(f"{settings_path}: [notify] is not a table")
-    return Settings(notify=_notify(table, Path(root)), lanes=lanes)
+    return Settings(notify=_notify(table, Path(root)), lanes=lanes, budgets=budgets)
