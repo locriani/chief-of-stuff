@@ -43,13 +43,13 @@
       "pattern": "^## Goal[ \\t]*\\n\\s*(?:##|.*(?i:proposed|TBD))"
     },
     {
-      "name": "tracker lane: README",
+      "name": "tracker task: README",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",
       "pattern": "(?m)^\\|(?:[^|\\n]*\\|)?\\s*Write eval README\\s*\\|"
     },
     {
-      "name": "tracker lane: deploy review",
+      "name": "tracker task: deploy review",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",
       "pattern": "(?m)^\\|(?:[^|\\n]*\\|)?\\s*Review deploy config\\s*\\|"
@@ -123,10 +123,10 @@
       "max": 0
     },
     {
-      "name": "board published with both carried lanes and the deadline",
+      "name": "board published with both carried tasks and the deadline",
       "type": "board_published",
       "min": 1,
-      "lanes": [
+      "tasks": [
         "Write eval README",
         "Review deploy config"
       ],

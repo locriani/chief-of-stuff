@@ -6,7 +6,7 @@
   "board": {
     "url": "board-known"
   },
-  "description": "A resuming session inherits a `## Resume` block the last move wrote as a narrative: `As of` runs to 929 characters and carries findings, asks, and a measurement caveat that the Lanes and the Log already hold. It writes the block as a block. The live tracker reached 19 044 characters in that field, with `resume_long=5` in every render for nine hours.",
+  "description": "A resuming session inherits a `## Resume` block the last move wrote as a narrative: `As of` runs to 929 characters and carries findings, asks, and a measurement caveat that the Tasks and the Log already hold. It writes the block as a block. The live tracker reached 19 044 characters in that field, with `resume_long=5` in every render for nine hours.",
   "prompt": "resume",
   "graders": [
     {
@@ -42,7 +42,7 @@
       "pattern": "(?m)^- \\d{1,2}:\\d{2}\\b[^\\n]*content-length"
     },
     {
-      "name": "lanes are not rewritten to make the block short",
+      "name": "tasks are not rewritten to make the block short",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",
       "pattern": "(?m)^\\| Load test the ingest path[ .|]"

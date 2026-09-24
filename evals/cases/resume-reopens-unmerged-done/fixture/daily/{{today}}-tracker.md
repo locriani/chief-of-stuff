@@ -11,7 +11,7 @@ Coordinator: gauntlet-85. Board: board-known.
 - Re-arm: the 30-minute check
 - Verified 09:40: agent /ready 200 (09:38)
 
-## Lanes
+## Tasks
 
 | item | owner | state | since | due | checklist |
 |---|---|---|---|---|---|

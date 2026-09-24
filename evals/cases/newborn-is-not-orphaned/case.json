@@ -1,7 +1,7 @@
 {
   "tz": "America/Chicago",
   "peers": "sessions.json",
-  "description": "Two sessions have no ref in any listing. One was spawned a moment ago and is not there yet; one has had no ref since 07:10 and never registered. Neither lane is orphaned, and the two are not the same fact.",
+  "description": "Two sessions have no ref in any listing. One was spawned a moment ago and is not there yet; one has had no ref since 07:10 and never registered. Neither task is orphaned, and the two are not the same fact.",
   "prompt": "Where are we?",
   "graders": [
     {
@@ -11,14 +11,14 @@
       "min": 1
     },
     {
-      "name": "the newborn lane is not orphaned",
+      "name": "the newborn task is not orphaned",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",
       "pattern": "(?m)^\\| Security audit \\|[^\\n]*\\| orphaned",
       "match": "absent"
     },
     {
-      "name": "the newborn lane is left running",
+      "name": "the newborn task is left running",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",
       "pattern": "(?m)^\\| Security audit \\| wt-audit \\| running",

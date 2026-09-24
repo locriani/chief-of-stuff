@@ -2,7 +2,7 @@
 
 Coordinator: coordinator. Board: none.
 
-## Lanes
+## Tasks
 
 | item | owner | state | since | due | checklist |
 |---|---|---|---|---|---|
@@ -13,7 +13,7 @@ Coordinator: coordinator. Board: none.
 
 | time | item | Robin's words |
 |---|---|---|
-| 09:40 | Security audit git | "4821-audit commits on its branch, merges to main, pushes, and redeploys its own lane" |
+| 09:40 | Security audit git | "4821-audit commits on its branch, merges to main, pushes, and redeploys its own task" |
 
 ## Sessions
 

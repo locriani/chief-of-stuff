@@ -2,7 +2,7 @@
 
 Covers requirements R1, R2, R3, and R5 across Tiers 1 through 4:
 - Tier 1 (Feature Coverage):
-    - SendMessageTest: creation, full schema fields, ISO timestamp, atomic staging, lane/worktree context.
+    - SendMessageTest: creation, full schema fields, ISO timestamp, atomic staging, task/worktree context.
     - ListMessagesTest: unread ordering, unread vs all, recipient isolation, empty mailbox.
     - ReadAndAckTest: reading payload, auto-ack, manual ack, idempotent repeat ack, durability.
     - DrainInboxTest: draining unread messages in order, recipient isolation, idempotence.
@@ -181,13 +181,13 @@ class SendMessageTest(BaseInboxTestCase):
             body="Testing schema",
             msg_type="register",
             payload={"status": "planning", "branch": "feat/inbox"},
-            lane="Storage lane",
+            task="Storage task",
             worktree="trees/wt-1",
             headers={"transport": "file", "priority": "high"},
             mailbox_dir=self.mailbox_dir,
         )
         self.assertEqual(msg.type, "register")
-        self.assertEqual(msg.lane, "Storage lane")
+        self.assertEqual(msg.task, "Storage task")
         self.assertEqual(msg.worktree, "trees/wt-1")
         self.assertEqual(msg.payload.get("status"), "planning")
         self.assertEqual(msg.payload.get("branch"), "feat/inbox")
@@ -201,7 +201,7 @@ class SendMessageTest(BaseInboxTestCase):
         with open(msg_files[0], "r", encoding="utf-8") as f:
             disk_data = json.load(f)
         self.assertEqual(disk_data["type"], "register")
-        self.assertEqual(disk_data["lane"], "Storage lane")
+        self.assertEqual(disk_data["task"], "Storage task")
         self.assertEqual(disk_data["worktree"], "trees/wt-1")
         self.assertEqual(disk_data["payload"]["status"], "planning")
         self.assertEqual(disk_data["headers"]["priority"], "high")
@@ -360,7 +360,7 @@ class ReadAndAckTest(BaseInboxTestCase):
             body="alpha body",
             msg_type="ask",
             payload={"action": "rebase"},
-            lane="Auth",
+            task="Auth",
             worktree="trees/auth",
             mailbox_dir=self.mailbox_dir,
         )
@@ -375,7 +375,7 @@ class ReadAndAckTest(BaseInboxTestCase):
         self.assertEqual(read.type, "ask")
         self.assertEqual(read.body, "alpha body")
         self.assertEqual(read.payload, {"action": "rebase"})
-        self.assertEqual(read.lane, "Auth")
+        self.assertEqual(read.task, "Auth")
         self.assertEqual(read.worktree, "trees/auth")
 
     def test_read_auto_ack_default(self) -> None:
@@ -543,7 +543,7 @@ class CLITest(BaseInboxTestCase):
         self.assertEqual(unread[0].body, "hello from cli")
 
     def test_cli_send_full_options(self) -> None:
-        """CLI: 'send' accepts --type, --payload, --lane, --worktree."""
+        """CLI: 'send' accepts --type, --payload, --task, --worktree."""
         proc = self._run_cli([
             "send",
             "--to", "coordinator",
@@ -551,7 +551,7 @@ class CLITest(BaseInboxTestCase):
             "--type", "register",
             "--body", "reg body",
             "--payload", '{"branch": "feat/cli", "ref": "0123"}',
-            "--lane", "Testing lane",
+            "--task", "Testing task",
             "--worktree", "trees/cli",
             "--mailbox-dir", str(self.mailbox_dir),
         ])
@@ -559,7 +559,7 @@ class CLITest(BaseInboxTestCase):
         msgs = inbox.list_messages("coordinator", unread_only=True, mailbox_dir=self.mailbox_dir)
         self.assertEqual(len(msgs), 1)
         self.assertEqual(msgs[0].type, "register")
-        self.assertEqual(msgs[0].lane, "Testing lane")
+        self.assertEqual(msgs[0].task, "Testing task")
         self.assertEqual(msgs[0].worktree, "trees/cli")
         self.assertEqual(msgs[0].payload.get("branch"), "feat/cli")
 
@@ -1159,6 +1159,19 @@ class MultiProcessConcurrencySimulationTest(BaseInboxTestCase):
             0,
             f"Expected 0 unread messages in mailbox, found {len(final_unread)}",
         )
+
+
+class TaskKeyTest(BaseInboxTestCase):
+    """#33: a message names its task; one stored before the rename says `lane` and still loads."""
+
+    def test_a_message_stored_with_lane_loads_as_its_task(self) -> None:
+        msg = Message.from_dict({"message_id": "m1", "timestamp": "t", "sender": "a", "recipient": "b",
+                                 "type": "progress", "body": "", "lane": "Security audit"})
+        self.assertEqual(msg.task, "Security audit")
+
+    def test_review_is_a_message_type(self) -> None:
+        """The reviewer's fallback report (auditor `reviewer`, 2026-09-23): `send --type review`."""
+        self.assertIn("review", inbox.VALID_MESSAGE_TYPES)
 
 
 if __name__ == "__main__":

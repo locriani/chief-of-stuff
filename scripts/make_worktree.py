@@ -102,7 +102,7 @@ def check_branch(branch: str, cwd: Path | None = None) -> None:
 def resolve(root: Path, trees: str, name: str) -> Path:
     """A new path, directly under the worktrees dir, inside the workspace root, that does not exist yet.
 
-    The inverse of `audit_lanes._resolve`, which requires a `.git` because it audits live trees.
+    The inverse of `audit_tasks._resolve`, which requires a `.git` because it audits live trees.
     """
     if not name or name.startswith("-") or "/" in name or name in (".", ".."):
         raise RefusedError(f"worktree name {name!r} must be one path segment and not an option")

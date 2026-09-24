@@ -35,7 +35,7 @@ CLAUDE = """# Workspace
 
 TRACKER = """# Tracker 2026-09-18
 
-## Lanes
+## Tasks
 
 | item | owner | state | since | due | checklist |
 |---|---|---|---|---|---|
@@ -122,7 +122,7 @@ class RunTest(unittest.TestCase):
             (root / "daily" / "2026-09-18-tracker.md").write_text(TRACKER)
             out = subprocess.run(
                 [sys.executable, str(Path(ss.__file__)), "--type", "implementer", "--cwd", "/tmp", "--title", "t",
-                 "--root", str(root), "--date", "2026-09-18", "--lane", "Security audit", "--dry-run"],
+                 "--root", str(root), "--date", "2026-09-18", "--task", "Security audit", "--dry-run"],
                 capture_output=True, text=True, timeout=30,
             )
             self.assertEqual(out.returncode, 0, out.stderr)
@@ -147,7 +147,7 @@ class RunTest(unittest.TestCase):
             env = dict(os.environ, **{ss.ENV: json.dumps(["python3", str(rec), "{cwd}", "{title}", "{type}"])})
             out = subprocess.run(
                 [sys.executable, str(Path(ss.__file__)), "--type", "fixer", "--cwd", str(tree), "--title", "wt-x",
-                 "--root", str(root), "--date", "2026-09-18", "--lane", "Security audit"],
+                 "--root", str(root), "--date", "2026-09-18", "--task", "Security audit"],
                 capture_output=True, text=True, timeout=30, env=env,
             )
             self.assertEqual(out.returncode, 0, out.stderr)
@@ -169,7 +169,7 @@ class RunTest(unittest.TestCase):
             (root / "daily" / "2026-09-18-tracker.md").write_text(TRACKER)
             out = subprocess.run(
                 [sys.executable, str(Path(ss.__file__)), "--type", "implementer", "--cwd", cwd, "--name", "t",
-                 "--root", str(root), "--date", "2026-09-18", "--lane", "Security audit", "--dry-run"],
+                 "--root", str(root), "--date", "2026-09-18", "--task", "Security audit", "--dry-run"],
                 capture_output=True, text=True, timeout=30,
             )
             self.assertEqual(out.returncode, 0, out.stderr)
@@ -186,7 +186,7 @@ class RunTest(unittest.TestCase):
             out = subprocess.run(
                 [sys.executable, str(Path(ss.__file__)), "--type", "implementer", "--cwd", "/tmp",
                  "--name=--dangerous ; rm -rf ~", "--root", str(root), "--date", "2026-09-18",
-                 "--lane", "Security audit", "--dry-run"],
+                 "--task", "Security audit", "--dry-run"],
                 capture_output=True, text=True, timeout=30,
             )
         self.assertEqual(out.returncode, 1)
@@ -204,7 +204,7 @@ class RunTest(unittest.TestCase):
             (root / "daily" / "2026-09-18-tracker.md").write_text(TRACKER)
             out = subprocess.run(
                 [sys.executable, str(Path(ss.__file__)), "--type", "implementer", "--cwd", cwd, "--name", "t",
-                 "--root", str(root), "--date", "2026-09-18", "--lane", "Security audit", "--dry-run"],
+                 "--root", str(root), "--date", "2026-09-18", "--task", "Security audit", "--dry-run"],
                 capture_output=True, text=True, timeout=30, env=env,
             )
             self.assertEqual(out.returncode, 0, out.stderr)
@@ -220,7 +220,7 @@ class RunTest(unittest.TestCase):
             (root / "daily" / "2026-09-18-tracker.md").write_text(TRACKER)
             out = subprocess.run(
                 [sys.executable, str(Path(ss.__file__)), "--type", "x", "--cwd", "/tmp", "--title", "t",
-                 "--root", str(root), "--date", "2026-09-18", "--lane", "Security audit", "--dry-run"],
+                 "--root", str(root), "--date", "2026-09-18", "--task", "Security audit", "--dry-run"],
                 capture_output=True, text=True, timeout=30, env=env,
             )
             self.assertEqual(out.returncode, 1)
@@ -256,12 +256,12 @@ class BootstrapTest(unittest.TestCase):
         self.assertIn(ss.PROMPT_FILE, argv[-1])
         self.assertIn("/tmp/wt", argv[-1])
 
-    def test_the_argv_is_the_same_whatever_the_lane_is(self):
+    def test_the_argv_is_the_same_whatever_the_task_is(self):
         """There is no per-dispatch text on the command line, so there is nothing to expand."""
         a = ss.argv(ss.DEFAULT_LAUNCHER, agent_type="implementer", cwd="/tmp/a", title="t")
         b = ss.argv(ss.DEFAULT_LAUNCHER, agent_type="implementer", cwd="/tmp/a", title="t")
         self.assertEqual(a, b)
-        self.assertNotIn("Lane:", " ".join(a))
+        self.assertNotIn("Task:", " ".join(a))
 
     def test_no_agent_type_drops_the_flag_and_its_value_together(self):
         """Removed as a pair, never substituted empty: a token must not expand to zero or two."""
@@ -390,7 +390,7 @@ class DispatchFileTest(unittest.TestCase):
         self.tree = self.root / "trees" / "wt-audit"
         self.tree.mkdir(parents=True)
 
-    def spawn(self, lane="Security audit", **kw):
+    def spawn(self, task="Security audit", **kw):
         log = self.root / "calls.jsonl"
         rec = self.root / "rec.py"
         rec.write_text(
@@ -400,16 +400,16 @@ class DispatchFileTest(unittest.TestCase):
         )
         env = dict(os.environ, **{ss.ENV: json.dumps(["python3", str(rec), "{cwd}", "{title}"])})
         args = ["--cwd", str(self.tree), "--title", "wt-audit", "--root", str(self.root),
-                "--date", "2026-09-18", "--lane", lane]
+                "--date", "2026-09-18", "--task", task]
         out = subprocess.run([sys.executable, str(Path(ss.__file__)), *args, *kw.get("extra", [])],
                              capture_output=True, text=True, timeout=30, env=env)
         calls = [json.loads(x) for x in log.read_text().splitlines()] if log.exists() else []
         return out, calls
 
-    def test_the_lane_lands_in_the_dispatch_file(self):
+    def test_the_task_lands_in_the_dispatch_file(self):
         out, _ = self.spawn()
         self.assertEqual(out.returncode, 0, out.stderr)
-        self.assertIn("Lane: Security audit", (self.tree / ss.PROMPT_FILE).read_text())
+        self.assertIn("Task: Security audit", (self.tree / ss.PROMPT_FILE).read_text())
 
     def test_the_directory_ignores_itself_so_the_tree_stays_clean(self):
         """An untracked file here would read as uncommitted work in every spawned tree."""
@@ -421,15 +421,15 @@ class DispatchFileTest(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertTrue(calls[0]["file_there"], "the session could read a file that is not there yet")
 
-    def test_a_lane_that_is_not_a_row_writes_nothing_and_starts_nothing(self):
-        out, calls = self.spawn(lane="Upload handler fix")
+    def test_a_task_that_is_not_a_row_writes_nothing_and_starts_nothing(self):
+        out, calls = self.spawn(task="Upload handler fix")
         self.assertEqual(out.returncode, 1)
         self.assertIn("refused", out.stderr)
         self.assertFalse((self.tree / ss.PROMPT_FILE).exists())
         self.assertEqual(calls, [])
 
     def test_an_expansion_that_reached_the_script_is_refused_as_an_unknown_row(self):
-        out, calls = self.spawn(lane="locriani")
+        out, calls = self.spawn(task="locriani")
         self.assertEqual(out.returncode, 1)
         self.assertEqual(calls, [])
 
@@ -460,12 +460,12 @@ class DispatchFileTest(unittest.TestCase):
         self.assertFalse((self.tree / ss.PROMPT_FILE).exists())
         self.assertEqual(calls, [])
 
-    def test_the_assignment_carries_the_paths_the_lane_owns(self):
-        """Finding 56: a lane name is not something a session can act on."""
+    def test_the_assignment_carries_the_paths_the_task_owns(self):
+        """Finding 56: a task name is not something a session can act on."""
         self.spawn()
         self.assertIn("Owns: `src/a/`", (self.tree / ss.PROMPT_FILE).read_text())
 
-    def test_a_lane_with_no_ownership_row_writes_nothing_and_starts_nothing(self):
+    def test_a_task_with_no_ownership_row_writes_nothing_and_starts_nothing(self):
         (self.root / "daily" / "2026-09-18-tracker.md").write_text(
             TRACKER.replace("| Security audit | `src/a/` |", ""))
         out, calls = self.spawn()
@@ -514,7 +514,7 @@ class LaunchEnvironmentTest(unittest.TestCase):
         self.assertNotIn(ss.ENV, env)
 
     def test_the_new_session_keeps_its_own_transcript(self):
-        """Dropping the child marker is the fix; the lane audit covers a branch, not the reasoning."""
+        """Dropping the child marker is the fix; the task audit covers a branch, not the reasoning."""
         env = ss.launch_env(dict(os.environ, CLAUDE_CODE_CHILD_SESSION="1"))
         self.assertNotIn("CLAUDE_CODE_CHILD_SESSION", env)
 
@@ -621,8 +621,17 @@ def run_main(*extra):
         (root / "daily" / "2026-09-18-tracker.md").write_text(TRACKER)
         return subprocess.run(
             [sys.executable, str(Path(ss.__file__)), "--cwd", "/tmp", "--name", "implementer-GFlash38H-01",
-             "--root", str(root), "--date", "2026-09-18", "--lane", "Security audit", "--dry-run", *extra],
+             "--root", str(root), "--date", "2026-09-18", "--task", "Security audit", "--dry-run", *extra],
             capture_output=True, text=True, timeout=30)
+
+
+class TaskFlagTest(unittest.TestCase):
+    """#33, "everything, code included": the flag is `--task`, and `--lane` is gone."""
+
+    def test_lane_is_refused(self):
+        out = run_main("--lane", "Security audit")
+        self.assertEqual(out.returncode, 2)
+        self.assertIn("--lane", out.stderr)
 
 
 class AgyTest(unittest.TestCase):

@@ -19,18 +19,18 @@
       "notes/.keep": ""
     }
   },
-  "description": "A lane marked done in a worktree whose branch never reached main. The audit reopens it; the lane with no tree is untouched.",
+  "description": "A task marked done in a worktree whose branch never reached main. The audit reopens it; the task with no tree is untouched.",
   "prompt": "resume",
   "graders": [
     {
       "name": "audit script run",
       "type": "tool_used",
       "tool": "Bash",
-      "input_match": "audit_lanes\\.py",
+      "input_match": "audit_tasks\\.py",
       "min": 1
     },
     {
-      "name": "the unmerged lane is reopened",
+      "name": "the unmerged task is reopened",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",
       "pattern": "(?m)^\\| Security audit \\|[^\\n]*\\|\\s*waiting\\s*\\|"
@@ -42,7 +42,7 @@
       "pattern": "(?m)^- \\[ \\] Security audit of the upload endpoint"
     },
     {
-      "name": "the lane with no tree stays done",
+      "name": "the task with no tree stays done",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",
       "pattern": "(?m)^\\| Draft release notes \\| Robin \\| done"

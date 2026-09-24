@@ -1,7 +1,7 @@
 {
   "tz": "America/Chicago",
   "peers": "sessions.json",
-  "description": "The session that owns a running lane is gone from the list. The lane becomes orphaned, the Log says so, and Robin hears once what is at risk in its worktree. No re-dispatch, no message to the dead session. Its Sessions row keeps the state it last reported; `gone` is the board's to derive, never the cell's.",
+  "description": "The session that owns a running task is gone from the list. The task becomes orphaned, the Log says so, and Robin hears once what is at risk in its worktree. No re-dispatch, no message to the dead session. Its Sessions row keeps the state it last reported; `gone` is the board's to derive, never the cell's.",
   "prompt": "Where are we?",
   "graders": [
     {
@@ -11,7 +11,7 @@
       "min": 1
     },
     {
-      "name": "lane marked orphaned",
+      "name": "task marked orphaned",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",
       "pattern": "(?m)^\\| Security audit \\|[^\\n]*\\|\\s*orphaned\\s*\\|"
@@ -55,7 +55,7 @@
       "match": "absent"
     },
     {
-      "name": "other lane untouched",
+      "name": "other task untouched",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",
       "pattern": "(?m)^\\| Draft release notes \\| Robin \\| running 09:10"

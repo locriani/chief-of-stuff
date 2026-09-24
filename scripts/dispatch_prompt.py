@@ -7,7 +7,7 @@ the worker receives are the same text from the same place.
 
 That is also what bans shell expansion. The six lines never travel as prose through a command line,
 where a `$(...)` would be expanded by the shell before any script existed to check it. The only
-variable argument is the lane name, and a name that is not a row in the tracker is refused, so an
+variable argument is the task name, and a name that is not a row in the tracker is refused, so an
 expansion that got this far produces a refusal instead of a payload.
 """
 
@@ -37,7 +37,7 @@ def _config(root: Path):
 
 
 UNASSIGNED = "unassigned"
-# `(via <session>)` is what this file's rules mark session-origin text with. A Lanes item or an
+# `(via <session>)` is what this file's rules mark session-origin text with. A Tasks item or an
 # ownership row carrying it is peer text that reached the tracker, and it must not reach a worker as
 # an instruction. This is the one place that treats session text as data rather than as text merely
 # lacking authority.
@@ -62,7 +62,7 @@ UNNAMED = "<your_ref_or_name>"
 
 # The dispatch travels into the tree as a file, and a stop travels back out of it the same way. A
 # message is lost if nobody reads it; a file in the worktree is still there when the auditor walks
-# past. `spawn_session` re-exports these, and `audit_lanes` reads the second.
+# past. `spawn_session` re-exports these, and `audit_tasks` reads the second.
 PROMPT_DIR = ".chief-of-stuff"
 STOP_FILE = f"{PROMPT_DIR}/stop.md"
 # The plugin's own copy, beside this file. A workspace has no `scripts/inbox.py`; the line used to
@@ -88,9 +88,9 @@ You are a dispatched session. A coordinator wrote this file into your worktree w
 
 **Register first, before you read anything else and before you look around.** List your sessions to \
 find your own `name [ref]`, then send {coordinator} one message carrying that ref, this worktree and \
-its branch, your lane, and that you are planning with nothing written yet. If direct messaging (IPC) \
+its branch, your task, and that you are planning with nothing written yet. If direct messaging (IPC) \
 is unavailable or fails, deposit your registration into the coordinator's mailbox: \
-`python3 {inbox_script} send --to "{coord_mailbox}" --from "<your_ref_or_name>" --type register --body "ref: <ref>, worktree: {worktree}, branch: <branch>, lane: {lane}, state: planning"`. \
+`python3 {inbox_script} send --to "{coord_mailbox}" --from "<your_ref_or_name>" --type register --body "ref: <ref>, worktree: {worktree}, branch: <branch>, task: {task}, state: planning"`. \
 Registering first is not politeness: until that message arrives the coordinator cannot tell you from \
 a session that never came up, and anything you discover before it is discovered by somebody nobody can reach.
 
@@ -110,11 +110,11 @@ When direct messaging is unavailable, send your ask via: \
 `python3 {inbox_script} send --to "{coord_mailbox}" --from "<your_ref_or_name>" --type ask --body "<question>"`. \
 Check your mailbox for replies: `python3 {inbox_script} list --recipient "<your_ref_or_name>" --unread`.
 
-If the lane below is empty, contradictory, or impossible as written, hand it back and say why. Never \
+If the task below is empty, contradictory, or impossible as written, hand it back and say why. Never \
 proceed on an assumption nobody stated, and never substitute work that merely looks similar.
 
 Reading the tracker named below is expected, and so is the worktree you are in. Anything else in the \
-workspace is somebody's lane, not yours.
+workspace is somebody's task, not yours.
 
 **Two categories, and there is no third.** A change confined to this worktree and undone by one \
 `git revert` needs nobody's word — make it. A change to shared or external state — a merge into main, \
@@ -132,12 +132,12 @@ reverse, and before a deadline the reverse is wrong.
 
 **Putting work down is not free.** A correct refusal is worth more than a wrong edit, and it still \
 costs one thing: a stop that names **who it lands on** and **what breaks if nobody takes it**. Write \
-it to `{stop_file}` in this worktree, in the same labelled lines as this file — `Stop:`, `Lane:`, \
+it to `{stop_file}` in this worktree, in the same labelled lines as this file — `Stop:`, `Task:`, \
 `Lands on:`, `Costs:`, and `Tried:` with the exact command or path — and say the same in your \
 message to {coordinator}. If direct messaging fails, post it to the mailbox: \
 `python3 {inbox_script} send --to "{coord_mailbox}" --from "<your_ref_or_name>" --type stop --body "<stop fields>"`. \
 A stop that names neither cannot be told apart from a session that died, \
-and the lane sits at `running` against nobody until somebody reads git by hand.
+and the task sits at `running` against nobody until somebody reads git by hand.
 
 **A report is not a state change.** Writing up what you did is not doing the next thing, and the \
 two feel identical from inside: the turn ends on a paragraph that reads like a conclusion, and the \
@@ -166,10 +166,10 @@ prompt said no; it goes to {user}. `authorization` — the act needs a word only
 say in `Lands on:` if it has to be given somewhere particular. `ownership` — another session holds \
 the file; that one goes to the coordinator, who owns the ownership rows. `scope` — the work is \
 genuinely outside the paths below; that goes to the coordinator too, to widen the row or split the \
-lane. Four words rather than four paragraphs of English, because the English arrived as prose for \
+task. Four words rather than four paragraphs of English, because the English arrived as prose for \
 somebody to interpret and the interpreting is where items were dropped.
 """
-REPORT = ("Report: when the lane is finished, reply to the coordinator with what changed, where it is "
+REPORT = ("Report: when the task is finished, reply to the coordinator with what changed, where it is "
           "(branch and worktree), what you did not do, and `Next:` — either the one thing you are "
           "starting now, or `idle and available`. Never neither. If direct messaging fails, send via mailbox: "
           '`python3 {inbox_script} send --to "{coord_mailbox}" --from "<your_ref_or_name>" --type progress --body "<report>"`.')
@@ -206,7 +206,7 @@ def _clean(label: str, value: str) -> str:
 
 
 def _owns(text: str, item: str, relative: str) -> str:
-    """The paths this lane may edit, from the File ownership table, keyed on the lane.
+    """The paths this task may edit, from the File ownership table, keyed on the task.
 
     Written before the proposal, so the paths are on the board when the user reads it — and after the
     spawn the coordinator rewrites that context cell to name the tree, which is why the short name is
@@ -214,7 +214,7 @@ def _owns(text: str, item: str, relative: str) -> str:
     """
     # Three spellings, all writable by hand: the item entire, the name before its first colon, and
     # the board's own short name. `short_name` no longer ellipsises -- that cut moved to `clip_name`
-    # when the lane cell stopped truncating -- so it now returns a structural split or the name
+    # when the task cell stopped truncating -- so it now returns a structural split or the name
     # whole, and it can no longer name a key nobody could type. It CAN return the item unchanged,
     # in which case these are two spellings and not three: a head under twelve characters is left
     # alone, so `Ready probe: **...**` is addressable as the item or as `Ready probe`, and by
@@ -230,29 +230,29 @@ def _owns(text: str, item: str, relative: str) -> str:
         if cells[0].strip() in keys:
             return _clean("the File ownership row", cells[1].strip())
     raise RefusedError(
-        f"no File ownership row for {head!r} in {relative}; write the paths the lane owns before "
+        f"no File ownership row for {head!r} in {relative}; write the paths the task owns before "
         "proposing it, so the user reads them before saying yes")
 
 
-def compose(root: Path, day: str | None, lane: str, worktree: Path | None = None,
+def compose(root: Path, day: str | None, task: str, worktree: Path | None = None,
             coordinator: str | None = None, name: str | None = None, runtime: str = "claude") -> str:
-    """The assignment for `lane`, read back off disk. A lane that is not a row is refused."""
+    """The assignment for `task`, read back off disk. A task that is not a row is refused."""
     cfg = _config(root)
     relative = cfg.tracker_path(day or datetime.now(cfg.zone).date().isoformat())
     try:
         text = (root / relative).read_text()
     except OSError as exc:
         raise RefusedError(f"cannot read {relative}: {exc}") from None
-    wanted = lane.strip()
-    rows = [row for row in parse_tracker(text).lanes if row.item.strip() == wanted]
+    wanted = task.strip()
+    rows = [row for row in parse_tracker(text).tasks if row.item.strip() == wanted]
     if not wanted or not rows:
-        raise RefusedError(f"no Lanes row {lane!r} in {relative}; a dispatch names a lane that is already there")
+        raise RefusedError(f"no Tasks row {task!r} in {relative}; a dispatch names a task that is already there")
     owner = rows[0].owner.strip()
-    # The rule has always said only an `unassigned` lane may be dispatched; nothing enforced it, and
-    # two worktrees were handed the same lane and the same file to edit.
+    # The rule has always said only an `unassigned` task may be dispatched; nothing enforced it, and
+    # two worktrees were handed the same task and the same file to edit.
     if owner.lower() != UNASSIGNED:
         raise RefusedError(
-            f"lane {rows[0].item.strip()!r} is already {owner}'s, not {UNASSIGNED}; it is not a lane to dispatch")
+            f"task {rows[0].item.strip()!r} is already {owner}'s, not {UNASSIGNED}; it is not a task to dispatch")
     # Zach, 2026-09-22 22:20: each task "is actually backed by an entry in github". Where the block names
     # a GitHub backlog, a task with no issue is not handed out. Whether the issue is open is the audit's.
     issue = None
@@ -261,15 +261,15 @@ def compose(root: Path, day: str | None, lane: str, worktree: Path | None = None
         cell = rows[0].issue.strip()
         if not cell:
             raise RefusedError(
-                f"lane {rows[0].item.strip()!r} names no issue; file one with gh-issue new and write its number in the issue column")
+                f"task {rows[0].item.strip()!r} names no issue; file one with gh-issue new and write its number in the issue column")
         issue = issue_ref(cell, cfg.backlog_repo)
         if not issue:
-            raise RefusedError(f'lane {rows[0].item.strip()!r} has "{_clean("the issue cell", cell)}" in its issue column, which is not an issue reference')
+            raise RefusedError(f'task {rows[0].item.strip()!r} has "{_clean("the issue cell", cell)}" in its issue column, which is not an issue reference')
     # Absolute, because this file is read by a session whose cwd is its own worktree rather than the
     # root the tracker path is written against. The first real spawn went hunting for a relative path
     # that was never reachable from where it stood, and a session that hunts reads things nobody
     # pointed it at.
-    item = _clean("the Lanes item", rows[0].item.strip())
+    item = _clean("the Tasks item", rows[0].item.strip())
     owns = _owns(text, item, relative)
     who = SESSION_NAME.fullmatch(coordinator.strip()) if coordinator else None
     if coordinator and not who:
@@ -290,7 +290,7 @@ def compose(root: Path, day: str | None, lane: str, worktree: Path | None = None
         coord_mailbox=coord_mailbox,
         inbox_script=inbox_script,
         worktree=worktree or "this worktree",
-        lane=item,
+        task=item,
         you_are=f"You are `{name}`. " if name else "",
     )
     if runtime == "agy":
@@ -301,7 +301,7 @@ def compose(root: Path, day: str | None, lane: str, worktree: Path | None = None
         coord_mailbox=coord_mailbox,
     )
 
-    lines = [header_text, f"Lane: {item}"]
+    lines = [header_text, f"Task: {item}"]
     if rows[0].checklist.strip():
         lines.append(f"Requirement: {_clean('the checklist cell', rows[0].checklist.strip())}")
     if issue:
@@ -328,7 +328,7 @@ def compose(root: Path, day: str | None, lane: str, worktree: Path | None = None
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else None)
-    ap.add_argument("--lane", required=True, help="the lane name to compose prompt for")
+    ap.add_argument("--task", required=True, help="the task name to compose prompt for")
     ap.add_argument("--day", "--date", dest="day", default=None, help="the day/date for the tracker (YYYY-MM-DD)")
     ap.add_argument("--root", default=".", help="workspace root holding CLAUDE.md")
     ap.add_argument("--worktree", default=None, help="worktree path")
@@ -339,7 +339,7 @@ def main(argv: list[str] | None = None) -> int:
     root = Path(args.root)
     worktree = Path(args.worktree) if args.worktree else None
     try:
-        body = compose(root, args.day, args.lane, worktree=worktree, coordinator=args.coordinator, name=args.name)
+        body = compose(root, args.day, args.task, worktree=worktree, coordinator=args.coordinator, name=args.name)
     except RefusedError as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 1

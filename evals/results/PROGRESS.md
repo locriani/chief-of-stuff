@@ -1404,3 +1404,14 @@ Zach, 2026-09-23 19:40: "I don't want to stop for PR - PR is the perfect way for
 - **Agent:** Assign's `Lands by:` and both `Works under:` lines, and the tracker rule's "opened on the user's "PR"", say the same.
 
 Red first: `PullRequestTest.test_the_session_opens_it_when_green` 1 failure, `PonytailTest.test_the_cuts_are_applied` 1 failure. Full suite on the branch: 963 of 963.
+
+## C33 — a row is a task (0.28.0; #33 stage 1)
+
+Zach, 2026-09-23 20:3x, naming #33's terms: "A lane: the sequence that a task has to move through." Until now a lane was a tracker row. Asked how deep the rename goes: "Everything, code included". Stage 2 makes lanes stage sequences, and stage 3 runs the review pipeline through them.
+
+- **Tracker:** the table is `## Tasks`. `parse_tracker` falls back to `## Lanes`, so today's tracker and every older one read the same.
+- **Code:** `Lane` → `Task`, `lanes`/`lane_rows`/`LANE_*` → `tasks`/`task_rows`/`TASK_*`, markup names, test names; `scripts/audit_lanes.py` → `scripts/audit_tasks.py` and its test; ten eval case ids (`task-becomes-lane-and-dispatch` → `item-becomes-task-and-dispatch`). One script did it (whole words; not after a letter, so `swimlane`/`sublane` stay; not inside a quote of Zach's). "Body lane" is a chart track, not a row, and became "body track".
+- **Flags and messages:** `spawn_session.py --task` and `inbox.py send --task`; `--lane` is gone. A mailbox message stored with a `lane` key loads as its task. `review` is a message type, for the `reviewer` session's fallback report (auditor PR 2).
+- **Words:** the agent file, the dispatch text (`Task:` line, "your task"), board and audit output. `named lanes only` deadline lines are now `named tasks only`. Left as written: PROGRESS and `docs/design-inputs.md` (history; case ids updated), and Zach's own quoted words.
+
+Red first: `TasksHeadingTest.test_an_older_tracker_headed_lanes_reads_the_same`, `TaskKeyTest.test_a_message_stored_with_lane_loads_as_its_task`, `TaskKeyTest.test_review_is_a_message_type` — 3 failures. Today's live tracker (`## Lanes`, 43 rows) renders and audits identically under 0.27.0 and 0.28.0 (`lanes=43` / `tasks=43`, same tracker sha, reopen 0), and so does a `## Tasks` copy. Full suite on the branch: 968 of 968.

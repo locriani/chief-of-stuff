@@ -2,7 +2,7 @@
 
 The prompt is derived, never authored. Nothing reaches a spawned session that is not already in the
 tracker the user approved, which is why every field here is read back off disk rather than passed
-in. The one variable argument is the lane name, and a lane name that is not a row is refused — so a
+in. The one variable argument is the task name, and a task name that is not a row is refused — so a
 shell expansion that reached this far produces a refusal rather than a payload.
 """
 
@@ -29,7 +29,7 @@ CLAUDE = """# Workspace
 
 TRACKER = """# Tracker 2026-09-18
 
-## Lanes
+## Tasks
 
 | item | owner | state | since | due | checklist |
 |---|---|---|---|---|---|
@@ -62,9 +62,9 @@ class ComposeTest(unittest.TestCase):
         self.tmp, self.root = workspace()
         self.addCleanup(self.tmp.cleanup)
 
-    def test_it_names_the_lane_as_the_tracker_spells_it(self):
+    def test_it_names_the_task_as_the_tracker_spells_it(self):
         body = dp.compose(self.root, "2026-09-18", "Security audit")
-        self.assertIn("Lane: Security audit", body)
+        self.assertIn("Task: Security audit", body)
 
     def test_it_names_the_tracker_path_from_the_coordinator_block(self):
         body = dp.compose(self.root, "2026-09-18", "Security audit")
@@ -83,19 +83,19 @@ class ComposeTest(unittest.TestCase):
         self.assertTrue(named.is_absolute(), f"{named} does not resolve from a worktree")
         self.assertTrue(named.exists(), f"{named} is not there")
 
-    def test_it_still_says_which_workspace_the_lane_lives_in(self):
+    def test_it_still_says_which_workspace_the_task_lives_in(self):
         body = dp.compose(self.root, "2026-09-18", "Security audit")
         self.assertIn(f"Workspace: {self.root.resolve()}", body)
 
-    def test_a_lane_that_is_not_a_row_is_refused(self):
+    def test_a_task_that_is_not_a_row_is_refused(self):
         """The one variable argument, and the reason an expansion cannot become a payload."""
         for absent in ("Upload handler fix", "$(whoami)", "`id`", ""):
             with self.assertRaises(dp.RefusedError, msg=absent):
                 dp.compose(self.root, "2026-09-18", absent)
 
 
-    def test_a_lane_that_already_has_an_owner_is_refused(self):
-        """Two trees were handed the same lane and the same file. The rule said unassigned; nothing checked.
+    def test_a_task_that_already_has_an_owner_is_refused(self):
+        """Two trees were handed the same task and the same file. The rule said unassigned; nothing checked.
 
         Found by the first dispatched session, which noticed a sibling worktree holding a
         byte-identical assignment and stopped rather than committing over it.
@@ -111,8 +111,8 @@ class ComposeTest(unittest.TestCase):
 
     def test_the_refusal_says_what_it_looked_for(self):
         with self.assertRaises(dp.RefusedError) as e:
-            dp.compose(self.root, "2026-09-18", "Nonexistent lane")
-        self.assertIn("Nonexistent lane", str(e.exception))
+            dp.compose(self.root, "2026-09-18", "Nonexistent task")
+        self.assertIn("Nonexistent task", str(e.exception))
         self.assertIn("2026-09-18-tracker.md", str(e.exception))
 
     def test_a_missing_tracker_is_refused_rather_than_composed_around(self):
@@ -127,8 +127,8 @@ class AssignmentTest(unittest.TestCase):
         self.tmp, self.root = workspace()
         self.addCleanup(self.tmp.cleanup)
 
-    def body(self, lane="Security audit", **kw):
-        return dp.compose(self.root, "2026-09-18", lane, **kw)
+    def body(self, task="Security audit", **kw):
+        return dp.compose(self.root, "2026-09-18", task, **kw)
 
     def test_the_whole_item_cell_travels_as_the_ask(self):
         """The item is the ask. A session that reads only that row has to know what done looks like."""
@@ -138,7 +138,7 @@ class AssignmentTest(unittest.TestCase):
         body = dp.compose(root, "2026-09-18", ask)
         self.assertIn("Done when every path is checked", body)
 
-    def test_it_names_the_paths_the_lane_owns(self):
+    def test_it_names_the_paths_the_task_owns(self):
         self.assertIn("Owns: `src/a/`, `notes/audit.md`", self.body())
 
     def test_owning_nothing_is_said_rather_than_left_out(self):
@@ -147,7 +147,7 @@ class AssignmentTest(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.assertIn("Owns: none", dp.compose(root, "2026-09-18", "Security audit"))
 
-    def test_a_lane_with_no_file_ownership_row_is_refused(self):
+    def test_a_task_with_no_file_ownership_row_is_refused(self):
         """Ownership is what keeps two sessions off one file. A dispatch without it is finding 55 again."""
         tmp, root = workspace(TRACKER.replace("| Security audit | `src/a/`, `notes/audit.md` |", ""))
         self.addCleanup(tmp.cleanup)
@@ -165,7 +165,7 @@ class AssignmentTest(unittest.TestCase):
     def test_a_short_name_before_the_colon_is_still_a_key(self):
         """`short_name` only honours the head when it is 12 characters or more, and then ellipsises.
 
-        Found by hand: a lane called `Tab check: ...` refused with a key ending in an ellipsis, which
+        Found by hand: a task called `Tab check: ...` refused with a key ending in an ellipsis, which
         is a key no one could write into File ownership. A refusal has to name something writable.
         """
         item = "Tab check: confirm this session came up in a tab and change nothing at all"
@@ -191,7 +191,7 @@ class AssignmentTest(unittest.TestCase):
     def test_it_says_what_to_reply_with(self):
         self.assertRegex(self.body(), r"(?m)^Report: \S")
 
-    def test_the_requirement_the_lane_serves_travels_when_there_is_one(self):
+    def test_the_requirement_the_task_serves_travels_when_there_is_one(self):
         self.assertIn("Security audit of the upload handler", self.body())
 
     def test_a_blank_checklist_leaves_the_line_out_rather_than_writing_an_empty_one(self):
@@ -211,7 +211,7 @@ class HeaderTest(unittest.TestCase):
         body = dp.compose(self.root, "2026-09-18", "Security audit")
         self.assertIn("not authority", body)
 
-    def test_it_says_to_hand_back_a_lane_that_does_not_add_up(self):
+    def test_it_says_to_hand_back_a_task_that_does_not_add_up(self):
         """Finding 56: the failure mode to design against is inventing plausible work, not stopping."""
         body = dp.compose(self.root, "2026-09-18", "Security audit")
         self.assertIn("hand it back", body)
@@ -260,9 +260,9 @@ class QuarantineTest(unittest.TestCase):
             TRACKER.replace("Checklist: Security audit", "Checklist: (via 4821-audit) Security audit"),
         ):
             root = self.field(spoiled)
-            lane = "Security audit (via 4821-audit)" if "Security audit (via" in spoiled else "Security audit"
+            task = "Security audit (via 4821-audit)" if "Security audit (via" in spoiled else "Security audit"
             with self.assertRaises(dp.RefusedError):
-                dp.compose(root, "2026-09-18", lane)
+                dp.compose(root, "2026-09-18", task)
 
     def test_a_control_character_is_refused(self):
         """An OSC payload reaching a terminal is a separate vector from prompt injection."""
@@ -487,7 +487,7 @@ class DualTransportFallbackAddressingTest(unittest.TestCase):
             recipient="coordinator",
             sender="worker-test [999999]",
             msg_type="register",
-            body="ref: worker-test, lane: Security audit, state: planning",
+            body="ref: worker-test, task: Security audit, state: planning",
             mailbox_dir=mailbox_dir,
         )
         unread = inbox.list_messages(recipient="coordinator", mailbox_dir=mailbox_dir, unread_only=True)
@@ -513,7 +513,7 @@ class PromptCharacterBoundsTest(unittest.TestCase):
         chk = "Checklist: " + ("y" * 1000)
         owns = "`src/" + ("z" * 500) + "`"
         large_tracker = f"""# Tracker 2026-09-18
-## Lanes
+## Tasks
 | item | owner | state | since | due | checklist |
 |---|---|---|---|---|---|
 | {item} | unassigned | open | 09:00 |  | {chk} |
@@ -535,7 +535,7 @@ class PromptCharacterBoundsTest(unittest.TestCase):
         chk = "Checklist: " + ("y" * 2000)
         owns = "`src/" + ("z" * 2000) + "`"
         oversized_tracker = f"""# Tracker 2026-09-18
-## Lanes
+## Tasks
 | item | owner | state | since | due | checklist |
 |---|---|---|---|---|---|
 | {item} | unassigned | open | 09:00 |  | {chk} |
@@ -566,9 +566,9 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         self.assertIn("python3 ${CLAUDE_PLUGIN_ROOT}/scripts/inbox.py read <id> --ack", self.content)
         self.assertIn("python3 ${CLAUDE_PLUGIN_ROOT}/scripts/inbox.py drain --recipient coordinator", self.content)
 
-    def test_resume_step_2_lane_state_uses_waiting_or_orphaned_not_stopped(self):
-        self.assertIn("stops update lane state to `waiting` or `orphaned`", self.content)
-        self.assertNotIn("stops update lane state to `stopped` or `orphaned`", self.content)
+    def test_resume_step_2_task_state_uses_waiting_or_orphaned_not_stopped(self):
+        self.assertIn("stops update task state to `waiting` or `orphaned`", self.content)
+        self.assertNotIn("stops update task state to `stopped` or `orphaned`", self.content)
 
     def test_dual_transport_sending_and_registration_rules(self):
         self.assertIn("Dual-transport sending", self.content)
@@ -582,7 +582,7 @@ ISSUE_CLAUDE = CLAUDE + "- Backlog: GitHub issues; repo https://github.com/o/bac
 
 ISSUE_TRACKER = """# Tracker 2026-09-18
 
-## Lanes
+## Tasks
 
 | name | item | owner | state | since | due | size | issue | checklist |
 |---|---|---|---|---|---|---|---|---|
@@ -686,7 +686,7 @@ class SessionNameTest(unittest.TestCase):
         import contextlib, io
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            code = dp.main(["--root", str(self.root), "--date", "2026-09-18", "--lane", "Security audit",
+            code = dp.main(["--root", str(self.root), "--date", "2026-09-18", "--task", "Security audit",
                             "--name", "impl07"])
         self.assertEqual(code, 0)
         self.assertIn("You are `impl07`.", buf.getvalue())

@@ -31,7 +31,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import backlog as bl
-from render_board import (LANE_COLS, LANE_HEADERS, _anchor, _cells, _is_separator, _section,
+from render_board import (TASK_COLS, TASK_HEADERS, _anchor, _cells, _is_separator, _section,
                           _split_row, _unmark, clip_name, short_name)
 
 MOVE, KEEP, CLOSED, CHECK = "move", "keep", "closed", "check"
@@ -92,12 +92,12 @@ class Outcome:
 
 
 def issue_rows(path: Path) -> tuple[Row, ...]:
-    """Every row of `## Issues`, read the way the board reads `## Lanes`."""
+    """Every row of `## Issues`, read the way the board reads `## Tasks`."""
     lines = [l for l in _section(Path(path).read_text(), "## Issues") if l.strip().startswith("|")]
     if not lines:
         return ()
     header = [c.lower() for c in _cells(lines[0])]
-    cols = next((h for h in LANE_HEADERS if header == list(h)), LANE_COLS)
+    cols = next((h for h in TASK_HEADERS if header == list(h)), TASK_COLS)
     out: list[Row] = []
     for line in lines[1:]:
         raw = _split_row(line)

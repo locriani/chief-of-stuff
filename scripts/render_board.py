@@ -44,14 +44,14 @@ HHMM = re.compile(r"^(\d{1,2}):(\d{2})$")
 RAN = re.compile(r"^(\d{1,2}:\d{2})[–-](\d{1,2}:\d{2})$")
 SIZES = ("S", "M", "L", "XL")
 ALL_SIZES = "all"
-LANE_COLS = ("item", "owner", "state", "since", "due", "checklist")
-LANE_COLS_SIZED = ("item", "owner", "state", "since", "due", "size", "checklist")
-LANE_COLS_NAMED = ("name", "item", "owner", "state", "since", "due", "size", "checklist")
+TASK_COLS = ("item", "owner", "state", "since", "due", "checklist")
+TASK_COLS_SIZED = ("item", "owner", "state", "since", "due", "size", "checklist")
+TASK_COLS_NAMED = ("name", "item", "owner", "state", "since", "due", "size", "checklist")
 # Zach, 2026-09-22 22:20: each task "is actually backed by an entry in github". The issue sits inside the
 # span `_anchor` fixes, between `state` and `checklist`, so a stray pipe still re-reads the same way.
-LANE_COLS_ISSUED = ("name", "item", "owner", "state", "since", "due", "size", "issue", "checklist")
+TASK_COLS_ISSUED = ("name", "item", "owner", "state", "since", "due", "size", "issue", "checklist")
 # Widest first: a header is matched whole, and the live tracker carries every width while it is rewritten.
-LANE_HEADERS = (LANE_COLS_ISSUED, LANE_COLS_NAMED, LANE_COLS_SIZED, LANE_COLS)
+TASK_HEADERS = (TASK_COLS_ISSUED, TASK_COLS_NAMED, TASK_COLS_SIZED, TASK_COLS)
 DATE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{1,2}):(\d{2}))?$")
 BULLET = re.compile(r"^(\s*)-\s*([^:]+?):\s*(.*?)\s*$")
 CAL_LIST = re.compile(r"^\s*-\s*(\d{1,2}:\d{2})\s*[–—-]\s*(\d{1,2}:\d{2})\s*(?:[A-Z]{2,5}\s+)?(.+?)\s*$")
@@ -93,8 +93,8 @@ class Deadline:
     name: str
     at: datetime
     requirements: str | None = None
-    # "all": unnamed lanes fall to it (the default). "named": only lanes whose `due` names it — an exam
-    # governs no lane on the table, and a derived end toward it would make it look like a plan (finding 73).
+    # "all": unnamed tasks fall to it (the default). "named": only tasks whose `due` names it — an exam
+    # governs no task on the table, and a derived end toward it would make it look like a plan (finding 73).
     scope: str = "all"
 
 
@@ -133,7 +133,7 @@ class Config:
 
 
 @dataclass(frozen=True)
-class Lane:
+class Task:
     item: str
     owner: str
     state: str
@@ -152,7 +152,7 @@ class Lane:
 
     @property
     def label(self) -> str:
-        """What the lane is called. A written `name` is the coordinator's judgement and stands;
+        """What the task is called. A written `name` is the coordinator's judgement and stands;
         with no name column the board falls back to guessing the name out of the prose, as it always has."""
         return self.name.strip() or short_name(_unmark(self.item))
 
@@ -197,14 +197,14 @@ class Lane:
 # out and never a session's to claim: a session cannot report that it is gone, and `ready for
 # decommissioning` is a `doing` value that `:189` says never becomes a state of its own.
 SESSION_STATES = ("planning", "working", "waiting", "idle")
-# The Lanes rule's own vocabulary, as a whole cell. It is what makes an over-wide row recoverable: every other
-# lane column is prose, a date or blank, and none of them can be told apart from the item they drifted out of.
-# A `done` state may carry the sha that landed it (`done 21:16–22:05 db4aa3b`), which `audit_lanes.py` needs to
-# clear a lane from `merge-base --is-ancestor` rather than from the owner's tree. Without this the one lane
-# carrying its own evidence would be the one lane `_anchor` could not recover from a stray pipe.
+# The Tasks rule's own vocabulary, as a whole cell. It is what makes an over-wide row recoverable: every other
+# task column is prose, a date or blank, and none of them can be told apart from the item they drifted out of.
+# A `done` state may carry the sha that landed it (`done 21:16–22:05 db4aa3b`), which `audit_tasks.py` needs to
+# clear a task from `merge-base --is-ancestor` rather than from the owner's tree. Without this the one task
+# carrying its own evidence would be the one task `_anchor` could not recover from a stray pipe.
 # Hex and 7–40 wide, so it stays recognisable ON SIGHT: `done, merged by impl-2` is prose, and admitting prose
 # here would let an item cell claim the anchor.
-LANE_STATE = re.compile(
+TASK_STATE = re.compile(
     r"(?i)^(?:open|waiting|orphaned|running\s+\d{1,2}:\d{2}"
     r"|done(?:\s+\d{1,2}:\d{2}(?:[\u2013-]\d{1,2}:\d{2})?)?(?:\s+[0-9a-f]{7,40})?)$")
 # A standing session's row is not a task (Zach, 2026-09-22 19:28: "we don't finish LANES, we finish TASKS").
@@ -212,9 +212,9 @@ STANDING_ITEM = re.compile(r"(?i)^([\w.-]+):\s+standing\b")
 STANDING_NAME = re.compile(r"(?i)^([\w.-]+)\s+[\u2014\u2013-]\s+standing\b")
 READY = re.compile(r"(?i)\bready for decommissioning\b")
 
-# A lane whose state says it is still going while its own item cell shouts DONE disputes itself.
-# Nothing else reads a lane's state: LANE_STATE anchors a stray pipe (`_anchor`) and validates
-# nothing, so four of eleven live lanes carried a stale state at 03:56 — two overstating progress,
+# A task whose state says it is still going while its own item cell shouts DONE disputes itself.
+# Nothing else reads a task's state: TASK_STATE anchors a stray pipe (`_anchor`) and validates
+# nothing, so four of eleven live tasks carried a stale state at 03:56 — two overstating progress,
 # two understating it — and no instrument saw one of them. A freshness check would need to know
 # about the world; this needs only the row, which already carries its own contradiction.
 # Case-sensitive, and the same vocabulary `scripts/migrate_backlog.py` uses: a shouted DONE is a
@@ -225,7 +225,7 @@ DONE_WORDS = re.compile(r"\b(?:DONE|FINISHED|LANDED|CLEARED|CANCELLED|SUPERSEDED
 
 
 def _disputes_itself(state: str, item: str) -> str:
-    """A lane's state cell read against the lane's own prose. Empty when the row agrees with itself."""
+    """A task's state cell read against the task's own prose. Empty when the row agrees with itself."""
     if state.strip().lower().startswith("done"):
         return ""
     said = DONE_WORDS.search(item)
@@ -332,11 +332,11 @@ def _session(cells: list[str]) -> Session:
 @dataclass(frozen=True)
 class Tracker:
     board_url: str | None
-    lanes: tuple[Lane, ...]
+    tasks: tuple[Task, ...]
     sessions: tuple[Session, ...] = ()
 
 
-# The four kinds of the body lane. A body kind is recognised by its own name as a whole word in the
+# The four kinds of the body track. A body kind is recognised by its own name as a whole word in the
 # event's title and by nothing else: the design names these four, and a wider vocabulary (workout,
 # breakfast, lunch, dinner on their own) is a decision rather than an implementation of it.
 BODY_KINDS = ("sleep", "eat", "gym", "recreation")
@@ -364,7 +364,7 @@ class Event:
 
 @dataclass(frozen=True)
 class Body:
-    """The body lane: one row whose track carries every body event on the axis, in clock order."""
+    """The body track: one row whose track carries every body event on the axis, in clock order."""
     segments: tuple[Event, ...]
 
 
@@ -418,7 +418,7 @@ def short_name(item: str) -> str:
     Both cuts are structural: they find where the name ends and the history begins. Neither loses a
     letter of the name it returns. A name with letters missing is not a shorter name, it is a wrong
     one, and the board has no width that a character cut would be measuring — a `<td>` wraps. The
-    cut belongs to a caller that really is one line wide; `clip_name` is that, and `audit_lanes.py`
+    cut belongs to a caller that really is one line wide; `clip_name` is that, and `audit_tasks.py`
     printing one finding per terminal line is who calls it.
     """
     name = item.strip()
@@ -506,7 +506,7 @@ def _depth0_split(text: str) -> list[str]:
 def history_lines(item: str, label: str | None = None) -> list[tuple[str, str]]:
     """What an item cell carries past its name, one (time, text) per clause; the first HH:MM outside parentheses is pulled out.
 
-    `label` is the lane's written name when it has one. The coordinator writes it as a bold headline
+    `label` is the task's written name when it has one. The coordinator writes it as a bold headline
     on the front of the cell (`**Deploy main.** 21:16: …`), so the headline is the name said twice:
     strip it, whichever form it is in, rather than printing its asterisks.
     """
@@ -589,7 +589,7 @@ def parse_coordinator(text: str, today: date) -> Config:
         m = DATE.match(_unquote(when))
         if m:
             reqs = next((r.group(1) for o in options if (r := re.match(r"(?i)requirements\s+`?([^`]+?)`?\s*$", o))), None)
-            scope = "named" if any(re.match(r"(?i)named lanes only\s*$", o) for o in options) else "all"
+            scope = "named" if any(re.match(r"(?i)named tasks only\s*$", o) for o in options) else "all"
             deadlines.append(Deadline(name, datetime(int(m[1]), int(m[2]), int(m[3]), int(m[4] or 23), int(m[5] or 59), tzinfo=zone), reqs, scope))
     tracker = re.search(r"`([^`]+)`", top["Tracker"])
     board_tool = board_url = None
@@ -688,7 +688,7 @@ def _summary_text(value: str) -> str:
 
 
 def _resume_value(value: str) -> str:
-    """A long field folds, the way `item_cell()` folds a long lane item. Same board, same idiom."""
+    """A long field folds, the way `item_cell()` folds a long task item. Same board, same idiom."""
     if len(value) <= RESUME_FOLD:
         return _inline(value)
     return f'<details class="long"><summary>{_esc(_summary_text(value))}</summary>{_inline(value)}</details>'
@@ -756,10 +756,10 @@ def _cells(line: str) -> list[str]:
 
 def _anchor(raw: list[str], cols: tuple[str, ...]) -> list[str] | None:
     """A row wider than its table is one cell that grew a pipe. Re-read it from its state column — the one cell
-    of a lane row a machine can recognise on sight: `item` absorbs the excess on its left and `checklist` the
+    of a task row a machine can recognise on sight: `item` absorbs the excess on its left and `checklist` the
     excess on its right, which is where the prose, and so the stray pipe, lives. Exactly one cell may claim the
     anchor; otherwise the row is left as it was written and only the warning speaks."""
-    hits = [i for i, c in enumerate(raw) if LANE_STATE.match(c.strip())]
+    hits = [i for i, c in enumerate(raw) if TASK_STATE.match(c.strip())]
     if len(hits) != 1:
         return None
     s, state = hits[0], cols.index("state")
@@ -782,11 +782,12 @@ def parse_tracker(text: str) -> Tracker:
         candidate = m.group(1).rstrip(".,;")
         if candidate and not candidate.startswith("<") and candidate.lower() != "none":
             url = candidate
-    lanes: list[Lane] = []
-    rows = [line for line in _section(text, "## Lanes") if line.strip().startswith("|")]
-    # The header decides the width: a six-column table parses as it always has, every lane unsized and unnamed.
+    tasks: list[Task] = []
+    # `## Lanes` is the heading a tracker had before #33 made every row a task.
+    rows = [line for line in _section(text, "## Tasks") or _section(text, "## Lanes") if line.strip().startswith("|")]
+    # The header decides the width: a six-column table parses as it always has, every task unsized and unnamed.
     header = [c.lower() for c in _cells(rows[0])] if rows else []
-    cols = next((h for h in LANE_HEADERS if header == list(h)), LANE_COLS)
+    cols = next((h for h in TASK_HEADERS if header == list(h)), TASK_COLS)
     for row in rows[1:]:
         raw = _split_row(row)
         cells = [c.strip() for c in raw]
@@ -800,14 +801,14 @@ def parse_tracker(text: str) -> Tracker:
         dispute = _disputes_itself(fields.get("state", ""), fields.get("item", ""))
         if dispute:
             warning = (warning + "; " if warning else "") + dispute
-        lanes.append(Lane(**fields, warning=warning))
+        tasks.append(Task(**fields, warning=warning))
     sessions: list[Session] = []
     for row in [line for line in _section(text, "## Sessions") if line.strip().startswith("|")][1:]:
         cells = _cells(row)
         if _is_separator(cells) or not any(c.strip() for c in cells):
             continue
         sessions.append(_session(cells))
-    return Tracker(board_url=url, lanes=tuple(lanes), sessions=tuple(sessions))
+    return Tracker(board_url=url, tasks=tuple(tasks), sessions=tuple(sessions))
 
 
 def _hhmm(value: str, day: date, zone: ZoneInfo) -> datetime | None:
@@ -863,10 +864,10 @@ def _end_of_day(cfg: Config, now: datetime) -> Deadline:
 
 
 def governing_deadline(cfg: Config, now: datetime) -> Deadline:
-    """The nearest deadline ahead that unnamed lanes fall to, else end of day.
+    """The nearest deadline ahead that unnamed tasks fall to, else end of day.
 
-    A lane that names no deadline is drawn or estimated toward this one. A deadline marked `named lanes
-    only` is skipped: after Final the nearest deadline is an exam (finding 73), and nothing on the Lanes
+    A task that names no deadline is drawn or estimated toward this one. A deadline marked `named tasks
+    only` is skipped: after Final the nearest deadline is an exam (finding 73), and nothing on the Tasks
     table is due to it unless its `due` cell says so.
     """
     for d in cfg.deadlines:
@@ -901,11 +902,11 @@ def _ordinal(n: int) -> str:
 
 @dataclass(frozen=True)
 class Estimate:
-    """Where lane i of an owner's N lands.
+    """Where task i of an owner's N lands.
 
-    Two bases. `history`: the queue drains at the mean elapsed time of closed lanes of each size (Zach,
+    Two bases. `history`: the queue drains at the mean elapsed time of closed tasks of each size (Zach,
     2026-09-18: "generate an average amount of time spent per t-shirt sized puzzle ... use that"). `queue`:
-    no lane has closed with a range yet, so the queue drains evenly by the horizon — the 0.10.0 model,
+    no task has closed with a range yet, so the queue drains evenly by the horizon — the 0.10.0 model,
     which claims nothing about effort. The label says which, so a reader can tell a measurement from a share.
     """
 
@@ -939,8 +940,8 @@ class Estimate:
                 "running first, then oldest first. Not a claim about effort; set a due to override.")
 
 
-# The chips over the one lane table. `all` first and always checked, then the two owner questions the
-# Unassigned and queue tables used to be, then the three tracker states a lane can be in.
+# The chips over the one task table. `all` first and always checked, then the two owner questions the
+# Unassigned and queue tables used to be, then the three tracker states a task can be in.
 FILTERS = ("all", "mine", "unassigned", "running", "orphaned", "done")
 FILTER_LABELS = {"all": "all", "mine": "yours", "unassigned": "unassigned",
                  "running": "running", "orphaned": "orphaned", "done": "done"}
@@ -964,71 +965,71 @@ def horizon(cfg: Config, now: datetime) -> tuple[datetime, str]:
     return datetime.combine(now.date(), time(0, 0), tzinfo=cfg.zone) + timedelta(days=1), "end of day"
 
 
-def estimates(active: list[Lane], cfg: Config, now: datetime, hist: dict[str, tuple[timedelta, int]] | None = None) -> dict[str, Estimate]:
-    """A derived end for every owned lane with no `due`, keyed by item. Nothing here is written to the tracker.
+def estimates(active: list[Task], cfg: Config, now: datetime, hist: dict[str, tuple[timedelta, int]] | None = None) -> dict[str, Estimate]:
+    """A derived end for every owned task with no `due`, keyed by item. Nothing here is written to the tracker.
 
-    Per owner, the active lanes that are blank or due by the horizon form a queue of N, running first, then
-    oldest first. With `hist` (see `history()`), a cursor starts at now and each lane takes the mean elapsed
-    time of closed lanes of its size — a running lane from its own start, never ending before now; a lane
-    with a `due` takes its time from the queue and keeps its due. Without history no lane has a duration to
+    Per owner, the active tasks that are blank or due by the horizon form a queue of N, running first, then
+    oldest first. With `hist` (see `history()`), a cursor starts at now and each task takes the mean elapsed
+    time of closed tasks of its size — a running task from its own start, never ending before now; a task
+    with a `due` takes its time from the queue and keeps its due. Without history no task has a duration to
     learn from, and this reads none — not the item text (its length tracks age, not work left), not the
-    Log: lane i ends at `H - (N-i)/N x (H - now)`, so lane N is the horizon instant, and the label says so.
-    Unowned lanes get nothing: there is no queue to place them in, and the deadline they already draw to
-    is the honest end. A gone owner — one an `orphaned` lane names — is unowned for all its lanes.
+    Log: task i ends at `H - (N-i)/N x (H - now)`, so task N is the horizon instant, and the label says so.
+    Unowned tasks get nothing: there is no queue to place them in, and the deadline they already draw to
+    is the honest end. A gone owner — one an `orphaned` task names — is unowned for all its tasks.
     """
     h, of = horizon(cfg, now)
     r = h - now
-    left = {_bare_name(lane.owner) for lane in active if lane.kind == ORPHANED} - {""}
-    queues: dict[str, list[tuple[tuple, Lane]]] = {}
-    for idx, lane in enumerate(active):
-        if lane.kind in ("done", ORPHANED):
+    left = {_bare_name(task.owner) for task in active if task.kind == ORPHANED} - {""}
+    queues: dict[str, list[tuple[tuple, Task]]] = {}
+    for idx, task in enumerate(active):
+        if task.kind in ("done", ORPHANED):
             continue
-        key = _owner_key(lane.owner)
+        key = _owner_key(task.owner)
         if not key or key in left:
             continue
-        due = _resolve_due(lane.due, cfg, now.date())
+        due = _resolve_due(task.due, cfg, now.date())
         if due is not None and due > h:
             continue
-        m = DATE.match(lane.since.strip())
+        m = DATE.match(task.since.strip())
         since = date(int(m[1]), int(m[2]), int(m[3])) if m else now.date()
-        queues.setdefault(key, []).append(((lane.kind != "running", since, idx), lane))
+        queues.setdefault(key, []).append(((task.kind != "running", since, idx), task))
     out: dict[str, Estimate] = {}
     for entries in queues.values():
         entries.sort(key=lambda e: e[0])
         n = len(entries)
         cursor = now
-        for i, (_, lane) in enumerate(entries, 1):
+        for i, (_, task) in enumerate(entries, 1):
             if hist:
-                size = lane.size.strip().upper()
+                size = task.size.strip().upper()
                 borrowed = bool(size) and size not in hist
                 mean, count = hist[size] if size and size in hist else hist[ALL_SIZES]
-                start = _hhmm(lane.state_time, now.date(), cfg.zone) if lane.kind == "running" and lane.state_time else None
+                start = _hhmm(task.state_time, now.date(), cfg.zone) if task.kind == "running" and task.state_time else None
                 end = max(now, start + mean) if start else cursor + mean
                 cursor = max(cursor, end)
-                if not lane.due.strip():
-                    out[lane.item] = Estimate(end, i, n, of, mean, size, "history", count, borrowed)
-            elif not lane.due.strip():
-                out[lane.item] = Estimate(h - r * ((n - i) / n), i, n, of, r / n)
+                if not task.due.strip():
+                    out[task.item] = Estimate(end, i, n, of, mean, size, "history", count, borrowed)
+            elif not task.due.strip():
+                out[task.item] = Estimate(h - r * ((n - i) / n), i, n, of, r / n)
     return out
 
 
-def history(lanes: list[Lane], cfg: Config, now: datetime) -> dict[str, tuple[timedelta, int]]:
-    """Mean elapsed time per size over done lanes that kept their running start, plus an `all` row.
+def history(tasks: list[Task], cfg: Config, now: datetime) -> dict[str, tuple[timedelta, int]]:
+    """Mean elapsed time per size over done tasks that kept their running start, plus an `all` row.
 
     Only `done HH:MM–HH:MM` counts: `since` is a date and `done HH:MM` alone has no start (finding 70), so
-    a lane closed without the range records nothing and is left out rather than guessed at. A range that
-    runs backwards crossed midnight and is dropped too. Empty when no lane has a range, and the estimator
+    a task closed without the range records nothing and is left out rather than guessed at. A range that
+    runs backwards crossed midnight and is dropped too. Empty when no task has a range, and the estimator
     then falls back to the queue-drain of 0.10.0, labelled as such.
     """
     today, zone = now.date(), cfg.zone
     spans: dict[str, list[timedelta]] = {}
-    for lane in lanes:
-        if not (r := lane.ran):
+    for task in tasks:
+        if not (r := task.ran):
             continue
         a, b = _hhmm(r[0], today, zone), _hhmm(r[1], today, zone)
         if a is None or b is None or b <= a:
             continue
-        spans.setdefault(lane.size.strip().upper(), []).append(b - a)
+        spans.setdefault(task.size.strip().upper(), []).append(b - a)
     out = {size: (sum(v, timedelta()) / len(v), len(v)) for size, v in spans.items()}
     if out:
         every = [d for v in spans.values() for d in v]
@@ -1036,48 +1037,48 @@ def history(lanes: list[Lane], cfg: Config, now: datetime) -> dict[str, tuple[ti
     return out
 
 
-def _end(lane: Lane, cfg: Config, now: datetime, start: datetime, est: dict[str, Estimate] | None = None) -> tuple[datetime, str, str | None]:
+def _end(task: Task, cfg: Config, now: datetime, start: datetime, est: dict[str, Estimate] | None = None) -> tuple[datetime, str, str | None]:
     today = now.date()
-    if (due := _resolve_due(lane.due, cfg, today)) is not None:
+    if (due := _resolve_due(task.due, cfg, today)) is not None:
         return due, "due", None
-    if lane.kind == "done":
-        if t := lane.state_time:
+    if task.kind == "done":
+        if t := task.state_time:
             return _hhmm(t, today, cfg.zone), "state", None
         return start, "state", "done, no time"
-    if est and (e := est.get(lane.item)):
+    if est and (e := est.get(task.item)):
         return max(e.end, start), "derived", e.label
     return governing_deadline(cfg, now).at, "deadline", NO_ESTIMATE
 
 
-def day_bar(lane: Lane, cfg: Config, now: datetime, est: dict[str, Estimate] | None = None) -> Bar:
+def day_bar(task: Task, cfg: Config, now: datetime, est: dict[str, Estimate] | None = None) -> Bar:
     today, zone = now.date(), cfg.zone
     day_start = datetime.combine(today, time(0, 0), tzinfo=zone)
-    if lane.kind == "running" and (t := lane.state_time):
+    if task.kind == "running" and (t := task.state_time):
         start, start_src = _hhmm(t, today, zone), "state"
-    elif t := _hhmm(lane.since, today, zone):
+    elif t := _hhmm(task.since, today, zone):
         start, start_src = t, "since"
     else:
         start, start_src = day_start, "carried"
-    end, end_src, label = _end(lane, cfg, now, start, est)
-    bar = Bar(lane.item, lane.owner, lane.label, lane.kind, start, end, start_src, end_src, label, est.get(lane.item) if est and end_src == "derived" else None, lane.size.strip().upper())
-    return replace(bar, deadline=_deadline_for(lane, bar, cfg, now).name)
+    end, end_src, label = _end(task, cfg, now, start, est)
+    bar = Bar(task.item, task.owner, task.label, task.kind, start, end, start_src, end_src, label, est.get(task.item) if est and end_src == "derived" else None, task.size.strip().upper())
+    return replace(bar, deadline=_deadline_for(task, bar, cfg, now).name)
 
 
-def week_bar(lane: Lane, cfg: Config, now: datetime, est: dict[str, Estimate] | None = None) -> Bar:
+def week_bar(task: Task, cfg: Config, now: datetime, est: dict[str, Estimate] | None = None) -> Bar:
     today, zone = now.date(), cfg.zone
     day_start = datetime.combine(today, time(0, 0), tzinfo=zone)
-    m = DATE.match(lane.since.strip())
+    m = DATE.match(task.since.strip())
     if m:
         start, start_src = datetime(int(m[1]), int(m[2]), int(m[3]), tzinfo=zone), "since"
-    elif lane.kind == "running" and (t := lane.state_time):
+    elif task.kind == "running" and (t := task.state_time):
         start, start_src = _hhmm(t, today, zone), "state"
-    elif t := _hhmm(lane.since, today, zone):
+    elif t := _hhmm(task.since, today, zone):
         start, start_src = t, "since"
     else:
         start, start_src = day_start, "carried"
-    end, end_src, label = _end(lane, cfg, now, start, est)
-    bar = Bar(lane.item, lane.owner, lane.label, lane.kind, start, end, start_src, end_src, label, est.get(lane.item) if est and end_src == "derived" else None, lane.size.strip().upper())
-    return replace(bar, deadline=_deadline_for(lane, bar, cfg, now).name)
+    end, end_src, label = _end(task, cfg, now, start, est)
+    bar = Bar(task.item, task.owner, task.label, task.kind, start, end, start_src, end_src, label, est.get(task.item) if est and end_src == "derived" else None, task.size.strip().upper())
+    return replace(bar, deadline=_deadline_for(task, bar, cfg, now).name)
 
 
 # --- rendering -----------------------------------------------------------------------------------
@@ -1150,7 +1151,7 @@ def legend() -> str:
 STAMP_FRESH = timedelta(minutes=30)
 STAMP_AGING = timedelta(hours=2)
 # Every kind a node can draw. The first four are reported; the rest the coordinator works out,
-# `gone` from the Lanes join because a session cannot report that it is gone.
+# `gone` from the Tasks join because a session cannot report that it is gone.
 SESSION_KINDS = ("planning", "working", "waiting", "idle", "starting", "ready", "gone", "unknown", "unreported")
 
 
@@ -1214,14 +1215,14 @@ def _session_node(session: Session, cfg: Config, now: datetime, gone: set[str]) 
 ORPHANED = "orphaned"
 
 
-def gone_sessions(lanes: tuple[Lane, ...], sessions: tuple[Session, ...]) -> set[str]:
-    """Sessions the registry still lists whose lane says its owner left. The join, in the renderer.
+def gone_sessions(tasks: tuple[Task, ...], sessions: tuple[Session, ...]) -> set[str]:
+    """Sessions the registry still lists whose task says its owner left. The join, in the renderer.
 
     A session cannot report that it is gone, so this is the coordinator's to work out, and it is the
-    one state the board takes over a session's own word: `orphaned` on the lane and `working` in the
-    registry are the same row contradicting itself, and the lane is the column that was updated last.
+    one state the board takes over a session's own word: `orphaned` on the task and `working` in the
+    registry are the same row contradicting itself, and the task is the column that was updated last.
     """
-    left = {_bare_name(lane.owner) for lane in lanes if lane.kind == ORPHANED}
+    left = {_bare_name(task.owner) for task in tasks if task.kind == ORPHANED}
     left -= {""}
     return {s.label for s in sessions if _bare_name(s.name) in left}
 
@@ -1281,7 +1282,7 @@ def grid_marks(axis_a: datetime, axis_b: datetime, kind: str) -> list[tuple[date
 
 
 def _bar_row(b: Bar, axis_a: datetime, axis_b: datetime, row_class: str = "row") -> str:
-    """One lane as a positioned row. A top-level bar and a sublane inside a fold are the same markup."""
+    """One task as a positioned row. A top-level bar and a sublane inside a fold are the same markup."""
     left, right = _pct(b.start, axis_a, axis_b), _pct(b.end, axis_a, axis_b)
     edge = (" clamped" if b.end > axis_b else "") + (" clamped-left" if b.end < axis_a else "")
     classes = f"bar {b.kind}" + (" open-end" if b.end_src == "deadline" else "") + (" derived" if b.end_src == "derived" else "") + edge
@@ -1299,17 +1300,17 @@ def week_load(bars: list[Bar], body: list[Event], week_a: datetime, week_b: date
               est: dict[str, Estimate], hist: dict[str, tuple[timedelta, int]]) -> list[dict]:
     """What each day of the week axis has committed to it, against the work time it has left.
 
-    The week strip says when lanes land; it does not say whether they can. A day carrying eighteen
+    The week strip says when tasks land; it does not say whether they can. A day carrying eighteen
     hours of estimated work and thirteen hours awake looks exactly like a day carrying four.
 
-    Committed is estimated WORK, not the wall-clock span of the bar: a lane running since Monday and
+    Committed is estimated WORK, not the wall-clock span of the bar: a task running since Monday and
     due Friday occupies four days of the strip and is not four days of work. The duration comes from
-    the lane's own estimate, else the mean of closed lanes of its size, else the mean of all of them;
-    a lane none of those can size is counted apart rather than guessed at. Each lane is charged to
-    the day it lands, which is the day its slipping would be felt. Every active lane counts, folded
-    into a summary row or not — a day's load is not lighter because the strip drew its lanes as one.
+    the task's own estimate, else the mean of closed tasks of its size, else the mean of all of them;
+    a task none of those can size is counted apart rather than guessed at. Each task is charged to
+    the day it lands, which is the day its slipping would be felt. Every active task counts, folded
+    into a summary row or not — a day's load is not lighter because the strip drew its tasks as one.
 
-    Work time available is the day minus the body lane, and today starts at `now` rather than at
+    Work time available is the day minus the body track, and today starts at `now` rather than at
     midnight because the morning is already spent. Beyond today the calendar holds no events, so
     nothing is booked and the whole day reads as available — true of the inputs rather than useful.
     """
@@ -1373,7 +1374,7 @@ def _load_row(cells: list[dict], axis_a: datetime, axis_b: datetime) -> str:
 
 
 def _body_row(body: Body, axis_a: datetime, axis_b: datetime) -> str:
-    """The body lane. Hours already spent asleep, eating or off are not available for work, and a
+    """The body track. Hours already spent asleep, eating or off are not available for work, and a
     deadline row above them reads as if they were until they are drawn."""
     segs = []
     for ev in body.segments:
@@ -1450,9 +1451,9 @@ def _strip(rows: list["Body | Swim | Bar | Summary"], axis_a: datetime, axis_b: 
     return "\n".join(out)
 
 
-def _deadline_for(lane: Lane, bar: Bar, cfg: Config, now: datetime) -> Deadline:
+def _deadline_for(task: Task, bar: Bar, cfg: Config, now: datetime) -> Deadline:
     for d in cfg.deadlines:
-        if d.name.lower() == lane.due.strip().lower() or (bar.end_src != "due" and d.at == bar.end):
+        if d.name.lower() == task.due.strip().lower() or (bar.end_src != "due" and d.at == bar.end):
             return d
     return governing_deadline(cfg, now)
 
@@ -1460,7 +1461,7 @@ def _deadline_for(lane: Lane, bar: Bar, cfg: Config, now: datetime) -> Deadline:
 def swimlanes(bars: list[Bar]) -> list["Swim | Bar"]:
     """Deadline outer, owner inner — the two groupings Zach asked for at once (2026-09-19).
 
-    Deadlines keep the order they are first drawn in; lanes answering to none come last, under one
+    Deadlines keep the order they are first drawn in; tasks answering to none come last, under one
     header, because nothing in them can make him late.
     """
     order: list[str] = []
@@ -1477,26 +1478,26 @@ def swimlanes(bars: list[Bar]) -> list["Swim | Bar"]:
     return rows
 
 
-def today_rows(active: list[Lane], cfg: Config, now: datetime, axis_b: datetime, est: dict[str, Estimate] | None = None, floor: timedelta | None = None) -> tuple[list[Bar], list[Bar]]:
-    """Own bars: running lanes and lanes whose cited end falls by the axis end. Everything else folds.
+def today_rows(active: list[Task], cfg: Config, now: datetime, axis_b: datetime, est: dict[str, Estimate] | None = None, floor: timedelta | None = None) -> tuple[list[Bar], list[Bar]]:
+    """Own bars: running tasks and tasks whose cited end falls by the axis end. Everything else folds.
 
     A derived end folds too when its slot is narrower than `floor` (the axis tick): a session with five
-    lanes and four hours left would otherwise unfold into five 48-minute slivers exactly when the strip
+    tasks and four hours left would otherwise unfold into five 48-minute slivers exactly when the strip
     most needs reading. The estimate survives in the folded row's `.member` span.
     """
     own, folded = [], []
-    for lane in active:
-        b = day_bar(lane, cfg, now, est)
+    for task in active:
+        b = day_bar(task, cfg, now, est)
         narrow = b.est is not None and floor is not None and b.est.slot < floor
-        if (lane.kind == "running" and lane.state_time) or (b.end_src != "deadline" and b.end <= axis_b and not narrow):
+        if (task.kind == "running" and task.state_time) or (b.end_src != "deadline" and b.end <= axis_b and not narrow):
             own.append(b)
         else:
             folded.append(b)
     return own, folded
 
 
-def done_rows(done: list[Lane], cfg: Config, now: datetime, axis_a: datetime) -> list[Bar]:
-    """Lanes finished inside the strip's past: `done HH:MM`, or `done HH:MM–HH:MM` for the whole run.
+def done_rows(done: list[Task], cfg: Config, now: datetime, axis_a: datetime) -> list[Bar]:
+    """Tasks finished inside the strip's past: `done HH:MM`, or `done HH:MM–HH:MM` for the whole run.
 
     The tracker writes clock times with no date, so a done time later than now is yesterday's. The start is
     the range's start, else a same-day `since` that is not after the end, else the end itself, drawn as the
@@ -1504,19 +1505,19 @@ def done_rows(done: list[Lane], cfg: Config, now: datetime, axis_a: datetime) ->
     """
     today, zone = now.date(), cfg.zone
     bars = []
-    for lane in done:
-        if not (t := lane.state_time) or (end := _hhmm(t, today, zone)) is None:
+    for task in done:
+        if not (t := task.state_time) or (end := _hhmm(t, today, zone)) is None:
             continue
         if end > now:
             end -= timedelta(days=1)
         if not axis_a <= end <= now:
             continue
         start, start_src = end, "state"
-        if lane.ran and (s := _hhmm(lane.ran[0], end.date(), zone)):
+        if task.ran and (s := _hhmm(task.ran[0], end.date(), zone)):
             start, start_src = (s if s <= end else s - timedelta(days=1)), "ran"
-        elif (s := _hhmm(lane.since, end.date(), zone)) and s <= end:
+        elif (s := _hhmm(task.since, end.date(), zone)) and s <= end:
             start, start_src = s, "since"
-        bars.append(Bar(lane.item, lane.owner, lane.label, "done", start, end, start_src, "state", None, size=lane.size.strip().upper()))
+        bars.append(Bar(task.item, task.owner, task.label, "done", start, end, start_src, "state", None, size=task.size.strip().upper()))
     return sorted(bars, key=lambda b: b.end)
 
 
@@ -1526,19 +1527,19 @@ def week_axis_end(cfg: Config, week_a: datetime) -> datetime:
     return max(min(week_a + timedelta(days=WEEK_DAYS), day_after_last), week_a + timedelta(days=1))
 
 
-def week_rows(active: list[Lane], cfg: Config, now: datetime, week_a: datetime, week_b: datetime, est: dict[str, Estimate] | None = None) -> list[Bar | Summary]:
-    """Running lanes get a bar. Lanes with a concrete due group by due day (a lone lane keeps its bar); overdue and
-    past-the-axis lanes get one row each. The rest fold into one row per deadline. Returned in drawing order."""
+def week_rows(active: list[Task], cfg: Config, now: datetime, week_a: datetime, week_b: datetime, est: dict[str, Estimate] | None = None) -> list[Bar | Summary]:
+    """Running tasks get a bar. Tasks with a concrete due group by due day (a lone task keeps its bar); overdue and
+    past-the-axis tasks get one row each. The rest fold into one row per deadline. Returned in drawing order."""
     keyed: list[tuple[tuple, Bar | Summary]] = []
     days: dict[date, list[Bar]] = {}
     overdue: list[Bar] = []
     later: list[Bar] = []
     groups: dict[Deadline, list[Bar]] = {}
     instants = {d.at for d in cfg.deadlines}
-    for lane in active:
-        b = week_bar(lane, cfg, now, est)
-        named = any(d.name.lower() == lane.due.strip().lower() for d in cfg.deadlines)
-        if lane.kind == "running" and lane.state_time:
+    for task in active:
+        b = week_bar(task, cfg, now, est)
+        named = any(d.name.lower() == task.due.strip().lower() for d in cfg.deadlines)
+        if task.kind == "running" and task.state_time:
             keyed.append(((1, b.start), b))
         elif b.end_src in ("due", "derived") and not named and b.end not in instants:
             if b.end < week_a:
@@ -1548,7 +1549,7 @@ def week_rows(active: list[Lane], cfg: Config, now: datetime, week_a: datetime, 
             else:
                 days.setdefault(b.end.date(), []).append(b)
         else:
-            groups.setdefault(_deadline_for(lane, b, cfg, now), []).append(b)
+            groups.setdefault(_deadline_for(task, b, cfg, now), []).append(b)
     if overdue:
         keyed.append(((0,), Summary("overdue", f"due {min(b.end for b in overdue):%a %d}", week_a, max(b.end for b in overdue), tuple(overdue), f"Overdue · {_tasks(len(overdue))}", "group")))
     for day, bars in days.items():
@@ -1611,27 +1612,27 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
     tracker = parse_tracker(tracker_text)
     today, zone = now.date(), cfg.zone
     events = parse_calendar(log_text, today, zone)
-    # A body event is drawn once, as a segment of the body lane; drawn as a band as well it would
+    # A body event is drawn once, as a segment of the body track; drawn as a band as well it would
     # read as two things happening at once. Every other event stays the band it was.
     body_events = [e for e in events if e.kind]
     events = [e for e in events if not e.kind]
     # Only tasks from here on. A standing session with no task is on the Sessions graph, which reads
     # `## Sessions`; `gone_sessions` still reads every row, so its orphaned placeholder still marks it gone.
-    lanes = [lane for lane in tracker.lanes if not lane.standing]
-    standing = len(tracker.lanes) - len(lanes)
-    active = [lane for lane in lanes if lane.kind != "done"]
-    done = [lane for lane in lanes if lane.kind == "done"]
+    tasks = [task for task in tracker.tasks if not task.standing]
+    standing = len(tracker.tasks) - len(tasks)
+    active = [task for task in tasks if task.kind != "done"]
+    done = [task for task in tasks if task.kind == "done"]
     nearest = nearest_deadline(cfg, now)
     url = tracker.board_url or cfg.board_url
 
     # Day strip: a rolling 24 hours, 8 behind this hour and 16 ahead of it (Zach, 2026-09-22). It first
     # ended at the nearest deadline or midnight, so at 23:00 only an hour of it lay ahead of now; then it
     # ran 24 hours forward from this hour (2026-09-19), so nothing already done was on it. The past third
-    # carries last night's sleep, today's earlier events and the lanes done in it; a bar that started
+    # carries last night's sleep, today's earlier events and the tasks done in it; a bar that started
     # before the axis draws clamped-left, as a carried bar always has.
     hour = now.replace(minute=0, second=0, microsecond=0)
     axis_a, axis_b = hour - DAY_BEHIND, hour + DAY_AHEAD
-    est = estimates(active, cfg, now, history(lanes, cfg, now))
+    est = estimates(active, cfg, now, history(tasks, cfg, now))
     day_bars, day_folded = today_rows(active, cfg, now, axis_b, est, _tick_step(axis_b - axis_a))
     step = _tick_step(axis_b - axis_a)
     day_ticks = []
@@ -1645,7 +1646,7 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
     # Folded work is still to do, so its row starts at this hour, not at the axis's past edge.
     day_summaries = [Summary("today", "no estimate, or due or estimated after today", hour, axis_b, tuple(day_folded))] if day_folded else []
     day_done = done_rows(done, cfg, now, axis_a)
-    # One closed row, opening onto the done lanes as sublanes: 27 of them pushed the work still ahead off the
+    # One closed row, opening onto the done tasks as sublanes: 27 of them pushed the work still ahead off the
     # first screen (Zach, 2026-09-22 18:57: "have done collapse down to an expandable row too").
     day_done_rows = [Summary("done", f"{len(day_done)} done", min(b.start for b in day_done), max(b.end for b in day_done), tuple(day_done), f"Done · {_tasks(len(day_done))}", "done")] if day_done else []
 
@@ -1655,7 +1656,7 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
     week = week_rows(active, cfg, now, week_a, week_b, est)
     week_bars = [r for r in week if isinstance(r, Bar)]
     week_groups = [r for r in week if isinstance(r, Summary) and r.attr == "group"]
-    load_cells = week_load([week_bar(l, cfg, now, est) for l in active], body_events, week_a, week_b, now, est, history(lanes, cfg, now))
+    load_cells = week_load([week_bar(l, cfg, now, est) for l in active], body_events, week_a, week_b, now, est, history(tasks, cfg, now))
     week_ticks = []
     t = week_a
     while t < week_b:
@@ -1671,63 +1672,63 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
                        else f'<li class="notime"><span>{_inline(text)}</span></li>' for t, text in lines)
         return f'<details><summary>{_esc(short)}</summary><ul class="hist">{body}</ul></details>'
 
-    def lane_filters(lane: Lane) -> list[str]:
+    def task_filters(task: Task) -> list[str]:
         """The chips that keep this row. A filter is mechanical and selects over the whole table,
-        done rows included: `yours` answers "which lanes name Robin", and the groups keep the state
+        done rows included: `yours` answers "which tasks name Robin", and the groups keep the state
         reading that the old queue table bought by excluding done."""
-        owner = lane.owner.strip().lower()
+        owner = task.owner.strip().lower()
         tokens = ["all"]
         if owner == cfg.user.strip().lower():
             tokens.append("mine")
         if owner in ("unassigned", ""):
             tokens.append("unassigned")
-        if lane.kind in ("running", "orphaned", "done"):
-            tokens.append(lane.kind)
+        if task.kind in ("running", "orphaned", "done"):
+            tokens.append(task.kind)
         return tokens
 
     # The issue column exists only where the block names a GitHub backlog; the board reads the cell and
-    # never the network, so whether the issue is open is audit_lanes.py's to say.
+    # never the network, so whether the issue is open is audit_tasks.py's to say.
     issued = cfg.backlog_repo is not None
     span = 7 if issued else 6
     issue_head = "<th>issue</th>" if issued else ""
 
-    def issue_cell(lane: Lane) -> str:
+    def issue_cell(task: Task) -> str:
         if not issued:
             return ""
-        cell = lane.issue.strip()
+        cell = task.issue.strip()
         ref = issue_ref(cell, cfg.backlog_repo) if cell else None
         if ref:
             body = f'<a href="{_esc(ref.url)}">{_esc(ref.label(cfg.backlog_repo))}</a>'
         elif cell:
             body = f'<span class="warn">not an issue: {_esc(cell)}</span>'
-        elif lane.needs_issue:
+        elif task.needs_issue:
             body = '<span class="warn">no issue</span>'
         else:
             body = ""
         return f"<td>{body}</td>"
 
-    def lane_rows(group: list[Lane]) -> str:
+    def task_rows(group: list[Task]) -> str:
         rows = []
-        for lane in group:
-            warn = f' <span class="warn">{_esc(lane.warning)}</span>' if lane.warning else ""
-            size = f' data-size="{_esc(lane.size)}"' if lane.size.strip() else ""
-            keeps = " ".join(lane_filters(lane))
-            rows.append(f'<tr data-state="{_esc(lane.kind)}" data-in="{keeps}"{size}><td>{item_cell(lane.item, lane.label)}{warn}</td><td>{_esc(lane.owner)}</td><td>{_esc(lane.state)}</td><td>{_esc(lane.since)}</td><td>{_esc(lane.due)}</td><td>{_esc(lane.size)}</td>{issue_cell(lane)}</tr>')
+        for task in group:
+            warn = f' <span class="warn">{_esc(task.warning)}</span>' if task.warning else ""
+            size = f' data-size="{_esc(task.size)}"' if task.size.strip() else ""
+            keeps = " ".join(task_filters(task))
+            rows.append(f'<tr data-state="{_esc(task.kind)}" data-in="{keeps}"{size}><td>{item_cell(task.item, task.label)}{warn}</td><td>{_esc(task.owner)}</td><td>{_esc(task.state)}</td><td>{_esc(task.since)}</td><td>{_esc(task.due)}</td><td>{_esc(task.size)}</td>{issue_cell(task)}</tr>')
         return "\n".join(rows) or f'<tr data-in="all"><td colspan="{span}" class="muted">none</td></tr>'
 
     running = [l for l in active if l.kind == "running"]
     orphaned = [l for l in active if l.kind == "orphaned"]
     waiting = [l for l in active if l.kind not in ("running", "orphaned")]
 
-    def group_head(label: str, group: list[Lane], note: str = "") -> str:
-        keeps = " ".join(f for f in FILTERS if f == "all" or any(f in lane_filters(l) for l in group))
+    def group_head(label: str, group: list[Task], note: str = "") -> str:
+        keeps = " ".join(f for f in FILTERS if f == "all" or any(f in task_filters(l) for l in group))
         tail = f" · {_esc(note)}" if note else ""
         return f'<tr class="group" data-in="{keeps}"><th colspan="{span}">{_esc(label)} · {len(group)}{tail}</th></tr>'
 
-    orphan_group = f'\n{group_head("orphaned", orphaned, "nobody owns these")}\n{lane_rows(orphaned)}' if orphaned else ""
-    # Unassigned and `<user>'s queue` were the Lanes table printed twice more. They are chips over
+    orphan_group = f'\n{group_head("orphaned", orphaned, "nobody owns these")}\n{task_rows(orphaned)}' if orphaned else ""
+    # Unassigned and `<user>'s queue` were the Tasks table printed twice more. They are chips over
     # the one table now; the counts are the only thing those tables said that the rows do not.
-    counts = {f: sum(1 for l in lanes if f in lane_filters(l)) for f in FILTERS}
+    counts = {f: sum(1 for l in tasks if f in task_filters(l)) for f in FILTERS}
     # Each radio sits immediately before its own label, so `:checked`/`:focus-visible` need one rule
     # between them and not one per chip, and the radios still precede the table they filter.
     chips = "".join(
@@ -1745,33 +1746,33 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
     )
     # 1 · DUE NEXT — a card per governing deadline, in the order the deadlines fall. A flat list
     # sorted by time answers "what is next" but not "what makes me late for the thing with a clock
-    # on it": a lane answering to tomorrow sitting between two of this morning's reads as one of
-    # them. Lanes answering to no deadline come last, because nothing in them can make him late.
+    # on it": a task answering to tomorrow sitting between two of this morning's reads as one of
+    # them. Tasks answering to no deadline come last, because nothing in them can make him late.
     def _clock(at: datetime) -> str:
         return at.strftime("%H:%M") if at.date() == today else at.strftime("%a %d %H:%M")
 
-    due_groups: dict[str, list[tuple[Lane, Bar]]] = {}
-    for lane in active:
-        b = day_bar(lane, cfg, now, est)
-        due_groups.setdefault(_deadline_for(lane, b, cfg, now).name, []).append((lane, b))
+    due_groups: dict[str, list[tuple[Task, Bar]]] = {}
+    for task in active:
+        b = day_bar(task, cfg, now, est)
+        due_groups.setdefault(_deadline_for(task, b, cfg, now).name, []).append((task, b))
     order = [d.name for d in cfg.deadlines if d.name in due_groups]
     order += [n for n in due_groups if n not in order]
 
-    def due_card(name: str, group: list[tuple[Lane, Bar]]) -> str:
+    def due_card(name: str, group: list[tuple[Task, Bar]]) -> str:
         at = next((d.at for d in cfg.deadlines if d.name == name), None)
-        # A lane with no estimate has no time to sort by; it is counted in the head rather than
+        # A task with no estimate has no time to sort by; it is counted in the head rather than
         # given a row it cannot fill. `NO_ESTIMATE` is the meaning the rest of the page uses.
         timed = sorted((p for p in group if p[1].label != NO_ESTIMATE), key=lambda p: p[1].end)
         no_est = sum(1 for _, b in group if b.label == NO_ESTIMATE)
         rows = "\n".join(
-            f'<div class="due-row" data-kind="{_esc(lane.kind)}" data-at-src="{b.end_src}">'
+            f'<div class="due-row" data-kind="{_esc(task.kind)}" data-at-src="{b.end_src}">'
             f'<span class="at">{"~" if b.end_src == "derived" else ""}{_clock(b.end)}'
-            f'{" ⚑" if lane.kind == "orphaned" else ""}</span>'
-            f'<span class="what">{_esc(lane.label)}</span>'
-            f'<span class="who">{_esc(lane.owner)}</span>'
-            f'<span class="state">{_esc(lane.state)}</span>'
-            f'<span class="size">{_esc(lane.size)}</span></div>'
-            for lane, b in timed
+            f'{" ⚑" if task.kind == "orphaned" else ""}</span>'
+            f'<span class="what">{_esc(task.label)}</span>'
+            f'<span class="who">{_esc(task.owner)}</span>'
+            f'<span class="state">{_esc(task.state)}</span>'
+            f'<span class="size">{_esc(task.size)}</span></div>'
+            for task, b in timed
         ) or '<div class="due-row muted"><span class="what">nothing with a time on it</span></div>'
         head = f"{_esc(name)} · {_clock(at)}" if at else _esc(name)
         return (f'<div class="card due-card"><div class="card-head"><b>{head}</b>'
@@ -1785,8 +1786,8 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
 """
 
     # 2 · BLOCKED — the band that is never folded: on you, unowned, or a session that stopped reporting.
-    awaiting = [lane for lane in active if lane.owner.strip().lower() == cfg.user.lower()]
-    unowned = [lane for lane in active if lane.kind == "orphaned"]
+    awaiting = [task for task in active if task.owner.strip().lower() == cfg.user.lower()]
+    unowned = [task for task in active if task.kind == "orphaned"]
     quiet = [s for s in tracker.sessions if _band(_age(s, cfg, now)[1] or 10**6) == "stale" or not s.state.strip()]
 
     # BLOCKED is never folded, so it cannot be allowed to grow without bound either: each card
@@ -1799,12 +1800,12 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
             body += f'<li class="more">+ {len(rows) - BLOCKED_SHOWN} more</li>'
         return f'<div class="card"><h3>{_esc(title)} · {len(rows)}</h3><ul>{body}</ul></div>'
 
-    def lane_line(l: Lane) -> str:
+    def task_line(l: Task) -> str:
         return f"{_esc(l.label)} <span class='muted'>· {_esc(l.due.strip()) or 'no due'}</span>"
 
     def quiet_line(s: Session) -> str:
         """A session name on its own does not say what the silence costs: how long, and how many
-        lanes are waiting behind it."""
+        tasks are waiting behind it."""
         minutes = _age(s, cfg, now)[1]
         silence = f"silent {_dur(timedelta(minutes=minutes))}" if minutes is not None else "never reported"
         held = sum(1 for l in active if _bare_name(l.owner) == _bare_name(s.name))
@@ -1813,8 +1814,8 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
 
     blocked_html = f"""<h2>Blocked</h2>
 <div class="cards">
-{blocked_card("Awaiting you", [lane_line(l) for l in awaiting])}
-{blocked_card("Orphaned", [lane_line(l) for l in unowned])}
+{blocked_card("Awaiting you", [task_line(l) for l in awaiting])}
+{blocked_card("Orphaned", [task_line(l) for l in unowned])}
 {blocked_card("Not reporting", [quiet_line(s) for s in quiet])}
 </div>
 """
@@ -1826,7 +1827,7 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
         # would just move the next break to the next wrapper.
         f'#lf-{f}:checked~* tr[data-in]:not([data-in~="{f}"]){{display:none}}' for f in FILTERS
     )
-    long_items = sum(1 for lane in lanes if len(lane.item) > LONG_ITEM)
+    long_items = sum(1 for task in tasks if len(task.item) > LONG_ITEM)
     orphan_note = f" · {sum(1 for l in active if l.kind == 'orphaned')} orphaned" if any(l.kind == "orphaned" for l in active) else ""
     long_note = f" · {long_items} {'task carries' if long_items == 1 else 'tasks carry'} history in the item cell" if long_items else ""
     standing_note = (f'<div class="meta">{standing} standing {"session" if standing == 1 else "sessions"} with no task '
@@ -1847,13 +1848,13 @@ h2{{font-family:"Cormorant SC","Cormorant Garamond",Georgia,serif;font-size:19px
 .header{{display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:4px}} .header .logo{{width:260px;max-width:100%;border:1px solid var(--brass);border-radius:4px;display:block}}
 .head-text{{flex:1 1 260px;min-width:0}}
 .meta{{color:var(--muted);font-size:13px}} .clock{{font-family:ui-monospace,monospace;font-size:14px;font-variant-numeric:tabular-nums;margin:6px 0}}
-table{{border-collapse:collapse;width:100%;max-width:100%}} .lanes table{{table-layout:fixed}} .lanes{{overflow-wrap:anywhere}} .lanes th:first-child{{width:40%}} .lanes th:nth-child(2){{width:18%}} td,th{{text-align:left;padding:4px 8px;border-bottom:1px solid var(--line);vertical-align:top}} th{{color:var(--muted);font-weight:600;font-size:12px;letter-spacing:.04em;text-transform:uppercase}}
+table{{border-collapse:collapse;width:100%;max-width:100%}} .tasks table{{table-layout:fixed}} .tasks{{overflow-wrap:anywhere}} .tasks th:first-child{{width:40%}} .tasks th:nth-child(2){{width:18%}} td,th{{text-align:left;padding:4px 8px;border-bottom:1px solid var(--line);vertical-align:top}} th{{color:var(--muted);font-weight:600;font-size:12px;letter-spacing:.04em;text-transform:uppercase}}
 tr.group th{{background:color-mix(in srgb,var(--brass) 18%,transparent);color:var(--fg);font-family:"Cormorant SC","Cormorant Garamond",Georgia,serif;font-weight:600;font-size:14px;letter-spacing:.12em;text-transform:uppercase;border-top:2px solid var(--brass);padding:6px 8px}}
-.lanes{{position:relative}} .lanes>input{{position:absolute;width:1px;height:1px;opacity:0;margin:0}}
-.lanes>label{{display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-size:12.5px;padding:3px 10px;min-height:26px;margin:0 6px 8px 0;border:1px solid var(--line);border-radius:13px;background:var(--surface)}}
-.lanes>label b{{font-weight:400;font-variant-numeric:tabular-nums;opacity:.7}}
-.lanes>input:checked+label{{background:var(--fg);color:var(--surface);border-color:var(--fg)}}
-.lanes>input:focus-visible+label{{outline:2px solid var(--brass);outline-offset:2px}}
+.tasks{{position:relative}} .tasks>input{{position:absolute;width:1px;height:1px;opacity:0;margin:0}}
+.tasks>label{{display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-size:12.5px;padding:3px 10px;min-height:26px;margin:0 6px 8px 0;border:1px solid var(--line);border-radius:13px;background:var(--surface)}}
+.tasks>label b{{font-weight:400;font-variant-numeric:tabular-nums;opacity:.7}}
+.tasks>input:checked+label{{background:var(--fg);color:var(--surface);border-color:var(--fg)}}
+.tasks>input:focus-visible+label{{outline:2px solid var(--brass);outline-offset:2px}}
 {filter_css}
 .cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px;margin:8px 0}} .cards.due{{grid-template-columns:repeat(auto-fit,minmax(330px,1fr))}}
 .card{{background:var(--surface);border:1px solid var(--line);border-radius:5px;padding:8px 11px}} .due-card{{border-left:3px solid var(--dl)}}
@@ -1945,7 +1946,7 @@ body{{padding:12px 12px 36px}}
 .due-row .state,.due-row .size{{order:3;flex:0 0 auto;width:auto;margin-left:0}}
 .due-row .who::after,.due-row .state::after{{content:" ·";color:var(--muted)}}
 .load{{height:58px}} .load-cell .col{{height:40px}} .load-cell .at{{font-size:9.5px}}
-.lanes>label{{font-size:12px;padding:3px 9px}}
+.tasks>label{{font-size:12px;padding:3px 9px}}
 .row.body .name,.strip .name{{font-size:11px}}
 .axis .tick:last-child{{transform:translateX(-100%)}}
 }}
@@ -1971,18 +1972,18 @@ body{{padding:12px 12px 36px}}
 {req_html}
 
 <h2>Tasks</h2>
-{standing_note}<div class="lanes">
+{standing_note}<div class="tasks">
 {chips}
 <div class="scroll"><table><tr><th>item</th><th>owner</th><th>state</th><th>since</th><th>due</th><th>size</th>{issue_head}</tr>
 {group_head("running", running)}
-{lane_rows(running)}{orphan_group}
+{task_rows(running)}{orphan_group}
 {group_head("open · waiting", waiting)}
-{lane_rows(waiting)}
+{task_rows(waiting)}
 {group_head("done", done)}
-{lane_rows(done)}
+{task_rows(done)}
 </table></div>
 </div>
-{session_graph(tracker.sessions, cfg, now, gone_sessions(tracker.lanes, tracker.sessions))}
+{session_graph(tracker.sessions, cfg, now, gone_sessions(tracker.tasks, tracker.sessions))}
 </div>
 <script>
 (function(){{
@@ -2035,26 +2036,26 @@ def main(argv: list[str] | None = None) -> Path:
     page = render(tracker_text, log_text, cfg, now, requirements=req_texts)
     out.write_text(page)
     parsed = parse_tracker(tracker_text)
-    hist = history(list(parsed.lanes), cfg, now)
-    est = estimates([lane for lane in parsed.lanes if lane.kind != "done"], cfg, now, hist)
-    bars = [day_bar(lane, cfg, now, est) for lane in parsed.lanes]
+    hist = history(list(parsed.tasks), cfg, now)
+    est = estimates([task for task in parsed.tasks if task.kind != "done"], cfg, now, hist)
+    bars = [day_bar(task, cfg, now, est) for task in parsed.tasks]
     sized = " ".join(f"{k or '?'}:{hist[k][1]}" for k in (*SIZES, "") if k in hist)
     hist_note = f"{sized} · all:{hist[ALL_SIZES][1]}" if hist else "none"
     horizon_name = horizon(cfg, now)[1]
     no_est = sum(1 for b in bars if b.label == NO_ESTIMATE)
     derived = sum(1 for b in bars if b.end_src == "derived")
-    long_items = sum(1 for lane in parsed.lanes if len(lane.item) > LONG_ITEM)
+    long_items = sum(1 for task in parsed.tasks if len(task.item) > LONG_ITEM)
     block = parse_resume(tracker_text)
     resume_long = sum(1 for k in resume_fields(block) if len(block[k]) > RESUME_CAP)
     # A count printed beside a warning count but not counted as one reads as telemetry: `resume_long=4`
     # sat next to `warnings=0` for three hours while the block degraded, and was read past every time.
-    warnings = sum(1 for lane in parsed.lanes if lane.warning) + sum(1 for s in parsed.sessions if s.warning) + resume_long
+    warnings = sum(1 for task in parsed.tasks if task.warning) + sum(1 for s in parsed.sessions if s.warning) + resume_long
     print(out)
     req_counts = ",".join(f"{name}:{sum(r.done for _, rs in parse_requirements(t) for r in rs)}/{sum(len(rs) for _, rs in parse_requirements(t))}" for name, t in req_texts.items() if t is not None)
     missing = sum(1 for t in req_texts.values() if t is None)
     drawn = resume_fields(block)
     resume_note = f"{len(drawn)} fields" if drawn else "none"
-    print(f"lanes={len(parsed.lanes)} no_estimate={no_est} derived={derived} warnings={warnings} long_items={long_items} resume={resume_note} resume_long={resume_long} requirements={req_counts or 'none'} requirements_missing={missing} history={hist_note} horizon={horizon_name} tracker_sha256={hashlib.sha256(tracker_text.encode()).hexdigest()[:12]}")
+    print(f"tasks={len(parsed.tasks)} no_estimate={no_est} derived={derived} warnings={warnings} long_items={long_items} resume={resume_note} resume_long={resume_long} requirements={req_counts or 'none'} requirements_missing={missing} history={hist_note} horizon={horizon_name} tracker_sha256={hashlib.sha256(tracker_text.encode()).hexdigest()[:12]}")
     return out
 
 

@@ -52,12 +52,12 @@ TOOLS = ["Bash", "Read", "Glob", "Grep", "Write", "Edit", "Agent"]
 # `mv`/`mkdir` are for filing moves (PARA); no `cp` or `rm`, so a "move" cannot become a copy or a delete.
 BOARD_RENDERER = PLUGIN_ROOT / "scripts" / "render_board.py"
 HEALTH_PROBE = PLUGIN_ROOT / "scripts" / "probe_health.py"
-LANE_AUDIT = PLUGIN_ROOT / "scripts" / "audit_lanes.py"
+TASK_AUDIT = PLUGIN_ROOT / "scripts" / "audit_tasks.py"
 MAKE_WORKTREE = PLUGIN_ROOT / "scripts" / "make_worktree.py"
 SPAWN_SESSION = PLUGIN_ROOT / "scripts" / "spawn_session.py"
 # The plugin's own scripts are the only ones the agent may run: html, health and merge state come
 # from code, never from the agent. git and curl stay off the allowlist — the scripts call them.
-SCRIPTS = ("render_board.py", "probe_health.py", "audit_lanes.py", "make_worktree.py", "spawn_session.py", "notify.py")
+SCRIPTS = ("render_board.py", "probe_health.py", "audit_tasks.py", "make_worktree.py", "spawn_session.py", "notify.py")
 
 
 def allowed_tools(root: Path) -> list[str]:
@@ -497,15 +497,15 @@ def _file_moved(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
     return True, f"{src} -> {same[0].relative_to(rec.fixture_dir)}"
 
 
-def _lane_rows(text: str) -> list[tuple[str, str]] | None:
-    """Every Lanes row as (name, item) in order, or None when the table has no `name` column.
+def _task_rows(text: str) -> list[tuple[str, str]] | None:
+    """Every Tasks row as (name, item) in order, or None when the table has no `name` column.
 
-    `name` is the newest Lanes column. An older six-column tracker has none — the board falls back
+    `name` is the newest Tasks column. An older six-column tracker has none — the board falls back
     to guessing a name from the item, and `agents/chief-of-stuff.md` says such a tracker is not to
     be rewritten wholesale to add it. There is nothing to compare in that case, and saying so beats
     passing by default: a grader that cannot see its subject has not checked it.
     """
-    rows = _section(text, "## Lanes") or []
+    rows = _section(text, "## Tasks") or []
     cells = [[c.strip() for c in r.strip().strip("|").split("|")] for r in rows if r.strip().startswith("|")]
     table = [c for c in cells if not all(set(x) <= set("-: ") for x in c)]
     if not table or table[0][:2] != ["name", "item"]:
@@ -513,24 +513,24 @@ def _lane_rows(text: str) -> list[tuple[str, str]] | None:
     return [(r[0], r[1]) for r in table[1:] if len(r) > 1]
 
 
-def _lane_names_unchanged(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
-    """No lane was renamed. A fact carried out of the Resume block goes to the Log or to `item`.
+def _task_names_unchanged(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
+    """No task was renamed. A fact carried out of the Resume block goes to the Log or to `item`.
 
     Not a length rule. A long name can be a house style with readers, and a fixture does not get to
     rule on that; the failure this watches for is a measurement narrative appended to a NAME during
     a move about something else, where `item` is the documented home for history. `except` names the
-    lanes a case expects to be renamed, for a move that changes what a lane is about.
+    tasks a case expects to be renamed, for a move that changes what a task is about.
 
-    A lane is matched to its former self by its item as a PREFIX. Neither column is a stable key on
+    A task is matched to its former self by its item as a PREFIX. Neither column is a stable key on
     its own: the name is the attribute under test, and the item is documented to accrete history
-    (Lanes: "`item` keeps the wording, the history you append"). What holds is that an appended item
+    (Tasks: "`item` keeps the wording, the history you append"). What holds is that an appended item
     still begins with the item that was there.
     """
-    before = _lane_rows(_read(rec.before_dir, g["path"]) or "")
-    after = _lane_rows(_read(rec.fixture_dir, g["path"]) or "")
+    before = _task_rows(_read(rec.before_dir, g["path"]) or "")
+    after = _task_rows(_read(rec.fixture_dir, g["path"]) or "")
     if before is None or after is None:
         which = "before" if before is None else "after"
-        return False, f"{g['path']}: no `name` column in the Lanes table ({which})"
+        return False, f"{g['path']}: no `name` column in the Tasks table ({which})"
     allowed, renamed, gone = set(g.get("except", [])), [], []
     left = list(after)
     for was, item in before:
@@ -544,7 +544,7 @@ def _lane_names_unchanged(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]
             renamed.append(f"{was!r} -> {match[0]!r}")
     if renamed or gone:
         return False, f"{g['path']}: renamed {renamed}, lost {gone}"
-    return True, f"{g['path']}: {len(before)} lane name(s) unchanged"
+    return True, f"{g['path']}: {len(before)} task name(s) unchanged"
 
 
 _RENDERER_CACHE: list[Any] = []
@@ -627,7 +627,7 @@ FILE_GRADERS = {
     "file_matches": _file_matches,
     "no_new_files": _no_new_files,
     "lines_preserved": _lines_preserved,
-    "lane_names_unchanged": _lane_names_unchanged,
+    "task_names_unchanged": _task_names_unchanged,
     "checklist_ticks_only": _checklist_ticks_only,
     "resume_fields_bounded": _resume_fields_bounded,
     "resume_block_matches": _resume_block_matches,
@@ -686,14 +686,14 @@ def _last_published_html(rec: RunRecord) -> tuple[str | None, str]:
 
 
 def _board_published(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
-    """At least `min` publishes; the last html names every lane in `lanes`, the `deadline` instant, and matches `html_match`."""
+    """At least `min` publishes; the last html names every task in `tasks`, the `deadline` instant, and matches `html_match`."""
     want = g.get("min", 1)
     html_text, note = _last_published_html(rec)
     if len(rec.publishes) < want:
         return False, f"{len(rec.publishes)} publish(es); want >= {want}"
     if html_text is None:
         return False, note
-    problems = [f"lane not on board: {lane!r}" for lane in g.get("lanes", []) if _esc_html(lane) not in html_text]
+    problems = [f"task not on board: {task!r}" for task in g.get("tasks", []) if _esc_html(task) not in html_text]
     if "deadline" in g and g["deadline"] not in html_text:
         problems.append(f"deadline {g['deadline']} not on board")
     if "html_match" in g and not re.search(g["html_match"], html_text):
@@ -744,7 +744,7 @@ def _board_url_fixed(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
     if "expect" in g and url != g["expect"]:
         return False, f"published to {url}, want {g['expect']}"
     tracker = _read(rec.fixture_dir, g["tracker"]) or ""
-    head = tracker.split("## Lanes", 1)[0]
+    head = tracker.split("## Tasks", 1)[0]
     m = re.search(r"Board:\s*(\S+)", head)
     header = m.group(1).rstrip(".,;") if m else None
     if header != url:
@@ -757,7 +757,7 @@ ATTR = re.compile(r'data-([a-z-]+)="([^"]*)"')
 
 
 def _board_bars(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
-    """Bars cite their sources: each listed lane (its own bar, or a member folded into a summary row) has the given data-*-src (and label); every end source is a known kind."""
+    """Bars cite their sources: each listed task (its own bar, or a member folded into a summary row) has the given data-*-src (and label); every end source is a known kind."""
     html_text, note = _last_published_html(rec)
     if html_text is None:
         return False, note

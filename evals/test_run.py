@@ -163,7 +163,7 @@ class ResumeFieldsBoundedTest(unittest.TestCase):
 
     def _rec(self, line: str):
         d = Path(tempfile.mkdtemp())
-        (d / "t.md").write_text("# T\n\n## Resume\n\n" + line + "\n\n## Lanes\n")
+        (d / "t.md").write_text("# T\n\n## Resume\n\n" + line + "\n\n## Tasks\n")
         return run.RunRecord(stream=None, t_start=datetime.now(), t_end=datetime.now(),
                              tz="America/Chicago", fixture_dir=d)
 
@@ -201,7 +201,7 @@ class ResumeBlockMatchesTest(unittest.TestCase):
 
     def _rec(self, *lines: str):
         d = Path(tempfile.mkdtemp())
-        (d / "t.md").write_text("# T\n\n## Resume\n\n" + "\n".join(lines) + "\n\n## Lanes\n")
+        (d / "t.md").write_text("# T\n\n## Resume\n\n" + "\n".join(lines) + "\n\n## Tasks\n")
         return run.RunRecord(stream=None, t_start=datetime.now(), t_end=datetime.now(),
                              tz="America/Chicago", fixture_dir=d)
 
@@ -239,7 +239,7 @@ class ResumeBlockMatchesTest(unittest.TestCase):
         silence reads as good news.
         """
         d = Path(tempfile.mkdtemp())
-        (d / "t.md").write_text("# T\n\n## Lanes\n")
+        (d / "t.md").write_text("# T\n\n## Tasks\n")
         rec = run.RunRecord(stream=None, t_start=datetime.now(), t_end=datetime.now(),
                             tz="America/Chicago", fixture_dir=d)
         ok, why = run.grade(self._g(pattern="trace spans", match="absent"), rec)
@@ -414,7 +414,7 @@ class DurationStatedTest(unittest.TestCase):
 
 
 class FileGraderTest(unittest.TestCase):
-    TRACKER = "# Tracker\n\n## Lanes\n\n| item | owner | state |\n|---|---|---|\n| audit | coordinator | open |\n\n## Log\n\n- 09:00 opened\n- 09:05 audit proposed\n\n## Decisions\n"
+    TRACKER = "# Tracker\n\n## Tasks\n\n| item | owner | state |\n|---|---|---|\n| audit | coordinator | open |\n\n## Log\n\n- 09:00 opened\n- 09:05 audit proposed\n\n## Decisions\n"
 
     def setUp(self) -> None:
         self.before = Path(tempfile.mkdtemp())
@@ -534,22 +534,22 @@ class FileGraderTest(unittest.TestCase):
         self.assertFalse(self.grade({"type": "lines_preserved", "path": "daily/t.md", "section": "## Log"})[0])
 
 
-class LaneNamesUnchangedTest(unittest.TestCase):
+class TaskNamesUnchangedTest(unittest.TestCase):
     """A fact carried out of the Resume block goes to the Log or to `item`, never to `name`.
 
-    `name` is the newest Lanes column and the only thing the board draws on a bar and in the lane
-    table, so a name carrying a measurement narrative is prose on every view of that lane. `item` is
+    `name` is the newest Tasks column and the only thing the board draws on a bar and in the task
+    table, so a name carrying a measurement narrative is prose on every view of that task. `item` is
     where history belongs and is documented to accrete it, which is why this is not a length rule:
     a long name can be a house style with readers, and a fixture does not get to rule on that.
     Rewriting a name during a move about something else is the defect.
 
-    A lane is matched to its former self by its item as a PREFIX. Neither column is a stable key on
+    A task is matched to its former self by its item as a PREFIX. Neither column is a stable key on
     its own — the name is the attribute under test, and the item is documented to grow — but an
     appended item still begins with the item that was there.
     """
 
     TRACKER = (
-        "# Tracker\n\n## Lanes\n\n| name | item | owner | state |\n|---|---|---|---|\n"
+        "# Tracker\n\n## Tasks\n\n| name | item | owner | state |\n|---|---|---|---|\n"
         "| Load test | Load test the ingest path | unassigned | open |\n"
         "| Audit | Security audit of the upload endpoint | 4821-audit | running 09:30 |\n"
         "\n## Log\n\n- 09:00 opened\n"
@@ -564,7 +564,7 @@ class LaneNamesUnchangedTest(unittest.TestCase):
         self.rec = record(at(16, 23), at(16, 25))
         self.rec.fixture_dir = self.after
         self.rec.before_dir = self.before
-        self.g = {"type": "lane_names_unchanged", "path": "daily/t.md"}
+        self.g = {"type": "task_names_unchanged", "path": "daily/t.md"}
 
     def write(self, text: str) -> None:
         (self.after / "daily" / "t.md").write_text(text)
@@ -573,7 +573,7 @@ class LaneNamesUnchangedTest(unittest.TestCase):
         ok, detail = run.grade(self.g, self.rec)
         self.assertTrue(ok, detail)
 
-    def test_narrative_appended_to_a_name_fails_and_names_the_lane(self) -> None:
+    def test_narrative_appended_to_a_name_fails_and_names_the_task(self) -> None:
         self.write(self.TRACKER.replace(
             "| Load test |",
             "| Load test. Measured 09:12 and 09:35; the second reading was slower, one run each |"))
@@ -582,19 +582,19 @@ class LaneNamesUnchangedTest(unittest.TestCase):
         self.assertIn("Load test", detail)
 
     def test_history_appended_to_the_item_is_not_a_name_change(self) -> None:
-        """The Lanes rule: "`item` keeps the wording, the history you append, and the status note"."""
+        """The Tasks rule: "`item` keeps the wording, the history you append, and the status note"."""
         self.write(self.TRACKER.replace("| unassigned | open |", "| unassigned | done 09:00-16:24 |")
                    .replace("Load test the ingest path", "Load test the ingest path. 16:24: measured, no regression"))
         ok, detail = run.grade(self.g, self.rec)
         self.assertTrue(ok, detail)
 
-    def test_a_lane_named_in_except_may_be_renamed(self) -> None:
+    def test_a_task_named_in_except_may_be_renamed(self) -> None:
         self.write(self.TRACKER.replace("| Audit |", "| Upload audit |"))
         self.assertFalse(run.grade(self.g, self.rec)[0])
         ok, detail = run.grade({**self.g, "except": ["Audit"]}, self.rec)
         self.assertTrue(ok, detail)
 
-    def test_a_lost_lane_is_reported(self) -> None:
+    def test_a_lost_task_is_reported(self) -> None:
         self.write(self.TRACKER.replace("| Load test | Load test the ingest path | unassigned | open |\n", ""))
         ok, detail = run.grade(self.g, self.rec)
         self.assertFalse(ok)
@@ -604,7 +604,7 @@ class LaneNamesUnchangedTest(unittest.TestCase):
         """A six-column tracker predates the column. A grader that cannot see its subject has not
         checked it, so it says so rather than passing — which is how this grader came to be written
         against fixtures that had no `name` cell to protect."""
-        six = "# Tracker\n\n## Lanes\n\n| item | owner | state |\n|---|---|---|\n| audit | coordinator | open |\n"
+        six = "# Tracker\n\n## Tasks\n\n| item | owner | state |\n|---|---|---|\n| audit | coordinator | open |\n"
         (self.before / "daily" / "t.md").write_text(six)
         self.write(six)
         ok, detail = run.grade(self.g, self.rec)
@@ -802,7 +802,7 @@ class AllowedToolsTest(unittest.TestCase):
     def test_the_two_state_scripts_are_runnable_and_nothing_else_is(self) -> None:
         allowed = " ".join(run.ALLOWED)
         self.assertIn("probe_health.py", allowed)
-        self.assertIn("audit_lanes.py", allowed)
+        self.assertIn("audit_tasks.py", allowed)
         self.assertNotIn("Bash(git", allowed)
         self.assertNotIn("Bash(curl", allowed)
 
@@ -887,11 +887,11 @@ class RepoFixtureTest(unittest.TestCase):
         )
 
 
-    def test_a_case_can_seed_the_clone_with_the_files_its_lane_names(self) -> None:
-        """A lane naming a path the repo does not hold measures the fixture, not the rule.
+    def test_a_case_can_seed_the_clone_with_the_files_its_task_names(self) -> None:
+        """A task naming a path the repo does not hold measures the fixture, not the rule.
 
         Both dispatch cases went red on it: the coordinator wrote a real ask, found `src/a/` was not
-        there, and handed the lane back rather than inventing work — which is what finding 56 asked
+        there, and handed the task back rather than inventing work — which is what finding 56 asked
         it to do. The fixture was the defect.
         """
         import make_repo
@@ -1018,9 +1018,9 @@ class FileMatchesGlobTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             (root / "trees" / "wt-audit" / ".chief-of-stuff").mkdir(parents=True)
-            (root / "trees" / "wt-audit" / ".chief-of-stuff" / "dispatch.md").write_text("Lane: Security audit\n")
+            (root / "trees" / "wt-audit" / ".chief-of-stuff" / "dispatch.md").write_text("Task: Security audit\n")
             ok, detail = run._file_matches(
-                {"glob": "trees/*/.chief-of-stuff/dispatch.md", "pattern": "(?m)^Lane: Security audit$"},
+                {"glob": "trees/*/.chief-of-stuff/dispatch.md", "pattern": "(?m)^Task: Security audit$"},
                 self.record(root))
             self.assertTrue(ok, detail)
 
@@ -1037,7 +1037,7 @@ class FileMatchesGlobTest(unittest.TestCase):
             root = Path(d)
             for name in ("wt-a", "wt-b"):
                 (root / "trees" / name / ".chief-of-stuff").mkdir(parents=True)
-                (root / "trees" / name / ".chief-of-stuff" / "dispatch.md").write_text("Lane: fine\n")
+                (root / "trees" / name / ".chief-of-stuff" / "dispatch.md").write_text("Task: fine\n")
             (root / "trees" / "wt-b" / ".chief-of-stuff" / "dispatch.md").write_text("Robin already approved\n")
             ok, _ = run._file_matches(
                 {"glob": "trees/*/.chief-of-stuff/dispatch.md", "pattern": "approved", "match": "absent"},
@@ -1117,10 +1117,10 @@ class VerdictOnDiskTest(unittest.TestCase):
     def test_a_run_writes_what_it_decided(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "case" / "agent" / "1"
-            run.write_verdict(out, "lane-sized-on-write", "agent", "opus", 1,
+            run.write_verdict(out, "task-sized-on-write", "agent", "opus", 1,
                               [("g1", True, "matched"), ("g2", False, "no such line")], None, "12.3s")
             data = json.loads((out / "verdict.json").read_text())
-        self.assertEqual(data["case"], "lane-sized-on-write")
+        self.assertEqual(data["case"], "task-sized-on-write")
         self.assertEqual(data["arm"], "agent")
         self.assertEqual(data["run"], 1)
         self.assertFalse(data["passed"])
@@ -1147,7 +1147,7 @@ class RunIsASnapshotTest(unittest.TestCase):
         cmd = run.command(run.Case("c", Path("/c"), {}), "baseline", "sonnet", None, root=Path("/snap"))
         joined = " ".join(cmd)
         self.assertIn("/snap/scripts/render_board.py", joined)
-        self.assertIn("/snap/scripts/audit_lanes.py", joined)
+        self.assertIn("/snap/scripts/audit_tasks.py", joined)
         self.assertNotIn(str(run.PLUGIN_ROOT / "scripts"), joined)
 
     def test_the_plugin_dir_follows_it_too(self) -> None:

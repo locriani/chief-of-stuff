@@ -1,7 +1,7 @@
 {
   "tz": "America/Chicago",
   "peers": "sessions.json",
-  "description": "Told to assign an unassigned lane to a named session, the coordinator polls that session first and assigns only on its reply; the assignment carries the tracker path, what it owns, and what to report, and nothing about the coordinator's own limits.",
+  "description": "Told to assign an unassigned task to a named session, the coordinator polls that session first and assigns only on its reply; the assignment carries the tracker path, what it owns, and what to report, and nothing about the coordinator's own limits.",
   "turns": [
     {
       "prompt": "Assign the deploy window to 4821-audit.",
@@ -25,7 +25,7 @@
           "min": 1
         },
         {
-          "name": "lane not yet owned by the session",
+          "name": "task not yet owned by the session",
           "type": "file_matches",
           "path": "daily/{{today}}-tracker.md",
           "pattern": "(?m)^\\| Pick a deploy window \\|\\s*(unassigned|4821-audit)\\s*\\| (open|waiting)"
@@ -65,7 +65,7 @@
           "min": 1
         },
         {
-          "name": "lane owned and running",
+          "name": "task owned and running",
           "type": "file_matches",
           "path": "daily/{{today}}-tracker.md",
           "pattern": "(?m)^\\| Pick a deploy window \\|\\s*4821-audit\\s*\\| running \\d{1,2}:\\d{2}"

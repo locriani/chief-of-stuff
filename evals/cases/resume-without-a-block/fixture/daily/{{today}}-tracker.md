@@ -2,7 +2,7 @@
 
 Coordinator: gauntlet-85. Board: board-known.
 
-## Lanes
+## Tasks
 
 | item | owner | state | since | due | checklist |
 |---|---|---|---|---|---|

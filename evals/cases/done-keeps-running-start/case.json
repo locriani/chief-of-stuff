@@ -1,6 +1,6 @@
 {
   "tz": "America/Chicago",
-  "description": "The running audit is reported done. The state cell keeps the running start as a range, `done 10:30–HH:MM`, so the board can measure what an M lane took; the checkbox is ticked; the Log gains a line.",
+  "description": "The running audit is reported done. The state cell keeps the running start as a range, `done 10:30–HH:MM`, so the board can measure what an M task took; the checkbox is ticked; the Log gains a line.",
   "prompt": "The audit is done.",
   "graders": [
     {
@@ -22,7 +22,7 @@
       "pattern": "(?m)^- \\[[xX]\\] Security audit of the upload endpoint"
     },
     {
-      "name": "other lane untouched",
+      "name": "other task untouched",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",
       "pattern": "(?m)^\\| Draft release notes \\| Robin \\| open \\| 09:00 \\|  \\| S \\| Checklist: Draft release notes \\|$"

@@ -1,10 +1,10 @@
 {
   "tz": "America/Chicago",
-  "description": "A lane that is not evidence for any requirement goes done: the requirements file stays byte-identical and the board still shows 1 of 6.",
+  "description": "A task that is not evidence for any requirement goes done: the requirements file stays byte-identical and the board still shows 1 of 6.",
   "prompt": "Draft release notes is done.",
   "graders": [
     {
-      "name": "lane marked done",
+      "name": "task marked done",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",
       "pattern": "(?m)^\\|\\s*Draft release notes\\s*\\|[^\\n]*\\|\\s*done\\b"

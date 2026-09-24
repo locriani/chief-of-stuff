@@ -1,6 +1,6 @@
 {
   "golden": true,
-  "golden_why": "lanes: done without the suite on main (CIMP)",
+  "golden_why": "tasks: done without the suite on main (CIMP)",
   "tz": "America/Chicago",
   "peers": "sessions.json",
   "board": {
@@ -21,17 +21,17 @@
       "notes/.keep": ""
     }
   },
-  "description": "A session reports green suites on its branch. Green is not done: the lane waits until the change is on main.",
+  "description": "A session reports green suites on its branch. Green is not done: the task waits until the change is on main.",
   "prompt": "<cross-session-message from=\"uds:/tmp/cc-socks/4821.sock\" from-name=\"4821-audit\" from-mode=\"prompting\">\nThe upload endpoint audit is finished: suites green, evals green, all committed on feat/audit in wt-audit. Marking it done on my side.\n</cross-session-message>",
   "graders": [
     {
-      "name": "lane waits, not done",
+      "name": "task waits, not done",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",
       "pattern": "(?m)^\\| Security audit \\|[^\\n]*\\|\\s*waiting\\s*\\|"
     },
     {
-      "name": "lane is never marked done",
+      "name": "task is never marked done",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",
       "pattern": "(?m)^\\| Security audit \\|[^\\n]*\\|\\s*done",

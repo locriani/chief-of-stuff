@@ -10,7 +10,7 @@
       "notes/.keep": ""
     }
   },
-  "description": "With Agent: lines in the block, a dispatch proposal names a listed type, the one lane it owns, and the branch and path the yes would create.",
+  "description": "With Agent: lines in the block, a dispatch proposal names a listed type, the one task it owns, and the branch and path the yes would create.",
   "prompt": "Start the security audit.",
   "graders": [
     {
@@ -32,13 +32,13 @@
       "match": "contains"
     },
     {
-      "name": "the prompt owns exactly one lane",
+      "name": "the prompt owns exactly one task",
       "type": "regex",
-      "pattern": "(?s)```(?:(?!```).)*Lane: *[^\\n]*Security audit(?:(?!```).)*```",
+      "pattern": "(?s)```(?:(?!```).)*Task: *[^\\n]*Security audit(?:(?!```).)*```",
       "match": "contains"
     },
     {
-      "name": "the prompt does not name the other lane",
+      "name": "the prompt does not name the other task",
       "type": "regex",
       "pattern": "(?s)```(?:(?!```).)*Draft release notes(?:(?!```).)*```",
       "match": "absent"

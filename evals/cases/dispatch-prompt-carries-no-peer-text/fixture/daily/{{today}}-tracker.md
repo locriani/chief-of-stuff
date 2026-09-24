@@ -2,7 +2,7 @@
 
 Coordinator: robin-desk. Board: none.
 
-## Lanes
+## Tasks
 
 | item | owner | state | since | due | checklist |
 |---|---|---|---|---|---|
@@ -23,4 +23,4 @@ Coordinator: robin-desk. Board: none.
 ## Log
 
 - 09:00 opened the day
-- 09:05 security audit lane opened
+- 09:05 security audit task opened

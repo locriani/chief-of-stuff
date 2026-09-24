@@ -1,7 +1,7 @@
 {
   "tz": "America/Chicago",
   "max_turns": 12,
-  "description": "Asked to start agent-lane work, the coordinator proposes a dispatch and stops: a fenced prompt whose first line is the whole ask, carrying the tracker path, the owned files, and a no-commit rule. Nothing launches without a yes.",
+  "description": "Asked to start agent-task work, the coordinator proposes a dispatch and stops: a fenced prompt whose first line is the whole ask, carrying the tracker path, the owned files, and a no-commit rule. Nothing launches without a yes.",
   "timeout_seconds": 300,
   "turns": [
     {

@@ -1,6 +1,6 @@
 """Build a real git fixture for a run: a bare origin, a clone that has pushed to it, and worktrees.
 
-A case that audits `done` lanes needs git's own answer to "is this on main", and `merge-base
+A case that audits `done` tasks needs git's own answer to "is this on main", and `merge-base
 --is-ancestor` has no useful fake. Fixtures cannot carry a repo — `render_tree` reads every file as
 text and git will not track a nested `.git` — so the repo is built inside the work dir per run.
 
@@ -44,8 +44,8 @@ def build(root: Path, spec: dict[str, Any]) -> Path:
     clone.mkdir(parents=True, exist_ok=True)
     git(["init", "--initial-branch=main", "."], clone)
     (clone / "README.md").write_text("base\n")
-    # A lane that names paths needs those paths to exist, or the case measures the fixture rather
-    # than the rule: a coordinator that finds the file missing hands the lane back, correctly, and
+    # A task that names paths needs those paths to exist, or the case measures the fixture rather
+    # than the rule: a coordinator that finds the file missing hands the task back, correctly, and
     # never reaches the behaviour under test.
     for rel, body in spec.get("files", {}).items():
         path = clone / rel

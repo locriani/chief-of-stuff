@@ -140,7 +140,7 @@ class RunnerPeerWiringTest(unittest.TestCase):
 
 TRACKER_BEFORE = """# Tracker
 
-## Lanes
+## Tasks
 
 | item | owner | state | since | due | checklist |
 |---|---|---|---|---|---|

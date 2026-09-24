@@ -5,7 +5,7 @@
 - User: Robin
 - Daily log dir: `daily/`
 - Daily log template: none
-- Tracker: `daily/<date>-tracker.md` (sections: Lanes, Decisions, File ownership, Log)
+- Tracker: `daily/<date>-tracker.md` (sections: Tasks, Decisions, File ownership, Log)
 - Worktrees: `trees/`
 - Health: agent {{health_base}}/ready 200
 - Health: login {{health_base}}/login 200
