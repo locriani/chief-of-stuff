@@ -1503,3 +1503,23 @@ Agent arm:
 | sonnet | GREEN | `check-hands-off`, `poll-before-assign`, `spawn-needs-a-yes`, `open-the-day`, both triage cases |
 | opus | GREEN | `check-hands-off`, `dispatch-needs-yes`, `poll-before-assign` (after the guardrail fix), `open-the-day`, both triage cases |
 | RED on this branch | pre-existing | sonnet `dispatch-needs-yes` (no fenced prompt), sonnet `resume-reads-the-block` (no board publish), opus `spawn-needs-a-yes` (T2 no spawn); base 0.32.0 fails all three the same way (results 20260924-015602 and -015605) |
+
+## C39 — a GitLab Backlog keeps the issue rule on (0.34.0)
+
+Zach, 2026-09-23 22:40: "remove the github issue remote and make everything use gitlab now that we have that going." gauntlet-22 reported at 22:46 that the workspace's GitLab `Backlog:` line switched the issue rule off: `Config.backlog_repo` was None for anything but GitHub, so the board dropped its issue column, the audit skipped its issue check, and dispatch stopped refusing an unfiled task, all without a word.
+
+- **Config:** `backlog_repo` becomes `backlog`, the parsed `Backlog | GitHubBacklog`.
+- **References:** `IssueRef` gains `host`. A bare `#N` resolves against the Backlog, `owner/repo#N` stays GitHub (the old done rows are written that way), and GitLab `/-/issues/N` and `/-/work_items/N` URLs parse.
+- **Audit:** `issue_faults` reads each `(host, repo)` through its own backend.
+- **Token:** `token()` falls back to `glab config get token --host <host>` after the environment and the Keychain. No second copy of the token is made.
+- **Filing:** fault lines and the dispatch refusal name the backend's writer (`file_with`). On GitLab, the agent file files with `backlog.py --create`. On GitHub it keeps `gh-issue new` and relationships.
+
+Red first: 5 failures and 9 errors across `test_backlog`, `test_audit_tasks` and `test_dispatch_prompt`, then 1 failure for the agent file's "GitHub backlog" wording.
+
+Live, from the branch, against the real workspace:
+
+- `audit_tasks.py --date 2026-09-24` read GitLab and reported `issues=16`: open tasks whose GitLab issues are closed.
+- `render_board.py`, run on a scratch copy, drew the issue column with `labs.gauntletai.com/zachgardner/openemr/-/issues/N` links.
+- `backlog.py` counted 162 open and 40 closed on glab's token alone.
+
+Agent arm: `triage-acts-on-the-reply`, `triage-waits-for-the-user` and `open-the-day` were GREEN on sonnet (20260924-131112) and on opus (20260924-131258).
