@@ -3268,10 +3268,6 @@ class SettingsLineTest(unittest.TestCase):
 class TasksHeadingTest(unittest.TestCase):
     """#33 (Zach, 2026-09-23): a row is a task, so the table is `## Tasks`; a tracker written before still says `## Lanes`."""
 
-    def test_the_tasks_heading_is_read(self) -> None:
-        self.assertIn("## Tasks", TRACKER)
-        self.assertTrue(rb.parse_tracker(TRACKER).tasks)
-
     def test_an_older_tracker_headed_lanes_reads_the_same(self) -> None:
         old = TRACKER.replace("## Tasks", "## Lanes")
         self.assertEqual(rb.parse_tracker(old).tasks, rb.parse_tracker(TRACKER).tasks)

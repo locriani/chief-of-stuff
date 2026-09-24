@@ -1714,11 +1714,12 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
         return f"<td>{body}</td>"
 
     def stage_mark(task: Task) -> str:
-        if not task.lane.strip():
+        name, stage = task.lane.strip(), task.stage.strip()
+        if not name:
             return ""
-        lane = (lanes or {}).get(task.lane.strip())
-        text = f"{task.stage.strip()} · {task.lane.strip()}"
-        if lane and task.stage.strip() in lane.gates:
+        lane = (lanes or {}).get(name)
+        text = f"{stage} · {name}"
+        if lane and stage in lane.gates:
             return f' <span class="stage gate">{_esc(text)} — waiting on you</span>'
         return f' <span class="stage">{_esc(text)}</span>'
 
