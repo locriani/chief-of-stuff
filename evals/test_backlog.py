@@ -628,6 +628,14 @@ class GitLabIssueRefTest(unittest.TestCase):
             with self.subTest(cell=cell):
                 self.assertEqual(bl.issue_ref(cell, GL), bl.IssueRef(*want))
 
+    def test_a_gitlab_url_on_another_host_is_no_reference(self):
+        # R1 on PR 14: a cell naming any host sent the Backlog's token there. Only the Backlog's own host is read.
+        for cell in ("https://evil.example.com/g/p/-/issues/1", "https://gl.example.evil.com/g/p/-/issues/1"):
+            with self.subTest(cell=cell):
+                self.assertIsNone(bl.issue_ref(cell, GL))
+        self.assertIsNone(bl.issue_ref("https://gl.example/g/p/-/issues/1", GH))
+        self.assertIsNone(bl.issue_ref("https://gl.example/g/p/-/issues/1", None))
+
     def test_owner_repo_is_still_github(self):
         ref = bl.issue_ref("locriani/GauntletIssues#33", GL)
         self.assertEqual(ref, bl.IssueRef(REPO, 33))

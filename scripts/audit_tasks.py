@@ -20,7 +20,7 @@ import argparse
 import re
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -161,8 +161,9 @@ def issue_faults(tasks, home: Backlog | GitHubBacklog, gh=None) -> list[IssueFau
             refs[task] = ref
     states: dict[tuple[str, str], dict] = {}
     for want in sorted({(r.host, r.repo) for r in refs.values()}):
+        # issue_ref admits a GitLab URL only on the Backlog's own host, so its token never leaves that host.
         cfg = (home if want == home_of(home) else GitHubBacklog(repo=want[1]) if want[0] == GITHUB
-               else Backlog(host=f"https://{want[0]}", project=want[1], env=getattr(home, "env", Backlog.env)))
+               else replace(home, project=want[1]))
         try:
             states[want] = issue_states(cfg, gh=gh)
         except BacklogError as e:

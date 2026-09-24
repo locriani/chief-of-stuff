@@ -387,8 +387,8 @@ _REF_LINK = re.compile(r"^\[[^\]]*\]\((https://[^)\s]+)\)$")
 
 
 def issue_ref(cell: str, home: Backlog | GitHubBacklog | None) -> IssueRef | None:
-    """`#N` (in the Backlog), `owner/repo#N` (GitHub), a GitHub or GitLab issue URL, or a markdown link to
-    one. Anything else is None, and a bare `#N` with no Backlog to resolve it against is None too."""
+    """`#N` (in the Backlog), `owner/repo#N` (GitHub), a GitHub issue URL, a GitLab issue URL on the
+    Backlog's own host, or a markdown link to one. Anything else is None, and a bare `#N` with no Backlog to resolve it against is None too."""
     text = cell.strip()
     link = _REF_LINK.match(text)
     if link:
@@ -398,7 +398,10 @@ def issue_ref(cell: str, home: Backlog | GitHubBacklog | None) -> IssueRef | Non
         return IssueRef(m.group(1), int(m.group(2)))
     m = _REF_GITLAB.match(text)
     if m:
-        return IssueRef(m.group(2), int(m.group(3)), m.group(1))
+        # Only the Backlog's own host: a URL is read with the Backlog's token, and a cell naming any other
+        # host would send it there (R1 on PR 14).
+        own = isinstance(home, Backlog) and m.group(1) == home_of(home)[0]
+        return IssueRef(m.group(2), int(m.group(3)), m.group(1)) if own else None
     m = _REF_SHORT.match(text)
     if not m or not (m.group(1) or home):
         return None
