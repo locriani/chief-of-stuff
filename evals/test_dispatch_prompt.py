@@ -586,6 +586,12 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         self.assertIn("`review PR <url>`", self.content)
         self.assertIn("A gate yes covers every stage up to the next gate", self.content)
 
+    def test_the_reviewer_hand_off_names_its_mailbox(self):
+        # autonomous-review-pipeline-design, 22:45: without --mailbox-dir the reviewer's report landed in the reviewed repo.
+        pipeline = self.content.split("## Pipeline", 1)[1].split("\n## ", 1)[0]
+        self.assertIn("`Report by: python3 ${CLAUDE_PLUGIN_ROOT}/scripts/inbox.py --mailbox-dir <workspace root>/.chief-of-stuff/mailbox send --to coordinator --from reviewer --type review --task \"<task>\"`", pipeline)
+        self.assertNotIn("`inbox.py send --to reviewer", pipeline)
+
     def test_triage_is_the_users(self):
         self.assertIn("## Triage", self.content)
         self.assertIn("every disposition in one reply", self.content)
