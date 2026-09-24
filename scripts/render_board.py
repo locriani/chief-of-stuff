@@ -38,6 +38,7 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from backlog import BacklogError, GitHubBacklog, issue_ref, parse_backlog  # noqa: E402
+from settings import SettingsError, load as load_settings  # noqa: E402
 
 HHMM = re.compile(r"^(\d{1,2}):(\d{2})$")
 # `done 21:16–22:05`: the running start kept on close. An en dash or a hyphen, because two hands write it.
@@ -50,8 +51,11 @@ TASK_COLS_NAMED = ("name", "item", "owner", "state", "since", "due", "size", "ch
 # Zach, 2026-09-22 22:20: each task "is actually backed by an entry in github". The issue sits inside the
 # span `_anchor` fixes, between `state` and `checklist`, so a stray pipe still re-reads the same way.
 TASK_COLS_ISSUED = ("name", "item", "owner", "state", "since", "due", "size", "issue", "checklist")
+# #33 (Zach, 2026-09-23): "A lane: the sequence that a task has to move through". `lane` names one from the
+# settings file and `stage` is where the task is in it; both sit inside the `_anchor` span like `issue`.
+TASK_COLS_LANED = ("name", "item", "owner", "state", "since", "due", "size", "lane", "stage", "issue", "checklist")
 # Widest first: a header is matched whole, and the live tracker carries every width while it is rewritten.
-TASK_HEADERS = (TASK_COLS_ISSUED, TASK_COLS_NAMED, TASK_COLS_SIZED, TASK_COLS)
+TASK_HEADERS = (TASK_COLS_LANED, TASK_COLS_ISSUED, TASK_COLS_NAMED, TASK_COLS_SIZED, TASK_COLS)
 DATE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{1,2}):(\d{2}))?$")
 BULLET = re.compile(r"^(\s*)-\s*([^:]+?):\s*(.*?)\s*$")
 CAL_LIST = re.compile(r"^\s*-\s*(\d{1,2}:\d{2})\s*[–—-]\s*(\d{1,2}:\d{2})\s*(?:[A-Z]{2,5}\s+)?(.+?)\s*$")
@@ -144,6 +148,8 @@ class Task:
     size: str = ""
     name: str = ""
     issue: str = ""
+    lane: str = ""
+    stage: str = ""
 
     @property
     def needs_issue(self) -> bool:
@@ -1607,7 +1613,7 @@ def requirements_section(d: Deadline, text: str | None) -> str:
     return "\n".join(out)
 
 
-def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, requirements: dict[str, str | None] | None = None) -> str:
+def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, requirements: dict[str, str | None] | None = None, lanes: dict | None = None) -> str:
     sha = hashlib.sha256(tracker_text.encode()).hexdigest()
     tracker = parse_tracker(tracker_text)
     today, zone = now.date(), cfg.zone
@@ -1707,13 +1713,22 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, require
             body = ""
         return f"<td>{body}</td>"
 
+    def stage_mark(task: Task) -> str:
+        if not task.lane.strip():
+            return ""
+        lane = (lanes or {}).get(task.lane.strip())
+        text = f"{task.stage.strip()} · {task.lane.strip()}"
+        if lane and task.stage.strip() in lane.gates:
+            return f' <span class="stage gate">{_esc(text)} — waiting on you</span>'
+        return f' <span class="stage">{_esc(text)}</span>'
+
     def task_rows(group: list[Task]) -> str:
         rows = []
         for task in group:
             warn = f' <span class="warn">{_esc(task.warning)}</span>' if task.warning else ""
             size = f' data-size="{_esc(task.size)}"' if task.size.strip() else ""
             keeps = " ".join(task_filters(task))
-            rows.append(f'<tr data-state="{_esc(task.kind)}" data-in="{keeps}"{size}><td>{item_cell(task.item, task.label)}{warn}</td><td>{_esc(task.owner)}</td><td>{_esc(task.state)}</td><td>{_esc(task.since)}</td><td>{_esc(task.due)}</td><td>{_esc(task.size)}</td>{issue_cell(task)}</tr>')
+            rows.append(f'<tr data-state="{_esc(task.kind)}" data-in="{keeps}"{size}><td>{item_cell(task.item, task.label)}{warn}</td><td>{_esc(task.owner)}</td><td>{_esc(task.state)}{stage_mark(task)}</td><td>{_esc(task.since)}</td><td>{_esc(task.due)}</td><td>{_esc(task.size)}</td>{issue_cell(task)}</tr>')
         return "\n".join(rows) or f'<tr data-in="all"><td colspan="{span}" class="muted">none</td></tr>'
 
     running = [l for l in active if l.kind == "running"]
@@ -1873,7 +1888,7 @@ tr.group th{{background:color-mix(in srgb,var(--brass) 18%,transparent);color:va
 .fill{{display:block;width:100%}} .fill.due{{background:var(--now)}} .fill.derived{{background:var(--est)}} .fill.over{{background:var(--dl)}}
 .key.fill{{display:inline-block;width:18px;height:10px;border-radius:2px}} .key.fill.free{{background:var(--line)}}
 .scroll{{overflow-x:auto;max-width:100%}}
-.muted{{color:var(--muted)}} .warn{{color:var(--dl);font-size:12px}}
+.muted{{color:var(--muted)}} .warn{{color:var(--dl);font-size:12px}} .stage{{color:var(--muted);font-size:12px}} .stage.gate{{color:var(--dl)}}
 .strip{{position:relative;margin:8px 0 4px;--name-w:30%}} .axis{{position:relative;height:18px;margin-left:var(--name-w);font-size:11px;color:var(--muted)}} .tick{{position:absolute;transform:translateX(-50%);white-space:nowrap}}
 .rows{{position:relative}} .row{{display:flex;align-items:center;height:26px}} .name{{width:var(--name-w);flex:none;padding-right:8px;box-sizing:border-box;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}} .track{{position:relative;flex:1;height:18px;border-left:1px solid var(--line)}}
 .summary-row .name{{color:var(--muted)}} details.folded>summary{{list-style:none;cursor:pointer}} details.folded>summary::-webkit-details-marker{{display:none}} details.folded>summary .name::before{{content:"\u25b8 "}} details.folded[open]>summary .name::before{{content:"\u25be "}} .row.sub{{height:22px}} .row.sub .name{{padding-left:18px;color:var(--muted);font-size:12px}} .row.sub .bar{{height:14px;line-height:14px;font-size:10px;top:2px}}
@@ -2033,7 +2048,11 @@ def main(argv: list[str] | None = None) -> Path:
     tracker_text = tracker.read_text()
     out = tracker.with_name(f"{day}-board.html")
     req_texts = {d.name: ((root / d.requirements).read_text() if (root / d.requirements).is_file() else None) for d in cfg.deadlines if d.requirements}
-    page = render(tracker_text, log_text, cfg, now, requirements=req_texts)
+    try:
+        lanes = load_settings(root, cfg.settings_path).lanes
+    except SettingsError as e:
+        sys.exit(f"render_board: {e}")
+    page = render(tracker_text, log_text, cfg, now, requirements=req_texts, lanes=lanes)
     out.write_text(page)
     parsed = parse_tracker(tracker_text)
     hist = history(list(parsed.tasks), cfg, now)

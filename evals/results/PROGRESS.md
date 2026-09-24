@@ -1415,3 +1415,17 @@ Zach, 2026-09-23 20:3x, naming #33's terms: "A lane: the sequence that a task ha
 - **Words:** the agent file, the dispatch text (`Task:` line, "your task"), board and audit output. `named lanes only` deadline lines are now `named tasks only`. Left as written: PROGRESS and `docs/design-inputs.md` (history; case ids updated), and Zach's own quoted words.
 
 Red first: `TasksHeadingTest.test_an_older_tracker_headed_lanes_reads_the_same`, `TaskKeyTest.test_a_message_stored_with_lane_loads_as_its_task`, `TaskKeyTest.test_review_is_a_message_type` — 3 failures. Today's live tracker (`## Lanes`, 43 rows) renders and audits identically under 0.27.0 and 0.28.0 (`lanes=43` / `tasks=43`, same tracker sha, reopen 0), and so does a `## Tasks` copy. Full suite on the branch: 968 of 968.
+
+## C34 — lanes are stage sequences (0.29.0; #33 stage 2)
+
+Zach, 2026-09-23: "A lane: the sequence that a task has to move through" — named lanes, "column per task", and the current stage its own column "for now … this is all eventually moving to require an issue tracker".
+
+- **Settings:** `[lanes]` in the `Settings:` toml, `name = { stages = [...], gates = [...] }`. Stages are a non-empty list of unique names; gates are stages of the lane. No table is no lanes.
+- **Tracker:** `lane` and `stage` after `size`, an eleven-column header; every narrower width still parses.
+- **Board:** a task with a lane shows `<stage> · <lane>` under its state; at a gate, "— waiting on you".
+- **Audit:** `lane: <task> — …` for a lane the toml does not name, a stage not in its lane, a lane with no stage; ` lanes=N` in the summary when any task names a lane; counted in the exit.
+- **Agent file:** the Tasks header and one paragraph on `lane` and `stage`.
+
+- **Board never opened:** a republish updates the board in place; the agent file forbids the tool's `open` action on it. Zach, 21:34: "it keeps relaunching the artifact on me. UPDATE the artifact. I know how to open it."
+
+Red first: `LanesTest` 5 failures, 3 errors; `LaneColumnsTest` + `LaneAuditTest` 2 failures, 4 errors.; `test_a_republish_never_opens_the_board` 1 failure.

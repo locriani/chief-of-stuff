@@ -5,6 +5,8 @@ Repos here are real: a bare origin, a clone that has fetched it, and worktrees o
 script is that its answer is git's answer.
 """
 
+import contextlib
+import io
 import json
 import subprocess
 import sys
@@ -1076,3 +1078,50 @@ class IssueAuditTest(unittest.TestCase):
         gh = FakeGh(LIVE)
         self.assertEqual(al.main(["--root", str(self.root), "--date", "2026-09-17", "--no-issues"], gh=gh), 0)
         self.assertEqual(gh.calls, [])
+
+
+LANE_CLAUDE = CLAUDE + "- Settings: `cos.toml`\n"
+LANE_TOML = '[lanes]\nbuild = { stages = ["implement", "pr", "review", "triage", "merge"], gates = ["triage", "merge"] }\n'
+LANE_TRACKER = TRACKER.replace(
+    "| item | owner | state | since | due | checklist |\n|---|---|---|---|---|---|\n{rows}",
+    "| name | item | owner | state | since | due | size | lane | stage | issue | checklist |\n|---|---|---|---|---|---|---|---|---|---|---|\n"
+    "| Good | Good one | a | running 10:00 | 10:00 | | M | build | review | | c |\n"
+    "| Unnamed lane | x | a | open | 10:00 | | M | designed | design | | c |\n"
+    "| Wrong stage | x | a | open | 10:00 | | M | build | design | | c |\n"
+    "| Blank stage | x | a | open | 10:00 | | M | build | | | c |\n"
+    "| No lane | a console action | a | open | 10:00 | | S | | | | c |").format(rows="", ownership="", sessions="")
+
+
+class LaneAuditTest(unittest.TestCase):
+    """#33: a task's `lane` is one the toml names, and its `stage` is a stage of that lane."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        (self.root / "daily").mkdir()
+        (self.root / "CLAUDE.md").write_text(LANE_CLAUDE)
+        (self.root / "cos.toml").write_text(LANE_TOML)
+        (self.root / "daily" / "2026-09-17-tracker.md").write_text(LANE_TRACKER)
+
+    def test_each_finding(self):
+        report = al.audit(self.root, "2026-09-17")
+        got = [str(f) for f in report.lanes]
+        self.assertEqual(got, [
+            "lane: Unnamed lane — lane designed is not in cos.toml",
+            "lane: Wrong stage — stage design is not a stage of build",
+            "lane: Blank stage — lane build but no stage",
+        ])
+        for line in got:
+            self.assertIn(line, report.lines)
+        self.assertIn(" lanes=3", report.lines[-1])
+
+    def test_the_exit_counts_them(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(al.main(["--root", str(self.root), "--date", "2026-09-17"]), 3)
+
+    def test_no_lane_column_says_nothing(self):
+        (self.root / "daily" / "2026-09-17-tracker.md").write_text(TRACKER.format(rows="| x | a | open | 10:00 | | c |", ownership="", sessions=""))
+        report = al.audit(self.root, "2026-09-17")
+        self.assertEqual(report.lanes, [])
+        self.assertNotIn("lanes=", report.lines[-1])

@@ -576,6 +576,10 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         self.assertIn("Dual-transport registration", self.content)
         self.assertIn("python3 ${CLAUDE_PLUGIN_ROOT}/scripts/inbox.py list --recipient coordinator --unread", self.content)
 
+    def test_a_republish_never_opens_the_board(self):
+        # Zach, 2026-09-23 21:34: "it keeps relaunching the artifact on me. UPDATE the artifact. I know how to open it."
+        self.assertIn("Never call the tool's `open` action on the board", self.content)
+
 
 # Zach, 2026-09-22 22:20: each task "is actually backed by an entry in github"; a task with none is refused.
 ISSUE_CLAUDE = CLAUDE + "- Backlog: GitHub issues; repo https://github.com/o/backlog (private)\n"

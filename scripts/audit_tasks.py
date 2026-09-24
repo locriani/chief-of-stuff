@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from render_board import BULLET, HHMM, RAN, ConfigError, _cells, _is_separator, _section, _unmark, _unquote, clip_name, parse_coordinator, parse_tracker  # noqa: E402
 from dispatch_prompt import PROMPT_DIR, STOP_FILE  # noqa: E402
 from backlog import CLOSED, BacklogError, GitHubBacklog, issue_ref, issue_states  # noqa: E402
+from settings import SettingsError, load as load_settings  # noqa: E402
 
 # The branch is written in the parenthetical right after the tree name — `worktree wt-x (feat/y)` —
 # which is the only place it survives when the tree itself is gone. Finding 46 turns on that.
@@ -175,6 +176,32 @@ def issue_faults(tasks, repo: str, gh=None) -> list[IssueFault]:
     return faults
 
 
+@dataclass(frozen=True)
+class LaneFault:
+    """A task whose lane the settings file does not name, or whose stage is not one of its lane's (#33)."""
+
+    task: str
+    why: str
+
+    def __str__(self) -> str:
+        return f"lane: {self.task} — {self.why}"
+
+
+def lane_faults(tasks, lanes: dict, settings_path: str | None) -> list[LaneFault]:
+    faults: list[LaneFault] = []
+    for task in tasks:
+        if not task.lane.strip():
+            continue
+        name, stage, lane = clip_name(task.label), task.stage.strip(), lanes.get(task.lane.strip())
+        if lane is None:
+            faults.append(LaneFault(name, f"lane {task.lane.strip()} is not in {settings_path or 'the settings file'}"))
+        elif not stage:
+            faults.append(LaneFault(name, f"lane {task.lane.strip()} but no stage"))
+        elif stage not in lane.stages:
+            faults.append(LaneFault(name, f"stage {stage} is not a stage of {task.lane.strip()}"))
+    return faults
+
+
 @dataclass
 class Report:
     lines: list[str] = field(default_factory=list)
@@ -183,6 +210,7 @@ class Report:
     stopped: list[Stop] = field(default_factory=list)
     queue: list[QueueFault] = field(default_factory=list)
     issues: list[IssueFault] = field(default_factory=list)
+    lanes: list[LaneFault] = field(default_factory=list)
 
 
 def worktrees_dir(claude_md: str) -> str:
@@ -668,11 +696,14 @@ def audit(root: Path, day: str, gh=None, check_issues: bool = True) -> Report:
             issues = f" issues={len(report.issues)}"
         else:
             issues = " issues=off"
+    report.lanes.extend(lane_faults(tasks, load_settings(root, cfg.settings_path).lanes, cfg.settings_path))
+    report.lines.extend(str(f) for f in report.lanes)
+    laned = f" lanes={len(report.lanes)}" if any(t.lane.strip() for t in tasks) else ""
     facts = len({(r.worktree, r.why) for r in report.reopen})
     reopen = f"{facts} tree{'' if facts == 1 else 's'}/{len(report.reopen)} task{'' if len(report.reopen) == 1 else 's'}" if report.reopen else "0"
     report.lines.append(
         f"tasks={len(tasks)} trees={len(seen)} reopen={reopen} orphaned={len(report.orphans)} "
-        f"stopped={len(report.stopped)}" + (f" queued={queued}" if queue_lines or faults or queued else "") + issues)
+        f"stopped={len(report.stopped)}" + (f" queued={queued}" if queue_lines or faults or queued else "") + issues + laned)
     return report
 
 
@@ -696,10 +727,14 @@ def main(argv: list[str] | None = None, gh=None) -> int:
     if not tracker.is_file():
         print(f"audit_tasks: tracker not found at {tracker}", file=sys.stderr)
         return 2
-    report = audit(root, day, gh=gh, check_issues=not args.no_issues)
+    try:
+        report = audit(root, day, gh=gh, check_issues=not args.no_issues)
+    except SettingsError as e:
+        print(f"audit_tasks: {e}", file=sys.stderr)
+        return 2
     for line in report.lines:
         print(line)
-    return len(report.reopen) + len(report.stopped) + len(report.queue) + len(report.issues)
+    return len(report.reopen) + len(report.stopped) + len(report.queue) + len(report.issues) + len(report.lanes)
 
 
 if __name__ == "__main__":

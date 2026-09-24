@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import render_board as rb  # noqa: E402
+import settings as st  # noqa: E402
 
 CT = ZoneInfo("America/Chicago")
 NOW = datetime(2026, 9, 16, 14, 30, tzinfo=CT)
@@ -3274,3 +3275,45 @@ class TasksHeadingTest(unittest.TestCase):
     def test_an_older_tracker_headed_lanes_reads_the_same(self) -> None:
         old = TRACKER.replace("## Tasks", "## Lanes")
         self.assertEqual(rb.parse_tracker(old).tasks, rb.parse_tracker(TRACKER).tasks)
+
+
+TRACKER_LANED = """# Tracker 2026-09-16
+
+Coordinator: coordinator. Board: board-7.
+
+## Tasks
+
+| name | item | owner | state | since | due | size | lane | stage | issue | checklist |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Cut the release | Cut the release branch | impl-2 | running 10:30 | 10:30 | 23:00 | M | build | review | #9 | Checklist: cut |
+| Write README | Write eval README | Robin | open | 09:00 | 17:00 | S | build | triage |  | Checklist: readme |
+| Console | Rotate the key in the console | Robin | open | 09:00 | 17:00 | S |  |  |  | Checklist: key |
+
+## Sessions
+
+## Log
+
+- 09:00 opened the day
+"""
+
+
+class LaneColumnsTest(unittest.TestCase):
+    """#33: `lane` names a lane from the toml and `stage` is where the task is in it; a gate waits on the user."""
+
+    LANES = {"build": st.Lane(("implement", "pr", "review", "triage", "merge"), ("triage", "merge"))}
+
+    def test_eleven_columns_parse(self) -> None:
+        tasks = rb.parse_tracker(TRACKER_LANED).tasks
+        self.assertEqual([(t.lane, t.stage) for t in tasks[:3]], [("build", "review"), ("build", "triage"), ("", "")])
+        self.assertEqual((tasks[0].issue, tasks[0].checklist, tasks[0].warning), ("#9", "Checklist: cut", ""))
+        self.assertTrue(all(not t.warning for t in tasks), [t.warning for t in tasks])
+
+    def test_the_stage_is_on_the_task(self) -> None:
+        html = rb.render(TRACKER_LANED, LOG, rb.parse_coordinator(CLAUDE_MD, today=NOW.date()), NOW, lanes=self.LANES)
+        self.assertIn('<span class="stage">review · build</span>', html)
+        self.assertIn('<span class="stage gate">triage · build — waiting on you</span>', html)
+
+    def test_no_lanes_no_gate(self) -> None:
+        html = rb.render(TRACKER_LANED, LOG, rb.parse_coordinator(CLAUDE_MD, today=NOW.date()), NOW)
+        self.assertIn('<span class="stage">triage · build</span>', html)
+        self.assertNotIn("waiting on you", html)
