@@ -57,6 +57,19 @@ class CoordinatorLaunchTest(unittest.TestCase):
         self.assertIn("session-scoped watcher", codex[-1])
         self.assertNotIn("${CLAUDE_PLUGIN_ROOT}", codex[-1])
 
+    def test_coordinator_prompts_use_host_mailbox_checks(self):
+        release = start.install(ROOT, self.install_dir)
+        expected = {"claude": "[Mailbox check] chief-of-stuff",
+                    "agy": "Antigravity `Schedule` at `*/5 * * * *`",
+                    "cursor": "Cursor in-session `/loop 5m`",
+                    "codex": "Codex CLI has no in-session schedule"}
+        for runtime, marker in expected.items():
+            with self.subTest(runtime=runtime):
+                rendered = start.prompt(runtime, release, self.root)
+                self.assertIn(marker, rendered)
+                self.assertIn("list --recipient coordinator --unread", rendered)
+        self.assertEqual(start.WATCH_INTERVAL, 5 * 60)
+
     def test_required_calendar_server_must_be_visible(self):
         (self.root / "CLAUDE.md").write_text(CLAUDE +
             "\n- Calendar tool: `mcp__calendar__list_events`\n- Calendars:\n  - Work: work-id\n")
@@ -140,12 +153,15 @@ class WorkerRuntimeTest(unittest.TestCase):
             self.assertIn("--login-shell", text)
 
     def test_assignment_names_real_host_tools_and_mailbox(self):
-        for runtime in ("codex", "cursor"):
+        for runtime in ("claude", "agy", "codex", "cursor"):
             body = dispatch.compose(self.root, "2026-09-18", "Security audit",
                                     worktree=Path("/tmp/wt"), name="impl01", runtime=runtime)
-            self.assertIn("--from \"impl01\" --type register", body)
-            self.assertNotIn("List your sessions", body)
-            self.assertIn("/plan", body)
+            self.assertIn('wait --recipient "impl01" --timeout 300', body)
+            self.assertIn("do not create polling scripts", body)
+            if runtime in ("codex", "cursor"):
+                self.assertIn("--from \"impl01\" --type register", body)
+                self.assertNotIn("List your sessions", body)
+                self.assertIn("/plan", body)
             if runtime == "codex":
                 self.assertIn("resume-codex", body)
                 self.assertIn("--session-id <session-id>", body)

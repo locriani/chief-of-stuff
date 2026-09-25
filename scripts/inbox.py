@@ -24,11 +24,13 @@ import argparse
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
+import math
 import os
 from pathlib import Path
 import re
 import subprocess
 import sys
+import time
 from typing import Any, Sequence
 import uuid
 
@@ -869,6 +871,27 @@ def drain_inbox(
 drain = drain_inbox
 
 
+def wait_for_messages(
+    recipient: str,
+    *,
+    timeout: float = 300,
+    interval: float = 2,
+    mailbox_dir: Path | str | None = None,
+) -> list[Message]:
+    """Wait for unread messages, without acknowledging them or running a daemon."""
+    if not math.isfinite(timeout) or not math.isfinite(interval) or timeout < 0 or interval <= 0:
+        raise InvalidMessageError("timeout must be finite and nonnegative; interval must be finite and positive")
+    deadline = time.monotonic() + timeout
+    while True:
+        messages = list_messages(recipient=recipient, unread_only=True, mailbox_dir=mailbox_dir)
+        if messages:
+            return messages
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return []
+        time.sleep(min(interval, remaining))
+
+
 # ---------------------------------------------------------------------------
 # Command-Line Interface (CLI)
 # ---------------------------------------------------------------------------
@@ -931,6 +954,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_list.add_argument("--format", dest="format", choices=["json", "text"], default="json", help="Output format")
     p_list.add_argument("--json", dest="json_flag", action="store_true", help="Alias for --format json")
     p_list.add_argument("--mailbox-dir", "--root", dest="mailbox_dir", help="Mailbox root directory")
+
+    # wait
+    p_wait = subparsers.add_parser("wait", help="Wait up to a bounded time for unread messages")
+    p_wait.add_argument("--recipient", "--to", dest="recipient", required=True, help="Recipient address/name")
+    p_wait.add_argument("--timeout", type=float, default=300, help="Maximum seconds to wait (default: 300)")
+    p_wait.add_argument("--interval", type=float, default=2, help="Seconds between checks (default: 2)")
+    p_wait.add_argument("--format", choices=["json", "text"], default="json", help="Output format")
+    p_wait.add_argument("--mailbox-dir", "--root", dest="mailbox_dir", help="Mailbox root directory")
 
     # read
     p_read = subparsers.add_parser("read", help="Read a message from a mailbox")
@@ -1034,10 +1065,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"Sent message {msg.message_id} to {msg.recipient}")
         return 0
 
-    if args.subcommand == "list":
+    if args.subcommand in ("list", "wait"):
         fmt = "json" if getattr(args, "json_flag", False) else args.format
         try:
-            if args.mode == "dead-letter":
+            if args.subcommand == "wait":
+                msgs = wait_for_messages(recipient=args.recipient, timeout=args.timeout,
+                                         interval=args.interval, mailbox_dir=mailbox_dir)
+            elif args.mode == "dead-letter":
                 msgs = list_dead_letter_messages(recipient=args.recipient, mailbox_dir=mailbox_dir)
             elif args.mode == "all":
                 msgs = list_messages(recipient=args.recipient, unread_only=False, mailbox_dir=mailbox_dir)

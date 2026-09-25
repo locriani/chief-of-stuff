@@ -18,7 +18,7 @@ from pathlib import Path
 
 SOURCE = Path(__file__).resolve().parent
 BINARIES = {"claude": "claude", "codex": "codex", "cursor": "agent", "agy": "agy"}
-WATCH_INTERVAL = 15 * 60
+WATCH_INTERVAL = 5 * 60
 
 
 class Refused(ValueError):
@@ -96,15 +96,33 @@ def prompt(runtime: str, release: Path, root: Path) -> str:
     rules = rules.split("---", 2)[-1].strip()
     rules = rules.replace("${CLAUDE_PLUGIN_ROOT}", str(release))
     if runtime != "claude":
+        mailbox_check = (f'python3 "{release / "scripts" / "inbox.py"}" '
+                         f'--mailbox-dir "{root / ".chief-of-stuff" / "mailbox"}" '
+                         'list --recipient coordinator --unread')
+        host_schedule = {
+            "agy": ("After opening the day, create one Antigravity `Schedule` at `*/5 * * * *` "
+                    f"to run `{mailbox_check}` and process unread worker messages as a normal "
+                    "coordinator turn. The CLI `/schedule \"*/5 * * * *\" ...` is the equivalent "
+                    "when the Schedule tool is unavailable. Avoid duplicates and cancel a "
+                    "persistent schedule when this session ends."),
+            "cursor": ("After opening the day, start one Cursor in-session `/loop 5m` to run "
+                       f"`{mailbox_check}` and process unread worker messages as a normal "
+                       "coordinator turn. Stop the loop when this session ends. If `/loop` is "
+                       "unavailable, rely on the watcher and check at the start of each turn."),
+            "codex": ("Codex CLI has no in-session schedule. The session-scoped watcher checks "
+                      "every five minutes and notifies on new messages. At the start of every "
+                      "turn, read the inbox and reconcile the tracker and board; do not claim "
+                      "that a notification woke this conversation."),
+        }[runtime]
         rules = rules.replace("`CronList`, then `CronCreate` only when no job's prompt starts `[Scheduled check]` (see Check)",
                               "confirm the session-scoped watcher (see Check)")
         rules = rules.replace("list sessions;", "inspect registered workers;")
         rules = rules.replace("list sessions,", "inspect registered workers,")
-        check = ("## Check\n\nA session-scoped watcher checks the inbox and task audit every 15 minutes "
+        check = ("## Check\n\nA session-scoped watcher checks the inbox and task audit every five minutes "
                  "while this CLI session is open. It sends notifications for new findings and never "
                  "edits the tracker or board. On the next coordinator turn, read the clock, inbox, "
                  "audit and worker registry; reconcile task state, then render the board. "
-                 "Do not launch a new session without the user's explicit yes.\n\n")
+                 "Do not launch a new session without the user's explicit yes.\n\n" + host_schedule + "\n\n")
         rules = re.sub(r"## Check\n.*?(?=## Sessions\n)", check, rules, flags=re.S)
         sessions = ("## Sessions\n\nThe workspace `Sessions:` line may name Claude native list and send tools. "
                     "Use those only when your host exposes them. For every non-Claude worker, "
@@ -120,8 +138,8 @@ def prompt(runtime: str, release: Path, root: Path) -> str:
                   "Discover non-Claude workers through `scripts/session_exec.py` registry records under "
                   "`.chief-of-stuff/sessions/`, and verify process liveness; use the shared `scripts/inbox.py` "
                   "mailbox for their messages. Claude workers retain their native session tools when available. "
-                  "You cannot wake yourself safely from an idle CLI conversation. A 15-minute watcher audits "
-                  "tasks and unread inbox messages while this session is open and sends notifications. "
+                  "A five-minute watcher audits tasks and unread inbox messages while this session "
+                  "is open and sends notifications. "
                   "On your next turn, reconcile the tracker and board. Never launch a new session without "
                   "the user's explicit approval. If the calendar integration is missing during a session, "
                   "report the missing tool and stop calendar-dependent work.\n")

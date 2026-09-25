@@ -83,6 +83,40 @@ NON_CLAUDE_REGISTER = ("**Register first, before you read anything else.** You r
     "Check replies with `python3 {inbox_script} list --recipient \"{name}\" --unread` "
     "before each step and after each commit. The coordinator writes tracker and board updates on its next turn.")
 
+
+def mailbox_check(runtime: str, name: str, inbox_script: str) -> str:
+    """Give each worker the check its interactive host can actually run."""
+    command = f'python3 {inbox_script} list --recipient "{name}" --unread'
+    wait = f'python3 {inbox_script} wait --recipient "{name}" --timeout 300'
+    common = (f'Check now with `{command}`. Process each new assignment or reply and acknowledge it '
+              "only after acting. A new task still starts with a plan and its required approval. "
+              f'For a bounded idle check, run `{wait}`; it returns unread JSON or `[]` after five '
+              "minutes and does not acknowledge messages. Use these shared inbox commands; do not "
+              "create polling scripts or background jobs in the workspace. ")
+    if runtime == "claude":
+        mechanism = (f'Use `CronList`, then create one in-session `CronCreate` job at `*/5 * * * *` '
+                     f'only if no job starts `[Mailbox check] {name}`. Its prompt is '
+                     f'`[Mailbox check] {name}: {command}; process unread messages`. If cron tools '
+                     "are unavailable, check at the start of every turn and after each commit.")
+    elif runtime == "agy":
+        mechanism = (f'Use Antigravity `Schedule` at `*/5 * * * *` with instruction '
+                     f'`Check the mailbox for an assigned task or reply using {command}; '
+                     f'process unread messages`. In the CLI, `/schedule "*/5 * * * *" ...` is the '
+                     "equivalent when the Schedule tool is not exposed. Keep one check for this session "
+                     "and cancel a persistent schedule when the session ends. If scheduling is unavailable, "
+                     "check at the start of every turn and after each commit.")
+    elif runtime == "cursor":
+        mechanism = (f'Start one Cursor in-session `/loop 5m` with instruction '
+                     f'`{command}; process unread messages`. Stop the loop when this session ends. '
+                     "If `/loop` is unavailable, check at the start of every turn and after each commit.")
+    else:
+        mechanism = ("Codex CLI has no in-session scheduling interface. Check at the start of every "
+                     "turn, before each new step, and after each commit. While this turn is open, "
+                     "use the bounded wait above when idle. A finished conversation cannot wake "
+                     "itself; handle later messages on the next turn.")
+    return "**Keep this mailbox live.** After registration, " + common + mechanism
+
+
 HEADER = """# Assignment
 
 You are a dispatched session. A coordinator wrote this file into your worktree when {user} said yes.
@@ -321,6 +355,8 @@ def compose(root: Path, day: str | None, task: str, worktree: Path | None = None
                 "This keeps the process registration current. Do not use `--last` because another session may have started.\n")
         elif runtime == "cursor":
             header_text += "\n\n**Cursor plan gate.** This session starts in Cursor Plan mode. Ask the user to approve the plan before switching to Agent mode.\n"
+    header_text = header_text.replace("**Your name is fixed.**",
+        mailbox_check(runtime, name or UNNAMED, inbox_script) + "\n\n**Your name is fixed.**", 1)
     report_text = REPORT.format(
         inbox_script=inbox_script,
         coord_mailbox=coord_mailbox,
