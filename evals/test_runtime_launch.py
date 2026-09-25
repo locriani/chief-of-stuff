@@ -38,6 +38,7 @@ class CoordinatorLaunchTest(unittest.TestCase):
         again = start.install(ROOT, self.install_dir)
         self.assertEqual(first, again)
         self.assertTrue((first / "scripts" / "spawn_session.py").is_file())
+        self.assertTrue((first / "scripts" / "_vendor" / "toon_format" / "decoder.py").is_file())
         self.assertTrue((first / "agents" / "chief-of-stuff.md").is_file())
         self.assertIn("0.36.0-", first.name)
 
@@ -58,6 +59,19 @@ class CoordinatorLaunchTest(unittest.TestCase):
         codex = start.command("codex", "/bin/fake", release, self.root)
         self.assertIn("session-scoped watcher", codex[-1])
         self.assertNotIn("${CLAUDE_PLUGIN_ROOT}", codex[-1])
+
+    def test_coordinator_prompts_use_host_mailbox_checks(self):
+        release = start.install(ROOT, self.install_dir)
+        expected = {"claude": "[Mailbox check] chief-of-stuff",
+                    "agy": "Antigravity `Schedule` at `*/5 * * * *`",
+                    "cursor": "Cursor in-session `/loop 5m`",
+                    "codex": "Codex CLI has no in-session schedule"}
+        for runtime, marker in expected.items():
+            with self.subTest(runtime=runtime):
+                rendered = start.prompt(runtime, release, self.root)
+                self.assertIn(marker, rendered)
+                self.assertIn("list --recipient coordinator --unread", rendered)
+        self.assertEqual(start.WATCH_INTERVAL, 5 * 60)
 
     def test_missing_calendar_server_does_not_block_launch(self):
         (self.root / "CLAUDE.md").write_text(CLAUDE +
@@ -102,7 +116,7 @@ class CoordinatorLaunchTest(unittest.TestCase):
                  mock.Mock(returncode=0, stdout="")]
         with mock.patch.object(start.subprocess, "run", side_effect=clean):
             self.assertEqual(start.check_once(self.root, release), "")
-        unread = [mock.Mock(returncode=0, stdout='[{"type":"register"}]'),
+        unread = [mock.Mock(returncode=0, stdout='[1]{type}:\n  register'),
                   mock.Mock(returncode=0, stdout="tasks=1 trees=0 orphaned=0 stopped=0\n"),
                   mock.Mock(returncode=0, stdout="")]
         with mock.patch.object(start.subprocess, "run", side_effect=unread):
@@ -148,12 +162,15 @@ class WorkerRuntimeTest(unittest.TestCase):
             self.assertIn("--login-shell", text)
 
     def test_assignment_names_real_host_tools_and_mailbox(self):
-        for runtime in ("codex", "cursor"):
+        for runtime in ("claude", "agy", "codex", "cursor"):
             body = dispatch.compose(self.root, "2026-09-18", "Security audit",
                                     worktree=Path("/tmp/wt"), name="impl01", runtime=runtime)
-            self.assertIn("--from \"impl01\" --type register", body)
-            self.assertNotIn("List your sessions", body)
-            self.assertIn("/plan", body)
+            self.assertIn('wait --recipient "impl01" --timeout 300', body)
+            self.assertIn("do not create polling scripts", body)
+            if runtime in ("codex", "cursor"):
+                self.assertIn("--from \"impl01\" --type register", body)
+                self.assertNotIn("List your sessions", body)
+                self.assertIn("/plan", body)
             if runtime == "codex":
                 self.assertIn("resume-codex", body)
                 self.assertIn("--session-id <session-id>", body)

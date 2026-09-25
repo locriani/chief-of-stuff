@@ -11,11 +11,11 @@ File layout:
 │   └── write_<pid>_<uuid>.tmp
 └── <recipient>/                   # Per-recipient mailbox (e.g. 'coordinator')
     ├── incoming/                  # Unread immutable message files
-    │   └── msg_<timestamp>_<uuid>.json
+    │   └── msg_<timestamp>_<uuid>.toon
     ├── read/                      # Acknowledged/archived message files
-    │   └── msg_<timestamp>_<uuid>.json
+    │   └── msg_<timestamp>_<uuid>.toon
     └── dead-letter/               # Quarantined malformed or unparseable files
-        └── msg_<timestamp>_<uuid>.json
+        └── msg_<timestamp>_<uuid>.toon
 """
 
 from __future__ import annotations
@@ -24,13 +24,27 @@ import argparse
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
+import math
 import os
 from pathlib import Path
 import re
 import subprocess
 import sys
+import time
 from typing import Any, Sequence
 import uuid
+
+from _vendor.toon_format import decode as _toon_decode, encode as toon_encode
+
+
+def toon_decode(raw: str) -> Any:
+    """Decode TOON, including the current spec's empty root array spelling."""
+    return [] if raw.strip() == "[]" else _toon_decode(raw)
+
+
+def dump_toon(value: Any) -> str:
+    """Encode a JSON-model value, using the current root empty-array spelling."""
+    return "[]" if value == [] else toon_encode(value)
 
 # Safe filesystem name regex
 RE_UNSAFE_CHARS = re.compile(r"[^a-zA-Z0-9._-]")
@@ -114,6 +128,9 @@ class Message:
     def to_json(self, indent: int | None = 2) -> str:
         return json.dumps(self.to_dict(), indent=indent, ensure_ascii=False)
 
+    def to_toon(self) -> str:
+        return dump_toon(self.to_dict())
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Message:
         if not isinstance(data, dict):
@@ -177,6 +194,21 @@ class Message:
             raise CorruptedMessageError(f"Invalid JSON: {exc}") from exc
         return cls.from_dict(data)
 
+    @classmethod
+    def from_toon(cls, raw: str) -> Message:
+        if not raw or not raw.strip():
+            raise CorruptedMessageError("Message TOON content is empty")
+        try:
+            data = toon_decode(raw)
+        except Exception as exc:
+            raise CorruptedMessageError(f"Invalid TOON: {exc}") from exc
+        return cls.from_dict(data)
+
+    @classmethod
+    def from_file(cls, path: Path) -> Message:
+        raw = path.read_text(encoding="utf-8")
+        return cls.from_json(raw) if path.suffix == ".json" else cls.from_toon(raw)
+
     def __getitem__(self, key: str) -> Any:
         try:
             return getattr(self, key)
@@ -234,8 +266,10 @@ def validate_message_id(message_id: str) -> str:
     if not message_id or not isinstance(message_id, str):
         raise InvalidMessageError("message_id must be a non-empty string")
     clean = message_id.strip()
-    if clean.endswith(".json"):
-        clean = clean[:-5]
+    for suffix in (".json", ".toon"):
+        if clean.endswith(suffix):
+            clean = clean[:-len(suffix)]
+            break
     if ".." in clean or "/" in clean or "\\" in clean or "\x00" in clean:
         raise InvalidMessageError(f"Path traversal detected in message_id: {message_id!r}")
     if not RE_SAFE_MESSAGE_ID.match(clean):
@@ -348,18 +382,18 @@ def get_recipient_dirs(mailbox_root: Path, recipient: str) -> tuple[Path, Path, 
 # Atomic File Writing & Quarantine Helpers
 # ---------------------------------------------------------------------------
 
-def _atomic_write_json(mailbox_root: Path, target_file: Path, data: dict[str, Any]) -> None:
-    """Atomically write JSON data to target_file via staging in .tmp/ on the same filesystem."""
+def _atomic_write_message(mailbox_root: Path, target_file: Path, data: dict[str, Any]) -> None:
+    """Atomically write TOON data via staging in .tmp/ on the same filesystem."""
     tmp_dir = mailbox_root / DIR_TMP
     tmp_dir.mkdir(parents=True, exist_ok=True)
     pid = os.getpid()
     uid = uuid.uuid4().hex
     temp_file = tmp_dir / f"write_{pid}_{uid}.tmp"
-    json_text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+    message_text = dump_toon(data) + "\n"
 
     try:
         with open(temp_file, "w", encoding="utf-8") as f:
-            f.write(json_text)
+            f.write(message_text)
             f.flush()
             os.fsync(f.fileno())
         os.replace(temp_file, target_file)
@@ -409,10 +443,10 @@ def _parse_or_quarantine_file(
         return None
 
     try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as exc:
+        data = json.loads(raw) if file_path.suffix == ".json" else toon_decode(raw)
+    except Exception as exc:
         _quarantine_file(file_path, dead_letter_dir)
-        sys.stderr.write(f"Quarantined invalid JSON message {file_path.name}: {exc}\n")
+        sys.stderr.write(f"Quarantined invalid message {file_path.name}: {exc}\n")
         return None
 
     try:
@@ -529,8 +563,8 @@ def send_message(
     # Atomic write to disk
     root = resolve_mailbox_root(mailbox_dir)
     _, incoming_dir, _, _ = get_recipient_dirs(root, clean_recipient)
-    target_file = incoming_dir / f"{msg_id}.json"
-    _atomic_write_json(root, target_file, msg.to_dict())
+    target_file = incoming_dir / f"{msg_id}.toon"
+    _atomic_write_message(root, target_file, msg.to_dict())
 
     return msg
 
@@ -592,8 +626,7 @@ def list_messages(
         files = sorted([f for f in read_dir.iterdir() if f.is_file()], key=lambda p: p.name)
         for f in files:
             try:
-                raw = f.read_text(encoding="utf-8")
-                messages.append(Message.from_json(raw))
+                messages.append(Message.from_file(f))
             except Exception:
                 pass
 
@@ -602,8 +635,7 @@ def list_messages(
         files = sorted([f for f in dead_letter_dir.iterdir() if f.is_file()], key=lambda p: p.name)
         for f in files:
             try:
-                raw = f.read_text(encoding="utf-8")
-                messages.append(Message.from_json(raw))
+                messages.append(Message.from_file(f))
             except Exception as exc:
                 messages.append(
                     Message(
@@ -638,8 +670,7 @@ def list_dead_letter_messages(
     files = sorted([f for f in dead_letter_dir.iterdir() if f.is_file()], key=lambda p: p.name)
     for f in files:
         try:
-            raw = f.read_text(encoding="utf-8")
-            messages.append(Message.from_json(raw))
+            messages.append(Message.from_file(f))
         except Exception as exc:
             messages.append(
                 Message(
@@ -706,41 +737,37 @@ def read_message(
         message_id = unreads[0].message_id
 
     clean_id = validate_message_id(message_id)
-    filename = f"{clean_id}.json"
+    for suffix in (".toon", ".json"):
+        filename = f"{clean_id}{suffix}"
+        incoming_file = incoming_dir / filename
+        read_file = read_dir / filename
+        dead_letter_file = dead_letter_dir / filename
 
-    incoming_file = incoming_dir / filename
-    read_file = read_dir / filename
-    dead_letter_file = dead_letter_dir / filename
+        if incoming_file.exists():
+            msg = _parse_or_quarantine_file(incoming_file, dead_letter_dir, clean_recip)
+            if msg is not None:
+                if ack:
+                    try:
+                        os.replace(incoming_file, read_file)
+                    except FileNotFoundError:
+                        if not read_file.exists():
+                            raise MessageNotFoundError(f"Message '{clean_id}' disappeared during read")
+                return msg
+            if dead_letter_file.exists():
+                raise CorruptedMessageError(
+                    f"Message '{clean_id}' was unparseable/corrupted and moved to dead-letter"
+                )
 
-    # 1. Check incoming
-    if incoming_file.exists():
-        msg = _parse_or_quarantine_file(incoming_file, dead_letter_dir, clean_recip)
-        if msg is not None:
-            if ack:
-                try:
-                    os.replace(incoming_file, read_file)
-                except FileNotFoundError:
-                    if not read_file.exists():
-                        raise MessageNotFoundError(f"Message '{clean_id}' disappeared during read")
-            return msg
+        if read_file.exists():
+            try:
+                return Message.from_file(read_file)
+            except FileNotFoundError:
+                pass
+            except Exception as exc:
+                raise CorruptedMessageError(f"Message '{clean_id}' in read/ is corrupted: {exc}") from exc
+
         if dead_letter_file.exists():
-            raise CorruptedMessageError(
-                f"Message '{clean_id}' was unparseable/corrupted and moved to dead-letter"
-            )
-
-    # 2. Check read (already acknowledged)
-    if read_file.exists():
-        try:
-            raw = read_file.read_text(encoding="utf-8")
-            return Message.from_json(raw)
-        except FileNotFoundError:
-            pass
-        except Exception as exc:
-            raise CorruptedMessageError(f"Message '{clean_id}' in read/ is corrupted: {exc}") from exc
-
-    # 3. Check dead-letter
-    if dead_letter_file.exists():
-        raise CorruptedMessageError(f"Message '{clean_id}' is quarantined in dead-letter")
+            raise CorruptedMessageError(f"Message '{clean_id}' is quarantined in dead-letter")
 
     raise MessageNotFoundError(f"Message '{clean_id}' not found for recipient '{clean_recip}'")
 
@@ -786,24 +813,25 @@ def ack_message(
     root = resolve_mailbox_root(mailbox_dir)
     _, incoming_dir, read_dir, dead_letter_dir = get_recipient_dirs(root, clean_recip)
 
-    filename = f"{clean_id}.json"
-    incoming_file = incoming_dir / filename
-    read_file = read_dir / filename
+    for suffix in (".toon", ".json"):
+        filename = f"{clean_id}{suffix}"
+        incoming_file = incoming_dir / filename
+        read_file = read_dir / filename
 
-    if incoming_file.exists():
-        try:
-            os.replace(incoming_file, read_file)
-            return True
-        except FileNotFoundError:
-            if read_file.exists():
+        if incoming_file.exists():
+            try:
+                os.replace(incoming_file, read_file)
                 return True
-            raise MessageNotFoundError(f"Message '{clean_id}' not found for recipient '{clean_recip}'")
+            except FileNotFoundError:
+                if read_file.exists():
+                    return True
+                raise MessageNotFoundError(f"Message '{clean_id}' not found for recipient '{clean_recip}'")
 
-    if read_file.exists():
-        return True
+        if read_file.exists():
+            return True
 
-    if (dead_letter_dir / filename).exists():
-        raise CorruptedMessageError(f"Message '{clean_id}' is quarantined in dead-letter")
+        if (dead_letter_dir / filename).exists():
+            raise CorruptedMessageError(f"Message '{clean_id}' is quarantined in dead-letter")
 
     raise MessageNotFoundError(f"Message '{clean_id}' not found for recipient '{clean_recip}'")
 
@@ -869,6 +897,27 @@ def drain_inbox(
 drain = drain_inbox
 
 
+def wait_for_messages(
+    recipient: str,
+    *,
+    timeout: float = 300,
+    interval: float = 2,
+    mailbox_dir: Path | str | None = None,
+) -> list[Message]:
+    """Wait for unread messages, without acknowledging them or running a daemon."""
+    if not math.isfinite(timeout) or not math.isfinite(interval) or timeout < 0 or interval <= 0:
+        raise InvalidMessageError("timeout must be finite and nonnegative; interval must be finite and positive")
+    deadline = time.monotonic() + timeout
+    while True:
+        messages = list_messages(recipient=recipient, unread_only=True, mailbox_dir=mailbox_dir)
+        if messages:
+            return messages
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return []
+        time.sleep(min(interval, remaining))
+
+
 # ---------------------------------------------------------------------------
 # Command-Line Interface (CLI)
 # ---------------------------------------------------------------------------
@@ -893,12 +942,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_send.add_argument("--from", "--sender", dest="sender", required=True, help="Sender address/name")
     p_send.add_argument("--type", dest="type", default="generic", help="Message type (default: generic)")
     p_send.add_argument("--body", dest="body", default="", help="Message body text")
-    p_send.add_argument("--payload", dest="payload", help="Message payload as JSON string")
-    p_send.add_argument("--payload-file", dest="payload_file", help="Path to JSON payload file")
+    payload_group = p_send.add_mutually_exclusive_group()
+    payload_group.add_argument("--payload", dest="payload", help="Message payload as legacy JSON string")
+    payload_group.add_argument("--payload-toon", dest="payload_toon", help="Message payload as TOON string")
+    payload_group.add_argument("--payload-file", dest="payload_file", help="Path to .toon or legacy .json payload file")
     p_send.add_argument("--task", dest="task", help="Associated task name")
     p_send.add_argument("--worktree", dest="worktree", help="Associated worktree path")
     p_send.add_argument("--header", dest="headers", action="append", help="Header key=value (repeatable)")
-    p_send.add_argument("--format", dest="format", choices=["json", "text"], default="json", help="Output format")
+    p_send.add_argument("--format", dest="format", choices=["toon", "json", "text"], default="toon", help="Output format")
     p_send.add_argument("--mailbox-dir", "--root", dest="mailbox_dir", help="Mailbox root directory")
 
     # list
@@ -928,9 +979,17 @@ def build_parser() -> argparse.ArgumentParser:
         const="dead-letter",
         help="List dead-letter messages",
     )
-    p_list.add_argument("--format", dest="format", choices=["json", "text"], default="json", help="Output format")
+    p_list.add_argument("--format", dest="format", choices=["toon", "json", "text"], default="toon", help="Output format")
     p_list.add_argument("--json", dest="json_flag", action="store_true", help="Alias for --format json")
     p_list.add_argument("--mailbox-dir", "--root", dest="mailbox_dir", help="Mailbox root directory")
+
+    # wait
+    p_wait = subparsers.add_parser("wait", help="Wait up to a bounded time for unread messages")
+    p_wait.add_argument("--recipient", "--to", dest="recipient", required=True, help="Recipient address/name")
+    p_wait.add_argument("--timeout", type=float, default=300, help="Maximum seconds to wait (default: 300)")
+    p_wait.add_argument("--interval", type=float, default=2, help="Seconds between checks (default: 2)")
+    p_wait.add_argument("--format", choices=["toon", "json", "text"], default="toon", help="Output format")
+    p_wait.add_argument("--mailbox-dir", "--root", dest="mailbox_dir", help="Mailbox root directory")
 
     # read
     p_read = subparsers.add_parser("read", help="Read a message from a mailbox")
@@ -939,7 +998,7 @@ def build_parser() -> argparse.ArgumentParser:
     ack_group = p_read.add_mutually_exclusive_group()
     ack_group.add_argument("--ack", dest="ack", action="store_true", default=True, help="Acknowledge message (default)")
     ack_group.add_argument("--no-ack", dest="ack", action="store_false", help="Do not acknowledge message")
-    p_read.add_argument("--format", dest="format", choices=["json", "text"], default="json", help="Output format")
+    p_read.add_argument("--format", dest="format", choices=["toon", "json", "text"], default="toon", help="Output format")
     p_read.add_argument("--json", dest="json_flag", action="store_true", help="Alias for --format json")
     p_read.add_argument("--mailbox-dir", "--root", dest="mailbox_dir", help="Mailbox root directory")
 
@@ -952,14 +1011,14 @@ def build_parser() -> argparse.ArgumentParser:
     # drain
     p_drain = subparsers.add_parser("drain", help="Drain and acknowledge all unread messages")
     p_drain.add_argument("--recipient", "--to", dest="recipient", required=True, help="Recipient address/name")
-    p_drain.add_argument("--format", dest="format", choices=["json", "text"], default="json", help="Output format")
+    p_drain.add_argument("--format", dest="format", choices=["toon", "json", "text"], default="toon", help="Output format")
     p_drain.add_argument("--json", dest="json_flag", action="store_true", help="Alias for --format json")
     p_drain.add_argument("--mailbox-dir", "--root", dest="mailbox_dir", help="Mailbox root directory")
 
     # status
     p_status = subparsers.add_parser("status", help="Show message counts for a recipient")
     p_status.add_argument("--recipient", "--to", dest="recipient", required=True, help="Recipient address/name")
-    p_status.add_argument("--format", dest="format", choices=["json", "text"], default="json", help="Output format")
+    p_status.add_argument("--format", dest="format", choices=["toon", "json", "text"], default="toon", help="Output format")
     p_status.add_argument("--mailbox-dir", "--root", dest="mailbox_dir", help="Mailbox root directory")
 
     return parser
@@ -995,15 +1054,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             except json.JSONDecodeError as exc:
                 sys.stderr.write(f"Error: Invalid JSON in --payload: {exc}\n")
                 return 2
+        elif args.payload_toon:
+            try:
+                payload = toon_decode(args.payload_toon)
+            except Exception as exc:
+                sys.stderr.write(f"Error: Invalid TOON in --payload-toon: {exc}\n")
+                return 2
         elif getattr(args, "payload_file", None):
             pf = Path(args.payload_file)
             if not pf.exists():
                 sys.stderr.write(f"Error: Payload file not found: {args.payload_file}\n")
                 return 2
             try:
-                payload = json.loads(pf.read_text(encoding="utf-8"))
-            except json.JSONDecodeError as exc:
-                sys.stderr.write(f"Error: Invalid JSON in --payload-file: {exc}\n")
+                raw = pf.read_text(encoding="utf-8")
+                payload = toon_decode(raw) if pf.suffix == ".toon" else json.loads(raw)
+            except Exception as exc:
+                sys.stderr.write(f"Error: Invalid payload in --payload-file: {exc}\n")
                 return 2
 
         try:
@@ -1030,14 +1096,19 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         if args.format == "json":
             print(msg.to_json(indent=2))
+        elif args.format == "toon":
+            print(msg.to_toon())
         else:
             print(f"Sent message {msg.message_id} to {msg.recipient}")
         return 0
 
-    if args.subcommand == "list":
+    if args.subcommand in ("list", "wait"):
         fmt = "json" if getattr(args, "json_flag", False) else args.format
         try:
-            if args.mode == "dead-letter":
+            if args.subcommand == "wait":
+                msgs = wait_for_messages(recipient=args.recipient, timeout=args.timeout,
+                                         interval=args.interval, mailbox_dir=mailbox_dir)
+            elif args.mode == "dead-letter":
                 msgs = list_dead_letter_messages(recipient=args.recipient, mailbox_dir=mailbox_dir)
             elif args.mode == "all":
                 msgs = list_messages(recipient=args.recipient, unread_only=False, mailbox_dir=mailbox_dir)
@@ -1055,6 +1126,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         if fmt == "json":
             print(json.dumps([m.to_dict() for m in msgs], indent=2))
+        elif fmt == "toon":
+            print(dump_toon([m.to_dict() for m in msgs]))
         else:
             if not msgs:
                 print("No messages found.")
@@ -1084,6 +1157,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         if fmt == "json":
             print(msg.to_json(indent=2))
+        elif fmt == "toon":
+            print(msg.to_toon())
         else:
             print(f"ID: {msg.message_id}")
             print(f"Timestamp: {msg.timestamp}")
@@ -1136,6 +1211,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         if fmt == "json":
             print(json.dumps([m.to_dict() for m in msgs], indent=2))
+        elif fmt == "toon":
+            print(dump_toon([m.to_dict() for m in msgs]))
         else:
             if not msgs:
                 print("No unread messages.")
@@ -1170,6 +1247,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         if fmt == "json":
             print(json.dumps(status_info, indent=2))
+        elif fmt == "toon":
+            print(dump_toon(status_info))
         else:
             print(f"Recipient: {status_info['recipient']}")
             print(f"Unread: {status_info['unread']}")

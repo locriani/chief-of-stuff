@@ -890,6 +890,23 @@ class AgyRuntimeTest(unittest.TestCase):
         self.assertNotIn("ponytail-review", para)
         self.assertIn(f'--from "{self.NAME}"', body)
 
+    def test_worker_mailbox_check_uses_each_hosts_available_mechanism(self):
+        expected = {"claude": ("CronList", "CronCreate"),
+                    "agy": ("Schedule", '/schedule "*/5 * * * *"'),
+                    "cursor": ("/loop 5m",),
+                    "codex": ("Codex CLI has no in-session scheduling interface",)}
+        for runtime, markers in expected.items():
+            with self.subTest(runtime=runtime):
+                body = dp.compose(self.root, "2026-09-18", "Security audit",
+                                  name=self.NAME, runtime=runtime)
+                self.assertIn("**Keep this mailbox live.** After registration", body)
+                self.assertIn(f'list --recipient "{self.NAME}" --unread', body)
+                self.assertLess(body.index("**Register first"), body.index("**Keep this mailbox live."))
+                for marker in markers:
+                    self.assertIn(marker, body)
+                if runtime != "codex":
+                    self.assertIn("*/5 * * * *" if runtime != "cursor" else "/loop 5m", body)
+
 
 class MailboxRootTest(unittest.TestCase):
     """The inbox finds its mailbox through git's common dir, so a session in a fork worktree resolved the
