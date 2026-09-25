@@ -4,6 +4,14 @@ A daily coordinator for Claude Code, Codex CLI, Cursor CLI, and Antigravity CLI.
 
 ## Install and launch
 
+For a new workspace, create a minimal `## Coordinator` block and settings file:
+
+```sh
+python3 scripts/init_workspace.py --root /path/to/workspace --user "Your Name" --timezone America/Chicago
+```
+
+The initializer appends to an existing `CLAUDE.md` when it has no Coordinator block, refuses to replace one that already exists, and leaves existing settings intact. `--dry-run` previews the addition. Optional flags include `--agent implementer:task`, `--launcher tmux`, `--board-port 8765`, `--github-repo owner/repo`, or `--gitlab-host` with `--gitlab-project`. The board port configures serving; the initializer does not open a browser. Notifications start off. Add calendar and deadline lines when those integrations are available.
+
 From this checkout:
 
 ```sh
