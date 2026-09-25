@@ -64,7 +64,7 @@ The board and `notify.py sync` also read precise deadlines from tracker `## Deci
 ```sh
 python3 -m unittest discover -s evals -p 'test_*.py'
 python3 evals/run.py --arm agent --golden --model opus --runs 3
-python3 evals/run.py --runtime codex --arm agent --model gpt-6-sol --effort high --golden --case stale-clock
+python3 evals/run.py --runtime codex --arm agent --model gpt-6-astra --effort high --golden --case stale-clock
 python3 evals/run.py --runtime cursor --arm agent --model <cursor-model> --case stale-clock
 python3 evals/run.py --runtime agy --arm agent --model <agy-model> --case stale-clock
 ```
