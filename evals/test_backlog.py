@@ -494,9 +494,11 @@ class FakeGh:
         self.fail = fail or {}
         self.close_rc = close_rc
         self.calls: list[list[str]] = []
+        self.inputs: list[str | None] = []
 
-    def __call__(self, args: list[str]) -> tuple[int, str, str]:
+    def __call__(self, args: list[str], input_text: str | None = None) -> tuple[int, str, str]:
         self.calls.append(list(args))
+        self.inputs.append(input_text)
         if args[:2] == ["issue", "list"]:
             state = args[args.index("--state") + 1]
             if state in self.fail:
@@ -504,6 +506,10 @@ class FakeGh:
             return 0, json.dumps(self.rows.get(state, [])), ""
         if args[:2] == ["issue", "close"]:
             return (self.close_rc, "", "could not close") if self.close_rc else (0, "", "")
+        if args[:2] == ["issue", "create"]:
+            return 0, f"https://github.com/{REPO}/issues/101\n", ""
+        if args[:2] == ["issue", "comment"]:
+            return 0, "", ""
         raise AssertionError(f"unexpected gh call: {args}")
 
 
@@ -656,7 +662,7 @@ class GitLabIssueRefTest(unittest.TestCase):
         self.assertEqual(seen, [(GL, "all")])
 
     def test_file_with_names_the_backend_writer(self):
-        self.assertIn("gh-issue new", bl.file_with(GH))
+        self.assertIn("backlog.py --create", bl.file_with(GH))
         self.assertIn("backlog.py --create", bl.file_with(GL))
 
 
@@ -679,19 +685,36 @@ class IssueStatesTest(unittest.TestCase):
 
 
 class GitHubWriteTest(unittest.TestCase):
-    def test_create_is_refused_and_names_gh_issue(self):
+    def test_create_preview_and_commit_use_generic_writer(self):
         gh = FakeGh()
-        got = bl.create(GH, "a title", body="b", labels=("bug",), commit=True, gh=gh)
-        self.assertFalse(got.ok)
-        self.assertIn("gh-issue new", got.error)
+        self.assertEqual(bl.write_line(bl.create(GH, "a title", body="b", gh=gh)), "would create: a title")
         self.assertEqual(gh.calls, [])
+        got = bl.create(GH, "a title", body="private text", labels=("bug",), parent=7,
+                        blocked_by=(8, 9), commit=True, gh=gh)
+        self.assertTrue(got.done)
+        self.assertEqual((got.iid, got.url), (101, f"https://github.com/{REPO}/issues/101"))
+        self.assertEqual(gh.calls, [["issue", "create", "-R", REPO, "--title", "a title", "--body-file", "-",
+                                     "--label", "bug", "--parent", "7", "--blocked-by", "8,9"]])
+        self.assertEqual(gh.inputs, ["private text"])
+        self.assertNotIn("private text", " ".join(gh.calls[0]))
 
-    def test_comment_is_refused_and_names_gh_issue_comment(self):
+    def test_create_failure_and_unrecognized_url_do_not_report_success(self):
+        def failed(_args, _body):
+            return 1, "", "permission denied"
+        def malformed(_args, _body):
+            return 0, "created without a URL", ""
+        self.assertIn("permission denied", bl.create(GH, "x", commit=True, gh=failed).error)
+        got = bl.create(GH, "x", commit=True, gh=malformed)
+        self.assertFalse(got.done)
+        self.assertIn("no recognizable issue URL", got.error)
+
+    def test_comment_uses_stdin_and_previews(self):
         gh = FakeGh()
+        self.assertEqual(bl.write_line(bl.comment(GH, 3, "b", gh=gh)), "would comment: #3")
         got = bl.comment(GH, 3, "b", commit=True, gh=gh)
-        self.assertFalse(got.ok)
-        self.assertIn("gh issue comment", got.error)
-        self.assertEqual(gh.calls, [])
+        self.assertTrue(got.done)
+        self.assertEqual(gh.calls, [["issue", "comment", "3", "-R", REPO, "--body-file", "-"]])
+        self.assertEqual(gh.inputs, ["b"])
 
     def test_close_dry_run(self):
         gh = FakeGh()
@@ -735,11 +758,11 @@ class GitHubCliTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(out.splitlines(), ["#1 t1 [bug]", "#2 t2 [bug]", "#3 t3 [bug]"])
 
-    def test_create_exits_one_with_the_refusal(self):
+    def test_create_uses_builtin_writer(self):
         code, out = self.run_main("--create", "a title", "--commit")
-        self.assertEqual(code, 1)
-        self.assertIn("create failed: a title", out)
-        self.assertIn("gh-issue new", out)
+        self.assertEqual(code, 0)
+        self.assertIn("created #101: a title", out)
+        self.assertIn(["issue", "create", "-R", REPO, "--title", "a title", "--body-file", "-"], self.gh.calls)
 
 
 if __name__ == "__main__":

@@ -1,17 +1,12 @@
 #!/usr/bin/env python3
-"""Read the backlog out of GitLab or GitHub, so the tracker can hold what is being worked and nothing else.
+"""Read and write a GitLab or GitHub backlog so the tracker holds active work only.
 
-Zach moved the tracker to GitHub on 2026-09-22 13:40: "for all future issue tracking, I want it to be
-stored in https://github.com/locriani/GauntletIssues as github issues." A `- Backlog:` line whose
-first part starts with `GitHub` names a `repo`, is read through `gh`, and is written only by
-`gh-issue` (see GH_FILE_WITH). Every other line is the GitLab client below, which reads, files, closes
-and comments. The workspace went back to GitLab on 2026-09-23 22:40 (Zach: "remove the github issue
-remote and make everything use gitlab now that we have that going").
+A `- Backlog:` line whose first part starts with `GitHub` names a repository read and written
+through `gh`. Other lines use the GitLab API. Both backends preview writes by default.
 
 The tracker grew to 158 rows in 22 hours because the ruleset says one row per item, so every
 finding, defect and question became a row and the file became a second Log with a worse index.
-The backlog belongs in an issue tracker; `labs.gauntletai.com` is the only authorized host for this
-project (workspace CLAUDE.md house rule 2) and it is the one we have.
+The backlog belongs in the issue tracker selected by the workspace's Coordinator block.
 
     python3 backlog.py --config /path/to/CLAUDE.md            # one count line
     python3 backlog.py --config /path/to/CLAUDE.md --list     # one line per open issue
@@ -87,10 +82,10 @@ GH_STATE = {OPEN: "open", CLOSED: "closed", "all": "all"}
 GH_REPO = re.compile(r"^[\w.-]+/[\w.-]+$")
 
 
-def run_gh(args: list[str]) -> tuple[int, str, str]:
+def run_gh(args: list[str], input_text: str | None = None) -> tuple[int, str, str]:
     """One `gh` call. Raises nothing: a missing `gh` is an answer like any other failure."""
     try:
-        done = subprocess.run(["gh", *args], capture_output=True, text=True, check=False)
+        done = subprocess.run(["gh", *args], input=input_text, capture_output=True, text=True, check=False)
     except FileNotFoundError:
         return 127, "", "gh not found"
     return done.returncode, done.stdout, done.stderr
@@ -357,7 +352,7 @@ def home_of(cfg: Backlog | GitHubBacklog) -> tuple[str, str]:
 
 def file_with(cfg: Backlog | GitHubBacklog) -> str:
     """The command that files an issue in this backlog, for a fault line to name."""
-    return "gh-issue new" if isinstance(cfg, GitHubBacklog) else "backlog.py --create"
+    return "backlog.py --create"
 
 
 @dataclass(frozen=True)
@@ -538,21 +533,29 @@ def ensure_labels(cfg: Backlog, names: tuple[str, ...], token: str | None = None
     return tuple(out)
 
 
-# GitHub issue text is held to two rules — no issue cited in prose, and a body that is a filled
-# template — by `gh-issue` and its PreToolUse guard in ai-additions' github-utilities. A second writer
-# here would be a way around both, so on GitHub this module reads and closes, and names the tool
-# that writes.
-GH_FILE_WITH = ("GitHub issues are filed with gh-issue new (templates and native relationships); "
-                "backlog.py does not write them")
-GH_COMMENT_WITH = ("GitHub comments go through gh issue comment, which github-utilities checks; "
-                   "backlog.py does not write them")
-
-
 def create(cfg: Backlog | GitHubBacklog, title: str, body: str = "", labels: tuple[str, ...] = (),
-           token: str | None = None, commit: bool = False, timeout: float = TIMEOUT, gh=None) -> Written:
+           token: str | None = None, commit: bool = False, timeout: float = TIMEOUT, gh=None,
+           parent: int | None = None, blocked_by: tuple[int, ...] = ()) -> Written:
     """One issue. Its labels are made first: GitLab drops an unknown label rather than refusing it."""
     if isinstance(cfg, GitHubBacklog):
-        return Written(CREATE, title, error=GH_FILE_WITH)
+        if not commit:
+            return Written(CREATE, title)
+        args = ["issue", "create", "-R", cfg.repo, "--title", title, "--body-file", "-"]
+        for label in labels:
+            args += ["--label", label]
+        if parent is not None:
+            args += ["--parent", str(parent)]
+        if blocked_by:
+            args += ["--blocked-by", ",".join(str(i) for i in blocked_by)]
+        rc, out, err = (gh or run_gh)(args, body)
+        if rc != 0:
+            return Written(CREATE, title, error=f"gh: {err.strip() or 'exit ' + str(rc)}")
+        match = re.search(rf"^https://github\.com/{re.escape(cfg.repo)}/issues/(\d+)/?$", out.strip())
+        if not match:
+            return Written(CREATE, title, error="gh created no recognizable issue URL")
+        return Written(CREATE, title, done=True, iid=int(match.group(1)), url=out.strip())
+    if parent is not None or blocked_by:
+        return Written(CREATE, title, error="native issue relationships require a GitHub backlog")
     secret = _secret(cfg, token)
     if not secret:
         return Written(CREATE, title, error=f"no token: set ${cfg.env} or add it to the Keychain as {cfg.service}")
@@ -595,7 +598,10 @@ def comment(cfg: Backlog | GitHubBacklog, iid: int, body: str, token: str | None
             timeout: float = TIMEOUT, gh=None) -> Written:
     what = f"#{iid}"
     if isinstance(cfg, GitHubBacklog):
-        return Written(COMMENT, what, error=GH_COMMENT_WITH)
+        if not commit:
+            return Written(COMMENT, what)
+        rc, _out, err = (gh or run_gh)(["issue", "comment", str(iid), "-R", cfg.repo, "--body-file", "-"], body)
+        return Written(COMMENT, what, done=rc == 0, iid=iid, error="" if rc == 0 else f"gh: {err.strip() or 'exit ' + str(rc)}")
     secret = _secret(cfg, token)
     if not secret:
         return Written(COMMENT, what, error=f"no token: set ${cfg.env} or add it to the Keychain as {cfg.service}")
@@ -626,6 +632,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=float, default=TIMEOUT, help="seconds per request")
     parser.add_argument("--create", metavar="TITLE", help="file one issue")
     parser.add_argument("--body", default="", help="the issue body, or the comment's text")
+    parser.add_argument("--parent", type=int, help="GitHub parent issue number for --create")
+    parser.add_argument("--blocked-by", type=int, action="append", default=[], metavar="IID",
+                        help="GitHub blocker issue number for --create; repeat for multiple blockers")
     parser.add_argument("--close", type=int, metavar="IID", help="close one issue")
     parser.add_argument("--comment", type=int, metavar="IID", help="comment on one issue")
     # No `--token`: argv is readable by `ps`, so the token comes from the environment or the
@@ -651,7 +660,8 @@ def main(argv: list[str] | None = None) -> int:
     writes: list[Written] = []
     if args.create:
         writes.append(create(cfg, args.create, body=args.body, labels=labels,
-                             commit=args.commit, timeout=args.timeout))
+                             commit=args.commit, timeout=args.timeout,
+                             parent=args.parent, blocked_by=tuple(args.blocked_by)))
     if args.close:
         writes.append(close(cfg, args.close, commit=args.commit, timeout=args.timeout))
     if args.comment:
