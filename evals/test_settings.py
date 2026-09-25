@@ -75,6 +75,13 @@ class SettingsTest(unittest.TestCase):
         with self.assertRaises(st.SettingsError):
             st.load(self.root, self.write('[workflow]\narchitecture_reviewer = "a b"\n'))
 
+    def test_reviewer_session_is_optional_and_validated(self):
+        self.assertIsNone(st.load(self.root, None).workflow.reviewer_session)
+        settings = st.load(self.root, self.write('[workflow]\nreviewer_session = "reviewer-01"\n'))
+        self.assertEqual(settings.workflow.reviewer_session, "reviewer-01")
+        with self.assertRaises(st.SettingsError):
+            st.load(self.root, self.write('[workflow]\nreviewer_session = "a b"\n'))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -68,6 +68,7 @@ class GitHubProject:
 @dataclass(frozen=True)
 class Workflow:
     architecture_reviewer: str | None = None
+    reviewer_session: str | None = None
 
 
 @dataclass(frozen=True)
@@ -102,10 +103,13 @@ class Settings:
 def _workflow(table) -> Workflow:
     if not isinstance(table, dict):
         raise SettingsError("[workflow] must be a table")
-    reviewer = table.get("architecture_reviewer")
-    if reviewer is not None and (not isinstance(reviewer, str) or not WORKER_NAME.fullmatch(reviewer)):
-        raise SettingsError("[workflow] architecture_reviewer must be a session name")
-    return Workflow(architecture_reviewer=reviewer)
+    names = {}
+    for key in ("architecture_reviewer", "reviewer_session"):
+        name = table.get(key)
+        if name is not None and (not isinstance(name, str) or not WORKER_NAME.fullmatch(name)):
+            raise SettingsError(f"[workflow] {key} must be a session name")
+        names[key] = name
+    return Workflow(**names)
 
 
 def _lane(name: str, table) -> Lane:
