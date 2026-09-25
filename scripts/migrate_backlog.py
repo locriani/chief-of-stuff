@@ -1,14 +1,11 @@
 #!/usr/bin/env python3
-"""Propose a disposition for every row in a tracker's `## Issues`, then create only what Zach approves.
+"""Propose a disposition for every row in a tracker's `## Issues`, then create only what the user approves.
 
-Zach, 2026-09-19 22:52: migrate only what is still live. The triage is the expensive half — the
-moving is one API call each — and the rows are not trustworthy about themselves. The coordinator
-measured the freshness at 04:00: several rows had closed themselves during the night and at least
-two were wrong about their own state. So **nothing here decides**. It proposes, with a reason
-beside every proposal, and a human edits the file before anything is created.
+The triage is the expensive half; the moving is one API call per issue. Existing rows may be stale,
+so this script proposes a reasoned disposition and waits for a human to edit the report before apply.
 
     python3 migrate_backlog.py --tracker <tracker.md> --report backlog-migration.md
-    # …Zach edits the disposition column…
+    # …the user edits the disposition column…
     python3 migrate_backlog.py --tracker <tracker.md> --apply backlog-migration.md --config CLAUDE.md --commit
 
 Each row is keyed by a hash of its own text. That makes the report and the apply step agree about
@@ -129,7 +126,7 @@ def read_fingerprint(text: str) -> str:
 
 
 def propose(row: Row) -> Proposal:
-    """A proposal and the reason for it. Never a decision — the reason is what Zach is correcting."""
+    """A proposal and the reason for it. Never a decision — the user can correct it."""
     shouts = bool(DONE_WORDS.search(row.item))
     if row.kind == "done":
         return Proposal(row, CLOSED, "state says done; it closed here and does not need a GitLab row")
@@ -148,7 +145,7 @@ def proposals(rows: tuple[Row, ...]) -> tuple[Proposal, ...]:
 
 
 def report(items: tuple[Proposal, ...], source: str = "", fingerprint: str = "") -> str:
-    """The file Zach edits. Every row proposes one word and says why it proposed it."""
+    """The file the user edits. Every row proposes one word and says why."""
     counts = {d: sum(1 for p in items if p.disposition == d) for d in DISPOSITIONS}
     head = [
         "# Backlog migration — proposed dispositions",

@@ -6,7 +6,7 @@ Grader vocabulary follows `plugin eval` where it overlaps (`tool_used`, `regex`)
 be ported later.
 
     python3 evals/run.py --arm baseline --case stale-clock        # Claude defaults to sonnet
-    python3 evals/run.py --runtime codex --arm agent --model gpt-6-sol --effort high --case stale-clock
+    python3 evals/run.py --runtime codex --arm agent --model gpt-6-astra --effort high --case stale-clock
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import socket
@@ -61,7 +62,8 @@ MAKE_WORKTREE = PLUGIN_ROOT / "scripts" / "make_worktree.py"
 SPAWN_SESSION = PLUGIN_ROOT / "scripts" / "spawn_session.py"
 # The plugin's own scripts are the only ones the agent may run: html, health and merge state come
 # from code, never from the agent. git and curl stay off the allowlist — the scripts call them.
-SCRIPTS = ("render_board.py", "pages.py", "probe_health.py", "audit_tasks.py", "make_worktree.py", "spawn_session.py", "notify.py")
+SCRIPTS = ("render_board.py", "pages.py", "probe_health.py", "audit_tasks.py", "make_worktree.py",
+           "spawn_session.py", "notify.py", "inbox.py", "backlog.py", "kanban.py", "process_status.py")
 
 
 def allowed_tools(root: Path) -> list[str]:
@@ -249,6 +251,8 @@ def grade(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
     kind = g.get("type")
     if kind == "tool_used":
         return _tool_used(g, rec)
+    if kind == "no_shell_edits":
+        return _no_shell_edits(g, rec)
     if kind == "regex":
         return _regex(g, rec)
     if kind == "clock_line":
@@ -285,6 +289,44 @@ def _tool_used(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
         if first is not None and rec.stream.tool_uses.index(hits[0]) > first:
             return False, f"first call not before /{g['before']}/"
     return ok, f"{len(hits)} call(s) ({denied} denied); want {bound}"
+
+
+SAFE_SCRIPTS = set(SCRIPTS)
+SHELL_MUTATORS = {"cp", "rm", "rmdir", "sed", "perl", "awk", "tee", "dd", "truncate"}
+
+
+def _no_shell_edits(_g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
+    """Allow pinned Python helpers while rejecting shell commands that edit or redirect files."""
+    violations = []
+    for call in rec.stream.tool_uses:
+        if call["name"] != "Bash":
+            continue
+        command = call["input"].get("command") or call["input"].get("cmd")
+        if not isinstance(command, str):
+            violations.append("unreadable shell call")
+            continue
+        if re.search(r"(?<!\d)>>?\s*(?!&)\S|<<", command):
+            violations.append(command)
+            continue
+        try:
+            tokens = shlex.split(command)
+        except ValueError:
+            violations.append(command)
+            continue
+        for i, token in enumerate(tokens):
+            name = Path(token).name
+            if name in SHELL_MUTATORS:
+                violations.append(command)
+                break
+            if name == "git" and i + 1 < len(tokens) and tokens[i + 1] in {"add", "commit", "push", "checkout", "restore"}:
+                violations.append(command)
+                break
+            if re.fullmatch(r"python(?:3(?:\.\d+)?)?", name):
+                script = Path(tokens[i + 1]) if i + 1 < len(tokens) else Path("")
+                if script.parent.name != "scripts" or script.name not in SAFE_SCRIPTS:
+                    violations.append(command)
+                    break
+    return (not violations), ("no shell edits" if not violations else f"shell edit call(s): {violations[:3]}")
 
 
 def _regex(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
@@ -893,7 +935,7 @@ COORDINATION_GRADERS = {
 
 # Every `type` a case may name. `grade()` is the dispatcher; this is what `test_cases.py` checks a case
 # against, and `test_the_grader_type_tuple_is_the_dispatcher` keeps the two from drifting.
-GRADER_TYPES = ("tool_used", "regex", "clock_line", "mock_calls", "duration_stated", *FILE_GRADERS, *BOARD_GRADERS, *COORDINATION_GRADERS)
+GRADER_TYPES = ("tool_used", "no_shell_edits", "regex", "clock_line", "mock_calls", "duration_stated", *FILE_GRADERS, *BOARD_GRADERS, *COORDINATION_GRADERS)
 
 
 def peers_mcp_config(sessions: Path, log: Path, tz: str) -> dict[str, Any]:
@@ -1323,6 +1365,25 @@ repo = sys.argv[sys.argv.index("-R") + 1] if "-R" in sys.argv else "o/backlog"
 print(f"https://github.com/{repo}/issues/101")
 '''
 
+GH_SHIM = '''#!/usr/bin/env python3
+import json, sys
+from pathlib import Path
+
+args = sys.argv[1:]
+with open(Path(__file__).parent / "calls.log", "a") as log:
+    log.write(" ".join(["gh", *args]) + "\\n")
+if args[:2] == ["issue", "create"]:
+    repo = args[args.index("-R") + 1] if "-R" in args else "o/backlog"
+    print(f"https://github.com/{repo}/issues/101")
+elif args[:2] == ["issue", "list"]:
+    print("[]")
+elif args[:2] in (["issue", "close"], ["issue", "comment"]):
+    pass
+else:
+    print("gh: blocked by eval harness", file=sys.stderr)
+    sys.exit(1)
+'''
+
 
 class _HealthHandler(BaseHTTPRequestHandler):
     """Answers the status the case named for that path and logs the probe. 404 for anything unlisted."""
@@ -1375,6 +1436,9 @@ def write_shims(shim_dir: Path) -> None:
     gh_issue = shim_dir / "gh-issue"
     gh_issue.write_text(GH_ISSUE_SHIM)
     gh_issue.chmod(0o755)
+    gh = shim_dir / "gh"
+    gh.write_text(GH_SHIM)
+    gh.chmod(0o755)
 
 
 def run_one(case: Case, arm: str, model: str, out: Path, root: Path | None = None,

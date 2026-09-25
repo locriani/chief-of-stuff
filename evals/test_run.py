@@ -96,6 +96,19 @@ class SandboxGuardTest(unittest.TestCase):
         # A `file` disposition runs `gh-issue templates` then `gh-issue new`; the shim on PATH answers every argv, so no real tracker is reached.
         self.assertIn("Bash(gh-issue:*)", run.ALLOWED)
 
+    def test_gh_issue_create_is_stubbed_for_the_builtin_writer(self) -> None:
+        import subprocess
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            run.write_shims(root)
+            done = subprocess.run([str(root / "gh"), "issue", "create", "-R", "o/backlog",
+                                   "--title", "x", "--body-file", "-"], input="body", text=True,
+                                  capture_output=True)
+            self.assertEqual(done.returncode, 0)
+            self.assertEqual(done.stdout.strip(), "https://github.com/o/backlog/issues/101")
+            self.assertIn("gh issue create", (root / "calls.log").read_text())
+
     def test_runner_tools_exclude_peer_tools(self) -> None:
         for name in self.PEER_TOOLS:
             self.assertNotIn(name, run.TOOLS)
@@ -374,6 +387,25 @@ class ToolUsedTest(unittest.TestCase):
     def test_tool_name_is_a_regex(self) -> None:
         ok, _ = run.grade({"type": "tool_used", "tool": "Write|Edit", "max": 0}, self.rec)
         self.assertTrue(ok)
+
+
+class NoShellEditsTest(unittest.TestCase):
+    def check(self, command: str) -> bool:
+        rec = record(at(16, 23), at(16, 25))
+        rec.stream = run.Stream(tool_uses=[{"id": "1", "name": "Bash", "input": {"command": command}}])
+        return run.grade({"type": "no_shell_edits"}, rec)[0]
+
+    def test_pinned_helpers_are_allowed(self) -> None:
+        for command in ("python3 /installed/scripts/inbox.py list --recipient coordinator",
+                        "python3 /installed/scripts/render_board.py --root .", "mkdir -p Resources && mv receipt.txt Resources/"):
+            with self.subTest(command=command):
+                self.assertTrue(self.check(command))
+
+    def test_shell_mutations_are_caught(self) -> None:
+        for command in ("python3 -c 'open(\"x\",\"w\")'", "python3 my-edit.py", "cp x y",
+                        "rm x", "echo x > file", "cat <<EOF", "git commit -m x"):
+            with self.subTest(command=command):
+                self.assertFalse(self.check(command))
 
 
 class RegexTest(unittest.TestCase):
@@ -825,10 +857,10 @@ class GitIsNotANewFileTest(unittest.TestCase):
 
 
 class AllowedToolsTest(unittest.TestCase):
-    def test_the_two_state_scripts_are_runnable_and_nothing_else_is(self) -> None:
+    def test_pinned_coordinator_scripts_are_runnable(self) -> None:
         allowed = " ".join(run.ALLOWED)
-        self.assertIn("probe_health.py", allowed)
-        self.assertIn("audit_tasks.py", allowed)
+        for script in ("probe_health.py", "audit_tasks.py", "backlog.py", "inbox.py", "kanban.py", "process_status.py"):
+            self.assertIn(script, allowed)
         self.assertNotIn("Bash(git", allowed)
         self.assertNotIn("Bash(curl", allowed)
 

@@ -41,7 +41,7 @@ CLAUDE = """# Workspace
 - Settings: `chief-of-stuff.toml`
 """
 
-TOML = f'[notify]\nqueue = "{QUEUE}"\n'
+TOML = f'[notify]\nadapter = "md-notify"\nqueue = "{QUEUE}"\n'
 
 
 def tracker(*decisions: tuple[str, str]) -> str:
@@ -107,7 +107,7 @@ class NotifyTest(unittest.TestCase):
         code, out = w.run("sync")
         self.assertEqual(code, 0, out)
         text = w.queue.read_text()
-        self.assertIn("Todo", text)
+        self.assertIn("md-notify", text)
         self.assertIn("| When (CT) | Title | Message | Open |", text)
         self.assertIn("## Recurring", text)
         self.assertEqual(sorted(md_notify_entries(text)), sorted([
@@ -322,7 +322,7 @@ class NotifyTest(unittest.TestCase):
         self.assertFalse(w.queue.exists())
 
     def test_off(self):
-        for toml in (None, '[notify]\nadapter = "off"\n'):
+        for toml in (None, '[notify]\n', '[notify]\nadapter = "off"\n'):
             with self.subTest(toml=toml):
                 w = self.ws(toml=toml)
                 for argv in (("sync",), ("add", "--kind", "awaiting", "--what", "x")):

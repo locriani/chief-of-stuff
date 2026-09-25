@@ -1,21 +1,21 @@
 # Notifications
 
-The coordinator tells the user about four things: a move that is waiting on them, a deadline coming up, the day's open and close, and a session that stopped or is gone (Zach, 2026-09-22 22:20). It says them through `scripts/notify.py`, which writes to whatever notifier the settings name.
+The coordinator can notify the user about a move awaiting them, a coming deadline, the day's open and close, or a stopped or gone session. `scripts/notify.py` writes only when workspace settings select an adapter.
 
-## Interim: md-notify, to be replaced by Todo
+## Optional md-notify adapter
 
-The adapter today is md-notify (`~/Developer/md-notify`, MarkdownNotify.app), a macOS background app that reads a markdown queue every minute and posts a banner with Open, Snooze 30 min, Complete and Ignore. Zach's words: "initial setup of notifications - with a note that we will be plugging this out later and integrating with my todo tooling instead at a future point."
+The md-notify adapter writes a markdown queue for the macOS app to read and display as banners with Open, Snooze, Complete, and Ignore actions.
 
-Replacing it means one new class in `notify.py` beside `MdNotifyQueue`, with the same `add` and `sync`, and one new value for `adapter` in the settings. No caller changes. Until then, never point Todo's `compile` at the md-notify queue: it regenerates its whole output file and would erase every row md-notify has parked.
+Another adapter can implement `add` and `sync` beside `MdNotifyQueue` and be selected in settings. Other tools should not rewrite the md-notify queue because they could erase parked rows.
 
 ## Settings
 
-The `## Coordinator` block names the file: `- Settings: chief-of-stuff.toml`, relative to the workspace root. No line, no file, or no `[notify]` table is notify off.
+The `## Coordinator` block names the file: `- Settings: chief-of-stuff.toml`, relative to the workspace root. Notifications remain off without an explicit `adapter = "md-notify"`, including when `[notify]` is present but empty.
 
 ```toml
 [notify]
 adapter = "md-notify"                          # or "off"
-queue = "Areas/notifications/NOTIFICATIONS.md" # under the workspace root
+queue = "notifications/NOTIFICATIONS.md"       # under the workspace root
 day_open = "06:00"
 day_close = "22:00"
 deadline_warnings = ["24h", "3h", "1h"]        # Nh or Nm before each deadline
@@ -44,7 +44,7 @@ md-notify's parser (MNCore `NotificationSchedule.parse`) decides the format, and
 From its README: `scripts/build-number.sh`, `xcodegen generate`, `xcodebuild -project MarkdownNotify.xcodeproj -scheme MarkdownNotify -configuration Release build` (signed with the Illideri Studios Developer ID), copy the app to `~/Applications/`, then point it at the queue and open it:
 
 ```
-defaults write com.illideri.MarkdownNotify NotificationsFilePaths -array <workspace>/Areas/notifications/NOTIFICATIONS.md
+defaults write com.illideri.MarkdownNotify NotificationsFilePaths -array <workspace>/notifications/NOTIFICATIONS.md
 open ~/Applications/MarkdownNotify.app
 ```
 

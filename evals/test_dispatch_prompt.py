@@ -602,7 +602,7 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
     def test_the_reviewer_hand_off_names_its_mailbox(self):
         # autonomous-review-pipeline-design, 22:45: without --mailbox-dir the reviewer's report landed in the reviewed repo.
         pipeline = self.content.split("## Pipeline", 1)[1].split("\n## ", 1)[0]
-        self.assertIn("`Report by: python3 ${CLAUDE_PLUGIN_ROOT}/scripts/inbox.py --mailbox-dir <workspace root>/.chief-of-stuff/mailbox send --to coordinator --from reviewer --type review --task \"<task>\"`", pipeline)
+        self.assertIn("`Report by: python3 ${CLAUDE_PLUGIN_ROOT}/scripts/inbox.py --mailbox-dir <workspace root>/.chief-of-stuff/mailbox send --to coordinator --from <reviewer session> --type review --task \"<task>\"`", pipeline)
         self.assertNotIn("`inbox.py send --to reviewer", pipeline)
         # A sonnet run sent the placeholder itself; the reviewer runs in another tree, so only an absolute path lands.
         self.assertIn("`<workspace root>` written out as an absolute path", pipeline)
@@ -644,9 +644,12 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         triage = self.content.split("## Triage", 1)[1].split("\n## ", 1)[0]
         self.assertIn("A verify pass with nothing open moves the task to `merge`", triage)
 
-    def test_gh_issue_is_run_before_it_is_looked_for(self):
-        # Every eval run probed PATH with `which`/`ls` first; the probe is the step that needs approval.
-        self.assertIn("run it by name, and only when the shell answers `command not found`", self.content)
+    def test_github_issue_writes_use_the_pinned_backlog_script(self):
+        self.assertIn("${CLAUDE_PLUGIN_ROOT}/scripts/backlog.py --create", self.content)
+        self.assertNotIn("~/.claude/plugins/cache/ai-additions", self.content)
+
+    def test_live_prompt_does_not_name_the_original_workspace_user(self):
+        self.assertNotIn("Zach", self.content)
 
     def test_triage_is_the_users(self):
         self.assertIn("## Triage", self.content)
@@ -710,7 +713,7 @@ class IssueDispatchTest(unittest.TestCase):
         with self.assertRaises(dp.RefusedError) as e:
             dp.compose(root, "2026-09-18", "Unfiled task")
         self.assertIn("names no issue", str(e.exception))
-        self.assertIn("gh-issue new", str(e.exception))
+        self.assertIn("backlog.py --create", str(e.exception))
 
     def test_a_gitlab_backlog_refuses_too_and_links_to_gitlab(self):
         """Zach, 2026-09-23 22:40: "make everything use gitlab now that we have that going"."""
@@ -832,8 +835,9 @@ class PonytailTest(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.body = dp.compose(self.root, "2026-09-18", "Security audit")
 
-    def test_the_header_names_ponytail_at_ultra(self):
-        self.assertIn("**ponytail, ultra.**", self.body)
+    def test_the_header_states_the_work_style_in_plain_language(self):
+        self.assertIn("**Work style.** Write the least code", self.body)
+        self.assertNotIn("ponytail, ultra", self.body)
 
     def test_a_new_task_is_a_new_plan(self):
         """Zach, 2026-09-23 22:25: a later task handed to this session starts in plan mode too."""
@@ -872,6 +876,31 @@ class OnlyTheUserMergesTest(unittest.TestCase):
         line = [x for x in dp.compose(root, "2026-09-18", "Security audit").splitlines() if x.startswith("Commits: ")][0]
         self.assertIn("The merge is the user's alone: you never merge a pull request.", line)
         self.assertNotIn("word you were given", line)
+
+
+class ReviewerRoutingTest(unittest.TestCase):
+    def test_assignment_names_only_a_configured_reviewer(self):
+        tmp, root = workspace(claude_md=CLAUDE + "- Settings: `cos.toml`\n")
+        self.addCleanup(tmp.cleanup)
+        (root / "cos.toml").write_text('[workflow]\nreviewer_session = "reviewer-01"\n')
+        configured = dp.compose(root, "2026-09-18", "Security audit")
+        self.assertIn("Review goes to the configured session reviewer-01", configured)
+        (root / "cos.toml").write_text("[workflow]\n")
+        generic = dp.compose(root, "2026-09-18", "Security audit")
+        self.assertIn("No reviewer session is configured", generic)
+        self.assertNotIn("reviewer-01", generic)
+
+    def test_delivery_and_merge_owner_change_worker_instructions(self):
+        tmp, root = workspace(claude_md=CLAUDE + "- Settings: `cos.toml`\n")
+        self.addCleanup(tmp.cleanup)
+        (root / "cos.toml").write_text('[workflow]\ndelivery = "branch"\n')
+        branch = dp.compose(root, "2026-09-18", "Security audit")
+        self.assertIn("Report the branch, head sha and test result", branch)
+        self.assertNotIn("Code reaches main only through a pull request", branch)
+        (root / "cos.toml").write_text('[workflow]\nmerge_owner = "worker"\n')
+        pr = dp.compose(root, "2026-09-18", "Security audit")
+        self.assertIn("merge your pull request", pr)
+        self.assertNotIn("The merge is the user's alone", pr)
 
 
 class AgyRuntimeTest(unittest.TestCase):

@@ -20,6 +20,7 @@ from pathlib import Path
 ADAPTERS = ("md-notify", "off")
 HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 OFFSET = re.compile(r"^(\d+)([hm])$")
+WORKER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 DEFAULT_WARNINGS = ("24h", "3h", "1h")
 
 
@@ -37,9 +38,8 @@ def _offset(label: str, where: str = "[notify] deadline_warnings") -> timedelta:
 
 @dataclass(frozen=True)
 class Notify:
-    # Interim: md-notify is to be replaced by Zach's Todo tooling (Zach, 2026-09-22 22:20).
     adapter: str = "off"
-    queue: str = "Areas/notifications/NOTIFICATIONS.md"
+    queue: str = "notifications/NOTIFICATIONS.md"
     day_open: str = "06:00"
     day_close: str = "22:00"
     warnings: tuple[tuple[str, timedelta], ...] = tuple((w, _offset(w)) for w in DEFAULT_WARNINGS)
@@ -62,6 +62,19 @@ class GitHubProject:
     number: int
     field: str = "Status"
     options: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class Workflow:
+    architecture_reviewer: str | None = None
+    reviewer_session: str | None = None
+    delivery: str = "pull-request"
+    merge_owner: str = "user"
+
+
+@dataclass(frozen=True)
+class Workers:
+    launcher: str = "ghostty"
 
 
 @dataclass(frozen=True)
@@ -90,6 +103,37 @@ class Settings:
     # #33 stage 3: how long a running task of each size goes before the coordinator polls its session. XL has none.
     budgets: dict[str, timedelta] = field(default_factory=dict)
     kanban: Kanban | None = None
+    workflow: Workflow = field(default_factory=Workflow)
+    workers: Workers = field(default_factory=Workers)
+
+
+def _workers(table) -> Workers:
+    if not isinstance(table, dict):
+        raise SettingsError("[workers] must be a table")
+    launcher = table.get("launcher", "ghostty")
+    if launcher not in ("ghostty", "tmux"):
+        raise SettingsError("[workers] launcher must be `ghostty` or `tmux`")
+    return Workers(launcher=launcher)
+
+
+def _workflow(table) -> Workflow:
+    if not isinstance(table, dict):
+        raise SettingsError("[workflow] must be a table")
+    names = {}
+    for key in ("architecture_reviewer", "reviewer_session"):
+        name = table.get(key)
+        if name is not None and (not isinstance(name, str) or not WORKER_NAME.fullmatch(name)):
+            raise SettingsError(f"[workflow] {key} must be a session name")
+        names[key] = name
+    delivery = table.get("delivery", "pull-request")
+    if delivery not in ("pull-request", "branch"):
+        raise SettingsError("[workflow] delivery must be `pull-request` or `branch`")
+    merge_owner = table.get("merge_owner", "user")
+    if merge_owner not in ("user", "worker"):
+        raise SettingsError("[workflow] merge_owner must be `user` or `worker`")
+    if delivery == "branch" and merge_owner != "user":
+        raise SettingsError("[workflow] merge_owner=worker requires delivery=pull-request")
+    return Workflow(**names, delivery=delivery, merge_owner=merge_owner)
 
 
 def _lane(name: str, table) -> Lane:
@@ -145,7 +189,7 @@ def _kanban(table) -> Kanban:
 
 
 def _notify(table: dict, root: Path) -> Notify:
-    got = Notify(adapter="md-notify")
+    got = Notify()
     adapter = table.get("adapter", got.adapter)
     if adapter not in ADAPTERS:
         raise SettingsError(f"[notify] adapter: {adapter!r} is not one of {', '.join(ADAPTERS)}")
@@ -183,13 +227,16 @@ def load(root: Path, settings_path: str | None) -> Settings:
         raise SettingsError(f"{settings_path}: [lanes] is not a table")
     lanes = {name: _lane(name, t) for name, t in lanes.items()}
     kanban = _kanban(data["kanban"]) if "kanban" in data else None
+    workflow = _workflow(data["workflow"]) if "workflow" in data else Workflow()
+    workers = _workers(data["workers"]) if "workers" in data else Workers()
     budgets = data.get("budgets", {})
     if not isinstance(budgets, dict) or not set(budgets) <= {"S", "M", "L", "XL"}:
         raise SettingsError(f"{settings_path}: [budgets] is a table of S, M, L, XL")
     budgets = {size: _offset(v, f"[budgets] {size}") for size, v in budgets.items()}
     table = data.get("notify")
     if table is None:
-        return Settings(lanes=lanes, budgets=budgets, kanban=kanban)
+        return Settings(lanes=lanes, budgets=budgets, kanban=kanban, workflow=workflow, workers=workers)
     if not isinstance(table, dict):
         raise SettingsError(f"{settings_path}: [notify] is not a table")
-    return Settings(notify=_notify(table, Path(root)), lanes=lanes, budgets=budgets, kanban=kanban)
+    return Settings(notify=_notify(table, Path(root)), lanes=lanes, budgets=budgets,
+                    kanban=kanban, workflow=workflow, workers=workers)

@@ -8,6 +8,8 @@ carrier. It lives in the plugin, and the eval overrides it through the environme
 Nothing here starts a real terminal: every test drives `--dry-run` or a recorder.
 """
 
+import contextlib
+import io
 import json
 import os
 import re
@@ -560,7 +562,7 @@ class BootstrapNamesItsPathsTest(unittest.TestCase):
 
     def test_the_ghostty_command_pins_the_directory_with_env(self):
         s = ss.ghostty_script(cwd="/tmp/wt", agent_type="implementer", claude=Path("/opt/homebrew/bin/claude"))
-        self.assertRegex(s, r"/usr/bin/env -C /tmp/wt (?:'PATH=[^']*'|PATH=\S*) /opt/homebrew/bin/claude")
+        self.assertRegex(s, r"/usr/bin/env -C /tmp/wt (?:'PATH=[^']*'|PATH=\S*) .*session_exec.py exec-login -- /opt/homebrew/bin/claude")
 
     def test_the_ghostty_bootstrap_names_the_paths_too(self):
         s = ss.ghostty_script(cwd="/tmp/wt", agent_type="implementer", claude=Path("/opt/homebrew/bin/claude"))
@@ -710,3 +712,48 @@ class ClaudeModelTest(unittest.TestCase):
         for extra in (["--effort", "extreme"], ["--model", "x;rm -rf ~"]):
             with self.subTest(extra=extra):
                 self.assertEqual(run_main(*extra).returncode, 1 if "--model" in extra else 2)
+
+
+class TmuxLauncherTest(unittest.TestCase):
+    def test_tmux_executes_worker_argv_without_a_shell(self):
+        command = ss.tmux_command(tmux=Path("/bin/tmux"), binary=Path("/bin/codex"),
+                                  cwd="/tmp/a b", agent_type=None, title="codex-01",
+                                  runtime="codex", workspace="/tmp")
+        self.assertEqual(command[:7], ["/bin/tmux", "new-window", "-d", "-c", "/tmp/a b", "-n", "codex-01"])
+        self.assertEqual(command[7:10], [ss.ENV_BIN, "-C", "/tmp/a b"])
+        self.assertIn("/bin/codex", command)
+        self.assertFalse({"sh", "bash", "zsh"} & set(command[7:]))
+
+    def test_workspace_launcher_can_be_overridden_per_invocation(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "CLAUDE.md").write_text(CLAUDE + "- Settings: `chief-of-stuff.toml`\n")
+            (root / "chief-of-stuff.toml").write_text('[workers]\nlauncher = "tmux"\n')
+            (root / "daily").mkdir()
+            (root / "daily" / "2026-09-18-tracker.md").write_text(TRACKER)
+            tree = root / "trees" / "wt-x"
+            tree.mkdir(parents=True)
+            args = ["--cwd", str(tree), "--name", "codex-01", "--task", "Security audit",
+                    "--root", str(root), "--date", "2026-09-18", "--dry-run"]
+            with unittest.mock.patch.object(ss, "resolve", side_effect=lambda name: "/bin/" + name):
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    self.assertEqual(ss.main(args), 0)
+                self.assertIn("tmux new-window", output.getvalue())
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    self.assertEqual(ss.main(args + ["--launcher", "ghostty"]), 0)
+                self.assertIn("would ask Ghostty for a tab", output.getvalue())
+
+    def test_missing_tmux_refuses_before_writing_assignment(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "CLAUDE.md").write_text(CLAUDE)
+            (root / "daily").mkdir()
+            (root / "daily" / "2026-09-18-tracker.md").write_text(TRACKER)
+            tree = root / "trees" / "wt-x"
+            tree.mkdir(parents=True)
+            with unittest.mock.patch.object(ss, "resolve", return_value=None), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(ss.main(["--cwd", str(tree), "--name", "codex-01", "--task", "Security audit",
+                                          "--root", str(root), "--date", "2026-09-18", "--launcher", "tmux"]), 1)
+            self.assertFalse((tree / ss.PROMPT_FILE).exists())

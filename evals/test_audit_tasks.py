@@ -1101,7 +1101,7 @@ class IssueAuditTest(unittest.TestCase):
         report = self.run_audit(FakeGh(LIVE))
         got = [str(f) for f in report.issues]
         self.assertEqual(got, [
-            "issue: Bare — no issue; file it with gh-issue new",
+            "issue: Bare — no issue; file it with backlog.py --create",
             'issue: Garbled — "TBD" is not an issue reference',
             "issue: Closed under it — #5 is closed",
             "issue: Missing — #6 not found in o/backlog",

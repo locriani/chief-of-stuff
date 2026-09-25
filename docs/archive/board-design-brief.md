@@ -1,4 +1,6 @@
-# Board layout — design brief
+# Board layout — design brief (historical)
+
+This is an archived design assignment from the original workspace. It is not current setup guidance.
 
 **For:** a design session in its own tab, on branch `board-design` (worktree `~/Developer/chief-of-stuff-wt/board-design`). Design first, with Zach, in plan mode; build only what he approves; CIMP per stage; TDD with the red shown.
 **From:** Zach, 2026-09-18 22:51 — "I find the current layout significantly too dense but we cannot sacrifice any information either." And at 22:55: "the problem is a lack of consistent structural organization. Let's not solve that now. that's better for a design session."

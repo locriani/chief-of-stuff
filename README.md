@@ -4,6 +4,14 @@ A daily coordinator for Claude Code, Codex CLI, Cursor CLI, and Antigravity CLI.
 
 ## Install and launch
 
+For a new workspace, create a minimal `## Coordinator` block and settings file:
+
+```sh
+python3 scripts/init_workspace.py --root /path/to/workspace --user "Your Name" --timezone America/Chicago
+```
+
+The initializer appends to an existing `CLAUDE.md` when it has no Coordinator block, refuses to replace one that already exists, and leaves existing settings intact. `--dry-run` previews the addition. Optional flags include `--agent implementer:task`, `--launcher tmux`, `--board-port 8765`, `--github-repo owner/repo`, or `--gitlab-host` with `--gitlab-project`. The board port configures serving; the initializer does not open a browser. Notifications start off. Add calendar and deadline lines when those integrations are available.
+
 From this checkout:
 
 ```sh
@@ -13,7 +21,7 @@ python3 start_coordinator.py --runtime cursor --root /path/to/workspace
 python3 start_coordinator.py --runtime agy --root /path/to/workspace
 ```
 
-The launcher copies the rules, scripts, assets, and Claude plugin into `~/.local/share/chief-of-stuff/versions/<version>-<hash>/` and starts the selected CLI with absolute paths to that copy. It refuses a missing runtime binary. `--install-dir <path>` selects another installation location; `--dry-run` installs and prints the exact launch arguments without opening a session. Updating this checkout creates a new release directory; an existing coordinator continues using its pinned copy.
+The launcher copies the rules, scripts, assets, and Claude plugin into `~/.local/share/chief-of-stuff/versions/<version>-<hash>/` and starts the selected CLI with absolute paths to that copy. It resolves the CLI through the configured interactive login shell (`$SHELL`, or the account login shell) so shell startup paths are honored, and refuses a missing runtime binary. `--install-dir <path>` selects another installation location; `--dry-run` installs and prints the exact launch arguments without opening a session. Updating this checkout creates a new release directory; an existing coordinator continues using its pinned copy.
 
 Claude can still use the existing plugin workflow:
 
@@ -29,9 +37,17 @@ If a workspace requires workers to use only the configured `User:` name, add `- 
 
 The coordinator's PARA filing rule applies only when the workspace `CLAUDE.md` explicitly defines the `Projects/`, `Areas/`, `Resources/`, and `Archives/` homes. Other workspaces do not gain those folders or automatic filing moves.
 
+Notifications are off unless the workspace settings explicitly set `[notify] adapter = "md-notify"`. The default queue path for that adapter is `notifications/NOTIFICATIONS.md` under the workspace; set `queue` to use another path.
+
+For a GitHub `Backlog:` line, the pinned `scripts/backlog.py --create <title> --body <text> --commit` files issues through `gh` without a personal plugin. It supports native `--parent` and `--blocked-by` relationships. Writes preview by default; a workspace can still set its own issue content rules. See [backlog setup](docs/backlog.md) for GitHub and GitLab configuration.
+
+An optional `[workflow] architecture_reviewer = "<session-name>"` in the workspace TOML routes filed architecture findings to that session. Without it, no particular person or agent is assumed.
+An optional `[workflow] reviewer_session = "<session-name>"` routes pull requests to a named reviewer. Without it, the coordinator asks the user how to review a pull request instead of inventing a reviewer session.
+`[workflow] delivery = "pull-request"` and `merge_owner = "user"` preserve the existing delivery path by default. Set `delivery = "branch"` for branch handoff without an automatic PR step, or `merge_owner = "worker"` to let the owning worker merge a reviewed PR after the coordinator confirms required approvals. Branch delivery still needs integration into main and a suite run there before a code task is marked done.
+
 ## Workers
 
-After the user approves a dispatch, `scripts/spawn_session.py` starts a separate Ghostty worktree tab with `--runtime claude|agy|codex|cursor`. Claude remains the default. The assignment is written to the worktree before the tab opens; each worker reads it through a fixed bootstrap prompt. Claude uses native session messaging. Other workers register and report through the workspace file mailbox, using their assigned name and worktree. A launcher wrapper loads login zsh configuration for those workers, then records their process under `.chief-of-stuff/sessions/`; `python3 scripts/process_status.py --root /path/to/workspace` checks all registered workers in one batch and prints TOON. Pass space- or comma-separated PIDs to check a specific batch, including unregistered processes. `gone` means the PID is absent, `pid_reused` means a registered PID now belongs to another process, and `unverified` means the process exists but its identity could not be checked.
+After the user approves a dispatch, `scripts/spawn_session.py` starts a separate worktree terminal with `--runtime claude|agy|codex|cursor`. Claude remains the default. Ghostty tabs are the default launcher. Set `[workers] launcher = "tmux"` in the workspace TOML named by the `Settings:` line, or pass `--launcher tmux`, to open a new window in an existing tmux session. A launch refuses a missing tmux executable or tmux server. `--launcher ghostty` overrides the setting for one dispatch. The assignment is written to the worktree before the terminal opens; each worker reads it through a fixed bootstrap prompt. Claude uses native session messaging. Other workers register and report through the workspace file mailbox, using their assigned name and worktree. A launcher wrapper loads the configured interactive login shell for every worker and records non-Claude worker processes under `.chief-of-stuff/sessions/`; `python3 scripts/process_status.py --root /path/to/workspace` checks all registered workers in one batch and prints TOON. Pass space- or comma-separated PIDs to check a specific batch, including unregistered processes. `gone` means the PID is absent, `pid_reused` means a registered PID now belongs to another process, and `unverified` means the process exists but its identity could not be checked.
 
 Cursor starts in [Plan mode](https://cursor.com/docs/cli/overview). Antigravity also starts in plan mode. Codex starts with a read-only sandbox for planning; after plan approval, use the assignment's `session_exec.py resume-codex` command to resume that session ID with write access and update its process registration. Codex documents `/plan` as a [developer command](https://learn.chatgpt.com/docs/developer-commands), but its CLI has no plan launch flag.
 
@@ -56,7 +72,7 @@ The board and `notify.py sync` also read precise deadlines from tracker `## Deci
 ```sh
 python3 -m unittest discover -s evals -p 'test_*.py'
 python3 evals/run.py --arm agent --golden --model opus --runs 3
-python3 evals/run.py --runtime codex --arm agent --model gpt-6-sol --effort high --golden --case stale-clock
+python3 evals/run.py --runtime codex --arm agent --model gpt-6-astra --effort high --golden --case stale-clock
 python3 evals/run.py --runtime cursor --arm agent --model <cursor-model> --case stale-clock
 python3 evals/run.py --runtime agy --arm agent --model <agy-model> --case stale-clock
 ```

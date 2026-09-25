@@ -23,6 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from backlog import file_with, issue_ref  # noqa: E402
 from render_board import ConfigError, _cells, _is_separator, _section, parse_coordinator, parse_tracker, short_name  # noqa: E402
+from settings import SettingsError, Workflow, load as load_settings  # noqa: E402
 
 
 class RefusedError(ValueError):
@@ -135,7 +136,7 @@ listing may show you under another name: that is the harness titling you from yo
 rename, and you never adopt it. You cannot rename a session and you never ask to; if the listing is \
 wrong, say so once in your next message to {coordinator}.
 
-**ponytail, ultra.** Write the least code that does the job: reuse what is already here, then the \
+**Work style.** Write the least code that does the job: reuse what is already here, then the \
 standard library, then the platform, before anything new. Say a challenge to the requirement once, in \
 one line, then build what {user} asked. The failing test comes first and stays small.
 
@@ -219,9 +220,24 @@ COMMITS = ("Commits: Commit small and often on your own branch — uncommitted w
            "lost. Code reaches main only through a pull request: push the branch and open one "
            "(`gh pr create`, or `glab mr create` on GitLab) when the work is finished and its suite is "
            "green, and never push to main or merge locally. Once it is open, report its URL and head sha to "
-           "the coordinator, then stop: the reviewer session reviews it and the user triages every finding, "
-           "so a finding is fixed only when the coordinator sends it to you, as a commit on the same branch. "
+           "the coordinator, then stop; a finding is fixed only when the coordinator sends it to you, "
+           "as a commit on the same branch. "
            "The merge is the user's alone: you never merge a pull request.")
+
+
+def commit_rule(workflow: Workflow) -> str:
+    if workflow.delivery == "branch":
+        return ("Commits: Commit small and often on your own branch. Report the branch, head sha and "
+                "test result to the coordinator when the task is ready. Do not push or merge shared branches "
+                "without the user's approval or an applicable workspace rule.")
+    rule = COMMITS
+    if workflow.merge_owner == "worker":
+        rule = rule.replace("The merge is the user's alone: you never merge a pull request.",
+                            "After the coordinator confirms review and required approvals, merge your pull "
+                            "request and report the resulting main sha.")
+    return rule + (f" Review goes to the configured session {workflow.reviewer_session}; report findings "
+                   "to the coordinator for user triage." if workflow.reviewer_session else
+                   " No reviewer session is configured; the coordinator asks the user how to review it.")
 
 
 def _clean(label: str, value: str) -> str:
@@ -271,6 +287,10 @@ def compose(root: Path, day: str | None, task: str, worktree: Path | None = None
             coordinator: str | None = None, name: str | None = None, runtime: str = "claude") -> str:
     """The assignment for `task`, read back off disk. A task that is not a row is refused."""
     cfg = _config(root)
+    try:
+        workflow = load_settings(root, cfg.settings_path).workflow
+    except (OSError, SettingsError) as exc:
+        raise RefusedError(f"cannot read workflow settings: {exc}") from None
     relative = cfg.tracker_path(day or datetime.now(cfg.zone).date().isoformat())
     try:
         text = (root / relative).read_text()
@@ -376,7 +396,7 @@ def compose(root: Path, day: str | None, task: str, worktree: Path | None = None
         f"Inbox: {INBOX_SCRIPT}",
         f"Owns: {owns}" + ("" if owns.lower() == "none" else
                            " — yours to keep true; drift left in them is your error. Do not touch any other file."),
-        COMMITS,
+        commit_rule(workflow),
         report_text,
     ]
     body = "\n".join(lines) + "\n"

@@ -45,7 +45,7 @@ class SettingsTest(unittest.TestCase):
     def test_defaults_per_missing_key(self):
         got = st.load(self.root, self.write("[notify]\n")).notify
         self.assertEqual((got.adapter, got.queue, got.day_open, got.day_close),
-                         ("md-notify", "Areas/notifications/NOTIFICATIONS.md", "06:00", "22:00"))
+                         ("off", "notifications/NOTIFICATIONS.md", "06:00", "22:00"))
         self.assertEqual(got.warnings, (("24h", timedelta(hours=24)), ("3h", timedelta(hours=3)), ("1h", timedelta(hours=1))))
 
     def test_values_are_read(self):
@@ -67,6 +67,38 @@ class SettingsTest(unittest.TestCase):
     def test_toml_that_does_not_parse_is_refused(self):
         with self.assertRaises(st.SettingsError):
             st.load(self.root, self.write("[notify\n"))
+
+    def test_architecture_reviewer_is_optional_and_validated(self):
+        self.assertIsNone(st.load(self.root, None).workflow.architecture_reviewer)
+        settings = st.load(self.root, self.write('[workflow]\narchitecture_reviewer = "architecture-01"\n'))
+        self.assertEqual(settings.workflow.architecture_reviewer, "architecture-01")
+        with self.assertRaises(st.SettingsError):
+            st.load(self.root, self.write('[workflow]\narchitecture_reviewer = "a b"\n'))
+
+    def test_reviewer_session_is_optional_and_validated(self):
+        self.assertIsNone(st.load(self.root, None).workflow.reviewer_session)
+        settings = st.load(self.root, self.write('[workflow]\nreviewer_session = "reviewer-01"\n'))
+        self.assertEqual(settings.workflow.reviewer_session, "reviewer-01")
+        with self.assertRaises(st.SettingsError):
+            st.load(self.root, self.write('[workflow]\nreviewer_session = "a b"\n'))
+
+    def test_code_delivery_and_merge_owner(self):
+        self.assertEqual((st.load(self.root, None).workflow.delivery,
+                          st.load(self.root, None).workflow.merge_owner), ("pull-request", "user"))
+        workflow = st.load(self.root, self.write('[workflow]\ndelivery = "branch"\n')).workflow
+        self.assertEqual(workflow.delivery, "branch")
+        workflow = st.load(self.root, self.write('[workflow]\nmerge_owner = "worker"\n')).workflow
+        self.assertEqual(workflow.merge_owner, "worker")
+        for text in ('delivery = "direct"', 'merge_owner = "bot"',
+                     'delivery = "branch"\nmerge_owner = "worker"'):
+            with self.subTest(text=text), self.assertRaises(st.SettingsError):
+                st.load(self.root, self.write('[workflow]\n' + text + '\n'))
+
+    def test_worker_launcher_defaults_to_ghostty_and_accepts_tmux(self):
+        self.assertEqual(st.load(self.root, None).workers.launcher, "ghostty")
+        self.assertEqual(st.load(self.root, self.write('[workers]\nlauncher = "tmux"\n')).workers.launcher, "tmux")
+        with self.assertRaises(st.SettingsError):
+            st.load(self.root, self.write('[workers]\nlauncher = "shell"\n'))
 
 
 if __name__ == "__main__":

@@ -24,10 +24,7 @@
     },
     {
       "name": "no copy, delete, or shell edit",
-      "type": "tool_used",
-      "tool": "Bash",
-      "input_match": "\\b(cp|rm|rmdir|sed|perl|awk|tee|python3?)\\b|(?<!\\d)>>?\\s*(?!&)\\S",
-      "max": 0
+      "type": "no_shell_edits"
     },
     {
       "name": "template unchanged",
@@ -50,6 +47,8 @@
       "except": [
         "Areas/daily/{{today}}.md",
         "Areas/daily/{{today}}-tracker.md",
+        ".chief-of-stuff/mailbox/.gitignore",
+        ".chief-of-stuff/.gitignore",
         "Resources/**",
         "Archives/**"
       ]
