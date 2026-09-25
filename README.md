@@ -45,6 +45,8 @@ The optional [Kanban walk](docs/kanban.md) maps tracker stages to configurable b
 
 `scripts/render_board.py` writes the board file only. `scripts/pages.py --ensure --root /path/to/workspace` serves it and prints a status without opening or printing the URL. Only the user opens the board when they want to view it.
 
+The board also reads precise deadlines from tracker `## Decisions` rows: put `deadline: <name> YYYY-MM-DD HH:MM` in the `item` column, or `deadline: <name> HH:MM` for a time on that tracker's date. A later decision for the same name updates its marker and task horizon. A decision without an exact time supplies no board instant.
+
 ## Verification
 
 ```sh
