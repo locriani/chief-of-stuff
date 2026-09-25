@@ -1,9 +1,10 @@
 """Render today's board from the tracker.
 
-The board is a view of the tracker and nothing else: every bar start and end cites a tracker field
-(`since`, `due`, `running HH:MM`, `done HH:MM`) or falls open to the nearest deadline from the
-`## Coordinator` block, labelled "no estimate". The page carries the tracker's sha256, the render
-instant, and the deadline instants, and draws its own clock and now-lines client-side.
+The board is a view of the tracker and workspace configuration: every bar start and end cites a tracker
+field (`since`, `due`, `running HH:MM`, `done HH:MM`) or falls open to the nearest deadline from the
+`## Coordinator` block or a precise `deadline:` Decisions row, labelled "no estimate". The page carries
+the tracker's sha256, the render instant, and the deadline instants, and draws its own clock and now-lines
+client-side.
 
 The charts draw the schedule only. Today: running tasks and tasks that end today get a bar; every
 other active task folds into one summary row, and tasks done inside the window fold into one Done row
@@ -58,6 +59,7 @@ TASK_COLS_LANED = ("name", "item", "owner", "state", "since", "due", "size", "la
 # Widest first: a header is matched whole, and the live tracker carries every width while it is rewritten.
 TASK_HEADERS = (TASK_COLS_LANED, TASK_COLS_ISSUED, TASK_COLS_NAMED, TASK_COLS_SIZED, TASK_COLS)
 DATE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{1,2}):(\d{2}))?$")
+DECISION_DEADLINE = re.compile(r"^deadline:\s*(.+?)\s+(?:(\d{4}-\d{2}-\d{2})[ T])?(\d{1,2}):(\d{2})$", re.I)
 BULLET = re.compile(r"^(\s*)-\s*([^:]+?):\s*(.*?)\s*$")
 CAL_LIST = re.compile(r"^\s*-\s*(\d{1,2}:\d{2})\s*[–—-]\s*(\d{1,2}:\d{2})\s*(?:[A-Z]{2,5}\s+)?(.+?)\s*$")
 TIME_RANGE = re.compile(r"^(\d{1,2}:\d{2})\s*[–—-]\s*(\d{1,2}:\d{2})$")
@@ -765,6 +767,92 @@ def _split_row(line: str) -> list[str]:
 
 def _cells(line: str) -> list[str]:
     return [c.strip() for c in _split_row(line)]
+
+
+def with_decision_deadlines(cfg: Config, tracker_text: str, tracker_day: date,
+                            *, min_day: date | None = None) -> Config:
+    """Project precise Decisions-row deadlines into the board's configured deadline list.
+
+    A time without a date belongs to the tracker day, even when an older board is rendered later.
+    If a name is decided more than once, the decision recorded at the latest time wins. A decision
+    that gives no exact time cannot supply an instant and leaves the existing configuration alone.
+    """
+    rows = [line for line in _section(tracker_text, "## Decisions") if line.strip().startswith("|")]
+    if not rows:
+        return cfg
+    header = [cell.lower() for cell in _cells(rows[0])]
+    if "item" not in header:
+        return cfg
+    item_col = header.index("item")
+    time_col = header.index("time") if "time" in header else None
+    base = {deadline.name.casefold(): deadline for deadline in cfg.deadlines}
+    decided: dict[str, tuple[time | None, Deadline]] = {}
+    for row in rows[1:]:
+        cells = _cells(row)
+        if _is_separator(cells) or item_col >= len(cells):
+            continue
+        item, *options = [part.strip() for part in _unmark(cells[item_col]).split(";")]
+        match = DECISION_DEADLINE.fullmatch(item)
+        if not match:
+            continue
+        name, day_text, hour_text, minute_text = match.groups()
+        name = name.strip(" ,—–-")
+        if not name:
+            continue
+        try:
+            day = date.fromisoformat(day_text) if day_text else tracker_day
+            at = datetime.combine(day, time(int(hour_text), int(minute_text)), tzinfo=cfg.zone)
+        except ValueError:
+            continue
+        if min_day is not None and at.date() < min_day:
+            continue
+        key = name.casefold()
+        old = base.get(key)
+        requirements = next((r.group(1) for option in options
+                             if (r := re.fullmatch(r"(?i)requirements\s+`?([^`]+?)`?", option))),
+                            old.requirements if old else None)
+        scope = ("named" if any(re.fullmatch(r"(?i)named tasks only", option) for option in options)
+                 else old.scope if old else "all")
+        recorded = None
+        if time_col is not None and time_col < len(cells):
+            stamp = HHMM.fullmatch(cells[time_col])
+            if stamp:
+                try:
+                    recorded = time(int(stamp[1]), int(stamp[2]))
+                except ValueError:
+                    pass
+        previous = decided.get(key)
+        if previous is None or (recorded is not None and (previous[0] is None or recorded > previous[0])):
+            decided[key] = (recorded, Deadline(old.name if old else name, at, requirements, scope))
+    if not decided:
+        return cfg
+    base.update({name: deadline for name, (_, deadline) in decided.items()})
+    return replace(cfg, deadlines=tuple(sorted(base.values(), key=lambda deadline: deadline.at)))
+
+
+def with_workspace_decision_deadlines(root: Path, cfg: Config, tracker_text: str, tracker_day: date) -> Config:
+    """Carry future deadlines forward from earlier daily trackers, then apply today's decisions."""
+    template = cfg.tracker_template
+    if template.count("<date>") != 1:
+        return with_decision_deadlines(cfg, tracker_text, tracker_day)
+    prefix, suffix = template.split("<date>")
+    history = []
+    for path in root.glob(f"{prefix}*{suffix}"):
+        if not path.is_file() or not path.resolve().is_relative_to(root.resolve()):
+            continue
+        relative = path.relative_to(root).as_posix()
+        if not relative.startswith(prefix) or not relative.endswith(suffix):
+            continue
+        token = relative[len(prefix):len(relative) - len(suffix) if suffix else None]
+        try:
+            day = date.fromisoformat(token)
+        except ValueError:
+            continue
+        if day < tracker_day:
+            history.append((day, path))
+    for day, path in sorted(history):
+        cfg = with_decision_deadlines(cfg, path.read_text(), day, min_day=tracker_day)
+    return with_decision_deadlines(cfg, tracker_text, tracker_day)
 
 
 def _anchor(raw: list[str], cols: tuple[str, ...]) -> list[str] | None:
@@ -1620,7 +1708,10 @@ def requirements_section(d: Deadline, text: str | None) -> str:
     return "\n".join(out)
 
 
-def render(tracker_text: str, log_text: str, cfg: Config, now: datetime, requirements: dict[str, str | None] | None = None, lanes: dict | None = None) -> str:
+def render(tracker_text: str, log_text: str, cfg: Config, now: datetime,
+           requirements: dict[str, str | None] | None = None, lanes: dict | None = None,
+           tracker_day: date | None = None) -> str:
+    cfg = with_decision_deadlines(cfg, tracker_text, tracker_day or now.date())
     sha = hashlib.sha256(tracker_text.encode()).hexdigest()
     tracker = parse_tracker(tracker_text)
     today, zone = now.date(), cfg.zone
@@ -2055,12 +2146,17 @@ def main(argv: list[str] | None = None) -> Path:
         sys.exit(f"render_board: {e}")
     now = datetime.now(cfg.zone).replace(second=0, microsecond=0)
     day = args.date or now.date().isoformat()
+    try:
+        tracker_day = date.fromisoformat(day)
+    except ValueError:
+        sys.exit(f"render_board: invalid date {day!r}; use YYYY-MM-DD")
     tracker = root / cfg.tracker_path(day)
     if not tracker.is_file():
         sys.exit(f"render_board: tracker not found at {tracker}")
     log = root / cfg.log_path(day)
     log_text = log.read_text() if log.is_file() else ""
     tracker_text = tracker.read_text()
+    cfg = with_workspace_decision_deadlines(root, cfg, tracker_text, tracker_day)
     out = (root / cfg.pages_dir if cfg.pages_dir else tracker.parent) / f"{day}-board.html"
     out.parent.mkdir(parents=True, exist_ok=True)
     req_texts = {d.name: ((root / d.requirements).read_text() if (root / d.requirements).is_file() else None) for d in cfg.deadlines if d.requirements}
@@ -2068,7 +2164,8 @@ def main(argv: list[str] | None = None) -> Path:
         lanes = load_settings(root, cfg.settings_path).lanes
     except SettingsError as e:
         sys.exit(f"render_board: {e}")
-    page = render(tracker_text, log_text, cfg, now, requirements=req_texts, lanes=lanes)
+    page = render(tracker_text, log_text, cfg, now, requirements=req_texts, lanes=lanes,
+                  tracker_day=tracker_day)
     out.write_text(page)
     parsed = parse_tracker(tracker_text)
     hist = history(list(parsed.tasks), cfg, now)

@@ -2546,6 +2546,112 @@ class DeadlineScopeTest(unittest.TestCase):
         self.assertIsNotNone(m, buf.getvalue())
 
 
+class DecisionDeadlineTest(unittest.TestCase):
+    """A recorded deadline reaches the clock, markers and task horizon on the board."""
+
+    def setUp(self) -> None:
+        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+
+    @staticmethod
+    def tracker(*items: str | tuple[str, str]) -> str:
+        rows = ""
+        for item in items:
+            when, name = item if isinstance(item, tuple) else ("12:00", item)
+            rows += f'| {when} | {name} | "approved" |\n'
+        return TRACKER.replace('| 11:15 | Draft release notes | "done" |\n',
+                               '| 11:15 | Draft release notes | "done" |\n' + rows)
+
+    def test_same_day_decision_reaches_clock_marker_and_horizon(self) -> None:
+        tracker = self.tracker("deadline: Review cutoff 16:00")
+        html = rb.render(tracker, LOG, self.cfg, NOW)
+        self.assertIn('data-deadline="2026-09-16T16:00:00-05:00"', html)
+        self.assertIn('class="dline" data-deadline-name="Review cutoff"', html)
+        self.assertIn('data-est-of="Review cutoff"', html)
+
+    def test_explicit_date_and_time_override_a_configured_deadline(self) -> None:
+        tracker = self.tracker(("13:00", "deadline: Final 2026-09-16 17:00"),
+                               ("12:00", "deadline: Final 2026-09-16 18:00"))
+        cfg = rb.with_decision_deadlines(self.cfg, tracker, NOW.date())
+        final = [d for d in cfg.deadlines if d.name == "Final"]
+        self.assertEqual(len(final), 1)
+        self.assertEqual(final[0].at, datetime(2026, 9, 16, 17, 0, tzinfo=CT))
+        self.assertIn('data-deadline="2026-09-16T17:00:00-05:00"',
+                      rb.render(tracker, LOG, self.cfg, NOW))
+
+    def test_changed_time_keeps_the_configured_requirements_file(self) -> None:
+        cfg = rb.parse_coordinator(CLAUDE_MD_REQ, today=NOW.date())
+        updated = rb.with_decision_deadlines(cfg, self.tracker("deadline: Final 2026-09-16 17:00"),
+                                             NOW.date())
+        final = next(d for d in updated.deadlines if d.name == "Final")
+        self.assertEqual(final.requirements, "daily/final-reqs.md")
+
+    def test_time_only_uses_selected_tracker_day_not_render_instant(self) -> None:
+        cfg = rb.with_decision_deadlines(self.cfg, self.tracker("deadline: Review cutoff 16:00"),
+                                         NOW.date())
+        cutoff = next(d for d in cfg.deadlines if d.name == "Review cutoff")
+        self.assertEqual(cutoff.at.date(), NOW.date())
+
+    def test_no_time_given_does_not_invent_an_instant(self) -> None:
+        tracker = self.tracker("deadline: Exam, Sat 2026-09-26 (no time given)")
+        cfg = rb.with_decision_deadlines(self.cfg, tracker, NOW.date())
+        self.assertNotIn("Exam", {d.name for d in cfg.deadlines})
+        self.assertNotIn('data-deadline-name="Exam"', rb.render(tracker, LOG, self.cfg, NOW))
+
+    def test_named_only_decision_does_not_become_the_default_task_horizon(self) -> None:
+        tracker = self.tracker("deadline: Exam 2026-09-17 09:00; named tasks only")
+        cfg = rb.with_decision_deadlines(self.cfg, tracker, NOW.date())
+        exam = next(d for d in cfg.deadlines if d.name == "Exam")
+        self.assertEqual(exam.scope, "named")
+        self.assertEqual(rb.governing_deadline(cfg, NOW).name, "Launch")
+        self.assertIn('data-deadline-name="Exam"', rb.render(tracker, LOG, self.cfg, NOW))
+
+    def test_future_decision_carries_into_the_next_daily_tracker(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "daily").mkdir()
+            (root / "daily/2026-09-16-tracker.md").write_text(
+                self.tracker("deadline: Review cutoff 2026-09-17 16:00"))
+            today = TRACKER.replace("# Tracker 2026-09-16", "# Tracker 2026-09-17")
+            cfg = rb.with_workspace_decision_deadlines(root, self.cfg, today, NOW.date() + timedelta(days=1))
+        cutoff = next(d for d in cfg.deadlines if d.name == "Review cutoff")
+        self.assertEqual(cutoff.at, datetime(2026, 9, 17, 16, 0, tzinfo=CT))
+
+    def test_expired_decision_is_not_carried_forward(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "daily").mkdir()
+            (root / "daily/2026-09-16-tracker.md").write_text(
+                self.tracker("deadline: Review cutoff 16:00"))
+            cfg = rb.with_workspace_decision_deadlines(root, self.cfg, TRACKER,
+                                                        NOW.date() + timedelta(days=1))
+        self.assertNotIn("Review cutoff", {d.name for d in cfg.deadlines})
+
+    def test_cli_renders_a_carried_deadline_and_reports_its_horizon(self) -> None:
+        today = datetime.now(CT).date()
+        tomorrow = today + timedelta(days=1)
+        yesterday = today - timedelta(days=1)
+        deadline = datetime(tomorrow.year, tomorrow.month, tomorrow.day, 16, tzinfo=CT)
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "daily").mkdir()
+            (root / "CLAUDE.md").write_text(CLAUDE_MD)
+            (root / "daily" / f"{yesterday}-tracker.md").write_text(
+                self.tracker(f"deadline: Review cutoff {tomorrow} 16:00"))
+            (root / "daily" / f"{today}-tracker.md").write_text(TRACKER)
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                page = rb.main(["--root", str(root), "--date", str(today)])
+            html = page.read_text()
+        self.assertIn(f'data-deadline="{deadline.isoformat()}"', html)
+        self.assertIn('data-deadline-name="Review cutoff"', html)
+        self.assertIn("horizon=Review cutoff", output.getvalue())
+
+    def test_agent_rules_name_the_precise_decision_format(self) -> None:
+        rules = (Path(__file__).resolve().parents[1] / "agents/chief-of-stuff.md").read_text()
+        self.assertIn("deadline: <name> YYYY-MM-DD HH:MM", rules)
+        self.assertIn("deadline: <name> HH:MM", rules)
+
+
 # --- the tracer bullet ----------------------------------------------------------------------------
 # One task threaded through every layer: written with a `name`, parsed, labelled by that name,
 # placed on a rolling 24h axis, inside a deadline swimlane under its owner, on a reordered page.
