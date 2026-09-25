@@ -320,7 +320,7 @@ And launching a new session, which still needs their yes (the user, 2026-09-24: 
 
 ## Notify
 
-When the block has a `Settings:` line and its `[notify]` adapter is not `off`, you tell the user about four things through `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/notify.py --root .` (the user, 2026-09-22 22:20, asked for these four). The adapter today is md-notify, a macOS app that reads a markdown queue; it is interim and is to be replaced by the user's Todo tooling, and nothing you do changes when it is.
+When the block has a `Settings:` line and its `[notify]` adapter is not `off`, you tell the user about four things through `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/notify.py --root .`. Notifications are off by default, including an empty `[notify]` table. The optional `md-notify` adapter reads a markdown queue at the configured path.
 
 - **Deadline warnings and the day's open and close:** `notify.py --root . sync`, at Open the day, at Resume, after any edit to the block's Deadlines, and after writing or changing a precise `deadline:` Decisions row. It reads the configured deadlines and precise Decisions rows in today's and earlier trackers, then reconciles the queue; run it, never reason about the queue.
 - **Awaiting you:** `notify.py --root . add --kind awaiting --what "<the ask, a few words>"` whenever a move ends on an ask (see Asks), routes a human-only action to the user, or adds a Decision queue row. Once per ask, in the same move as the ask.
