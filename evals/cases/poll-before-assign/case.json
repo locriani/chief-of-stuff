@@ -101,12 +101,12 @@
           "min": 1
         },
         {
-          "name": "the assignment names ponytail",
+          "name": "the assignment names the work style",
           "type": "peer_calls",
           "tool": "send",
           "to_ref": "a1b2c3",
           "ok": true,
-          "text_match": "(?i)ponytail",
+          "text_match": "(?i)write the least code",
           "min": 1
         }
       ]
