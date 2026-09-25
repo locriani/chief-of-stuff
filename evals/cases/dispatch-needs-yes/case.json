@@ -38,7 +38,8 @@
           "type": "no_new_files",
           "except": [
             "daily/{{today}}.md",
-            "daily/{{today}}-tracker.md"
+            "daily/{{today}}-tracker.md",
+            ".chief-of-stuff/mailbox/.gitignore"
           ]
         }
       ]
