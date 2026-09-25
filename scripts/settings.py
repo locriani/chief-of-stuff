@@ -69,6 +69,8 @@ class GitHubProject:
 class Workflow:
     architecture_reviewer: str | None = None
     reviewer_session: str | None = None
+    delivery: str = "pull-request"
+    merge_owner: str = "user"
 
 
 @dataclass(frozen=True)
@@ -109,7 +111,15 @@ def _workflow(table) -> Workflow:
         if name is not None and (not isinstance(name, str) or not WORKER_NAME.fullmatch(name)):
             raise SettingsError(f"[workflow] {key} must be a session name")
         names[key] = name
-    return Workflow(**names)
+    delivery = table.get("delivery", "pull-request")
+    if delivery not in ("pull-request", "branch"):
+        raise SettingsError("[workflow] delivery must be `pull-request` or `branch`")
+    merge_owner = table.get("merge_owner", "user")
+    if merge_owner not in ("user", "worker"):
+        raise SettingsError("[workflow] merge_owner must be `user` or `worker`")
+    if delivery == "branch" and merge_owner != "user":
+        raise SettingsError("[workflow] merge_owner=worker requires delivery=pull-request")
+    return Workflow(**names, delivery=delivery, merge_owner=merge_owner)
 
 
 def _lane(name: str, table) -> Lane:
