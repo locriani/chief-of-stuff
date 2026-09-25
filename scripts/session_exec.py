@@ -6,11 +6,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+from shell_setup import clean_env, exec_login, resolve
 
 
 def register(path: Path, *, runtime: str, name: str, worktree: str, pid: int) -> None:
@@ -41,6 +42,10 @@ def alive(path: Path) -> bool:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "exec-login":
+        if len(argv) < 3 or argv[1] != "--":
+            raise SystemExit("expected exec-login -- followed by the runtime command")
+        exec_login(argv[2:])
     if argv and argv[0] == "resume-codex":
         resume = argparse.ArgumentParser(description="Resume an approved Codex plan with write access")
         resume.add_argument("--root", type=Path, required=True)
@@ -48,7 +53,7 @@ def main(argv: list[str] | None = None) -> int:
         resume.add_argument("--worktree", type=Path, required=True)
         resume.add_argument("--session-id", required=True)
         options = resume.parse_args(argv[1:])
-        binary = shutil.which("codex")
+        binary = resolve("codex")
         if not binary:
             resume.error("codex is unavailable on PATH")
         path = options.root / ".chief-of-stuff" / "sessions" / f"{options.name}.json"
@@ -83,18 +88,6 @@ def main(argv: list[str] | None = None) -> int:
     if args.login_shell:
         exec_login(command[1:])
     os.execve(command[1], command[1:], clean_env())
-
-
-def exec_login(command: list[str]) -> None:
-    """Source zsh login and interactive config, then replace it with exact argv."""
-    shell = "/bin/zsh"
-    os.execve(shell, [shell, "-lic", 'exec "$@"', "chief-of-stuff-worker", *command], clean_env())
-
-
-def clean_env() -> dict[str, str]:
-    keep = {"PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "TERM_PROGRAM", "TMPDIR",
-            "LANG", "LC_ALL", "LC_CTYPE", "COLORTERM", "TZ", "SSH_AUTH_SOCK", "XDG_CONFIG_HOME"}
-    return {k: v for k, v in os.environ.items() if k in keep}
 
 
 if __name__ == "__main__":

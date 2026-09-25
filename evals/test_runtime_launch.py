@@ -42,7 +42,7 @@ class CoordinatorLaunchTest(unittest.TestCase):
         self.assertTrue((first / "scripts" / "process_status.py").is_file())
         self.assertTrue((first / "scripts" / "_vendor" / "toon_format" / "decoder.py").is_file())
         self.assertTrue((first / "agents" / "chief-of-stuff.md").is_file())
-        self.assertIn("0.36.12-", first.name)
+        self.assertIn("0.36.13-", first.name)
 
     def test_concurrent_installs_share_one_complete_release(self):
         with ThreadPoolExecutor(max_workers=3) as pool:
@@ -82,7 +82,7 @@ class CoordinatorLaunchTest(unittest.TestCase):
             "\n- Calendar tool: `mcp__claude_ai_Google_Calendar__list_events`\n"
             "- Calendars:\n  - Work: work-id\n")
         output = io.StringIO()
-        with mock.patch.object(start.shutil, "which", return_value="/bin/fake"), \
+        with mock.patch.object(start, "resolve", return_value="/bin/fake"), \
              mock.patch.object(start.subprocess, "run") as probe, \
              contextlib.redirect_stdout(output):
             code = start.main(["--runtime", "codex", "--root", str(self.root),
@@ -93,7 +93,7 @@ class CoordinatorLaunchTest(unittest.TestCase):
         self.assertTrue((self.install_dir / "versions").exists())
 
     def test_missing_runtime_binary_refuses_before_install(self):
-        with mock.patch.object(start.shutil, "which", return_value=None):
+        with mock.patch.object(start, "resolve", return_value=None):
             code = start.main(["--runtime", "cursor", "--root", str(self.root),
                                "--install-dir", str(self.install_dir), "--dry-run"])
         self.assertEqual(code, 1)
@@ -153,7 +153,10 @@ class CoordinatorLaunchTest(unittest.TestCase):
         fake.write_text("#!/usr/bin/env python3\nimport json,sys\n"
                         f"open({str(record)!r}, 'w').write(json.dumps(sys.argv[1:]))\n")
         fake.chmod(0o755)
-        env = dict(os.environ, PATH=str(bin_dir) + os.pathsep + os.environ.get("PATH", ""))
+        home = Path(self.tmp.name) / "home"
+        home.mkdir()
+        (home / ".zshrc").write_text(f'export PATH="{bin_dir}:$PATH"\n')
+        env = dict(os.environ, HOME=str(home), SHELL="/bin/zsh")
         proc = subprocess.run([sys.executable, str(ROOT / "start_coordinator.py"), "--runtime", "cursor",
                                "--root", str(self.root), "--install-dir", str(self.install_dir)],
                               env=env, capture_output=True, text=True, timeout=15)

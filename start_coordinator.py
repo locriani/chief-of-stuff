@@ -16,6 +16,7 @@ from datetime import date
 from pathlib import Path
 
 from scripts._vendor.toon_format import ToonDecodeError, decode as toon_decode
+from scripts.shell_setup import ShellError, login_argv, resolve
 
 SOURCE = Path(__file__).resolve().parent
 BINARIES = {"claude": "claude", "codex": "codex", "cursor": "agent", "agy": "agy"}
@@ -186,15 +187,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
     root = args.root.resolve()
-    binary = shutil.which(BINARIES[args.runtime])
     try:
+        binary = resolve(BINARIES[args.runtime])
         if not binary:
-            raise Refused(f"{BINARIES[args.runtime]} is unavailable on PATH")
+            raise Refused(f"{BINARIES[args.runtime]} is unavailable in the configured login shell")
         if not root.is_dir():
             raise Refused(f"workspace {root} does not exist")
         release = install(SOURCE, args.install_dir.expanduser().resolve())
         cmd = command(args.runtime, binary, release, root)
-    except (Refused, OSError, ValueError) as exc:
+        launch_cmd = login_argv(cmd)
+    except (Refused, ShellError, OSError, ValueError) as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 1
     if args.dry_run:
@@ -206,7 +208,7 @@ def main(argv: list[str] | None = None) -> int:
         monitor = threading.Thread(target=watcher, args=(root, release, stop), daemon=True)
         monitor.start()
     try:
-        return subprocess.call(cmd, cwd=root)
+        return subprocess.call(launch_cmd, cwd=root)
     finally:
         stop.set()
         if monitor:
