@@ -562,7 +562,7 @@ class BootstrapNamesItsPathsTest(unittest.TestCase):
 
     def test_the_ghostty_command_pins_the_directory_with_env(self):
         s = ss.ghostty_script(cwd="/tmp/wt", agent_type="implementer", claude=Path("/opt/homebrew/bin/claude"))
-        self.assertRegex(s, r"/usr/bin/env -C /tmp/wt (?:'PATH=[^']*'|PATH=\S*) /opt/homebrew/bin/claude")
+        self.assertRegex(s, r"/usr/bin/env -C /tmp/wt (?:'PATH=[^']*'|PATH=\S*) .*session_exec.py exec-login -- /opt/homebrew/bin/claude")
 
     def test_the_ghostty_bootstrap_names_the_paths_too(self):
         s = ss.ghostty_script(cwd="/tmp/wt", agent_type="implementer", claude=Path("/opt/homebrew/bin/claude"))
@@ -735,7 +735,7 @@ class TmuxLauncherTest(unittest.TestCase):
             tree.mkdir(parents=True)
             args = ["--cwd", str(tree), "--name", "codex-01", "--task", "Security audit",
                     "--root", str(root), "--date", "2026-09-18", "--dry-run"]
-            with unittest.mock.patch.object(ss.shutil, "which", side_effect=lambda name: "/bin/" + name):
+            with unittest.mock.patch.object(ss, "resolve", side_effect=lambda name: "/bin/" + name):
                 output = io.StringIO()
                 with contextlib.redirect_stdout(output):
                     self.assertEqual(ss.main(args), 0)
@@ -753,7 +753,7 @@ class TmuxLauncherTest(unittest.TestCase):
             (root / "daily" / "2026-09-18-tracker.md").write_text(TRACKER)
             tree = root / "trees" / "wt-x"
             tree.mkdir(parents=True)
-            with unittest.mock.patch.object(ss.shutil, "which", return_value=None), contextlib.redirect_stderr(io.StringIO()):
+            with unittest.mock.patch.object(ss, "resolve", return_value=None), contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(ss.main(["--cwd", str(tree), "--name", "codex-01", "--task", "Security audit",
                                           "--root", str(root), "--date", "2026-09-18", "--launcher", "tmux"]), 1)
             self.assertFalse((tree / ss.PROMPT_FILE).exists())

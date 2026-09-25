@@ -23,7 +23,6 @@ import json
 import os
 import re
 import shlex
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -31,6 +30,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import dispatch_prompt  # noqa: E402
 from settings import SettingsError, load as load_settings  # noqa: E402
+from shell_setup import ShellError, resolve  # noqa: E402
 
 ENV = "CHIEF_OF_STUFF_LAUNCHER"
 # The assignment lives in the tree, not on the command line. `.chief-of-stuff/` ignores itself, so a
@@ -212,7 +212,10 @@ def runtime_tokens(*, cwd: str, agent_type: str | None, binary: Path | None, tit
     template = _unset(TEMPLATES[runtime], values)
     rest = [PLACEHOLDER.sub(lambda m: values.get(m.group(1), m.group(0)), t) for t in template[1:]]
     tokens = [ENV_BIN, "-C", root, f"PATH={os.environ.get('PATH', '')}"]
-    if runtime != "claude":
+    if runtime == "claude":
+        tokens += [sys.executable, str(Path(__file__).resolve().parent / "session_exec.py"),
+                   "exec-login", "--"]
+    else:
         tokens += [sys.executable, str(Path(__file__).resolve().parent / "session_exec.py"),
                    "--registry", str(Path(os.path.abspath(workspace)) / PROMPT_DIR / "sessions" / f"{title}.json"),
                    "--runtime", runtime, "--name", title or "", "--worktree", root,
@@ -343,15 +346,15 @@ def main(argv_in: list[str] | None = None) -> int:
                            model=args.model, effort=args.effort, workspace=args.root)
             script = None
         elif selected == "tmux":
-            command = tmux_command(tmux=Path(p) if (p := shutil.which("tmux")) else None,
-                                   binary=Path(p) if (p := shutil.which(BINARY[args.runtime])) else None,
+            command = tmux_command(tmux=Path(p) if (p := resolve("tmux")) else None,
+                                   binary=Path(p) if (p := resolve(BINARY[args.runtime])) else None,
                                    **worker)
             script = None
         else:
             command = [OSASCRIPT, "-"]
-            script = ghostty_script(claude=Path(p) if (p := shutil.which(BINARY[args.runtime])) else None,
+            script = ghostty_script(claude=Path(p) if (p := resolve(BINARY[args.runtime])) else None,
                                    **worker)
-    except (RefusedError, dispatch_prompt.RefusedError, SettingsError) as exc:
+    except (RefusedError, dispatch_prompt.RefusedError, SettingsError, ShellError) as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 1
 
