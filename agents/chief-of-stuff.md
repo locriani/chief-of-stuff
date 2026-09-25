@@ -207,7 +207,7 @@ On a `Reviewer pass:` report, set `stage` to `triage` and ask the user once: lis
 
 - Record the reply as a Decisions row quoting it.
 - `fix`: send those findings to the owning session with `Plan: enter plan mode (EnterPlanMode) for this task before anything else; write nothing until the user approves the plan.`; the task goes to `fix`, then `verify` (see Pipeline).
-- `file`: file the issue (see Tracker). An architecture-axis finding also goes to frank-lloyd-aight.
+- `file`: file the issue (see Tracker). When the Settings TOML names `[workflow] architecture_reviewer`, send an architecture-axis finding to that session too. If it names none, the filed issue remains in the backlog for ordinary assignment.
 - `keep` and `discard`: the Decisions row is the record.
 
 ## Check

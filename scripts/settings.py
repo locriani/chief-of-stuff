@@ -20,6 +20,7 @@ from pathlib import Path
 ADAPTERS = ("md-notify", "off")
 HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 OFFSET = re.compile(r"^(\d+)([hm])$")
+WORKER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 DEFAULT_WARNINGS = ("24h", "3h", "1h")
 
 
@@ -65,6 +66,11 @@ class GitHubProject:
 
 
 @dataclass(frozen=True)
+class Workflow:
+    architecture_reviewer: str | None = None
+
+
+@dataclass(frozen=True)
 class Kanban:
     """One visible board stage per tracker stage, with an independent human hold."""
     stages: tuple[str, ...]
@@ -90,6 +96,16 @@ class Settings:
     # #33 stage 3: how long a running task of each size goes before the coordinator polls its session. XL has none.
     budgets: dict[str, timedelta] = field(default_factory=dict)
     kanban: Kanban | None = None
+    workflow: Workflow = field(default_factory=Workflow)
+
+
+def _workflow(table) -> Workflow:
+    if not isinstance(table, dict):
+        raise SettingsError("[workflow] must be a table")
+    reviewer = table.get("architecture_reviewer")
+    if reviewer is not None and (not isinstance(reviewer, str) or not WORKER_NAME.fullmatch(reviewer)):
+        raise SettingsError("[workflow] architecture_reviewer must be a session name")
+    return Workflow(architecture_reviewer=reviewer)
 
 
 def _lane(name: str, table) -> Lane:
@@ -183,13 +199,15 @@ def load(root: Path, settings_path: str | None) -> Settings:
         raise SettingsError(f"{settings_path}: [lanes] is not a table")
     lanes = {name: _lane(name, t) for name, t in lanes.items()}
     kanban = _kanban(data["kanban"]) if "kanban" in data else None
+    workflow = _workflow(data["workflow"]) if "workflow" in data else Workflow()
     budgets = data.get("budgets", {})
     if not isinstance(budgets, dict) or not set(budgets) <= {"S", "M", "L", "XL"}:
         raise SettingsError(f"{settings_path}: [budgets] is a table of S, M, L, XL")
     budgets = {size: _offset(v, f"[budgets] {size}") for size, v in budgets.items()}
     table = data.get("notify")
     if table is None:
-        return Settings(lanes=lanes, budgets=budgets, kanban=kanban)
+        return Settings(lanes=lanes, budgets=budgets, kanban=kanban, workflow=workflow)
     if not isinstance(table, dict):
         raise SettingsError(f"{settings_path}: [notify] is not a table")
-    return Settings(notify=_notify(table, Path(root)), lanes=lanes, budgets=budgets, kanban=kanban)
+    return Settings(notify=_notify(table, Path(root)), lanes=lanes, budgets=budgets,
+                    kanban=kanban, workflow=workflow)

@@ -1,2 +1,4 @@
 [lanes]
 build = { stages = ["implement", "pr", "review", "triage", "fix", "verify", "merge", "main"], gates = ["triage", "merge"] }
+[workflow]
+architecture_reviewer = "frank-lloyd-aight"
