@@ -1,26 +1,46 @@
 # chief-of-stuff
 
-A Claude Code agent that runs as the main session and coordinates a working day. It does not do the work. It keeps the clock, the daily log, and the list of who owns each open item, and it proposes subagent launches for Zach to approve.
+A daily coordinator for Claude Code, Codex CLI, Cursor CLI, and Antigravity CLI. The workspace keeps its existing `CLAUDE.md` `## Coordinator` block. The coordinator routes work, keeps the tracker and board current, and asks before every new session launch.
 
-**Status:** layout only. No agent file, no evals yet. Nothing below has been run.
+## Install and launch
 
-## Launch
+From this checkout:
 
 ```sh
+python3 start_coordinator.py --runtime claude --root /path/to/workspace
+python3 start_coordinator.py --runtime codex --root /path/to/workspace
+python3 start_coordinator.py --runtime cursor --root /path/to/workspace
+python3 start_coordinator.py --runtime agy --root /path/to/workspace
+```
+
+The launcher copies the rules, scripts, assets, and Claude plugin into `~/.local/share/chief-of-stuff/versions/<version>-<hash>/` and starts the selected CLI with absolute paths to that copy. It refuses a missing runtime binary. `--install-dir <path>` selects another installation location; `--dry-run` installs and prints the exact launch arguments without opening a session. Updating this checkout creates a new release directory; an existing coordinator continues using its pinned copy.
+
+Claude can still use the existing plugin workflow:
+
+```sh
+claude plugin marketplace add /path/to/chief-of-stuff
+claude plugin install chief-of-stuff@chief-of-stuff
 claude --agent chief-of-stuff
 ```
 
-## Install (when built)
+When `Calendars:` names calendars, configure the `Calendar tool:` MCP server in the selected CLI before launching. The launcher checks that the CLI lists that server and refuses to start if it cannot find it. Each host reports the missing server by name. A calendar integration that disappears during a session is reported to the user before calendar-dependent work continues.
+
+## Workers
+
+After the user approves a dispatch, `scripts/spawn_session.py` starts a separate Ghostty worktree tab with `--runtime claude|agy|codex|cursor`. Claude remains the default. The assignment is written to the worktree before the tab opens; each worker reads it through a fixed bootstrap prompt. Claude uses native session messaging. Other workers register and report through the workspace file mailbox, using their assigned name and worktree. A launcher wrapper loads login zsh configuration for those workers, then records their process under `.chief-of-stuff/sessions/`; `python3 scripts/session_exec.py list --root /path/to/workspace` shows which processes are live.
+
+Cursor starts in [Plan mode](https://cursor.com/docs/cli/overview). Antigravity also starts in plan mode. Codex starts with a read-only sandbox for planning; after plan approval, use the assignment's `session_exec.py resume-codex` command to resume that session ID with write access and update its process registration. Codex documents `/plan` as a [developer command](https://learn.chatgpt.com/docs/developer-commands), but its CLI has no plan launch flag.
+
+For Codex, Cursor and Antigravity coordinators, a session scoped watcher checks the inbox, worker processes, and task audit every 15 minutes while the CLI remains open. It sends notifications for new findings. The coordinator updates tracker and board state on its next turn. Claude keeps its native scheduled check.
+
+## Verification
 
 ```sh
-claude plugin marketplace add ~/Developer/chief-of-stuff
-claude plugin install chief-of-stuff@chief-of-stuff
+python3 -m unittest discover -s evals -p 'test_*.py'
+python3 evals/run.py --arm agent --golden --model opus --runs 3
+python3 evals/run.py --runtime codex --arm agent --model gpt-6-sol --effort high --golden --case stale-clock
+python3 evals/run.py --runtime cursor --arm agent --model <cursor-model> --case stale-clock
+python3 evals/run.py --runtime agy --arm agent --model <agy-model> --case stale-clock
 ```
 
-## Brand
-
-`assets/chief-of-stuff.jpeg` is the source painting (1408×768). `assets/logo.webp` is the board's
-header mark, derived with `cwebp -resize 520 0 -q 62 assets/chief-of-stuff.jpeg -o assets/logo.webp`
-(21 KB), and inlined as a data URI by the renderer: the board is one file, and the artifact host
-serves nothing beside it. The board's palette is sampled from the painting — paper, walnut ink,
-brass, sage, lavender, poppy — with Cormorant SC for headings and Alegreya Sans for text.
+The eval runner shares fixture setup and graders across CLIs. Claude remains the default backend. Codex accepts the isolated calendar and peer MCP mocks through per-run config. Cursor and Antigravity currently refuse cases that require those mocks, and headless backends refuse wait turns that depend on an idle conversation waking by itself. A refusal is recorded as unmeasured, never as a passing case. See [TEST_INFRA.md](TEST_INFRA.md) for the test setup.

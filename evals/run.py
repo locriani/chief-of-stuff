@@ -1,10 +1,12 @@
 """Eval runner for the chief-of-stuff agent.
 
-`claude plugin eval` cannot run a case under `--agent`, so this drives `claude -p` directly.
+`claude plugin eval` cannot run a case under `--agent`, so the default backend drives
+`claude -p` directly. `--runtime` selects a headless Codex, Cursor, or Antigravity CLI instead.
 Grader vocabulary follows `plugin eval` where it overlaps (`tool_used`, `regex`) so cases can
 be ported later.
 
-    python3 evals/run.py --arm baseline --case stale-clock        # model defaults to opus
+    python3 evals/run.py --arm baseline --case stale-clock        # Claude defaults to sonnet
+    python3 evals/run.py --runtime codex --arm agent --model gpt-6-sol --effort high --case stale-clock
 """
 
 from __future__ import annotations
@@ -23,7 +25,6 @@ import sys
 import queue
 import tempfile
 import threading
-import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -31,7 +32,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from datetime import datetime, timedelta
 from datetime import time as dtime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -46,6 +47,7 @@ AGENT = "chief-of-stuff"
 # `--model` flag beats the frontmatter, so `check_arm` sees sonnet and passes rather than failing
 # the family check. Supersedes the 2026-09-16 "we don't use Sonnet for this" for the runner.
 DEFAULT_MODEL = "sonnet"
+RUNTIMES = ("claude", "codex", "cursor", "agy")
 
 # Isolation: `--setting-sources project` drops user settings (and with them user plugins and
 # permission rules) but still loads the fixture CLAUDE.md. `--restricted` was probed and skips
@@ -949,7 +951,8 @@ def snapshot_plugin(dest: Path) -> Path:
 
 
 def write_verdict(out: Path, case: str, arm: str, model: str, run_no: int,
-                  results: list[tuple[str, bool, str]], error: str | None, meta: str) -> Path:
+                  results: list[tuple[str, bool, str]], error: str | None, meta: str,
+                  runtime: str = "claude") -> Path:
     """What the run decided, beside the inputs it decided from. Finding 114b.
 
     The result dir held every input to grading and none of its output, so a sweep whose stdout was
@@ -963,7 +966,7 @@ def write_verdict(out: Path, case: str, arm: str, model: str, run_no: int,
     out.mkdir(parents=True, exist_ok=True)
     path = out / "verdict.json"
     path.write_text(json.dumps({
-        "case": case, "arm": arm, "model": model, "run": run_no, "meta": meta,
+        "case": case, "arm": arm, "model": model, "runtime": runtime, "run": run_no, "meta": meta,
         "error": error,
         "passed": None if error else all(p for _, p, _ in results),
         "graders": [{"name": n, "passed": p, "why": w} for n, p, w in results],
@@ -972,7 +975,7 @@ def write_verdict(out: Path, case: str, arm: str, model: str, run_no: int,
 
 
 def command(case: Case, arm: str, model: str, prompt: str | None, mcp_config: dict[str, Any] | None = None,
-            root: Path | None = None) -> list[str]:
+            root: Path | None = None, effort: str | None = None) -> list[str]:
     """A `prompt` of None means a multi-turn case: user turns arrive as stream-json on stdin.
 
     `root` is the plugin tree this run reads — a snapshot when one was taken, the live checkout
@@ -999,7 +1002,149 @@ def command(case: Case, arm: str, model: str, prompt: str | None, mcp_config: di
         cmd += ["--input-format", "stream-json"]
     if arm == "agent":
         cmd += ["--agent", AGENT]
+    if effort:
+        cmd += ["--effort", effort]
     return cmd
+
+
+def host_command(runtime: str, model: str, prompt: str, work: Path, root: Path,
+                 mcp_config: dict[str, Any] | None = None, session_id: str | None = None,
+                 persistent: bool = False, effort: str | None = None,
+                 extra_write: Path | None = None) -> list[str]:
+    """Build an isolated, one-turn headless command for a non-Claude CLI."""
+    binary = shutil.which({"codex": "codex", "cursor": "agent", "agy": "agy"}[runtime])
+    if not binary:
+        raise RuntimeError(f"{runtime} CLI is unavailable on PATH")
+    servers = (mcp_config or {}).get("mcpServers", {})
+    if servers and runtime != "codex":
+        raise RuntimeError(f"{runtime} eval backend cannot inject isolated MCP mocks; choose a case without calendar or peers")
+    if runtime == "codex":
+        cmd = [binary, "exec"] + (["resume"] if session_id else [])
+        cmd += ["--json", "--ignore-user-config", "--skip-git-repo-check", "-m", model]
+        if not persistent:
+            cmd += ["--ephemeral"]
+        if not session_id:
+            cmd += ["-C", str(work), "-s", "workspace-write"]
+            if extra_write:
+                cmd += ["--add-dir", str(extra_write)]
+        else:
+            cmd += ["-c", 'sandbox_mode="workspace-write"']
+            if extra_write:
+                cmd += ["-c", f"sandbox_workspace_write.writable_roots={json.dumps([str(extra_write)])}"]
+        if effort:
+            cmd += ["-c", f"model_reasoning_effort={json.dumps(effort)}"]
+        for name, server in servers.items():
+            cmd += ["-c", f"mcp_servers.{name}.command={json.dumps(server['command'])}",
+                    "-c", f"mcp_servers.{name}.args={json.dumps(server['args'])}"]
+        return cmd + ([session_id] if session_id else []) + [prompt]
+    if runtime == "cursor":
+        if effort:
+            raise RuntimeError("Cursor eval backend does not expose a separate reasoning effort flag")
+        return [binary, "--print", "--output-format", "stream-json", "--workspace", str(work),
+                "--model", model, "--sandbox", "enabled", "--force", "--trust"] + \
+               (["--add-dir", str(extra_write)] if extra_write else []) + \
+               (["--resume", session_id] if session_id else []) + [prompt]
+    return [binary, "--print", prompt, "--output-format", "stream-json", "--model", model,
+            "--sandbox"] + (["--add-dir", str(extra_write)] if extra_write else []) + \
+           (["--effort", effort] if effort else []) + \
+           (["--conversation", session_id] if session_id else ["--new-project"])
+
+
+def host_prompt(runtime: str, arm: str, prompt: str, root: Path, work: Path) -> str:
+    if arm == "baseline":
+        return prompt
+    # The same rendered host instructions used by an installed coordinator, pinned to this run's snapshot.
+    sys.path.insert(0, str(PLUGIN_ROOT))
+    from start_coordinator import prompt as coordinator_prompt
+    text = coordinator_prompt(runtime, root, work)
+    text = text.rsplit("\n\nOpen the day.", 1)[0]
+    return text + "\n\nUser turn: " + prompt
+
+
+def parse_host_stream(raw: str, runtime: str, model: str) -> Stream:
+    """Normalize JSONL from Codex, Cursor and Antigravity into the existing grader record."""
+    s = Stream(init={"model": model, "runtime": runtime})
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        kind = ev.get("type") or ev.get("event")
+        if kind == "init":
+            details = ev.get("init", {})
+            if isinstance(details, dict):
+                s.init.update({k: details[k] for k in ("model", "cwd") if k in details})
+            if ev.get("conversation_id"):
+                s.init["conversation_id"] = ev["conversation_id"]
+        if kind in ("thread.started", "system"):
+            s.init.update({k: ev[k] for k in ("thread_id", "session_id", "chatId", "model") if k in ev})
+        if kind == "step_update":
+            step = ev.get("step_update", {})
+            if step.get("step_type") == "tool" and step.get("state") == "ACTIVE":
+                native = step.get("tool_name", "")
+                name = {"run_command": "Bash", "view_file": "Read", "grep_search": "Grep",
+                        "find_by_name": "Glob", "write_file": "Write", "replace_file_content": "Edit"}.get(native, native)
+                params = (step.get("tool_info") or {}).get("parameters") or {}
+                s.tool_uses.append({"id": str(step.get("step_index", "")), "name": name,
+                                    "input": params})
+            if step.get("step_type") == "agent_response" and step.get("text_delta"):
+                s.last_text += step["text_delta"]
+        item = ev.get("item") or {}
+        if kind in ("item.started", "item.completed") and isinstance(item, dict):
+            item_type = item.get("type", "")
+            if item_type in ("command_execution", "tool_call", "mcp_tool_call", "file_change") and kind == "item.started":
+                name = {"command_execution": "Bash", "file_change": "Edit"}.get(item_type,
+                    item.get("name") or item.get("tool_name") or item_type)
+                s.tool_uses.append({"id": item.get("id", ""), "name": name,
+                                    "input": item.get("arguments") or {"command": item.get("command", "")}})
+            if item_type == "agent_message" and item.get("text"):
+                s.last_text = item["text"]
+        if kind == "assistant":
+            message = ev.get("message", {})
+            content = message.get("content", []) if isinstance(message, dict) else message
+            if isinstance(content, str):
+                s.last_text = content
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        s.last_text = block.get("text", s.last_text)
+                    elif isinstance(block, dict) and block.get("type") == "tool_use":
+                        s.tool_uses.append({"id": block.get("id", ""), "name": block.get("name", ""),
+                                            "input": block.get("input", {})})
+        if kind == "tool_call" and ev.get("subtype") == "started" and isinstance(ev.get("tool_call"), dict):
+            native = ev["tool_call"]
+            for key, name in (("shellToolCall", "Bash"), ("readToolCall", "Read"),
+                              ("grepToolCall", "Grep"), ("globToolCall", "Glob"),
+                              ("writeToolCall", "Write"), ("editToolCall", "Edit")):
+                if key in native:
+                    s.tool_uses.append({"id": ev.get("call_id", ""), "name": name,
+                                        "input": native[key].get("args") or {}})
+                    break
+        elif kind in ("tool_call", "tool_use") and ev.get("subtype") != "completed":
+            tool = ev.get("tool") or ev.get("name") or ""
+            s.tool_uses.append({"id": ev.get("id", ""), "name": tool,
+                                "input": ev.get("input") or ev.get("arguments") or {}})
+        if kind == "result":
+            result = ev.get("result", ev)
+            if isinstance(result, dict):
+                s.result = result
+                s.last_text = result.get("response") or result.get("text") or s.last_text
+                s.init.update({k: result[k] for k in ("thread_id", "session_id", "chatId", "conversation_id") if k in result})
+            elif isinstance(result, str):
+                s.result = ev
+                s.last_text = result
+        elif kind == "turn.completed":
+            s.result = ev
+        if kind in ("error", "turn.failed"):
+            s.init["error"] = ev.get("message") or ev.get("error")
+    return s
+
+
+def host_session_id(stream: Stream) -> str | None:
+    return next((str(stream.init[k]) for k in ("thread_id", "session_id", "chatId", "conversation_id")
+                 if stream.init.get(k)), None)
 
 
 @dataclass
@@ -1232,7 +1377,8 @@ def write_shims(shim_dir: Path) -> None:
     gh_issue.chmod(0o755)
 
 
-def run_one(case: Case, arm: str, model: str, out: Path, root: Path | None = None) -> tuple[list[tuple[str, bool, str]], str | None, dict[str, Any]]:
+def run_one(case: Case, arm: str, model: str, out: Path, root: Path | None = None,
+            runtime: str = "claude", effort: str | None = None) -> tuple[list[tuple[str, bool, str]], str | None, dict[str, Any]]:
     tz = case.spec.get("tz", "America/Chicago")
     ctx = context(tz, datetime.now(ZoneInfo(tz)))
     out.mkdir(parents=True, exist_ok=True)
@@ -1281,12 +1427,23 @@ def run_one(case: Case, arm: str, model: str, out: Path, root: Path | None = Non
             sessions.write_text(render((case.root / spec["peers"]).read_text(), ctx))
             mcp_config = merge_mcp(mcp_config, peers_mcp_config(sessions, calls_log, tz))
         if "turns" in spec:
+            if runtime != "claude":
+                return run_host_turns(spec, arm, model, out, work, env, mcp_config, calls_log, tz,
+                                      runtime=runtime, root=root or PLUGIN_ROOT, effort=effort,
+                                      case_root=case.root, ctx=ctx)
             return run_turns(spec, arm, model, out, work, env, mcp_config, calls_log, tz, case_root=case.root, ctx=ctx)
-        cmd = command(case, arm, model, spec["prompt"], mcp_config=mcp_config, root=root)
+        try:
+            cmd = (command(case, arm, model, spec["prompt"], mcp_config=mcp_config, root=root, effort=effort)
+                   if runtime == "claude" else host_command(runtime, model,
+                        host_prompt(runtime, arm, spec["prompt"], root or PLUGIN_ROOT, work),
+                        work, root or PLUGIN_ROOT, mcp_config, effort=effort, extra_write=out))
+        except RuntimeError as exc:
+            return [], str(exc), {"runtime": runtime}
         (out / "command.json").write_text(json.dumps(cmd, indent=1))
         t_start = datetime.now(ZoneInfo(tz))
         try:
-            proc = subprocess.run(cmd, cwd=work, env=env, capture_output=True, text=True, timeout=spec.get("timeout_seconds", 300))
+            proc = subprocess.run(cmd, cwd=work, env=env, stdin=subprocess.DEVNULL, capture_output=True,
+                                  text=True, timeout=spec.get("timeout_seconds", 300))
         except subprocess.TimeoutExpired:
             return [], "timeout", {}
         t_end = datetime.now(ZoneInfo(tz))
@@ -1299,18 +1456,23 @@ def run_one(case: Case, arm: str, model: str, out: Path, root: Path | None = Non
         stop_server(health)
         stop_server(taken)  # a daemon thread would otherwise outlive this case and serve the next one
 
-    stream = load_stream(out / "stream.jsonl")
+    stream = (load_stream(out / "stream.jsonl") if runtime == "claude" else
+              parse_host_stream((out / "stream.jsonl").read_text(), runtime, model))
     meta = {
         "exit": proc.returncode,
         "turns": (stream.result or {}).get("num_turns"),
         "notional_usd": (stream.result or {}).get("total_cost_usd"),
-        "denials": len(stream.denied_ids),
+        "denials": len(stream.denied_ids), "runtime": runtime,
     }
     if proc.returncode != 0 or stream.result is None:
-        return [], f"claude exit {proc.returncode}: {proc.stderr.strip()[:200]}", meta
-    ok, detail = check_arm(stream.init, arm, agent_flag_used="--agent" in cmd and arm != "agent", needs_calendar="calendar" in spec, model=model, needs_peers="peers" in spec)
-    if not ok:
-        return [], f"arm check: {detail}", meta
+        detail = stream.init.get("error") or proc.stderr.strip()
+        return [], f"{runtime} exit {proc.returncode}: {str(detail)[:300]}", meta
+    if runtime == "claude":
+        ok, detail = check_arm(stream.init, arm, agent_flag_used="--agent" in cmd and arm != "agent", needs_calendar="calendar" in spec, model=model, needs_peers="peers" in spec)
+        if not ok:
+            return [], f"arm check: {detail}", meta
+    elif str((stream.result or {}).get("status", "SUCCESS")).upper() not in ("SUCCESS", "COMPLETED"):
+        return [], f"{runtime} result: {(stream.result or {}).get('error') or stream.result}", meta
     mock_calls = [json.loads(l) for l in calls_log.read_text().splitlines() if l.strip()] if calls_log.exists() else []
     rec = RunRecord(stream=stream, t_start=t_start, t_end=t_end, tz=tz, fixture_dir=out / "fixture", mock_calls=mock_calls, before_dir=out / "fixture-before")
     results = []
@@ -1318,6 +1480,65 @@ def run_one(case: Case, arm: str, model: str, out: Path, root: Path | None = Non
         passed, why = grade(g, rec)
         results.append((g.get("name", f"{i}:{g['type']}"), passed, why))
     return results, None, meta
+
+
+def run_host_turns(spec: dict[str, Any], arm: str, model: str, out: Path, work: Path,
+                   env: dict[str, str], mcp_config: dict[str, Any] | None, calls_log: Path, tz: str,
+                   *, runtime: str, root: Path, effort: str | None = None,
+                   case_root: Path = Path("."), ctx: dict[str, str] | None = None
+                   ) -> tuple[list[tuple[str, bool, str]], str | None, dict[str, Any]]:
+    """Drive prompted turns through the host's explicit conversation ID."""
+    completed: list[tuple[Stream, datetime, datetime]] = []
+    session_id = None
+    all_raw = []
+    for n, turn in enumerate(spec["turns"], 1):
+        if "prompt" not in turn:
+            return [], f"{runtime} cannot safely wake an idle conversation for wait turn {n}", {"runtime": runtime}
+        if "peers" in turn:
+            (out / "peers-sessions.json").write_text(render((case_root / turn["peers"]).read_text(), ctx))
+        message = host_prompt(runtime, arm, turn["prompt"], root, work) if n == 1 else turn["prompt"]
+        try:
+            cmd = host_command(runtime, model, message, work, root, mcp_config,
+                               session_id=session_id, persistent=True, effort=effort, extra_write=out)
+        except RuntimeError as exc:
+            return [], str(exc), {"runtime": runtime, "turns_reached": len(completed)}
+        (out / f"command-turn{n}.json").write_text(json.dumps(cmd, indent=1))
+        started = datetime.now(ZoneInfo(tz))
+        try:
+            proc = subprocess.run(cmd, cwd=work, env=env, stdin=subprocess.DEVNULL, capture_output=True,
+                                  text=True, timeout=spec.get("timeout_seconds", 300))
+        except subprocess.TimeoutExpired:
+            return [], f"{runtime} turn {n} timed out", {"runtime": runtime, "turns_reached": len(completed)}
+        ended = datetime.now(ZoneInfo(tz))
+        (out / f"stream-turn{n}.jsonl").write_text(proc.stdout)
+        (out / f"stderr-turn{n}.txt").write_text(proc.stderr)
+        all_raw.append(proc.stdout)
+        stream = parse_host_stream(proc.stdout, runtime, model)
+        if proc.returncode or stream.result is None:
+            return [], f"{runtime} turn {n} failed: {stream.init.get('error') or proc.stderr.strip()[:200]}", \
+                   {"runtime": runtime, "turns_reached": len(completed)}
+        completed.append((stream, started, ended))
+        shutil.copytree(work, out / f"fixture-turn{n}", dirs_exist_ok=True)
+        if n < len(spec["turns"]):
+            session_id = host_session_id(stream)
+            if not session_id:
+                return [], f"{runtime} returned no conversation ID after turn {n}", \
+                       {"runtime": runtime, "turns_reached": len(completed)}
+    (out / "stream.jsonl").write_text("".join(all_raw))
+    shutil.copytree(work, out / "fixture", dirs_exist_ok=True)
+    calls = [json.loads(l) for l in calls_log.read_text().splitlines() if l.strip()] if calls_log.exists() else []
+    results = []
+    for n, (turn_spec, (stream, started, ended)) in enumerate(zip(spec["turns"], completed), 1):
+        in_turn = [c for c in calls if "at" in c and started <= datetime.fromisoformat(c["at"]) <= ended]
+        rec = RunRecord(stream=stream, t_start=started, t_end=ended, tz=tz,
+                        fixture_dir=out / f"fixture-turn{n}", mock_calls=in_turn,
+                        before_dir=out / ("fixture-before" if n == 1 else f"fixture-turn{n - 1}"))
+        for i, grader in enumerate(turn_spec["graders"]):
+            passed, why = grade(grader, rec)
+            label = grader.get("name", f"{i}:{grader['type']}")
+            results.append((f"T{n}: {label}", passed, why))
+    return results, None, {"runtime": runtime, "turns_reached": len(completed),
+                            "denials": sum(len(s.denied_ids) for s, _, _ in completed)}
 
 
 def run_turns(spec: dict[str, Any], arm: str, model: str, out: Path, work: Path, env: dict[str, str], mcp_config: dict[str, Any] | None, calls_log: Path, tz: str, case_root: Path = Path("."), ctx: dict[str, str] | None = None) -> tuple[list[tuple[str, bool, str]], str | None, dict[str, Any]]:
@@ -1356,13 +1577,20 @@ def run_turns(spec: dict[str, Any], arm: str, model: str, out: Path, work: Path,
 
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--runtime", choices=RUNTIMES, default="claude", help="CLI backend; default claude")
     ap.add_argument("--arm", choices=["baseline", "agent"], required=True)
-    ap.add_argument("--model", default=DEFAULT_MODEL)
+    ap.add_argument("--model", default=None)
+    ap.add_argument("--effort", choices=("low", "medium", "high", "xhigh", "max"),
+                    help="reasoning effort where the selected CLI exposes it")
     ap.add_argument("--case", action="append", default=[], help="case name glob; repeatable")
     ap.add_argument("--runs", type=int, default=1)
     ap.add_argument("--golden", action="store_true",
-                    help='only cases marked "golden": true; the set green is called on, run with --model opus')
+                    help='only cases marked "golden": true; select a model supported by the chosen runtime')
     args = ap.parse_args(argv)
+    if args.runtime != "claude" and args.model is None:
+        ap.error("--model is required for non-Claude runtimes")
+    if args.model is None:
+        args.model = DEFAULT_MODEL
 
     cases = load_cases(args.case, golden_only=args.golden)
     if not cases:
@@ -1384,8 +1612,9 @@ def main(argv: list[str]) -> int:
         unmeasured = False
         for n in range(1, args.runs + 1):
             out = EVALS / "results" / stamp / case.name / args.arm / str(n)
-            results, error, meta = run_one(case, args.arm, args.model, out, root=snapshot)
-            write_verdict(out, case.name, args.arm, args.model, n, results, error, meta)
+            results, error, meta = run_one(case, args.arm, args.model, out, root=snapshot,
+                                           runtime=args.runtime, effort=args.effort)
+            write_verdict(out, case.name, args.arm, args.model, n, results, error, meta, runtime=args.runtime)
             print(f"\n{case.name}  arm={args.arm}  model={args.model}  run={n}  {meta}")
             if error:
                 harness_error = unmeasured = True

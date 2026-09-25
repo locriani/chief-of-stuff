@@ -52,7 +52,7 @@ LINE_CAP = 2400
 # 12500 from 12000 when the header gained the fixed-name paragraph, and 13000 when it gained ponytail
 # and the review step, and 14200 when an agy session gained its mailbox-only paragraph and every inbox
 # command its mailbox path: each time keeping the old headroom.
-BODY_CAP = 14200
+BODY_CAP = 16000
 # A bare session name, optionally carrying the six hex characters a listing shows beside it.
 SESSION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}(?: \[[0-9a-f]{6}\])?")
 # The name a session is started with: bare, because the ref is the harness's and arrives later.
@@ -75,6 +75,13 @@ AGY = ("**You run under Antigravity, not Claude Code.** You cannot list sessions
        "`--from \"{name}\"`, and your ref is your name. Check your mailbox "
        "(`python3 {inbox_script} list --recipient \"{name}\" --unread`) before each step and after each "
        "commit.")
+NON_CLAUDE_REGISTER = ("**Register first, before you read anything else.** You run under {host}, so "
+    "use the file mailbox for every registration, ask, progress report and stop. Your ref is your assigned "
+    "name `{name}`; the coordinator identifies you by that name, this worktree and your registered process. "
+    "Send `python3 {inbox_script} send --to coordinator --from \"{name}\" --type register "
+    "--body \"ref: {name}, worktree: {worktree}, branch: <branch>, task: {task}, state: planning\"`. "
+    "Check replies with `python3 {inbox_script} list --recipient \"{name}\" --unread` "
+    "before each step and after each commit. The coordinator writes tracker and board updates on its next turn.")
 
 HEADER = """# Assignment
 
@@ -292,13 +299,35 @@ def compose(root: Path, day: str | None, task: str, worktree: Path | None = None
         task=item,
         you_are=f"You are `{name}`. " if name else "",
     )
-    if runtime == "agy":
-        agy = AGY.format(name=name or UNNAMED, inbox_script=inbox_script)
-        header_text = header_text.replace("\n\n**Register first", f"\n\n{agy}\n\n**Register first", 1)
+    if runtime != "claude":
+        host = {"agy": "Antigravity", "codex": "Codex CLI", "cursor": "Cursor CLI"}[runtime]
+        registration = NON_CLAUDE_REGISTER.format(host=host, name=name or UNNAMED,
+            inbox_script=inbox_script, worktree=worktree or "this worktree", task=item)
+        if runtime == "agy":
+            registration = AGY.format(name=name or UNNAMED, inbox_script=inbox_script) + "\n\n" + registration
+        start, rest = header_text.split("**Register first", 1)
+        _, end = rest.split("**Your name is fixed.**", 1)
+        header_text = start + registration + "\n\n**Your name is fixed.**" + end
+        header_text = header_text.replace("enter it (EnterPlanMode)",
+            "enter it (/plan)" if runtime in ("codex", "cursor") else "enter it (plan mode)")
+        header_text = header_text.replace("If direct messaging (IPC) is unavailable or fails, deposit", "Deposit")
+        header_text = header_text.replace("If direct messaging fails, post it to the mailbox:", "Post it to the mailbox:")
+        if runtime == "codex":
+            header_text += ("\n\n**Codex plan gate.** This session starts with a read-only sandbox. "
+                "Use `/plan` to present the plan. After the user approves it, exit this read-only session "
+                "and resume this same session ID with `python3 " + shlex.quote(str(INBOX_SCRIPT.parent / "session_exec.py")) +
+                " resume-codex --root " + shlex.quote(str(root.resolve())) + " --name " + str(name or UNNAMED) +
+                " --worktree " + shlex.quote(str(worktree or root)) + " --session-id <session-id>`. "
+                "This keeps the process registration current. Do not use `--last` because another session may have started.\n")
+        elif runtime == "cursor":
+            header_text += "\n\n**Cursor plan gate.** This session starts in Cursor Plan mode. Ask the user to approve the plan before switching to Agent mode.\n"
     report_text = REPORT.format(
         inbox_script=inbox_script,
         coord_mailbox=coord_mailbox,
     )
+    if runtime != "claude":
+        report_text = report_text.replace("If direct messaging fails, send via mailbox:", "Send via mailbox:")
+        header_text = header_text.replace("When direct messaging is unavailable, send your ask via:", "Send your ask via:")
 
     lines = [header_text, f"Task: {item}"]
     if rows[0].checklist.strip():
@@ -348,4 +377,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

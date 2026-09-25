@@ -645,13 +645,14 @@ class AgyTest(unittest.TestCase):
                                  runtime="agy", model="gemini-3.8-flash-high", workspace="/tmp/ws", **kw)
 
     def test_the_tab_runs_agy_in_plan_mode_on_the_named_model(self):
-        self.assertRegex(self.script(), r"/usr/bin/env -C /tmp/wt (?:'PATH=[^']*'|PATH=\S*) /opt/homebrew/bin/agy "
+        self.assertRegex(self.script(), r"session_exec.py --registry .* --runtime agy .* -- /opt/homebrew/bin/agy "
                                         r"--model gemini-3.8-flash-high --mode plan -i ")
 
     def test_it_carries_no_claude_flags(self):
         s = self.script()
-        for flag in ("--agent", "--name", "--permission-mode"):
+        for flag in ("--agent", "--permission-mode"):
             self.assertNotIn(flag, s)
+        self.assertIn("--name implementer-GFlash38H-01", s, "the wrapper registers the assigned name")
 
     def test_the_bootstrap_names_the_dispatch_and_the_workspace_rules(self):
         s = self.script().replace("\\", "")
