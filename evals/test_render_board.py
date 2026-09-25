@@ -5,9 +5,7 @@ import contextlib
 import hashlib
 import http.server
 import io
-import os
 import re
-import signal
 import socket
 import sys
 import tempfile
@@ -1414,9 +1412,9 @@ class CliTest(unittest.TestCase):
         port = free_port()
         root = self.pages_root(port)
         buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
+        with mock.patch("pages.ensure", side_effect=AssertionError("render started the server")), \
+             contextlib.redirect_stdout(buf):
             out = rb.main(["--date", "2026-09-16", "--root", str(root)])
-        self.addCleanup(lambda: os.kill(int((root / "pages" / ".pid").read_text()), signal.SIGTERM))
         self.assertEqual(out, root / "pages" / "2026-09-16-board.html")
         page = out.read_text()
         self.assertIn("Last-Modified", page)
@@ -1424,10 +1422,10 @@ class CliTest(unittest.TestCase):
         self.assertIn("document.lastModified", page)
         self.assertIn("visibilitychange", page)
         self.assertIn(f"board http://127.0.0.1:{port}/", page)
-        # Every render ensures the server, so no move can render a board nobody is serving without hearing so.
-        self.assertIn(f"pages: started http://127.0.0.1:{port}/", buf.getvalue())
+        self.assertFalse((root / "pages" / ".pid").exists())
+        self.assertNotIn("http://127.0.0.1", buf.getvalue())
 
-    def test_a_render_says_when_the_board_is_not_served(self) -> None:
+    def test_a_render_only_writes_even_when_board_port_is_occupied(self) -> None:
         other = http.server.ThreadingHTTPServer(("127.0.0.1", 0), http.server.SimpleHTTPRequestHandler)
         threading.Thread(target=other.serve_forever, daemon=True).start()
         self.addCleanup(other.server_close)
@@ -1437,7 +1435,7 @@ class CliTest(unittest.TestCase):
         with contextlib.redirect_stdout(buf):
             out = rb.main(["--date", "2026-09-16", "--root", str(root)])
         self.assertTrue(out.exists())
-        self.assertIn(f"pages: not served — port {other.server_address[1]} answers as", buf.getvalue())
+        self.assertNotIn("pages:", buf.getvalue())
 
     def test_summary_line_counts_long_items(self) -> None:
         root = Path(tempfile.mkdtemp())

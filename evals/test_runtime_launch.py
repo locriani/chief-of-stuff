@@ -20,6 +20,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import start_coordinator as start  # noqa: E402
 import dispatch_prompt as dispatch  # noqa: E402
 import session_exec  # noqa: E402
+import process_status  # noqa: E402
 import spawn_session as spawn  # noqa: E402
 from evals.test_spawn_session import CLAUDE, TRACKER  # noqa: E402
 
@@ -38,9 +39,10 @@ class CoordinatorLaunchTest(unittest.TestCase):
         again = start.install(ROOT, self.install_dir)
         self.assertEqual(first, again)
         self.assertTrue((first / "scripts" / "spawn_session.py").is_file())
+        self.assertTrue((first / "scripts" / "process_status.py").is_file())
         self.assertTrue((first / "scripts" / "_vendor" / "toon_format" / "decoder.py").is_file())
         self.assertTrue((first / "agents" / "chief-of-stuff.md").is_file())
-        self.assertIn("0.36.0-", first.name)
+        self.assertIn("0.36.1-", first.name)
 
     def test_concurrent_installs_share_one_complete_release(self):
         with ThreadPoolExecutor(max_workers=3) as pool:
@@ -71,6 +73,7 @@ class CoordinatorLaunchTest(unittest.TestCase):
                 rendered = start.prompt(runtime, release, self.root)
                 self.assertIn(marker, rendered)
                 self.assertIn("list --recipient coordinator --unread", rendered)
+                self.assertIn("process_status.py --root", rendered)
         self.assertEqual(start.WATCH_INTERVAL, 5 * 60)
 
     def test_missing_calendar_server_does_not_block_launch(self):
@@ -113,14 +116,24 @@ class CoordinatorLaunchTest(unittest.TestCase):
         release = start.install(ROOT, self.install_dir)
         clean = [mock.Mock(returncode=0, stdout="[]"),
                  mock.Mock(returncode=0, stdout="tasks=1 trees=0 orphaned=0 stopped=0\n"),
-                 mock.Mock(returncode=0, stdout="")]
+                 mock.Mock(returncode=0, stdout="[]")]
         with mock.patch.object(start.subprocess, "run", side_effect=clean):
             self.assertEqual(start.check_once(self.root, release), "")
         unread = [mock.Mock(returncode=0, stdout='[1]{type}:\n  register'),
                   mock.Mock(returncode=0, stdout="tasks=1 trees=0 orphaned=0 stopped=0\n"),
-                  mock.Mock(returncode=0, stdout="")]
+                  mock.Mock(returncode=0, stdout="[]")]
         with mock.patch.object(start.subprocess, "run", side_effect=unread):
             self.assertIn("1 unread", start.check_once(self.root, release))
+
+    def test_watcher_uses_batch_process_helper_and_reports_reused_pid(self):
+        release = start.install(ROOT, self.install_dir)
+        rows = [{"pid": 123, "name": "impl01", "runtime": "cursor", "status": "pid_reused"}]
+        outputs = [mock.Mock(returncode=0, stdout="[]"),
+                   mock.Mock(returncode=0, stdout="tasks=1 trees=0 orphaned=0 stopped=0\n"),
+                   mock.Mock(returncode=0, stdout=process_status.toon_encode(rows))]
+        with mock.patch.object(start.subprocess, "run", side_effect=outputs) as run:
+            self.assertIn("worker impl01 process is pid_reused", start.check_once(self.root, release))
+        self.assertEqual(Path(run.call_args_list[2].args[0][1]).name, "process_status.py")
 
     def test_cursor_launch_with_fake_cli(self):
         bin_dir = Path(self.tmp.name) / "bin"

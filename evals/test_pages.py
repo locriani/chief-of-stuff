@@ -95,10 +95,10 @@ class EnsureTest(unittest.TestCase):
     def test_starts_once_then_reuses(self):
         self.addCleanup(self.stop)
         first = pg.ensure(self.dir, self.port, self.log)
-        self.assertEqual(first, f"pages: started http://127.0.0.1:{self.port}/")
+        self.assertEqual(first, "pages: started")
         pid = (self.dir / ".pid").read_text()
         self.assertEqual(get(self.port, "/").status, 200)
-        self.assertEqual(pg.ensure(self.dir, self.port, self.log), f"pages: http://127.0.0.1:{self.port}/")
+        self.assertEqual(pg.ensure(self.dir, self.port, self.log), "pages: serving")
         self.assertEqual((self.dir / ".pid").read_text(), pid)
 
     def test_a_foreign_server_on_the_port_is_an_error(self):
