@@ -82,6 +82,18 @@ class SettingsTest(unittest.TestCase):
         with self.assertRaises(st.SettingsError):
             st.load(self.root, self.write('[workflow]\nreviewer_session = "a b"\n'))
 
+    def test_code_delivery_and_merge_owner(self):
+        self.assertEqual((st.load(self.root, None).workflow.delivery,
+                          st.load(self.root, None).workflow.merge_owner), ("pull-request", "user"))
+        workflow = st.load(self.root, self.write('[workflow]\ndelivery = "branch"\n')).workflow
+        self.assertEqual(workflow.delivery, "branch")
+        workflow = st.load(self.root, self.write('[workflow]\nmerge_owner = "worker"\n')).workflow
+        self.assertEqual(workflow.merge_owner, "worker")
+        for text in ('delivery = "direct"', 'merge_owner = "bot"',
+                     'delivery = "branch"\nmerge_owner = "worker"'):
+            with self.subTest(text=text), self.assertRaises(st.SettingsError):
+                st.load(self.root, self.write('[workflow]\n' + text + '\n'))
+
 
 if __name__ == "__main__":
     unittest.main()

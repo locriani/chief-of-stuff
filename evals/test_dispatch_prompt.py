@@ -886,6 +886,18 @@ class ReviewerRoutingTest(unittest.TestCase):
         self.assertIn("No reviewer session is configured", generic)
         self.assertNotIn("reviewer-01", generic)
 
+    def test_delivery_and_merge_owner_change_worker_instructions(self):
+        tmp, root = workspace(claude_md=CLAUDE + "- Settings: `cos.toml`\n")
+        self.addCleanup(tmp.cleanup)
+        (root / "cos.toml").write_text('[workflow]\ndelivery = "branch"\n')
+        branch = dp.compose(root, "2026-09-18", "Security audit")
+        self.assertIn("Report the branch, head sha and test result", branch)
+        self.assertNotIn("Code reaches main only through a pull request", branch)
+        (root / "cos.toml").write_text('[workflow]\nmerge_owner = "worker"\n')
+        pr = dp.compose(root, "2026-09-18", "Security audit")
+        self.assertIn("merge your pull request", pr)
+        self.assertNotIn("The merge is the user's alone", pr)
+
 
 class AgyRuntimeTest(unittest.TestCase):
     """An agy session cannot list sessions or message one: the mailbox is its only channel."""

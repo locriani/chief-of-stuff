@@ -23,7 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from backlog import file_with, issue_ref  # noqa: E402
 from render_board import ConfigError, _cells, _is_separator, _section, parse_coordinator, parse_tracker, short_name  # noqa: E402
-from settings import SettingsError, load as load_settings  # noqa: E402
+from settings import SettingsError, Workflow, load as load_settings  # noqa: E402
 
 
 class RefusedError(ValueError):
@@ -225,6 +225,21 @@ COMMITS = ("Commits: Commit small and often on your own branch — uncommitted w
            "The merge is the user's alone: you never merge a pull request.")
 
 
+def commit_rule(workflow: Workflow) -> str:
+    if workflow.delivery == "branch":
+        return ("Commits: Commit small and often on your own branch. Report the branch, head sha and "
+                "test result to the coordinator when the task is ready. Do not push or merge shared branches "
+                "without the user's approval or an applicable workspace rule.")
+    rule = COMMITS
+    if workflow.merge_owner == "worker":
+        rule = rule.replace("The merge is the user's alone: you never merge a pull request.",
+                            "After the coordinator confirms review and required approvals, merge your pull "
+                            "request and report the resulting main sha.")
+    return rule + (f" Review goes to the configured session {workflow.reviewer_session}; report findings "
+                   "to the coordinator for user triage." if workflow.reviewer_session else
+                   " No reviewer session is configured; the coordinator asks the user how to review it.")
+
+
 def _clean(label: str, value: str) -> str:
     """A field read off the tracker, checked before it becomes an instruction to somebody."""
     if VIA in value:
@@ -381,9 +396,7 @@ def compose(root: Path, day: str | None, task: str, worktree: Path | None = None
         f"Inbox: {INBOX_SCRIPT}",
         f"Owns: {owns}" + ("" if owns.lower() == "none" else
                            " — yours to keep true; drift left in them is your error. Do not touch any other file."),
-        COMMITS + (f" Review goes to the configured session {workflow.reviewer_session}; report findings "
-                   "to the coordinator for user triage." if workflow.reviewer_session else
-                   " No reviewer session is configured; the coordinator asks the user how to review it."),
+        commit_rule(workflow),
         report_text,
     ]
     body = "\n".join(lines) + "\n"
