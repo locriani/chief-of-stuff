@@ -33,7 +33,7 @@
           "name": "R2 is filed once",
           "type": "tool_used",
           "tool": "Bash",
-          "input_match": "gh-issue new|glab issue create|backlog\\.py[^\"]*--create",
+          "input_match": "backlog\\.py[^\"]*--create",
           "min": 1,
           "max": 1
         },
@@ -95,7 +95,7 @@
           "name": "nothing is filed again",
           "type": "tool_used",
           "tool": "Bash",
-          "input_match": "gh-issue new|glab issue create|backlog\\.py[^\"]*--create",
+          "input_match": "backlog\\.py[^\"]*--create",
           "max": 0
         },
         {

@@ -70,7 +70,7 @@ def allowed_tools(root: Path) -> list[str]:
     """The allowlist, rooted. Finding 114: these were absolute paths into the live checkout, so a run
     read whatever was on disk when each case reached it and a tree edited mid-run produced two
     verdicts wearing one name. Rooting them lets a run point at a snapshot of its own."""
-    return (["Bash(date:*)", "Bash(TZ=*)", "Bash(mv:*)", "Bash(mkdir:*)", "Bash(gh-issue:*)"]
+    return (["Bash(date:*)", "Bash(TZ=*)", "Bash(mv:*)", "Bash(mkdir:*)"]
             + [f"Bash(python3 {root / 'scripts' / name}:*)" for name in SCRIPTS]
             + ["Read", "Glob", "Grep", "Write(./**)", "Edit(./**)"])
 
@@ -1354,17 +1354,6 @@ print("railway: blocked by eval harness", file=sys.stderr)
 sys.exit(1)
 '''
 
-# A `file` disposition runs `gh-issue new`; in an eval it is recorded and answered, and reaches no tracker.
-GH_ISSUE_SHIM = '''#!/usr/bin/env python3
-import sys
-from pathlib import Path
-
-with open(Path(__file__).parent / "calls.log", "a") as log:
-    log.write(" ".join(["gh-issue", *sys.argv[1:]]) + "\\n")
-repo = sys.argv[sys.argv.index("-R") + 1] if "-R" in sys.argv else "o/backlog"
-print(f"https://github.com/{repo}/issues/101")
-'''
-
 GH_SHIM = '''#!/usr/bin/env python3
 import json, sys
 from pathlib import Path
@@ -1433,12 +1422,18 @@ def write_shims(shim_dir: Path) -> None:
     railway = shim_dir / "railway"
     railway.write_text(RAILWAY_SHIM)
     railway.chmod(0o755)
-    gh_issue = shim_dir / "gh-issue"
-    gh_issue.write_text(GH_ISSUE_SHIM)
-    gh_issue.chmod(0o755)
     gh = shim_dir / "gh"
     gh.write_text(GH_SHIM)
     gh.chmod(0o755)
+
+
+def eval_environment(out: Path, calls_log: Path, tz: str) -> dict[str, str]:
+    """Pin external issue writes to the fake CLI even if a host resets its shell PATH."""
+    shims = out / "shims"
+    return dict(os.environ,
+                PATH=f"{shims}{os.pathsep}{os.environ['PATH']}",
+                CHIEF_OF_STUFF_GH=str((shims / "gh").resolve()),
+                CHIEF_OF_STUFF_LAUNCHER=json.dumps(write_recorder(shims, calls_log, tz)))
 
 
 def run_one(case: Case, arm: str, model: str, out: Path, root: Path | None = None,
@@ -1466,11 +1461,7 @@ def run_one(case: Case, arm: str, model: str, out: Path, root: Path | None = Non
         write_shims(out / "shims")
         calls_log.parent.mkdir(parents=True, exist_ok=True)
         calls_log.touch()
-        env = dict(
-            os.environ,
-            PATH=f"{out / 'shims'}{os.pathsep}{os.environ['PATH']}",
-            CHIEF_OF_STUFF_LAUNCHER=json.dumps(write_recorder(out / "shims", calls_log, tz)),
-        )
+        env = eval_environment(out, calls_log, tz)
         mcp_config = None
         if "calendar" in spec:
             # Events live in the results dir, not the agent's cwd, so the calendar is reachable only through the mock.

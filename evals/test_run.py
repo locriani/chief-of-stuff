@@ -92,9 +92,9 @@ class SandboxGuardTest(unittest.TestCase):
         self.assertNotIn("Bash(rm:*)", run.ALLOWED)
         self.assertNotIn("Bash(cp:*)", run.ALLOWED)
 
-    def test_the_gh_issue_shim_is_allowlisted(self) -> None:
-        # A `file` disposition runs `gh-issue templates` then `gh-issue new`; the shim on PATH answers every argv, so no real tracker is reached.
-        self.assertIn("Bash(gh-issue:*)", run.ALLOWED)
+    def test_legacy_gh_issue_plugin_is_not_allowlisted(self) -> None:
+        self.assertNotIn("Bash(gh-issue:*)", run.ALLOWED)
+        self.assertIn("backlog.py", " ".join(run.ALLOWED))
 
     def test_gh_issue_create_is_stubbed_for_the_builtin_writer(self) -> None:
         import subprocess
@@ -108,6 +108,14 @@ class SandboxGuardTest(unittest.TestCase):
             self.assertEqual(done.returncode, 0)
             self.assertEqual(done.stdout.strip(), "https://github.com/o/backlog/issues/101")
             self.assertIn("gh issue create", (root / "calls.log").read_text())
+
+    def test_eval_environment_pins_the_gh_shim_by_absolute_path(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            run.write_shims(root / "shims")
+            env = run.eval_environment(root, root / "calls.jsonl", "America/Chicago")
+            self.assertEqual(env["CHIEF_OF_STUFF_GH"], str((root / "shims" / "gh").resolve()))
+            self.assertTrue(Path(env["CHIEF_OF_STUFF_GH"]).is_file())
 
     def test_runner_tools_exclude_peer_tools(self) -> None:
         for name in self.PEER_TOOLS:
@@ -138,20 +146,11 @@ class ShimTest(unittest.TestCase):
             self.assertIn("blocked by eval harness", proc.stderr)
             self.assertEqual((shims / "calls.log").read_text(), "railway up --detach\n")
 
-    def test_gh_issue_shim_logs_and_answers_with_an_issue(self) -> None:
-        """A `file` disposition in an eval files nothing on a real tracker."""
-        import subprocess
-        import sys
-
+    def test_no_legacy_gh_issue_shim_is_written(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             shims = Path(d)
             run.write_shims(shims)
-            shim = shims / "gh-issue"
-            self.assertTrue(os.access(shim, os.X_OK))
-            proc = subprocess.run([sys.executable, str(shim), "new", "-R", "o/backlog", "--title", "x"], capture_output=True, text=True)
-            self.assertEqual(proc.returncode, 0)
-            self.assertRegex(proc.stdout, r"https://github.com/o/backlog/issues/\d+")
-            self.assertEqual((shims / "calls.log").read_text(), "gh-issue new -R o/backlog --title x\n")
+            self.assertFalse((shims / "gh-issue").exists())
 
 
 class ModelGuardTest(unittest.TestCase):
