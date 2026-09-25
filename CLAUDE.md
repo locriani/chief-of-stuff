@@ -10,4 +10,3 @@ A versioned coordinator for Claude Code, Codex CLI, Cursor CLI, and Antigravity 
 - **No shell scripts.** Harness code, shims, mocks, and probes are Python (or another real language). Shell appears only as a one-line command someone types.
 - **Fixtures are templates.** `{{today}}`, `{{yesterday}}`, `{{tomorrow}}`, `{{tz}}`, `{{now_hhmm}}`, `{{now±Nh}}` (`|local`, `|hhmm`), and `{{dotgit}}` (a `.git` dir name, since git cannot track one) in file names and contents. No hardcoded dates. An unknown token fails the run.
 - **Fixtures are generic.** No data from any workspace that uses this agent — no patient data, no program documents, no real deploy names.
-- **Referenced from `~/Developer/ai-additions`** (`SETUP-LIST.md`, Referenced table). That repo's approval gate governs enabling.

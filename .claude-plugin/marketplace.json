@@ -1,6 +1,6 @@
 {
   "name": "chief-of-stuff",
-  "description": "A main-session coordinator agent for running a working day from a daily log",
+  "description": "A reusable coordinator for daily work across agent CLIs",
   "owner": {
     "name": "Zach Gardner",
     "email": "locriani@gmail.com"
@@ -8,8 +8,8 @@
   "plugins": [
     {
       "name": "chief-of-stuff",
-      "description": "The chief-of-stuff agent: clock from date, daily log upkeep, three tasks per open item, dispatch on a yes. Launch with claude --agent chief-of-stuff.",
-      "version": "0.36.16",
+      "description": "The chief-of-stuff agent: daily log, tracker, board, and worker dispatch on user approval. Launch with Claude Code or start_coordinator.py.",
+      "version": "0.36.17",
       "source": "./",
       "author": {
         "name": "Zach Gardner",

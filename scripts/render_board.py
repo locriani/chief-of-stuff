@@ -1254,7 +1254,7 @@ def legend() -> str:
 
 # A poll cycle runs about an hour, so under half an hour is current, under two hours is last cycle,
 # and past that a node is reporting a memory of the morning. Baked in Python at render: the fade has
-# to survive with JavaScript off, and design-inputs §50 settled that this page runs none.
+    # to survive with JavaScript off, and docs/archive/design-inputs.md §50 settled that this page runs none.
 STAMP_FRESH = timedelta(minutes=30)
 STAMP_AGING = timedelta(hours=2)
 # Every kind a node can draw. The first four are reported; the rest the coordinator works out,
