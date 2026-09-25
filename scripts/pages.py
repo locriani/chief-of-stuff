@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Serve the workspace's pages from this Mac: the board and any page a session writes beside it.
+"""Serve the workspace's pages locally: the board and any page a session writes beside it.
 
-Zach, 2026-09-24 14:07: "we should host our own webserver and ensure they are set up as part of the
-agent's boot loop." It replaced the claude.ai Artifact board. The page is the file the renderer
-wrote, so a move renders and is done, and the open tab reloads itself when the file changes.
+The page is the file the renderer wrote, so a move renders and is done, and an open tab reloads
+itself when the file changes.
 
     python3 pages.py --ensure [--root R]    # start it unless it is already serving; print status only
     python3 pages.py serve --dir D --port P # what --ensure starts, detached

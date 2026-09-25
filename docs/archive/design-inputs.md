@@ -1,4 +1,6 @@
-# Design inputs
+# Design inputs (historical)
+
+This is an archived record from the original workspace. It is not current setup guidance.
 
 Field findings weighed at replans. Status per finding is in the table; the plan (`/Users/locriani/.claude/plans/it-s-the-ramp-card-crystalline-cupcake.md`) governs.
 

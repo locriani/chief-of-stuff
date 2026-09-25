@@ -648,6 +648,9 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         self.assertIn("${CLAUDE_PLUGIN_ROOT}/scripts/backlog.py --create", self.content)
         self.assertNotIn("~/.claude/plugins/cache/ai-additions", self.content)
 
+    def test_live_prompt_does_not_name_the_original_workspace_user(self):
+        self.assertNotIn("Zach", self.content)
+
     def test_triage_is_the_users(self):
         self.assertIn("## Triage", self.content)
         self.assertIn("every disposition in one reply", self.content)
