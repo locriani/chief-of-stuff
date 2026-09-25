@@ -38,9 +38,8 @@ def _offset(label: str, where: str = "[notify] deadline_warnings") -> timedelta:
 
 @dataclass(frozen=True)
 class Notify:
-    # Interim: md-notify is to be replaced by Zach's Todo tooling (Zach, 2026-09-22 22:20).
     adapter: str = "off"
-    queue: str = "Areas/notifications/NOTIFICATIONS.md"
+    queue: str = "notifications/NOTIFICATIONS.md"
     day_open: str = "06:00"
     day_close: str = "22:00"
     warnings: tuple[tuple[str, timedelta], ...] = tuple((w, _offset(w)) for w in DEFAULT_WARNINGS)
@@ -190,7 +189,7 @@ def _kanban(table) -> Kanban:
 
 
 def _notify(table: dict, root: Path) -> Notify:
-    got = Notify(adapter="md-notify")
+    got = Notify()
     adapter = table.get("adapter", got.adapter)
     if adapter not in ADAPTERS:
         raise SettingsError(f"[notify] adapter: {adapter!r} is not one of {', '.join(ADAPTERS)}")

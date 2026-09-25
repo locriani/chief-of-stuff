@@ -45,7 +45,7 @@ class SettingsTest(unittest.TestCase):
     def test_defaults_per_missing_key(self):
         got = st.load(self.root, self.write("[notify]\n")).notify
         self.assertEqual((got.adapter, got.queue, got.day_open, got.day_close),
-                         ("md-notify", "Areas/notifications/NOTIFICATIONS.md", "06:00", "22:00"))
+                         ("off", "notifications/NOTIFICATIONS.md", "06:00", "22:00"))
         self.assertEqual(got.warnings, (("24h", timedelta(hours=24)), ("3h", timedelta(hours=3)), ("1h", timedelta(hours=1))))
 
     def test_values_are_read(self):

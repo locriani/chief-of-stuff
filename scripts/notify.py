@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
-"""The coordinator's notifications, written where a notifier reads them.
+"""The coordinator's notifications, written where the configured notifier reads them.
 
-Zach, 2026-09-22 22:20: "consider integration with my md-notify repo for initial setup of notifications -
-with a note that we will be plugging this out later and integrating with my todo tooling instead at a future
-point." So md-notify is an adapter behind `adapter_for`, and a Todo adapter replaces it without any caller
-changing. Todo's `compile` rewrites its whole queue file: the two must never share one.
+The md-notify adapter is optional and writes only when explicitly selected in workspace settings.
 
     python3 notify.py --root . sync                                   # deadline warnings, day open and close
     python3 notify.py --root . add --kind awaiting --what "PR 0.23.0" [--message M] [--when now|YYYY-MM-DD HH:MM]
@@ -47,7 +44,7 @@ WARNING = "⏰ "
 OPEN_DAY, CLOSE_DAY = "☀️ Open the day", "🌙 Close the day"
 TEMPLATE = """# chief-of-stuff notifications
 
-Written by chief-of-stuff's `notify.py` for md-notify, the interim adapter: it is to be replaced by the Todo tooling (Zach, 2026-09-22). Tap Complete or Ignore on a banner to park its row. Never point Todo's `compile` at this file; it rewrites the whole file.
+Written by chief-of-stuff's `notify.py` for md-notify. Tap Complete or Ignore on a banner to park its row. Keep other notification tools from rewriting this queue.
 
 | When (CT) | Title | Message | Open |
 |---|---|---|---|
@@ -147,7 +144,7 @@ class Off:
 
 
 class MdNotifyQueue:
-    """md-notify's queue file. Interim: to be replaced by the Todo tooling (Zach, 2026-09-22 22:20)."""
+    """md-notify's queue file, selected explicitly by workspace settings."""
 
     def __init__(self, path: Path):
         self.path = Path(path)
