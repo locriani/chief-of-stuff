@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -61,38 +60,6 @@ def install(source: Path, install_dir: Path) -> Path:
     return target
 
 
-def calendar_server(root: Path) -> str | None:
-    text = (root / "CLAUDE.md").read_text()
-    block = text.split("## Coordinator", 1)
-    if len(block) < 2:
-        raise Refused("workspace CLAUDE.md has no ## Coordinator block")
-    body = block[1].split("\n## ", 1)[0]
-    if re.search(r"(?m)^- Calendars:\s*none\s*$", body):
-        return None
-    if not re.search(r"(?m)^- Calendars:\s*(?:$|\S)", body):
-        return None
-    m = re.search(r"(?m)^- Calendar tool:\s*`?([^`\s]+)", body)
-    if not m:
-        raise Refused("calendars are configured but Calendar tool is missing")
-    tool = m.group(1)
-    if not tool.startswith("mcp__") or "__" not in tool[5:]:
-        raise Refused(f"calendar tool {tool!r} is not a named MCP tool")
-    return tool.split("__", 2)[1]
-
-
-def preflight(runtime: str, root: Path, binary: str) -> None:
-    server = calendar_server(root)
-    if not server:
-        return
-    try:
-        result = subprocess.run([binary, "mcp", "list"], capture_output=True, text=True, timeout=15)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise Refused(f"cannot inspect {runtime} calendar integration: {exc}") from None
-    # All four CLIs list the configured MCP server by name. A failed probe is a refusal.
-    if result.returncode or not re.search(rf"(?m)^\s*{re.escape(server)}(?:\s|:|$)", result.stdout):
-        raise Refused(f"{runtime} cannot see required calendar MCP server {server!r}; configure it in {runtime} before launching")
-
-
 def prompt(runtime: str, release: Path, root: Path) -> str:
     rules = (release / "agents" / "chief-of-stuff.md").read_text()
     rules = rules.split("---", 2)[-1].strip()
@@ -143,8 +110,8 @@ def prompt(runtime: str, release: Path, root: Path) -> str:
                   "A five-minute watcher audits tasks and unread inbox messages while this session "
                   "is open and sends notifications. "
                   "On your next turn, reconcile the tracker and board. Never launch a new session without "
-                  "the user's explicit approval. If the calendar integration is missing during a session, "
-                  "report the missing tool and stop calendar-dependent work.\n")
+                  "the user's explicit approval. If the named calendar tool is unavailable, "
+                  "report it, leave calendar facts unverified, and continue work that does not depend on it.\n")
     return (f"You are chief-of-stuff. The installed rules and scripts are pinned at {release}. "
             f"The workspace is {root}. Read its CLAUDE.md for configuration.\n\n{rules}\n\nOpen the day.")
 
@@ -219,7 +186,6 @@ def main(argv: list[str] | None = None) -> int:
             raise Refused(f"{BINARIES[args.runtime]} is unavailable on PATH")
         if not root.is_dir():
             raise Refused(f"workspace {root} does not exist")
-        preflight(args.runtime, root, binary)
         release = install(SOURCE, args.install_dir.expanduser().resolve())
         cmd = command(args.runtime, binary, release, root)
     except (Refused, OSError, ValueError) as exc:
