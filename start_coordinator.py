@@ -16,6 +16,8 @@ import threading
 from datetime import date
 from pathlib import Path
 
+from scripts._vendor.toon_format import ToonDecodeError, decode as toon_decode
+
 SOURCE = Path(__file__).resolve().parent
 BINARIES = {"claude": "claude", "codex": "codex", "cursor": "agent", "agy": "agy"}
 WATCH_INTERVAL = 5 * 60
@@ -172,10 +174,10 @@ def check_once(root: Path, release: Path) -> str:
         return f"inbox exit {inbox.returncode}; audit exit {audit.returncode}"
     lines = []
     try:
-        unread = json.loads(inbox.stdout)
+        unread = [] if inbox.stdout.strip() == "[]" else toon_decode(inbox.stdout)
         if isinstance(unread, list) and unread:
             lines.append(f"{len(unread)} unread coordinator message(s)")
-    except ValueError:
+    except (ValueError, ToonDecodeError):
         lines.append("coordinator inbox could not be parsed")
     lines.extend(line for line in audit.stdout.splitlines()
                  if re.match(r"(?i)^(orphaned work:|stopped:|reopen:|issue:|next decision:|overdue:|waiting:)", line))

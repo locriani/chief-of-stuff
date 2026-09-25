@@ -146,8 +146,8 @@ class BaseInboxTestCase(unittest.TestCase):
 class SendMessageTest(BaseInboxTestCase):
     """Tier 1: Comprehensive tests for message creation and schema validation."""
 
-    def test_send_creates_immutable_json_file(self) -> None:
-        """Sending a message creates a discrete JSON file in <mailbox>/<recipient>/incoming/."""
+    def test_send_creates_immutable_toon_file(self) -> None:
+        """Sending a message creates a discrete TOON file in <mailbox>/<recipient>/incoming/."""
         msg = inbox.send_message(
             recipient="coordinator",
             sender="worker-1",
@@ -162,12 +162,11 @@ class SendMessageTest(BaseInboxTestCase):
 
         incoming_dir = self.mailbox_dir / "coordinator" / "incoming"
         self.assertTrue(incoming_dir.is_dir(), f"Incoming dir {incoming_dir} should exist")
-        files = list(incoming_dir.glob("*.json"))
+        files = list(incoming_dir.glob("*.toon"))
         self.assertEqual(len(files), 1, f"Expected exactly 1 message file, found: {files}")
 
-        # Verify on-disk JSON content matches schema
-        with open(files[0], "r", encoding="utf-8") as f:
-            data = json.load(f)
+        # Verify on-disk TOON content matches schema
+        data = inbox.Message.from_toon(files[0].read_text()).to_dict()
         self.assertEqual(data["message_id"], msg.message_id)
         self.assertEqual(data["sender"], "worker-1")
         self.assertEqual(data["recipient"], "coordinator")
@@ -196,15 +195,33 @@ class SendMessageTest(BaseInboxTestCase):
 
         # Verify persistence on disk
         incoming_dir = self.mailbox_dir / "coordinator" / "incoming"
-        msg_files = list(incoming_dir.glob("*.json"))
+        msg_files = list(incoming_dir.glob("*.toon"))
         self.assertEqual(len(msg_files), 1)
-        with open(msg_files[0], "r", encoding="utf-8") as f:
-            disk_data = json.load(f)
+        disk_data = inbox.Message.from_toon(msg_files[0].read_text()).to_dict()
         self.assertEqual(disk_data["type"], "register")
         self.assertEqual(disk_data["task"], "Storage task")
         self.assertEqual(disk_data["worktree"], "trees/wt-1")
         self.assertEqual(disk_data["payload"]["status"], "planning")
         self.assertEqual(disk_data["headers"]["priority"], "high")
+
+    def test_toon_round_trip_nested_payload_and_legacy_json_mail(self) -> None:
+        payload = {"rows": [{"id": 1, "name": "one"}, {"id": 2, "name": "two"}],
+                   "empty": [], "note": "colon: comma, newline\nnext", "enabled": False}
+        fresh = inbox.send_message("worker", "coordinator", "fresh", payload=payload,
+                                   mailbox_dir=self.mailbox_dir)
+        incoming = self.mailbox_dir / "worker" / "incoming"
+        self.assertTrue((incoming / f"{fresh.message_id}.toon").is_file())
+        self.assertEqual(inbox.read_message("worker", fresh.message_id, ack=False,
+                                            mailbox_dir=self.mailbox_dir).payload, payload)
+
+        legacy = inbox.send_message("worker", "coordinator", "legacy", mailbox_dir=self.mailbox_dir)
+        (incoming / f"{legacy.message_id}.toon").unlink()
+        (incoming / f"{legacy.message_id}.json").write_text(legacy.to_json() + "\n")
+        self.assertEqual(len(inbox.list_messages("worker", mailbox_dir=self.mailbox_dir)), 2)
+        self.assertTrue(inbox.ack_message("worker", legacy.message_id + ".json",
+                                           mailbox_dir=self.mailbox_dir))
+        self.assertEqual(inbox.read_message("worker", legacy.message_id,
+                                            mailbox_dir=self.mailbox_dir).body, "legacy")
 
     def test_send_iso_timestamp(self) -> None:
         """Message timestamp must be a valid ISO-8601 UTC string."""
@@ -384,13 +401,13 @@ class ReadAndAckTest(BaseInboxTestCase):
         incoming_file = self.mailbox_dir / "coordinator" / "incoming"
         read_file = self.mailbox_dir / "coordinator" / "read"
 
-        self.assertEqual(len(list(incoming_file.glob("*.json"))), 1)
+        self.assertEqual(len(list(incoming_file.glob("*.toon"))), 1)
         read_msg = inbox.read_message("coordinator", msg.message_id, mailbox_dir=self.mailbox_dir)
         self.assertEqual(read_msg.message_id, msg.message_id)
 
         # File must now be moved to read/
-        self.assertEqual(len(list(incoming_file.glob("*.json"))), 0)
-        self.assertEqual(len(list(read_file.glob("*.json"))), 1)
+        self.assertEqual(len(list(incoming_file.glob("*.toon"))), 0)
+        self.assertEqual(len(list(read_file.glob("*.toon"))), 1)
 
         # Subsequent unread list must be empty
         unread = inbox.list_messages("coordinator", unread_only=True, mailbox_dir=self.mailbox_dir)
@@ -474,7 +491,7 @@ class DrainInboxTest(BaseInboxTestCase):
 
         # Verify files now reside in read/
         read_dir = self.mailbox_dir / "coordinator" / "read"
-        self.assertEqual(len(list(read_dir.glob("*.json"))), 3)
+        self.assertEqual(len(list(read_dir.glob("*.toon"))), 3)
 
     def test_drain_empty_mailbox(self) -> None:
         """Draining an empty mailbox returns [] cleanly."""
@@ -582,11 +599,36 @@ class CLITest(BaseInboxTestCase):
         self.assertIn("item 1", bodies)
         self.assertIn("item 2", bodies)
 
+    def test_cli_defaults_to_toon_for_structured_results(self) -> None:
+        sent = self._run_cli(["send", "--to", "worker", "--from", "coordinator",
+                              "--body", "next: task", "--mailbox-dir", str(self.mailbox_dir)])
+        message = inbox.toon_decode(sent.stdout)
+        self.assertEqual(message["body"], "next: task")
+        listed = self._run_cli(["list", "--recipient", "worker",
+                                "--mailbox-dir", str(self.mailbox_dir)])
+        self.assertEqual(inbox.toon_decode(listed.stdout)[0]["message_id"], message["message_id"])
+        status = self._run_cli(["status", "--recipient", "worker",
+                                "--mailbox-dir", str(self.mailbox_dir)])
+        self.assertEqual(inbox.toon_decode(status.stdout)["unread"], 1)
+        read = self._run_cli(["read", message["message_id"], "--recipient", "worker",
+                              "--mailbox-dir", str(self.mailbox_dir)])
+        self.assertEqual(inbox.toon_decode(read.stdout)["body"], "next: task")
+        drained = self._run_cli(["drain", "--recipient", "worker",
+                                 "--mailbox-dir", str(self.mailbox_dir)])
+        self.assertEqual(inbox.toon_decode(drained.stdout), [])
+
+    def test_cli_accepts_toon_payload(self) -> None:
+        proc = self._run_cli(["send", "--to", "worker", "--from", "coordinator",
+                              "--payload-toon", 'branch: feat/test\nready: true',
+                              "--mailbox-dir", str(self.mailbox_dir)])
+        self.assertEqual(inbox.toon_decode(proc.stdout)["payload"],
+                         {"branch": "feat/test", "ready": True})
+
     def test_cli_wait_returns_existing_unread_without_acknowledging(self) -> None:
         msg = inbox.send_message("worker", "coordinator", "next task", mailbox_dir=self.mailbox_dir)
         proc = self._run_cli(["wait", "--recipient", "worker", "--timeout", "0",
                               "--mailbox-dir", str(self.mailbox_dir)])
-        self.assertEqual([item["message_id"] for item in json.loads(proc.stdout)], [msg.message_id])
+        self.assertEqual([item["message_id"] for item in inbox.toon_decode(proc.stdout)], [msg.message_id])
         self.assertEqual([item.message_id for item in inbox.list_messages(
             "worker", unread_only=True, mailbox_dir=self.mailbox_dir)], [msg.message_id])
 
@@ -602,12 +644,12 @@ class CLITest(BaseInboxTestCase):
                                   "--interval", "0.01", "--mailbox-dir", str(self.mailbox_dir)])
         finally:
             sender.join()
-        self.assertEqual([item["body"] for item in json.loads(proc.stdout)], ["reply"])
+        self.assertEqual([item["body"] for item in inbox.toon_decode(proc.stdout)], ["reply"])
 
     def test_cli_wait_times_out_and_rejects_invalid_bounds(self) -> None:
         proc = self._run_cli(["wait", "--recipient", "worker", "--timeout", "0.02",
                               "--interval", "0.01", "--mailbox-dir", str(self.mailbox_dir)])
-        self.assertEqual(json.loads(proc.stdout), [])
+        self.assertEqual(inbox.toon_decode(proc.stdout), [])
         bad = self._run_cli(["wait", "--recipient", "worker", "--interval", "0",
                              "--mailbox-dir", str(self.mailbox_dir)], expected_code=2)
         self.assertIn("interval", bad.stderr)

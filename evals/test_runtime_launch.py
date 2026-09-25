@@ -36,6 +36,7 @@ class CoordinatorLaunchTest(unittest.TestCase):
         again = start.install(ROOT, self.install_dir)
         self.assertEqual(first, again)
         self.assertTrue((first / "scripts" / "spawn_session.py").is_file())
+        self.assertTrue((first / "scripts" / "_vendor" / "toon_format" / "decoder.py").is_file())
         self.assertTrue((first / "agents" / "chief-of-stuff.md").is_file())
         self.assertIn("0.36.0-", first.name)
 
@@ -107,7 +108,7 @@ class CoordinatorLaunchTest(unittest.TestCase):
                  mock.Mock(returncode=0, stdout="")]
         with mock.patch.object(start.subprocess, "run", side_effect=clean):
             self.assertEqual(start.check_once(self.root, release), "")
-        unread = [mock.Mock(returncode=0, stdout='[{"type":"register"}]'),
+        unread = [mock.Mock(returncode=0, stdout='[1]{type}:\n  register'),
                   mock.Mock(returncode=0, stdout="tasks=1 trees=0 orphaned=0 stopped=0\n"),
                   mock.Mock(returncode=0, stdout="")]
         with mock.patch.object(start.subprocess, "run", side_effect=unread):
