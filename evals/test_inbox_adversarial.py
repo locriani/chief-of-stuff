@@ -126,7 +126,7 @@ class AdversarialInboxStressTest(unittest.TestCase):
 
         # Verify incoming folder contents
         incoming = self.mailbox_dir / recipient / "incoming"
-        files = list(incoming.glob("*.json"))
+        files = list(incoming.glob("*.toon"))
         self.assertEqual(len(files), total_expected, f"Expected {total_expected} files, found {len(files)}")
 
         # Verify all messages can be listed and parsed

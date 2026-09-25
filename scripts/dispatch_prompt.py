@@ -90,7 +90,7 @@ def mailbox_check(runtime: str, name: str, inbox_script: str) -> str:
     wait = f'python3 {inbox_script} wait --recipient "{name}" --timeout 300'
     common = (f'Check now with `{command}`. Process each new assignment or reply and acknowledge it '
               "only after acting. A new task still starts with a plan and its required approval. "
-              f'For a bounded idle check, run `{wait}`; it returns unread JSON or `[]` after five '
+              f'For a bounded idle check, run `{wait}`; it returns unread TOON or `[]` after five '
               "minutes and does not acknowledge messages. Use these shared inbox commands; do not "
               "create polling scripts or background jobs in the workspace. ")
     if runtime == "claude":

@@ -463,7 +463,7 @@ class Task3CLIRobustnessTest(BaseAdversarialTestCase):
             ],
             expected_code=0,
         )
-        data = json.loads(proc.stdout)
+        data = inbox.toon_decode(proc.stdout)
         self.assertEqual(data["payload"], {"command": "ping"})
         # When body is omitted, payload is serialized to body for text display
         self.assertEqual(data["body"], '{"command": "ping"}')
@@ -480,7 +480,7 @@ class Task3CLIRobustnessTest(BaseAdversarialTestCase):
             ],
             expected_code=0,
         )
-        data2 = json.loads(proc2.stdout)
+        data2 = inbox.toon_decode(proc2.stdout)
         self.assertEqual(data2["body"], "")
         self.assertEqual(data2["payload"], {"body": "", "command": "ping"})
 
@@ -499,7 +499,7 @@ class Task3CLIRobustnessTest(BaseAdversarialTestCase):
             ],
             expected_code=0,
         )
-        msg_id = json.loads(proc_send.stdout)["message_id"]
+        msg_id = inbox.toon_decode(proc_send.stdout)["message_id"]
 
         proc_read = self.run_cli(
             [
@@ -532,7 +532,7 @@ class Task3CLIRobustnessTest(BaseAdversarialTestCase):
             ],
             expected_code=0,
         )
-        file_msg_id = json.loads(proc_payload_send.stdout)["message_id"]
+        file_msg_id = inbox.toon_decode(proc_payload_send.stdout)["message_id"]
 
         proc_payload_read = self.run_cli(
             [
