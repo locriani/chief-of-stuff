@@ -44,6 +44,11 @@ CLAUDE = """# Workspace
 TOML = f'[notify]\nqueue = "{QUEUE}"\n'
 
 
+def tracker(*decisions: tuple[str, str]) -> str:
+    rows = "".join(f"| {when} | {item} | recorded |\n" for when, item in decisions)
+    return "## Decisions\n\n| time | item | source |\n|---|---|---|\n" + rows
+
+
 def md_notify_entries(text: str) -> list[tuple[str, str]]:
     """`NotificationSchedule.parse`, ported: (when, title) for every row md-notify would consider firing."""
     out, excluded = [], False
@@ -106,11 +111,11 @@ class NotifyTest(unittest.TestCase):
         self.assertIn("| When (CT) | Title | Message | Open |", text)
         self.assertIn("## Recurring", text)
         self.assertEqual(sorted(md_notify_entries(text)), sorted([
-            ("2026-09-23 20:59", "⏰ Early in 3h (Wed 23:59)"),
-            ("2026-09-23 22:59", "⏰ Early in 1h (Wed 23:59)"),
-            ("2026-09-26 12:00", "⏰ Final in 24h (Sun 12:00)"),
-            ("2026-09-27 09:00", "⏰ Final in 3h (Sun 12:00)"),
-            ("2026-09-27 11:00", "⏰ Final in 1h (Sun 12:00)"),
+            ("2026-09-23 20:59", "⏰ Early in 3h (Wed 2026-09-23 23:59)"),
+            ("2026-09-23 22:59", "⏰ Early in 1h (Wed 2026-09-23 23:59)"),
+            ("2026-09-26 12:00", "⏰ Final in 24h (Sun 2026-09-27 12:00)"),
+            ("2026-09-27 09:00", "⏰ Final in 3h (Sun 2026-09-27 12:00)"),
+            ("2026-09-27 11:00", "⏰ Final in 1h (Sun 2026-09-27 12:00)"),
             ("daily 06:00", "☀️ Open the day"),
             ("daily 22:00", "🌙 Close the day"),
         ]))
@@ -193,8 +198,8 @@ class NotifyTest(unittest.TestCase):
         (w.root / "CLAUDE.md").write_text(CLAUDE.replace("Final: 2026-09-27 12:00", "Final: 2026-09-27 18:00"))
         code, out = w.run("sync")
         titles = [t for _, t in md_notify_entries(w.queue.read_text())]
-        self.assertFalse([t for t in titles if "(Sun 12:00)" in t], out)
-        self.assertEqual(len([t for t in titles if "(Sun 18:00)" in t]), 3, out)
+        self.assertFalse([t for t in titles if "2026-09-27 12:00)" in t], out)
+        self.assertEqual(len([t for t in titles if "2026-09-27 18:00)" in t]), 3, out)
         self.assertEqual(len([t for t in titles if t.startswith("⏰ Early")]), 2)
 
     def test_a_removed_deadline_loses_future_rows_and_keeps_past_ones(self):
@@ -207,6 +212,81 @@ class NotifyTest(unittest.TestCase):
         w.run("sync")
         titles = [t for _, t in md_notify_entries(w.queue.read_text())]
         self.assertEqual([t for t in titles if t.startswith("⏰ Early")], ["⏰ Early in 11h (Wed 23:59)"])
+
+    def test_today_decision_adds_warnings_and_moving_it_removes_old_future_rows(self):
+        w = self.ws()
+        path = w.root / "daily/2026-09-23-tracker.md"
+        path.parent.mkdir()
+        path.write_text(tracker(("14:01", "deadline: Review 2026-09-27 16:00")))
+        w.run("sync")
+        titles = [title for _, title in md_notify_entries(w.queue.read_text())]
+        self.assertEqual(len([title for title in titles if "Review" in title and "2026-09-27 16:00" in title]), 3)
+        path.write_text(tracker(("14:01", "deadline: Review 2026-09-27 16:00"),
+                                ("14:02", "deadline: Review 2026-09-27 18:00")))
+        w.run("sync")
+        titles = [title for _, title in md_notify_entries(w.queue.read_text())]
+        self.assertFalse([title for title in titles if "Review" in title and "16:00" in title])
+        self.assertEqual(len([title for title in titles if "Review" in title and "18:00" in title]), 3)
+        before = w.queue.read_bytes()
+        self.assertEqual(w.run("sync")[1].strip(), "notify: nothing to change")
+        self.assertEqual(w.queue.read_bytes(), before)
+
+    def test_yesterday_decision_carries_forward_and_today_overrides_it(self):
+        w = self.ws()
+        directory = w.root / "daily"
+        directory.mkdir()
+        (directory / "2026-09-22-tracker.md").write_text(
+            tracker(("17:00", "deadline: Review 2026-09-27 16:00")))
+        w.run("sync")  # today's tracker does not exist yet
+        self.assertEqual(sum("Review" in title for _, title in md_notify_entries(w.queue.read_text())), 3)
+        (directory / "2026-09-23-tracker.md").write_text(
+            tracker(("14:01", "deadline: Review 2026-09-27 18:00")))
+        w.run("sync")
+        titles = [title for _, title in md_notify_entries(w.queue.read_text()) if "Review" in title]
+        self.assertEqual(len(titles), 3)
+        self.assertTrue(all("2026-09-27 18:00" in title for title in titles))
+
+    def test_no_time_decision_adds_no_warning(self):
+        w = self.ws()
+        path = w.root / "daily/2026-09-23-tracker.md"
+        path.parent.mkdir()
+        path.write_text(tracker(("14:01", "deadline: Exam, Sat 2026-09-26 (no time given)")))
+        w.run("sync")
+        self.assertNotIn("Exam", w.queue.read_text())
+
+    def test_same_weekday_time_next_week_gets_a_new_warning(self):
+        w = self.ws()
+        w.run("sync")
+        (w.root / "CLAUDE.md").write_text(CLAUDE.replace("Final: 2026-09-27 12:00", "Final: 2026-10-04 12:00"))
+        w.run("sync")
+        titles = [title for _, title in md_notify_entries(w.queue.read_text()) if "Final" in title]
+        self.assertEqual(len(titles), 3)
+        self.assertTrue(all("2026-10-04" in title for title in titles))
+
+    def test_legacy_warning_titles_migrate_without_losing_snooze_or_parked_state(self):
+        w = self.ws()
+        w.queue.parent.mkdir(parents=True)
+        w.queue.write_text(
+            "# Mine\n\n| When (CT) | Title | Message | Open | Snoozes |\n|---|---|---|---|---|\n"
+            "| 2026-09-23 23:30 | ⏰ Early in 3h (Wed 23:59) | Due 2026-09-23 23:59 | | 1 |\n"
+            "\n## Completed\n| When (CT) | Title | Message | Open |\n|---|---|---|---|\n"
+            "| 2026-09-23 22:59 | ⏰ Early in 1h (Wed 23:59) | Due 2026-09-23 23:59 | |\n")
+        w.run("sync")
+        text = w.queue.read_text()
+        self.assertIn("| 2026-09-23 23:30 | ⏰ Early in 3h (Wed 2026-09-23 23:59) | Due 2026-09-23 23:59 | | 1 |", text)
+        self.assertIn("## Completed", text)
+        self.assertIn("| 2026-09-23 22:59 | ⏰ Early in 1h (Wed 2026-09-23 23:59) | Due 2026-09-23 23:59 | |", text)
+        self.assertEqual(sum("Early in 1h" in title for _, title in md_notify_entries(text)), 0)
+
+    def test_parked_legacy_warning_from_previous_week_does_not_hide_new_warning(self):
+        w = self.ws()
+        w.queue.parent.mkdir(parents=True)
+        w.queue.write_text(
+            "# Mine\n\n## Completed\n| When (CT) | Title | Message | Open |\n|---|---|---|---|\n"
+            "| 2026-09-16 20:59 | ⏰ Early in 3h (Wed 23:59) | Due 2026-09-16 23:59 | |\n")
+        w.run("sync")
+        titles = [title for _, title in md_notify_entries(w.queue.read_text())]
+        self.assertIn("⏰ Early in 3h (Wed 2026-09-23 23:59)", titles)
 
     def test_day_rows_follow_the_settings(self):
         w = self.ws()

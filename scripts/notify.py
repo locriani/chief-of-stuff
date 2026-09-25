@@ -38,7 +38,7 @@ from pathlib import Path
 from typing import Protocol
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from render_board import ConfigError, parse_coordinator  # noqa: E402
+from render_board import ConfigError, parse_coordinator, with_workspace_decision_deadlines  # noqa: E402
 from settings import Settings, SettingsError, load  # noqa: E402
 
 WHEN = "%Y-%m-%d %H:%M"
@@ -78,6 +78,7 @@ class Row:
     title: str
     message: str = ""
     open: str = ""
+    legacy_title: str = ""
 
     def line(self) -> str:
         return f"| {self.when} | {clean(self.title)} | {clean(self.message)} | {clean(self.open)} |"
@@ -89,16 +90,17 @@ class Changes:
 
 
 def warnings(cfg, notify, now: datetime, board: str) -> list[Row]:
-    """One row per deadline per offset, only where the warning is still ahead. The due time is in the
-    title, so a moved deadline is a new title and its old future rows are no longer wanted."""
+    """One row per future warning. The full due date distinguishes deadlines a week apart."""
     rows = []
     for d in cfg.deadlines:
         at = d.at.astimezone(cfg.zone)
         for label, delta in notify.warnings:
             when = at - delta
             if when > now:
-                rows.append(Row(when.strftime(WHEN), f"{WARNING}{d.name} in {label} ({at:%a %H:%M})",
-                                f"Due {at:%Y-%m-%d %H:%M}", board))
+                head = f"{WARNING}{d.name} in {label}"
+                rows.append(Row(when.strftime(WHEN), f"{head} ({at:%a %Y-%m-%d %H:%M})",
+                                f"Due {at:%Y-%m-%d %H:%M}", board,
+                                legacy_title=f"{head} ({at:%a %H:%M})"))
     return sorted(rows, key=lambda r: r.when)
 
 
@@ -213,6 +215,22 @@ class MdNotifyQueue:
         lines, said = self._read(), []
         created = not self.path.is_file()
         wanted = {clean(r.title) for r in one_shot}
+        # Existing queues used weekday and time in the title. Match the full due instant in Message
+        # before renaming: a parked warning from a previous week must not suppress this week's one.
+        legacy = {(clean(r.legacy_title), clean(r.message)): clean(r.title)
+                  for r in one_shot if r.legacy_title}
+        for i, line in enumerate(lines):
+            if not _is_data(line):
+                continue
+            cells = _cells(line)
+            if len(cells) < 3:
+                continue
+            replacement = legacy.get((cells[1], cells[2]))
+            if replacement and replacement != cells[1]:
+                parts = line.split("|")
+                parts[2] = parts[2].replace(cells[1], replacement, 1)
+                lines[i] = "|".join(parts)
+                said.append(f"notify: updated {replacement}")
         regions, keep = _regions(lines), []
         for line, region in zip(lines, regions):
             if region == "active" and _is_data(line):
@@ -275,6 +293,13 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
     now = (now or datetime.now(cfg.zone)).astimezone(cfg.zone).replace(second=0, microsecond=0)
     queue, board = adapter_for(settings, root), cfg.board_url or ""
     if args.cmd == "sync":
+        try:
+            tracker = root / cfg.tracker_path(now.date().isoformat())
+            tracker_text = tracker.read_text() if tracker.is_file() else ""
+            cfg = with_workspace_decision_deadlines(root, cfg, tracker_text, now.date())
+        except OSError as e:
+            print(f"notify: {e}", file=sys.stderr)
+            return 2
         got = queue.sync(warnings(cfg, settings.notify, now, board), day_rows(settings.notify, board), now)
     else:
         when = now
