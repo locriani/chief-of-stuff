@@ -95,8 +95,8 @@ def prompt(runtime: str, release: Path, root: Path) -> str:
         rules = re.sub(r"## Check\n.*?(?=## Sessions\n)", check, rules, flags=re.S)
         sessions = ("## Sessions\n\nThe workspace `Sessions:` line may name Claude native list and send tools. "
                     "Use those only when your host exposes them. For every non-Claude worker, "
-                    "read `.chief-of-stuff/sessions/<name>.json` and verify its PID with "
-                    "`session_exec.py`'s liveness check. The assigned name, worktree and process "
+                    "run the pinned `scripts/process_status.py --root <workspace>` to check "
+                    "registered worker PIDs in one batch. The assigned name, worktree and process "
                     "identify it; do not invent a Claude ref. Receive registrations and reports "
                     "through the shared mailbox and send replies there. A missing registration "
                     "is `starting`; a dead registered process can orphan its task after audit. "
@@ -104,8 +104,8 @@ def prompt(runtime: str, release: Path, root: Path) -> str:
         rules = re.sub(r"## Sessions\n.*?(?=## Relay\n)", sessions, rules, flags=re.S)
         rules += ("\n\n## Host adapter\n\nYou run in " + runtime + ". Use your host's own tools to read, edit and run the pinned scripts above. "
                   "The `Sessions:` line in CLAUDE.md describes Claude's peer tools; you do not have those tools. "
-                  "Discover non-Claude workers through `scripts/session_exec.py` registry records under "
-                  "`.chief-of-stuff/sessions/`, and verify process liveness; use the shared `scripts/inbox.py` "
+                  "Check non-Claude workers with the pinned `scripts/process_status.py --root <workspace>` "
+                  "batch helper; use the shared `scripts/inbox.py` "
                   "mailbox for their messages. Claude workers retain their native session tools when available. "
                   "A five-minute watcher audits tasks and unread inbox messages while this session "
                   "is open and sends notifications. "
@@ -135,7 +135,7 @@ def check_once(root: Path, release: Path) -> str:
                            text=True, timeout=30)
     audit = subprocess.run([sys.executable, str(scripts / "audit_tasks.py"), "--date", date.today().isoformat()],
                            cwd=root, capture_output=True, text=True, timeout=60)
-    workers = subprocess.run([sys.executable, str(scripts / "session_exec.py"), "list", "--root", str(root)],
+    workers = subprocess.run([sys.executable, str(scripts / "process_status.py"), "--root", str(root)],
                              capture_output=True, text=True, timeout=10)
     if inbox.returncode or audit.returncode:
         return f"inbox exit {inbox.returncode}; audit exit {audit.returncode}"
@@ -148,13 +148,16 @@ def check_once(root: Path, release: Path) -> str:
         lines.append("coordinator inbox could not be parsed")
     lines.extend(line for line in audit.stdout.splitlines()
                  if re.match(r"(?i)^(orphaned work:|stopped:|reopen:|issue:|next decision:|overdue:|waiting:)", line))
-    for line in workers.stdout.splitlines():
+    if workers.returncode:
+        lines.append("worker process check failed")
+    else:
         try:
-            entry = json.loads(line)
-            if not entry["alive"]:
-                lines.append(f"worker {entry['name']} process is gone")
-        except (ValueError, KeyError):
-            continue
+            statuses = [] if workers.stdout.strip() == "[]" else toon_decode(workers.stdout)
+            for entry in statuses:
+                if entry["status"] in ("gone", "pid_reused"):
+                    lines.append(f"worker {entry['name']} process is {entry['status']}")
+        except (ValueError, TypeError, KeyError, ToonDecodeError):
+            lines.append("worker process check could not be parsed")
     return " | ".join(lines[:5])[:400]
 
 

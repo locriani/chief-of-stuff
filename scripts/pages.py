@@ -5,7 +5,7 @@ Zach, 2026-09-24 14:07: "we should host our own webserver and ensure they are se
 agent's boot loop." It replaced the claude.ai Artifact board. The page is the file the renderer
 wrote, so a move renders and is done, and the open tab reloads itself when the file changes.
 
-    python3 pages.py --ensure [--root R]    # start it unless it is already serving; print its URL
+    python3 pages.py --ensure [--root R]    # start it unless it is already serving; print status only
     python3 pages.py serve --dir D --port P # what --ensure starts, detached
 
 The `## Coordinator` block's `Board:` line names both halves: `URL http://127.0.0.1:<port>/` and
@@ -108,11 +108,10 @@ def _who(port: int) -> str | None:
 def ensure(pages_dir: Path, port: int, log: Path) -> str:
     """Start the server unless ours already answers on the port. Never moves to another port: the URL
     is the board's address, and a board that wanders is a board nobody has open."""
-    url = f"http://127.0.0.1:{port}/"
     who = _who(port)
     if who is not None:
         if who.startswith(SERVER):
-            return f"pages: {url}"
+            return "pages: serving"
         raise PagesError(f"port {port} answers as {who or 'an unnamed server'}, not the pages server")
     pages_dir.mkdir(parents=True, exist_ok=True)
     log.parent.mkdir(parents=True, exist_ok=True)
@@ -125,7 +124,7 @@ def ensure(pages_dir: Path, port: int, log: Path) -> str:
     (pages_dir / PID).write_text(str(proc.pid))
     for _ in range(30):
         if (_who(port) or "").startswith(SERVER):
-            return f"pages: started {url}"
+            return "pages: started"
         if proc.poll() is not None:
             break
         time.sleep(0.1)
@@ -147,7 +146,7 @@ def from_config(root: Path) -> tuple[Path, int]:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--ensure", action="store_true", help="start the server unless it is serving; print its URL")
+    ap.add_argument("--ensure", action="store_true", help="start the server unless it is serving; print status only")
     ap.add_argument("--root", default=".", help="workspace root holding CLAUDE.md")
     ap.add_argument("command", nargs="?", choices=("serve",))
     ap.add_argument("--dir")
