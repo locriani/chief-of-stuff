@@ -371,7 +371,7 @@ class NameRuleTravelsTest(unittest.TestCase):
     """Finding 91: the workspace name rule does not reach a subagent a session spawns, and a commit message is durable."""
 
     def setUp(self):
-        self.tmp, self.root = workspace()
+        self.tmp, self.root = workspace(claude_md=CLAUDE + "- Identity: user-name-only\n")
         self.addCleanup(self.tmp.cleanup)
         self.body = dp.compose(self.root, "2026-09-18", "Security audit")
 
@@ -387,6 +387,12 @@ class NameRuleTravelsTest(unittest.TestCase):
     def test_the_rule_never_spells_a_name_of_its_own(self):
         """The rule is stated without an example, because an example would be the thing it forbids."""
         self.assertNotRegex(self.body, r"(?i)\b(legal|birth|given) name is\b")
+
+    def test_generic_workspace_does_not_invent_an_alias_rule(self):
+        (self.root / "CLAUDE.md").write_text(CLAUDE)
+        generic = dp.compose(self.root, "2026-09-18", "Security audit")
+        self.assertNotIn("is the only name", generic)
+        self.assertNotIn("Files and PDFs in this workspace carry another name", generic)
 
 
 class ChallengedConstraintTest(unittest.TestCase):

@@ -130,6 +130,8 @@ class Config:
     backlog: Backlog | GitHubBacklog | None = None
     # `Settings:` — the workspace's chief-of-stuff.toml, relative to the root (settings.py reads it).
     settings_path: str | None = None
+    # An optional workspace identity rule for dispatched workers.
+    identity_policy: str | None = None
 
     @property
     def zone(self) -> ZoneInfo:
@@ -595,6 +597,9 @@ def parse_coordinator(text: str, today: date) -> Config:
             raise ConfigError(f"`## Coordinator` block has no `{needed}:` line")
     tz = _unquote(top["Timezone"])
     zone = ZoneInfo(tz)
+    identity_policy = _unquote(top.get("Identity", "")).lower() or None
+    if identity_policy not in (None, "user-name-only"):
+        raise ConfigError("`Identity:` must be `user-name-only` when present")
     deadlines = []
     for name, value in nested.get("Deadlines", []):
         when, *options = [part.strip() for part in value.split(";")]
@@ -632,6 +637,7 @@ def parse_coordinator(text: str, today: date) -> Config:
         pages_dir=pages_dir,
         backlog=backlog,
         settings_path=_first_path(top.get("Settings", "")),
+        identity_policy=identity_policy,
     )
 
 

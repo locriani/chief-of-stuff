@@ -193,13 +193,6 @@ stop. If it traces to a hand-off or to somebody's reading of one, say so and let
 rather than agreeing first: agreeing to a constraint nobody can source is the same failure as \
 ignoring a well-founded one, and it is harder to catch because it looks like humility.
 
-**{user} is the only name.** Write it that way everywhere — a commit message, a branch, a document, \
-a comment, generated code, a message to anyone. Files and PDFs in this workspace carry another name \
-for the same person; it is not theirs, it is never inferred from a filename, and it is never quoted. \
-A commit message and a generated document are the durable places, which is why this is here and not \
-left to taste. **If you spawn a subagent, carry this rule into it in its own prompt** — the rule \
-lives in a file you read and it does not follow a context you create.
-
 `Stop:` is one of four words, because they go four different ways. `permission` — a classifier or a \
 prompt said no; it goes to {user}. `authorization` — the act needs a word only {user} can give, and \
 say in `Lands on:` if it has to be given somewhere particular. `ownership` — another session holds \
@@ -333,6 +326,10 @@ def compose(root: Path, day: str | None, task: str, worktree: Path | None = None
         task=item,
         you_are=f"You are `{name}`. " if name else "",
     )
+    if cfg.identity_policy == "user-name-only":
+        header_text += (f"\n\n**{cfg.user} is the only name.** Use that name in messages, commit messages, "
+                        "branches and generated files. Do not infer another name for the user from a file. "
+                        "If you spawn a subagent, carry this rule into its prompt.\n")
     if runtime != "claude":
         host = {"agy": "Antigravity", "codex": "Codex CLI", "cursor": "Cursor CLI"}[runtime]
         registration = NON_CLAUDE_REGISTER.format(host=host, name=name or UNNAMED,
