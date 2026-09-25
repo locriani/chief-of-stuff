@@ -1323,6 +1323,25 @@ repo = sys.argv[sys.argv.index("-R") + 1] if "-R" in sys.argv else "o/backlog"
 print(f"https://github.com/{repo}/issues/101")
 '''
 
+GH_SHIM = '''#!/usr/bin/env python3
+import json, sys
+from pathlib import Path
+
+args = sys.argv[1:]
+with open(Path(__file__).parent / "calls.log", "a") as log:
+    log.write(" ".join(["gh", *args]) + "\\n")
+if args[:2] == ["issue", "create"]:
+    repo = args[args.index("-R") + 1] if "-R" in args else "o/backlog"
+    print(f"https://github.com/{repo}/issues/101")
+elif args[:2] == ["issue", "list"]:
+    print("[]")
+elif args[:2] in (["issue", "close"], ["issue", "comment"]):
+    pass
+else:
+    print("gh: blocked by eval harness", file=sys.stderr)
+    sys.exit(1)
+'''
+
 
 class _HealthHandler(BaseHTTPRequestHandler):
     """Answers the status the case named for that path and logs the probe. 404 for anything unlisted."""
@@ -1375,6 +1394,9 @@ def write_shims(shim_dir: Path) -> None:
     gh_issue = shim_dir / "gh-issue"
     gh_issue.write_text(GH_ISSUE_SHIM)
     gh_issue.chmod(0o755)
+    gh = shim_dir / "gh"
+    gh.write_text(GH_SHIM)
+    gh.chmod(0o755)
 
 
 def run_one(case: Case, arm: str, model: str, out: Path, root: Path | None = None,

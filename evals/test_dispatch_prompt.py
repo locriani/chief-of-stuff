@@ -644,9 +644,9 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         triage = self.content.split("## Triage", 1)[1].split("\n## ", 1)[0]
         self.assertIn("A verify pass with nothing open moves the task to `merge`", triage)
 
-    def test_gh_issue_is_run_before_it_is_looked_for(self):
-        # Every eval run probed PATH with `which`/`ls` first; the probe is the step that needs approval.
-        self.assertIn("run it by name, and only when the shell answers `command not found`", self.content)
+    def test_github_issue_writes_use_the_pinned_backlog_script(self):
+        self.assertIn("${CLAUDE_PLUGIN_ROOT}/scripts/backlog.py --create", self.content)
+        self.assertNotIn("~/.claude/plugins/cache/ai-additions", self.content)
 
     def test_triage_is_the_users(self):
         self.assertIn("## Triage", self.content)
@@ -710,7 +710,7 @@ class IssueDispatchTest(unittest.TestCase):
         with self.assertRaises(dp.RefusedError) as e:
             dp.compose(root, "2026-09-18", "Unfiled task")
         self.assertIn("names no issue", str(e.exception))
-        self.assertIn("gh-issue new", str(e.exception))
+        self.assertIn("backlog.py --create", str(e.exception))
 
     def test_a_gitlab_backlog_refuses_too_and_links_to_gitlab(self):
         """Zach, 2026-09-23 22:40: "make everything use gitlab now that we have that going"."""

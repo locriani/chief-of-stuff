@@ -96,6 +96,19 @@ class SandboxGuardTest(unittest.TestCase):
         # A `file` disposition runs `gh-issue templates` then `gh-issue new`; the shim on PATH answers every argv, so no real tracker is reached.
         self.assertIn("Bash(gh-issue:*)", run.ALLOWED)
 
+    def test_gh_issue_create_is_stubbed_for_the_builtin_writer(self) -> None:
+        import subprocess
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            run.write_shims(root)
+            done = subprocess.run([str(root / "gh"), "issue", "create", "-R", "o/backlog",
+                                   "--title", "x", "--body-file", "-"], input="body", text=True,
+                                  capture_output=True)
+            self.assertEqual(done.returncode, 0)
+            self.assertEqual(done.stdout.strip(), "https://github.com/o/backlog/issues/101")
+            self.assertIn("gh issue create", (root / "calls.log").read_text())
+
     def test_runner_tools_exclude_peer_tools(self) -> None:
         for name in self.PEER_TOOLS:
             self.assertNotIn(name, run.TOOLS)

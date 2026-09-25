@@ -16,11 +16,11 @@ A first part starting with `GitHub` selects GitHub. `repo` takes a URL or `owner
 
 Reads go through `gh issue list --json`. The GitLab rules carry over: a failure is `backlog: unknown — <why>` and never a zero, and a result that fills `GH_LIMIT` (5000, the same ceiling as `MAX_PAGES` pages) is refused as partial.
 
-**`backlog.py` reads and closes GitHub issues; it does not file or comment.** GitHub issue text is held to two rules — no issue cited in prose, linked with native relationships instead; and a body that is a filled issue template whose field types set the caps. `gh-issue new` in ai-additions' `github-utilities` is the filing surface and its PreToolUse guard holds raw `gh issue` writes to the same rules. A second writer here would be the way around both, so `--create` and `--comment` fail and name the tool to use. `--close` works, dry-run by default like every write.
+`backlog.py` reads, files, comments on, and closes GitHub issues through `gh`. Writes are previews until `--commit` is supplied. For filing, pass `--create <title> --body <text>`; the body goes to `gh issue create --body-file -` on stdin. `--parent <number>` and repeated `--blocked-by <number>` create native issue relationships. Workspace issue templates and content rules remain the workspace's responsibility; the generic writer requires no personal Claude plugin.
 
 `migrate_backlog.py` is GitLab-era: against a GitHub line, `--apply` reports a refusal per row and writes nothing.
 
-Proved live against `locriani/GauntletIssues`: `backlog: 3 open, 2 closed`; `--list` and `--state closed --list` match `gh issue list`; `--create` exits 1 with the refusal.
+The reader was previously checked against `locriani/GauntletIssues`; writer tests use a fake `gh` and do not create live issues.
 
 ## Where it is (GitLab)
 
