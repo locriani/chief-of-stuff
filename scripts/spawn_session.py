@@ -69,7 +69,10 @@ CLAUDE_ARGV = ["claude", "--agent", "{type}", "--name", "{title}", "--model", "{
 # house rules (GitLab only, above all) have to reach it, so the bootstrap names the file.
 AGY_BOOTSTRAP = BOOTSTRAP + " Then read {root}/CLAUDE.md: its house rules bind you."
 AGY_ARGV = ["agy", "--model", "{model}", "--mode", "plan", "-i", AGY_BOOTSTRAP]
-TEMPLATES = {"claude": CLAUDE_ARGV, "agy": AGY_ARGV}
+CODEX_ARGV = ["codex", "-C", "{cwd}", "--sandbox", "read-only", "--model", "{model}", AGY_BOOTSTRAP]
+CURSOR_ARGV = ["agent", "--workspace", "{cwd}", "--mode", "plan", "--model", "{model}", AGY_BOOTSTRAP]
+TEMPLATES = {"claude": CLAUDE_ARGV, "agy": AGY_ARGV, "codex": CODEX_ARGV, "cursor": CURSOR_ARGV}
+BINARY = {"claude": "claude", "agy": "agy", "codex": "codex", "cursor": "agent"}
 MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 # The override the eval harness sets, and the only path that still builds an argv. Nothing else uses
 # it: the real launcher asks Ghostty for a tab.
@@ -222,7 +225,13 @@ def ghostty_script(*, cwd: str, agent_type: str | None, claude: Path | None, tit
     # The one variable passed on: a `command` tab skips the login shell, so Ghostty's PATH is launchd's
     # and has no /opt/homebrew/bin. Sessions spawned without it had no rtk, gh or glab — every Bash call
     # failed the rtk hook — so the tab gets the launching shell's PATH, which is a user terminal's.
-    tokens = [ENV_BIN, "-C", root, f"PATH={os.environ.get('PATH', '')}", str(claude)] + rest
+    tokens = [ENV_BIN, "-C", root, f"PATH={os.environ.get('PATH', '')}"]
+    if runtime != "claude":
+        tokens += [sys.executable, str(Path(__file__).resolve().parent / "session_exec.py"),
+                   "--registry", str(Path(os.path.abspath(workspace)) / PROMPT_DIR / "sessions" / f"{title}.json"),
+                   "--runtime", runtime, "--name", title or "", "--worktree", root,
+                   "--login-shell", "--"]
+    tokens += [str(claude)] + rest
     command = " ".join(shlex.quote(tok) for tok in tokens)
     # `set_tab_title:` is how a tab gets a name — a surface configuration has no title field, and
     # without this the tab is called after whatever the process last wrote.
@@ -286,8 +295,8 @@ def main(argv_in: list[str] | None = None) -> int:
     ap.add_argument("--coordinator", help="your own session name as a listing shows it, so the session knows who to register with")
     ap.add_argument("--date", help="YYYY-MM-DD; default: today in the workspace timezone")
     ap.add_argument("--runtime", choices=sorted(TEMPLATES), default="claude",
-                    help="claude (default) or agy (Antigravity), which registers and reports through the mailbox only")
-    ap.add_argument("--model", default="", help="claude: an alias (fable, opus, sonnet) or a model id; agy: an id from `agy models`, required")
+                    help="claude (default), agy, codex, or cursor")
+    ap.add_argument("--model", default="", help="model id; required for agy")
     ap.add_argument("--effort", default="", choices=("", "low", "medium", "high", "xhigh", "max"),
                     help="claude only; agy's effort is in its model id")
     ap.add_argument("--dry-run", action="store_true", help="print the argv and start nothing")
@@ -295,8 +304,8 @@ def main(argv_in: list[str] | None = None) -> int:
     if (args.model or args.runtime == "agy") and not MODEL.fullmatch(args.model):
         print(f"refused: --model needs a model id (agy: one from `agy models`, and it is required), not {args.model!r}", file=sys.stderr)
         return 1
-    if args.runtime == "agy" and args.effort:
-        print("refused: --effort is claude only; an agy model id carries its own effort (gemini-3.8-flash-high)", file=sys.stderr)
+    if args.runtime != "claude" and args.effort:
+        print("refused: --effort is claude only", file=sys.stderr)
         return 1
     # Resolved once, here, because the two consumers used to disagree: `compose` was given a resolved
     # worktree while the launcher was handed the raw value, so a relative `--cwd` wrote the dispatch
@@ -317,7 +326,7 @@ def main(argv_in: list[str] | None = None) -> int:
         script = None if override else ghostty_script(
             cwd=args.cwd, agent_type=args.agent_type, title=args.title, runtime=args.runtime,
             model=args.model, effort=args.effort, workspace=args.root,
-            claude=Path(p) if (p := shutil.which(args.runtime)) else None)
+            claude=Path(p) if (p := shutil.which(BINARY[args.runtime])) else None)
     except (RefusedError, dispatch_prompt.RefusedError) as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 1
