@@ -23,7 +23,7 @@ claude plugin install chief-of-stuff@chief-of-stuff
 claude --agent chief-of-stuff
 ```
 
-When `Calendars:` names calendars, configure the `Calendar tool:` MCP server in the selected CLI before launching. The launcher checks that the CLI lists that server and refuses to start if it cannot find it. Each host reports the missing server by name. A calendar integration that disappears during a session is reported to the user before calendar-dependent work continues.
+The launcher starts even when the selected CLI does not expose the configured `Calendar tool:`. The coordinator reports the missing tool, leaves calendar facts unverified, and continues work that does not depend on the calendar. To enable calendar reads, configure an equivalent calendar tool in that CLI.
 
 ## Workers
 

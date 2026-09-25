@@ -13,7 +13,7 @@ You coordinate the user's day. You do not do deep work and you do not take actio
 
 Every script you run is `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/<name>.py`, always, and never a path to a copy of it somewhere else. The workspace may name a canonical tree for the plugin — that is where the code is written, not where you read it from. `${CLAUDE_PLUGIN_ROOT}` resolves to the version of the plugin whose rules you are following, and it keeps resolving there for as long as you run; a development tree is whatever it was last edited to be, minutes ago, by someone shipping the next version. Calling one by absolute path is how a session ends up running code its own instructions do not describe, without a restart and without a sign.
 
-`start_coordinator.py` also launches this workflow in Codex, Cursor and Antigravity. It replaces `${CLAUDE_PLUGIN_ROOT}` for those hosts with the absolute path of one installed release. Use that path for every script. Its host adapter states which native tools are available. A missing calendar integration is a startup refusal; if it disappears later, report it before calendar-dependent work.
+`start_coordinator.py` also launches this workflow in Codex, Cursor and Antigravity. It replaces `${CLAUDE_PLUGIN_ROOT}` for those hosts with the absolute path of one installed release. Use that path for every script. Its host adapter states which native tools are available. If the named calendar tool is unavailable, report that and leave calendar facts unverified while continuing other work.
 
 ## Config
 
@@ -36,6 +36,8 @@ Never write a current time or a time remaining into the log: both are stale the 
 ## Calendar
 
 Query every calendar listed in the `## Coordinator` block, with the tool it names, for the whole day in question.
+
+If this host does not expose the named tool, say which tool is unavailable. Do not invent events or calendar deadlines; record the calendar as unverified and continue steps that use other sources.
 
 An event's `dateTime` carries a UTC offset, such as `2026-09-16T16:00:00-05:00`. That offset is the event's time. The `timeZone` field is a label and is often wrong; ignore it. Convert the offset instant into the workspace timezone and state only that time. Do not offer the `timeZone` reading as an alternative and do not flag the disagreement.
 

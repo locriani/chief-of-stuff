@@ -1,5 +1,7 @@
 """Focused checks for versioned coordinator launches and non-Claude workers."""
 
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -57,14 +59,20 @@ class CoordinatorLaunchTest(unittest.TestCase):
         self.assertIn("session-scoped watcher", codex[-1])
         self.assertNotIn("${CLAUDE_PLUGIN_ROOT}", codex[-1])
 
-    def test_required_calendar_server_must_be_visible(self):
+    def test_missing_calendar_server_does_not_block_launch(self):
         (self.root / "CLAUDE.md").write_text(CLAUDE +
-            "\n- Calendar tool: `mcp__calendar__list_events`\n- Calendars:\n  - Work: work-id\n")
-        with mock.patch.object(start.subprocess, "run", return_value=mock.Mock(returncode=0, stdout="other enabled\n")):
-            with self.assertRaisesRegex(start.Refused, "calendar"):
-                start.preflight("codex", self.root, "/bin/fake")
-        with mock.patch.object(start.subprocess, "run", return_value=mock.Mock(returncode=0, stdout="calendar enabled\n")):
-            start.preflight("codex", self.root, "/bin/fake")
+            "\n- Calendar tool: `mcp__claude_ai_Google_Calendar__list_events`\n"
+            "- Calendars:\n  - Work: work-id\n")
+        output = io.StringIO()
+        with mock.patch.object(start.shutil, "which", return_value="/bin/fake"), \
+             mock.patch.object(start.subprocess, "run") as probe, \
+             contextlib.redirect_stdout(output):
+            code = start.main(["--runtime", "codex", "--root", str(self.root),
+                               "--install-dir", str(self.install_dir), "--dry-run"])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(output.getvalue())["runtime"], "codex")
+        probe.assert_not_called()
+        self.assertTrue((self.install_dir / "versions").exists())
 
     def test_missing_runtime_binary_refuses_before_install(self):
         with mock.patch.object(start.shutil, "which", return_value=None):
