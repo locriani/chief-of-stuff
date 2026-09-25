@@ -28,7 +28,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from render_board import BULLET, HHMM, RAN, ConfigError, _dur, _cells, _is_separator, _section, _unmark, _unquote, clip_name, parse_coordinator, parse_tracker  # noqa: E402
 from dispatch_prompt import PROMPT_DIR, STOP_FILE  # noqa: E402
 from backlog import CLOSED, GITHUB, Backlog, BacklogError, GitHubBacklog, file_with, home_of, issue_ref, issue_states  # noqa: E402
-from settings import SettingsError, load as load_settings  # noqa: E402
+from settings import Kanban, SettingsError, load as load_settings  # noqa: E402
+import kanban as kanban_tool  # noqa: E402
 
 # The branch is written in the parenthetical right after the tree name — `worktree wt-x (feat/y)` —
 # which is the only place it survives when the tree itself is gone. Finding 46 turns on that.
@@ -206,6 +207,58 @@ def lane_faults(tasks, lanes: dict, settings_path: str | None) -> list[LaneFault
 
 
 @dataclass(frozen=True)
+class KanbanFault:
+    task: str
+    why: str
+
+    def __str__(self) -> str:
+        return f"kanban: {self.task} — {self.why}"
+
+
+def kanban_faults(tasks, home: Backlog | GitHubBacklog, config: Kanban, gh=None) -> list[KanbanFault]:
+    """Report label or Project Status drift; never move a card during an audit."""
+    selected = []
+    for task in tasks:
+        if task.standing or task.kind == "done" or not task.lane.strip() or not task.issue.strip():
+            continue
+        ref = issue_ref(task.issue, home)
+        if ref is not None:
+            selected.append((task, ref))
+    states = {}
+    for host, repo in sorted({(ref.host, ref.repo) for _, ref in selected}):
+        cfg = (home if (host, repo) == home_of(home) else GitHubBacklog(repo)
+               if host == GITHUB else replace(home, project=repo))
+        try:
+            states[(host, repo)] = issue_states(cfg, gh=gh)
+        except BacklogError as exc:
+            return [KanbanFault("unknown", str(exc))]
+    faults = []
+    project_items = None
+    project_error = ""
+    for task, ref in selected:
+        found = states[(ref.host, ref.repo)].get(ref.number)
+        if found is None:
+            continue  # issue_faults already reports a missing issue
+        status = None
+        if ref.host == GITHUB and config.github_project:
+            if project_items is None:
+                project_items, project_error = kanban_tool._project_items(
+                    gh or kanban_tool.backlog.run_gh, config.github_project)
+            if project_error:
+                faults.append(KanbanFault(clip_name(task.label), project_error))
+                continue
+            if ref.url not in project_items:
+                faults.append(KanbanFault(clip_name(task.label), "issue is absent from the configured GitHub Project"))
+                continue
+            status = project_items[ref.url]
+        issue_config = config if ref.host == GITHUB else replace(config, github_project=None)
+        why = kanban_tool.drift(issue_config, found.labels, task.stage.strip(), project_status=status)
+        if why:
+            faults.append(KanbanFault(clip_name(task.label), why))
+    return faults
+
+
+@dataclass(frozen=True)
 class OverBudget:
     """A running task past its size's budget (#33 stage 3). The coordinator polls its session and tells the user;
     it never stops the session."""
@@ -240,6 +293,7 @@ class Report:
     queue: list[QueueFault] = field(default_factory=list)
     issues: list[IssueFault] = field(default_factory=list)
     lanes: list[LaneFault] = field(default_factory=list)
+    kanban: list[KanbanFault] = field(default_factory=list)
     over: list[OverBudget] = field(default_factory=list)
 
 
@@ -728,16 +782,20 @@ def audit(root: Path, day: str, gh=None, check_issues: bool = True, now: datetim
             issues = " issues=off"
     settings = load_settings(root, cfg.settings_path)
     report.lanes.extend(lane_faults(tasks, settings.lanes, cfg.settings_path))
+    if settings.kanban and cfg.backlog and check_issues:
+        report.kanban.extend(kanban_faults(tasks, cfg.backlog, settings.kanban, gh=gh))
+        report.lines.extend(str(f) for f in report.kanban)
     report.over.extend(over_budget(tasks, settings.budgets, day, now or datetime.now(cfg.zone)))
     report.lines.extend(str(o) for o in report.over)
     budgeted = f" over={len(report.over)}" if settings.budgets else ""
     report.lines.extend(str(f) for f in report.lanes)
     laned = f" lanes={len(report.lanes)}" if any(t.lane.strip() for t in tasks) else ""
+    kanban = f" kanban={len(report.kanban)}" if settings.kanban and check_issues else ""
     facts = len({(r.worktree, r.why) for r in report.reopen})
     reopen = f"{facts} tree{'' if facts == 1 else 's'}/{len(report.reopen)} task{'' if len(report.reopen) == 1 else 's'}" if report.reopen else "0"
     report.lines.append(
         f"tasks={len(tasks)} trees={len(seen)} reopen={reopen} orphaned={len(report.orphans)} "
-        f"stopped={len(report.stopped)}" + (f" queued={queued}" if queue_lines or faults or queued else "") + issues + laned + budgeted)
+        f"stopped={len(report.stopped)}" + (f" queued={queued}" if queue_lines or faults or queued else "") + issues + laned + kanban + budgeted)
     return report
 
 
@@ -768,7 +826,7 @@ def main(argv: list[str] | None = None, gh=None) -> int:
         return 2
     for line in report.lines:
         print(line)
-    return len(report.reopen) + len(report.stopped) + len(report.queue) + len(report.issues) + len(report.lanes)
+    return len(report.reopen) + len(report.stopped) + len(report.queue) + len(report.issues) + len(report.lanes) + len(report.kanban)
 
 
 if __name__ == "__main__":

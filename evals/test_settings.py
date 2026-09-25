@@ -136,3 +136,71 @@ class BudgetsTest(unittest.TestCase):
         for bad in ('budgets = 1\n', '[budgets]\nQ = "1h"\n', '[budgets]\nM = "soon"\n', '[budgets]\nM = 90\n'):
             with self.assertRaises(st.SettingsError, msg=bad):
                 self.load(bad)
+
+
+KANBAN = '''[kanban]
+stages = ["00 - PLAN", "01 - PLAN REVIEW", "02 - TEST", "03 - BUILD", "04 - REVIEW", "05 - FIX"]
+human_review_label = "!! - HUMAN REVIEW REQUIRED"
+hold_stages = ["plan review", "triage", "merge"]
+terminal_stages = ["main"]
+
+[kanban.map]
+plan = 0
+"plan review" = 1
+test = 2
+implement = 3
+review = 4
+triage = 4
+fix = 5
+merge = 4
+'''
+
+
+class KanbanSettingsTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+
+    def load(self, text: str):
+        (self.root / "s.toml").write_text(text)
+        return st.load(self.root, "s.toml")
+
+    def test_absent_kanban_is_disabled(self):
+        self.assertIsNone(self.load("").kanban)
+
+    def test_config_maps_fine_stages_and_hold_overlay(self):
+        cfg = self.load(KANBAN).kanban
+        self.assertEqual(cfg.label_for("implement"), "03 - BUILD")
+        self.assertEqual(cfg.label_for("fix"), "05 - FIX")
+        self.assertTrue(cfg.holds("triage"))
+        self.assertFalse(cfg.holds("review"))
+        self.assertIsNone(cfg.label_for("main"))
+
+    def test_invalid_mapping_is_refused(self):
+        for bad in (
+            KANBAN.replace('plan = 0', 'plan = 6'),
+            KANBAN.replace('plan = 0', 'plan = true'),
+            KANBAN.replace('"triage", "merge"', '"unknown", "merge"'),
+            KANBAN.replace('"00 - PLAN", ', '"01 - PLAN REVIEW", '),
+            KANBAN.replace('terminal_stages = ["main"]', 'terminal_stages = ["review"]'),
+        ):
+            with self.subTest(bad=bad), self.assertRaises(st.SettingsError):
+                self.load(bad)
+
+    def test_github_project_options_can_use_different_status_names(self):
+        extra = '''\n[kanban.github_project]
+owner = "example-org"
+number = 7
+field = "Status"
+options = ["Plan", "Plan Review", "Test", "Build", "Review", "Fix"]
+'''
+        cfg = self.load(KANBAN + extra).kanban.github_project
+        self.assertEqual((cfg.owner, cfg.number, cfg.field), ("example-org", 7, "Status"))
+        self.assertEqual(cfg.options[4], "Review")
+
+    def test_invalid_github_project_is_refused(self):
+        for extra in ('owner = ""\nnumber = 7', 'owner = "org"\nnumber = 0',
+                      'owner = "org"\nnumber = 7\noptions = ["one"]'):
+            with self.subTest(extra=extra), self.assertRaises(st.SettingsError):
+                self.load(KANBAN + "\n[kanban.github_project]\n" + extra + "\n")

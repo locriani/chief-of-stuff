@@ -42,7 +42,7 @@ class CoordinatorLaunchTest(unittest.TestCase):
         self.assertTrue((first / "scripts" / "process_status.py").is_file())
         self.assertTrue((first / "scripts" / "_vendor" / "toon_format" / "decoder.py").is_file())
         self.assertTrue((first / "agents" / "chief-of-stuff.md").is_file())
-        self.assertIn("0.36.1-", first.name)
+        self.assertIn("0.36.2-", first.name)
 
     def test_concurrent_installs_share_one_complete_release(self):
         with ThreadPoolExecutor(max_workers=3) as pool:
@@ -74,6 +74,7 @@ class CoordinatorLaunchTest(unittest.TestCase):
                 self.assertIn(marker, rendered)
                 self.assertIn("list --recipient coordinator --unread", rendered)
                 self.assertIn("process_status.py --root", rendered)
+                self.assertIn("kanban.py --root", rendered)
         self.assertEqual(start.WATCH_INTERVAL, 5 * 60)
 
     def test_missing_calendar_server_does_not_block_launch(self):
@@ -124,6 +125,15 @@ class CoordinatorLaunchTest(unittest.TestCase):
                   mock.Mock(returncode=0, stdout="[]")]
         with mock.patch.object(start.subprocess, "run", side_effect=unread):
             self.assertIn("1 unread", start.check_once(self.root, release))
+
+    def test_watcher_notifies_on_kanban_drift(self):
+        release = start.install(ROOT, self.install_dir)
+        outputs = [mock.Mock(returncode=0, stdout="[]"),
+                   mock.Mock(returncode=1, stdout="kanban: Build it — expected 03, found 00\n"
+                                                      "tasks=1 trees=0 kanban=1\n"),
+                   mock.Mock(returncode=0, stdout="[]")]
+        with mock.patch.object(start.subprocess, "run", side_effect=outputs):
+            self.assertIn("kanban: Build it", start.check_once(self.root, release))
 
     def test_watcher_uses_batch_process_helper_and_reports_reused_pid(self):
         release = start.install(ROOT, self.install_dir)

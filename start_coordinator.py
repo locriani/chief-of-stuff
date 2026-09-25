@@ -137,7 +137,7 @@ def check_once(root: Path, release: Path) -> str:
                            cwd=root, capture_output=True, text=True, timeout=60)
     workers = subprocess.run([sys.executable, str(scripts / "process_status.py"), "--root", str(root)],
                              capture_output=True, text=True, timeout=10)
-    if inbox.returncode or audit.returncode:
+    if inbox.returncode:
         return f"inbox exit {inbox.returncode}; audit exit {audit.returncode}"
     lines = []
     try:
@@ -146,8 +146,11 @@ def check_once(root: Path, release: Path) -> str:
             lines.append(f"{len(unread)} unread coordinator message(s)")
     except (ValueError, ToonDecodeError):
         lines.append("coordinator inbox could not be parsed")
-    lines.extend(line for line in audit.stdout.splitlines()
-                 if re.match(r"(?i)^(orphaned work:|stopped:|reopen:|issue:|next decision:|overdue:|waiting:)", line))
+    findings = [line for line in audit.stdout.splitlines()
+                if re.match(r"(?i)^(orphaned work:|stopped:|reopen:|issue:|lane:|kanban:|decision queue:|next decision:|overdue:|waiting:)", line)]
+    lines.extend(findings)
+    if audit.returncode and not findings:
+        lines.append(f"audit exit {audit.returncode}: {audit.stderr.strip()[:120] or 'no findings printed'}")
     if workers.returncode:
         lines.append("worker process check failed")
     else:
