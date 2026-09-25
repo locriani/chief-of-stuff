@@ -87,8 +87,12 @@ NON_CLAUDE_REGISTER = ("**Register first, before you read anything else.** You r
 def mailbox_check(runtime: str, name: str, inbox_script: str) -> str:
     """Give each worker the check its interactive host can actually run."""
     command = f'python3 {inbox_script} list --recipient "{name}" --unread'
+    wait = f'python3 {inbox_script} wait --recipient "{name}" --timeout 300'
     common = (f'Check now with `{command}`. Process each new assignment or reply and acknowledge it '
-              "only after acting. A new task still starts with a plan and its required approval. ")
+              "only after acting. A new task still starts with a plan and its required approval. "
+              f'For a bounded idle check, run `{wait}`; it returns unread JSON or `[]` after five '
+              "minutes and does not acknowledge messages. Use these shared inbox commands; do not "
+              "create polling scripts or background jobs in the workspace. ")
     if runtime == "claude":
         mechanism = (f'Use `CronList`, then create one in-session `CronCreate` job at `*/5 * * * *` '
                      f'only if no job starts `[Mailbox check] {name}`. Its prompt is '
@@ -107,8 +111,9 @@ def mailbox_check(runtime: str, name: str, inbox_script: str) -> str:
                      "If `/loop` is unavailable, check at the start of every turn and after each commit.")
     else:
         mechanism = ("Codex CLI has no in-session scheduling interface. Check at the start of every "
-                     "turn, before each new step, and after each commit. When idle, report that this "
-                     "conversation cannot wake itself; handle new mailbox messages on the next turn.")
+                     "turn, before each new step, and after each commit. While this turn is open, "
+                     "use the bounded wait above when idle. A finished conversation cannot wake "
+                     "itself; handle later messages on the next turn.")
     return "**Keep this mailbox live.** After registration, " + common + mechanism
 
 

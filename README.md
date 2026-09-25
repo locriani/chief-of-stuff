@@ -33,6 +33,8 @@ Cursor starts in [Plan mode](https://cursor.com/docs/cli/overview). Antigravity 
 
 Every worker assignment describes a five-minute mailbox check. Antigravity uses [Schedule or `/schedule`](https://antigravity.google/docs/slash-commands/), Cursor uses its in-session [`/loop`](https://cursor.com/docs/agent/overview), and Claude uses its native cron tools. [Codex CLI has no Scheduled interface](https://learn.chatgpt.com/docs/automations), so its workers check at the start of each turn and after each commit. The prompts keep the approval gate for each new task.
 
+Workers can use the pinned `scripts/inbox.py wait --recipient <assigned-name> --timeout 300` for a bounded idle check. It prints unread messages as JSON as soon as they arrive, or `[]` after five minutes, without acknowledging them. A scheduled host check should run `inbox.py list --recipient <assigned-name> --unread` once per tick. These shared commands replace workspace-specific polling scripts under `.chief-of-stuff/`; a wait only runs while the agent's current tool call is active and does not wake a finished conversation.
+
 The Claude coordinator keeps its 15-minute full check and adds a five-minute mailbox check. Codex, Cursor and Antigravity coordinators have a session-scoped Python watcher that audits the inbox, workers and tasks every five minutes and notifies on findings. Antigravity and Cursor also start their native recurring mailbox prompts when available. Codex reconciles tracker and board state on its next turn because the CLI cannot wake an idle conversation.
 
 ## Verification

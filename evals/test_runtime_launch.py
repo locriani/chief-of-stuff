@@ -153,12 +153,15 @@ class WorkerRuntimeTest(unittest.TestCase):
             self.assertIn("--login-shell", text)
 
     def test_assignment_names_real_host_tools_and_mailbox(self):
-        for runtime in ("codex", "cursor"):
+        for runtime in ("claude", "agy", "codex", "cursor"):
             body = dispatch.compose(self.root, "2026-09-18", "Security audit",
                                     worktree=Path("/tmp/wt"), name="impl01", runtime=runtime)
-            self.assertIn("--from \"impl01\" --type register", body)
-            self.assertNotIn("List your sessions", body)
-            self.assertIn("/plan", body)
+            self.assertIn('wait --recipient "impl01" --timeout 300', body)
+            self.assertIn("do not create polling scripts", body)
+            if runtime in ("codex", "cursor"):
+                self.assertIn("--from \"impl01\" --type register", body)
+                self.assertNotIn("List your sessions", body)
+                self.assertIn("/plan", body)
             if runtime == "codex":
                 self.assertIn("resume-codex", body)
                 self.assertIn("--session-id <session-id>", body)

@@ -582,6 +582,36 @@ class CLITest(BaseInboxTestCase):
         self.assertIn("item 1", bodies)
         self.assertIn("item 2", bodies)
 
+    def test_cli_wait_returns_existing_unread_without_acknowledging(self) -> None:
+        msg = inbox.send_message("worker", "coordinator", "next task", mailbox_dir=self.mailbox_dir)
+        proc = self._run_cli(["wait", "--recipient", "worker", "--timeout", "0",
+                              "--mailbox-dir", str(self.mailbox_dir)])
+        self.assertEqual([item["message_id"] for item in json.loads(proc.stdout)], [msg.message_id])
+        self.assertEqual([item.message_id for item in inbox.list_messages(
+            "worker", unread_only=True, mailbox_dir=self.mailbox_dir)], [msg.message_id])
+
+    def test_cli_wait_returns_when_message_arrives(self) -> None:
+        def send_later() -> None:
+            time.sleep(0.05)
+            inbox.send_message("worker", "coordinator", "reply", mailbox_dir=self.mailbox_dir)
+
+        sender = threading.Thread(target=send_later)
+        sender.start()
+        try:
+            proc = self._run_cli(["wait", "--recipient", "worker", "--timeout", "1",
+                                  "--interval", "0.01", "--mailbox-dir", str(self.mailbox_dir)])
+        finally:
+            sender.join()
+        self.assertEqual([item["body"] for item in json.loads(proc.stdout)], ["reply"])
+
+    def test_cli_wait_times_out_and_rejects_invalid_bounds(self) -> None:
+        proc = self._run_cli(["wait", "--recipient", "worker", "--timeout", "0.02",
+                              "--interval", "0.01", "--mailbox-dir", str(self.mailbox_dir)])
+        self.assertEqual(json.loads(proc.stdout), [])
+        bad = self._run_cli(["wait", "--recipient", "worker", "--interval", "0",
+                             "--mailbox-dir", str(self.mailbox_dir)], expected_code=2)
+        self.assertIn("interval", bad.stderr)
+
     def test_cli_list_text_format(self) -> None:
         """CLI: 'list --format text' outputs readable message summaries."""
         inbox.send_message("coordinator", "w1", "text format check", mailbox_dir=self.mailbox_dir)
