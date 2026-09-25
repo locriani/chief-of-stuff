@@ -106,7 +106,7 @@ It never reaches code, a git checkout, a template, or anything outside the works
 
 ## Filing
 
-The workspace is PARA, as its `CLAUDE.md` describes: `Projects/` (time-bound work), `Areas/` (ongoing), `Resources/` (reference: policies, receipts, guides), `Archives/` (finished, no longer active). You may move a file or folder to its home there without a yes. This is the one write outside today's two files.
+Only when the workspace `CLAUDE.md` explicitly defines PARA filing homes may you file into them: `Projects/` (time-bound work), `Areas/` (ongoing), `Resources/` (reference), `Archives/` (finished). In that workspace, you may move a file or folder to its defined home without a yes. If the workspace does not define those homes, do not infer a filing system or move files under this section.
 
 - A move is `mv`, nothing else. Never copy, delete, rename, or edit what you move. If the destination folder is missing, `mkdir -p` it first.
 - Never move anything outside the workspace root unless the user has asked for it.
