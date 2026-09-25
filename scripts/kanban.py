@@ -1,0 +1,418 @@
+#!/usr/bin/env python3
+"""Preview or sync a tracked issue's Kanban stage without replacing unrelated labels."""
+
+from __future__ import annotations
+
+import argparse
+from datetime import date, datetime
+import json
+from dataclasses import dataclass
+from pathlib import Path
+import sys
+
+import backlog
+from _vendor.toon_format import encode as toon_encode
+from render_board import ConfigError, parse_coordinator, parse_tracker
+from settings import Kanban, SettingsError, load as load_settings
+
+
+@dataclass(frozen=True)
+class Delta:
+    add: tuple[str, ...] = ()
+    remove: tuple[str, ...] = ()
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.add or self.remove)
+
+
+@dataclass(frozen=True)
+class Sync:
+    issue: backlog.IssueRef
+    stage: str
+    delta: Delta = Delta()
+    done: bool = False
+    error: str = ""
+    current_status: str | None = None
+    project_status: str | None = None
+    project_add: bool = False
+
+    @property
+    def ok(self) -> bool:
+        return not self.error
+
+
+def label_delta(config: Kanban, current: tuple[str, ...], stage: str) -> Delta:
+    """Exactly one numbered stage and an independent hold, preserving every other label."""
+    desired = config.label_for(stage)
+    hold = config.holds(stage)
+    managed = set(config.stages) | {config.human_review_label}
+    remove = tuple(label for label in current if label in managed and label != desired
+                   and not (label == config.human_review_label and hold))
+    add = tuple(label for label in (desired, config.human_review_label if hold else None)
+                if label and label not in current)
+    return Delta(add, remove)
+
+
+def after(current: tuple[str, ...], delta: Delta) -> tuple[str, ...]:
+    return tuple(label for label in current if label not in delta.remove) + delta.add
+
+
+def drift(config: Kanban, labels: tuple[str, ...], stage: str,
+          *, project_status: str | None = None) -> str:
+    """Describe a board disagreement; the audit never repairs one silently."""
+    try:
+        target = config.label_for(stage)
+    except KeyError:
+        return f"unmapped tracker stage {stage}"
+    hold = config.human_review_label if config.holds(stage) else None
+    managed = set(config.stages) | {config.human_review_label}
+    expected = {x for x in (hold, target if config.github_project is None else None) if x}
+    actual = set(labels) & managed
+    problems = []
+    if actual != expected:
+        problems.append(f"expected {', '.join(sorted(expected)) or 'no managed labels'}, "
+                        f"found {', '.join(sorted(actual)) or 'none'}")
+    if config.github_project:
+        wanted = config.github_project.options[config.stage_map[stage]] if target else None
+        if project_status != wanted:
+            problems.append(f"expected project {config.github_project.field} {wanted or 'empty'}, "
+                            f"found {project_status or 'none'}")
+    return "; ".join(problems)
+
+
+def _guard(current, desired, prior, *, expected_stage: str | None, initialize: bool) -> str:
+    if current == desired or (expected_stage is not None and current == prior) or (initialize and not current):
+        return ""
+    if expected_stage is None and not initialize:
+        return "commit needs --from-stage or --initialize"
+    return "Kanban state changed outside the tracker; reconcile before writing"
+
+
+def sync_gitlab(cfg: backlog.Backlog, ref: backlog.IssueRef, config: Kanban, stage: str,
+                *, token: str | None = None, commit: bool = False,
+                expected_stage: str | None = None, initialize: bool = False,
+                timeout: float = backlog.TIMEOUT) -> Sync:
+    """GitLab's add/remove update leaves unrelated issue labels untouched."""
+    if ref.host != backlog.home_of(cfg)[0]:
+        return Sync(ref, stage, error="issue host does not match the configured GitLab host")
+    try:
+        config.label_for(stage)
+    except KeyError:
+        return Sync(ref, stage, error=f"unmapped tracker stage: {stage}")
+    if expected_stage is not None:
+        try:
+            config.label_for(expected_stage)
+        except KeyError:
+            return Sync(ref, stage, error=f"unmapped prior stage: {expected_stage}")
+    project = cfg if cfg.project == ref.repo else backlog.Backlog(cfg.host, ref.repo, cfg.env, cfg.account)
+    secret = token if token is not None else backlog.token(project)
+    if not secret:
+        return Sync(ref, stage, error=f"no token: set ${cfg.env} or add it to the Keychain as {cfg.service}")
+    url = f"{project.issues_url}/{ref.number}"
+    row, _, error = backlog._get(url, secret, timeout)
+    if error:
+        return Sync(ref, stage, error=error)
+    if not isinstance(row, dict) or not isinstance(row.get("labels"), list):
+        return Sync(ref, stage, error="GitLab issue has no readable labels")
+    current = tuple(str(label) for label in row["labels"])
+    delta = label_delta(config, current, stage)
+    managed = set(config.stages) | {config.human_review_label}
+    prior = set(label_delta(config, (), expected_stage).add) if expected_stage else set()
+    desired = set(after(current, delta)) & managed
+    if commit:
+        error = _guard(set(current) & managed, desired, prior,
+                       expected_stage=expected_stage, initialize=initialize)
+        if error:
+            return Sync(ref, stage, delta, error=error)
+    if not delta.changed:
+        return Sync(ref, stage, delta, done=True)
+    if not commit:
+        return Sync(ref, stage, delta)
+    have, error = backlog.existing_labels(project, token=secret, timeout=timeout)
+    if error:
+        return Sync(ref, stage, delta, error=error)
+    missing = set(delta.add) - have
+    if missing:
+        return Sync(ref, stage, delta, error=f"missing label in GitLab: {', '.join(sorted(missing))}")
+    payload = {}
+    if delta.add:
+        payload["add_labels"] = ",".join(delta.add)
+    if delta.remove:
+        payload["remove_labels"] = ",".join(delta.remove)
+    _, _, error = backlog._call("PUT", url, secret, timeout, payload)
+    if error:
+        return Sync(ref, stage, delta, error=error)
+    verified, _, error = backlog._get(url, secret, timeout)
+    if error or not isinstance(verified, dict) or not isinstance(verified.get("labels"), list):
+        return Sync(ref, stage, delta, error=error or "could not verify GitLab labels after update")
+    if set(verified["labels"]) != set(after(current, delta)):
+        return Sync(ref, stage, delta, error="GitLab labels differ after update; reconcile before continuing")
+    return Sync(ref, stage, delta, done=True)
+
+
+def _gh_json(gh, args: list[str]):
+    code, stdout, stderr = gh(args)
+    if code:
+        return None, stderr.strip() or f"gh exited {code}"
+    try:
+        return json.loads(stdout), ""
+    except ValueError:
+        return None, "gh did not answer with JSON"
+
+
+def _github_issue(gh, ref: backlog.IssueRef):
+    row, error = _gh_json(gh, ["issue", "view", str(ref.number), "-R", ref.repo,
+                               "--json", "labels,state,url"])
+    if error:
+        return (), error
+    if not isinstance(row, dict) or not isinstance(row.get("labels"), list):
+        return (), "GitHub issue has no readable labels"
+    return tuple(str(x["name"]) for x in row["labels"] if isinstance(x, dict) and "name" in x), ""
+
+
+def _project_items(gh, project):
+    row, error = _gh_json(gh, ["project", "item-list", str(project.number), "--owner", project.owner,
+                               "--format", "json", "--limit", "5000", "--field", project.field])
+    if error:
+        return {}, error
+    if not isinstance(row, dict) or not isinstance(row.get("items"), list):
+        return {}, "GitHub Project items could not be parsed"
+    if row.get("totalCount", len(row["items"])) > len(row["items"]):
+        return {}, "GitHub Project item list was truncated"
+    items = {}
+    for item in row["items"]:
+        if isinstance(item, dict) and isinstance(item.get("content"), dict):
+            url = item["content"].get("url")
+            value = item.get(project.field.lower(), item.get(project.field))
+            if isinstance(url, str):
+                items[url] = str(value) if value is not None else None
+    return items, ""
+
+
+def _project_item(gh, project, ref: backlog.IssueRef):
+    items, error = _project_items(gh, project)
+    return ref.url in items, items.get(ref.url), error
+
+
+def _project_option_exists(gh, project, value: str) -> str:
+    row, error = _gh_json(gh, ["project", "field-list", str(project.number), "--owner", project.owner,
+                               "--format", "json", "--limit", "100"])
+    if error:
+        return error
+    fields = row.get("fields") if isinstance(row, dict) else None
+    if not isinstance(fields, list):
+        return "GitHub Project fields could not be parsed"
+    for field in fields:
+        if isinstance(field, dict) and field.get("name") == project.field:
+            options = field.get("options")
+            if isinstance(options, list) and value in {x.get("name") for x in options if isinstance(x, dict)}:
+                return ""
+            return f"missing GitHub Project option: {value}"
+    return f"missing GitHub Project field: {project.field}"
+
+
+def _github_labels_exist(gh, ref: backlog.IssueRef, names: tuple[str, ...]) -> str:
+    if not names:
+        return ""
+    row, error = _gh_json(gh, ["label", "list", "-R", ref.repo, "--json", "name", "--limit", "5000"])
+    if error:
+        return error
+    if not isinstance(row, list):
+        return "GitHub labels could not be parsed"
+    have = {x.get("name") for x in row if isinstance(x, dict)}
+    missing = set(names) - have
+    return f"missing label in GitHub: {', '.join(sorted(missing))}" if missing else ""
+
+
+def _github_label_delta(config: Kanban, current: tuple[str, ...], stage: str) -> Delta:
+    if config.github_project is None:
+        return label_delta(config, current, stage)
+    # A Project Status is the numbered stage; only the human hold lives on its issue.
+    hold = config.holds(stage)
+    remove = tuple(x for x in current if x in config.stages or
+                   (x == config.human_review_label and not hold))
+    add = (config.human_review_label,) if hold and config.human_review_label not in current else ()
+    return Delta(add, remove)
+
+
+def sync_github(ref: backlog.IssueRef, config: Kanban, stage: str, *, gh=None,
+                commit: bool = False, expected_stage: str | None = None,
+                initialize: bool = False) -> Sync:
+    """Update issue labels, or a GitHub Project Status plus the issue's hold label."""
+    if ref.host != backlog.GITHUB:
+        return Sync(ref, stage, error="issue is not on GitHub")
+    try:
+        label = config.label_for(stage)
+    except KeyError:
+        return Sync(ref, stage, error=f"unmapped tracker stage: {stage}")
+    if expected_stage is not None:
+        try:
+            config.label_for(expected_stage)
+        except KeyError:
+            return Sync(ref, stage, error=f"unmapped prior stage: {expected_stage}")
+    gh = gh or backlog.run_gh
+    current, error = _github_issue(gh, ref)
+    if error:
+        return Sync(ref, stage, error=error)
+    delta = _github_label_delta(config, current, stage)
+    managed = set(config.stages) | {config.human_review_label}
+    current_labels = set(current) & managed
+    desired_labels = set(after(current, delta)) & managed
+    prior_labels = set(_github_label_delta(config, (), expected_stage).add) if expected_stage else set()
+    project = config.github_project
+    present, old_status, wanted = False, None, None
+    if project:
+        present, old_status, error = _project_item(gh, project, ref)
+        if error:
+            return Sync(ref, stage, delta, error=error)
+        wanted = project.options[config.stage_map[stage]] if label is not None else None
+        if wanted:
+            error = _project_option_exists(gh, project, wanted)
+            if error:
+                return Sync(ref, stage, delta, error=error)
+    project_add = bool(project and not present and wanted is not None)
+    changed = delta.changed or (project is not None and (project_add or (present and old_status != wanted)))
+    result = Sync(ref, stage, delta, current_status=old_status, project_status=wanted,
+                  project_add=project_add)
+    if not changed:
+        return Sync(ref, stage, delta, done=True, current_status=old_status, project_status=wanted)
+    if not commit:
+        return result
+    if project:
+        prior_status = (project.options[config.stage_map[expected_stage]]
+                        if expected_stage and expected_stage not in config.terminal_stages else None)
+        current_state = (old_status if present else None, frozenset(current_labels))
+        desired_state = (wanted, frozenset(desired_labels))
+        prior_state = (prior_status, frozenset(prior_labels))
+        blank = (None, frozenset())
+        if current_state == blank and initialize:
+            error = ""
+        else:
+            error = _guard(current_state, desired_state, prior_state,
+                           expected_stage=expected_stage, initialize=False)
+    else:
+        error = _guard(current_labels, desired_labels, prior_labels,
+                       expected_stage=expected_stage, initialize=initialize)
+    if error:
+        return Sync(ref, stage, delta, error=error, current_status=old_status, project_status=wanted)
+    error = _github_labels_exist(gh, ref, delta.add)
+    if error:
+        return Sync(ref, stage, delta, error=error, current_status=old_status, project_status=wanted)
+
+    def edit_labels():
+        if not delta.changed:
+            return ""
+        cmd = ["issue", "edit", str(ref.number), "-R", ref.repo]
+        if delta.add:
+            cmd += ["--add-label", ",".join(delta.add)]
+        if delta.remove:
+            cmd += ["--remove-label", ",".join(delta.remove)]
+        code, _, stderr = gh(cmd)
+        return stderr.strip() or f"gh exited {code}" if code else ""
+
+    def edit_project():
+        if project is None or (not present and wanted is None) or (present and old_status == wanted):
+            return ""
+        if not present:
+            code, _, stderr = gh(["project", "item-add", str(project.number), "--owner", project.owner,
+                                  "--url", ref.url])
+            if code:
+                return stderr.strip() or f"gh exited {code}"
+        cmd = ["project", "item-edit", str(project.number), "--owner", project.owner,
+               "--url", ref.url, "--field", project.field]
+        cmd += ["--value", wanted] if wanted is not None else ["--clear"]
+        code, _, stderr = gh(cmd)
+        return stderr.strip() or f"gh exited {code}" if code else ""
+
+    # Enter a hold before moving the card. Leave a hold only after the destination is set.
+    steps = (edit_labels, edit_project) if config.holds(stage) else (edit_project, edit_labels)
+    for step in steps:
+        error = step()
+        if error:
+            return Sync(ref, stage, delta, error=error, current_status=old_status,
+                        project_status=wanted, project_add=project_add)
+    verified_labels, error = _github_issue(gh, ref)
+    if error or set(verified_labels) != set(after(current, delta)):
+        return Sync(ref, stage, delta, error=error or "GitHub labels differ after update")
+    if project:
+        present, status, error = _project_item(gh, project, ref)
+        if error or (wanted is not None and not present) or (present and status != wanted):
+            return Sync(ref, stage, delta, error=error or "GitHub Project status differs after update")
+    return Sync(ref, stage, delta, done=True, current_status=old_status,
+                project_status=wanted, project_add=project_add)
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--root", type=Path, required=True, help="workspace holding CLAUDE.md and the tracker")
+    ap.add_argument("--date", help="tracker date, YYYY-MM-DD; defaults to today in the workspace timezone")
+    ap.add_argument("--issue", help="one tracked issue reference, required with --commit")
+    ap.add_argument("--from-stage", help="stage last observed on the issue or project")
+    ap.add_argument("--initialize", action="store_true", help="start an unlabeled issue or project item")
+    ap.add_argument("--commit", action="store_true", help="apply one verified move; default is preview")
+    args = ap.parse_args(argv)
+    if args.commit and not args.issue:
+        print("kanban: --commit requires --issue; bulk updates are preview only", file=sys.stderr)
+        return 2
+    if args.commit and not (args.from_stage or args.initialize):
+        print("kanban: --commit requires --from-stage or --initialize", file=sys.stderr)
+        return 2
+    if args.from_stage and args.initialize:
+        print("kanban: choose --from-stage or --initialize", file=sys.stderr)
+        return 2
+    try:
+        cfg = parse_coordinator((args.root / "CLAUDE.md").read_text(), today=date.today())
+        settings = load_settings(args.root, cfg.settings_path)
+        if settings.kanban is None:
+            print("kanban: no [kanban] section in the workspace settings", file=sys.stderr)
+            return 2
+        day = args.date or datetime.now(cfg.zone).date().isoformat()
+        tracker = parse_tracker((args.root / cfg.tracker_path(day)).read_text())
+    except (OSError, ConfigError, SettingsError) as exc:
+        print(f"kanban: {exc}", file=sys.stderr)
+        return 2
+    wanted = backlog.issue_ref(args.issue, cfg.backlog) if args.issue else None
+    if args.issue and wanted is None:
+        print(f"kanban: invalid issue reference {args.issue!r}", file=sys.stderr)
+        return 2
+    selected = []
+    for task in tracker.tasks:
+        if task.standing or (task.kind == "done" and not wanted) or not task.lane.strip() or not task.issue.strip():
+            continue
+        ref = backlog.issue_ref(task.issue, cfg.backlog)
+        if ref is None or (wanted and ref != wanted):
+            continue
+        selected.append((task, ref))
+    if wanted and not selected:
+        print(f"kanban: {args.issue} is not a tracked task with a lane", file=sys.stderr)
+        return 2
+    if len({ref for _, ref in selected}) != len(selected):
+        print("kanban: multiple tracker tasks point to one issue", file=sys.stderr)
+        return 2
+    rows = []
+    for task, ref in selected:
+        stage = task.stage.strip()
+        if not stage:
+            result = Sync(ref, stage, error="tracker stage is blank")
+        elif ref.host == backlog.GITHUB:
+            result = sync_github(ref, settings.kanban, stage, commit=args.commit,
+                                 expected_stage=args.from_stage, initialize=args.initialize)
+        elif isinstance(cfg.backlog, backlog.Backlog):
+            result = sync_gitlab(cfg.backlog, ref, settings.kanban, stage, commit=args.commit,
+                                 expected_stage=args.from_stage, initialize=args.initialize)
+        else:
+            result = Sync(ref, stage, error="no configured GitLab host for this issue")
+        changed = result.delta.changed or result.project_add or result.current_status != result.project_status
+        rows.append({"issue": ref.label(cfg.backlog), "stage": stage,
+                     "add": ", ".join(result.delta.add), "remove": ", ".join(result.delta.remove),
+                     "project_status": result.project_status or "",
+                     "action": ("error" if result.error else "unchanged" if not changed else
+                                "updated" if result.done else "would update"),
+                     "error": result.error})
+    print(toon_encode(rows) if rows else "[]")
+    return 1 if any(row["error"] for row in rows) else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
