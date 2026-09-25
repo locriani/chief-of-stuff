@@ -94,6 +94,12 @@ class SettingsTest(unittest.TestCase):
             with self.subTest(text=text), self.assertRaises(st.SettingsError):
                 st.load(self.root, self.write('[workflow]\n' + text + '\n'))
 
+    def test_worker_launcher_defaults_to_ghostty_and_accepts_tmux(self):
+        self.assertEqual(st.load(self.root, None).workers.launcher, "ghostty")
+        self.assertEqual(st.load(self.root, self.write('[workers]\nlauncher = "tmux"\n')).workers.launcher, "tmux")
+        with self.assertRaises(st.SettingsError):
+            st.load(self.root, self.write('[workers]\nlauncher = "shell"\n'))
+
 
 if __name__ == "__main__":
     unittest.main()

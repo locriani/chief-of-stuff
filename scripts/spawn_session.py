@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Open a terminal running `claude` in a worktree, and print what was started.
+"""Open a worker terminal in a worktree, and print what was started.
 
     python3 spawn_session.py --type implementer --cwd <worktree> --title wt-docs
 
@@ -30,6 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import dispatch_prompt  # noqa: E402
+from settings import SettingsError, load as load_settings  # noqa: E402
 
 ENV = "CHIEF_OF_STUFF_LAUNCHER"
 # The assignment lives in the tree, not on the command line. `.chief-of-stuff/` ignores itself, so a
@@ -200,6 +201,34 @@ def _as_string(value: str) -> str:
     return '"' + value.translate(AS_ESCAPE) + '"'
 
 
+def runtime_tokens(*, cwd: str, agent_type: str | None, binary: Path | None, title: str | None = None,
+                   runtime: str = "claude", model: str = "", effort: str = "", workspace: str = ".") -> list[str]:
+    """Exact worker argv shared by terminal launchers."""
+    if binary is None:
+        raise RefusedError(f"cannot find `{runtime}` on PATH")
+    root, dispatch = _paths(cwd)
+    values = {"cwd": root, "title": title or "", "type": agent_type or "", "dispatch": dispatch,
+              "model": model, "effort": effort, "root": os.path.abspath(workspace)}
+    template = _unset(TEMPLATES[runtime], values)
+    rest = [PLACEHOLDER.sub(lambda m: values.get(m.group(1), m.group(0)), t) for t in template[1:]]
+    tokens = [ENV_BIN, "-C", root, f"PATH={os.environ.get('PATH', '')}"]
+    if runtime != "claude":
+        tokens += [sys.executable, str(Path(__file__).resolve().parent / "session_exec.py"),
+                   "--registry", str(Path(os.path.abspath(workspace)) / PROMPT_DIR / "sessions" / f"{title}.json"),
+                   "--runtime", runtime, "--name", title or "", "--worktree", root,
+                   "--login-shell", "--"]
+    return tokens + [str(binary)] + rest
+
+
+def tmux_command(*, tmux: Path | None, **worker) -> list[str]:
+    """Open a new tmux window in an existing tmux session, with argv executed directly."""
+    if tmux is None:
+        raise RefusedError("tmux launcher is configured but tmux is unavailable on PATH")
+    tokens = runtime_tokens(**worker)
+    return [str(tmux), "new-window", "-d", "-c", os.path.abspath(worker["cwd"]),
+            "-n", worker.get("title") or worker["runtime"], *tokens]
+
+
 def ghostty_script(*, cwd: str, agent_type: str | None, claude: Path | None, title: str | None = None,
                    runtime: str = "claude", model: str = "", effort: str = "", workspace: str = ".") -> str:
     """Ask Ghostty for a tab running `claude` in `cwd`. The inner layer is Ghostty's own shell-style parse.
@@ -213,25 +242,8 @@ def ghostty_script(*, cwd: str, agent_type: str | None, claude: Path | None, tit
     opened themselves would have and never a coordinator's, except that a `command` tab skips the login
     shell, so its PATH is launchd's; the launching PATH goes on the `env` line instead.
     """
-    if claude is None:
-        raise RefusedError(f"cannot find `{runtime}` on PATH; a GUI-launched terminal cannot look it up either")
-    root, dispatch = _paths(cwd)
-    values = {"cwd": root, "title": title or "", "type": agent_type or "", "dispatch": dispatch,
-              "model": model, "effort": effort, "root": os.path.abspath(workspace)}
-    template = _unset(TEMPLATES[runtime], values)
-    rest = [PLACEHOLDER.sub(lambda m: values.get(m.group(1), m.group(0)), t) for t in template[1:]]
-    # `env -C` first: the directory is pinned by the command, not by the field below, which Ghostty
-    # does not reliably honour when a command is set.
-    # The one variable passed on: a `command` tab skips the login shell, so Ghostty's PATH is launchd's
-    # and has no /opt/homebrew/bin. Sessions spawned without it had no rtk, gh or glab — every Bash call
-    # failed the rtk hook — so the tab gets the launching shell's PATH, which is a user terminal's.
-    tokens = [ENV_BIN, "-C", root, f"PATH={os.environ.get('PATH', '')}"]
-    if runtime != "claude":
-        tokens += [sys.executable, str(Path(__file__).resolve().parent / "session_exec.py"),
-                   "--registry", str(Path(os.path.abspath(workspace)) / PROMPT_DIR / "sessions" / f"{title}.json"),
-                   "--runtime", runtime, "--name", title or "", "--worktree", root,
-                   "--login-shell", "--"]
-    tokens += [str(claude)] + rest
+    tokens = runtime_tokens(cwd=cwd, agent_type=agent_type, binary=claude, title=title,
+                            runtime=runtime, model=model, effort=effort, workspace=workspace)
     command = " ".join(shlex.quote(tok) for tok in tokens)
     # `set_tab_title:` is how a tab gets a name — a surface configuration has no title field, and
     # without this the tab is called after whatever the process last wrote.
@@ -296,6 +308,8 @@ def main(argv_in: list[str] | None = None) -> int:
     ap.add_argument("--date", help="YYYY-MM-DD; default: today in the workspace timezone")
     ap.add_argument("--runtime", choices=sorted(TEMPLATES), default="claude",
                     help="claude (default), agy, codex, or cursor")
+    ap.add_argument("--launcher", choices=("ghostty", "tmux"),
+                    help="terminal launcher; default: [workers] launcher in workspace settings, then ghostty")
     ap.add_argument("--model", default="", help="model id; required for agy")
     ap.add_argument("--effort", default="", choices=("", "low", "medium", "high", "xhigh", "max"),
                     help="claude only; agy's effort is in its model id")
@@ -319,15 +333,25 @@ def main(argv_in: list[str] | None = None) -> int:
         body = dispatch_prompt.compose(Path(args.root), args.date, args.task,
                                       worktree=Path(args.cwd), coordinator=args.coordinator, name=args.title,
                                       runtime=args.runtime)
+        config = dispatch_prompt._config(Path(args.root))
+        selected = args.launcher or load_settings(Path(args.root), config.settings_path).workers.launcher
         # The override is the eval harness's recorder and the only path that still builds an argv.
-        command = (argv(launcher(), agent_type=args.agent_type, cwd=args.cwd, title=args.title,
-                        model=args.model, effort=args.effort, workspace=args.root)
-                   if override else [OSASCRIPT, "-"])
-        script = None if override else ghostty_script(
-            cwd=args.cwd, agent_type=args.agent_type, title=args.title, runtime=args.runtime,
-            model=args.model, effort=args.effort, workspace=args.root,
-            claude=Path(p) if (p := shutil.which(BINARY[args.runtime])) else None)
-    except (RefusedError, dispatch_prompt.RefusedError) as exc:
+        worker = dict(cwd=args.cwd, agent_type=args.agent_type, title=args.title, runtime=args.runtime,
+                      model=args.model, effort=args.effort, workspace=args.root)
+        if override:
+            command = argv(launcher(), agent_type=args.agent_type, cwd=args.cwd, title=args.title,
+                           model=args.model, effort=args.effort, workspace=args.root)
+            script = None
+        elif selected == "tmux":
+            command = tmux_command(tmux=Path(p) if (p := shutil.which("tmux")) else None,
+                                   binary=Path(p) if (p := shutil.which(BINARY[args.runtime])) else None,
+                                   **worker)
+            script = None
+        else:
+            command = [OSASCRIPT, "-"]
+            script = ghostty_script(claude=Path(p) if (p := shutil.which(BINARY[args.runtime])) else None,
+                                   **worker)
+    except (RefusedError, dispatch_prompt.RefusedError, SettingsError) as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 1
 
@@ -349,9 +373,15 @@ def main(argv_in: list[str] | None = None) -> int:
         print(f"refused: {exc}", file=sys.stderr)
         return 1
     try:
-        if script is None:
+        if override:
             proc = subprocess.Popen(command, cwd=args.cwd, env=launch_env(), start_new_session=True)
             where = f"pid {proc.pid}"
+        elif selected == "tmux":
+            out = subprocess.run(command, text=True, capture_output=True, timeout=30, env=launch_env())
+            if out.returncode != 0:
+                print(f"refused: tmux would not open a window: {out.stderr.strip()}", file=sys.stderr)
+                return 1
+            where = "a new tmux window"
         else:
             # The script goes in on stdin, never as `osascript -e` arguments: a value that reached an
             # argument would be one quoting layer closer to being read as AppleScript.

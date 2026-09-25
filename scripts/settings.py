@@ -74,6 +74,11 @@ class Workflow:
 
 
 @dataclass(frozen=True)
+class Workers:
+    launcher: str = "ghostty"
+
+
+@dataclass(frozen=True)
 class Kanban:
     """One visible board stage per tracker stage, with an independent human hold."""
     stages: tuple[str, ...]
@@ -100,6 +105,16 @@ class Settings:
     budgets: dict[str, timedelta] = field(default_factory=dict)
     kanban: Kanban | None = None
     workflow: Workflow = field(default_factory=Workflow)
+    workers: Workers = field(default_factory=Workers)
+
+
+def _workers(table) -> Workers:
+    if not isinstance(table, dict):
+        raise SettingsError("[workers] must be a table")
+    launcher = table.get("launcher", "ghostty")
+    if launcher not in ("ghostty", "tmux"):
+        raise SettingsError("[workers] launcher must be `ghostty` or `tmux`")
+    return Workers(launcher=launcher)
 
 
 def _workflow(table) -> Workflow:
@@ -214,14 +229,15 @@ def load(root: Path, settings_path: str | None) -> Settings:
     lanes = {name: _lane(name, t) for name, t in lanes.items()}
     kanban = _kanban(data["kanban"]) if "kanban" in data else None
     workflow = _workflow(data["workflow"]) if "workflow" in data else Workflow()
+    workers = _workers(data["workers"]) if "workers" in data else Workers()
     budgets = data.get("budgets", {})
     if not isinstance(budgets, dict) or not set(budgets) <= {"S", "M", "L", "XL"}:
         raise SettingsError(f"{settings_path}: [budgets] is a table of S, M, L, XL")
     budgets = {size: _offset(v, f"[budgets] {size}") for size, v in budgets.items()}
     table = data.get("notify")
     if table is None:
-        return Settings(lanes=lanes, budgets=budgets, kanban=kanban, workflow=workflow)
+        return Settings(lanes=lanes, budgets=budgets, kanban=kanban, workflow=workflow, workers=workers)
     if not isinstance(table, dict):
         raise SettingsError(f"{settings_path}: [notify] is not a table")
     return Settings(notify=_notify(table, Path(root)), lanes=lanes, budgets=budgets,
-                    kanban=kanban, workflow=workflow)
+                    kanban=kanban, workflow=workflow, workers=workers)
