@@ -602,7 +602,7 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
     def test_the_reviewer_hand_off_names_its_mailbox(self):
         # autonomous-review-pipeline-design, 22:45: without --mailbox-dir the reviewer's report landed in the reviewed repo.
         pipeline = self.content.split("## Pipeline", 1)[1].split("\n## ", 1)[0]
-        self.assertIn("`Report by: python3 ${CLAUDE_PLUGIN_ROOT}/scripts/inbox.py --mailbox-dir <workspace root>/.chief-of-stuff/mailbox send --to coordinator --from reviewer --type review --task \"<task>\"`", pipeline)
+        self.assertIn("`Report by: python3 ${CLAUDE_PLUGIN_ROOT}/scripts/inbox.py --mailbox-dir <workspace root>/.chief-of-stuff/mailbox send --to coordinator --from <reviewer session> --type review --task \"<task>\"`", pipeline)
         self.assertNotIn("`inbox.py send --to reviewer", pipeline)
         # A sonnet run sent the placeholder itself; the reviewer runs in another tree, so only an absolute path lands.
         self.assertIn("`<workspace root>` written out as an absolute path", pipeline)
@@ -872,6 +872,19 @@ class OnlyTheUserMergesTest(unittest.TestCase):
         line = [x for x in dp.compose(root, "2026-09-18", "Security audit").splitlines() if x.startswith("Commits: ")][0]
         self.assertIn("The merge is the user's alone: you never merge a pull request.", line)
         self.assertNotIn("word you were given", line)
+
+
+class ReviewerRoutingTest(unittest.TestCase):
+    def test_assignment_names_only_a_configured_reviewer(self):
+        tmp, root = workspace(claude_md=CLAUDE + "- Settings: `cos.toml`\n")
+        self.addCleanup(tmp.cleanup)
+        (root / "cos.toml").write_text('[workflow]\nreviewer_session = "reviewer-01"\n')
+        configured = dp.compose(root, "2026-09-18", "Security audit")
+        self.assertIn("Review goes to the configured session reviewer-01", configured)
+        (root / "cos.toml").write_text("[workflow]\n")
+        generic = dp.compose(root, "2026-09-18", "Security audit")
+        self.assertIn("No reviewer session is configured", generic)
+        self.assertNotIn("reviewer-01", generic)
 
 
 class AgyRuntimeTest(unittest.TestCase):
