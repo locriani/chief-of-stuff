@@ -42,7 +42,7 @@ class CoordinatorLaunchTest(unittest.TestCase):
         self.assertTrue((first / "scripts" / "process_status.py").is_file())
         self.assertTrue((first / "scripts" / "_vendor" / "toon_format" / "decoder.py").is_file())
         self.assertTrue((first / "agents" / "chief-of-stuff.md").is_file())
-        self.assertIn("0.36.10-", first.name)
+        self.assertIn("0.36.11-", first.name)
 
     def test_concurrent_installs_share_one_complete_release(self):
         with ThreadPoolExecutor(max_workers=3) as pool:

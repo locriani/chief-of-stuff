@@ -832,8 +832,9 @@ class PonytailTest(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.body = dp.compose(self.root, "2026-09-18", "Security audit")
 
-    def test_the_header_names_ponytail_at_ultra(self):
-        self.assertIn("**ponytail, ultra.**", self.body)
+    def test_the_header_states_the_work_style_in_plain_language(self):
+        self.assertIn("**Work style.** Write the least code", self.body)
+        self.assertNotIn("ponytail, ultra", self.body)
 
     def test_a_new_task_is_a_new_plan(self):
         """Zach, 2026-09-23 22:25: a later task handed to this session starts in plan mode too."""
