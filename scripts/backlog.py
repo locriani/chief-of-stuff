@@ -83,9 +83,12 @@ GH_REPO = re.compile(r"^[\w.-]+/[\w.-]+$")
 
 
 def run_gh(args: list[str], input_text: str | None = None) -> tuple[int, str, str]:
-    """One `gh` call. Raises nothing: a missing `gh` is an answer like any other failure."""
+    """One `gh` call. The eval harness may pin an isolated fake CLI by absolute path."""
+    binary = os.environ.get("CHIEF_OF_STUFF_GH", "gh")
+    if binary != "gh" and not Path(binary).is_absolute():
+        return 127, "", "CHIEF_OF_STUFF_GH must be an absolute executable path"
     try:
-        done = subprocess.run(["gh", *args], input=input_text, capture_output=True, text=True, check=False)
+        done = subprocess.run([binary, *args], input=input_text, capture_output=True, text=True, check=False)
     except FileNotFoundError:
         return 127, "", "gh not found"
     return done.returncode, done.stdout, done.stderr

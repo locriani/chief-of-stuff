@@ -9,7 +9,7 @@
     {
       "name": "chief-of-stuff",
       "description": "The chief-of-stuff agent: daily log, tracker, board, and worker dispatch on user approval. Launch with Claude Code or start_coordinator.py.",
-      "version": "0.36.18",
+      "version": "0.36.19",
       "source": "./",
       "author": {
         "name": "Zach Gardner",

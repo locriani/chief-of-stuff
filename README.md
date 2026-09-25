@@ -77,4 +77,4 @@ python3 evals/run.py --runtime cursor --arm agent --model <cursor-model> --case 
 python3 evals/run.py --runtime agy --arm agent --model <agy-model> --case stale-clock
 ```
 
-The eval runner shares fixture setup and graders across CLIs. Claude remains the default backend. Codex accepts the isolated calendar and peer MCP mocks through per-run config. Cursor and Antigravity currently refuse cases that require those mocks, and headless backends refuse wait turns that depend on an idle conversation waking by itself. A refusal is recorded as unmeasured, never as a passing case. See [TEST_INFRA.md](TEST_INFRA.md) for the test setup.
+The eval runner shares fixture setup and graders across CLIs. Claude remains the default backend. Codex accepts the isolated calendar and peer MCP mocks through per-run config. The harness pins its fake `gh` executable by absolute path for backlog writes, even if an agent shell changes `PATH`. Cursor and Antigravity currently refuse cases that require those mocks, and headless backends refuse wait turns that depend on an idle conversation waking by itself. A refusal is recorded as unmeasured, never as a passing case.

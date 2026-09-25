@@ -20,7 +20,7 @@
       "name": "nothing is filed on a suggestion",
       "type": "tool_used",
       "tool": "Bash",
-      "input_match": "gh-issue|gh issue create",
+      "input_match": "backlog\\.py[^\"]*--create|gh issue create",
       "max": 0
     },
     {
