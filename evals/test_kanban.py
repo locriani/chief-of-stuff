@@ -60,6 +60,43 @@ class LabelDeltaTest(unittest.TestCase):
         self.assertIn("00 - PLAN", kanban.drift(FLOW, ("00 - PLAN", "03 - BUILD"), "implement"))
         self.assertEqual(kanban.drift(FLOW, ("03 - BUILD", "kind::code"), "implement"), "")
 
+    def test_waiting_one_shot_may_hold_without_moving_its_stage(self):
+        labels = ("03 - BUILD", "!! - HUMAN REVIEW REQUIRED", "kind::code")
+        self.assertEqual(kanban.drift(FLOW, labels, "implement", allow_extra_hold=True), "")
+        self.assertIn("!! - HUMAN REVIEW REQUIRED", kanban.drift(FLOW, labels, "implement"))
+
+
+class HumanHoldTest(unittest.TestCase):
+    def test_github_adds_only_hold_and_verifies(self):
+        ref = backlog.IssueRef("team/repo", 9)
+        calls = []
+
+        def gh(args):
+            calls.append(args)
+            if args[:2] == ["issue", "view"]:
+                held = any(cmd[:2] == ["issue", "edit"] for cmd in calls)
+                labels = ["03 - BUILD", "kind::code"] + ([FLOW.human_review_label] if held else [])
+                return 0, json.dumps({"labels": [{"name": x} for x in labels]}), ""
+            if args[:2] == ["label", "list"]:
+                return 0, json.dumps([{"name": FLOW.human_review_label}]), ""
+            return 0, "", ""
+
+        self.assertEqual(kanban.add_human_hold(ref, backlog.GitHubBacklog("team/repo"), FLOW, gh=gh), "")
+        edits = [cmd for cmd in calls if cmd[:2] == ["issue", "edit"]]
+        self.assertEqual(edits, [["issue", "edit", "9", "-R", "team/repo", "--add-label",
+                                  FLOW.human_review_label]])
+
+    def test_gitlab_adds_only_hold_and_verifies(self):
+        home = backlog.Backlog("https://labs.example.test", "team/app")
+        ref = backlog.IssueRef("team/app", 7, "labs.example.test")
+        before = {"labels": ["03 - BUILD", "kind::code"]}
+        after = {"labels": [*before["labels"], FLOW.human_review_label]}
+        with mock.patch.object(kanban.backlog, "_get", side_effect=[(before, {}, ""), (after, {}, "")]), \
+             mock.patch.object(kanban.backlog, "existing_labels", return_value=({FLOW.human_review_label}, "")), \
+             mock.patch.object(kanban.backlog, "_call", return_value=(after, {}, "")) as write:
+            self.assertEqual(kanban.add_human_hold(ref, home, FLOW, token="test"), "")
+        self.assertEqual(write.call_args.args[-1], {"add_labels": FLOW.human_review_label})
+
 
 class GitLabUpdaterTest(unittest.TestCase):
     def setUp(self):

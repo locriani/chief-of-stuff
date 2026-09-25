@@ -41,9 +41,11 @@ class CoordinatorLaunchTest(unittest.TestCase):
         self.assertTrue((first / "scripts" / "spawn_session.py").is_file())
         self.assertTrue((first / "scripts" / "init_workspace.py").is_file())
         self.assertTrue((first / "scripts" / "process_status.py").is_file())
+        self.assertTrue((first / "scripts" / "one_shot.py").is_file())
         self.assertTrue((first / "scripts" / "_vendor" / "toon_format" / "decoder.py").is_file())
         self.assertTrue((first / "agents" / "chief-of-stuff.md").is_file())
-        self.assertIn("0.36.19-", first.name)
+        version = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text())["version"]
+        self.assertTrue(first.name.startswith(f"{version}-"))
 
     def test_concurrent_installs_share_one_complete_release(self):
         with ThreadPoolExecutor(max_workers=3) as pool:

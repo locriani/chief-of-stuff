@@ -59,13 +59,14 @@ def after(current: tuple[str, ...], delta: Delta) -> tuple[str, ...]:
 
 
 def drift(config: Kanban, labels: tuple[str, ...], stage: str,
-          *, project_status: str | None = None) -> str:
+          *, project_status: str | None = None, allow_extra_hold: bool = False) -> str:
     """Describe a board disagreement; the audit never repairs one silently."""
     try:
         target = config.label_for(stage)
     except KeyError:
         return f"unmapped tracker stage {stage}"
-    hold = config.human_review_label if config.holds(stage) else None
+    hold = config.human_review_label if (config.holds(stage) or
+           (allow_extra_hold and config.human_review_label in labels)) else None
     managed = set(config.stages) | {config.human_review_label}
     expected = {x for x in (hold, target if config.github_project is None else None) if x}
     actual = set(labels) & managed
@@ -223,6 +224,54 @@ def _github_labels_exist(gh, ref: backlog.IssueRef, names: tuple[str, ...]) -> s
     have = {x.get("name") for x in row if isinstance(x, dict)}
     missing = set(names) - have
     return f"missing label in GitHub: {', '.join(sorted(missing))}" if missing else ""
+
+
+def add_human_hold(ref: backlog.IssueRef, home: backlog.Backlog | backlog.GitHubBacklog,
+                   config: Kanban, *, gh=None, token: str | None = None) -> str:
+    """Add only the review hold; leave the numbered stage and Project Status untouched.
+
+    Return an error string, or empty string when the hold is verified. This is used when a
+    one-shot worker exits unfinished, including after partial edits.
+    """
+    label = config.human_review_label
+    if ref.host == backlog.GITHUB:
+        gh = gh or backlog.run_gh
+        current, error = _github_issue(gh, ref)
+        if error or label in current:
+            return error
+        error = _github_labels_exist(gh, ref, (label,))
+        if error:
+            return error
+        code, _, stderr = gh(["issue", "edit", str(ref.number), "-R", ref.repo, "--add-label", label])
+        if code:
+            return stderr.strip() or f"gh exited {code}"
+        updated, error = _github_issue(gh, ref)
+        return error or ("GitHub review hold was not applied" if label not in updated else "")
+    if not isinstance(home, backlog.Backlog) or ref.host != backlog.home_of(home)[0]:
+        return "issue host does not match the configured backlog"
+    project = home if home.project == ref.repo else backlog.Backlog(home.host, ref.repo, home.env, home.account)
+    secret = token if token is not None else backlog.token(project)
+    if not secret:
+        return f"no token: set ${home.env} or add it to the Keychain as {home.service}"
+    url = f"{project.issues_url}/{ref.number}"
+    row, _, error = backlog._get(url, secret, backlog.TIMEOUT)
+    if error:
+        return error
+    if not isinstance(row, dict) or not isinstance(row.get("labels"), list):
+        return "GitLab issue has no readable labels"
+    if label in row["labels"]:
+        return ""
+    labels, error = backlog.existing_labels(project, token=secret)
+    if error:
+        return error
+    if label not in labels:
+        return f"missing label in GitLab: {label}"
+    _, _, error = backlog._call("PUT", url, secret, backlog.TIMEOUT, {"add_labels": label})
+    if error:
+        return error
+    updated, _, error = backlog._get(url, secret, backlog.TIMEOUT)
+    return error or ("GitLab review hold was not applied" if not isinstance(updated, dict) or
+                     label not in updated.get("labels", []) else "")
 
 
 def _github_label_delta(config: Kanban, current: tuple[str, ...], stage: str) -> Delta:

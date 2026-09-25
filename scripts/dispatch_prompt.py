@@ -284,7 +284,8 @@ def _owns(text: str, item: str, relative: str) -> str:
 
 
 def compose(root: Path, day: str | None, task: str, worktree: Path | None = None,
-            coordinator: str | None = None, name: str | None = None, runtime: str = "claude") -> str:
+            coordinator: str | None = None, name: str | None = None, runtime: str = "claude",
+            one_shot: bool = False) -> str:
     """The assignment for `task`, read back off disk. A task that is not a row is refused."""
     cfg = _config(root)
     try:
@@ -330,6 +331,42 @@ def compose(root: Path, day: str | None, task: str, worktree: Path | None = None
     # Zach, 2026-09-23 00:04: "when a session gets a name, it should stick with that name".
     if name is not None and not GIVEN_NAME.fullmatch(name):
         raise RefusedError(f"{name!r} is not a session name; a launch name is bare, like impl07")
+    if one_shot:
+        if worktree is None:
+            raise RefusedError("one-shot dispatch needs a worktree")
+        if rows[0].kind != "open" or rows[0].standing_for(name):
+            raise RefusedError("one-shot dispatch needs an open, non-standing task")
+        result = worktree / PROMPT_DIR / "worker-result.toon"
+        lines = [
+            "# One-shot assignment",
+            f"You are {name or 'a worker'} in a single, noninteractive {runtime} run. Complete only this task, then exit.",
+            "Do not register, poll a mailbox, schedule checks, start another agent, or send messages.",
+            "Do not wait for a plan approval or for a reply. If a decision, missing access, or another blocker prevents completion, stop and report human_review.",
+            f"Task: {item}",
+        ]
+        if rows[0].checklist.strip():
+            lines.append(f"Requirement: {_clean('the checklist cell', rows[0].checklist.strip())}")
+        if issue:
+            lines.append(f"Issue: {issue.url}")
+        lines += [
+            f"Worktree: {worktree}", f"Workspace: {root.resolve()}",
+            f"Tracker: {(root / relative).resolve()}",
+            f"Owns: {owns}. Edit only these paths and task-local files in this worktree.",
+            "Read the workspace rules and the issue if present. Implement the task, verify it, and make the changes this task permits in this one run.",
+            ("Commit the finished change on this worktree's branch and open a pull request when tests pass; do not merge."
+             if workflow.delivery == "pull-request" else
+             "Commit the finished change on this worktree's branch; do not push or merge without existing authorization."),
+            "Do not edit the tracker or issue labels yourself; the launcher reconciles them after you exit.",
+            f"Before exiting, write a TOON object to {result} with exactly three string fields:",
+            'status: done', 'reason: "what was completed, or why human review is required"',
+            'changes: "files changed, tests run, commit or PR if any"',
+            "Use status: human_review if unfinished, including when you made partial changes. State the blocker and the partial changes plainly.",
+            "The launcher treats a missing or invalid result as human_review.",
+        ]
+        body = "\n".join(lines) + "\n"
+        if len(body) > BODY_CAP:
+            raise RefusedError(f"the assignment is {len(body)} characters, over the {BODY_CAP} cap")
+        return body
     coord_mailbox = "coordinator"
     # Named explicitly: the inbox finds its mailbox through git's common dir, so from a fork worktree it
     # resolved the fork's mailbox while the coordinator, at a workspace root that is no repo, read the

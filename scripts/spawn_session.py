@@ -317,6 +317,10 @@ def main(argv_in: list[str] | None = None) -> int:
     ap.add_argument("--effort", default="", choices=("", "low", "medium", "high", "xhigh", "max"),
                     help="claude only; agy's effort is in its model id")
     ap.add_argument("--dry-run", action="store_true", help="print the argv and start nothing")
+    ap.add_argument("--one-shot", action="store_true",
+                    help="run one noninteractive task in the foreground, then record its outcome")
+    ap.add_argument("--timeout-minutes", type=int, default=60,
+                    help="one-shot run limit before human review (default: 60)")
     args = ap.parse_args(argv_in)
     if (args.model or args.runtime == "agy") and not MODEL.fullmatch(args.model):
         print(f"refused: --model needs a model id (agy: one from `agy models`, and it is required), not {args.model!r}", file=sys.stderr)
@@ -330,6 +334,23 @@ def main(argv_in: list[str] | None = None) -> int:
     # working directory. That produced a session in the workspace root, hunting for an assignment by
     # file mtime, and before that a tab that died silently. One value, one meaning, both callers.
     args.cwd = os.path.abspath(args.cwd)
+
+    if args.one_shot:
+        if args.timeout_minutes < 1:
+            print("refused: --timeout-minutes must be positive", file=sys.stderr)
+            return 1
+        if args.launcher:
+            print("refused: --launcher applies to interactive sessions, not --one-shot", file=sys.stderr)
+            return 1
+        try:
+            import one_shot
+            return one_shot.run(root=Path(args.root).resolve(), day=args.date, task=args.task,
+                                cwd=Path(args.cwd), name=args.title, runtime=args.runtime,
+                                agent_type=args.agent_type, model=args.model, effort=args.effort,
+                                dry_run=args.dry_run, timeout_minutes=args.timeout_minutes)
+        except (ValueError, OSError, dispatch_prompt.RefusedError, ShellError, SettingsError) as exc:
+            print(f"refused: {exc}", file=sys.stderr)
+            return 1
 
     override = os.environ.get(ENV)
     try:
