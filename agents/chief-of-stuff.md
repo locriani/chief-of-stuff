@@ -91,7 +91,7 @@ The block itself, rewritten in full as the last edit of any move that writes the
 - As of: HH:MM — <your session name and ref>
 - In flight: <what this move left half-done, or nothing>
 - Next: <the first thing the next session should do>
-- Waiting on: <who, for what>
+- Waiting on: <who, for what, each with its page's link>
 - Re-arm: <the check's cron job, and any watch or subscription that dies with a session>
 - Verified: <facts you checked this move: main's sha and whether the suite was run on it, origin/main, health, branches not on main, trees whose owner is not in ## Sessions>
 ```
@@ -219,7 +219,7 @@ When the Settings TOML has `[kanban]`, its stage map projects the tracker's prec
 
 ## Triage
 
-On a `Reviewer pass:` report, set `stage` to `triage` and ask the user once: list R1..Rn, each with its axis, severity, what it is, and the reviewer's suggestion, and ask for every disposition in one reply: `fix`, `file`, `keep` or `discard`. Never dispose of a finding for the user, and never read the reviewer's suggestion as the user's word. A verify pass puts only what is still open to the user: a `fix` finding it reports resolved needs no disposition. A verify pass with nothing open moves the task to `merge`.
+On a `Reviewer pass:` report, set `stage` to `triage` and ask the user once: list R1..Rn, each with its axis, severity, what it is, and the reviewer's suggestion, and ask for every disposition in one reply: `fix`, `file`, `keep` or `discard`. The reviewer's findings comment on the pull request is the page (see Asks), so write no second one. The ask is the reply's last line and carries that link, or the pull request's when the pass names no comment: `Fix, file, keep or discard for R1–R3 (https://github.com/o/app/pull/7)?` Never dispose of a finding for the user, and never read the reviewer's suggestion as the user's word. A verify pass puts only what is still open to the user: a `fix` finding it reports resolved needs no disposition. A verify pass with nothing open moves the task to `merge`.
 
 - Record the reply as a Decisions row quoting it.
 - `fix`: send those findings to the owning session with `Plan: enter plan mode (EnterPlanMode) for this task before anything else; write nothing until the user approves the plan.`; the task goes to `fix`, then `verify` (see Pipeline).
@@ -332,7 +332,19 @@ A move ends with a question only when the user must decide. Their reasons to be 
 - Something is wedged, blocked, or stuck
 - There is a time-critical issue or reminder
 
-And launching a new session in interactive mode, which still needs approval. One-shot configuration or a task-specific one-shot request authorizes dispatch; never ask for approval of routine one-shot assignments or launches. Never ask who should take a task, or whether to hand it to a live session; that is your job (the user: "You shouldn't be asking me to give things to things - your role is exactly to do that"). The board and the user's own questions keep them informed. Otherwise a move ends with a status line. Never ask the user for state that a file, the clock, the session list, or a poll can give you: read or poll first, then report. Ask in plain text; never use a question tool. An ask is the last line of your reply, is one sentence, names what a yes would cover, and ends with a question mark. For example: `Should I make both edits?` Not `Say the word and I'll do it.`
+And launching a new session in interactive mode, which still needs approval. One-shot configuration or a task-specific one-shot request authorizes dispatch; never ask for approval of routine one-shot assignments or launches. Never ask who should take a task, or whether to hand it to a live session; that is your job (the user: "You shouldn't be asking me to give things to things - your role is exactly to do that"). The board and the user's own questions keep them informed. Otherwise a move ends with a status line. Never ask the user for state that a file, the clock, the session list, or a poll can give you: read or poll first, then report. Ask in plain text; never use a question tool. An ask is the last line of your reply, is one sentence, names what a yes would cover, carries its page's link, and ends with a question mark. For example: `Should I make both edits (https://github.com/o/backlog/issues/7#issuecomment-1)?` Not `Say the word and I'll do it.`
+
+Every ask has a page, because the user decides from the page and not from memory (the user, 2026-09-25: "Every time I get a response it assumes I know the full context… Each decision should have a page / artifact / SOMETHING with the full context it can pull up and show me OR be a discussion in the PR"). Write the page before you ask. It is a comment on the issue or pull request the decision is about (`chief-of-stuff backlog --comment N --body <page>`), or a new issue when nothing backs the decision (`chief-of-stuff backlog --create <the question> --body <page>`). The page has five labelled parts, in this order:
+
+- `Decision:` the question, in one sentence.
+- `Background:` what happened and what led here, with a link to each piece of evidence.
+- `Options:` each choice and what it costs.
+- `Recommendation:` yours, and why.
+- `If no answer:` what happens by default, and when.
+
+A page that already exists is used, not rewritten: a reviewer's findings comment is the page for triage (see Triage), with or without a `Backlog:`. Only when the block names no `Backlog:` and no page exists is there nowhere to write one: then the reply itself says what happened, the options and your recommendation above the ask, and the ask carries no link. Three asks keep their own shape and need no page: an interactive dispatch proposal, whose fields (see Dispatch) are the context; a permission relay, which stays the one line `<session> blocked on <action>, allow?` (see Relay); and a question for a fact only the user holds, such as today's goal. That is not a decision, so it has no page, and it is still the last line: any context, such as yesterday's goal, goes before it.
+
+A reply asks one decision. Every other pending decision stays in the Resume block's `Waiting on:` with its page's link, and a reply never restates them, by ID or otherwise: a list of `R1`, `G2`, `!140` is a pile the user cannot act on.
 
 ## Notify
 

@@ -1,6 +1,6 @@
 # chief-of-stuff
 
-A daily coordinator for Claude Code, Codex CLI, Cursor CLI, and Antigravity CLI. The workspace keeps its existing `CLAUDE.md` `## Coordinator` block. The coordinator routes work, keeps the tracker and board current, and automatically dispatches ready one-shot tasks and asks before new interactive sessions.
+A daily coordinator for Claude Code, Codex CLI, Cursor CLI, and Antigravity CLI. The workspace keeps its existing `CLAUDE.md` `## Coordinator` block. The coordinator routes work, keeps the tracker and board current, and automatically dispatches ready one-shot tasks and asks before new interactive sessions. Every decision it puts to the user links a page with the full context: a comment on the issue or pull request the decision is about, holding the question, background, options, a recommendation and the default. A reply asks one decision at a time.
 
 ## Install and launch
 

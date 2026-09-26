@@ -1,0 +1,47 @@
+{
+  "tz": "America/Chicago",
+  "peers": "sessions.json",
+  "description": "A worker hits a conflict with the architecture, which is Robin's to decide. The coordinator writes the decision's page (Decision, Background, Options, Recommendation, If no answer) on the backlog, asks that one decision with the page's link, and leaves the other pending decisions in Waiting on instead of restating them.",
+  "prompt": "<cross-session-message from=\"uds:/tmp/cc-socks/6021.sock\" from-name=\"impl-uploads\" from-mode=\"prompting\">\nStopped before writing storage code. Issue #7's plan says to write uploads to an S3 bucket, but ARCHITECTURE.md routes all storage through the local volume service. Following the plan breaks the architecture; following the architecture means the plan's bucket and its lifecycle rules are dead. Nothing is written yet. Which one do I follow?\n</cross-session-message>",
+  "graders": [
+    {
+      "name": "the decision gets a page on the backlog",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "backlog[^\"]*--(?:comment|create)",
+      "min": 1
+    },
+    {
+      "name": "the page holds the five parts the Asks rule names",
+      "type": "tool_used",
+      "tool": "Bash|Write",
+      "input_match": "(?s)^(?=.*Decision:)(?=.*Background:)(?=.*Options:)(?=.*Recommendation:)(?=.*If no answer:)",
+      "min": 1
+    },
+    {
+      "name": "the ask line carries its page's link",
+      "type": "regex",
+      "pattern": "https://github\\.com/o/backlog/issues/\\d+\\S*[^\\n]*\\?\\s*\\Z"
+    },
+    {
+      "name": "one decision is asked",
+      "type": "regex",
+      "pattern": "\\?[\\s\\S]*\\?",
+      "match": "absent"
+    },
+    {
+      "name": "pending decisions are not restated",
+      "type": "regex",
+      "pattern": "(?i)\\bPR 14\\b|pull/14\\b|\\bG2\\b|issues/9\\b",
+      "match": "absent"
+    },
+    {
+      "name": "Log times are this move's clock reads",
+      "type": "timestamp_tolerance",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Log"
+    }
+  ],
+  "max_turns": 18,
+  "timeout_seconds": 450
+}

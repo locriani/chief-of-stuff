@@ -34,6 +34,11 @@
       "pattern": "(?is)^(?=.*\\bfix\\b)(?=.*\\bfile\\b)(?=.*\\bkeep\\b)(?=.*\\bdiscard\\b)"
     },
     {
+      "name": "the ask links the findings' page",
+      "type": "regex",
+      "pattern": "https://github\\.com/o/app/pull/12\\S*[^\\n]*\\?\\s*\\Z"
+    },
+    {
       "name": "the task sits at triage",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",
