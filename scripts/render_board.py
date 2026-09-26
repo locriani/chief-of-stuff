@@ -20,7 +20,8 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from backlog import Backlog, BacklogError, GitHubBacklog, issue_ref, parse_backlog  # noqa: E402
-from settings import SettingsError, load as load_settings  # noqa: E402
+from settings import Kanban, SettingsError, load as load_settings  # noqa: E402
+import columns  # noqa: E402
 import decision_page  # noqa: E402
 import gantt  # noqa: E402
 
@@ -1677,9 +1678,47 @@ def requirements_section(d: Deadline, text: str | None) -> str:
     return "\n".join(out)
 
 
+def stage_order(lanes: dict) -> list[str]:
+    """Every lane's stages in one order that keeps each lane's own: a new stage lands after its predecessor, a lane's
+    leading new stages before its first known one, and a lane sharing none after the rest. graphlib's topological
+    order would interleave two lanes that share no stage."""
+    order: list[str] = []
+    for lane in lanes.values():
+        at, pending = None, []
+        for stage in lane.stages:
+            if stage in order:
+                i = order.index(stage)
+                order[i:i] = pending
+                at, pending = i + len(pending) + 1, []
+            elif at is None:
+                pending.append(stage)
+            else:
+                order.insert(at, stage)
+                at += 1
+        order += pending
+    return order
+
+
+def build_columns(tasks: list[Task], lanes: dict | None, kanban: Kanban | None = None) -> tuple[list[columns.Column], columns.Column]:
+    """The Build board: a column per lane stage, a card per task at it, and the tasks with no lane in the footer."""
+    lanes = lanes or {}
+    gates = {g for lane in lanes.values() for g in lane.gates}
+
+    def card(task: Task) -> columns.Card:
+        held = kanban is not None and kanban.holds(task.stage.strip())
+        return columns.Card(task.label, task.kind, task.issue.strip(), task.owner, task.state,
+                            flag=columns.Mark("ON HOLD", "hold") if held else None)
+
+    laned = [t for t in tasks if t.lane.strip() and t.stage.strip()]
+    order = list(dict.fromkeys(stage_order(lanes) + [t.stage.strip() for t in laned]))
+    cols = [columns.Column(stage, tuple(card(t) for t in laned if t.stage.strip() == stage),
+                           *(("gate", "gate") if stage in gates else ())) for stage in order]
+    return cols, columns.Column("no lane", tuple(card(t) for t in tasks if not (t.lane.strip() and t.stage.strip())))
+
+
 def render(tracker_text: str, log_text: str, cfg: Config, now: datetime,
            requirements: dict[str, str | None] | None = None, lanes: dict | None = None,
-           tracker_day: date | None = None, decisions: int | None = None) -> str:
+           tracker_day: date | None = None, decisions: int | None = None, kanban: Kanban | None = None) -> str:
     cfg = with_decision_deadlines(cfg, tracker_text, tracker_day or now.date())
     sha = hashlib.sha256(tracker_text.encode()).hexdigest()
     tracker = parse_tracker(tracker_text)
@@ -1888,6 +1927,11 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime,
         return (f"{_esc(s.name)} <span class='warn'>· {silence}</span> "
                 f"<span class='muted'>· {_tasks(held)}</span>")
 
+    build_cols, no_lane = build_columns(tasks, lanes, kanban)
+    issues = sum(1 for t in tasks if t.issue.strip())
+    build_html = (f'<h2>Build</h2>\n<div class="meta">{_tasks(len(tasks))} · {issues} issue{"" if issues == 1 else "s"}</div>\n'
+                  f'{columns.render(build_cols, no_lane if no_lane.cards else None)}\n'
+                  if any(t.lane.strip() for t in tasks) else "")
     blocked_html = f"""<h2>Blocked</h2>
 <div class="cards">
 {blocked_card("Awaiting you", [task_line(l) for l in awaiting])}
@@ -1933,6 +1977,7 @@ tr.group th{{background:color-mix(in srgb,var(--brass) 18%,transparent);color:va
 .tasks>input:checked+label{{background:var(--fg);color:var(--surface);border-color:var(--fg)}}
 .tasks>input:focus-visible+label{{outline:2px solid var(--brass);outline-offset:2px}}
 {filter_css}
+{columns.css()}.columns{{--columns-ink:var(--fg);--columns-muted:var(--muted);--columns-card:var(--surface);--columns-rule:var(--line);--columns-gate-ink:var(--brass);--columns-bg:color-mix(in srgb,var(--brass) 10%,var(--bg));--columns-gate:color-mix(in srgb,var(--brass) 14%,var(--surface))}}
 .cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px;margin:8px 0}} .cards.due{{grid-template-columns:repeat(auto-fit,minmax(330px,1fr))}}
 .card{{background:var(--surface);border:1px solid var(--line);border-radius:5px;padding:8px 11px}} .due-card{{border-left:3px solid var(--dl)}}
 .card h3,.card-head b{{margin:0 0 5px;font-family:"Cormorant SC","Cormorant Garamond",Georgia,serif;font-size:13.5px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--brass)}}
@@ -2037,6 +2082,7 @@ body{{padding:12px 12px 36px}}
 
 {due_html}{blocked_html}
 
+{build_html}
 <h2>Today</h2>
 <div class="meta">{len(day_done)} done · {len(day_bars)} scheduled · {len(day_folded)} folded into one row (no estimate, or due or estimated after today) · bands are calendar events · green line is now{orphan_note}</div>
 {legend()}{_strip(day_body + day_done_rows + swimlanes(day_bars) + day_summaries, axis_a, axis_b, day_events, [nearest], day_ticks, "day")}
@@ -2124,15 +2170,15 @@ def main(argv: list[str] | None = None) -> Path:
     out.parent.mkdir(parents=True, exist_ok=True)
     req_texts = {d.name: ((root / d.requirements).read_text() if (root / d.requirements).is_file() else None) for d in cfg.deadlines if d.requirements}
     try:
-        lanes = load_settings(root, cfg.settings_path).lanes
+        settings = load_settings(root, cfg.settings_path)
     except SettingsError as e:
         sys.exit(f"render_board: {e}")
     today_rows = decision_rows(tracker_text)
     answered = [row[1] for _, path in daily_trackers(root, cfg) if path != tracker for row in decision_rows(path.read_text())]
     decisions, pending = decision_page.index(out.parent, answered + [row[1] for row in today_rows], today_rows, day)
     (out.parent / "decisions.html").write_text(decisions)
-    page = render(tracker_text, log_text, cfg, now, requirements=req_texts, lanes=lanes,
-                  tracker_day=tracker_day, decisions=pending)
+    page = render(tracker_text, log_text, cfg, now, requirements=req_texts, lanes=settings.lanes,
+                  tracker_day=tracker_day, decisions=pending, kanban=settings.kanban)
     out.write_text(page)
     parsed = parse_tracker(tracker_text)
     hist = history(list(parsed.tasks), cfg, now)

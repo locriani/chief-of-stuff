@@ -192,11 +192,19 @@ class Palette(unittest.TestCase):
 
 
 class Standalone(unittest.TestCase):
-    def test_imports_no_plugin_module(self) -> None:
-        src = (SCRIPTS / "gantt.py").read_text()
-        imported = set(re.findall(r"^(?:from|import) ([\w.]+)", src, re.M))
+    """gantt.py and columns.py lift out with fragment.py, their shared escaping and validation, and nothing else."""
+
+    def imports(self, name: str) -> set[str]:
+        src = (SCRIPTS / f"{name}.py").read_text()
         plugin = {p.stem for p in SCRIPTS.glob("*.py")} | {"_vendor", "scripts"}
-        self.assertFalse({m.split(".")[0] for m in imported} & plugin, imported)
+        return {m.split(".")[0] for m in re.findall(r"^(?:from|import) ([\w.]+)", src, re.M)} & plugin
+
+    def test_imports_no_plugin_module_but_fragment(self) -> None:
+        for name in ("gantt", "columns"):
+            self.assertEqual(self.imports(name), {"fragment"}, name)
+
+    def test_fragment_imports_no_plugin_module(self) -> None:
+        self.assertEqual(self.imports("fragment"), set())
 
 
 if __name__ == "__main__":

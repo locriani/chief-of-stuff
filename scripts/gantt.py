@@ -7,18 +7,16 @@ No JavaScript: positions are baked in at render, and everything else is a class.
 
 from __future__ import annotations
 
-import html
 import math
-import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+
+from fragment import colour as _colour, css_str as _css_str, esc as _esc, kind as _kind
 
 HOUR, DAY = timedelta(hours=1), timedelta(days=1)
 STEPS = tuple(HOUR * h for h in (1, 2, 3, 4, 6, 12)) + tuple(DAY * d for d in (1, 2, 7))
 MAX_TICKS = 13
 MIN_WIDTH = 0.5
-KIND = re.compile(r"[a-z][a-z0-9-]*")
-COLOUR = re.compile(r"[#\w(),.%/ -]+")  # a colour or var(); nothing that ends a declaration or a rule
 # Okabe-Ito. A tuple is (fill, edge), for a fill too pale to read on the background, as the yellow is.
 PALETTE: dict[str, str | tuple[str, str]] = {
     "implement": "#0072B2", "pr": "#56B4E9", "review": "#009E73", "triage": "#E69F00",
@@ -88,16 +86,6 @@ def ticks(start: datetime, end: datetime, step: timedelta | None = None, fmt: st
 _ticks = ticks  # `render` takes a `ticks` argument of its own
 
 
-def _esc(text: str) -> str:
-    return html.escape(text, quote=True)
-
-
-def _kind(kind: str) -> str:
-    if not KIND.fullmatch(kind):
-        raise ValueError(f"kind {kind!r} is not a class name")
-    return kind
-
-
 def _bar(g: Segment, win: Window) -> str:
     clock = "%H:%M" if win.end - win.start <= DAY else "%a %H:%M"
     label = _esc(" · ".join(p for p in (f"{g.category} {g.start:{clock}}–{g.end:{clock}}", g.title, g.kind) if p))
@@ -134,17 +122,6 @@ def legend(colors: dict[str, str | tuple[str, str]] = PALETTE, kinds: tuple[str,
     keys = [f'<span class="gantt-bar gantt-done" data-cat="{_esc(c)}"></span>{_esc(c)}' for c in colors]
     keys += [f'<span class="gantt-bar gantt-{_kind(k)}"></span>{_esc(k)}' for k in kinds]
     return '<div class="gantt-legend">' + "".join(f'<span class="gantt-key">{k}</span>' for k in keys) + "</div>"
-
-
-def _css_str(text: str) -> str:
-    """A CSS string body that cannot end the string, the rule or the `<style>` element."""
-    return text.replace("\\", "\\\\").replace('"', '\\"').replace("<", "\\3c ").replace("\n", "\\a ")
-
-
-def _colour(value: str) -> str:
-    if not COLOUR.fullmatch(value):
-        raise ValueError(f"colour {value!r} is not a colour")
-    return value
 
 
 BASE_CSS = """\
