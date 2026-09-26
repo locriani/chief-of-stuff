@@ -63,9 +63,10 @@ SPAWN_SESSION = PLUGIN_ROOT / "scripts" / "spawn_session.py"
 # The plugin's own scripts are the only ones the agent may run: html, health and merge state come
 # from code, never from the agent. git and curl stay off the allowlist — the scripts call them.
 SCRIPTS = ("render_board.py", "pages.py", "probe_health.py", "audit_tasks.py", "make_worktree.py",
-           "spawn_session.py", "notify.py", "inbox.py", "backlog.py", "kanban.py", "process_status.py")
+           "spawn_session.py", "notify.py", "inbox.py", "backlog.py", "kanban.py", "process_status.py",
+           "decision_page.py")
 OPERATIONS = ("board", "pages", "health", "audit", "worktree", "worker", "notify", "inbox",
-              "backlog", "kanban", "processes")
+              "backlog", "kanban", "processes", "decision")
 
 
 def allowed_tools(root: Path) -> list[str]:

@@ -1,6 +1,6 @@
 # chief-of-stuff
 
-A daily coordinator for Claude Code, Codex CLI, Cursor CLI, and Antigravity CLI. The workspace keeps its existing `CLAUDE.md` `## Coordinator` block. The coordinator routes work, keeps the tracker and board current, and automatically dispatches ready one-shot tasks and asks before new interactive sessions. Every decision it puts to the user links a page with the full context: a comment on the issue or pull request the decision is about, holding the question, background, options, a recommendation and the default. A reply asks one decision at a time.
+A daily coordinator for Claude Code, Codex CLI, Cursor CLI, and Antigravity CLI. The workspace keeps its existing `CLAUDE.md` `## Coordinator` block. The coordinator routes work, keeps the tracker and board current, and automatically dispatches ready one-shot tasks and asks before new interactive sessions. Every decision it puts to the user links a page with the full context: the question, background, options, a recommendation and the default. With a self-hosted board, `chief-of-stuff decision` renders that page into the pages dir and prints its local URL. Without one, the page is a comment on the issue or pull request the decision is about. A reply asks one decision at a time.
 
 ## Install and launch
 
@@ -75,6 +75,8 @@ The Claude coordinator keeps its 15-minute full check and adds a five-minute mai
 The optional [Kanban walk](docs/kanban.md) maps tracker stages to configurable board columns in the workspace TOML. It syncs GitLab issue labels, GitHub issue labels, or a GitHub Project Status field, with `!!` as an independent human hold. Moves are previewed by default, and the audit reports drift without moving cards.
 
 `chief-of-stuff board` writes the board file only. `chief-of-stuff pages --ensure --root /path/to/workspace` serves it and prints a status without opening or printing the URL. Only the user opens the board when they want to view it.
+
+`chief-of-stuff decision --root /path/to/workspace --name <slug>` renders `<pages dir>/decision-<slug>.json` into `decision-<slug>.html` beside the board and prints its `http://127.0.0.1:<port>/` URL. The JSON fields are listed in `scripts/decision_page.py`.
 
 The board and `notify.py sync` also read precise deadlines from tracker `## Decisions` rows: put `deadline: <name> YYYY-MM-DD HH:MM` in the `item` column, or `deadline: <name> HH:MM` for a time on that tracker's date. A later decision for the same name updates its marker, task horizon, and future notification warnings. A decision without an exact time supplies no instant. Run notification sync after a precise deadline decision changes.
 
