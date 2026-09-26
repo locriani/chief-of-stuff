@@ -31,8 +31,8 @@ class Render(unittest.TestCase):
         card = C("Rate limit headers", "running", refs=(("#118", "https://forge/i/118"), ("!54", "")), owner="worker-07",
                  state="running 01:28", href="https://forge/i/118")
         html = columns.render([columns.Column("implement", (card,))])
-        for part in ('<a class="columns-card-name" href="https://forge/i/118">Rate limit headers</a>',
-                     '<div class="columns-refs"><a href="https://forge/i/118">#118</a><span>!54</span></div>',
+        for part in ('<a class="columns-card-name" href="https://forge/i/118" target="_blank" rel="noopener">Rate limit headers</a>',
+                     '<div class="columns-refs"><a href="https://forge/i/118" target="_blank" rel="noopener">#118</a><span>!54</span></div>',
                      '<span class="columns-owner">worker-07</span>',
                      '<span class="columns-tag columns-chip" data-cat="running">running 01:28</span>'):
             self.assertIn(part, html)
