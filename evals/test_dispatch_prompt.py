@@ -153,6 +153,13 @@ class AssignmentTest(unittest.TestCase):
     def test_it_names_the_paths_the_task_owns(self):
         self.assertIn("Owns: `src/a/`, `notes/audit.md`", self.body())
 
+    def test_a_bullet_row_is_read_like_a_table_row(self):
+        """Audit reads bullets; a dispatch refusing the same row sent the coordinator to rewrite it (#74)."""
+        tmp, root = workspace(TRACKER.replace("| context | paths |\n|---|---|\n| Security audit | `src/a/`, `notes/audit.md` |",
+                                              "- Security audit: `src/a/`, `notes/audit.md`"))
+        self.addCleanup(tmp.cleanup)
+        self.assertIn("Owns: `src/a/`, `notes/audit.md`", dp.compose(root, "2026-09-18", "Security audit"))
+
     def test_owning_nothing_is_said_rather_than_left_out(self):
         tmp, root = workspace(TRACKER.replace("| Security audit | `src/a/`, `notes/audit.md` |",
                                               "| Security audit | none |"))

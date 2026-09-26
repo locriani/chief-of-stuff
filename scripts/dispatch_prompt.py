@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from backlog import file_with, issue_ref  # noqa: E402
 from render_board import ConfigError, _cells, _is_separator, _section, parse_coordinator, parse_tracker, short_name  # noqa: E402
 from settings import SettingsError, Workflow, load as load_settings  # noqa: E402
+import ownership  # noqa: E402
 
 
 class RefusedError(ValueError):
@@ -228,14 +229,9 @@ def _owns(text: str, item: str, relative: str) -> str:
     """Find task-owned paths by full item, colon prefix, or board short name."""
     head = item.split(": ", 1)[0].strip()
     keys = {item.strip(), head, short_name(item).strip()} - {""}
-    for line in _section(text, "## File ownership"):
-        if not line.strip().startswith("|"):
-            continue
-        cells = _cells(line)
-        if _is_separator(cells) or len(cells) < 2:
-            continue
-        if cells[0].strip() in keys:
-            return _clean("the File ownership row", cells[1].strip())
+    for row in ownership.parse("\n".join(_section(text, ownership.HEADING))):
+        if row.context in keys:
+            return _clean("the File ownership row", row.paths)
     raise RefusedError(
         f"no File ownership row for {head!r} in {relative}; write the paths the task owns before "
         "proposing it, so the user reads them before saying yes")
