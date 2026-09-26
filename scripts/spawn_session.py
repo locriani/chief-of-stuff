@@ -228,7 +228,7 @@ def main(argv_in: list[str] | None = None) -> int:
     ap.add_argument("--cwd", required=True, help="the worktree the session starts in")
     ap.add_argument("--name", "--title", dest="title", required=True,
                     help="the session's name, e.g. impl07; the listing, the prompt box and the tab all show it")
-    ap.add_argument("--task", required=True, help="the Tasks row this dispatch owns; the assignment is read back from it")
+    ap.add_argument("--task", required=True, help="the Tasks row this dispatch owns, by its item or its name; the assignment is read back from it")
     ap.add_argument("--root", default=".", help="workspace root holding CLAUDE.md")
     ap.add_argument("--coordinator", help="your own session name as a listing shows it, so the session knows who to register with")
     ap.add_argument("--date", help="YYYY-MM-DD; default: today in the workspace timezone")
@@ -261,6 +261,11 @@ def main(argv_in: list[str] | None = None) -> int:
         print(f"refused: {exc}", file=sys.stderr)
         return 1
     one_shot = worker_settings.mode == "one-shot" or args.one_shot
+    try:
+        args.task = dispatch_prompt.resolve_task(Path(args.root), args.date, args.task)
+    except dispatch_prompt.RefusedError as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 1
 
     if one_shot:
         if args.timeout_minutes < 1:
