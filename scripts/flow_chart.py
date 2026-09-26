@@ -143,7 +143,9 @@ def build(log: list[Move], tasks, lanes: dict, held: set[str], ends: dict[str, d
 def _merge_issues(rows: list[tuple[str, gantt.Row]]) -> list[tuple[str, gantt.Row]]:
     """Rows that share a non-empty ref (the task's issue) merge into one: every segment, sorted by start; the
     name of whichever row started earliest; the status and note of whichever moved last (highest segment start,
-    ties keeping the later row); placed where the first of its rows was."""
+    ties keeping the later row); placed where the first of its rows was. A row with no segments (its only move
+    was its lane's last stage) still counts toward the group, but only a row with segments can supply the name
+    or the status/note, falling back to the first or last row by position when none of the group has any."""
     groups: dict[str, list[int]] = {}
     for i, (_, row) in enumerate(rows):
         if row.ref:
@@ -153,8 +155,12 @@ def _merge_issues(rows: list[tuple[str, gantt.Row]]) -> list[tuple[str, gantt.Ro
         if len(idxs) < 2:
             continue
         entries = [rows[i] for i in idxs]
-        name = min(entries, key=lambda e: e[1].segments[0].start)[1].name
-        status, last_row = max(enumerate(entries), key=lambda p: (p[1][1].segments[-1].start, p[0]))[1]
+        timed = [e for e in entries if e[1].segments]
+        name = min(timed, key=lambda e: e[1].segments[0].start)[1].name if timed else entries[0][1].name
+        if timed:
+            status, last_row = max(enumerate(timed), key=lambda p: (p[1][1].segments[-1].start, p[0]))[1]
+        else:
+            status, last_row = entries[-1]
         segs = tuple(sorted((g for _, r in entries for g in r.segments), key=lambda g: g.start))
         out[idxs[0]] = (status, replace(last_row, name=name, segments=segs))
         drop.update(idxs[1:])
