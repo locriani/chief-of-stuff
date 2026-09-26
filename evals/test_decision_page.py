@@ -3,14 +3,18 @@ in the future you don't serve it as an artifact but serve it using the localhost
 
 import io
 import json
+import os
 import re
 import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from datetime import date, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+import board_sources as bs  # noqa: E402
 import decision_page as dp  # noqa: E402
 import render_board as rb  # noqa: E402
 import gantt  # noqa: E402
@@ -54,7 +58,7 @@ class RenderTest(unittest.TestCase):
         page = dp.render(dp.parse(decision()), "2026-09-25")
         self.assertTrue(page.startswith("<!doctype html>"))
         self.assertIn('<meta name="viewport"', page)
-        for text in ("Decision · Storage · 2026-09-25", "Should the worker follow the architecture?",
+        for text in ("Decision · Storage · Fri 25 Sep", "Should the worker follow the architecture?",
                      "What the plan says", "Where it stands", "How it got here", "Options",
                      "Recommendation", "The architecture is the newer decision.", "If you don't answer",
                      "The worker waits.", "References", "Answer in chat: A or B."):
@@ -69,7 +73,7 @@ class RenderTest(unittest.TestCase):
 
     def test_the_recommended_option_is_marked(self):
         page = dp.render(dp.parse(decision()), "2026-09-25")
-        self.assertIn('<div class="opt rec"><span class="k">A</span><b>Follow the architecture (recommended)</b>', page)
+        self.assertIn('<div class="opt rec"><span class="k">A</span><b>Follow the architecture <span class="rec">· recommended</span></b>', page)
         self.assertIn('<div class="opt"><span class="k">B</span>', page)
 
     def test_a_section_may_be_one_paragraph(self):
@@ -269,6 +273,220 @@ class DesignTest(unittest.TestCase):
                 self.assertFalse(stroked & set(classes.split()))
 
 
+TZ = ZoneInfo("America/Chicago")
+NOW = datetime(2026, 9, 26, 2, 10, tzinfo=TZ)
+
+
+def at(hhmm: str, day: int = 26) -> datetime:
+    h, m = map(int, hhmm.split(":"))
+    return datetime(2026, 9, day, h, m, tzinfo=TZ)
+
+
+def row(hhmm: str, item: str, words: str, day: int = 26) -> dp.Row:
+    return dp.Row(date(2026, 9, day), at(hhmm, day), item, words)
+
+
+def task(name: str, item: str, stage: str = "", issue: str = "") -> rb.Task:
+    return rb.Task(item=item, owner="impl", state="running 01:00", since="01:00", due="", checklist="", name=name,
+                   issue=issue, lane="build" if stage else "", stage=stage)
+
+
+def change(ref: str, state: str = "open", pipeline: str | None = "passed", merged: datetime | None = None,
+           issues: tuple[str, ...] = ()) -> bs.Change:
+    return bs.Change(ref, f"https://x/{ref}", "t", state, False, pipeline, True, 1, merged, "main", (), issues)
+
+
+def issue(ref: str, state: str = "open", labels: tuple[str, ...] = ()) -> bs.Issue:
+    return bs.Issue(ref, f"https://x/{ref}", "t", state, labels)
+
+
+SOURCES = bs.Sources({}, {"#111": issue("#111", labels=("status::hold",)), "#96": issue("#96", "closed")},
+                     {"!58": change("!58"), "!52": change("!52", pipeline="failed"),
+                      "!60": change("!60", "merged", merged=at("01:15"), issues=("#99",)),
+                      "!61": change("!61", pipeline="running", issues=("#109",))}, (), {})
+
+
+class DerivationTest(unittest.TestCase):
+    """Every field on the decisions pages comes from a source: the JSON, the tracker, or the forge."""
+
+    def ctx(self, **over) -> dp.Context:
+        return dp.Context(**{"now": NOW, **over})
+
+    def test_asked_is_the_json_then_the_log_line_naming_the_page_then_the_file(self):
+        mtime = at("00:30").timestamp()
+        log = ((at("23:50", 25), "asked Robin about the cache"), (at("01:41"), "asked decision-cache-warmup"),
+               (at("01:50"), "again decision-cache-warmup"))
+        ctx = self.ctx(log=log)
+        self.assertEqual(ctx.asked("cache-warmup", {"asked": "01:05"}, mtime), at("01:05"))
+        self.assertEqual(ctx.asked("cache-warmup", {}, mtime), at("01:41"))
+        self.assertEqual(ctx.asked("other", {}, mtime), at("00:30"))
+        self.assertIsNone(ctx.asked("other", {}, None))
+
+    def test_the_answer_is_the_latest_decisions_row_naming_the_page(self):
+        ctx = self.ctx(rows=(row("00:10", "option A of decision-cache-warmup-v2", '"A"'),
+                             row("00:20", "option B of decision-cache-warmup", '"B, smaller"'),
+                             row("00:40", "decision-cache-warmup: changed to C", '"make it C"')))
+        self.assertEqual(ctx.answer("cache-warmup").words, '"make it C"')
+        self.assertIsNone(ctx.answer("cache"))
+
+    def test_the_key_is_the_option_the_words_name(self):
+        ctx = self.ctx()
+        keys = ["A", "B", "C"]
+        self.assertEqual(ctx.key(row("01:00", "decision-x", '"B, go"'), keys), "B")
+        self.assertEqual(ctx.key(row("01:00", "decision-x", '"go with C please"'), keys), "C")
+        self.assertEqual(ctx.key(row("01:00", "option A of decision-x", '"yes"'), keys), "A")
+        self.assertEqual(ctx.key(row("01:00", "decision-x", '"a fine idea"'), keys), "")
+
+    def test_holding_is_the_json_refs_and_the_tasks_that_name_the_page(self):
+        d = decision(holds=["#111"], references=[{"kind": "MR", "value": "!58"}, {"kind": "code", "value": "src/a.py:3"},
+                                                 {"kind": "issue", "value": "https://github.com/o/app/issues/111"}])
+        tasks = (task("Cache", "Warm pool; waits on decision-cache-warmup. https://github.com/o/app/pull/61", "review", "#110"),
+                 task("Other", "Unrelated #5", "fix", "#5"))
+        self.assertEqual(self.ctx(tasks=tasks).holding("cache-warmup", d), ["#111", "!58", "#110", "#61"])
+        self.assertEqual(self.ctx().holding("cache-warmup", decision()), ["#7"])  # the plan's issue URL
+        self.assertEqual(self.ctx().holding("cache-warmup", decision(references=[])), [])
+
+    def test_where_a_ref_stands_joins_the_tracker_stage_and_the_forge(self):
+        tasks = (task("Budget", "Connection budget", "triage", "#111"), task("Pool", "Warm pool !58", "merge"),
+                 task("Upload", "Upload limit", "review", "#109"))
+        ctx = self.ctx(tasks=tasks, sources=SOURCES, hold="status::hold")
+        self.assertEqual(ctx.where("#111"), "triage · hold")
+        self.assertEqual(ctx.where("!58"), "merge · passed")
+        self.assertEqual(ctx.where("!52"), "open · failed")
+        self.assertEqual(ctx.where("#99"), "merged 01:15")
+        self.assertEqual(ctx.where("#109"), "review · running")
+        self.assertEqual(ctx.where("#96"), "closed")
+        # With no sources the tracker alone speaks, and a ref it does not hold says nothing.
+        self.assertEqual(self.ctx(tasks=tasks).where("#111"), "triage")
+        self.assertEqual(self.ctx().where("#7"), "")
+
+    def test_a_github_pr_written_with_a_bang_finds_its_change(self):
+        ctx = self.ctx(sources=bs.Sources({}, {}, {"#58": change("#58")}, (), {}))
+        self.assertEqual(ctx.where("!58"), "open · passed")
+
+    def test_spans_read_as_the_design_writes_them(self):
+        for minutes, text in ((29, "29m"), (78, "1h 18m"), (240, "4h"), (125, "2h 05m"), (1500, "1d 1h")):
+            with self.subTest(minutes=minutes):
+                self.assertEqual(dp.span(timedelta(minutes=minutes)), text)
+
+
+def pages_dir(**decisions) -> Path:
+    pages = Path(tempfile.mkdtemp())
+    for n, (slug, d) in enumerate(decisions.items()):
+        (pages / f"decision-{slug}.json").write_text(d if isinstance(d, str) else json.dumps(d))
+        os.utime(pages / f"decision-{slug}.json", (at("00:00").timestamp() + 60 * n,) * 2)
+    return pages
+
+
+class IndexTest(unittest.TestCase):
+    """decisions.html is a list of pending and completed decisions (Decisions.dc.html)."""
+
+    def render(self, ctx: dp.Context, **decisions) -> str:
+        return dp.index(pages_dir(**decisions), ctx, "2026-09-26")[0]
+
+    def test_a_pending_row_carries_every_column(self):
+        warm = decision(topic="cache", headline="Cache warmup", ask="Keep the pool?", holds=["#111"], references=[{"kind": "MR", "value": "!58"}],
+                        options=[{"key": "A", "title": "keep the pool"}, {"key": "B", "title": "start cold"}],
+                        default="The pool stays.")
+        ctx = dp.Context(NOW, log=((at("01:41"), "asked decision-cache-warmup"),),
+                         tasks=(task("Budget", "Connection budget", "triage", "#111"), task("Pool", "Warm pool !58", "merge")),
+                         sources=SOURCES, hold="status::hold")
+        page = self.render(ctx, **{"cache-warmup": warm})
+        pending = page.split("COMPLETED")[0]
+        self.assertIn("<h1>Decisions · Sat 26 Sep</h1>", page)
+        for text in ('<span class="when">01:41</span>', '<span class="age">29m</span>', '<a class="headline" href="decision-cache-warmup.html">Cache warmup</a>',
+                     '<span class="topic">cache</span>', "Keep the pool?", '<span class="key">A</span>keep the pool · recommended',
+                     '<span class="key">B</span>start cold', '<a class="ref" href="https://x/#111">#111</a> triage · hold', '<a class="ref" href="https://x/!58">!58</a> merge · passed',
+                     "The pool stays."):
+            with self.subTest(text=text):
+                self.assertIn(text, pending)
+        self.assertIn('<span class="o rec">', pending)
+        self.assertIn("rendered 02:10 CDT · 1 pending · oldest 29m · holding 1 issue, 1 merge request · 0 completed today", page)
+
+    def test_without_a_topic_there_is_no_chip(self):
+        page = self.render(dp.Context(NOW), x=decision(topic=None))
+        self.assertNotIn('class="topic"', page)
+
+    def test_an_unreadable_file_is_a_dashed_row_naming_it_and_why(self):
+        d = decision()
+        del d["default"]
+        page = self.render(dp.Context(NOW), good=decision(), bad=d, broken="{")
+        self.assertIn('<div class="row pend unread">', page)
+        self.assertIn("decision-bad.json", page)
+        self.assertIn("unreadable: the decision has no default", page)
+        self.assertIn("decision-broken.json", page)
+        self.assertIn("· 2 unreadable ·", page)
+        self.assertIn("1 pending", page)
+
+    def test_a_completed_row_carries_every_column(self):
+        warm = decision(headline="Cache warmup", options=[{"key": "A", "title": "keep the pool"}, {"key": "B", "title": "start cold"}],
+                        holds=["#99"])
+        ctx = dp.Context(NOW, rows=(row("23:00", "decision-cache-warmup old", '"A"', 25),
+                                    row("00:20", "Upload size limit #109", '"yes, dispatch it"'),
+                                    row("01:15", "option B of decision-cache-warmup", '"B, start cold"')),
+                         log=((at("23:10", 25), "asked decision-cache-warmup"),), sources=SOURCES,
+                         tasks=(task("Upload", "Upload limit", "review", "#109"),))
+        page = self.render(ctx, **{"cache-warmup": warm})
+        done = page.split("COMPLETED")[1]
+        self.assertLess(done.index("01:15"), done.index("00:20"))
+        for text in ('<span class="when">01:15</span>', '<span class="took">in 2h 05m</span>',
+                     '<a class="headline" href="decision-cache-warmup.html">Cache warmup</a>', '<span class="page">decision-cache-warmup</span>',
+                     '<span class="key">B</span>start cold', '<span class="words">&quot;B, start cold&quot;</span>',
+                     '<a class="ref">#99</a> merged 01:15',
+                     "Upload size limit #109", '<span class="page">Decisions row</span>', '<span class="key">yes</span>dispatch it',
+                     '<a class="ref">#109</a> review · running'):
+            with self.subTest(text=text):
+                self.assertIn(text, done)
+        self.assertNotIn("decision-cache-warmup old", done)
+        self.assertIn("0 pending", page)
+        self.assertIn("2 completed today", page)
+
+    def test_it_renders_with_empty_sources(self):
+        page = self.render(dp.Context(NOW, sources=bs.EMPTY), x=decision(holds=["#111"]))
+        self.assertIn('<a class="ref">#111</a>', page)
+
+    def test_a_source_that_could_not_be_read_is_named_in_the_header(self):
+        page = self.render(dp.Context(NOW, sources=bs.Sources({}, {}, {}, (), {"merge requests": "gh: not logged in"})))
+        self.assertIn("merge requests: gh: not logged in", page)
+
+    def test_text_is_escaped(self):
+        page = self.render(dp.Context(NOW, rows=(row("01:00", "<b>x</b>", "<i>"),)), x=decision(headline="<script>", topic="<t>"))
+        self.assertNotIn("<script>", page)
+        self.assertNotIn("<b>x</b>", page)
+        self.assertNotIn("<t>", page)
+
+    def test_the_page_wears_the_board_scheme(self):
+        page = self.render(dp.Context(NOW))
+        board, mine = scheme(board_css()), scheme(page)
+        for token in SHARED:
+            self.assertEqual(mine["light"][token], board["light"][token])
+
+
+class DerivedPageTest(unittest.TestCase):
+    """The decision page applies the same derivations when its JSON does not carry them."""
+
+    def test_asked_answer_and_the_chip_come_from_the_tracker(self):
+        ctx = dp.Context(NOW, rows=(row("01:15", "option B of decision-x", '"B"'),), log=((at("00:40"), "asked decision-x"),))
+        page = dp.render(dp.parse(decision()), "2026-09-26", ctx=ctx, slug="x")
+        self.assertIn("asked 00:40", page)
+        self.assertIn(">ANSWERED · B<", page)
+        page = dp.render(dp.parse(decision(asked="00:10")), "2026-09-26", ctx=dp.Context(NOW), slug="x", mtime=at("00:05").timestamp())
+        self.assertIn("asked 00:10", page)
+        self.assertIn(">PENDING<", page)
+
+    def test_a_reference_without_a_status_takes_it_from_the_sources(self):
+        refs = [{"kind": "MR", "value": "!58"}, {"kind": "issue", "value": "#111"}, {"kind": "issue", "value": "#96", "status": "said"}]
+        ctx = dp.Context(NOW, tasks=(task("Budget", "Connection budget", "triage", "#111"),), sources=SOURCES, hold="status::hold")
+        page = dp.render(dp.parse(decision(references=refs)), "2026-09-26", ctx=ctx, slug="x")
+        self.assertIn('<span class="st">open · passed</span>', page)
+        self.assertIn('<span class="st">triage · hold</span>', page)
+        self.assertIn('<span class="st">said</span>', page)
+
+    def test_without_sources_the_page_still_renders(self):
+        page = dp.render(dp.parse(decision(references=[{"kind": "MR", "value": "!58"}])), "2026-09-26", ctx=dp.Context(NOW), slug="x")
+        self.assertIn('<span class="st"></span>', page)
+
+
 def board_css() -> str:
     return (Path(__file__).resolve().parent.parent / "scripts" / "render_board.py").read_text().replace("{{", "{").replace("}}", "}")
 
@@ -295,14 +513,14 @@ def contrast(a: str, b: str) -> float:
 
 
 STAGES = ("implement", "pr", "review", "triage", "fix", "verify", "merge")
-SHARED = ("--bg", "--surface", "--fg", "--muted", "--line", "--brass", "--dl") + tuple(f"--stage-{s}" for s in STAGES)
+SHARED = ("--bg", "--surface", "--fg", "--muted", "--line", "--brass", "--dl", "--now") + tuple(f"--stage-{s}" for s in STAGES)
 # (text, ground) pairs as the stylesheets use them: every one is text that must read at WCAG AA.
 BOARD_TEXT = [("--fg", "--bg"), ("--fg", "--surface"), ("--muted", "--bg"), ("--muted", "--surface"), ("--brass", "--surface"),
               ("--brass", "--bg"), ("--dl", "--bg"), ("--dl", "--surface"), ("--est", "--surface"), ("--fg", "--done"),
               ("--seg-ink", "--eat"), ("--seg-ink", "--recreation"), ("--bar-ink", "--sleep"), ("--bar-ink", "--gym")] + [
               ("--bar-ink", f"--{bar}") for bar in ("open", "running", "noest", "est", "fold")] + [
               (f"--stage-{s}", "--bg") for s in STAGES]
-PAGE_TEXT = [("--link", "--ref-bg"), ("--link", "--surface"), ("--deployed", "--surface"), ("--inflight", "--inflight-soft"),
+PAGE_TEXT = [("--link", "--ref-bg"), ("--link", "--surface"), ("--surface", "--link"), ("--surface", "--now"), ("--deployed", "--surface"), ("--inflight", "--inflight-soft"),
              ("--designed", "--designed-soft"), ("--ext-ink", "--ext-soft"), ("--dl", "--ext-soft")]
 
 
@@ -387,6 +605,18 @@ class MainTest(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("recommended", err)
         self.assertFalse((root / "pages").exists())
+
+    def test_the_cli_reads_asked_and_the_answer_from_the_trackers(self):
+        root = self.workspace()
+        (root / "daily").mkdir()
+        (root / "daily" / "2026-09-25-tracker.md").write_text(
+            "# Tracker\n\n## Decisions\n\n| time | item | Robin's words |\n|---|---|---|\n"
+            "| 10:05 | option B of decision-x | \"B, go\" |\n\n## Log\n\n- 09:40 asked Robin about decision-x\n")
+        code, _, _ = self.run_main("--root", str(root), "--from", str(root / "d.json"), "--name", "x", "--date", "2026-09-25")
+        page = (root / "pages" / "decision-x.html").read_text()
+        self.assertEqual(code, 0)
+        self.assertRegex(page, r"asked (?:Fri )?09:40")
+        self.assertIn(">ANSWERED · B<", page)
 
     def test_links_against_the_workspace_backlog(self):
         root = self.workspace(board=BOARD + "\n- Backlog: GitHub; repo o/app")

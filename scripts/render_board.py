@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from backlog import Backlog, BacklogError, GitHubBacklog, issue_ref, parse_backlog  # noqa: E402
 from settings import Kanban, SettingsError, load as load_settings  # noqa: E402
 import columns  # noqa: E402
+import board_sources  # noqa: E402
 import decision_page  # noqa: E402
 import gantt  # noqa: E402
 
@@ -841,6 +842,36 @@ def decision_rows(tracker_text: str) -> list[list[str]]:
     """The Decisions table's rows as (time, item, words), header and separator left out."""
     rows = [_cells(line) for line in _section(tracker_text, "## Decisions") if line.strip().startswith("|")]
     return [(cells + ["", "", ""])[:3] for cells in rows[1:] if not _is_separator(cells)]
+
+
+def decision_context(root: Path, day: date, now: datetime | None = None) -> decision_page.Context:
+    """What the decisions pages read from the workspace: every tracker's Decisions rows and Log lines, `day`'s
+    tasks, the cached forge sources and the [kanban] label that holds an issue."""
+    cfg = parse_coordinator((root / "CLAUDE.md").read_text(), today=date.today())
+    now = now or datetime.now(cfg.zone).replace(second=0, microsecond=0)
+
+    def at(d: date, hhmm: str) -> datetime | None:
+        m = re.match(r"(\d{1,2}):(\d{2})\b", hhmm.strip())
+        try:
+            return datetime.combine(d, time(int(m[1]), int(m[2])), cfg.zone) if m else None
+        except ValueError:
+            return None
+
+    rows, log = [], []
+    for d, path in daily_trackers(root, cfg):
+        text = path.read_text()
+        rows += [decision_page.Row(d, at(d, t), item, words) for t, item, words in decision_rows(text)]
+        log += [(when, line.strip()[2:]) for line in _section(text, "## Log")
+                if line.strip().startswith("- ") and (when := at(d, line.strip()[2:]))]
+    tracker = root / cfg.tracker_path(day.isoformat())
+    tasks = parse_tracker(tracker.read_text()).tasks if tracker.is_file() else ()
+    try:
+        kanban = load_settings(root, cfg.settings_path).kanban
+    except SettingsError:
+        kanban = None
+    pages = root / cfg.pages_dir if cfg.pages_dir else tracker.parent
+    return decision_page.Context(now, tuple(rows), tuple(sorted(log, key=lambda x: x[0])), tasks, board_sources.load(pages),
+                                 kanban.human_review_label if kanban else "", cfg.user, cfg.backlog)
 
 
 def _anchor(raw: list[str], cols: tuple[str, ...]) -> list[str] | None:
@@ -2173,10 +2204,7 @@ def main(argv: list[str] | None = None) -> Path:
         settings = load_settings(root, cfg.settings_path)
     except SettingsError as e:
         sys.exit(f"render_board: {e}")
-    today_rows = decision_rows(tracker_text)
-    answered = [row[1] for _, path in daily_trackers(root, cfg) if path != tracker for row in decision_rows(path.read_text())]
-    decisions, pending = decision_page.index(out.parent, answered + [row[1] for row in today_rows], today_rows, day)
-    (out.parent / "decisions.html").write_text(decisions)
+    pending = decision_page.write_all(out.parent, decision_context(root, tracker_day, now), day, root)
     page = render(tracker_text, log_text, cfg, now, requirements=req_texts, lanes=settings.lanes,
                   tracker_day=tracker_day, decisions=pending, kanban=settings.kanban)
     out.write_text(page)

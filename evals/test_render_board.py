@@ -1463,7 +1463,7 @@ class CliTest(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             board = rb.main(["--date", "2026-09-16", "--root", str(root)]).read_text()
         page = (pages / "decisions.html").read_text()
-        pending, completed = page.split("Completed", 1)
+        pending, completed = page.split("COMPLETED", 1)
         self.assertRegex(pending, r'(?s)href="decision-deploy-window\.html".*decision-broken')
         for text in ("Decide deploy-window", "Which window?", "Monday", "Nothing ships."):
             self.assertIn(text, pending)
@@ -1471,7 +1471,13 @@ class CliTest(unittest.TestCase):
         self.assertNotIn("cache-size", pending)
         self.assertIn("Draft release notes", completed)
         self.assertRegex(completed, r'(?s)11:20.*href="decision-cache-size\.html".*B, go')
-        self.assertRegex(board, r'href="decisions\.html"[^>]*>2 decisions pending<')
+        # The unreadable file is listed, and counted apart from the pending ones (Decisions.dc.html: "1 unreadable").
+        self.assertIn("1 unreadable", page)
+        self.assertRegex(board, r'href="decisions\.html"[^>]*>1 decision pending<')
+        # Each page is rendered again from its JSON and the tracker: the answered one wears its answer.
+        self.assertIn(">ANSWERED · B<", (pages / "decision-cache-size.html").read_text())
+        self.assertIn(">PENDING<", (pages / "decision-deploy-window.html").read_text())
+        self.assertEqual((pages / "decision-broken.html").exists(), False)
 
     def test_summary_line_counts_long_items(self) -> None:
         root = Path(tempfile.mkdtemp())
