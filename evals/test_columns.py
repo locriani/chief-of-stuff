@@ -41,6 +41,17 @@ class Render(unittest.TestCase):
         self.assertEqual(html.count('class="columns-marks"'), 1)
         self.assertIn('<span class="columns-tag columns-mark" data-cat="hold">hold</span>', html)
 
+    def test_a_flag_outlines_the_card_and_bars_its_foot_in_its_colour(self) -> None:
+        held = C("a", "waiting", flag=columns.Mark("on hold", "hold"))
+        html = columns.render([columns.Column("triage", (held, C("b", "open")))])
+        self.assertEqual(html.count("columns-flagged"), 1)
+        self.assertIn('<div class="columns-card columns-flagged" data-cat="hold">', html)
+        self.assertTrue(html.split('data-cat="hold">', 1)[1].split("</div></div>")[0].endswith(
+            '<div class="columns-tag columns-flag" data-cat="hold">on hold'), "the bar is the card's last line")
+        sheet = columns.css()
+        self.assertIn('.columns-card[data-cat="hold"]', sheet)
+        self.assertIn(".columns-flagged{", sheet)
+
     def test_a_gate_column_is_a_class_and_its_word(self) -> None:
         html = columns.render([col("triage", 1, note="gate", kind="gate")])
         self.assertIn('<section class="columns-col columns-gate"', html)
@@ -74,7 +85,7 @@ class Render(unittest.TestCase):
 class Css(unittest.TestCase):
     def test_one_rule_per_palette_entry(self) -> None:
         css = columns.css({"running": ("#0072B2", "#fbf8ef", "1px solid #0072B2")})
-        self.assertIn('.columns-tag[data-cat="running"]{--c:#0072B2;--i:#fbf8ef;--e:1px solid #0072B2}', css)
+        self.assertIn('.columns-tag[data-cat="running"],.columns-card[data-cat="running"]{--c:#0072B2;--i:#fbf8ef;--e:1px solid #0072B2}', css)
 
     def test_the_default_palette_covers_every_tracker_state_and_the_hold(self) -> None:
         self.assertLessEqual({"open", "running", "waiting", "orphaned", "done", "hold"}, set(columns.PALETTE))
@@ -124,10 +135,10 @@ class Adapter(unittest.TestCase):
         _, foot = self.build()
         self.assertEqual((foot.name, [c.name for c in foot.cards]), ("no lane", ["Rotate key", "Book room"]))
 
-    def test_a_kanban_hold_stage_marks_its_cards(self) -> None:
+    def test_a_kanban_hold_stage_flags_its_cards_on_hold(self) -> None:
         kanban = st.Kanban(("todo", "doing"), "needs-human", {"implement": 1, "triage": 1, "main": 1}, hold_stages=("triage",))
-        marked = [c.name for col in self.build(kanban=kanban)[0] for c in col.cards if c.marks]
-        self.assertEqual(marked, ["Session timeout"])
+        held = [(c.name, c.flag, c.marks) for col in self.build(kanban=kanban)[0] for c in col.cards if c.flag]
+        self.assertEqual(held, [("Session timeout", columns.Mark("ON HOLD", "hold"), ())])
 
     def test_lanes_merge_in_order_and_disjoint_lanes_stay_whole(self) -> None:
         lanes = {"code": st.Lane(("implement", "review", "merge")), "research": st.Lane(("implement", "triage", "review", "merge")),

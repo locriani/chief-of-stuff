@@ -1707,7 +1707,7 @@ def build_columns(tasks: list[Task], lanes: dict | None, kanban: Kanban | None =
     def card(task: Task) -> columns.Card:
         held = kanban is not None and kanban.holds(task.stage.strip())
         return columns.Card(task.label, task.kind, task.issue.strip(), task.owner, task.state,
-                            (columns.Mark("hold", "hold"),) if held else ())
+                            flag=columns.Mark("ON HOLD", "hold") if held else None)
 
     laned = [t for t in tasks if t.lane.strip() and t.stage.strip()]
     order = list(dict.fromkeys(stage_order(lanes) + [t.stage.strip() for t in laned]))

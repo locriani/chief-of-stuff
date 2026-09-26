@@ -20,7 +20,7 @@ PALETTE: dict[str, tuple[str, str, str]] = {
     "open": ("#f4efe1", "#2f2630", "1px solid #ddd3bd"),
     "orphaned": ("#fbf8ef", "#c9533a", "1px dashed #c9533a"),
     "done": ("#4f6b3a", "#fbf8ef", "1px solid #4f6b3a"),
-    "hold": ("#E69F00", "#2f2630", "1px solid #E69F00"),
+    "hold": ("#c9533a", "#fbf8ef", "1px solid #c9533a"),
 }
 
 
@@ -38,6 +38,7 @@ class Card:
     owner: str = ""
     state: str = ""  # the chip's text; blank draws no chip
     marks: tuple[Mark, ...] = ()
+    flag: Mark | None = None  # the card's whole condition: an outline and a bar across its foot, in its colour
 
 
 @dataclass(frozen=True)
@@ -55,9 +56,11 @@ def _tag(role: str, category: str, text: str) -> str:
 def _card(c: Card) -> str:
     chip = _tag("chip", c.kind, c.state) if c.state else ""
     marks = f'<div class="columns-marks">{"".join(_tag("mark", m.category, m.text) for m in c.marks)}</div>' if c.marks else ""
-    return (f'<div class="columns-card"><div class="columns-card-name">{_esc(c.name)}</div>'
+    head = f'<div class="columns-card columns-flagged" data-cat="{_esc(c.flag.category)}">' if c.flag else '<div class="columns-card">'
+    flag = f'<div class="columns-tag columns-flag" data-cat="{_esc(c.flag.category)}">{_esc(c.flag.text)}</div>' if c.flag else ""
+    return (f'{head}<div class="columns-card-name">{_esc(c.name)}</div>'
             + (f'<div class="columns-refs">{_esc(c.refs)}</div>' if c.refs else "")
-            + f'<div class="columns-who"><span class="columns-owner">{_esc(c.owner)}</span>{chip}</div>{marks}</div>')
+            + f'<div class="columns-who"><span class="columns-owner">{_esc(c.owner)}</span>{chip}</div>{marks}{flag}</div>')
 
 
 def tally(cards: tuple[Card, ...]) -> str:
@@ -106,6 +109,8 @@ BASE_CSS = """\
 .columns-tag{--c:var(--columns-card);--i:var(--columns-ink);--e:1px solid var(--columns-rule);background:var(--c);color:var(--i);border:var(--e)}
 .columns-chip{font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;padding:1px 6px;border-radius:9px}
 .columns-mark{font-size:10px;padding:0 5px;border-radius:3px}
+.columns-flagged{border:2px solid var(--c);padding-bottom:0;overflow:hidden}
+.columns-flag{margin:3px -7px 0;padding:2px 0;border:0;text-align:center;font-size:10px;font-weight:700;letter-spacing:.14em;text-transform:uppercase}
 .columns-more,.columns-foot{font-size:11px;color:var(--columns-muted)}
 .columns-more>summary,.columns-foot>summary{cursor:pointer;display:flex;gap:14px;flex-wrap:wrap}
 .columns-more>summary{gap:6px}
@@ -119,6 +124,6 @@ BASE_CSS = """\
 
 def css(colors: dict[str, tuple[str, str, str]] = PALETTE) -> str:
     """The stylesheet: layout, the gate kind, and one rule per tag category. Override any `--columns-*` token on `.columns`."""
-    rules = [f'.columns-tag[data-cat="{_css_str(cat)}"]{{--c:{_colour(fill)};--i:{_colour(ink)};--e:{_colour(edge)}}}'
+    rules = [f'.columns-tag[data-cat="{_css_str(cat)}"],.columns-card[data-cat="{_css_str(cat)}"]{{--c:{_colour(fill)};--i:{_colour(ink)};--e:{_colour(edge)}}}'
              for cat, (fill, ink, edge) in colors.items()]
     return BASE_CSS + "\n".join(rules) + "\n"
