@@ -9,6 +9,7 @@ References. pages.py renders it on request into `issue-<n>.html`.
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 from html import escape
 from pathlib import Path
@@ -17,7 +18,7 @@ import board_sources
 import flow_chart
 from decision_page import HEAD, _graph, _md, _section, span
 from fragment import href
-from render_board import (Config, ConfigError, TRAILING_NUMBER, _resolve_due, daily_trackers, parse_coordinator,
+from render_board import (Config, ConfigError, TRAILING_NUMBER, _dur, _resolve_due, daily_trackers, parse_coordinator,
                           parse_tracker)
 from settings import Graph, SettingsError, load as load_settings
 
@@ -210,24 +211,48 @@ def render(number: int, trackers: list[tuple[date, str]], sources: board_sources
     ahead = _next(rows, change, every, why_not, now) + (_files(change, every, number) if change and _paths(change) else "")
     ahead += _graph(change, graph, pages, root, "Architecture", f"No change names {ref} to graph.")
 
-    steps = "\n".join(f'      <div class="step"><span class="when">{_clock(m.at, now)}</span><span class="dot" data-k="{escape(m.stage)}">'
-                      f"</span><span>{_md(m.line.split(' ', 2)[2])}</span></div>" for m in log)
-    workers: dict[str, list[flow_chart.Move]] = {}
+    task_of = lambda m: (t.name.strip() if (t := latest.get(m.name.strip().casefold())) else m.name).casefold()  # noqa: E731
+    workers: dict[str, list[list]] = {}  # who → [[started move, its Log match, ended move or None], ...]
+    what = {}  # a launcher move → its compact How-it-got-here text
     for m in log:
-        if m.launch and (w := flow_chart.STARTED.match(m.line) or flow_chart.ENDED.match(m.line)):
-            workers.setdefault(w[3], []).append(m)
-    lines = []
+        if not m.launch:
+            continue
+        if started := board_sources.STARTED.match(m.line):
+            stage = next((x.stage for x in reversed(log) if not x.launch and x.at <= m.at and task_of(x) == task_of(m)), m.stage)
+            workers.setdefault(started[2], []).append([replace(m, stage=stage), started, None])
+            what[m] = f"{escape(stage)} started · {escape(started[2])} · {escape(started[4])}"
+        elif (w := flow_chart.ENDED.match(m.line)) and (runs := workers.get(w[3])):
+            # ponytail: an end pairs with a start on the same day's tracker (flow_chart.moves); a run over midnight
+            # loses its end and counts nothing, pair across days if that shows up.
+            runs[-1][2] = m
+            what[m] = f"ended {escape(ENDED.get(m.stage, 'ended'))} · {escape(w[3])} · {escape(runs[-1][1][4])}"
+    steps = "\n".join(f'      <div class="step"><span class="when">{_clock(m.at, now)}</span><span class="dot" data-k="{escape(m.stage)}">'
+                      f"</span><span>{what.get(m) or _md(m.line.split(' ', 2)[2])}</span></div>" for m in log)
+    lines, spans = [], []
     for who, runs in workers.items():
-        started = board_sources.STARTED.match(runs[0].line)
-        if not started:
-            continue  # its started line is on a day before the window
-        task = latest.get(runs[0].name.strip().casefold())
-        live = task is not None and task.kind == "running" and task.owner.strip() == who
-        state = "running" if live else ENDED.get(runs[-1].stage, "ended")
-        took = span((now if live else runs[-1].at) - runs[0].at) if live or len(runs) > 1 else ""
-        lines.append(f'      <div class="wk"><span><b>{escape(who)}</b><br><span class="meta">one-shot · {escape(started[3])} · '
-                     f'task {escape(started[5])} · {_clock(runs[0].at, now)}</span></span><span class="when">{took}</span>'
-                     f'<span class="st{" running" if live else ""}">{escape(state)}</span></div>')
+        task = latest.get(runs[-1][0].name.strip().casefold())
+        live = runs[-1][2] is None and task is not None and task.kind == "running" and task.owner.strip() == who
+        state = "running" if live else ENDED.get(runs[-1][2].stage, "ended") if runs[-1][2] else "ended"
+        mine_spans = [(s.at, e.at if e else now) for s, _, e in runs if e or (live and s is runs[-1][0])]
+        spans += mine_spans
+        stages = ", ".join(dict.fromkeys(s.stage for s, _, _ in runs))
+        took = sum((e - s for s, e in mine_spans), timedelta())
+        lines.append((took, f'      <div class="wk"><span><b>{escape(who)}</b> · one-shot{f" ×{len(runs)}" if len(runs) > 1 else ""} · '
+                            f'{escape(runs[-1][1][3])} · {escape(stages)}</span><span class="when">{_dur(took)}</span>'
+                            f'<span class="st{" running" if live else ""}">{escape(state)}</span></div>'))
+    # Worked: the union of every launch's interval, so overlapping workers count once.
+    first = min((s for s, _ in spans), default=now)
+    worked, reach = timedelta(), first
+    for s, e in sorted(spans):
+        worked, reach = worked + max(timedelta(), e - max(s, reach)), max(reach, e)
+    end = max((g.end for _, r in rows for g in r.segments if g.kind == "done"), default=now)
+    elapsed = end - first
+    worked_line = (f'<p class="meta">Worked {_dur(worked)} of {_dur(elapsed)} elapsed · {_dur(elapsed - worked)} waiting</p>\n'
+                   if spans else "")
+
+    workers_html = (_section(f"Workers · {_dur(sum((t for t, _ in lines), timedelta()))} · {len(lines)} sessions",
+                             '    <div class="card">\n' + "\n".join(x for _, x in lines) + "\n    </div>") if lines else
+                    _section("Workers", '    <div class="card"><p>No workers launched.</p></div>'))
 
     refs = [("issue", f'<a {href(issue.url)}>{ref} {escape(issue.title)}</a>' if issue else f"{ref} {escape(name)}",
              issue.state if issue else "")]
@@ -245,12 +270,12 @@ def render(number: int, trackers: list[tuple[date, str]], sources: board_sources
             f'<body>\n<main class="issue">\n  <header class="top">\n    <div>\n      <span class="eyebrow">{eyebrow}</span>\n'
             f"      <h1>{escape(name)}</h1>\n    </div>\n"
             f'    <span class="chip {escape(status)}">{escape(status.upper())}</span>\n  </header>\n\n'
-            + cards + (f"  <section>\n{flow}  </section>\n" if flow else "") + ahead
+            + cards + (f"  <section>\n{flow}{worked_line}  </section>\n" if flow else "") + ahead
             + '  <div class="cols">\n  <div class="col">\n'
             + _section("How it got here", f'    <div class="card timeline">\n{steps}\n    </div>' if steps else '    <div class="card"><p>No Log lines yet.</p></div>')
             + (_review(change, now) if change else "")
             + '  </div>\n  <div class="col">\n' + _acceptance(issue)
-            + _section("Workers", '    <div class="card">\n' + "\n".join(lines) + "\n    </div>" if lines else '    <div class="card"><p>No workers launched.</p></div>')
+            + workers_html
             + _section("References", f'    <div class="card refs">\n{refs_html}\n    </div>')
             + "  </div>\n  </div>\n</main>\n</body>\n</html>\n")
 
