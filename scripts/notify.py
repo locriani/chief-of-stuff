@@ -74,11 +74,11 @@ class Row:
     when: str
     title: str
     message: str = ""
-    open: str = ""
     legacy_title: str = ""
 
     def line(self) -> str:
-        return f"| {self.when} | {clean(self.title)} | {clean(self.message)} | {clean(self.open)} |"
+        # Open stays empty: md-notify opens it, and a notification must never open a page (Zach, 2026-09-25).
+        return f"| {self.when} | {clean(self.title)} | {clean(self.message)} |  |"
 
 
 @dataclass
@@ -86,7 +86,7 @@ class Changes:
     lines: list[str] = field(default_factory=list)
 
 
-def warnings(cfg, notify, now: datetime, board: str) -> list[Row]:
+def warnings(cfg, notify, now: datetime) -> list[Row]:
     """One row per future warning. The full due date distinguishes deadlines a week apart."""
     rows = []
     for d in cfg.deadlines:
@@ -96,14 +96,29 @@ def warnings(cfg, notify, now: datetime, board: str) -> list[Row]:
             if when > now:
                 head = f"{WARNING}{d.name} in {label}"
                 rows.append(Row(when.strftime(WHEN), f"{head} ({at:%a %Y-%m-%d %H:%M})",
-                                f"Due {at:%Y-%m-%d %H:%M}", board,
+                                f"Due {at:%Y-%m-%d %H:%M}",
                                 legacy_title=f"{head} ({at:%a %H:%M})"))
     return sorted(rows, key=lambda r: r.when)
 
 
-def day_rows(notify, board: str) -> list[Row]:
-    return [Row(f"daily {notify.day_open}", OPEN_DAY, "Open the day with the coordinator.", board),
-            Row(f"daily {notify.day_close}", CLOSE_DAY, "Close the day: log, tracker, what carries over.", board)]
+def day_rows(notify) -> list[Row]:
+    return [Row(f"daily {notify.day_open}", OPEN_DAY, "Open the day with the coordinator."),
+            Row(f"daily {notify.day_close}", CLOSE_DAY, "Close the day: log, tracker, what carries over.")]
+
+
+def _owned(title: str) -> bool:
+    return title.startswith((WARNING, *KINDS.values())) or title in (OPEN_DAY, CLOSE_DAY)
+
+
+def clear_open(lines: list[str]) -> list[str]:
+    """Empty the Open cell of every row this script owns, in place. Earlier releases wrote the board URL there."""
+    said = []
+    for i, line in enumerate(lines):
+        cells = _cells(line) if _is_data(line) else []
+        if len(cells) > 3 and cells[3] and _owned(cells[1]):
+            lines[i] = Row(cells[0], cells[1], cells[2]).line()
+            said.append(f"notify: cleared Open on {cells[1]}")
+    return said
 
 
 def _cells(line: str) -> list[str]:
@@ -199,17 +214,21 @@ class MdNotifyQueue:
 
     def add(self, row: Row) -> Changes:
         lines = self._read()
+        said = clear_open(lines)
         if clean(row.title) in self._titles(lines):
-            return Changes([f"notify: already there {clean(row.title)}"])
+            if said:
+                self._write(lines)
+            return Changes([*said, f"notify: already there {clean(row.title)}"])
         self._insert(lines, row, "active")
         self._write(lines)
-        return Changes([f"notify: added {clean(row.title)}"])
+        return Changes([*said, f"notify: added {clean(row.title)}"])
 
     def sync(self, one_shot: list[Row], recurring: list[Row], now: datetime) -> Changes:
         """Reconcile only what this script owns: `⏰ ` rows in the active table, and the two day rows.
         A future owned row that is no longer wanted goes; a past one stays for its owner to tap; a snoozed
         one keeps its new time, because it is still wanted by title."""
-        lines, said = self._read(), []
+        lines = self._read()
+        said = clear_open(lines)
         created = not self.path.is_file()
         wanted = {clean(r.title) for r in one_shot}
         # Existing queues used weekday and time in the title. Match the full due instant in Message
@@ -288,7 +307,7 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
         print("notify: off")
         return 0
     now = (now or datetime.now(cfg.zone)).astimezone(cfg.zone).replace(second=0, microsecond=0)
-    queue, board = adapter_for(settings, root), cfg.board_url or ""
+    queue = adapter_for(settings, root)
     if args.cmd == "sync":
         try:
             tracker = root / cfg.tracker_path(now.date().isoformat())
@@ -297,7 +316,7 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
         except OSError as e:
             print(f"notify: {e}", file=sys.stderr)
             return 2
-        got = queue.sync(warnings(cfg, settings.notify, now, board), day_rows(settings.notify, board), now)
+        got = queue.sync(warnings(cfg, settings.notify, now), day_rows(settings.notify), now)
     else:
         when = now
         if args.when != "now":
@@ -310,7 +329,7 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
                 print(f"notify: --when {args.when} has passed; a past row resurfaces until tapped, so use --when now",
                       file=sys.stderr)
                 return 2
-        got = queue.add(Row(when.strftime(WHEN), event_title(args.kind, args.what, now), args.message or args.what, board))
+        got = queue.add(Row(when.strftime(WHEN), event_title(args.kind, args.what, now), args.message or args.what))
     print("\n".join(got.lines) or "notify: nothing to change")
     return 0
 
