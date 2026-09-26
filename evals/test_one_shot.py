@@ -71,6 +71,17 @@ class CommandTest(unittest.TestCase):
                     self.assertEqual(args[args.index("--plugin-dir") + 1], str(release))
                     self.assertTrue((release / "hooks/hooks.json").is_file())
 
+    def test_codex_may_write_a_worktrees_git_dir(self):
+        # A linked worktree keeps its git metadata outside the tree, where workspace-write can't commit or fetch.
+        with tempfile.TemporaryDirectory() as tmp:
+            base, tree = Path(tmp) / "base", Path(tmp) / "tree"
+            subprocess.run(["git", "init", "-q", str(base)], check=True)
+            subprocess.run(["git", "-C", str(base), "-c", "user.name=t", "-c", "user.email=t@example.com",
+                            "commit", "-q", "--allow-empty", "-m", "init"], check=True)
+            subprocess.run(["git", "-C", str(base), "worktree", "add", "-q", str(tree)], check=True)
+            args = one_shot.command("codex", "/bin/fake", tree, tree / "d.md", agent_type=None, model="", effort="")
+            self.assertEqual(args[args.index("--add-dir") + 1], str((base / ".git").resolve()))
+
     def test_agy_print_takes_the_prompt_as_its_value(self):
         # agy's --print takes a value: a flag after it becomes the prompt, and agy exits 2.
         dispatch = Path("/tmp/one-shot-tree/.chief-of-stuff/dispatch.md")
