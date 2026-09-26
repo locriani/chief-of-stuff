@@ -75,7 +75,7 @@ class RenderTest(unittest.TestCase):
         # The user, 2026-09-26: "I want the decisions page to NOT have something selected until I actually select it
         # for options, and to always have a write in option." Recommended is a text tag, not a filled or bold row.
         page = dp.render(dp.parse(decision()), "2026-09-25", slug="uploads")
-        self.assertIn('<form class="options" method="post" action="/decision/uploads/answer">', page)
+        self.assertIn('<form class="options" method="post" action="/decisions/uploads">', page)
         self.assertIn('<label class="opt"><span class="k"><input type="radio" name="key" value="A"> A</span>'
                       '<b>Follow the architecture<span class="tag">recommended</span></b>', page)
         self.assertIn('<input type="radio" name="key" value="B"> B</span><b>Follow the plan</b>', page)
@@ -423,11 +423,11 @@ class IndexTest(unittest.TestCase):
         page = self.render(ctx, **{"cache-warmup": warm})
         pending = page.split("COMPLETED")[0]
         self.assertIn("<h1>Decisions · Sat 26 Sep</h1>", page)
-        for text in ('<span class="when">01:41</span>', '<span class="age">29m</span>', '<a class="headline" href="decision-cache-warmup.html">Cache warmup</a>',
+        for text in ('<span class="when">01:41</span>', '<span class="age">29m</span>', '<a class="headline" href="/decisions/cache-warmup">Cache warmup</a>',
                      '<span class="topic">cache</span>', "Keep the pool?",
                      '<label class="o"><input type="radio" name="key" value="A"><span class="key">A</span>keep the pool<span class="tag">recommended</span></label>',
                      '<label class="o"><input type="radio" name="key" value="B"><span class="key">B</span>start cold</label>',
-                     '<form class="stack" method="post" action="/decision/cache-warmup/answer">', '<input type="hidden" name="back" value="decisions.html">',
+                     '<form class="stack" method="post" action="/decisions/cache-warmup">', '<input type="hidden" name="back" value="/decisions">',
                      '<input type="text" name="words"', '<button type="submit">save</button>', '<a class="ref" href="https://x/#111">#111</a> triage · hold', '<a class="ref" href="https://x/!58">!58</a> merge · passed',
                      "The pool stays."):
             with self.subTest(text=text):
@@ -474,7 +474,7 @@ class IndexTest(unittest.TestCase):
         done = page.split("COMPLETED")[1]
         self.assertLess(done.index("01:15"), done.index("00:20"))
         for text in ('<span class="when">01:15</span>', '<span class="took">in 2h 05m</span>',
-                     '<a class="headline" href="decision-cache-warmup.html">Cache warmup</a>', '<span class="page">decision-cache-warmup</span>',
+                     '<a class="headline" href="/decisions/cache-warmup">Cache warmup</a>', '<span class="page">decision-cache-warmup</span>',
                      '<span class="key">B</span>start cold', '<span class="words">&quot;B, start cold&quot;</span>',
                      '<a class="ref">#99</a> merged 01:15',
                      "Upload size limit #109", '<span class="page">Decisions row</span>', '<span class="key">yes</span>dispatch it',
@@ -614,7 +614,7 @@ class MainTest(unittest.TestCase):
         code, out, _ = self.run_main("--root", str(root), "--from", str(root / "d.json"), "--name", "uploads-storage",
                                      "--date", "2026-09-25")
         self.assertEqual(code, 0)
-        self.assertEqual(out.strip(), "http://127.0.0.1:8765/decision-uploads-storage.html")
+        self.assertEqual(out.strip(), "http://127.0.0.1:8765/decisions/uploads-storage")
         self.assertIn("Follow the architecture", (root / "pages" / "decision-uploads-storage.html").read_text())
 
     def test_reads_the_decision_beside_its_page_by_default(self):
@@ -622,7 +622,7 @@ class MainTest(unittest.TestCase):
         (root / "pages").mkdir()
         (root / "pages" / "decision-uploads-storage.json").write_text(json.dumps(decision()))
         code, out, _ = self.run_main("--root", str(root), "--name", "uploads-storage")
-        self.assertEqual((code, out.strip()), (0, "http://127.0.0.1:8765/decision-uploads-storage.html"))
+        self.assertEqual((code, out.strip()), (0, "http://127.0.0.1:8765/decisions/uploads-storage"))
 
     def test_a_name_that_is_not_a_slug_is_refused(self):
         root = self.workspace()

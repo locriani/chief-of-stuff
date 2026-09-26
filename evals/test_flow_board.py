@@ -125,9 +125,9 @@ class Decisions(unittest.TestCase):
     def test_pending_rows_carry_asked_recommended_and_default(self) -> None:
         d = {"headline": "Cache warmup: keep the pool?", "recommended": "A", "default": "pool stays"}
         p = rb.decision_panel([("cache", d, NOW.replace(hour=1, minute=41), ""), ("bad", None, None, "no ask")], 4, NOW)
-        self.assertEqual((p.id, p.count, p.foot, p.link), ("decisions", 1, "4 answered today", ("decisions page", "decisions.html")))
+        self.assertEqual((p.id, p.count, p.foot, p.link), ("decisions", 1, "4 answered today", ("decisions page", "/decisions")))
         self.assertEqual(p.rows[0], panels.Row("Cache warmup: keep the pool?", "asked 01:41 · recommended A · default: pool stays",
-                                               href="decision-cache.html"))
+                                               href="/decisions/cache"))
         self.assertEqual(p.rows[1], panels.Row("decision-bad.json", "unreadable: no ask"))
 
     def test_the_pending_list_is_the_decisions_page_list(self) -> None:
