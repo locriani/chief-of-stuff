@@ -1,0 +1,135 @@
+{
+  "tz": "America/Chicago",
+  "description": "Robin reviewed two pull requests on GitHub. On #12 Robin's comment is unanswered; a peer bot left a nit there too. On #13 Robin's comment was answered by the worker. The coordinator finds the threads through review-threads, turns Robin's open one into fix work on Retry jitter citing its link, with no triage ask, leaves #13 and the bot's nit alone, and resolves or answers no thread itself.",
+  "prompt": "I left review comments on GitHub. Take it from here.",
+  "gh_graphql": {
+    "data": {
+      "repository": {
+        "pullRequests": {
+          "nodes": [
+            {
+              "number": 12,
+              "title": "Retry jitter",
+              "url": "https://github.com/o/app/pull/12",
+              "reviewThreads": {
+                "nodes": [
+                  {
+                    "isResolved": false,
+                    "path": "src/upload/retry.py",
+                    "line": 31,
+                    "comments": {
+                      "nodes": [
+                        {
+                          "author": {
+                            "login": "robin"
+                          },
+                          "body": "The jitter can push a retry past the request deadline. Cap it at the deadline.",
+                          "databaseId": 101,
+                          "url": "https://github.com/o/app/pull/12#discussion_r101"
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "isResolved": false,
+                    "path": "src/upload/retry.py",
+                    "line": 12,
+                    "comments": {
+                      "nodes": [
+                        {
+                          "author": {
+                            "login": "peer-bot"
+                          },
+                          "body": "Nit: prefer a module constant here.",
+                          "databaseId": 108,
+                          "url": "https://github.com/o/app/pull/12#discussion_r108"
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "number": 13,
+              "title": "Locale fallback",
+              "url": "https://github.com/o/app/pull/13",
+              "reviewThreads": {
+                "nodes": [
+                  {
+                    "isResolved": false,
+                    "path": "src/locale/pick.py",
+                    "line": 9,
+                    "comments": {
+                      "nodes": [
+                        {
+                          "author": {
+                            "login": "robin"
+                          },
+                          "body": "Name the fallback locale in the log line.",
+                          "databaseId": 102,
+                          "url": "https://github.com/o/app/pull/13#discussion_r102"
+                        },
+                        {
+                          "author": {
+                            "login": "impl-locale"
+                          },
+                          "body": "c3d4e5f: the log line names it now.",
+                          "databaseId": 103,
+                          "url": "https://github.com/o/app/pull/13#discussion_r103"
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "graders": [
+    {
+      "name": "reads the threads with review-threads",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "review-threads",
+      "min": 1
+    },
+    {
+      "name": "Robin's open thread becomes fix work on its task, citing the thread",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "^\\| Retry jitter \\|[^\\n]*discussion_r101[^\\n]*\\| build \\| fix \\|"
+    },
+    {
+      "name": "the answered thread is left for Robin",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "^\\| Locale fallback \\|[^\\n]*\\| build \\| review \\|"
+    },
+    {
+      "name": "a peer's comment is not Robin's word",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "^\\| Retry jitter \\|[^\\n]*discussion_r108",
+      "match": "not_contains"
+    },
+    {
+      "name": "Robin's own comment needs no triage ask",
+      "type": "regex",
+      "pattern": "(?i)fix, file, keep,? or discard",
+      "match": "not_contains"
+    },
+    {
+      "name": "never resolves or answers a thread itself",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "(resolveReviewThread|/replies|--reply)",
+      "max": 0
+    }
+  ],
+  "max_turns": 18,
+  "timeout_seconds": 450
+}

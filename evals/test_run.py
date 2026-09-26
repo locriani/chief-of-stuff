@@ -176,6 +176,24 @@ class ShimTest(unittest.TestCase):
             self.assertEqual(merged.returncode, 0)
             self.assertIn("gh pr merge 12\n", (shims / "calls.log").read_text())
 
+    def test_gh_shim_answers_graphql_from_the_case_and_logs_a_thread_reply(self) -> None:
+        import subprocess
+        import sys
+
+        with tempfile.TemporaryDirectory() as d:
+            shims = Path(d)
+            run.write_shims(shims, graphql={"data": {"x": 1}})
+            shim = str(shims / "gh")
+            got = subprocess.run([sys.executable, shim, "api", "graphql", "-f", "query=q"], capture_output=True, text=True)
+            self.assertEqual(json.loads(got.stdout), {"data": {"x": 1}})
+            reply = subprocess.run([sys.executable, shim, "api", "repos/o/app/pulls/12/comments/101/replies",
+                                    "-f", "body=fixed"], capture_output=True, text=True)
+            self.assertEqual(reply.returncode, 0)
+            self.assertIn("api repos/o/app/pulls/12/comments/101/replies -f body=fixed\n", (shims / "calls.log").read_text())
+            other = subprocess.run([sys.executable, shim, "api", "graphql", "-f", "query=mutation { resolveReviewThread }"],
+                                   capture_output=True, text=True)
+            self.assertEqual(other.returncode, 1, "a mutation is not a case's answer")
+
     def test_no_legacy_gh_issue_shim_is_written(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             shims = Path(d)

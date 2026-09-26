@@ -64,9 +64,9 @@ SPAWN_SESSION = PLUGIN_ROOT / "scripts" / "spawn_session.py"
 # from code, never from the agent. git and curl stay off the allowlist — the scripts call them.
 SCRIPTS = ("render_board.py", "pages.py", "probe_health.py", "audit_tasks.py", "make_worktree.py",
            "spawn_session.py", "notify.py", "inbox.py", "backlog.py", "kanban.py", "process_status.py",
-           "decision_page.py", "tracker_write.py", "merge_approved.py")
+           "decision_page.py", "tracker_write.py", "merge_approved.py", "review_threads.py")
 OPERATIONS = ("board", "pages", "health", "audit", "worktree", "worker", "notify", "inbox",
-              "backlog", "kanban", "processes", "decision", "log", "merge-approved")
+              "backlog", "kanban", "processes", "decision", "log", "merge-approved", "review-threads")
 
 
 def allowed_tools(root: Path) -> list[str]:
@@ -1379,6 +1379,11 @@ elif args[:2] in (["issue", "close"], ["issue", "comment"], ["pr", "merge"]):
 elif args[:2] == ["pr", "list"]:
     prs = Path(__file__).parent / "prs.json"
     print(prs.read_text() if prs.exists() else "[]")
+elif args[:2] == ["api", "graphql"] and "mutation" not in " ".join(args):
+    graph = Path(__file__).parent / "graphql.json"
+    print(graph.read_text() if graph.exists() else '{"data": {"repository": {"pullRequests": {"nodes": []}}}}')
+elif args[:1] == ["api"] and len(args) > 1 and args[1].endswith("/replies"):
+    print("{}")
 else:
     print("gh: blocked by eval harness", file=sys.stderr)
     sys.exit(1)
@@ -1428,7 +1433,7 @@ def write_recorder(shim_dir: Path, calls_log: Path, tz: str) -> list[str]:
     return ["python3", str(recorder), "{type}", "{cwd}", "{title}"]
 
 
-def write_shims(shim_dir: Path, prs: list | None = None) -> None:
+def write_shims(shim_dir: Path, prs: list | None = None, graphql: dict | None = None) -> None:
     shim_dir.mkdir(parents=True, exist_ok=True)
     railway = shim_dir / "railway"
     railway.write_text(RAILWAY_SHIM)
@@ -1439,6 +1444,9 @@ def write_shims(shim_dir: Path, prs: list | None = None) -> None:
     if prs is not None:
         # A case's open pull requests, as `gh pr list --json` returns them.
         (shim_dir / "prs.json").write_text(json.dumps(prs))
+    if graphql is not None:
+        # What `gh api graphql` answers for the case: its review threads.
+        (shim_dir / "graphql.json").write_text(json.dumps(graphql))
 
 
 def eval_environment(out: Path, calls_log: Path, tz: str, root: Path | None = None) -> dict[str, str]:
@@ -1479,7 +1487,7 @@ def run_one(case: Case, arm: str, model: str, out: Path, root: Path | None = Non
             make_repo.build(work, spec["repo"])
         # After every piece of setup, so the baseline is what the agent was handed, not a part of it.
         before_snapshot(work, out / "fixture-before")
-        write_shims(out / "shims", spec.get("gh_prs"))
+        write_shims(out / "shims", spec.get("gh_prs"), spec.get("gh_graphql"))
         calls_log.parent.mkdir(parents=True, exist_ok=True)
         calls_log.touch()
         env = eval_environment(out, calls_log, tz, root=root)
