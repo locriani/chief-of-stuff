@@ -1104,9 +1104,9 @@ def host_prompt(runtime: str, arm: str, prompt: str, root: Path, work: Path) -> 
         return prompt
     # The same rendered host instructions used by an installed coordinator, pinned to this run's snapshot.
     sys.path.insert(0, str(PLUGIN_ROOT))
-    from start_coordinator import prompt as coordinator_prompt
+    from start_coordinator import START, prompt as coordinator_prompt
     text = coordinator_prompt(runtime, root, work)
-    text = text.rsplit("\n\nOpen the day.", 1)[0]
+    text = text.rsplit("\n\n" + START, 1)[0]
     return text + "\n\nUser turn: " + prompt
 
 
