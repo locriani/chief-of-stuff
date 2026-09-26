@@ -58,7 +58,7 @@
         "Security audit",
         "Draft release notes"
       ],
-      "html_match": "<tr data-state=\"done\"[^>]*><td>(<details><summary>)?Security audit"
+      "html_match": "<div class=\"columns-card-name\">Security audit</div>(<div class=\"columns-refs\">[^<]*</div>)?<div class=\"columns-who\"><span class=\"columns-owner\">[^<]*</span><span class=\"columns-tag columns-chip\" data-cat=\"done\">"
     },
     {
       "name": "board matches the final tracker",

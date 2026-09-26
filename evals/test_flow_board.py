@@ -7,7 +7,7 @@ import re
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -18,7 +18,7 @@ import decision_page  # noqa: E402
 import panels  # noqa: E402
 import render_board as rb  # noqa: E402
 import settings as st  # noqa: E402
-from test_render_board import CLAUDE_MD, CT, LOG, NOW  # noqa: E402
+from test_render_board import CLAUDE_MD, NOW  # noqa: E402
 
 
 def change(ref: str, *, state="open", draft=False, pipeline="passed", approved=False, merged_at=None,
@@ -184,23 +184,22 @@ class Build(unittest.TestCase):
 class Page(unittest.TestCase):
     def setUp(self) -> None:
         self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
-        self.html = rb.render(TRACKER, LOG, self.cfg, NOW, lanes=LANES, kanban=KANBAN, sources=SOURCES,
+        self.html = rb.render(TRACKER, self.cfg, NOW, lanes=LANES, kanban=KANBAN, sources=SOURCES,
                               decisions=[("x", {"headline": "Pick", "recommended": "B", "default": "d"}, NOW.replace(hour=10, minute=0), "")],
                               answered=1, tracker_at=NOW - timedelta(minutes=5))
         self.body = self.html.split("</style>", 1)[1]
 
-    def test_the_flow_top_then_the_day_layout(self) -> None:
-        marks = ['class="panels-head"', 'class="panels-tiles"', '<section id="build">', 'class="panels"',
-                 "Due next", '<section id="blocked">', "<h2>Today", "<h2>Week", "<h2>Tasks"]
+    def test_the_board_is_the_flow_artboard_in_order(self) -> None:
+        marks = ['class="panels-head"', 'class="panels-tiles"', '<section id="flow">', 'class="panels"']
         at = [self.body.index(m) for m in marks]
         self.assertEqual(at, sorted(at), [m for _, m in sorted(zip(at, marks))])
 
     def test_the_header_names_each_source_time_and_the_counts(self) -> None:
         self.assertIn("rendered 14:30 CDT · tracker 14:25 · kanban 14:28 · merge requests 14:27 · workers 14:30 · "
-                      "4 tasks · 1 in no lane · board board-7", self.body)
+                      "4 tasks · 1 in no lane", self.body)
 
     def test_a_source_error_is_in_the_header(self) -> None:
-        html = rb.render(TRACKER, LOG, self.cfg, NOW, lanes=LANES, sources=bs.Sources({}, {}, {}, (), {"workers": "no registry"}))
+        html = rb.render(TRACKER, self.cfg, NOW, lanes=LANES, sources=bs.Sources({}, {}, {}, (), {"workers": "no registry"}))
         self.assertIn('<div class="panels-warn">workers: no registry</div>', html)
 
     def test_tile_counts(self) -> None:
@@ -213,7 +212,7 @@ class Page(unittest.TestCase):
             self.assertIn(f'id="{anchor}"', self.body)
 
     def test_empty_sources_render_and_running_falls_back_to_tasks(self) -> None:
-        html = rb.render(TRACKER, LOG, self.cfg, NOW, lanes=LANES)
+        html = rb.render(TRACKER, self.cfg, NOW, lanes=LANES)
         tiles = dict(re.findall(r'<span class="panels-label">([A-Z]+)</span><b class="panels-count">(\d+)</b>', html))
         self.assertEqual(tiles, {"BLOCKED": "3", "DECISIONS": "0", "APPROVED": "0", "RUNNING": "1", "DRIFT": "0", "ORPHANED": "1"})
         self.assertIn("rendered 14:30 CDT · tracker 14:30 · 4 tasks", html)

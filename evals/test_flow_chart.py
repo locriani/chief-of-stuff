@@ -196,30 +196,30 @@ class BoardTest(unittest.TestCase):
     def cfg(self):
         return rb.parse_coordinator(self.CLAUDE, today=TODAY)
 
-    def test_flow_sits_after_build_and_before_today(self):
-        html = rb.render(TODAY_TRACKER, "", self.cfg(), NOW, lanes=LANES, tracker_day=TODAY, kanban=KANBAN,
+    def test_flow_sits_after_build_and_the_panels(self):
+        html = rb.render(TODAY_TRACKER, self.cfg(), NOW, lanes=LANES, tracker_day=TODAY, kanban=KANBAN,
                          stage_log=[(YESTERDAY, YESTERDAY_TRACKER)])
-        build, flow, today = html.index("<h2>Build</h2>"), html.index("<h2>Flow · 24 hours</h2>"), html.index("<h2>Today</h2>")
-        self.assertLess(build, flow)
-        self.assertLess(flow, today)
+        build, panels, flow = html.index("<h2>Build</h2>"), html.index('class="panels"'), html.index("<h2>Flow · 24 hours</h2>")
+        self.assertLess(build, panels)
+        self.assertLess(panels, flow)
         self.assertIn('title="implement Fri 22:00–Sat 01:00', html)
         self.assertIn("gantt-hold", html)
 
     def test_queued_tasks_take_their_size_from_closed_tasks(self):
         tracker = TODAY_TRACKER.replace("| Locale fallback | Fall back to en | Robin | done 00:41 |", "| Locale fallback | Fall back to en | Robin | done 00:10–00:41 |")
-        html = rb.render(tracker, "", self.cfg(), NOW, lanes=LANES, tracker_day=TODAY, kanban=KANBAN)
+        html = rb.render(tracker, self.cfg(), NOW, lanes=LANES, tracker_day=TODAY, kanban=KANBAN)
         self.assertIn("Session timeout", html[html.index("Flow · 24 hours"):])
         self.assertIn("queued · ~", html)
 
     def test_no_stage_line_no_flow_and_no_chart_css(self):
         plain = TODAY_TRACKER.split("- 00:30")[0]
-        html = rb.render(plain, "", self.cfg(), NOW, lanes=LANES, tracker_day=TODAY, kanban=KANBAN)
+        html = rb.render(plain, self.cfg(), NOW, lanes=LANES, tracker_day=TODAY, kanban=KANBAN)
         self.assertNotIn("Flow ·", html)
         self.assertNotIn('class="gantt', html)
         self.assertNotIn(".gantt-bar", html)
 
     def test_every_stage_colour_is_set_light_and_dark(self):
-        html = rb.render(TODAY_TRACKER, "", self.cfg(), NOW, lanes=LANES, tracker_day=TODAY, kanban=KANBAN)
+        html = rb.render(TODAY_TRACKER, self.cfg(), NOW, lanes=LANES, tracker_day=TODAY, kanban=KANBAN)
         used = set(re.findall(r"--c:var\((--stage-[\w-]+)\)", html))
         self.assertEqual(used, {f"--stage-{s}" for s in gantt.PALETTE})
         blocks = [re.search(r"^:root\{(.*?)\}$", html, re.M)[1],

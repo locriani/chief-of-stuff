@@ -852,53 +852,9 @@ def _board_matches_tracker(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str
     return True, f"board sha {want[:12]} matches the tracker"
 
 
-CITED = re.compile(r'<[^>]*\bdata-item="[^"]*"[^>]*>')
-ATTR = re.compile(r'data-([a-z-]+)="([^"]*)"')
-
-
-def _board_bars(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
-    """Bars cite their sources: each listed task (its own bar, or a member folded into a summary row) has the given data-*-src (and label); every end source is a known kind."""
-    html_text, note = _last_published_html(rec)
-    if html_text is None:
-        return False, note
-    bars = {}
-    for tag in CITED.findall(html_text):
-        attrs = dict(ATTR.findall(tag))
-        if "end-src" in attrs:
-            bars.setdefault(attrs["item"], attrs)
-    problems = [f"{item!r}: end src {a.get('end-src')!r}" for item, a in bars.items() if a.get("end-src") not in ("due", "state", "deadline", "derived")]
-    for want in g.get("bars", []):
-        a = bars.get(_esc_html(want["item"]))
-        if a is None:
-            problems.append(f"no bar for {want['item']!r}")
-            continue
-        for key in ("start_src", "end_src", "label"):
-            if key in want and a.get(key.replace("_", "-")) != want[key]:
-                problems.append(f"{want['item']!r}: {key} {a.get(key.replace('_', '-'))!r}, want {want[key]!r}")
-    for name in g.get("deadline_lines", []):
-        if f'data-deadline-name="{_esc_html(name)}"' not in html_text:
-            problems.append(f"no deadline line for {name!r}")
-    return (not problems), ("; ".join(problems) if problems else f"{len(bars)} bar(s) cite their sources")
-
-
-def _board_requirements(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
-    """The last published board has the deadline's requirements section with `done` of `total` ticked."""
-    html_text, note = _last_published_html(rec)
-    if html_text is None:
-        return False, note
-    m = re.search(rf'<section class="reqs" data-deadline="{re.escape(_esc_html(g["deadline"]))}" data-done="(\d+)" data-total="(\d+)"', html_text)
-    if not m:
-        return False, f"no requirements section for {g['deadline']!r}"
-    done, total = int(m[1]), int(m[2])
-    ok = done == g["done"] and total == g["total"]
-    return ok, f"{g['deadline']}: {done} of {total}; want {g['done']} of {g['total']}"
-
-
 BOARD_GRADERS = {
     "board_published": _board_published,
     "board_matches_tracker": _board_matches_tracker,
-    "board_bars": _board_bars,
-    "board_requirements": _board_requirements,
 }
 
 
