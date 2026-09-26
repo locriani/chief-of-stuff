@@ -5,6 +5,7 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -727,6 +728,7 @@ class ModuleGraphTest(unittest.TestCase):
 
     def setUp(self):
         self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, True)
         self.pages = self.root / "pages"
         self.pages.mkdir()
         self.bin = self.root / "bin"
