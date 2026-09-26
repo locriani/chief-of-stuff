@@ -23,12 +23,15 @@ LOG = "## Log"
 
 
 def lock_path(path: Path) -> Path:
-    return path.with_name(f".{path.name}.lock")
+    # The tracker's own directory: a lock file beside it would show up untracked in the workspace's git.
+    # ponytail: one lock for the whole daily dir; per-tracker lock files if two days ever write at once.
+    return path.parent
 
 
 def edit(path: Path, change: Callable[[str], str]) -> None:
     """Read, change and replace `path` while holding its lock; a raise from `change` writes nothing."""
-    with open(lock_path(path), "a") as lock:
+    lock = os.open(lock_path(path), os.O_RDONLY)
+    try:
         fcntl.flock(lock, fcntl.LOCK_EX)
         text = change(path.read_text())
         # A temporary sibling keeps readers from seeing a half-written tracker.
@@ -38,6 +41,8 @@ def edit(path: Path, change: Callable[[str], str]) -> None:
             os.replace(temp.name, path)
         finally:
             Path(temp.name).unlink(missing_ok=True)
+    finally:
+        os.close(lock)
 
 
 def stamp(zone: ZoneInfo) -> str:

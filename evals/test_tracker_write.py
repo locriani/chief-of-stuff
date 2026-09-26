@@ -1,6 +1,7 @@
 """tracker_write.py: every script-side tracker write takes one lock, and `log` appends a stamped Log line."""
 
 import fcntl
+import os
 import sys
 import tempfile
 import threading
@@ -55,14 +56,23 @@ class LogTest(unittest.TestCase):
         self.assertEqual(self.log("one\n- 09:01 two"), 2)
         self.assertEqual(self.tracker.read_text(), TRACKER)
 
+    def test_an_edit_leaves_no_file_beside_the_tracker(self):
+        # A workspace that tracks its daily dir in git would gain an untracked lock file every day.
+        before = sorted(p.name for p in self.tracker.parent.iterdir())
+        tw.edit(self.tracker, lambda text: text + "late\n")
+        self.assertEqual(sorted(p.name for p in self.tracker.parent.iterdir()), before)
+
     def test_an_edit_waits_for_the_lock(self):
-        with open(tw.lock_path(self.tracker), "w") as held:
+        held = os.open(tw.lock_path(self.tracker), os.O_RDONLY)
+        try:
             fcntl.flock(held, fcntl.LOCK_EX)
             writer = threading.Thread(target=tw.edit, args=(self.tracker, lambda text: text + "late\n"))
             writer.start()
             writer.join(0.3)
             self.assertTrue(writer.is_alive())
             self.assertEqual(self.tracker.read_text(), TRACKER)
+        finally:
+            os.close(held)
         writer.join(5)
         self.assertTrue(self.tracker.read_text().endswith("late\n"))
 
