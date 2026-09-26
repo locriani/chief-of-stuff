@@ -285,6 +285,59 @@ ONE_SHOT_TRACKER = """# Tracker
 """
 
 
+REVIEW_LOOP = """# Tracker
+
+## Tasks
+
+| name | item | owner | state | since | due | size | lane | stage | issue | checklist |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Documentation upload | Upload docs | w1 | waiting | 2026-09-26 |  | S | build | pr | #307 | c |
+| Review !182 | Review 182 | w2 | done 00:50–01:20 | 2026-09-26 |  | S | build | review | #307 | c |
+| Fix !182 R1 | Fix 182 | w3 | running 01:20 | 2026-09-26 |  | S | build | triage | #307 | c |
+| Tidy config | Tidy | w4 | running 00:40 | 2026-09-26 |  | S |  |  |  | c |
+| Trim cache | Trim | w5 | running 00:45 | 2026-09-26 |  | S |  |  |  | c |
+
+## Log
+
+- 00:10 stage: Documentation upload → implement
+- 00:40 stage: Documentation upload → pr
+- 00:40 stage: Tidy config → implement
+- 00:45 stage: Trim cache → implement
+- 00:50 stage: Review !182 → review
+- 01:20 stage: Fix !182 R1 → triage
+"""
+
+
+class IssueRowTest(unittest.TestCase):
+    """The review loop makes a Tasks row per pass; the chart draws one row per issue (#155)."""
+
+    def built(self) -> list[tuple[str, gantt.Row]]:
+        return fc.build(fc.moves(REVIEW_LOOP, TODAY, CT), rb.parse_tracker(REVIEW_LOOP).tasks, LANES, set(), {}, NOW)
+
+    def test_tasks_sharing_an_issue_draw_on_one_row_in_time_order(self):
+        mine = [(s, r) for s, r in self.built() if r.ref == "#307"]
+        self.assertEqual(len(mine), 1)
+        status, row = mine[0]
+        # Named for the first task, with the status of the latest.
+        self.assertEqual((status, row.name), ("running", "Documentation upload"))
+        starts = [g.start for g in row.segments]
+        self.assertEqual(starts, sorted(starts))
+        self.assertEqual([g.category for g in row.segments][:4], ["implement", "pr", "review", "triage"])
+
+    def test_a_task_with_no_segment_still_merges(self):
+        # A task whose only move is its lane's last stage draws no segment; its issue row still renders.
+        text = REVIEW_LOOP.replace("| Trim cache | Trim | w5 | running 00:45 | 2026-09-26 |  | S |  |  |  | c |",
+                                   "| Land docs | Land | w6 | done 01:00 | 2026-09-26 |  | S | build | main | #307 | c |")
+        text = tw.append_log(text, "- 01:00 stage: Land docs → main")
+        got = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(), {}, NOW)
+        self.assertEqual(len([r for _, r in got if r.ref == "#307"]), 1)
+        fc.section(got, NOW)
+
+    def test_tasks_without_an_issue_keep_a_row_each(self):
+        names = [r.name for _, r in self.built() if not r.ref]
+        self.assertEqual(sorted(names), ["Tidy config", "Trim cache"])
+
+
 class OneShotTest(unittest.TestCase):
     """A task with no `stage:` lines draws from the one-shot launcher's own Log lines, at the times they record (#149)."""
 
