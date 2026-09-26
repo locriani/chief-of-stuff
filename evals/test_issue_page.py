@@ -18,7 +18,7 @@ import tempfile
 import threading
 import unittest
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, time
 from html import unescape
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -103,15 +103,16 @@ OTHER = bs.Change("!50", "https://forge.example/grp/app/-/merge_requests/50", "W
                   "passed", True, 1, None, "main", (), ("#111",))
 
 
-def sources(*changes: bs.Change) -> bs.Sources:
-    return bs.Sources({}, {"#109": ISSUE}, {c.ref: c for c in changes}, (), {})
+def sources(*changes: bs.Change, issue: bs.Issue = ISSUE) -> bs.Sources:
+    return bs.Sources({}, {"#109": issue}, {c.ref: c for c in changes}, (), {})
 
 
-def page(number: int = 109, src: bs.Sources | None = None) -> str | None:
+def page(number: int = 109, src: bs.Sources | None = None, today: str | None = None,
+         trackers: list | None = None) -> str | None:
     if ip is None:
         raise AssertionError("scripts/issue_page.py does not exist yet")
-    return ip.render(number, [(YESTERDAY, YESTERDAY_TRACKER), (TODAY, today_tracker())],
-                     src if src is not None else sources(MR, OTHER), NOW, LANES)
+    trackers = trackers or [(YESTERDAY, YESTERDAY_TRACKER), (TODAY, today if today is not None else today_tracker())]
+    return ip.render(number, trackers, src if src is not None else sources(MR, OTHER), NOW, LANES)
 
 
 def text(html: str) -> str:
@@ -216,6 +217,264 @@ class RenderTest(unittest.TestCase):
         refs = section(page(src=sources()), "References")
         self.assertIn(f'href="{ISSUE.url}"', refs)
         self.assertNotIn("merge_requests", refs)
+
+
+# Stage 2. The changes into `main` around !48: !9 and !41 merge before it and !50 after; !45 targets another base and
+# !30 is merged, so neither is in main's queue. Only !50 shares a file (src/upload/limits.py) with !48.
+FILES = ("src/upload/limits.py", "src/upload/form.py")
+MINE = replace(MR, files=FILES)
+
+
+def change(n: int, state: str, base: str, files: tuple[str, ...], issue: str) -> bs.Change:
+    return bs.Change(f"!{n}", f"https://forge.example/grp/app/-/merge_requests/{n}", f"Change {n}", state, False,
+                     "passed", False, 0, NOW if state == "merged" else None, base, files, (issue,))
+
+
+QUEUE = (change(9, "open", "main", ("src/log.py",), "#130"), change(41, "open", "main", ("src/common/config.py",), "#120"),
+         change(45, "open", "release", ("src/release/notes.py",), "#121"), change(30, "merged", "main", ("src/upload/form.py",), "#131"),
+         replace(OTHER, files=("src/upload/limits.py", "src/cache/pool.py")))
+
+
+def card(html: str) -> str:
+    """The change card: the section headed "Merge request" (or "Pull request")."""
+    return section(html, r"(?:Merge|Pull) request")
+
+
+def paired(got: str, pairs: dict[str, str]) -> list[str]:
+    """Asserts each key (a literal) sits next to a match of its value (a pattern), all on the same side, among the
+    keys and values in reading order; so a row may read `name status` or `status name`. Returns that sequence."""
+    seq = re.findall("|".join([*map(re.escape, pairs), *(f"(?:{v})" for v in pairs.values())]), got)
+
+    def beside(d: int) -> bool:
+        return all(k in seq and 0 <= (i := seq.index(k)) + d < len(seq) and re.fullmatch(v, seq[i + d])
+                   for k, v in pairs.items())
+    if not (beside(1) or beside(-1)):
+        raise AssertionError(f"not each beside its own {pairs}: {seq}")
+    return seq
+
+
+def with_stats(c: bs.Change, *rows: tuple[str, int, int]) -> bs.Change:
+    return replace(c, files=tuple(p for p, _, _ in rows),
+                   stats=tuple(bs.FileStat(path=p, additions=a, deletions=d) for p, a, d in rows))
+
+
+def thread(resolved: bool, hhmm: str, body: str) -> "bs.ReviewThread":
+    at = datetime.combine(TODAY, time.fromisoformat(hhmm), CT)
+    return bs.ReviewThread(resolved=resolved, author="reviewer-a", body=body, at=at,
+                           url=f"https://forge.example/grp/app/-/merge_requests/48#note_{hhmm.replace(':', '')}")
+
+
+class MergeOrderTest(unittest.TestCase):
+    """A1: "merge order K of M": M is the open changes into the same base, ordered by change number, oldest first,
+    and the card lists the refs merging before it. A merged or closed change shows no merge order."""
+
+    def test_merge_order_counts_open_changes_into_the_same_base_by_number(self):
+        got = text(card(page(src=sources(MINE, *QUEUE))))
+        self.assertRegex(got, r"(?i)merge order\W+3 of 4\b")
+        self.assertRegex(got, r"(?i)\bafter\W+!9\W+!41\b")
+        for other in ("!30", "!45"):
+            with self.subTest(other=other):
+                self.assertNotIn(other, got)
+
+    def test_a_merged_or_closed_change_shows_no_merge_order(self):
+        self.assertRegex(text(card(page(src=sources(MINE, *QUEUE)))), r"(?i)merge order")  # while open, it does
+        for state in ("merged", "closed"):
+            with self.subTest(state=state):
+                got = text(card(page(src=sources(replace(MINE, state=state), *QUEUE))))
+                self.assertNotRegex(got, r"(?i)merge order")
+
+
+class OverlapTest(unittest.TestCase):
+    """A2: "overlap N file(s)" counts files shared with other open changes, naming the other change and a shared
+    path; with none it says "overlap none"."""
+
+    def test_overlap_names_the_other_open_change_and_a_shared_path(self):
+        got = text(card(page(src=sources(MINE, *QUEUE))))
+        self.assertRegex(got, r"(?i)overlap\W+1 file\b")  # form.py is shared only with !30, which is merged
+        self.assertIn("!50", got)
+        self.assertIn("src/upload/limits.py", got)
+
+    def test_no_shared_file_is_overlap_none(self):
+        got = text(card(page(src=sources(MINE, change(41, "open", "main", ("src/common/config.py",), "#120")))))
+        self.assertRegex(got, r"(?i)overlap\W+none\b")
+
+
+class FilesChangedTest(unittest.TestCase):
+    """A3: Files changed lists each file the change touches; one another open change also touches is marked "also !N".
+    B1: each file shows "+A −D", and a total line."""
+
+    def test_each_file_is_listed_and_a_shared_one_names_the_other_change(self):
+        got = text(section(page(src=sources(MINE, *QUEUE)), "Files changed"))
+        for path in FILES:
+            self.assertIn(path, got)
+        paired(got, {"src/upload/limits.py": r"also\W+!50"})
+        self.assertEqual(len(re.findall(r"(?i)\balso\b", got)), 1, got)  # only merged !30 touches form.py
+
+    def test_each_file_shows_its_additions_and_deletions_and_a_total(self):
+        mine = with_stats(MR, ("src/upload/limits.py", 12, 3), ("src/upload/form.py", 5, 2))
+        got = text(section(page(src=sources(mine, OTHER)), "Files changed"))
+        paired(got, {"src/upload/limits.py": r"\+12\s*[−-]3", "src/upload/form.py": r"\+5\s*[−-]2"})
+        self.assertRegex(got, r"\+17\s*[−-]5\b")
+
+
+class ArchitectureTest(unittest.TestCase):
+    """A4: ARCHITECTURE reuses the decision page's module-graph behaviour for the issue's change."""
+
+    def test_with_no_graph_table_it_says_the_graph_is_not_configured(self):
+        got = section(page(), "Architecture")
+        self.assertIn("not configured", got)
+        self.assertNotIn('class="mermaid"', got)
+
+    def test_with_no_change_there_is_no_graph(self):
+        got = section(page(src=sources(OTHER)), "Architecture")
+        self.assertNotIn('class="mermaid"', got)
+        self.assertNotIn("not configured", got)
+
+
+class PipelineTest(unittest.TestCase):
+    """B2: the card lists each of the head pipeline's jobs with its status."""
+
+    def test_the_card_lists_each_job_with_its_status(self):
+        jobs = {"lint-code": "passed", "unit-tests": "failed", "preview-deploy": "running"}
+        mine = replace(MR, jobs=(bs.Job(name="lint-code", status="passed", seconds=42),
+                                 bs.Job(name="unit-tests", status="failed", seconds=310),
+                                 bs.Job(name="preview-deploy", status="running", seconds=None)))
+        paired(text(card(page(src=sources(mine, OTHER)))).lower(), jobs)
+
+
+class ConflictsTest(unittest.TestCase):
+    """B3: the card shows "conflicts none" or "conflicts yes"."""
+
+    def test_the_card_says_whether_the_change_conflicts_with_its_base(self):
+        for conflicts, word in ((False, "none"), (True, "yes")):
+            with self.subTest(conflicts=conflicts):
+                got = text(card(page(src=sources(replace(MR, conflicts=conflicts), OTHER))))
+                self.assertRegex(got, rf"(?i)conflicts\W+{word}\b")
+
+
+class ReviewTest(unittest.TestCase):
+    """B4: REVIEW lists the threads newest first, open before resolved, each marked Open or Resolved; the card shows
+    "threads K open" and the resolved count; with none the section says the change has no review threads."""
+
+    def threads(self) -> tuple:
+        return (thread(False, "00:30", "Cap should be configurable"), thread(True, "01:00", "Typo in the message"),
+                thread(False, "01:30", "Test exactly 25 MB"), thread(True, "00:10", "Rename the helper"))
+
+    def test_open_threads_come_first_then_resolved_each_newest_first(self):
+        order = ("Test exactly 25 MB", "Cap should be configurable", "Typo in the message", "Rename the helper")
+        got = text(re.sub(r"<h2\b.*?</h2>", "", section(page(src=sources(replace(MR, threads=self.threads()), OTHER)),
+                                                          "Review"), flags=re.S))
+        at = [got.find(body) for body in order]
+        self.assertNotIn(-1, at, got)
+        self.assertEqual(at, sorted(at))
+        self.assertEqual([m.lower() for m in re.findall(r"(?i)\b(?:open|resolved)\b", got)],
+                         ["open", "open", "resolved", "resolved"], got)
+
+    def test_the_card_counts_open_and_resolved_threads(self):
+        got = text(card(page(src=sources(replace(MR, threads=self.threads()[:3]), OTHER))))
+        self.assertRegex(got, r"(?i)threads\W+2 open\b")
+        self.assertRegex(got, r"(?i)\b1 resolved\b")
+
+    def test_no_threads_says_so(self):
+        got = text(section(page(src=sources(replace(MR, threads=()), OTHER)), "Review"))
+        self.assertRegex(got, r"(?i)\bno review threads\b")
+
+
+BODY = """## Context
+
+Uploads have no cap.
+
+{heading} Acceptance
+
+- [x] Uploads over 25 MB are refused
+- [ ] The limit is configurable
+- The error names the limit
+
+## Notes
+
+- not a criterion
+"""
+
+
+class AcceptanceTest(unittest.TestCase):
+    """C2: ACCEPTANCE lists the bullets under the body's "Acceptance" heading (any level); `- [x]` is met, `- [ ]`
+    and plain `-` are not; the heading shows "K of N met". C3: with no such heading, it says the issue states none."""
+
+    def test_the_bullets_under_acceptance_are_listed_and_counted(self):
+        for heading in ("#", "###"):
+            with self.subTest(heading=heading):
+                issue = replace(ISSUE, body=BODY.format(heading=heading))
+                got = section(page(src=sources(MR, OTHER, issue=issue)), "Acceptance")
+                self.assertRegex(text(re.search(r"<h2\b.*?</h2>", got, re.S)[0]), r"\b1 of 3 met\b")
+                for bullet in ("Uploads over 25 MB are refused", "The limit is configurable", "The error names the limit"):
+                    self.assertIn(bullet, text(got))
+                self.assertNotIn("not a criterion", text(got))
+
+    def test_no_acceptance_heading_says_the_issue_states_none(self):
+        issue = replace(ISSUE, body="## Context\n\n- [ ] something\n")
+        got = text(section(page(src=sources(MR, OTHER, issue=issue)), "Acceptance"))
+        self.assertRegex(got, r"(?i)\bno acceptance criteria\b")
+
+
+DONE_TRACKER = f"""# Tracker
+
+## Tasks
+
+{HEAD}| Upload size limit | Cap uploads | Robin | done 01:00 | {TODAY} |  | M | build | main | #109 | c |
+
+## Log
+
+- 00:30 stage: Upload size limit → merge
+- 01:00 stage: Upload size limit → main
+"""
+DUE = datetime.combine(TODAY, time(5, 0), CT)
+
+
+def due_tracker() -> str:
+    """Today's tracker with #109's build row due 05:00, so the Flow row forecasts its remaining stages."""
+    before = today_tracker()
+    after = before.replace(f"| Robin | waiting | {YESTERDAY} |  |", f"| Robin | waiting | {YESTERDAY} | {DUE:%H:%M} |")
+    assert after != before, "the fixture's #109 row moved"
+    return after
+
+
+class WhatHappensNextTest(unittest.TestCase):
+    """D1: the forecast stages of the task's Flow row, "<stage> ~HH:MM–HH:MM". D2: an open change's merge-queue
+    position. D3: done or closed says nothing next; open with no forecast says no estimate."""
+
+    def test_forecast_stages_from_the_flow_row(self):
+        today = due_tracker()
+        built = fc.build(fc.moves(YESTERDAY_TRACKER, YESTERDAY, CT) + fc.moves(today, TODAY, CT),
+                         rb.parse_tracker(YESTERDAY_TRACKER).tasks + rb.parse_tracker(today).tasks, LANES, set(),
+                         {"Cap uploads": DUE}, NOW)
+        ahead = [g for _, r in built if r.ref == "#109" for g in r.segments if g.kind == "forecast"]
+        self.assertTrue(ahead, "the fixture forecasts nothing")
+        got = text(section(page(today=today), "What happens next"))
+        at = []
+        for g in ahead:
+            with self.subTest(stage=g.category):
+                m = re.search(rf"{g.category}\s*~{g.start.astimezone(CT):%H:%M}\s*[–-]\s*{g.end.astimezone(CT):%H:%M}", got)
+                self.assertIsNotNone(m, got)
+                at.append(m.start())
+        self.assertEqual(at, sorted(at))
+
+    def test_an_open_change_gives_its_merge_queue_position(self):
+        got = text(section(page(src=sources(MINE, *QUEUE)), "What happens next"))
+        self.assertRegex(got, r"\b3 of 4\b")
+        self.assertRegex(got, r"(?i)\bafter\W+!9\W+!41\b")
+
+    def test_an_open_task_with_no_forecast_has_no_estimate(self):
+        got = text(section(page(), "What happens next"))
+        self.assertRegex(got, r"(?i)\bno estimate\b")
+
+    def test_a_done_or_closed_task_has_nothing_next(self):
+        done = page(src=sources(replace(MR, state="merged")), trackers=[(TODAY, DONE_TRACKER)])
+        closed = page(src=sources(MR, OTHER, issue=replace(ISSUE, state="closed")))
+        for name, html in (("done", done), ("closed", closed)):
+            with self.subTest(task=name):
+                got = text(section(html, "What happens next"))
+                self.assertRegex(got, r"(?i)\bnothing\b.*\bnext\b")
+                self.assertNotRegex(got, r"(?i)\bno estimate\b")
 
 
 class BoardLinkTest(unittest.TestCase):

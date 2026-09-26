@@ -41,15 +41,42 @@ HHMM = re.compile(r"^\s*(\d{1,2}):(\d{2})\b")
 STARTED = re.compile(r"^-\s+(\d{1,2}:\d{2}) one-shot (\S+) started: (.*?), worktree `([^`]*)`, task (.+?)\s*$")
 GL_WAITING = {"pending", "created", "waiting_for_resource", "preparing", "scheduled", "manual"}
 
-GH_ISSUE = "number url title state labels(first: 50) { nodes { name } }"
-GH_CHANGE = ("number url title state isDraft mergedAt baseRefName body headRefOid reviewDecision "
-             "files(first: 100) { nodes { path } } "
+GH_ISSUE = "number url title state body labels(first: 50) { nodes { name } }"
+# A review thread is its first comment, as review_threads.QUERY reads them; one comment keeps the node count low.
+GH_CHANGE = ("number url title state isDraft mergedAt baseRefName body headRefOid reviewDecision mergeable "
+             "files(first: 100) { nodes { path additions deletions } } "
              "latestReviews(first: 50) { nodes { author { login } state submittedAt commit { oid } } } "
+             "reviewThreads(first: 100) { nodes { isResolved comments(first: 1) { nodes { author { login } body createdAt url } } } } "
              "commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes { __typename "
-             "... on CheckRun { status conclusion } ... on StatusContext { state } } } } } } }")
-GL_ISSUE = "iid webUrl title state labels { nodes { title } }"
-GL_CHANGE = ("iid webUrl title state draft mergedAt targetBranch description approved "
-             "approvedBy { nodes { username } } headPipeline { status } diffStats { path } diffHeadSha")
+             "... on CheckRun { name status conclusion startedAt completedAt } ... on StatusContext { state } } } } } } }")
+GL_ISSUE = "iid webUrl title state description labels { nodes { title } }"
+GL_CHANGE = ("iid webUrl title state draft mergedAt targetBranch description approved conflicts "
+             "approvedBy { nodes { username } } headPipeline { status jobs { nodes { name status duration } } } "
+             "diffStats { path additions deletions } diffHeadSha "
+             "discussions { nodes { resolvable resolved notes(first: 1) { nodes { author { username } body createdAt url } } } }")
+
+
+@dataclass(frozen=True)
+class FileStat:
+    path: str
+    additions: int
+    deletions: int
+
+
+@dataclass(frozen=True)
+class Job:            # one job of the head pipeline (GitLab) or one check run (GitHub)
+    name: str
+    status: str       # as Change.pipeline
+    seconds: int | None
+
+
+@dataclass(frozen=True)
+class ReviewThread:   # its first comment
+    resolved: bool
+    author: str
+    body: str
+    at: datetime | None
+    url: str
 
 
 @dataclass(frozen=True)
@@ -67,6 +94,10 @@ class Change:          # a PR or MR
     files: tuple[str, ...]
     issues: tuple[str, ...]   # issue refs it closes, e.g. ("#111",)
     head: str = ""            # the head commit's sha, which the decision page graphs
+    stats: tuple[FileStat, ...] = ()
+    jobs: tuple[Job, ...] = ()
+    conflicts: bool = False
+    threads: tuple[ReviewThread, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -76,6 +107,7 @@ class Issue:
     title: str
     state: str
     labels: tuple[str, ...]
+    body: str = ""
 
 
 @dataclass(frozen=True)
@@ -106,14 +138,21 @@ def _when(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value) if value else None
 
 
+def _change_of(v: dict) -> Change:
+    """A cached change; a cache from an older release lacks the later fields, which keep their defaults."""
+    return Change(**{**v, "merged_at": _when(v["merged_at"]), "files": tuple(v["files"]), "issues": tuple(v["issues"]),
+                     "stats": tuple(FileStat(**s) for s in v.get("stats") or ()),
+                     "jobs": tuple(Job(**j) for j in v.get("jobs") or ()),
+                     "threads": tuple(ReviewThread(**{**t, "at": _when(t["at"])}) for t in v.get("threads") or ())})
+
+
 def load(pages_dir: Path) -> Sources:
     """The cache, or EMPTY when it is absent or unreadable."""
     try:
         d = json.loads((pages_dir / CACHE).read_text())
         return Sources({k: datetime.fromisoformat(v) for k, v in d["fetched"].items()},
                        {k: Issue(**{**v, "labels": tuple(v["labels"])}) for k, v in d["issues"].items()},
-                       {k: Change(**{**v, "merged_at": _when(v["merged_at"]), "files": tuple(v["files"]),
-                                     "issues": tuple(v["issues"])}) for k, v in d["changes"].items()},
+                       {k: _change_of(v) for k, v in d["changes"].items()},
                        tuple(Worker(**{**w, "started": _when(w["started"]), "last": _when(w["last"])})
                              for w in d["workers"]),
                        dict(d["errors"]))
@@ -134,6 +173,11 @@ def _graphql_errors(body) -> str:
     return "; ".join(str(e.get("message", e)) for e in body.get("errors") or [] if isinstance(e, dict))
 
 
+def _stats(files: list[dict]) -> tuple[FileStat, ...]:
+    return tuple(FileStat(f["path"], int(f.get("additions") or 0), int(f.get("deletions") or 0))
+                 for f in files if "additions" in f)
+
+
 # --- GitHub ----------------------------------------------------------------------------------------
 
 def _gh_change(key: str, p: dict, approver: str) -> Change:
@@ -142,13 +186,22 @@ def _gh_change(key: str, p: dict, approver: str) -> Change:
     commit = (((p.get("commits") or {}).get("nodes") or [{}])[0] or {}).get("commit") or {}
     checks = ((commit.get("statusCheckRollup") or {}).get("contexts") or {}).get("nodes") or []
     pipeline = _github_pipeline(checks)
+    runs = [c for c in checks if c.get("__typename") == "CheckRun"]
+    jobs = tuple(Job(c.get("name") or "", _github_pipeline([c]),
+                     int((_when(c["completedAt"]) - _when(c["startedAt"])).total_seconds())
+                     if c.get("startedAt") and c.get("completedAt") else None) for c in runs)
+    threads = tuple(ReviewThread(bool(t.get("isResolved")), (c.get("author") or {}).get("login") or "", c.get("body") or "",
+                                 _when(c.get("createdAt")), c.get("url") or "")
+                    for t in (p.get("reviewThreads") or {}).get("nodes") or []
+                    for c in ((t.get("comments") or {}).get("nodes") or [])[:1])
+    files = (p.get("files") or {}).get("nodes") or []
     approved = (_github_approval(reviews, approver, p.get("headRefOid", "")) == "approved" if approver
                 else p.get("reviewDecision") == "APPROVED")
     return Change(key, p["url"], p["title"], p["state"].lower(), bool(p.get("isDraft")),
                   None if pipeline == "none" else pipeline, approved,
                   sum(r.get("state") == "APPROVED" for r in reviews), _when(p.get("mergedAt")),
-                  p.get("baseRefName") or "", tuple(f["path"] for f in (p.get("files") or {}).get("nodes") or []),
-                  _closes(p.get("body")), p.get("headRefOid") or "")
+                  p.get("baseRefName") or "", tuple(f["path"] for f in files), _closes(p.get("body")),
+                  p.get("headRefOid") or "", _stats(files), jobs, p.get("mergeable") == "CONFLICTING", threads)
 
 
 def github(home: backlog.GitHubBacklog, wanted: dict[str, set[int]], since: datetime, approver: str, gh):
@@ -179,7 +232,8 @@ def github(home: backlog.GitHubBacklog, wanted: dict[str, set[int]], since: date
                 changes[key] = _gh_change(key, node, approver)
             else:
                 issues[key] = Issue(key, node["url"], node["title"], node["state"].lower(),
-                                    tuple(x["name"] for x in (node.get("labels") or {}).get("nodes") or []))
+                                    tuple(x["name"] for x in (node.get("labels") or {}).get("nodes") or []),
+                                    node.get("body") or "")
     for node in ((data.get("merged") or {}).get("nodes") or []):
         if node and _when(node.get("mergedAt")) and _when(node["mergedAt"]) >= since:
             changes.setdefault(f"#{node['number']}", _gh_change(f"#{node['number']}", node, approver))
@@ -199,11 +253,19 @@ def _gl_pipeline(status: str | None) -> str | None:
 def _gl_change(m: dict, approver: str) -> Change:
     by = {(u or {}).get("username") for u in (m.get("approvedBy") or {}).get("nodes") or []}
     state = {"opened": "open", "locked": "closed"}.get(m["state"], m["state"])
-    return Change(f"!{m['iid']}", m["webUrl"], m["title"], state, bool(m.get("draft")),
-                  _gl_pipeline((m.get("headPipeline") or {}).get("status")),
+    pipe = m.get("headPipeline") or {}
+    jobs = tuple(Job(j.get("name") or "", _gl_pipeline(j.get("status")) or "pending",
+                     None if j.get("duration") is None else int(j["duration"]))
+                 for j in (pipe.get("jobs") or {}).get("nodes") or [])
+    threads = tuple(ReviewThread(bool(d.get("resolved")), (n.get("author") or {}).get("username") or "", n.get("body") or "",
+                                 _when(n.get("createdAt")), n.get("url") or "")
+                    for d in (m.get("discussions") or {}).get("nodes") or [] if d.get("resolvable")
+                    for n in ((d.get("notes") or {}).get("nodes") or [])[:1])
+    return Change(f"!{m['iid']}", m["webUrl"], m["title"], state, bool(m.get("draft")), _gl_pipeline(pipe.get("status")),
                   approver in by if approver else bool(m.get("approved")), len(by), _when(m.get("mergedAt")),
                   m.get("targetBranch") or "", tuple(d["path"] for d in m.get("diffStats") or []),
-                  _closes(m.get("description")), m.get("diffHeadSha") or "")
+                  _closes(m.get("description")), m.get("diffHeadSha") or "", _stats(m.get("diffStats") or []), jobs,
+                  bool(m.get("conflicts")), threads)
 
 
 def gitlab(home: backlog.Backlog, wanted: dict[str, set[int]], mrs: set[int], since: datetime, approver: str, call):
@@ -234,7 +296,8 @@ def gitlab(home: backlog.Backlog, wanted: dict[str, set[int]], mrs: set[int], si
         for node in (p.get("issues") or {}).get("nodes") or []:
             key = backlog.IssueRef(project, int(node["iid"]), host).label(home)
             issues[key] = Issue(key, node["webUrl"], node["title"], {"opened": "open"}.get(node["state"], node["state"]),
-                                tuple(x["title"] for x in (node.get("labels") or {}).get("nodes") or []))
+                                tuple(x["title"] for x in (node.get("labels") or {}).get("nodes") or []),
+                                node.get("description") or "")
         for node in ((p.get("mergeRequests") or {}).get("nodes") or []) + ((p.get("merged") or {}).get("nodes") or []):
             changes.setdefault(f"!{node['iid']}", _gl_change(node, approver))
     return issues, changes, _graphql_errors(body)
