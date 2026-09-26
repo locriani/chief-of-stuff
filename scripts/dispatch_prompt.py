@@ -320,6 +320,9 @@ def compose(root: Path, day: str | None, task: str, worktree: Path | None = None
             'status: done', 'reason: "what was completed, or why human review is required"',
             'changes: "files changed, tests run, commit or PR if any"',
             "Use status: human_review if unfinished, including when you made partial changes. State the blocker and the partial changes plainly.",
+            ("Use status: relaunch only when the task's premise moved under you before you changed anything, such as its "
+             "base or target PR merged or was replaced, and a fresh run from current main would do the task as written. "
+             "Say what moved; the coordinator relaunches it."),
             "The launcher treats a missing or invalid result as human_review.",
         ]
         body = "\n".join(lines) + "\n"

@@ -111,11 +111,11 @@ class RunTest(unittest.TestCase):
         path.chmod(0o755)
         return path
 
-    def _run(self, fake: Path) -> int:
+    def _run(self, fake: Path, tree: Path | None = None) -> int:
         with mock.patch.object(one_shot, "resolve", return_value=str(fake)), \
              mock.patch.object(one_shot, "login_argv", side_effect=lambda argv: argv):
             return one_shot.run(root=self.root, day="2026-09-18", task="Security audit",
-                                cwd=self.tree, name="worker01", runtime="codex", agent_type=None,
+                                cwd=tree or self.tree, name="worker01", runtime="codex", agent_type=None,
                                 model="", effort="", dry_run=False)
 
     def test_done_exits_once_and_leaves_waiting_for_integration(self):
@@ -150,6 +150,45 @@ class RunTest(unittest.TestCase):
         self.assertEqual(self._run(fake), 1)
         self.assertIn("worktree is not clean", self.tracker.read_text())
         self.assertIn("partial.txt", self.tracker.read_text())
+
+    def test_relaunch_leaves_the_task_ready_and_the_user_out_of_it(self):
+        # A stop a fresh run fixes is the coordinator's to relaunch, not the user's to review (#68).
+        fake = self._fake('status: relaunch\nreason: target PR merged before work began\nchanges: none\n',
+                          write_partial=False)
+        with mock.patch.object(one_shot.kanban, "add_human_hold") as hold, \
+             mock.patch.object(one_shot.backlog, "comment") as comment:
+            self.assertEqual(self._run(fake), 1)
+        hold.assert_not_called()
+        comment.assert_not_called()
+        tracker = self.tracker.read_text()
+        self.assertIn("| Security audit | unassigned | open |", tracker)
+        self.assertIn("one-shot worker01: relaunch requested for Security audit — target PR merged", tracker)
+        self.assertNotIn("HUMAN REVIEW", tracker)
+        self.assertEqual(toon_decode((self.tree / one_shot.REPORT).read_text())["status"], "relaunch")
+
+    def test_the_assignment_offers_relaunch_for_a_moved_premise(self):
+        fake = self._fake('status: done\nreason: done\nchanges: checked\n', write_partial=False)
+        self._run(fake)
+        dispatch = (self.tree / ".chief-of-stuff/dispatch.md").read_text()
+        self.assertIn("status: relaunch", dispatch)
+        self.assertRegex(dispatch, r"(?i)status: relaunch[^\n]*before you changed anything[^\n]*merged")
+
+    def test_relaunch_with_changes_needs_review(self):
+        fake = self._fake('status: relaunch\nreason: base moved\nchanges: none\n')
+        self.assertEqual(self._run(fake), 1)
+        tracker = self.tracker.read_text()
+        self.assertIn("| Security audit | Robin | waiting |", tracker)
+        self.assertIn("asked to be relaunched but left changes", tracker)
+
+    def test_a_second_relaunch_of_one_task_needs_review(self):
+        fake = self._fake('status: relaunch\nreason: base moved\nchanges: none\n', write_partial=False)
+        self._run(fake)
+        again = self.root / "trees/worker-2"
+        subprocess.run(["git", "clone", "-q", str(self.tree), str(again)], check=True)
+        self.assertEqual(self._run(fake, again), 1)
+        tracker = self.tracker.read_text()
+        self.assertIn("| Security audit | Robin | waiting |", tracker)
+        self.assertIn("already relaunched once", tracker)
 
     def test_missing_result_reports_committed_partial_work(self):
         fake = self._fake(None, commit_partial=True)
