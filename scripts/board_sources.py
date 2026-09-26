@@ -49,6 +49,7 @@ GH_CHANGE = ("number url title state isDraft mergedAt baseRefName body headRefOi
              "reviewThreads(first: 100) { nodes { isResolved comments(first: 1) { nodes { author { login } body createdAt url } } } } "
              "commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes { __typename "
              "... on CheckRun { name status conclusion startedAt completedAt } ... on StatusContext { state } } } } } } }")
+GL_PAGE = 100  # the most nodes GitLab answers for one connection
 GL_ISSUE = "iid webUrl title state description labels { nodes { title } }"
 GL_CHANGE = ("iid webUrl title state draft mergedAt targetBranch description approved conflicts "
              "approvedBy { nodes { username } } headPipeline { status } diffStats { path additions deletions } diffHeadSha")
@@ -275,42 +276,59 @@ def _gl_change(m: dict, approver: str) -> Change:
 
 
 def gitlab(home: backlog.Backlog, wanted: dict[str, set[int]], mrs: set[int], since: datetime, approver: str, call):
-    """(issues, changes, error) from the host's /api/graphql, with the Backlog's token: one POST, and one more for open changes' jobs and threads."""
+    """(issues, changes, error) from the host's /api/graphql, with the Backlog's token: one POST, and one more for open changes' jobs and threads.
+    A connection answers at most GL_PAGE nodes, so past that the same query goes again for the next GL_PAGE iids and the next merged page."""
     secret = backlog.token(home)
     if not secret:
         return None, None, f"no token: set ${home.env} or add it to the Keychain as {home.service}"
     projects = sorted(set(wanted) | {home.project})
-    parts = []
-    for i, project in enumerate(projects):
-        fields = []
-        if wanted.get(project):
-            fields.append(f"issues(iids: {json.dumps([str(n) for n in sorted(wanted[project])])}) {{ nodes {{ {GL_ISSUE} }} }}")
-        if project == home.project:
-            if mrs:
-                fields.append(f"mergeRequests(iids: {json.dumps([str(n) for n in sorted(mrs)])}) {{ nodes {{ {GL_CHANGE} }} }}")
-            fields.append(f"merged: mergeRequests(state: merged, mergedAfter: {json.dumps(since.isoformat())}) "
-                          f"{{ nodes {{ {GL_CHANGE} }} }}")
-        parts.append(f"p{i}: project(fullPath: {json.dumps(project)}) {{ {' '.join(fields)} }}")
-    body, _, err = call("POST", f"{home.host.rstrip('/')}/api/graphql", secret, backlog.TIMEOUT,
-                        {"query": "query { " + " ".join(parts) + " }"})
-    if err or not isinstance(body, dict) or not isinstance(body.get("data"), dict):
-        return None, None, err or _graphql_errors(body if isinstance(body, dict) else {}) or "GitLab did not answer"
-    issues, changes = {}, {}
+    left = {project: sorted(wanted.get(project) or ()) for project in projects}
+    mrs, cursor = sorted(mrs), ""  # cursor: the merged page to ask for next, None once the last one is in
+    issues, changes, error = None, None, ""
     host = backlog.home_of(home)[0]
-    for i, project in enumerate(projects):
-        p = body["data"].get(f"p{i}") or {}
-        for node in (p.get("issues") or {}).get("nodes") or []:
-            key = backlog.IssueRef(project, int(node["iid"]), host).label(home)
-            issues[key] = Issue(key, node["webUrl"], node["title"], {"opened": "open"}.get(node["state"], node["state"]),
-                                tuple(x["title"] for x in (node.get("labels") or {}).get("nodes") or []),
-                                node.get("description") or "")
-        for node in ((p.get("mergeRequests") or {}).get("nodes") or []) + ((p.get("merged") or {}).get("nodes") or []):
-            changes.setdefault(f"!{node['iid']}", _gl_change(node, approver))
-    error = _graphql_errors(body)
+    while True:
+        parts = []
+        for i, project in enumerate(projects):
+            fields = []
+            if left[project]:
+                fields.append(f"issues(iids: {json.dumps([str(n) for n in left[project][:GL_PAGE]])}) {{ nodes {{ {GL_ISSUE} }} }}")
+            if project == home.project:
+                if mrs:
+                    fields.append(f"mergeRequests(iids: {json.dumps([str(n) for n in mrs[:GL_PAGE]])}) {{ nodes {{ {GL_CHANGE} }} }}")
+                if cursor is not None:
+                    after = f", after: {json.dumps(cursor)}" if cursor else ""
+                    fields.append(f"merged: mergeRequests(state: merged, mergedAfter: {json.dumps(since.isoformat())}{after}) "
+                                  f"{{ nodes {{ {GL_CHANGE} }} pageInfo {{ hasNextPage endCursor }} }}")
+            if fields:
+                parts.append(f"p{i}: project(fullPath: {json.dumps(project)}) {{ {' '.join(fields)} }}")
+        if not parts:
+            break
+        body, _, err = call("POST", f"{home.host.rstrip('/')}/api/graphql", secret, backlog.TIMEOUT,
+                            {"query": "query { " + " ".join(parts) + " }"})
+        if err or not isinstance(body, dict) or not isinstance(body.get("data"), dict):
+            err = err or _graphql_errors(body if isinstance(body, dict) else {}) or "GitLab did not answer"
+            if issues is None:
+                return None, None, err
+            return issues, changes, error or err  # a later page failed: the board keeps what the first ones gave
+        issues, changes = issues or {}, changes or {}
+        for i, project in enumerate(projects):
+            p = body["data"].get(f"p{i}") or {}
+            for node in (p.get("issues") or {}).get("nodes") or []:
+                key = backlog.IssueRef(project, int(node["iid"]), host).label(home)
+                issues[key] = Issue(key, node["webUrl"], node["title"], {"opened": "open"}.get(node["state"], node["state"]),
+                                    tuple(x["title"] for x in (node.get("labels") or {}).get("nodes") or []),
+                                    node.get("description") or "")
+            for node in ((p.get("mergeRequests") or {}).get("nodes") or []) + ((p.get("merged") or {}).get("nodes") or []):
+                changes.setdefault(f"!{node['iid']}", _gl_change(node, approver))
+            left[project] = left[project][GL_PAGE:]
+        info = (((body["data"].get(f"p{projects.index(home.project)}") or {}).get("merged") or {}).get("pageInfo") or {})
+        cursor = info.get("endCursor") if info.get("hasNextPage") else None
+        mrs = mrs[GL_PAGE:]
+        error = error or _graphql_errors(body)
     opened = sorted(int(k[1:]) for k, c in changes.items() if c.state == "open")
-    if opened:
+    for start in range(0, len(opened), GL_PAGE):
         query = (f"query {{ p0: project(fullPath: {json.dumps(home.project)}) {{ "
-                 f"mergeRequests(iids: {json.dumps([str(n) for n in opened])}) {{ nodes {{ {GL_DETAIL} }} }} }} }}")
+                 f"mergeRequests(iids: {json.dumps([str(n) for n in opened[start:start + GL_PAGE]])}) {{ nodes {{ {GL_DETAIL} }} }} }} }}")
         body, _, err = call("POST", f"{home.host.rstrip('/')}/api/graphql", secret, backlog.TIMEOUT, {"query": query})
         if err or not isinstance(body, dict) or not isinstance(body.get("data"), dict):
             # The board still renders the changes without their jobs and threads.

@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -344,6 +345,99 @@ class GitLabStageTwoTest(unittest.TestCase):
         # C1: Issue gains body, from GitLab description.
         self.assertEqual(self.refresh().issues["#115"].body, "## Acceptance\n- [x] pages hold\n")
         self.assertIn("description", self.query.split("issues(", 1)[1].split("mergeRequests(", 1)[0])
+
+
+class FakeGitLab:
+    """GitLab's /api/graphql as far as paging goes: a connection answers at most 100 nodes, from `after:` (a
+    cursor it gave in pageInfo) for `first:` nodes, and pageInfo only when the query asks for it. Aliases,
+    literal arguments and $variables; every project holds the same issues and merge requests."""
+
+    PAGE = 100
+    PROJECT = re.compile(r'(?:(\w+)\s*:\s*)?project\s*\(\s*fullPath\s*:\s*("[^"]*"|\$\w+)\s*\)')
+    CONNECTION = re.compile(r"(?:(\w+)\s*:\s*)?\b(issues|mergeRequests)\s*\(([^)]*)\)")
+    ARG = re.compile(r'(\w+)\s*:\s*(\[[^\]]*\]|"[^"]*"|\$\w+|[\w.-]+)')
+
+    def __init__(self, issues=(), mrs=()):
+        self.nodes = {"issues": list(issues), "mergeRequests": list(mrs)}
+        self.queries = []
+
+    def __call__(self, method, url, token, timeout, payload=None):
+        query, variables = payload["query"], payload.get("variables") or {}
+        self.queries.append(query)
+        starts = list(self.PROJECT.finditer(query)) + [None]
+        data = {}
+        for m, nxt in zip(starts, starts[1:]):
+            project = data.setdefault(m[1] or "project", {})
+            for c in self.CONNECTION.finditer(query, m.end(), nxt.start() if nxt else len(query)):
+                project[c[1] or c[2]] = self.page(c[2], self.args(c[3], variables), "pageInfo" in query)
+        return {"data": data}, {}, ""
+
+    def args(self, text, variables):
+        return {name: (variables.get(value[1:]) if value.startswith("$")
+                       else json.loads(value) if value[0] in '["' or value.isdigit() else value)
+                for name, value in self.ARG.findall(text)}
+
+    def page(self, kind, args, page_info):
+        nodes = self.nodes[kind]
+        if args.get("iids") is not None:
+            wanted = {str(n) for n in args["iids"]}
+            nodes = [n for n in nodes if n["iid"] in wanted]
+        if args.get("state"):
+            nodes = [n for n in nodes if n["state"] == str(args["state"]).lower()]
+        if args.get("mergedAfter"):
+            after = datetime.fromisoformat(args["mergedAfter"])
+            nodes = [n for n in nodes if n.get("mergedAt") and datetime.fromisoformat(n["mergedAt"]) >= after]
+        start = int(args["after"]) if args.get("after") else 0
+        size = min(int(args.get("first") or self.PAGE), self.PAGE)
+        got = {"nodes": nodes[start:start + size]}
+        if page_info:
+            got["pageInfo"] = {"hasNextPage": start + size < len(nodes), "endCursor": str(start + size)}
+        return got
+
+
+def gl_issue(iid):
+    return {"iid": str(iid), "webUrl": f"https://labs.example.test/team/app/-/issues/{iid}", "title": f"Issue {iid}",
+            "state": "opened", "labels": {"nodes": []}, "description": ""}
+
+
+def gl_mr(iid, merged_at=None):
+    return {"iid": str(iid), "webUrl": f"https://labs.example.test/team/app/-/merge_requests/{iid}", "title": f"MR {iid}",
+            "state": "merged" if merged_at else "opened", "draft": False, "mergedAt": merged_at, "targetBranch": "main",
+            "description": "", "approved": False, "approvedBy": {"nodes": []}, "headPipeline": None, "diffStats": [],
+            "diffHeadSha": HEAD}
+
+
+class GitLabPastOnePageTest(unittest.TestCase):
+    """GitLab answers at most 100 nodes a connection page; the board wants every issue and change the tracker names."""
+
+    def refresh(self, rows, gitlab):
+        root = workspace("GitLab issues; host https://labs.example.test; project team/app")
+        head = TRACKER.split("| Rate limit |", 1)[0]
+        (root / "daily" / f"{DAY}-tracker.md").write_text(
+            head + "".join(f"| Task {k} | Item {k} | Robin | waiting | 01:00 |  | S | {issue} | {mr} |\n"
+                           for k, (issue, mr) in enumerate(rows)))
+        with mock.patch.dict(os.environ, {"CHIEF_OF_STUFF_GITLAB_TOKEN": "tok"}):
+            got = bs.refresh(root, NOW, call=gitlab)
+        self.assertEqual(got.errors, {})
+        return got
+
+    def test_every_named_issue_past_the_first_hundred(self):
+        iids = range(1001, 1151)
+        got = self.refresh([(f"#{n}", "") for n in iids], FakeGitLab(issues=[gl_issue(n) for n in range(1001, 1301)]))
+        self.assertEqual(len(got.issues), 150)
+        self.assertEqual(sorted(got.issues), sorted(f"#{n}" for n in iids))
+
+    def test_every_named_change_past_the_first_hundred(self):
+        iids = range(2001, 2151)
+        got = self.refresh([("", f"!{n}") for n in iids], FakeGitLab(mrs=[gl_mr(n) for n in range(2001, 2301)]))
+        self.assertEqual(len(got.changes), 150)
+        self.assertEqual(sorted(got.changes), sorted(f"!{n}" for n in iids))
+
+    def test_every_change_merged_today_past_the_first_hundred(self):
+        merged = [gl_mr(n, f"{DAY}T06:{n % 60:02d}:00+00:00") for n in range(3001, 3131)]
+        got = self.refresh([("#1001", "")], FakeGitLab(issues=[gl_issue(1001)], mrs=merged))
+        self.assertEqual(len(got.changes), 130)
+        self.assertEqual(sorted(got.changes), sorted(f"!{n}" for n in range(3001, 3131)))
 
 
 class WorkersTest(unittest.TestCase):
