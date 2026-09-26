@@ -266,6 +266,61 @@ class RunTest(unittest.TestCase):
         self.assertIn("partial.txt", report["changes"])
         self.assertIn("partial", report["changes"])
 
+    # The run launches on 2026-09-18 and ends at 00:30 on 2026-09-19 (#93).
+    END_TRACKER = "daily/2026-09-19-tracker.md"
+
+    def _run_past_midnight(self, fake: Path) -> int:
+        class Frozen(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime(2026, 9, 19, 0, 30, tzinfo=ZoneInfo("America/Chicago")).astimezone(tz)
+
+        with mock.patch.object(one_shot, "datetime", Frozen):
+            return self._run(fake)
+
+    def _rolled_over(self, log: str = "") -> Path:
+        """The end day's tracker as the midnight rollover leaves it: the row carried over, still running."""
+        end = self.root / self.END_TRACKER
+        end.write_text(TRACKER.replace("| unassigned | open |", "| worker01 | running 23:50 |")
+                       .replace("- 09:00 opened\n", "- 00:00 rolled over\n" + log))
+        return end
+
+    def test_a_run_ending_after_midnight_lands_on_the_end_days_row(self):
+        end = self._rolled_over()
+        fake = self._fake('status: done\nreason: completed audit\nchanges: committed handler\n',
+                          write_partial=False)
+        self.assertEqual(self._run_past_midnight(fake), 0)
+        self.assertIn("| Security audit | Robin | waiting |", end.read_text())
+        self.assertIn("completed; awaiting integration", end.read_text())
+        self.assertEqual(self.tracker.read_text(), (self.root / "during.md").read_text(),
+                         "the launch day's tracker is untouched by the result")
+
+    def test_a_run_ending_after_midnight_with_no_end_day_tracker_lands_on_the_launch_days_row(self):
+        fake = self._fake('status: done\nreason: completed audit\nchanges: committed handler\n',
+                          write_partial=False)
+        self.assertEqual(self._run_past_midnight(fake), 0)
+        self.assertIn("| Security audit | Robin | waiting |", self.tracker.read_text())
+        self.assertIn("completed; awaiting integration", self.tracker.read_text())
+        self.assertFalse((self.root / self.END_TRACKER).exists())
+
+    def test_a_run_ending_after_midnight_whose_row_is_not_on_the_end_day_lands_on_the_launch_days_row(self):
+        end = self.root / self.END_TRACKER
+        end.write_text(TRACKER.replace("Security audit", "Export header"))
+        fake = self._fake('status: done\nreason: completed audit\nchanges: committed handler\n',
+                          write_partial=False)
+        self.assertEqual(self._run_past_midnight(fake), 0)
+        self.assertIn("| Security audit | Robin | waiting |", self.tracker.read_text())
+        self.assertIn("completed; awaiting integration", self.tracker.read_text())
+        self.assertEqual(end.read_text(), TRACKER.replace("Security audit", "Export header"))
+
+    def test_the_relaunch_once_check_reads_the_tracker_the_result_goes_to(self):
+        end = self._rolled_over("- 00:10 one-shot worker00: relaunch requested for Security audit — base moved.\n")
+        fake = self._fake('status: relaunch\nreason: base moved again\nchanges: none\n', write_partial=False)
+        self.assertEqual(self._run_past_midnight(fake), 1)
+        self.assertIn("| Security audit | Robin | waiting |", end.read_text())
+        self.assertIn("already relaunched once", end.read_text())
+        self.assertEqual(self.tracker.read_text(), (self.root / "during.md").read_text())
+
     def _cap(self, n: int) -> None:
         (self.root / "CLAUDE.md").write_text(CLAUDE + "- Settings: `cos.toml`\n")
         (self.root / "cos.toml").write_text(f"[workers]\nmode = \"one-shot\"\nmax_concurrency = {n}\n")
