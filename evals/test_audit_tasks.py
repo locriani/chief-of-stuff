@@ -1052,11 +1052,11 @@ class GitLabIssueAuditTest(unittest.TestCase):
         with patch.object(bl, "issues", fake):
             report = al.audit(root, "2026-09-17", gh=FakeGh(LIVE))
         self.assertEqual([str(f) for f in report.issues], [
-            "issue: Bare — no issue; file it with backlog.py --create",
+            "issue: Bare — no issue; file it with chief-of-stuff backlog --create",
             'issue: Garbled — "TBD" is not an issue reference',
             "issue: Closed under it — #5 is closed",
             "issue: Missing — #6 not found in o/backlog",
-            "issue: Done open — done but #7 is open; backlog.py --close 7 --commit",
+            "issue: Done open — done but #7 is open; chief-of-stuff backlog --close 7 --commit",
         ])
 
 
@@ -1109,11 +1109,11 @@ class IssueAuditTest(unittest.TestCase):
         report = self.run_audit(FakeGh(LIVE))
         got = [str(f) for f in report.issues]
         self.assertEqual(got, [
-            "issue: Bare — no issue; file it with backlog.py --create",
+            "issue: Bare — no issue; file it with chief-of-stuff backlog --create",
             'issue: Garbled — "TBD" is not an issue reference',
             "issue: Closed under it — #5 is closed",
             "issue: Missing — #6 not found in o/backlog",
-            "issue: Done open — done but #7 is open; backlog.py --close 7 --commit",
+            "issue: Done open — done but #7 is open; chief-of-stuff backlog --close 7 --commit",
         ])
         for line in got:
             self.assertIn(line, report.lines)
@@ -1154,6 +1154,24 @@ class IssueAuditTest(unittest.TestCase):
         gh = FakeGh(LIVE)
         self.assertEqual(al.main(["--root", str(self.root), "--date", "2026-09-17", "--no-issues"], gh=gh), 0)
         self.assertEqual(gh.calls, [])
+
+
+class IssueClosesAtLaneEndTest(unittest.TestCase):
+    """A done row mid-lane is one stage of its issue's work; the issue closes when its card reaches the lane's end."""
+
+    def test_only_a_row_done_at_the_last_stage_asks_to_close(self):
+        tmp, root = issue_workspace(ISSUE_CLAUDE + "- Settings: `cos.toml`\n")
+        self.addCleanup(tmp.cleanup)
+        (root / "cos.toml").write_text(LANE_TOML)
+        (root / "daily" / "2026-09-17-tracker.md").write_text(
+            "# Tracker 2026-09-17\n\n## Tasks\n\n"
+            "| name | item | owner | state | since | due | size | lane | stage | issue | checklist |\n"
+            "|---|---|---|---|---|---|---|---|---|---|---|\n"
+            "| Review done | Review the change | a | done 09:00–10:00 | 09:00 | | S | build | review | #7 | c |\n"
+            "| Merged | Merge the change | a | done 10:00–10:30 | 10:00 | | S | build | merge | #8 | c |\n\n## Log\n")
+        report = al.audit(root, "2026-09-17", gh=FakeGh(LIVE))
+        self.assertEqual([str(f) for f in report.issues],
+                         ["issue: Merged — done but #8 is open; chief-of-stuff backlog --close 8 --commit"])
 
 
 LANE_CLAUDE = CLAUDE + "- Settings: `cos.toml`\n"

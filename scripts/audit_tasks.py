@@ -117,7 +117,7 @@ class IssueFault:
         return f"issue: {self.task} — {self.why}"
 
 
-def issue_faults(tasks, home: Backlog | GitHubBacklog, gh=None) -> list[IssueFault]:
+def issue_faults(tasks, home: Backlog | GitHubBacklog, gh=None, lanes: dict | None = None) -> list[IssueFault]:
     """Compare task issues with one issue-list request per repository."""
     refs = {}
     faults: list[IssueFault] = []
@@ -149,9 +149,15 @@ def issue_faults(tasks, home: Backlog | GitHubBacklog, gh=None) -> list[IssueFau
             faults.append(IssueFault(name, f"{tag} not found in {ref.repo}"))
         elif task.needs_issue and found.state == CLOSED:
             faults.append(IssueFault(name, f"{tag} is closed"))
-        elif task.kind == "done" and found is not None and found.state != CLOSED:
-            faults.append(IssueFault(name, f"done but {tag} is open; backlog.py --close {ref.number} --commit"))
+        elif task.kind == "done" and found is not None and found.state != CLOSED and _ends_issue(task, lanes or {}):
+            faults.append(IssueFault(name, f"done but {tag} is open; chief-of-stuff backlog --close {ref.number} --commit"))
     return faults
+
+
+def _ends_issue(task, lanes: dict) -> bool:
+    """A laned row closes its issue only at the lane's last stage; a review done mid-lane leaves it open."""
+    lane = lanes.get(task.lane.strip())
+    return lane is None or task.stage.strip() == lane.stages[-1]
 
 
 @dataclass(frozen=True)
@@ -711,14 +717,14 @@ def audit(root: Path, day: str, gh=None, check_issues: bool = True, now: datetim
     report.lines.extend(queue_lines)
     report.lines.extend(str(q) for q in report.queue)
     issues = ""
+    settings = load_settings(root, cfg.settings_path)
     if cfg.backlog:
         if check_issues:
-            report.issues.extend(issue_faults(tasks, cfg.backlog, gh))
+            report.issues.extend(issue_faults(tasks, cfg.backlog, gh, settings.lanes))
             report.lines.extend(str(f) for f in report.issues)
             issues = f" issues={len(report.issues)}"
         else:
             issues = " issues=off"
-    settings = load_settings(root, cfg.settings_path)
     report.lanes.extend(lane_faults(tasks, settings.lanes, cfg.settings_path))
     if settings.kanban and cfg.backlog and check_issues:
         report.kanban.extend(kanban_faults(tasks, cfg.backlog, settings.kanban, gh=gh))

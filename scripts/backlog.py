@@ -339,7 +339,7 @@ def home_of(cfg: Backlog | GitHubBacklog) -> tuple[str, str]:
 
 def file_with(cfg: Backlog | GitHubBacklog) -> str:
     """The command that files an issue in this backlog, for a fault line to name."""
-    return "backlog.py --create"
+    return "chief-of-stuff backlog --create"
 
 
 @dataclass(frozen=True)
