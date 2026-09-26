@@ -324,6 +324,15 @@ class IssueRowTest(unittest.TestCase):
         self.assertEqual(starts, sorted(starts))
         self.assertEqual([g.category for g in row.segments][:4], ["implement", "pr", "review", "triage"])
 
+    def test_a_task_with_no_segment_still_merges(self):
+        # A task whose only move is its lane's last stage draws no segment; its issue row still renders.
+        text = REVIEW_LOOP.replace("| Trim cache | Trim | w5 | running 00:45 | 2026-09-26 |  | S |  |  |  | c |",
+                                   "| Land docs | Land | w6 | done 01:00 | 2026-09-26 |  | S | build | main | #307 | c |")
+        text = tw.append_log(text, "- 01:00 stage: Land docs → main")
+        got = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(), {}, NOW)
+        self.assertEqual(len([r for _, r in got if r.ref == "#307"]), 1)
+        fc.section(got, NOW)
+
     def test_tasks_without_an_issue_keep_a_row_each(self):
         names = [r.name for _, r in self.built() if not r.ref]
         self.assertEqual(sorted(names), ["Tidy config", "Trim cache"])
