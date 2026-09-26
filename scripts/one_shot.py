@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 import re
 import shlex
@@ -82,7 +83,10 @@ def worker_result(path: Path, exit_code: int) -> tuple[str, str, str]:
     try:
         data = toon_decode(raw)
     except (ToonDecodeError, ValueError, TypeError) as exc:
-        return "human_review", f"worker wrote an unreadable TOON result ({exc}); exit {exit_code}: {_brief(raw)}", ""
+        try:  # some workers write JSON instead of TOON (#154); same fields either way
+            data = json.loads(raw)
+        except ValueError:
+            return "human_review", f"worker wrote an unreadable TOON result ({exc}); exit {exit_code}: {_brief(raw)}", ""
     if not isinstance(data, dict) or data.get("status") not in ("done", "human_review", "relaunch") or any(
         not isinstance(data.get(k), str) or not data[k].strip() for k in ("reason", "changes")
     ):
