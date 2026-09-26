@@ -19,10 +19,10 @@ MAX_TICKS = 13
 MIN_WIDTH = 0.5
 KIND = re.compile(r"[a-z][a-z0-9-]*")
 COLOUR = re.compile(r"[#\w(),.%/ -]+")  # a colour or var(); nothing that ends a declaration or a rule
-# Okabe-Ito. A tuple is (fill, edge): the yellow needs a dark edge to read on parchment.
+# Okabe-Ito. A tuple is (fill, edge), for a fill too pale to read on the background, as the yellow is.
 PALETTE: dict[str, str | tuple[str, str]] = {
     "implement": "#0072B2", "pr": "#56B4E9", "review": "#009E73", "triage": "#E69F00",
-    "fix": "#D55E00", "verify": "#CC79A7", "merge": ("#F0E442", "#8a7a1a"),
+    "fix": "#D55E00", "verify": "#CC79A7", "merge": "#000000",
 }
 
 

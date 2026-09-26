@@ -157,14 +157,14 @@ class Palette(unittest.TestCase):
     def test_the_default_palette_is_okabe_ito(self) -> None:
         self.assertEqual(gantt.PALETTE, {
             "implement": "#0072B2", "pr": "#56B4E9", "review": "#009E73", "triage": "#E69F00",
-            "fix": "#D55E00", "verify": "#CC79A7", "merge": ("#F0E442", "#8a7a1a"),
+            "fix": "#D55E00", "verify": "#CC79A7", "merge": "#000000",
         })
 
     def test_the_css_colours_each_category_by_attribute(self) -> None:
         self.assertIn('[data-cat="implement"]{--c:#0072B2;--e:#0072B2}', gantt.css())
 
     def test_an_edge_colour_is_its_own(self) -> None:
-        self.assertIn('[data-cat="merge"]{--c:#F0E442;--e:#8a7a1a}', gantt.css())
+        self.assertIn('[data-cat="pale"]{--c:#F0E442;--e:#8a7a1a}', gantt.css({"pale": ("#F0E442", "#8a7a1a")}))
 
     def test_a_custom_palette_colours_its_own_categories(self) -> None:
         sheet = gantt.css({"alpha": "#123456"})
