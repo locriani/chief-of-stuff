@@ -397,16 +397,22 @@ def main(argv: list[str] | None = None) -> int:
         print(f"decision: no page — {e}", file=sys.stderr)
         return 1
     try:
-        source = Path(args.source) if args.source else pages_dir / f"decision-{args.name}.json"
-        page = render(parse(json.loads(source.read_text())), args.date, forge(Path(args.root)), Path(args.root),
-                      context(Path(args.root), args.date), args.name, source.stat().st_mtime)
+        write(Path(args.root), pages_dir, args.name, args.date, Path(args.source) if args.source else None)
     except (OSError, json.JSONDecodeError, DecisionError, KeyError, TypeError, AttributeError) as e:
         print(f"decision: {e}", file=sys.stderr)
         return 2
-    pages_dir.mkdir(parents=True, exist_ok=True)
-    (pages_dir / f"decision-{args.name}.html").write_text(page)
     print(f"http://127.0.0.1:{port}/decision-{args.name}.html")
     return 0
+
+
+def write(root: Path, pages_dir: Path, name: str, day: str, source: Path | None = None) -> Path:
+    """Render `decision-<name>.json` (or `source`) to `decision-<name>.html`; the page server calls this in process."""
+    source = source or pages_dir / f"decision-{name}.json"
+    page = render(parse(json.loads(source.read_text())), day, forge(root), root, context(root, day), name, source.stat().st_mtime)
+    pages_dir.mkdir(parents=True, exist_ok=True)
+    out = pages_dir / f"decision-{name}.html"
+    out.write_text(page)
+    return out
 
 
 PAGE_REF = re.compile(r"decision-[a-z0-9]+(?:-[a-z0-9]+)*")

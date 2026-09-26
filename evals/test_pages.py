@@ -6,11 +6,15 @@ import http.server
 import os
 import signal
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import pages as pg  # noqa: E402
@@ -112,6 +116,149 @@ class EnsureTest(unittest.TestCase):
         self.addCleanup(other.shutdown)
         with self.assertRaisesRegex(pg.PagesError, f"{self.port}.*not the pages server"):
             pg.ensure(self.dir, self.port, self.log)
+
+    def test_an_older_server_is_restarted(self):
+        # A server started before `--root` existed never renders; `--ensure` replaces it, by its pid file.
+        self.addCleanup(self.stop)
+        old = start_old_server(self.dir, self.port)
+        self.addCleanup(old.kill)
+        (self.dir / ".pid").write_text(str(old.pid))
+        self.assertEqual(pg.ensure(self.dir, self.port, self.log), "pages: restarted")
+        self.assertIsNotNone(old.wait(timeout=5))
+        self.assertIn(f"{pg.SERVER}/{pg.VERSION}", pg._who(self.port))
+
+    def test_an_older_server_is_stopped_only_by_its_own_pid(self):
+        old = start_old_server(self.dir, self.port)
+        self.addCleanup(old.kill)
+        other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        self.addCleanup(other.kill)
+        (self.dir / ".pid").write_text(str(other.pid))
+        with self.assertRaisesRegex(pg.PagesError, "not it"):
+            pg.ensure(self.dir, self.port, self.log)
+        self.assertIsNone(other.poll())
+        self.assertIsNone(old.poll())
+
+
+OLD_SERVER = """import functools, http.server, sys
+class H(http.server.SimpleHTTPRequestHandler):
+    server_version = "chief-of-stuff-pages"
+http.server.ThreadingHTTPServer(("127.0.0.1", int(sys.argv[5])), functools.partial(H, directory=sys.argv[3])).serve_forever()
+"""
+
+
+def start_old_server(pages: Path, port: int) -> subprocess.Popen:
+    script = Path(tempfile.mkdtemp()) / "pages.py"
+    script.write_text(OLD_SERVER)
+    proc = subprocess.Popen([sys.executable, str(script), "serve", "--dir", str(pages), "--port", str(port)],
+                            stderr=subprocess.DEVNULL)
+    for _ in range(50):
+        if pg._who(port) is not None:
+            return proc
+        time.sleep(0.1)
+    raise AssertionError("old server did not start")
+
+
+ZONE = "America/Chicago"
+TRACKER = """# Tracker {day}
+
+## Tasks
+
+| item | owner | state | since | due | checklist |
+|---|---|---|---|---|---|
+| {task} | Robin | open | 09:00 |  | Checklist: {task} |
+
+## Decisions
+
+| time | item | Robin's words |
+|---|---|---|
+
+## Log
+
+- 09:00 opened the day
+"""
+
+
+class RenderOnRequestTest(unittest.TestCase):
+    """The agent never renders: a GET re-renders the page its sources outdate (the user, 2026-09-26: "I want to
+    make the page render automatically using scripts and stuff instead of the agent pulling in data each time")."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.day = datetime.now(ZoneInfo(ZONE)).date().isoformat()
+        (self.root / "CLAUDE.md").write_text(
+            "## Coordinator\n- User: Robin\n- Daily log dir: `daily/`\n- Tracker: `daily/<date>-tracker.md`\n"
+            f"- Timezone: {ZONE}\n- Board: self-hosted; URL http://127.0.0.1:8765/; dir `pages/`\n"
+            "- Settings: `cos.toml`\n")
+        (self.root / "daily").mkdir()
+        self.tracker = self.root / "daily" / f"{self.day}-tracker.md"
+        self.tracker.write_text(TRACKER.format(day=self.day, task="Security audit"))
+        self.pages = self.root / "pages"
+        self.pages.mkdir()
+        self.calls = []
+        self.server = pg.make_server(self.pages, 0, root=self.root, refresh=self.fake_refresh, every=3600)
+        self.port = self.server.server_address[1]
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+
+    def fake_refresh(self, root, now):
+        self.calls.append(now)
+        import board_sources
+        return board_sources.refresh(root, now)
+
+    def board(self) -> Path:
+        return self.pages / f"{self.day}-board.html"
+
+    def test_root_renders_todays_board_and_rerenders_after_a_tracker_edit(self):
+        self.assertIn(b"Security audit", get(self.port, "/").body)
+        self.tracker.write_text(TRACKER.format(day=self.day, task="Draft release notes"))
+        self.assertIn(b"Draft release notes", get(self.port, f"/{self.day}-board.html").body)
+        self.assertTrue((self.pages / "decisions.html").is_file())
+
+    def test_an_unchanged_page_is_served_as_written(self):
+        get(self.port, "/")
+        before = self.board().stat().st_mtime_ns
+        resp = get(self.port, "/", method="HEAD")
+        self.assertEqual((resp.status, self.board().stat().st_mtime_ns), (200, before))
+
+    def test_a_render_error_keeps_the_last_good_page_with_a_banner(self):
+        get(self.port, "/")
+        (self.root / "cos.toml").write_text("[lanes\n")
+        resp = get(self.port, "/")
+        self.assertEqual(resp.status, 200)
+        self.assertIn(b"Security audit", resp.body)
+        self.assertIn(b"not re-rendered", resp.body)
+        self.assertIn(b'role="alert"', resp.body)
+
+    def test_a_decision_page_renders_from_its_json(self):
+        (self.pages / "decision-cache-ttl.json").write_text(
+            '{"headline": "Cache TTL", "ask": "Keep 5 minutes?", "options": [{"key": "A", "title": "Keep", '
+            '"text": "no change"}, {"key": "B", "title": "Drop", "text": "slower"}], "recommended": "A", "why": "fine", "default": "A at 17:00"}')
+        resp = get(self.port, "/decision-cache-ttl.html")
+        self.assertEqual(resp.status, 200)
+        self.assertIn(b"Cache TTL", resp.body)
+        self.assertIn(b"Cache TTL", get(self.port, "/decisions.html").body)
+
+    def test_dotfiles_and_foreign_hosts_are_still_refused(self):
+        self.assertEqual(get(self.port, "/.sources.json").status, 404)
+        self.assertEqual(get(self.port, "/", host="evil.test").status, 403)
+
+    def test_the_refresher_writes_the_cache_and_a_stale_cache_wakes_it(self):
+        cache = self.pages / ".sources.json"
+        for _ in range(50):
+            if cache.is_file():
+                break
+            time.sleep(0.05)
+        self.assertTrue(cache.is_file())
+        self.assertEqual(len(self.calls), 1)
+        old = time.time() - 7200
+        os.utime(cache, (old, old))
+        get(self.port, "/")
+        for _ in range(50):
+            if len(self.calls) > 1:
+                break
+            time.sleep(0.05)
+        self.assertEqual(len(self.calls), 2)
 
 
 if __name__ == "__main__":

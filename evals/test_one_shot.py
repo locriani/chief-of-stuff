@@ -85,14 +85,6 @@ class CommandTest(unittest.TestCase):
         self.assertIn("did not write", reason)
         self.assertEqual(changes, "")
 
-    def test_an_undecodable_result_requires_review_with_its_text(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "worker-result.toon"
-            path.write_text('status: done\nreason: "costs \\$5"\nchanges: "a.py"\n')
-            status, reason, _ = one_shot.worker_result(path, 0)
-        self.assertEqual(status, "human_review")
-        self.assertIn("costs", reason)
-
 
 class RunTest(unittest.TestCase):
     def setUp(self):

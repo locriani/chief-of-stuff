@@ -40,6 +40,7 @@ COMMANDS = {
     "log": "scripts/tracker_write.py",
     "merge-approved": "scripts/merge_approved.py",
     "review-threads": "scripts/review_threads.py",
+    "sources": "scripts/board_sources.py",
 }
 
 
