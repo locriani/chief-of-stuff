@@ -24,6 +24,7 @@ from settings import Kanban, SettingsError, load as load_settings  # noqa: E402
 import board_sources  # noqa: E402
 import columns  # noqa: E402
 import decision_page  # noqa: E402
+import flow_chart  # noqa: E402
 import gantt  # noqa: E402
 import panels  # noqa: E402
 
@@ -1701,6 +1702,17 @@ def stage_order(lanes: dict) -> list[str]:
     return order
 
 
+def held(task: Task, kanban: Kanban | None) -> bool:
+    return kanban is not None and kanban.holds(task.stage.strip())
+
+
+def queue_durations(active: list[Task], hist: dict[str, tuple[timedelta, int]]) -> dict[str, timedelta]:
+    """By item, the mean time closed tasks of each task's size took, as `estimates` reads it; empty with no history."""
+    if not hist:
+        return {}
+    return {t.item: (hist[size] if (size := t.size.strip().upper()) and size in hist else hist[ALL_SIZES])[0] for t in active}
+
+
 TRAILING_NUMBER = re.compile(r"(\d+)\s*$")
 PIPELINE_MARK = {"passed": "passed", "failed": "failed", "running": "pending", "pending": "pending"}
 
@@ -1748,13 +1760,12 @@ def build_columns(tasks: list[Task], lanes: dict | None, kanban: Kanban | None =
     gates = {g for lane in lanes.values() for g in lane.gates}
 
     def card(task: Task) -> columns.Card:
-        held = kanban is not None and kanban.holds(task.stage.strip())
         changes = task_changes(task, sources)
         issue = issue_key(task.issue) if changes or issue_key(task.issue) in sources.issues else task.issue.strip()
         refs = " · ".join([issue] * bool(issue) + [c.ref for c in changes])
         marks = change_marks(changes) + ((columns.Mark("drift", "drift"),) if drifts(task, kanban, sources) else ())
         return columns.Card(task.label, task.kind, refs, task.owner, task.state, marks,
-                            flag=columns.Mark("ON HOLD", "hold") if held else None)
+                            flag=columns.Mark("ON HOLD", "hold") if held(task, kanban) else None)
 
     laned = [t for t in tasks if t.lane.strip() and t.stage.strip()]
     order = list(dict.fromkeys(stage_order(lanes) + [t.stage.strip() for t in laned]))
@@ -1854,7 +1865,9 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime,
            requirements: dict[str, str | None] | None = None, lanes: dict | None = None,
            tracker_day: date | None = None, decisions: list[tuple[str, dict | Exception]] | None = None,
            kanban: Kanban | None = None, sources: board_sources.Sources = board_sources.EMPTY, answered: int = 0,
-           tracker_at: datetime | None = None) -> str:
+           tracker_at: datetime | None = None, stage_log: list[tuple[date, str]] | None = None, slots: int = 1) -> str:
+    """`stage_log` is (day, tracker text) for the earlier days the Flow charts reach back over; `slots` is how many
+    queued tasks run at once, `[workers] max_concurrency`."""
     cfg = with_decision_deadlines(cfg, tracker_text, tracker_day or now.date())
     sha = hashlib.sha256(tracker_text.encode()).hexdigest()
     tracker = parse_tracker(tracker_text)
@@ -1880,7 +1893,8 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime,
     # before the axis draws clamped-left, as a carried bar always has.
     hour = now.replace(minute=0, second=0, microsecond=0)
     axis_a, axis_b = hour - DAY_BEHIND, hour + DAY_AHEAD
-    est = estimates(active, cfg, now, history(tasks, cfg, now))
+    hist = history(tasks, cfg, now)
+    est = estimates(active, cfg, now, hist)
     day_bars, day_folded = today_rows(active, cfg, now, axis_b, est, gantt.tick_step(axis_b - axis_a, MAX_TICKS))
     day_ticks = gantt.ticks(axis_a, axis_b, gantt.tick_step(axis_b - axis_a, MAX_TICKS), "%H:%M", origin=axis_a)
     day_events = [e for e in events if e.end > axis_a and e.start < axis_b]
@@ -2069,6 +2083,13 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime,
     build_html = (f'<section id="build"><h2>Build</h2>\n<div class="meta">{_tasks(len(tasks))} · {_plural(issues, "issue")}{changes_note}</div>\n'
                   f'{columns.render(build_cols, no_lane if no_lane.cards else None)}</section>\n'
                   if laned else "")
+    flow_moves = [m for day, text in [*(stage_log or []), (tracker_day or today, tracker_text)]
+                  for m in flow_chart.moves(text, day, zone)]
+    known = [t for _, text in stage_log or [] for t in parse_tracker(text).tasks] + tasks
+    ends = {t.item: end for t in active if (end := _end(t, cfg, now, now, est))[1] in ("due", "derived")}
+    flow_html = flow_chart.section(flow_chart.build(flow_moves, known, lanes or {}, {t.name.strip() for t in tasks if held(t, kanban)},
+                                                    {item: end[0] for item, end in ends.items()}, now,
+                                                    queue_durations(active, hist), slots), now)
     blocked_html = f"""<section id="blocked"><h2>Blocked</h2>
 <div class="cards">
 {blocked_card("Awaiting you", [task_line(l) for l in awaiting])}
@@ -2125,7 +2146,7 @@ tr.group th{{background:color-mix(in srgb,var(--brass) 18%,transparent);color:va
 .tasks>input:checked+label{{background:var(--fg);color:var(--surface);border-color:var(--fg)}}
 .tasks>input:focus-visible+label{{outline:2px solid var(--brass);outline-offset:2px}}
 {filter_css}
-{panels.css(PANEL_COLOURS, PANEL_TOKENS)}{columns.css(CARD_COLOURS)}.columns{{--columns-ink:var(--fg);--columns-muted:var(--muted);--columns-card:var(--surface);--columns-rule:var(--line);--columns-gate-ink:var(--brass);--columns-bg:color-mix(in srgb,var(--brass) 10%,var(--bg));--columns-gate:color-mix(in srgb,var(--brass) 14%,var(--surface))}}
+{flow_chart.css() if flow_html else ""}{panels.css(PANEL_COLOURS, PANEL_TOKENS)}{columns.css(CARD_COLOURS)}.columns{{--columns-ink:var(--fg);--columns-muted:var(--muted);--columns-card:var(--surface);--columns-rule:var(--line);--columns-gate-ink:var(--brass);--columns-bg:color-mix(in srgb,var(--brass) 10%,var(--bg));--columns-gate:color-mix(in srgb,var(--brass) 14%,var(--surface))}}
 .cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px;margin:8px 0}} .cards.due{{grid-template-columns:repeat(auto-fit,minmax(330px,1fr))}}
 .card{{background:var(--surface);border:1px solid var(--line);border-radius:5px;padding:8px 11px}} .due-card{{border-left:3px solid var(--dl)}}
 .card h3,.card-head b{{margin:0 0 5px;font-family:"Cormorant SC","Cormorant Garamond",Georgia,serif;font-size:13.5px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--brass)}}
@@ -2226,7 +2247,7 @@ body{{padding:12px 12px 36px}}
 {resume_strip(parse_resume(tracker_text))}
 {panels.tiles(tiles)}
 {build_html}{panels_html}
-<!-- flow charts -->
+{flow_html}
 
 {due_html}{blocked_html}
 <h2>Today</h2>
@@ -2323,10 +2344,13 @@ def main(argv: list[str] | None = None) -> Path:
     named = answered + [row[1] for row in today_rows]
     decisions, _ = decision_page.index(out.parent, named, today_rows, day)
     (out.parent / "decisions.html").write_text(decisions)
+    reach = (now - flow_chart.WINDOWS[-1][1]).date()
+    stage_log = [(d, path.read_text()) for d, path in daily_trackers(root, cfg) if reach <= d < tracker_day]
     page = render(tracker_text, log_text, cfg, now, requirements=req_texts, lanes=settings.lanes,
                   tracker_day=tracker_day, decisions=decision_page.pending(out.parent, named), kanban=settings.kanban,
                   sources=board_sources.load(out.parent), answered=len(today_rows),
-                  tracker_at=datetime.fromtimestamp(tracker.stat().st_mtime, cfg.zone))
+                  tracker_at=datetime.fromtimestamp(tracker.stat().st_mtime, cfg.zone), stage_log=stage_log,
+                  slots=settings.workers.max_concurrency or 1)
     out.write_text(page)
     parsed = parse_tracker(tracker_text)
     hist = history(list(parsed.tasks), cfg, now)

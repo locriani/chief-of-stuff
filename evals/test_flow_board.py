@@ -190,7 +190,7 @@ class Page(unittest.TestCase):
 
     def test_the_flow_top_then_the_day_layout(self) -> None:
         marks = ['class="panels-head"', 'class="panels-tiles"', '<section id="build">', 'class="panels"',
-                 "<!-- flow charts -->", "Due next", '<section id="blocked">', "<h2>Today", "<h2>Week", "<h2>Tasks"]
+                 "Due next", '<section id="blocked">', "<h2>Today", "<h2>Week", "<h2>Tasks"]
         at = [self.body.index(m) for m in marks]
         self.assertEqual(at, sorted(at), [m for _, m in sorted(zip(at, marks))])
 

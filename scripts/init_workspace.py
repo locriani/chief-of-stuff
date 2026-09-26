@@ -74,6 +74,11 @@ def coordinator_block(*, user: str, timezone: str, daily_dir: str, worktrees: st
 
 def settings_text(launcher: str, mode: str = "interactive") -> str:
     text = f'[notify]\nadapter = "off"\n\n[workers]\nlauncher = "{launcher}"\nmode = "{mode}"\n'
+    # #111: uncomment to pick models from the TOML; without [models], chief-of-stuff-models.md applies.
+    text += ('\n# [models.deep]\n# rotation = ["claude:opus@high", "codex:<model-id>@high"]\n'
+             '# [models.implement]\n# rotation = ["claude:sonnet@medium", "codex:<model-id>@medium"]\n'
+             '# [models.fast]\n# rotation = ["claude:haiku@low"]\n'
+             '# [models.review]\n# rotation = ["codex:<model-id>@high", "claude:opus@high"]\n')
     tomllib.loads(text)
     return text
 

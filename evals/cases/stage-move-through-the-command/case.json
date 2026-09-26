@@ -1,0 +1,35 @@
+{
+  "tz": "America/Chicago",
+  "description": "A stage move goes through `chief-of-stuff log --stage`, which sets the stage cell and writes the structured `stage: <name> → <stage>` Log line the board's Flow charts read. Enforces: \"Move `stage` with `chief-of-stuff log --root . --stage \"<name>\" <stage>` when the task moves, once for every stage it enters, even two in one move: it sets the cell and writes the `stage: <name> → <stage>` Log line the board's Flow charts read, under the tracker lock.\"",
+  "prompt": "impl-uploads opened the pull request for Upload path check: https://github.com/o/app/pull/14, head 3f9c2a1.",
+  "graders": [
+    {
+      "name": "the move goes through log --stage",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "(?:chief[-_]of[-_]stuff(?:\\.py)?\\s+log|tracker_write\\.py)\\b[^\\n]*--stage",
+      "min": 1
+    },
+    {
+      "name": "the Log carries the structured move to pr",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^- \\d{1,2}:\\d{2} stage: Upload path check → pr$"
+    },
+    {
+      "name": "the stage cell is the last structured move",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?s)\\| build \\| (\\w+) \\|.*\\n- \\d{1,2}:\\d{2} stage: Upload path check → \\1\\n(?!.*stage: Upload path check)"
+    },
+    {
+      "name": "log append-only",
+      "type": "lines_preserved",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Log",
+      "min_added": 1
+    }
+  ],
+  "max_turns": 16,
+  "timeout_seconds": 400
+}
