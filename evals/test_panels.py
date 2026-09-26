@@ -14,7 +14,7 @@ sys.path.insert(0, str(SCRIPTS))
 import panels  # noqa: E402
 
 CT = ZoneInfo("America/Chicago")
-NOW = datetime(2026, 9, 26, 2, 10, tzinfo=CT)
+NOW = datetime(2026, 9, 26, 2, 10, 37, tzinfo=CT)
 
 
 class Header(unittest.TestCase):
@@ -28,13 +28,13 @@ class Header(unittest.TestCase):
         self.assertIn("rendered 02:10 CDT · tracker 02:05 · 38 tasks", self.html)
 
     def test_now_and_the_countdown_to_the_deadline(self) -> None:
-        self.assertRegex(self.html, r'class="panels-now"[^>]*datetime="2026-09-26T02:10:00-05:00"[^>]*>02:10<')
+        self.assertRegex(self.html, r'class="panels-now"[^>]*datetime="2026-09-26T02:10:37-05:00"[^>]*>02:10:37<')
         self.assertIn('<span class="panels-clock-name">demo in</span>', self.html)
-        self.assertRegex(self.html, r'class="panels-left"[^>]*datetime="2026-09-26T11:00:00-05:00"[^>]*>8h50m<')
+        self.assertRegex(self.html, r'class="panels-left"[^>]*datetime="2026-09-26T11:00:00-05:00"[^>]*>8h49m23s<')
 
     def test_a_past_deadline_counts_negative(self) -> None:
-        html = panels.header(panels.Header("B", (), NOW, "x", datetime(2026, 9, 26, 1, 40, tzinfo=CT)))
-        self.assertRegex(html, r'class="panels-left"[^>]*>-0h30m<')
+        html = panels.header(panels.Header("B", (), NOW, "x", datetime(2026, 9, 26, 1, 40, 37, tzinfo=CT)))
+        self.assertRegex(html, r'class="panels-left"[^>]*>-0h30m00s<')
 
     def test_warnings_show_and_escape(self) -> None:
         self.assertIn('<div class="panels-warn">merge requests: token expired</div>', self.html)

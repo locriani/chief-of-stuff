@@ -151,7 +151,8 @@ class Build(unittest.TestCase):
 
     def test_a_card_gains_its_change_ref_and_marks(self) -> None:
         card = next(c for col in self.cols()[0] for c in col.cards if c.name == "Cut the release")
-        self.assertEqual(card.refs, "#9 · !48")
+        self.assertEqual(card.refs, (("#9", "https://forge/i/9"), ("!48", "https://forge/48")))
+        self.assertEqual(card.href, "https://forge/48")
         self.assertEqual(card.marks, (columns.Mark("passed", "passed"),))
 
     def test_approval_and_a_failed_pipeline_are_marks(self) -> None:
@@ -161,12 +162,19 @@ class Build(unittest.TestCase):
 
     def test_an_issue_url_matches_its_number(self) -> None:
         card = next(c for col in self.cols()[0] for c in col.cards if c.name == "Write README")
-        self.assertEqual(card.refs, "#7")
+        self.assertEqual((card.refs, card.href), ((("#7", "https://forge/i/7"),), "https://forge/i/7"))
+
+    def test_a_tracker_issue_url_links_without_sources(self) -> None:
+        card = next(c for col in rb.build_columns(rb.parse_tracker(TRACKER).tasks, LANES)[0] for c in col.cards if c.name == "Write README")
+        self.assertEqual((card.refs, card.href), ((("#7", "https://forge/i/7"),), "https://forge/i/7"))
+        bare = next(c for col in self.cols()[0] for c in col.cards if c.name == "Webhook check")
+        self.assertEqual((bare.refs, bare.href), ((), ""))
 
     def test_main_holds_the_changes_merged_today(self) -> None:
         main = self.cols()[0][-1]
-        self.assertEqual((main.name, [(c.name, c.refs, c.owner, c.state, c.kind) for c in main.cards]),
-                         ("main", [("Locale fallback", "#8 · !37", "merged 12:30", "done", "merged today")]))
+        self.assertEqual((main.name, [(c.name, c.refs, c.href, c.owner, c.state, c.kind) for c in main.cards]),
+                         ("main", [("Locale fallback", (("#8", ""), ("!37", "https://forge/37")), "https://forge/37",
+                                    "merged 12:30", "done", "merged today")]))
         html = columns.render([columns.Column("main", main.cards * 5)])
         self.assertIn("+ <span>2 merged today</span>", html)
 
@@ -179,7 +187,7 @@ class Build(unittest.TestCase):
     def test_empty_sources_draw_the_cards_as_before(self) -> None:
         tasks = rb.parse_tracker(TRACKER).tasks
         self.assertEqual(rb.build_columns(tasks, LANES, KANBAN, bs.EMPTY, NOW), rb.build_columns(tasks, LANES, KANBAN))
-        self.assertEqual([c.name for c in rb.build_columns(tasks, LANES)[0]], ["implement", "pr", "review", "triage", "merge"])
+        self.assertEqual([c.name for c in rb.build_columns(tasks, LANES)[0]], ["implement", "review", "triage", "merge"])
 
 
 class Page(unittest.TestCase):
@@ -234,6 +242,17 @@ class Page(unittest.TestCase):
         self.assertEqual(re.findall(r"#[0-9a-fA-F]{3,8}\b", overrides), [])
         self.assertIn(".panels-head,.panels-tiles,.panels{--panels-ink:var(--fg)", css)
         self.assertIn('[data-kind="merge"]{--k:var(--stage-review)}', css)
+
+    def test_the_clocks_tick_every_second_with_seconds(self) -> None:
+        script = self.html.split("<script>", 1)[1]
+        self.assertIn("setInterval(tick,1000)", script)
+        self.assertIn("second:'2-digit'", script)
+        self.assertIn("+'s'", script)
+
+    def test_build_cards_link_to_their_items(self) -> None:
+        self.assertIn('<a class="columns-card-name" href="https://forge/48">Cut the release</a>', self.body)
+        self.assertIn('<a href="https://forge/i/9">#9</a>', self.body)
+        self.assertNotIn('href="#"', self.body)
 
     def test_the_page_fits_a_phone(self) -> None:
         self.assertIn('<meta name="viewport" content="width=device-width, initial-scale=1">', self.html)
