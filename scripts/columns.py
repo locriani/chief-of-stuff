@@ -7,14 +7,12 @@ No JavaScript: overflow and the footer are native `<details>`, everything else i
 
 from __future__ import annotations
 
-import html
-import re
 from collections import Counter
 from dataclasses import dataclass
 
+from fragment import colour as _colour, css_str as _css_str, esc as _esc, kind as _kind
+
 LIMIT = 3
-KIND = re.compile(r"[a-z][a-z0-9-]*")
-COLOUR = re.compile(r"[#\w(),.%/ -]+")  # a colour, var() or border shorthand; nothing that ends a declaration or a rule
 # Okabe-Ito on parchment. (fill, ink, border): a tag's background, its text, and its border shorthand.
 PALETTE: dict[str, tuple[str, str, str]] = {
     "running": ("#0072B2", "#fbf8ef", "1px solid #0072B2"),
@@ -48,16 +46,6 @@ class Column:
     cards: tuple[Card, ...]
     note: str = ""  # a word beside the name
     kind: str = ""  # a class, `columns-<kind>`; the base CSS styles "gate"
-
-
-def _esc(text: str) -> str:
-    return html.escape(text, quote=True)
-
-
-def _kind(kind: str) -> str:
-    if not KIND.fullmatch(kind):
-        raise ValueError(f"kind {kind!r} is not a class name")
-    return kind
 
 
 def _tag(role: str, category: str, text: str) -> str:
@@ -98,17 +86,6 @@ def render(cols: list[Column], footer: Column | None = None, limit: int = LIMIT)
                    f'{tally(footer.cards)}</summary><div class="columns-foot-cards">{"".join(map(_card, footer.cards))}</div></details>')
     out.append("</figure>")
     return "\n".join(out)
-
-
-def _css_str(text: str) -> str:
-    """A CSS string body that cannot end the string, the rule or the `<style>` element."""
-    return text.replace("\\", "\\\\").replace('"', '\\"').replace("<", "\\3c ").replace("\n", "\\a ")
-
-
-def _colour(value: str) -> str:
-    if not COLOUR.fullmatch(value):
-        raise ValueError(f"colour {value!r} is not a colour")
-    return value
 
 
 BASE_CSS = """\
