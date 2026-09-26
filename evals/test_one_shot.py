@@ -104,6 +104,13 @@ class CommandTest(unittest.TestCase):
         self.assertEqual(status, "human_review")
         self.assertIn("costs", reason)
 
+    def test_a_json_result_reads_like_toon(self):
+        # Some workers write the result file as JSON; the fields are the same (#154).
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "worker-result.toon"
+            path.write_text('{"status": "done", "reason": "fixed: the \\"cap\\"", "changes": "a.py, b.py"}\n')
+            self.assertEqual(one_shot.worker_result(path, 0), ("done", 'fixed: the "cap"', "a.py, b.py"))
+
 
 class RunTest(unittest.TestCase):
     def setUp(self):
