@@ -444,8 +444,12 @@ def render(d: dict, day: str, forge: Backlog | GitHubBacklog | None = None, root
         on = " checked" if page and page.get("key") == o["key"] else ""
         opts.append(f'      <label class="opt"><span class="k"><input type="radio" name="key" value="{escape(o["key"])}"{on}> {escape(o["key"])}</span>'
                     f'<b>{escape(o["title"])}{tag}</b>\n        <span class="d">{md(o.get("text", ""))}</span>\n      </label>')
-    opts.append('      <div class="opt wi"><span class="cap">write in</span><span></span><input type="text" name="words" aria-label="write in">'
-                '<button type="submit">save</button></div>')
+    # The write-in is the next option: same look, key "" (a words-only save), the next letter after the real ones.
+    wi_key = chr(ord("A") + len(d["options"]))
+    on = " checked" if page and page.get("key") == "" else ""
+    opts.append(f'      <label class="opt"><span class="k"><input type="radio" name="key" value=""{on}> {wi_key}</span>'
+                f'<b>Your own answer</b>\n        <span class="d"><input type="text" name="words" aria-label="Your own answer">'
+                f'<button type="submit">save</button></span>\n      </label>')
     fmt = (lambda t: ctx.when(t)) if ctx else (lambda t: f"{t:%H:%M}")
     done = f'    <div class="card answered">{_saved_html(d, fmt)}</div>\n' if page else ""
     right.append(_section("Options", done + "    " + _answer_form(slug, "options", "\n" + "\n".join(opts)) + "\n    </form>"))
@@ -491,7 +495,8 @@ def render(d: dict, day: str, forge: Backlog | GitHubBacklog | None = None, root
             + where
             + '  <div class="cols">\n  <div class="col">\n' + "".join(left) + '  </div>\n  <div class="col">\n'
             + "".join(right) + "  </div>\n  </div>\n"
-            + f'\n  <p class="foot">Prepared by the coordinator{sources}. Answer here or in chat: {", ".join(keys)}, or your own words.</p>\n</main>\n{ANSWER_JS}</body>\n</html>\n')
+            + f'\n  <p class="foot">Prepared by the coordinator{sources}. Answer here or in chat: '
+            + ", ".join(keys) + f", or {wi_key} in your own words.</p>\n</main>\n{ANSWER_JS}</body>\n</html>\n")
 
 
 def forge(root: Path) -> Backlog | GitHubBacklog | None:
@@ -848,17 +853,17 @@ code{font-family:ui-monospace,monospace;font-size:.88em;background:var(--ref-bg)
 .dot[data-k="implement"]{background:var(--stage-implement)} .dot[data-k="pr"]{background:var(--stage-pr)}
 .dot[data-k="review"]{background:var(--stage-review)} .dot[data-k="triage"]{background:var(--stage-triage)}
 .dot[data-k="fix"]{background:var(--stage-fix)} .dot[data-k="verify"]{background:var(--stage-verify)} .dot[data-k="merge"]{background:var(--stage-merge)}
-.options{display:flex;flex-direction:column;gap:8px}
-.opt{display:grid;grid-template-columns:44px minmax(0,1fr);gap:2px 8px;background:var(--surface);border:1px solid var(--line);border-radius:5px;padding:10px 14px}
-label.opt,label.o{cursor:pointer} label.opt:hover,label.o:hover{border-color:var(--brass)}
+.options{display:flex;flex-direction:column;background:var(--surface);border-top:3px solid var(--brass);border-radius:5px;padding:4px 14px;box-shadow:0 2px 6px color-mix(in srgb,var(--fg) 8%,transparent)}
+.opt{display:grid;grid-template-columns:44px minmax(0,1fr);gap:2px 8px;padding:8px 6px;margin:0 -6px;width:calc(100% + 12px);border-radius:3px}
+.opt+.opt{border-top:1px dotted var(--line)}
+.opt:hover{background:var(--bg)}
+label.opt,label.o{cursor:pointer} label.o:hover{border-color:var(--brass)}
 .opt .k{font:700 16px/1.3 ui-monospace,monospace;color:var(--muted)}
 .opt input,.o input{accent-color:var(--brass);margin:0 4px 0 0}
 .opt .d{grid-column:2}
+.opt .d input[type=text]{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:3px;padding:4px 8px;margin-right:6px;min-width:0}
+.opt .d button{font:inherit;font-size:13px;color:var(--link);background:var(--ref-bg);border:1px solid var(--brass);border-radius:3px;padding:3px 12px;cursor:pointer}
 .tag{font-size:10px;font-weight:500;letter-spacing:.08em;text-transform:uppercase;color:var(--link);margin-left:6px}
-.wi{grid-template-columns:44px minmax(0,1fr) auto;align-items:center}
-.wi .cap{grid-column:1/-1}
-.wi input[type=text]{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:3px;padding:4px 8px;min-width:0}
-.wi button{font:inherit;font-size:13px;color:var(--link);background:var(--ref-bg);border:1px solid var(--brass);border-radius:3px;padding:3px 12px;cursor:pointer}
 .answered{border-left:3px solid var(--now);display:flex;flex-direction:column;gap:2px;margin-bottom:8px}
 span.saved{font:11.5px ui-monospace,monospace;color:var(--now)}
 .row.saved{border-left:3px solid var(--now)}
@@ -944,7 +949,7 @@ document.querySelectorAll('form[action^="/decisions/"]').forEach(function (f) {
     fetch(f.action, {method: 'POST', body: new URLSearchParams(new FormData(f))})
       .then(function (r) { if (r.ok) location.reload(); });
   }
-  f.addEventListener('change', function (e) { if (e.target.name === 'key') send(); });
+  f.addEventListener('change', function (e) { if (e.target.name === 'key' && e.target.value) send(); });
   f.addEventListener('submit', function (e) { e.preventDefault(); send(); });
 });
 </script>
