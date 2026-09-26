@@ -730,7 +730,7 @@ def index(pages_dir: Path, ctx: Context, day: str) -> tuple[str, list[tuple[str,
     except ValueError:
         today = ctx.now.date()
     done = []
-    for row in reversed([r for r in ctx.rows if r.day == today]):
+    for row in sorted((r for r in ctx.rows if r.day == today), key=lambda r: (r.when is None, -(r.when.timestamp() if r.when else 0))):
         page = next(iter(PAGE_REF.findall(row.item)), None)
         source = pages_dir / f"{page}.json" if page else None
         try:
