@@ -1,28 +1,8 @@
-"""Render today's board from the tracker.
+"""Render a tracker-based daily board without opening a server or browser.
 
-The board is a view of the tracker and workspace configuration: every bar start and end cites a tracker
-field (`since`, `due`, `running HH:MM`, `done HH:MM`) or falls open to the nearest deadline from the
-`## Coordinator` block or a precise `deadline:` Decisions row, labelled "no estimate". The page carries
-the tracker's sha256, the render instant, and the deadline instants, and draws its own clock and now-lines
-client-side.
-
-The charts draw the schedule only. Today: running tasks and tasks that end today get a bar; every
-other active task folds into one summary row, and tasks done inside the window fold into one Done row
-that opens onto them. The Today axis runs 8 hours behind this hour and 16 ahead. Week: running tasks and tasks with a concrete due get
-a bar, grouped into one row per due day when several share it (overdue and past-the-week tasks get one row
-each); the rest fold into one row per deadline. The Week axis spans at most 7 days; later deadlines are an
-edge marker. Folded tasks keep their citations as `.member`
-spans. Full item text appears only in the Tasks table. A standing session's
-placeholder row (`impl02: standing implementer …`) is not a task and appears only on the Sessions graph.
-
-A deadline line may name a requirements file (`- Final: 2026-09-20 12:00; requirements `path``): checkbox
-lines under `## ` headings, evidence after ` — evidence: `. The board shows it, with a done count, for
-every deadline that has not passed.
-
-    python3 render_board.py --date 2026-09-16 [--root <workspace>]
-
-Writes `<date>-board.html` into the Board line's `dir` (served separately by pages.py), or beside the
-tracker when it names none, and prints its path and one summary line. It never starts a server or browser.
+The page carries tracker and deadline metadata and draws its live clock client-side. Today and
+Week charts fold tasks outside their visible windows into summary rows. The renderer writes the
+board HTML and prints its path and summary.
 """
 
 from __future__ import annotations
@@ -43,20 +23,17 @@ from backlog import Backlog, BacklogError, GitHubBacklog, issue_ref, parse_backl
 from settings import SettingsError, load as load_settings  # noqa: E402
 
 HHMM = re.compile(r"^(\d{1,2}):(\d{2})$")
-# `done 21:16–22:05`: the running start kept on close. An en dash or a hyphen, because two hands write it.
+# Accept both separators in a completed time range.
 RAN = re.compile(r"^(\d{1,2}:\d{2})[–-](\d{1,2}:\d{2})$")
 SIZES = ("S", "M", "L", "XL")
 ALL_SIZES = "all"
 TASK_COLS = ("item", "owner", "state", "since", "due", "checklist")
 TASK_COLS_SIZED = ("item", "owner", "state", "since", "due", "size", "checklist")
 TASK_COLS_NAMED = ("name", "item", "owner", "state", "since", "due", "size", "checklist")
-# Zach, 2026-09-22 22:20: each task "is actually backed by an entry in github". The issue sits inside the
-# span `_anchor` fixes, between `state` and `checklist`, so a stray pipe still re-reads the same way.
+# Keep issue and stage columns in the recoverable task span.
 TASK_COLS_ISSUED = ("name", "item", "owner", "state", "since", "due", "size", "issue", "checklist")
-# #33 (Zach, 2026-09-23): "A lane: the sequence that a task has to move through". `lane` names one from the
-# settings file and `stage` is where the task is in it; both sit inside the `_anchor` span like `issue`.
 TASK_COLS_LANED = ("name", "item", "owner", "state", "since", "due", "size", "lane", "stage", "issue", "checklist")
-# Widest first: a header is matched whole, and the live tracker carries every width while it is rewritten.
+# Match the widest supported tracker header first.
 TASK_HEADERS = (TASK_COLS_LANED, TASK_COLS_ISSUED, TASK_COLS_NAMED, TASK_COLS_SIZED, TASK_COLS)
 DATE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{1,2}):(\d{2}))?$")
 DECISION_DEADLINE = re.compile(r"^deadline:\s*(.+?)\s+(?:(\d{4}-\d{2}-\d{2})[ T])?(\d{1,2}):(\d{2})$", re.I)
@@ -68,24 +45,16 @@ LOGO = Path(__file__).resolve().parent.parent / "assets" / "logo.webp"
 FONTS = "https://fonts.googleapis.com/css2?family=Alegreya+Sans:wght@400;500;600&family=Cormorant+SC:wght@600&display=swap"
 SHORT_NAME = 48
 LONG_ITEM = 80
-# Two questions, two numbers. They were one constant, and the day the written rule moved to 300 the guard
-# became unsatisfiable: every field could obey `agents/chief-of-stuff.md` exactly and still be counted.
-# A guard that cannot be satisfied is one a writer learns to ignore — `resume_long=5` in every render for
-# nine hours is how the live `As of` reached 19 044 characters.
-RESUME_FOLD = 160   # display: too long to read inline in a six-row strip, so it folds
-RESUME_CAP = 300    # hygiene: the bound `agents/chief-of-stuff.md` gives the writer. Keep the two in step.
-# The fold bounds what a long field shows closed; nothing bounded what it shows OPEN, and one 9 400-character
-# `As of:` field filled the viewport with the rest of the board below it. `.resume details.long[open]` caps it.
-# The comment lives here rather than in the stylesheet: CSS prose ships in every rendered page.
-# The lookbehinds are zero-width so the mark that opens a bold clause survives the time being lifted
-# out of it: `**22:19: copied**` keeps its `**` and loses only the time.
+# Separate display folding from the writer's 300-character limit.
+RESUME_FOLD = 160   # display threshold
+RESUME_CAP = 300    # writer limit from agent rules
+# Preserve Markdown delimiters when lifting times from bold clauses.
 CLAUSE_TIME = re.compile(r"(?:^|(?<=\s)|(?<=\*\*))(?:at\s+)?(\d{1,2}:\d{2}):?(?=\s|$|[,;)])")
 REQ_LINE = re.compile(r"^(\s*)- \[([ xX])\]\s+(.*?)\s*$")
 EVIDENCE = " — evidence: "
 TICK_STEPS_H = (1, 2, 3, 4, 6)
 WEEK_DAYS = 7
-# The day strip's window around this hour (Zach, 2026-09-22: "the full rolling 24 hour period - 8 hours
-# before, 16 after").
+# Rolling 24-hour Today window.
 DAY_BEHIND = timedelta(hours=8)
 DAY_AHEAD = timedelta(hours=16)
 MAX_TICKS = 9
