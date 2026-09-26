@@ -1,18 +1,7 @@
 #!/usr/bin/env python3
-"""Cut the worktree and branch a dispatch will run in, and print what was made.
+"""Create a checked worktree and branch for a dispatch.
 
-A task is a worktree, a branch, a plan and a review. This makes the first two, so the tracker's
-File ownership row is written from what exists on disk rather than from what was planned — the
-tracker carried `openemr-agent-defects-140c0b2` for eight hours before anyone noticed the tree of
-that name had never been created.
-
-    python3 make_worktree.py --type implementer --name wt-docs --branch fix/docstring
-
-This is the first script here that writes to the user's repo. Every other git call the plugin makes
-is read-only, and that is why git stays off the agent's own allowlist. So the branch and the path —
-both of which come out of a file an agent wrote — are checked before git sees them, and a refusal
-creates nothing. Removing a worktree or deleting a branch is not here and never will be: a tree can
-hold hours of gitignored state that `git status` does not show.
+Branch and path are validated before Git writes. This module does not remove worktrees or branches.
 """
 
 from __future__ import annotations
@@ -35,7 +24,7 @@ BASE = "main"
 
 
 class RefusedError(ValueError):
-    """Something that came out of a file did not survive its check. Nothing was created."""
+    """Invalid worktree request; nothing created."""
 
 
 @dataclass(frozen=True)
@@ -46,7 +35,7 @@ class Made:
 
 
 def git(args: list[str], cwd: Path) -> tuple[int, str]:
-    """Never a shell, always a list, always bounded — the same discipline as the read-only scripts."""
+    """Run a bounded Git command without a shell."""
     try:
         out = subprocess.run(
             ["git", "-C", str(cwd), *args],
@@ -69,7 +58,7 @@ def worktrees_dir(claude_md: str) -> str:
 
 
 def agent_types(claude_md: str) -> dict[str, str]:
-    """`- Agent: <type> <lifetime>` lines in the `## Coordinator` block. No lines, no types, no error."""
+    """Parse Agent declarations from the Coordinator block."""
     body = "\n".join(_section(claude_md, "## Coordinator"))
     types: dict[str, str] = {}
     for name, lifetime in AGENT.findall(body):
@@ -80,18 +69,14 @@ def agent_types(claude_md: str) -> dict[str, str]:
 
 
 def check_type(claude_md: str, agent_type: str) -> None:
-    """An unlisted type is refused — but a block with no types at all means the old behaviour."""
+    """Check a declared type; an empty list permits the default behavior."""
     types = agent_types(claude_md)
     if types and agent_type not in types:
         raise RefusedError(f"no agent type {agent_type!r} in the Coordinator block; it lists {', '.join(sorted(types))}")
 
 
 def check_branch(branch: str, cwd: Path | None = None) -> None:
-    """git's own answer to what a branch may be called, not a regex of mine.
-
-    A leading dash is checked here rather than by git, because `check-ref-format --branch -rf` would
-    read the name as its own option.
-    """
+    """Validate a branch with Git after rejecting option-like names."""
     if not branch or branch.startswith("-"):
         raise RefusedError(f"branch name {branch!r} is empty or would be read as an option")
     code, detail = git(["check-ref-format", "--branch", branch], cwd or Path.cwd())
@@ -100,10 +85,7 @@ def check_branch(branch: str, cwd: Path | None = None) -> None:
 
 
 def resolve(root: Path, trees: str, name: str) -> Path:
-    """A new path, directly under the worktrees dir, inside the workspace root, that does not exist yet.
-
-    The inverse of `audit_tasks._resolve`, which requires a `.git` because it audits live trees.
-    """
+    """Return an unused worktree path inside the workspace root."""
     if not name or name.startswith("-") or "/" in name or name in (".", ".."):
         raise RefusedError(f"worktree name {name!r} must be one path segment and not an option")
     base = (root / trees).resolve() if trees else root.resolve()

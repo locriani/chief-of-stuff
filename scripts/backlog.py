@@ -1,23 +1,8 @@
 #!/usr/bin/env python3
-"""Read and write a GitLab or GitHub backlog so the tracker holds active work only.
+"""Read and write the configured GitHub or GitLab backlog.
 
-A `- Backlog:` line whose first part starts with `GitHub` names a repository read and written
-through `gh`. Other lines use the GitLab API. Both backends preview writes by default.
-
-The tracker grew to 158 rows in 22 hours because the ruleset says one row per item, so every
-finding, defect and question became a row and the file became a second Log with a worse index.
-The backlog belongs in the issue tracker selected by the workspace's Coordinator block.
-
-    python3 backlog.py --config /path/to/CLAUDE.md            # one count line
-    python3 backlog.py --config /path/to/CLAUDE.md --list     # one line per open issue
-
-Every failure returns a value. A token that is absent, a host that is down, a 401, a body that is
-not JSON: each of those produces a line that says the answer is unknown and why. None of them
-produces a zero, because a count nobody could take and a backlog that is empty are not the same
-fact, and only one of them means there is nothing to do.
-
-No secret is ever read from a file in a repo. The `- Backlog:` line carries the *name* of an
-environment variable; the value comes from that variable or from the macOS Keychain.
+GitHub uses `gh`; GitLab uses its API. Writes preview by default. Failed reads report an unknown
+count rather than zero. Credentials come from the configured environment variable or Keychain.
 """
 
 from __future__ import annotations
@@ -45,12 +30,12 @@ OPEN, CLOSED = "opened", "closed"
 
 
 class BacklogError(ValueError):
-    """A `Backlog:` line that cannot be read as a backlog."""
+    """Invalid Backlog configuration."""
 
 
 @dataclass(frozen=True)
 class Backlog:
-    """Where the backlog is and what the token is *called*. Never what the token is."""
+    """GitLab location and credential name; never the token value."""
 
     host: str
     project: str
@@ -59,7 +44,7 @@ class Backlog:
 
     @property
     def service(self) -> str:
-        """The Keychain service, derived from the host so one host is one entry and nothing drifts."""
+        """Keychain service for this host."""
         return f"gitlab-{urlsplit(self.host).hostname or ''}"
 
     @property
@@ -69,13 +54,12 @@ class Backlog:
 
 @dataclass(frozen=True)
 class GitHubBacklog:
-    """A GitHub repo's issues, read through `gh`. `gh` holds the login, so there is no token to name."""
+    """GitHub repository; `gh` manages authentication."""
 
     repo: str
 
 
-# `gh issue list` has no pages to follow, only a limit. The same ceiling as GitLab's pages: a result
-# that fills it may have been cut, and a cut list is refused rather than read as the whole backlog.
+# A full result may be truncated; reject it rather than treating it as complete.
 GH_LIMIT = PER_PAGE * MAX_PAGES
 GH_FIELDS = "number,title,state,labels,url,updatedAt"
 GH_STATE = {OPEN: "open", CLOSED: "closed", "all": "all"}
@@ -83,7 +67,7 @@ GH_REPO = re.compile(r"^[\w.-]+/[\w.-]+$")
 
 
 def run_gh(args: list[str], input_text: str | None = None) -> tuple[int, str, str]:
-    """One `gh` call. The eval harness may pin an isolated fake CLI by absolute path."""
+    """Run `gh`, allowing an absolute-path eval override."""
     binary = os.environ.get("CHIEF_OF_STUFF_GH", "gh")
     if binary != "gh" and not Path(binary).is_absolute():
         return 127, "", "CHIEF_OF_STUFF_GH must be an absolute executable path"

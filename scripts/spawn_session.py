@@ -1,19 +1,9 @@
 #!/usr/bin/env python3
-"""Open a worker terminal in a worktree, and print what was started.
+"""Start a worker in a worktree using fixed argv templates.
 
-    python3 spawn_session.py --type implementer --cwd <worktree> --title wt-docs
-
-The launcher is here, in the plugin, and nowhere else. It is deliberately not read from the
-workspace `CLAUDE.md`: a working session may edit that file freely — the coordinator's limits bind
-the coordinator and nobody else — so a launch template living there would be arbitrary argv run on
-the user's machine, with a config file as the carrier. The eval harness overrides it through
-`CHIEF_OF_STUFF_LAUNCHER`, which is set by the runner and not by anything the agent can write.
-
-Substitution is per whole token and the argv is never re-split, so a path or a title containing a
-space, a quote or a leading dash occupies exactly the one argv entry it was given.
-
-This file starts sessions. It never ends one, never removes a worktree and never deletes a branch:
-a tree can hold hours of gitignored state that `git status` does not show.
+Launch templates live here because workers may edit workspace configuration. The eval harness
+may override them with `CHIEF_OF_STUFF_LAUNCHER`. Token substitution never re-splits argv.
+This module does not stop sessions or delete worktrees or branches.
 """
 
 from __future__ import annotations
@@ -33,41 +23,19 @@ from settings import SettingsError, load as load_settings  # noqa: E402
 from shell_setup import ShellError, resolve  # noqa: E402
 
 ENV = "CHIEF_OF_STUFF_LAUNCHER"
-# The assignment lives in the tree, not on the command line. `.chief-of-stuff/` ignores itself, so a
-# dispatch never reads as uncommitted work in the tree it was written into. The directory is defined
-# beside the assignment it carries, because the stop that travels back out of the tree shares it.
+# Keep assignments and stop files in the worktree's ignored metadata directory.
 PROMPT_DIR = dispatch_prompt.PROMPT_DIR
 PROMPT_FILE = f"{PROMPT_DIR}/dispatch.md"
-# The same string on every launch. There is no per-dispatch text in the argv, so there is nothing
-# for a shell to expand on the way here.
-# No punctuation the metacharacter guard rejects: the bootstrap is a launcher token like any other,
-# and exempting it would be exempting the one token that reaches every session.
-# Both paths absolute, and the reason is a real failure: Ghostty does not reliably give a tab the
-# directory its surface configuration asked for, so "in this directory" sometimes named a directory
-# that was not the worktree and the session could not find its own assignment. A session that lands
-# in the wrong place can still read an absolute path, and is told where it was meant to be standing.
-# Still one constant template with no per-dispatch text in it: the two values are paths the launcher
-# already had, not anything the coordinator composed.
+# Use absolute paths: Ghostty can ignore its configured working directory.
 BOOTSTRAP = ("Read the file {dispatch} — that is your assignment, in full, and read it before you do "
              "anything else. Your working directory is {cwd}. Start there and stay there: every path "
              "the assignment names is inside it.")
-# `env -C` changes directory before exec and needs no shell, so the working directory is pinned by the
-# command itself rather than by a field a terminal may ignore. A bad path exits 125 and says why,
-# which the tab's `wait after command` leaves on screen — a loud failure instead of a session quietly
-# running in the wrong tree.
+# Pin cwd in argv because the terminal may ignore its configured directory.
 ENV_BIN = "/usr/bin/env"
-# What the tab runs. `--permission-mode plan` is the plan-first gate, enforced at launch rather than
-# asked for in the assignment text: a dispatched session cannot write before it has shown its plan.
-# `--name` is the session's name, not the tab's. Without it the harness names a session after its
-# directory and then retitles it from its first task, so impl07 was listed as
-# `lab-write-patient-check-merge` by its second turn. A launch name registers as the user's, which the
-# harness never retitles (Zach, 2026-09-22 16:18: "the NUMERIC NAMES I ASSIGN ARE THE ONLY NAMES THEY
-# ARE ALLOWED TO KEEP").
+# Enforce planning at launch and pass the assigned session name explicitly.
 CLAUDE_ARGV = ["claude", "--agent", "{type}", "--name", "{title}", "--model", "{model}", "--effort", "{effort}",
                "--permission-mode", "plan", BOOTSTRAP]
-# An agy (Antigravity) session: no `--agent`, no `--name` (the tab title and the assignment carry the
-# name), `--mode plan` for the same plan-first gate. agy does not load CLAUDE.md, and the workspace's
-# house rules (GitLab only, above all) have to reach it, so the bootstrap names the file.
+# Antigravity gets its name from the tab and assignment and reads workspace rules explicitly.
 AGY_BOOTSTRAP = BOOTSTRAP + " Then read {root}/CLAUDE.md: its house rules bind you."
 AGY_ARGV = ["agy", "--model", "{model}", "--mode", "plan", "-i", AGY_BOOTSTRAP]
 CODEX_ARGV = ["codex", "-C", "{cwd}", "--sandbox", "read-only", "--model", "{model}", AGY_BOOTSTRAP]
@@ -75,24 +43,11 @@ CURSOR_ARGV = ["agent", "--workspace", "{cwd}", "--mode", "plan", "--model", "{m
 TEMPLATES = {"claude": CLAUDE_ARGV, "agy": AGY_ARGV, "codex": CODEX_ARGV, "cursor": CURSOR_ARGV}
 BINARY = {"claude": "claude", "agy": "agy", "codex": "codex", "cursor": "agent"}
 MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
-# The override the eval harness sets, and the only path that still builds an argv. Nothing else uses
-# it: the real launcher asks Ghostty for a tab.
+# The eval harness may override this template; normal launches use Ghostty tabs.
 DEFAULT_LAUNCHER = ["ghostty", "--working-directory={cwd}", "--title={title}", "-e", *CLAUDE_ARGV]
-# Ghostty's scripting dictionary, rather than keystrokes into the front window. `new tab` takes a
-# `surface configuration` record with an initial working directory and a command, so the tab is asked
-# for by name. Two things it does not take: a title (the tab is named by the process, which in a
-# worktree is the tree) and, deliberately, an environment.
 CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 AS_ESCAPE = str.maketrans({'"': '\\"', "\\": "\\\\"})
-# What a terminal and an editor actually need. Everything else is dropped, and the CLAUDE_* markers
-# most of all: the coordinator is itself a Claude Code session, so passing its environment on gave a
-# spawned session the coordinator's messaging socket and token, bound it to the coordinator's
-# project instead of its own worktree, and turned its transcript off. A dispatched session that
-# leaves no transcript is one whose account of its work dies when the tab closes.
-# `SSH_AUTH_SOCK` stays deliberately. The dispatch says "do not commit or push", but that is a rule
-# and not a missing capability: a session under the user's own rules may commit and push its task
-# when the user has said so, and a limit that binds the coordinator binds nobody else. A dispatched
-# session gets what a terminal the user opened would have, minus the coordinator's identity.
+# Keep shell essentials and SSH auth, but exclude the coordinator's CLAUDE_* identity.
 KEEP = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "TERM_PROGRAM", "TMPDIR",
         "LANG", "LC_ALL", "LC_CTYPE", "COLORTERM", "TZ", "SSH_AUTH_SOCK", "XDG_CONFIG_HOME",
         "CHIEF_OF_STUFF_RELEASE")
@@ -104,11 +59,11 @@ FIELDS = ("cwd", "title", "type", "dispatch", "model", "effort", "root")
 
 
 class RefusedError(ValueError):
-    """The launcher or one of its values did not survive its check. Nothing was started."""
+    """Invalid launch configuration; no session started."""
 
 
 def launcher(template: list[str] | None = None) -> list[str]:
-    """The argv template: the environment override when set, otherwise the plugin's own."""
+    """Return the configured argv template."""
     if template is None:
         raw = os.environ.get(ENV)
         if raw:
@@ -132,13 +87,7 @@ def launcher(template: list[str] | None = None) -> list[str]:
 
 
 def _without(template: list[str], field: str) -> list[str]:
-    """Drop a flag and its `{field}` value as a pair: `--agent {type}` gives the default agent and
-    skills, and `--name {title}` gives a session no name rather than an empty one.
-
-    Removal rather than an empty substitution: a token that expands to zero or two argv entries is
-    the one thing per-token substitution exists to prevent. Tokens that merely embed the field, like
-    Ghostty's `--title={title}`, are dropped with it.
-    """
+    """Remove an unset field and its flag without changing argv token boundaries."""
     mark = "{" + field + "}"
     out, skip = [], False
     for i, token in enumerate(template):
@@ -155,14 +104,7 @@ def _without(template: list[str], field: str) -> list[str]:
 
 
 def _paths(cwd: str) -> tuple[str, str]:
-    """The working directory and the assignment inside it, both absolute.
-
-    Resolved here rather than left to the session: a relative path can only be resolved against the
-    directory you are standing in, and the whole reason these are absolute is that the session may
-    not be standing where the launcher intended.
-    """
-    # `abspath`, not `resolve`: absolute is what a session needs, and resolving symlinks would
-    # rewrite the path the user gave — `/tmp/wt` silently becoming `/private/tmp/wt` on a Mac.
+    """Return absolute cwd and dispatch paths, preserving symlink spelling."""
     root = Path(os.path.abspath(cwd))
     return str(root), str(root / PROMPT_FILE)
 
@@ -192,11 +134,7 @@ def argv(template: list[str], *, agent_type: str | None, cwd: str, title: str, m
 
 
 def _as_string(value: str) -> str:
-    """One AppleScript string literal. The outer of the two quoting layers this launcher now has.
-
-    A control character is refused rather than escaped: there is no reading of an escape sequence in a
-    path or an agent type that is a path or an agent type.
-    """
+    """Quote one AppleScript string and reject control characters."""
     if CONTROL.search(value):
         raise RefusedError(f"{value!r} carries a control character; nothing was started")
     return '"' + value.translate(AS_ESCAPE) + '"'
@@ -235,22 +173,11 @@ def tmux_command(*, tmux: Path | None, **worker) -> list[str]:
 
 def ghostty_script(*, cwd: str, agent_type: str | None, claude: Path | None, title: str | None = None,
                    runtime: str = "claude", model: str = "", effort: str = "", workspace: str = ".") -> str:
-    """Ask Ghostty for a tab running `claude` in `cwd`. The inner layer is Ghostty's own shell-style parse.
-
-    `claude` is an absolute path, resolved by the caller. Ghostty is launched from the GUI, so its
-    children inherit launchd's environment and not a login shell's: the first real tab died in 38ms
-    with `exec: claude: not found` while `which claude` answered `/opt/homebrew/bin/claude`. Upstream
-    hits the same thing with tmux, and the answer there is the same — name the binary absolutely.
-
-    No environment is passed but PATH. The tab inherits Ghostty's, which is what a terminal the user
-    opened themselves would have and never a coordinator's, except that a `command` tab skips the login
-    shell, so its PATH is launchd's; the launching PATH goes on the `env` line instead.
-    """
+    """Build a Ghostty tab script with an absolute binary and the launching shell's PATH."""
     tokens = runtime_tokens(cwd=cwd, agent_type=agent_type, binary=claude, title=title,
                             runtime=runtime, model=model, effort=effort, workspace=workspace)
     command = " ".join(shlex.quote(tok) for tok in tokens)
-    # `set_tab_title:` is how a tab gets a name — a surface configuration has no title field, and
-    # without this the tab is called after whatever the process last wrote.
+    # Surface configuration has no title field.
     named = (f'  perform action {_as_string("set_tab_title:" + title)} on focused terminal of tb\n'
              if title else "")
     return (
@@ -259,14 +186,12 @@ def ghostty_script(*, cwd: str, agent_type: str | None, claude: Path | None, tit
         "  set cfg to new surface configuration\n"
         f"  set initial working directory of cfg to {_as_string(cwd)}\n"
         f"  set command of cfg to {_as_string(command)}\n"
-        # Ghostty calls any sub-second exit a launch failure and closes the tab on it. A session that
-        # dies on startup should leave its reason on screen, which is how the PATH fault above was read.
+        # Keep startup failures visible.
         "  set wait after command of cfg to true\n"
         "  if (count of windows) is 0 then\n"
         "    set tb to selected tab of (new window with configuration cfg)\n"
         "  else\n"
-        # `in front window`, or the tab lands in whichever window Ghostty happens to return first —
-        # the first real tab opened in a window the user was not looking at.
+        # Target the front window explicitly.
         "    set tb to new tab in front window with configuration cfg\n"
         "  end if\n"
         + named +
@@ -275,18 +200,13 @@ def ghostty_script(*, cwd: str, agent_type: str | None, claude: Path | None, tit
 
 
 def launch_env(parent: dict[str, str] | None = None) -> dict[str, str]:
-    """The environment the new session starts in: a whitelist, never the coordinator's own.
-
-    The same discipline `audit_tasks.git()` applies to a read-only git call, applied to the one call
-    that starts a session — and it matters more here, because what leaks is an identity rather than
-    a config.
-    """
+    """Keep only approved environment variables; exclude coordinator identity."""
     source = os.environ if parent is None else parent
     return {k: v for k, v in source.items() if k in KEEP and not k.upper().startswith("CLAUDE")}
 
 
 def write_dispatch(cwd: Path, body: str) -> Path:
-    """The assignment as a file, created not overwritten, beside a gitignore that hides them both."""
+    """Create the ignored assignment file without overwriting an earlier dispatch."""
     path = cwd / PROMPT_FILE
     path.parent.mkdir(parents=True, exist_ok=True)
     (path.parent / ".gitignore").write_text("*\n")
@@ -329,11 +249,7 @@ def main(argv_in: list[str] | None = None) -> int:
     if args.runtime != "claude" and args.effort:
         print("refused: --effort is claude only", file=sys.stderr)
         return 1
-    # Resolved once, here, because the two consumers used to disagree: `compose` was given a resolved
-    # worktree while the launcher was handed the raw value, so a relative `--cwd` wrote the dispatch
-    # into the right tree and then asked Ghostty for a directory it resolved against its own GUI
-    # working directory. That produced a session in the workspace root, hunting for an assignment by
-    # file mtime, and before that a tab that died silently. One value, one meaning, both callers.
+    # Compose and launch must use the same absolute cwd.
     args.cwd = os.path.abspath(args.cwd)
 
     try:
@@ -367,7 +283,7 @@ def main(argv_in: list[str] | None = None) -> int:
                                       worktree=Path(args.cwd), coordinator=args.coordinator, name=args.title,
                                       runtime=args.runtime)
         selected = args.launcher or worker_settings.launcher
-        # The override is the eval harness's recorder and the only path that still builds an argv.
+        # The eval harness uses the argv override.
         worker = dict(cwd=args.cwd, agent_type=args.agent_type, title=args.title, runtime=args.runtime,
                       model=args.model, effort=args.effort, workspace=args.root)
         if override:
@@ -388,8 +304,7 @@ def main(argv_in: list[str] | None = None) -> int:
         return 1
 
     if args.dry_run:
-        # Quoted per token: the printed line is read by a human and may be pasted into a shell,
-        # where a title carrying a space or a semicolon would stop being one argument.
+        # Keep each argv token intact if the preview is copied into a shell.
         print("would run: " + " ".join(shlex.quote(t) for t in command))
         if script:
             print("would ask Ghostty for a tab:")
@@ -415,8 +330,7 @@ def main(argv_in: list[str] | None = None) -> int:
                 return 1
             where = "a new tmux window"
         else:
-            # The script goes in on stdin, never as `osascript -e` arguments: a value that reached an
-            # argument would be one quoting layer closer to being read as AppleScript.
+            # Pass AppleScript on stdin to avoid another quoting layer.
             out = subprocess.run(command, input=script, text=True, capture_output=True,
                                  timeout=30, env=launch_env())
             if out.returncode != 0:

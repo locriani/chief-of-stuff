@@ -1,14 +1,7 @@
 #!/usr/bin/env python3
-"""Compose the assignment a spawned session wakes up holding, from the tracker and nothing else.
+"""Compose worker assignments from approved tracker rows.
 
-The prompt is derived, never authored. A coordinator that wants to tell a worker something writes it
-into the tracker first, where the user reads it before saying yes — so what was approved and what
-the worker receives are the same text from the same place.
-
-That is also what bans shell expansion. The six lines never travel as prose through a command line,
-where a `$(...)` would be expanded by the shell before any script existed to check it. The only
-variable argument is the task name, and a name that is not a row in the tracker is refused, so an
-expansion that got this far produces a refusal instead of a payload.
+Assignments come from the tracker, not a free-form command line. Unknown tasks are refused.
 """
 
 from __future__ import annotations
@@ -27,7 +20,7 @@ from settings import SettingsError, Workflow, load as load_settings  # noqa: E40
 
 
 class RefusedError(ValueError):
-    """Something did not survive its check against the tracker. Nothing was composed."""
+    """Invalid tracker data; no assignment composed."""
 
 
 def _config(root: Path):
@@ -38,39 +31,25 @@ def _config(root: Path):
 
 
 UNASSIGNED = "unassigned"
-# `(via <session>)` is what this file's rules mark session-origin text with. A Tasks item or an
-# ownership row carrying it is peer text that reached the tracker, and it must not reach a worker as
-# an instruction. This is the one place that treats session text as data rather than as text merely
-# lacking authority.
+# Session-origin text must not become worker instructions.
 VIA = "(via "
-# C0 without tab or newline, DEL, and C1. Not the shell metacharacters the plan first named: there
-# is no command line left for those to mean anything on, and the live File ownership column is full
-# of legitimate semicolons. What survives is the vector that is real for a file read into a
-# terminal — an ANSI or OSC payload, which begins with an escape.
+# Reject terminal control sequences; ordinary shell punctuation is valid tracker text.
 CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
-# A sanity bound, not a filter: live item cells run to 1700 characters and have to compose.
+# Allow long tracker items while bounding assignment size.
 LINE_CAP = 2400
-# 12500 from 12000 when the header gained the fixed-name paragraph, and 13000 when it gained ponytail
-# and the review step, and 14200 when an agy session gained its mailbox-only paragraph and every inbox
-# command its mailbox path: each time keeping the old headroom.
 BODY_CAP = 16000
-# A bare session name, optionally carrying the six hex characters a listing shows beside it.
+# Session listings may append a six-character ref.
 SESSION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}(?: \[[0-9a-f]{6}\])?")
-# The name a session is started with: bare, because the ref is the harness's and arrives later.
+# Launch names do not include refs.
 GIVEN_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
-# What the mailbox commands say where the session's own name goes, until a launch has given it one.
 UNNAMED = "<your_ref_or_name>"
 
-# The dispatch travels into the tree as a file, and a stop travels back out of it the same way. A
-# message is lost if nobody reads it; a file in the worktree is still there when the auditor walks
-# past. `spawn_session` re-exports these, and `audit_tasks` reads the second.
+# Persist assignments and stop reports in the worktree.
 PROMPT_DIR = ".chief-of-stuff"
 STOP_FILE = f"{PROMPT_DIR}/stop.md"
-# The plugin's own copy, beside this file. A workspace has no `scripts/inbox.py`; the line used to
-# name one anyway, and a session following it found nothing there.
+# Use the installed inbox script, not a workspace path.
 INBOX_SCRIPT = Path(__file__).resolve().parent / "inbox.py"
-# An agy (Antigravity) session has no session listing, no direct messages and no Claude skills, so the
-# mailbox is its only channel (Zach, 2026-09-23 18:42).
+# Antigravity uses the mailbox for session messages.
 AGY = ("**You run under Antigravity, not Claude Code.** You cannot list sessions or message one: every "
        "registration, ask, progress report and stop below goes through the mailbox commands, with "
        "`--from \"{name}\"`, and your ref is your name. Check your mailbox "
@@ -206,16 +185,7 @@ REPORT = ("Report: when the task is finished, reply to the coordinator with what
           "(branch and worktree), what you did not do, and `Next:` — either the one thing you are "
           "starting now, or `idle and available`. Never neither. If direct messaging fails, send via mailbox: "
           '`python3 {inbox_script} send --to "{coord_mailbox}" --from "<your_ref_or_name>" --type progress --body "<report>"`.')
-# This line said "Write only: do not commit or push." until 0.12.0, against the workspace rule it was
-# supposed to carry: every session makes meaningful small commits, because uncommitted work is how
-# work gets lost. The gate was never the commit; it is the merge. Since 0.23.0 the merge is a pull
-# request's (Zach, 2026-09-23 15:31: "all code changes should require a PR" … "This will fully
-# supersede CIMP"), and the GitHub repos refuse a direct push to main. Who merges: the user, always
-# (17:26: "I'll review and click the auto merge button on all PRs from here on forward"). Opening it
-# and applying the cuts are the session's own since 0.27.0 (19:40: "PRs should be autononmous"; 19:51:
-# "I want ponytail cuts to be automatically applied, I think").
-# #33 stage 3 (Zach, 2026-09-23: "Reviewer + my triage"): the `reviewer` session reviews every pull request and
-# the user disposes of each finding, so a session no longer reviews or cuts its own.
+# Workers commit on their branches and open PRs; the reviewer and user handle review and merge.
 COMMITS = ("Commits: Commit small and often on your own branch — uncommitted work is how work gets "
            "lost. Code reaches main only through a pull request: push the branch and open one "
            "(`gh pr create`, or `glab mr create` on GitLab) when the work is finished and its suite is "
@@ -255,19 +225,7 @@ def _clean(label: str, value: str) -> str:
 
 
 def _owns(text: str, item: str, relative: str) -> str:
-    """The paths this task may edit, from the File ownership table, keyed on the task.
-
-    Written before the proposal, so the paths are on the board when the user reads it — and after the
-    spawn the coordinator rewrites that context cell to name the tree, which is why the short name is
-    accepted too.
-    """
-    # Three spellings, all writable by hand: the item entire, the name before its first colon, and
-    # the board's own short name. `short_name` no longer ellipsises -- that cut moved to `clip_name`
-    # when the task cell stopped truncating -- so it now returns a structural split or the name
-    # whole, and it can no longer name a key nobody could type. It CAN return the item unchanged,
-    # in which case these are two spellings and not three: a head under twelve characters is left
-    # alone, so `Ready probe: **...**` is addressable as the item or as `Ready probe`, and by
-    # nothing shorter. That is the spelling to write in the File ownership context cell.
+    """Find task-owned paths by full item, colon prefix, or board short name."""
     head = item.split(": ", 1)[0].strip()
     keys = {item.strip(), head, short_name(item).strip()} - {""}
     for line in _section(text, "## File ownership"):
@@ -302,15 +260,13 @@ def compose(root: Path, day: str | None, task: str, worktree: Path | None = None
     if not wanted or not rows:
         raise RefusedError(f"no Tasks row {task!r} in {relative}; a dispatch names a task that is already there")
     owner = rows[0].owner.strip()
-    # The rule has always said only an `unassigned` task may be dispatched; nothing enforced it, and
-    # two worktrees were handed the same task and the same file to edit.
+    # Prevent two workers from claiming one task.
     if owner.lower() != UNASSIGNED:
         raise RefusedError(
             f"task {rows[0].item.strip()!r} is already {owner}'s, not {UNASSIGNED}; it is not a task to dispatch")
-    # Zach, 2026-09-22 22:20: each task "is actually backed by an entry in github". Where the block names
-    # a backlog, a task with no issue is not handed out. Whether the issue is open is the audit's.
+    # Backlog-backed tasks need an issue; the audit checks whether it is open.
     issue = None
-    # "A standing session's placeholder is not a task and takes no issue" (the agent file's tracker rule).
+    # Standing placeholders do not need issues.
     if cfg.backlog and not rows[0].standing_for(name):
         cell = rows[0].issue.strip()
         if not cell:
@@ -319,16 +275,13 @@ def compose(root: Path, day: str | None, task: str, worktree: Path | None = None
         issue = issue_ref(cell, cfg.backlog)
         if not issue:
             raise RefusedError(f'task {rows[0].item.strip()!r} has "{_clean("the issue cell", cell)}" in its issue column, which is not an issue reference')
-    # Absolute, because this file is read by a session whose cwd is its own worktree rather than the
-    # root the tracker path is written against. The first real spawn went hunting for a relative path
-    # that was never reachable from where it stood, and a session that hunts reads things nobody
-    # pointed it at.
+    # Workers read the tracker from a different cwd, so its path must be absolute.
     item = _clean("the Tasks item", rows[0].item.strip())
     owns = _owns(text, item, relative)
     who = SESSION_NAME.fullmatch(coordinator.strip()) if coordinator else None
     if coordinator and not who:
         raise RefusedError(f"{coordinator!r} is not a session name; pass the name a listing shows")
-    # Zach, 2026-09-23 00:04: "when a session gets a name, it should stick with that name".
+    # Preserve the assigned session name.
     if name is not None and not GIVEN_NAME.fullmatch(name):
         raise RefusedError(f"{name!r} is not a session name; a launch name is bare, like impl07")
     if one_shot:
@@ -368,9 +321,7 @@ def compose(root: Path, day: str | None, task: str, worktree: Path | None = None
             raise RefusedError(f"the assignment is {len(body)} characters, over the {BODY_CAP} cap")
         return body
     coord_mailbox = "coordinator"
-    # Named explicitly: the inbox finds its mailbox through git's common dir, so from a fork worktree it
-    # resolved the fork's mailbox while the coordinator, at a workspace root that is no repo, read the
-    # workspace's. A mailbox-only (agy) session would never have been heard.
+    # Pin the workspace mailbox; worktree discovery can select a different one.
     inbox_script = f"{INBOX_SCRIPT} --mailbox-dir {shlex.quote(str(root.resolve() / PROMPT_DIR / 'mailbox'))}"
 
     header_text = HEADER.replace("\\\n", "").format(
