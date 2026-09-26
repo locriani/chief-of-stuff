@@ -61,7 +61,7 @@ class RenderTest(unittest.TestCase):
         for text in ("Decision · Storage · Fri 25 Sep", "Should the worker follow the architecture?",
                      "What the plan says", "Where it stands", "How it got here", "Options",
                      "Recommendation", "The architecture is the newer decision.", "If you don't answer",
-                     "The worker waits.", "References", "Answer in chat: A or B."):
+                     "The worker waits.", "References", "Answer here or in chat: A, B, or your own words."):
             self.assertIn(text, page)
 
     def test_text_is_escaped_and_marked_up(self):
@@ -71,10 +71,39 @@ class RenderTest(unittest.TestCase):
         self.assertIn('<a href="https://github.com/o/backlog/issues/7">https://github.com/o/backlog/issues/7</a>', page)
         self.assertNotIn("<now>", page)
 
-    def test_the_recommended_option_is_marked(self):
-        page = dp.render(dp.parse(decision()), "2026-09-25")
-        self.assertIn('<div class="opt rec"><span class="k">A</span><b>Follow the architecture <span class="rec">· recommended</span></b>', page)
-        self.assertIn('<div class="opt"><span class="k">B</span>', page)
+    def test_no_option_is_selected_until_the_user_selects_one(self):
+        # The user, 2026-09-26: "I want the decisions page to NOT have something selected until I actually select it
+        # for options, and to always have a write in option." Recommended is a text tag, not a filled or bold row.
+        page = dp.render(dp.parse(decision()), "2026-09-25", slug="uploads")
+        self.assertIn('<form class="options" method="post" action="/decision/uploads/answer">', page)
+        self.assertIn('<label class="opt"><span class="k"><input type="radio" name="key" value="A"> A</span>'
+                      '<b>Follow the architecture<span class="tag">recommended</span></b>', page)
+        self.assertIn('<input type="radio" name="key" value="B"> B</span><b>Follow the plan</b>', page)
+        self.assertIn('<input type="text" name="words"', page)
+        self.assertIn('<button type="submit">save</button>', page)
+        self.assertNotIn("checked", page)
+        self.assertNotIn("opt rec", page)
+        self.assertNotRegex(page, r"<script[^>]* src=")
+
+    def test_a_saved_page_answer_shows_the_decision_answered(self):
+        saved = {"key": "B", "words": "B, and log it", "at": "2026-09-25T02:08:00-05:00"}
+        page = dp.render(dp.parse(decision(answer=saved)), "2026-09-25", slug="uploads")
+        self.assertIn(">ANSWERED · B<", page)
+        self.assertIn("answered, saved 02:08", page)
+        self.assertIn("“B, and log it”", page)
+        self.assertIn('<input type="radio" name="key" value="B" checked>', page)
+        written = dp.render(dp.parse(decision(answer={"key": None, "words": "neither; ask the owner", "at": saved["at"]})),
+                            "2026-09-25", slug="uploads")
+        self.assertIn(">ANSWERED<", written)
+        self.assertIn("“neither; ask the owner”", written)
+        self.assertNotIn("checked", written)
+
+    def test_a_saved_answer_is_checked(self):
+        for bad, word in (({"key": "Z", "words": "", "at": "2026-09-25T02:08:00-05:00"}, "Z"),
+                          ({"key": None, "words": " ", "at": "2026-09-25T02:08:00-05:00"}, "words"),
+                          ({"key": "A", "words": ""}, "at")):
+            with self.subTest(word=word), self.assertRaisesRegex(dp.DecisionError, word):
+                dp.parse(decision(answer=bad))
 
     def test_a_section_may_be_one_paragraph(self):
         page = dp.render(dp.parse(decision(sections=[{"heading": "What happened", "text": "It stopped."}])), "2026-09-25")
@@ -395,13 +424,28 @@ class IndexTest(unittest.TestCase):
         pending = page.split("COMPLETED")[0]
         self.assertIn("<h1>Decisions · Sat 26 Sep</h1>", page)
         for text in ('<span class="when">01:41</span>', '<span class="age">29m</span>', '<a class="headline" href="decision-cache-warmup.html">Cache warmup</a>',
-                     '<span class="topic">cache</span>', "Keep the pool?", '<span class="key">A</span>keep the pool · recommended',
-                     '<span class="key">B</span>start cold', '<a class="ref" href="https://x/#111">#111</a> triage · hold', '<a class="ref" href="https://x/!58">!58</a> merge · passed',
+                     '<span class="topic">cache</span>', "Keep the pool?",
+                     '<label class="o"><input type="radio" name="key" value="A"><span class="key">A</span>keep the pool<span class="tag">recommended</span></label>',
+                     '<label class="o"><input type="radio" name="key" value="B"><span class="key">B</span>start cold</label>',
+                     '<form class="stack" method="post" action="/decision/cache-warmup/answer">', '<input type="hidden" name="back" value="decisions.html">',
+                     '<input type="text" name="words"', '<button type="submit">save</button>', '<a class="ref" href="https://x/#111">#111</a> triage · hold', '<a class="ref" href="https://x/!58">!58</a> merge · passed',
                      "The pool stays."):
             with self.subTest(text=text):
                 self.assertIn(text, pending)
-        self.assertIn('<span class="o rec">', pending)
+        self.assertNotIn("checked", pending)
+        self.assertNotRegex(pending, r'class="[^"]*\brec\b')
         self.assertIn("rendered 02:10 CDT · 1 pending · oldest 29m · holding 1 issue, 1 merge request · 0 completed today", page)
+
+    def test_a_saved_page_answer_is_an_answered_row_with_the_words(self):
+        saved = {"key": "B", "words": "B, and log each retry", "at": at("02:08").isoformat()}
+        page = self.render(dp.Context(NOW), retry=decision(answer=saved), other=decision())
+        pending = page.split("COMPLETED")[0]
+        self.assertIn('<div class="row pend saved">', pending)
+        self.assertIn('<span class="key">B</span>Follow the plan', pending)
+        self.assertIn('<span class="words">“B, and log each retry”</span>', pending)
+        self.assertIn('<span class="saved">answered, saved 02:08</span>', pending)
+        self.assertEqual(pending.count("<form"), 1)
+        self.assertIn("· 2 pending · 1 saved ·", page)
 
     def test_without_a_topic_there_is_no_chip(self):
         page = self.render(dp.Context(NOW), x=decision(topic=None))
@@ -451,7 +495,7 @@ class IndexTest(unittest.TestCase):
 
     def test_text_is_escaped(self):
         page = self.render(dp.Context(NOW, rows=(row("01:00", "<b>x</b>", "<i>"),)), x=decision(headline="<script>", topic="<t>"))
-        self.assertNotIn("<script>", page)
+        self.assertEqual(page.count("<script>"), 1)  # the page's own answer script; the headline is escaped
         self.assertNotIn("<b>x</b>", page)
         self.assertNotIn("<t>", page)
 
