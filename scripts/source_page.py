@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
 """A task's change as source and diff, `/issues/<n>/source` (Source48.dc.html, "Source & diff — task !48"): the change's
 files with +additions −deletions, a NEW / CHANGED / REMOVED badge and the other open changes on the same file, then
-each file's diff against the merge base, unified or split (a radio pair; CSS shows the one picked). The diff is read from the `[graph]` table's clone, fetched as the
+each file's diff against the merge base, unified or split (a radio pair; CSS shows the one picked), with each review
+thread inline under the line it is on. The diff is read from the `[graph]` table's clone, fetched as the
 module graph fetches it; without the table the page lists the files from the sources cache. pages.py renders it on
 request into `issue-<n>-source.html`.
 """
 
 from __future__ import annotations
 
+import json
 import re
+from dataclasses import dataclass
 from datetime import date, datetime
 from html import escape
 from pathlib import Path
 
+import backlog
 import board_sources
 import decision_page
 from decision_page import HEAD
@@ -56,9 +60,74 @@ table.split .lno,table.split .rno{width:40px;color:var(--muted);text-align:right
 table.split .rno{border-left:1px solid var(--line)} table.split .left,table.split .right{white-space:pre;overflow:hidden;text-overflow:ellipsis}
 td.left.del{background:color-mix(in srgb,var(--dl) 12%,transparent)} td.right.add{background:color-mix(in srgb,var(--stage-review) 12%,transparent)}
 td.empty{background:repeating-linear-gradient(135deg,var(--ref-bg) 0 4px,var(--surface) 4px 8px)}
+tr.note td{padding:4px 14px 8px 100px;font-family:"Alegreya Sans",system-ui,sans-serif}
+.nt{background:var(--surface);border:1px solid var(--line);border-top:3px solid var(--stage-pr);border-radius:5px;padding:7px 12px;margin:4px 0;font-size:13px;line-height:1.45;white-space:normal}
+.nt.resolved{border-top-color:var(--stage-review)} .nt p{color:var(--fg)}
 @media (max-width:760px){.src{grid-template-columns:minmax(0,1fr)} ul.files{position:static}}
 </style>
 """
+
+
+GL_NOTES = ("discussions { nodes { resolvable resolved notes(first: 1) { nodes { author { username } body createdAt url "
+            "position { filePath oldLine newLine } } } } }")
+GH_NOTES = ("reviewThreads(first: 100) { nodes { isResolved path line diffSide "
+            "comments(first: 1) { nodes { author { login } body createdAt url } } } }")
+
+
+@dataclass(frozen=True)
+class Note:
+    path: str               # the file the thread is on
+    line: int | None        # its line on that side; None when the forge gives none (outdated)
+    side: str               # "new" or "old"
+    thread: board_sources.ReviewThread
+
+
+def notes(change: board_sources.Change, home, gh=backlog.run_gh, call=backlog._call) -> tuple[list[Note], str]:
+    """The change's review threads with their file and line: (notes, error), from one small query for this change
+    only, apart from the cache refresh's. Never raises."""
+    when = board_sources._when
+    try:
+        n = int(change.ref[1:])
+        if isinstance(home, backlog.GitHubBacklog):
+            owner, name = home.repo.split("/", 1)
+            q = (f"query {{ repository(owner: {json.dumps(owner)}, name: {json.dumps(name)}) "
+                 f"{{ pullRequest(number: {n}) {{ {GH_NOTES} }} }} }}")
+            code, out, err = gh(["api", "graphql", "-f", f"query={q}"])
+            try:
+                body = json.loads(out)
+                nodes = body["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"]
+            except (ValueError, KeyError, TypeError):
+                return [], err.strip() or f"gh exited {code}"
+            return [Note(t["path"], t.get("line"), "old" if t.get("diffSide") == "LEFT" else "new",
+                         board_sources.ReviewThread(bool(t.get("isResolved")), (c.get("author") or {}).get("login") or "",
+                                                    c.get("body") or "", when(c.get("createdAt")), c.get("url") or ""))
+                    for t in nodes for c in ((t.get("comments") or {}).get("nodes") or [])[:1]], ""
+        secret = backlog.token(home)
+        if not secret:
+            return [], f"no token: set ${home.env} or add it to the Keychain as {home.service}"
+        q = (f"query {{ project(fullPath: {json.dumps(home.project)}) {{ mergeRequest(iid: {json.dumps(str(n))}) "
+             f"{{ {GL_NOTES} }} }} }}")
+        body, _, err = call("POST", f"{home.host.rstrip('/')}/api/graphql", secret, backlog.TIMEOUT, {"query": q})
+        if err or not isinstance(body, dict) or not isinstance(body.get("data"), dict):
+            return [], err or board_sources._graphql_errors(body if isinstance(body, dict) else {}) or "GitLab did not answer"
+        out = []
+        for d in (((body["data"].get("project") or {}).get("mergeRequest") or {}).get("discussions") or {}).get("nodes") or []:
+            for c in ((d.get("notes") or {}).get("nodes") or [])[:1] if d.get("resolvable") else ():
+                pos = c.get("position") or {}
+                side = "new" if pos.get("newLine") is not None else "old"
+                out.append(Note(pos.get("filePath") or "", pos.get(f"{side}Line"), side,
+                                board_sources.ReviewThread(bool(d.get("resolved")), (c.get("author") or {}).get("username") or "",
+                                                           c.get("body") or "", when(c.get("createdAt")), c.get("url") or "")))
+        return out, ""
+    except Exception as e:  # a forge answer shaped unlike its schema; the page still renders its diff
+        return [], f"{type(e).__name__}: {e}"
+
+
+def _note(n: Note, now: datetime) -> str:
+    t = n.thread
+    when = f" · {t.at.astimezone(now.tzinfo):%H:%M}" if t.at else ""
+    return (f'<div class="nt{" resolved" if t.resolved else ""}"><span><b>{"Resolved" if t.resolved else "Open"} thread · '
+            f'{escape(t.author)}{when}</b> · <a href="{escape(t.url)}">thread</a></span><p>{escape(t.body)}</p></div>')
 
 
 class File:
@@ -120,20 +189,31 @@ def _count(a: int, d: int) -> str:
                                   f'<span class="minus">−{d}</span>' if d else ""))) or "+0"
 
 
-def _rows(f: File) -> str:
-    out = []
+def _rows(f: File, mine: list[Note], now: datetime) -> tuple[str, list[Note]]:
+    """The file's diff rows, each line followed by the notes on it; and the notes on no shown line."""
+    out, left = [], list(mine)
     for kind, o, n, tx in f.rows:
         if kind == "hunk":
             out.append(f'<tr class="hunk"><td colspan="4">{escape(tx)}</td></tr>')
-        else:
-            sign = {"add": "+", "del": "−"}.get(kind, "")
-            out.append(f'<tr class="{kind}"><td class="o">{o}</td><td class="n">{n}</td><td class="sign">{sign}</td>'
-                       f'<td class="tx">{escape(tx)}</td></tr>')
-    return "\n".join(out)
+            continue
+        sign = {"add": "+", "del": "−"}.get(kind, "")
+        out.append(f'<tr class="{kind}"><td class="o">{o}</td><td class="n">{n}</td><td class="sign">{sign}</td>'
+                   f'<td class="tx">{escape(tx)}</td></tr>')
+        on = [x for x in left if x.line is not None and (x.line == n if x.side == "new" else x.line == o)]
+        out += [f'<tr class="note"><td colspan="4">{_note(x, now)}</td></tr>' for x in on]
+        left = [x for x in left if x not in on]
+    return "\n".join(out), left
 
 
-def _split(f: File) -> str:
-    """The old side left, the new side right; within a change, removed and added lines pair row by row."""
+def _change(ref: str, sources: board_sources.Sources) -> board_sources.Change | None:
+    """The change naming the issue: an open one first, then a merged one."""
+    order = {"open": 0, "merged": 1}
+    return min((c for c in sources.changes.values() if ref in c.issues), key=lambda c: order.get(c.state, 2), default=None)
+
+
+def _split(f: File, mine: list[Note], now: datetime) -> str:
+    """The old side left, the new side right; within a change, removed and added lines pair row by row. A note follows
+    the row holding its line."""
     def side(row, cls: str) -> str:
         if row is None:
             return f'<td class="{cls[0]}no"></td><td class="{cls} empty"></td>'
@@ -142,23 +222,29 @@ def _split(f: File) -> str:
 
     out, dels, adds = [], [], []
 
+    def row(left, right) -> None:
+        out.append("<tr>" + side(left, "left") + side(right, "right") + "</tr>")
+        out.extend(f'<tr class="note"><td colspan="4">{_note(x, now)}</td></tr>' for x in mine if x.line is not None and (
+            (x.side == "old" and left and x.line == left[1]) or (x.side == "new" and right and x.line == right[2])))
+
     def flush():
         for k in range(max(len(dels), len(adds))):
-            out.append("<tr>" + side(dels[k] if k < len(dels) else None, "left")
-                       + side(adds[k] if k < len(adds) else None, "right") + "</tr>")
+            row(dels[k] if k < len(dels) else None, adds[k] if k < len(adds) else None)
         dels.clear(), adds.clear()
 
-    for row in f.rows:
-        if row[0] == "del":
+    for r in f.rows:
+        if r[0] == "del":
             if adds:
                 flush()
-            dels.append(row)
-        elif row[0] == "add":
-            adds.append(row)
+            dels.append(r)
+        elif r[0] == "add":
+            adds.append(r)
         else:
             flush()
-            out.append(f'<tr class="hunk"><td colspan="4">{escape(row[3])}</td></tr>' if row[0] == "hunk"
-                       else "<tr>" + side(row, "left") + side(row, "right") + "</tr>")
+            if r[0] == "hunk":
+                out.append(f'<tr class="hunk"><td colspan="4">{escape(r[3])}</td></tr>')
+            else:
+                row(r, r)
     flush()
     return "\n".join(out)
 
@@ -169,8 +255,9 @@ LAYOUT = ('  <div class="seg" role="group" aria-label="Diff layout">'
 
 
 def render(number: int, trackers: list[tuple[date, str]], sources: board_sources.Sources, now: datetime,
-           graph: Graph | None = None, pages: Path | None = None, root: Path | None = None) -> str | None:
-    """The page, or None when no task in `trackers` names issue `number`."""
+           graph: Graph | None = None, pages: Path | None = None, root: Path | None = None,
+           notes: list[Note] | None = None, notes_error: str = "") -> str | None:
+    """The page, or None when no task in `trackers` names issue `number`. `notes` are the change's review threads."""
     ref = f"#{number}"
     mine = [t for _, text in trackers for t in parse_tracker(text).tasks
             if (m := TRAILING_NUMBER.search(t.issue)) and int(m[1]) == number]
@@ -178,8 +265,7 @@ def render(number: int, trackers: list[tuple[date, str]], sources: board_sources
         return None
     issue = sources.issues.get(ref)
     name = issue.title if issue else mine[0].label
-    order = {"open": 0, "merged": 1}
-    change = min((c for c in sources.changes.values() if ref in c.issues), key=lambda c: order.get(c.state, 2), default=None)
+    change = _change(ref, sources)
     crumb = f"Source · {escape(change.ref) + ' · ' if change else ''}{ref} {escape(name)}"
     title = f"{escape(change.ref)} · {escape(change.title)}" if change else escape(name)
     compare = note = ""
@@ -208,10 +294,20 @@ def render(number: int, trackers: list[tuple[date, str]], sources: board_sources
             f'<span class="chip also">ALSO {escape(r)}</span>' for r in shared.get(f.path, ()))
         items.append(f'      <li><a href="#{escape(anchor(f.path))}">{escape(f.path)}</a><span class="d">{_count(f.add, f.dele)}</span>'
                      f'<span class="b">{chips}</span></li>')
-    tables = [f'    <div class="card"><h3>{escape(f.path)}</h3>\n    <table class="diff" id="{escape(anchor(f.path))}" '
-              f'data-path="{escape(f.path)}">\n{_rows(f)}\n    </table>\n'
-              f'    <table class="split" data-split-path="{escape(f.path)}">\n{_split(f)}\n    </table></div>'
-              for f in files if f.rows]
+    tables, notes = [], list(notes or ())
+    for f in files:
+        if not f.rows:
+            continue
+        on = [x for x in notes if x.path == f.path]
+        rows, off = _rows(f, on, now)
+        notes = [x for x in notes if x.path != f.path]
+        tables.append(f'    <div class="card"><h3>{escape(f.path)}</h3>\n' + "".join(_note(x, now) for x in off)
+                      + f'    <table class="diff" id="{escape(anchor(f.path))}" data-path="{escape(f.path)}">\n{rows}\n    </table>\n'
+                      f'    <table class="split" data-split-path="{escape(f.path)}">\n{_split(f, [x for x in on if x not in off], now)}\n    </table></div>')
+    if notes:  # threads on files the page shows no diff of
+        tables.insert(0, '    <div class="card">' + "".join(_note(x, now) for x in notes) + "</div>")
+    if notes_error:
+        tables.insert(0, f'    <p class="card">Review notes unavailable: {escape(notes_error)}</p>')
     if not change:
         body = f'  <p class="card">Nothing to diff: no change names {ref} yet.</p>\n'
     else:
@@ -231,6 +327,10 @@ def render(number: int, trackers: list[tuple[date, str]], sources: board_sources
 
 def write(root: Path, pages_dir: Path, number: int) -> Path | None:
     """Render `issue-<number>-source.html`; with no page, remove the file and return None."""
-    _, now, trackers, settings = inputs(root)
-    page = render(number, trackers, board_sources.load(pages_dir), now, settings.graph, pages_dir, root)
+    cfg, now, trackers, settings = inputs(root)
+    sources = board_sources.load(pages_dir)
+    change = _change(f"#{number}", sources)
+    # ponytail: one small forge query per render (about once a minute while the page is open); cache by head if it bites.
+    found, error = notes(change, cfg.backlog) if change and cfg.backlog else ([], "")
+    page = render(number, trackers, sources, now, settings.graph, pages_dir, root, found, error)
     return put(pages_dir / f"issue-{number}-source.html", page)
