@@ -53,10 +53,12 @@ def _ahead(stages: list[str], start: datetime, end: datetime) -> list[gantt.Segm
 
 
 def build(log: list[Move], tasks, lanes: dict, held: set[str], ends: dict[str, datetime], now: datetime,
-          durations: dict[str, timedelta] | None = None, slots: int = 1) -> list[tuple[str, gantt.Row]]:
+          durations: dict[str, timedelta] | None = None, slots: int = 1,
+          approved: frozenset[str] = frozenset()) -> list[tuple[str, gantt.Row]]:
     """(status, row) per task with a move, first moved first, then the queued tasks in tracker order. `tasks` are
     tracker rows, later ones winning; `held` names the held tasks; `ends` maps a task's item to its estimated end;
-    `durations` maps a queued task's item to how long it will take, and `slots` is how many run at once.
+    `durations` maps a queued task's item to how long it will take, and `slots` is how many run at once;
+    `approved` names the tasks whose open change is approved, labelled `approved · merge ~HH:MM` by their end.
     Status is `merged`, `held` or the task's state word."""
     by_name = {t.name.strip().casefold(): t for t in tasks if t.name.strip()}
     terminal = {lane.stages[-1] for lane in lanes.values()}
@@ -79,9 +81,10 @@ def build(log: list[Move], tasks, lanes: dict, held: set[str], ends: dict[str, d
             ahead = [last.stage] + [s for s in lane.stages[lane.stages.index(last.stage) + 1:] if s not in terminal]
             segs += _ahead(ahead, now, end)
             busy.append(end)
-            status, note = task.kind, f"{last.stage} · {_clock(end, now)}"
+            ok = task.name.strip() in approved
+            status, note = task.kind, f"approved · merge {_clock(end, now)}" if ok else f"{last.stage} · {_clock(end, now)}"
         else:
-            status, note = (task.kind if task else ""), last.stage
+            status, note = (task.kind if task else ""), "approved" if task and task.name.strip() in approved else last.stage
         out.append((status, gantt.Row(task.issue.strip() if task else "", task.name.strip() if task else last.name,
                                       note, tuple(segs))))
     # Each slot is free once the forecast holding it ends; more forecasts than slots wait for the (n-k+1)th end.
