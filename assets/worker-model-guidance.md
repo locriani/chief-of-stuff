@@ -24,11 +24,17 @@ These are examples, not assumed installed model IDs. The table is not an authori
 
 ## Workspace choices
 
-Record the exact model IDs and any provider restrictions for this workspace here. The CLI flags use these IDs verbatim.
+Record the exact model IDs for this workspace in the Settings TOML (`chief-of-stuff.toml`), one `[models.<class>]` table per task class. Each rotation entry is `runtime:model-id@effort`, with the runtime one of `claude`, `agy`, `codex` or `cursor`, the model ID used verbatim, and `@high`, `@medium` or `@low` optional. The first entry is the suggested model; the rest is the fallback order when a model is unavailable or out of quota.
 
-| Task class | Runtime | Exact model ID | Effort | Notes |
-|---|---|---|---|---|
-| Deep reasoning | | | | |
-| General implementation | | | | |
-| Fast work | | | | |
-| Independent review | | | | |
+```toml
+[models.deep]
+rotation = ["claude:opus@high", "codex:<model-id>@high"]
+[models.implement]
+rotation = ["claude:sonnet@medium", "codex:<model-id>@medium"]
+[models.fast]
+rotation = ["claude:haiku@low"]
+[models.review]
+rotation = ["codex:<model-id>@high", "claude:opus@high"]
+```
+
+`chief-of-stuff models --root . --class implement` prints the suggested entry; `--after <entry>` prints the next, and `--not-family <runtime>` skips a runtime for independent review. Record provider restrictions here. Without `[models]`, the coordinator follows this file's guidance alone.
