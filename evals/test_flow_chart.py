@@ -284,6 +284,58 @@ ONE_SHOT_TRACKER = """# Tracker
 - 00:05 opened the day
 """
 
+# #182: a launch records its task as the item read then; the row's item changes afterwards.
+UPLOAD_ITEM = "Cap uploads at 25 MB"
+UPLOAD_PROMPT = (f"{UPLOAD_ITEM}. The form refuses a larger file before sending it and names the limit. Keep the limit "
+                 "in one setting that both sides read. Add tests for exactly 25 MB and one byte over.")
+KEY_PROMPT = ("Rotate the signing key for the token service (#105). Swap the key in the vault before the restart, "
+              "and note the new key id in the runbook.")
+SWEEP_PROMPT = ("Sweep the stale branches older than thirty days in every repository and list each one that still "
+                "has an open change against it.")
+PROMPT_SENTENCES = ("Keep the limit in one setting that both sides read", "Swap the key in the vault before the restart")
+# (row name, launch-time item, worker, tree, launched at, the item afterwards; None = the row is gone)
+LAUNCHES = (("Upload size limit", UPLOAD_PROMPT, "impl-1", "upload", "00:20", UPLOAD_ITEM),
+            ("Key rotation", KEY_PROMPT, "impl-2", "keys", "00:40", "Monthly key rotation"),
+            ("Branch sweep", SWEEP_PROMPT, "impl-3", "sweep", "01:00", None))
+LAUNCHED_TRACKER = f"""# Tracker
+
+## Tasks
+
+| name | item | owner | state | since | due | size | lane | stage | issue | checklist |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Upload size limit | {UPLOAD_PROMPT} | unassigned | open | {TODAY} |  | M |  |  | #104 | c |
+| Key rotation | {KEY_PROMPT} | unassigned | open | {TODAY} |  | S |  |  | #105 | c |
+| Branch sweep | {SWEEP_PROMPT} | unassigned | open | {TODAY} |  | S |  |  | #106 | c |
+
+## File ownership
+
+| context | paths |
+|---|---|
+| Upload size limit | `src/upload/` |
+| Key rotation | `src/keys/` |
+| Branch sweep | `tools/sweep/` |
+
+## Log
+
+- 00:05 opened the day
+"""
+
+
+def launched_tracker() -> str:
+    """The launcher's real writer records each launch; then Upload's item shrinks to the prompt's first words, Key
+    rotation's item is reworded (its prompt still carries #105), and Branch sweep's row is removed."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "tracker.md"
+        path.write_text(LAUNCHED_TRACKER)
+        for _, prompt, worker, tree, hhmm, _ in LAUNCHES:
+            one_shot.record_launch(path, prompt, worker, f"worktree `trees/{tree}` ({tree})", "claude", "opus", hhmm)
+        text = path.read_text()
+    for name, prompt, *_, after in LAUNCHES:
+        row = f"| {name} | {prompt} |"
+        text = (text.replace(row, f"| {name} | {after} |") if after else
+                "".join(line for line in text.splitlines(keepends=True) if not line.startswith(row)))
+    return text
+
 
 REVIEW_LOOP = """# Tracker
 
@@ -388,6 +440,45 @@ class OneShotTest(unittest.TestCase):
         self.assertEqual([(g.category, g.start, g.end) for g in row.segments],
                          [("implement", at(TODAY, "00:20"), at(TODAY, "01:30")), ("pr", at(TODAY, "01:30"), at(TODAY, "01:40")),
                           ("review", at(TODAY, "01:40"), NOW)])
+
+
+class LaunchRowTest(unittest.TestCase):
+    """A one-shot's launch is drawn on its task's row even after the row's item stops matching the launch (#182)."""
+
+    def setUp(self):
+        text = launched_tracker()
+        self.got = [row for _, row in fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(), {}, NOW)]
+
+    def launched_at(self, hhmm: str) -> gantt.Row:
+        rows = [r for r in self.got if any(g.start == at(TODAY, hhmm) for g in r.segments)]
+        self.assertEqual(len(rows), 1, [r.name[:40] for r in self.got])
+        return rows[0]
+
+    def test_a_launch_is_drawn_on_its_tasks_own_row(self):
+        # Rules 1–3: a started line whose task begins with a row's item, or carries the row's issue ref, is drawn on
+        # that row, with its ref and name; no launcher-only row is named by the prompt.
+        for hhmm, ref, name in (("00:20", "#104", "Upload size limit"), ("00:40", "#105", "Key rotation")):
+            with self.subTest(task=name):
+                row = self.launched_at(hhmm)
+                self.assertEqual((row.ref, row.name), (ref, name))
+        html = fc.section([("running", r) for r in self.got], NOW)
+        for sentence in PROMPT_SENTENCES:
+            with self.subTest(sentence=sentence):
+                self.assertFalse(sentence in html, "the prompt's sentence is drawn")
+
+    def test_no_row_name_is_longer_than_its_tasks_name(self):
+        # Rule 4: no Flow row name is longer than the row name it maps to.
+        for name, _, _, _, hhmm, after in LAUNCHES:
+            if after:
+                with self.subTest(task=name):
+                    self.assertLessEqual(len(self.launched_at(hhmm).name), len(name))
+
+    def test_a_launch_with_no_row_keeps_a_short_name(self):
+        # Rule 5: a started line that maps to no row is named by its first line, cut to a fixed length.
+        name = self.launched_at("01:00").name
+        self.assertTrue(name)
+        self.assertLessEqual(len(name), 80)
+        self.assertTrue(SWEEP_PROMPT.splitlines()[0].startswith(name), name)
 
 
 if __name__ == "__main__":

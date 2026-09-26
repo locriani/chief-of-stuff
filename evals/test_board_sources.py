@@ -10,14 +10,17 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from unittest import mock
 from zoneinfo import ZoneInfo
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path[:0] = [str(Path(__file__).resolve().parents[1] / "scripts"), str(Path(__file__).resolve().parent)]
 
 import board_sources as bs  # noqa: E402
+import render_board as rb  # noqa: E402
+import test_flow_chart as fc_test  # noqa: E402
 
 ZONE = ZoneInfo("America/Chicago")
 NOW = datetime(2026, 9, 26, 2, 10, tzinfo=ZONE)
@@ -448,11 +451,55 @@ class WorkersTest(unittest.TestCase):
         (tree / "one-shot.pid").write_text(f"{os.getpid()} Rate limit headers, PR #58\n")
         got = bs.refresh(root, NOW, gh=FakeGh())
         one = next(w for w in got.workers if w.kind == "one-shot")
+        # The task is named by its row's name, not the item the launch recorded (#182).
         self.assertEqual((one.name, one.runtime, one.model, one.task, one.tree, one.started.strftime("%H:%M")),
-                         ("impl-1", "claude", "opus", "Rate limit headers, PR #58", "rate-limit", "01:28"))
+                         ("impl-1", "claude", "opus", "Rate limit", "rate-limit", "01:28"))
         session = next(w for w in got.workers if w.kind == "session")
         self.assertEqual((session.name, session.task, session.last.strftime("%H:%M")),
                          ("reviewer-2", "review of #58", "01:58"))
+
+
+class LaunchedWorkerNameTest(unittest.TestCase):
+    """A live one-shot is named by its task row even after the row's item stops matching its launch (#182)."""
+
+    def setUp(self):
+        root = workspace("GitHub issues; repo o/app")
+        text = fc_test.launched_tracker()
+        (root / "daily" / f"{DAY}-tracker.md").write_text(text)
+        for _, prompt, _, tree, _, _ in fc_test.LAUNCHES:
+            pid = root / "trees" / tree / ".chief-of-stuff" / "one-shot.pid"
+            pid.parent.mkdir(parents=True)
+            pid.write_text(f"{os.getpid()} {prompt}\n")
+        cfg = rb.parse_coordinator((root / "CLAUDE.md").read_text(), today=NOW.date())
+        self.workers = bs.workers(root, cfg, rb.parse_tracker(text), text, NOW.date())
+        self.by_tree = {w.tree: w for w in self.workers if w.kind == "one-shot"}
+        self.facts = {r.name: r.facts for r in rb.worker_panel(replace(bs.EMPTY, workers=self.workers), NOW).rows}
+
+    def test_the_workers_panel_names_the_row_a_launch_maps_to(self):
+        # Rules 1–2: a started line whose task begins with a row's item, or carries the row's issue ref, shows that
+        # row's name; the prompt's later sentences appear nowhere.
+        for tree, worker, name in (("upload", "impl-1", "Upload size limit"), ("keys", "impl-2", "Key rotation")):
+            with self.subTest(task=name):
+                self.assertEqual(self.by_tree[tree].name, worker)
+                self.assertIn(name, self.facts[worker])
+        for sentence in fc_test.PROMPT_SENTENCES:
+            with self.subTest(sentence=sentence):
+                self.assertNotIn(sentence, repr(self.workers))
+                self.assertNotIn(sentence, repr(self.facts))
+
+    def test_no_workers_fact_is_longer_than_its_rows_name(self):
+        # Rule 4: no Workers fact is longer than the row name it maps to.
+        for name, _, _, tree, _, after in fc_test.LAUNCHES:
+            if after:
+                with self.subTest(task=name):
+                    self.assertLessEqual(len(self.by_tree[tree].task), len(name))
+
+    def test_a_launch_with_no_row_keeps_a_short_name(self):
+        # Rule 5: a started line that maps to no row is named by its first line, cut to a fixed length.
+        task = self.by_tree["sweep"].task
+        self.assertTrue(task)
+        self.assertLessEqual(len(task), 80)
+        self.assertTrue(fc_test.SWEEP_PROMPT.splitlines()[0].startswith(task), task)
 
 
 class LoadTest(unittest.TestCase):

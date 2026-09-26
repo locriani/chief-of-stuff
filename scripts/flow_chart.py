@@ -60,6 +60,18 @@ def moves(text: str, day: date, zone: ZoneInfo) -> list[Move]:
     return out
 
 
+def launch_row(text: str, tasks):
+    """(row, name) for a one-shot's launch-time task text: the row whose item the text begins with, else the row
+    whose issue ref it carries (later rows win), and that row's name; with no row, None and the text's first line
+    cut to 80 characters. The launch keeps its text; the row's item may change after it (#182)."""
+    text = text.strip()
+    for hit in (lambda t: t.item.strip() and text.startswith(t.item.strip()),
+                lambda t: t.issue.strip() and re.search(rf"(?<!\w){re.escape(t.issue.strip())}(?!\d)", text)):
+        if rows := [t for t in tasks if hit(t)]:
+            return rows[-1], rows[-1].name.strip() or text.split("\n", 1)[0][:80]
+    return None, text.split("\n", 1)[0][:80]
+
+
 def _clock(at: datetime, now: datetime) -> str:
     return f"~{at:%H:%M}" if at.date() == now.date() else f"{at:%a}"
 
@@ -83,7 +95,8 @@ def build(log: list[Move], tasks, lanes: dict, held: set[str], ends: dict[str, d
     find = {**{t.item.strip().casefold(): t for t in tasks if t.item.strip()}, **by_name}
 
     def key_of(m: Move) -> str:
-        return t.name.strip().casefold() if (t := find.get(m.name.strip().casefold())) and t.name.strip() else m.name.casefold()
+        t = find.get(m.name.strip().casefold()) or (launch_row(m.name, tasks)[0] if m.launch else None)
+        return t.name.strip().casefold() if t and t.name.strip() else m.name.casefold()
 
     terminal = {lane.stages[-1] for lane in lanes.values()}
     horizon = now + WINDOWS[-1][2]
@@ -117,7 +130,7 @@ def build(log: list[Move], tasks, lanes: dict, held: set[str], ends: dict[str, d
             status, note = task.kind, f"approved · merge {_clock(end, now)}" if ok else f"{last.stage} · {_clock(end, now)}"
         else:
             status, note = (task.kind if task else ""), "approved" if task and task.name.strip() in approved else last.stage
-        out.append((status, gantt.Row(task.issue.strip() if task else "", task.name.strip() if task else last.name,
+        out.append((status, gantt.Row(task.issue.strip() if task else "", task.name.strip() if task else launch_row(last.name, ())[1],
                                       note, tuple(segs))))
     # Each slot is free once the forecast holding it ends; more forecasts than slots wait for the (n-k+1)th end.
     slots = max(1, slots)
