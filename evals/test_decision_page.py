@@ -491,6 +491,15 @@ class IndexTest(unittest.TestCase):
         self.assertIn("0 pending", page)
         self.assertIn("2 completed today", page)
 
+    def test_completed_rows_run_newest_first_whatever_the_tracker_order(self):
+        # The user, 2026-09-26: "decisions list page needs to go in reverse chronological order". The tracker's
+        # Decisions table is not kept in time order, so the list sorts by each row's time.
+        ctx = dp.Context(NOW, rows=(row("01:15", "Second #1", '"yes"'), row("00:05", "First #2", '"yes"'),
+                                    row("01:40", "Third #3", '"yes"'), row("00:20", "Fourth #4", '"yes"')))
+        done = self.render(ctx).split("COMPLETED")[1]
+        whens = re.findall(r'<span class="when">(\d\d:\d\d)</span>', done)
+        self.assertEqual(whens, ["01:40", "01:15", "00:20", "00:05"])
+
     def test_it_renders_with_empty_sources(self):
         page = self.render(dp.Context(NOW, sources=bs.EMPTY), x=decision(holds=["#111"]))
         self.assertIn('<a class="ref">#111</a>', page)
