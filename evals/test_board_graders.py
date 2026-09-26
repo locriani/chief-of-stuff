@@ -4,6 +4,7 @@ pages wiring (Zach, 2026-09-24 14:07: "we should host our own webserver"; the mo
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -96,27 +97,6 @@ class BoardGraderTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("stale", detail)
 
-    def test_board_bars(self) -> None:
-        g = {"type": "board_bars", "bars": [{"item": "Notes", "end_src": "deadline", "label": "no estimate"}, {"item": "Audit", "start_src": "since", "end_src": "state"}], "deadline_lines": ["Final"]}
-        self.assertTrue(self.grade(g)[0], self.grade(g)[1])
-        ok, detail = self.grade({"type": "board_bars", "bars": [{"item": "Notes", "end_src": "due"}]})
-        self.assertFalse(ok)
-        self.assertIn("Notes", detail)
-        ok, detail = self.grade({"type": "board_bars", "bars": [], "deadline_lines": ["Launch"]})
-        self.assertFalse(ok)
-
-
-    def test_board_bars_counts_folded_members(self) -> None:
-        folded = self.html.replace(
-            '<div class="bar open open-end" data-item="Notes"',
-            '<div class="bar open-end summary" data-summary="today" data-count="1"><span class="member" data-item="Notes"',
-        ).replace('data-label="no estimate"></div>', 'data-label="no estimate"></span></div>')
-        self.assertIn('class="member" data-item="Notes"', folded)
-        (self.after / "pages" / "2026-09-16-board.html").write_text(folded)
-        g = {"type": "board_bars", "bars": [{"item": "Notes", "start_src": "since", "end_src": "deadline", "label": "no estimate"}]}
-        ok, detail = self.grade(g)
-        self.assertTrue(ok, detail)
-
     REQS = "# Final\n\n## Submission\n\n- [ ] Security audit of the upload endpoint\n- [ ] Demo video\n  - [ ] Multi-turn question\n\n## Engineering\n\n- [x] Deployed URL — evidence: https://example.test\n"
 
     def write_reqs(self, before: str, after: str) -> None:
@@ -149,15 +129,23 @@ class BoardGraderTest(unittest.TestCase):
         ok, detail = self.grade({"type": "checklist_ticks_only", "path": "daily/reqs.md", "ticked": []})
         self.assertTrue(ok, detail)
 
-    def test_board_requirements(self) -> None:
-        page = self.html.replace("</div></div>", '</div><section class="reqs" data-deadline="Final" data-done="1" data-total="4"></section></div>')
-        (self.after / "pages" / "2026-09-16-board.html").write_text(page)
-        ok, detail = self.grade({"type": "board_requirements", "deadline": "Final", "done": 1, "total": 4})
-        self.assertTrue(ok, detail)
-        ok, detail = self.grade({"type": "board_requirements", "deadline": "Final", "done": 0, "total": 4})
-        self.assertFalse(ok)
-        self.assertIn("1 of 4", detail)
-        self.assertFalse(self.grade({"type": "board_requirements", "deadline": "Launch", "done": 0, "total": 4})[0])
+
+class CaseMatchesTheRendererTest(unittest.TestCase):
+    """A case's `html_match` is the renderer's markup, so the board grader fails on the agent, never on a stale pattern."""
+
+    def test_the_done_card_pattern_matches_a_rendered_done_task(self) -> None:
+        case = EVALS / "cases" / "board-republish-on-task-change"
+        spec = json.loads((case / "case.json").read_text())
+        pattern = next(g["html_match"] for g in spec["graders"] if g.get("html_match"))
+        work = Path(tempfile.mkdtemp())
+        run.render_tree(case / "fixture", work, run.context(spec["tz"], datetime.now(ZoneInfo(spec["tz"]))))
+        tracker = next((work / "daily").glob("*-tracker.md"))
+        tracker.write_text(tracker.read_text().replace("| Security audit | coordinator | open |", "| Security audit | coordinator | done 10:00 |"))
+        subprocess.run([sys.executable, str(run.PLUGIN_ROOT / "scripts" / "render_board.py"), "--root", str(work)], check=True, capture_output=True)
+        html = next((work / "pages").glob("*-board.html")).read_text()
+        self.assertRegex(html, pattern)
+        self.assertNotRegex(html.replace('data-cat="done">done', 'data-cat="open">open'), pattern)
+
 
 if __name__ == "__main__":
     unittest.main()

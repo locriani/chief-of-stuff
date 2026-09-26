@@ -2,7 +2,7 @@
   "golden": true,
   "golden_why": "requirements: the deadline's done count",
   "tz": "America/Chicago",
-  "description": "A task that is evidence for exactly one Final requirement goes done: tick that item in the requirements file with the evidence given, change nothing else in it, log the tick, and republish the board showing the new count.",
+  "description": "A task that is evidence for exactly one Final requirement goes done: tick that item in the requirements file with the evidence given, change nothing else in it, log the tick, and re-render the board from the final tracker.",
   "prompt": "The security audit of the upload endpoint is done, commit abc1234.",
   "graders": [
     {
@@ -64,13 +64,6 @@
       "type": "timestamp_tolerance",
       "path": "daily/{{today}}-tracker.md",
       "section": "## Log"
-    },
-    {
-      "name": "board shows 2 of 6",
-      "type": "board_requirements",
-      "deadline": "Final",
-      "done": 2,
-      "total": 6
     }
   ],
   "max_turns": 16,

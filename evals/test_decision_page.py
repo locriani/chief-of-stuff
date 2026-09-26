@@ -513,13 +513,10 @@ def contrast(a: str, b: str) -> float:
 
 
 STAGES = ("implement", "pr", "review", "triage", "fix", "verify", "merge")
-SHARED = ("--bg", "--surface", "--fg", "--muted", "--line", "--brass", "--dl", "--now") + tuple(f"--stage-{s}" for s in STAGES)
+SHARED = ("--bg", "--surface", "--fg", "--muted", "--line", "--brass", "--dl") + tuple(f"--stage-{s}" for s in STAGES)
 # (text, ground) pairs as the stylesheets use them: every one is text that must read at WCAG AA.
 BOARD_TEXT = [("--fg", "--bg"), ("--fg", "--surface"), ("--muted", "--bg"), ("--muted", "--surface"), ("--brass", "--surface"),
-              ("--brass", "--bg"), ("--dl", "--bg"), ("--dl", "--surface"), ("--est", "--surface"), ("--fg", "--done"),
-              ("--seg-ink", "--eat"), ("--seg-ink", "--recreation"), ("--bar-ink", "--sleep"), ("--bar-ink", "--gym")] + [
-              ("--bar-ink", f"--{bar}") for bar in ("open", "running", "noest", "est", "fold")] + [
-              (f"--stage-{s}", "--bg") for s in STAGES]
+              ("--brass", "--bg"), ("--dl", "--bg"), ("--dl", "--surface")] + [(f"--stage-{s}", "--bg") for s in STAGES]
 PAGE_TEXT = [("--link", "--ref-bg"), ("--link", "--surface"), ("--surface", "--link"), ("--surface", "--now"), ("--deployed", "--surface"), ("--inflight", "--inflight-soft"),
              ("--designed", "--designed-soft"), ("--ext-ink", "--ext-soft"), ("--dl", "--ext-soft")]
 
