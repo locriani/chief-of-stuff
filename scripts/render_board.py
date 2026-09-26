@@ -1145,22 +1145,31 @@ def build_columns(tasks: list[Task], lanes: dict | None, kanban: Kanban | None =
     lanes = lanes or {}
     gates = {g for lane in lanes.values() for g in lane.gates}
 
+    def issue_url(ref: str, cell: str = "") -> str:
+        known = sources.issues.get(ref)
+        return known.url if known else cell.strip() if cell.strip().startswith(("https://", "http://")) else ""
+
     def card(task: Task) -> columns.Card:
         changes = task_changes(task, sources)
-        issue = issue_key(task.issue) if changes or issue_key(task.issue) in sources.issues else task.issue.strip()
-        refs = " · ".join([issue] * bool(issue) + [c.ref for c in changes])
+        url = issue_url(issue_key(task.issue), task.issue)
+        issue = issue_key(task.issue) if changes or url else task.issue.strip()
+        refs = ((issue, url),) * bool(issue) + tuple((c.ref, c.url) for c in changes)
         marks = change_marks(changes) + ((columns.Mark("drift", "drift"),) if drifts(task, kanban, sources) else ())
         return columns.Card(task.label, task.kind, refs, task.owner, task.state, marks,
-                            flag=columns.Mark("ON HOLD", "hold") if held(task, kanban) else None)
+                            flag=columns.Mark("ON HOLD", "hold") if held(task, kanban) else None,
+                            href=next((c.url for c in changes if c.state == "open"), url))
 
     laned = [t for t in tasks if t.lane.strip() and t.stage.strip()]
     order = list(dict.fromkeys(stage_order(lanes) + [t.stage.strip() for t in laned]))
-    cols = [columns.Column(stage, tuple(card(t) for t in laned if t.stage.strip() == stage),
+    # No PR column: a card at `pr` draws in the stage after it, normally review.
+    into = {"pr": order[order.index("pr") + 1]} if "pr" in order[:-1] else {}
+    order = [s for s in order if s not in into]
+    cols = [columns.Column(stage, tuple(card(t) for t in laned if into.get(t.stage.strip(), t.stage.strip()) == stage),
                            *(("gate", "gate") if stage in gates else ())) for stage in order]
     merged = merged_today(sources, now) if now else []
     if merged:
-        cards = tuple(columns.Card(c.title, "merged today", " · ".join([*c.issues[:1], c.ref]),
-                                   f"merged {c.merged_at.astimezone(now.tzinfo):%H:%M}", "done") for c in merged)
+        cards = tuple(columns.Card(c.title, "merged today", tuple((i, issue_url(i)) for i in c.issues[:1]) + ((c.ref, c.url),),
+                                   f"merged {c.merged_at.astimezone(now.tzinfo):%H:%M}", "done", href=c.url) for c in merged)
         at = next((i for i, c in enumerate(cols) if c.name == "main"), None)
         if at is None:
             cols.append(columns.Column("main", cards))
@@ -1313,7 +1322,7 @@ h2+.meta{{display:inline-block}}
 .header{{display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap;margin-bottom:4px}}
 .header>.panels-head{{flex:1 1 320px;min-width:0}}
 .meta{{color:var(--muted);font-size:12px}}
-{flow_chart.css() if flow_html else ""}{panels.css(PANEL_COLOURS, PANEL_TOKENS)}{columns.css(CARD_COLOURS)}.columns{{--columns-ink:var(--fg);--columns-muted:var(--muted);--columns-card:var(--surface);--columns-rule:var(--line);--columns-gate-ink:var(--brass);--columns-bg:color-mix(in srgb,var(--brass) 10%,var(--bg));--columns-gate:color-mix(in srgb,var(--brass) 14%,var(--surface))}}
+{flow_chart.css() if flow_html else ""}{panels.css(PANEL_COLOURS, PANEL_TOKENS)}{columns.css(CARD_COLOURS)}.columns{{--columns-ink:var(--fg);--columns-muted:var(--muted);--columns-card:var(--surface);--columns-rule:var(--line);--columns-gate-ink:var(--brass);--columns-link:var(--brass);--columns-edge:var(--brass);--columns-bg:color-mix(in srgb,var(--brass) 10%,var(--bg));--columns-gate:color-mix(in srgb,var(--brass) 14%,var(--surface))}}
 @media (max-width:420px){{body{{padding:12px 12px 36px}}}}
 </style>
 <div class="board" data-rendered-at="{_iso(now)}" data-tz="{_esc(cfg.tz)}" data-deadline="{_iso(nearest.at)}" data-deadline-name="{_esc(nearest.name)}">
@@ -1324,14 +1333,14 @@ h2+.meta{{display:inline-block}}
 <script>
 (function(){{
   var root=document.querySelector('.board'),tz=root.dataset.tz,dl=new Date(root.dataset.deadline);
-  function hm(d){{return new Intl.DateTimeFormat('en-GB',{{timeZone:tz,hour:'2-digit',minute:'2-digit'}}).format(d);}}
+  function hms(d){{return new Intl.DateTimeFormat('en-GB',{{timeZone:tz,hour:'2-digit',minute:'2-digit',second:'2-digit'}}).format(d);}}
   function pad(n){{return (n<10?'0':'')+n;}}
   function tick(){{
-    var now=new Date(),ms=dl-now,sign=ms<0?'-':'',m=Math.floor(Math.abs(ms)/60000);
-    root.querySelector('.panels-now').textContent=hm(now);
-    root.querySelector('.panels-left').textContent=sign+Math.floor(m/60)+'h'+pad(m%60)+'m';
+    var now=new Date(),ms=dl-now,sign=ms<0?'-':'',s=Math.floor(Math.abs(ms)/1000);
+    root.querySelector('.panels-now').textContent=hms(now);
+    root.querySelector('.panels-left').textContent=sign+Math.floor(s/3600)+'h'+pad(Math.floor(s/60)%60)+'m'+pad(s%60)+'s';
   }}
-  tick();setInterval(tick,30000);
+  tick();setInterval(tick,1000);
   // Served by pages.py: reload when the file behind this address changes (a re-render, or a new day's board).
   // A hidden tab's timers are throttled, so coming back to the tab checks at once.
   if(location.protocol==='http:'){{var seen=Date.parse(document.lastModified);var poll=function(){{
@@ -1354,7 +1363,7 @@ def write(root: Path, day: str | None = None) -> tuple[Path, Config, datetime, s
     if not claude_md.is_file():
         raise ConfigError(f"no CLAUDE.md at {root}")
     cfg = parse_coordinator(claude_md.read_text(), today=date.today())
-    now = datetime.now(cfg.zone).replace(second=0, microsecond=0)
+    now = datetime.now(cfg.zone).replace(microsecond=0)
     day = day or now.date().isoformat()
     try:
         tracker_day = date.fromisoformat(day)

@@ -34,11 +34,12 @@ class Mark:
 class Card:
     name: str
     kind: str  # the chip's palette key, and what overflow and the footer tally
-    refs: str = ""
+    refs: tuple[tuple[str, str], ...] = ()  # (text, url); a blank url draws plain text
     owner: str = ""
     state: str = ""  # the chip's text; blank draws no chip
     marks: tuple[Mark, ...] = ()
     flag: Mark | None = None  # the card's whole condition: an outline and a bar across its foot, in its colour
+    href: str = ""  # links the name
 
 
 @dataclass(frozen=True)
@@ -53,13 +54,18 @@ def _tag(role: str, category: str, text: str) -> str:
     return f'<span class="columns-tag columns-{role}" data-cat="{_esc(category)}">{_esc(text)}</span>'
 
 
+def _link(text: str, url: str, cls: str = "", tag: str = "span") -> str:
+    c = f' class="{cls}"' if cls else ""
+    return f'<a{c} href="{_esc(url)}">{_esc(text)}</a>' if url else f"<{tag}{c}>{_esc(text)}</{tag}>"
+
+
 def _card(c: Card) -> str:
     chip = _tag("chip", c.kind, c.state) if c.state else ""
     marks = f'<div class="columns-marks">{"".join(_tag("mark", m.category, m.text) for m in c.marks)}</div>' if c.marks else ""
     head = f'<div class="columns-card columns-flagged" data-cat="{_esc(c.flag.category)}">' if c.flag else '<div class="columns-card">'
     flag = f'<div class="columns-tag columns-flag" data-cat="{_esc(c.flag.category)}">{_esc(c.flag.text)}</div>' if c.flag else ""
-    return (f'{head}<div class="columns-card-name">{_esc(c.name)}</div>'
-            + (f'<div class="columns-refs">{_esc(c.refs)}</div>' if c.refs else "")
+    return (f'{head}{_link(c.name, c.href, "columns-card-name", "div")}'
+            + (f'<div class="columns-refs">{"".join(_link(t, u) for t, u in c.refs)}</div>' if c.refs else "")
             + f'<div class="columns-who"><span class="columns-owner">{_esc(c.owner)}</span>{chip}</div>{marks}{flag}</div>')
 
 
@@ -92,7 +98,7 @@ def render(cols: list[Column], footer: Column | None = None, limit: int = LIMIT)
 
 
 BASE_CSS = """\
-.columns{--columns-ink:#2f2630;--columns-muted:#6e6470;--columns-bg:#ebe4d2;--columns-gate:#efe6cf;--columns-gate-ink:#8a6c30;--columns-card:#fbf8ef;--columns-rule:#ddd3bd;margin:0;color:var(--columns-ink)}
+.columns{--columns-ink:#2f2630;--columns-muted:#6e6470;--columns-link:#8a6c30;--columns-edge:#a7843e;--columns-bg:#ebe4d2;--columns-gate:#efe6cf;--columns-gate-ink:#8a6c30;--columns-card:#fbf8ef;--columns-rule:#ddd3bd;margin:0;color:var(--columns-ink)}
 .columns-grid{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(120px,1fr);gap:8px;overflow-x:auto}
 .columns-col{background:var(--columns-bg);border-radius:5px;padding:7px 6px;display:flex;flex-direction:column;gap:6px;min-width:0}
 .columns-gate{background:var(--columns-gate)}
@@ -102,8 +108,10 @@ BASE_CSS = """\
 .columns-note{font-size:11px;color:var(--columns-muted)}
 .columns-count{font-size:14px;font-weight:700;margin-left:auto;font-variant-numeric:tabular-nums}
 .columns-card{background:var(--columns-card);border:1px solid var(--columns-rule);border-radius:4px;padding:6px 7px;display:flex;flex-direction:column;gap:3px;overflow-wrap:anywhere}
-.columns-card-name{font-size:12.5px;font-weight:500;line-height:1.25}
-.columns-refs{font:10.5px ui-monospace,monospace;color:var(--columns-muted)}
+.columns-card-name{font-size:12.5px;font-weight:500;line-height:1.25;color:inherit;text-decoration:none}
+.columns-refs{display:flex;gap:5px;flex-wrap:wrap;font:10.5px ui-monospace,monospace;color:var(--columns-muted)}
+.columns-refs a{color:var(--columns-link);text-decoration:none;border-bottom:1px dotted var(--columns-edge)}
+.columns a:focus-visible{outline:2px solid var(--columns-ink);outline-offset:1px}
 .columns-who,.columns-marks{display:flex;align-items:center;gap:5px;flex-wrap:wrap}
 .columns-owner{font-size:11px;color:var(--columns-muted)}
 .columns-tag{--c:var(--columns-card);--i:var(--columns-ink);--e:1px solid var(--columns-rule);background:var(--c);color:var(--i);border:var(--e)}
