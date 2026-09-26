@@ -130,7 +130,7 @@ class GitHubTest(unittest.TestCase):
 
 
 class GitLabTest(unittest.TestCase):
-    def test_one_graphql_call_with_the_backlog_token(self):
+    def test_graphql_calls_with_the_backlog_token(self):
         root = workspace("GitLab issues; host https://labs.example.test; project team/app", mr="!54")
         calls = []
         mr = {"iid": "54", "webUrl": "https://labs.example.test/team/app/-/merge_requests/54", "title": "Search",
@@ -147,7 +147,8 @@ class GitLabTest(unittest.TestCase):
 
         with mock.patch.dict(os.environ, {"CHIEF_OF_STUFF_GITLAB_TOKEN": "tok"}):
             got = bs.refresh(root, NOW, call=call)
-        self.assertEqual([(m, u, t) for m, u, t, _ in calls], [("POST", "https://labs.example.test/api/graphql", "tok")])
+        # Every call goes to the host's GraphQL with the Backlog token; an open change adds one for its jobs and threads.
+        self.assertEqual({(m, u, t) for m, u, t, _ in calls}, {("POST", "https://labs.example.test/api/graphql", "tok")})
         self.assertIn('mergeRequests(iids: ["54"])', calls[0][3]["query"])
         change = got.changes["!54"]
         self.assertEqual((change.state, change.pipeline, change.approved, change.approvals, change.files, change.issues),
