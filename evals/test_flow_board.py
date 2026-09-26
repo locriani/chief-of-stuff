@@ -7,6 +7,7 @@ import re
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 
@@ -204,8 +205,16 @@ class Page(unittest.TestCase):
 
     def test_tile_counts(self) -> None:
         tiles = dict(re.findall(r'<span class="panels-label">([A-Z]+)</span><b class="panels-count">(\d+)</b>', self.body))
-        # blocked: Robin's two open tasks and the orphaned one; running: the two workers; drift: README at triage has stage::implement.
-        self.assertEqual(tiles, {"BLOCKED": "3", "DECISIONS": "1", "APPROVED": "3", "RUNNING": "2", "DRIFT": "1", "ORPHANED": "1"})
+        # blocked: no kanban hold stage, so no ON HOLD card; running: the two workers; drift: README at triage has stage::implement.
+        self.assertEqual(tiles, {"BLOCKED": "0", "DECISIONS": "1", "APPROVED": "3", "RUNNING": "2", "DRIFT": "1", "ORPHANED": "1"})
+
+    def test_blocked_counts_the_on_hold_cards(self) -> None:
+        # Flow.dc.html v22: BLOCKED is the number of ON HOLD cards; what the user owns and the orphaned are not in it.
+        held = replace(KANBAN, hold_stages=("triage", "implement"))
+        html = rb.render(TRACKER, self.cfg, NOW, lanes=LANES, kanban=held, sources=SOURCES)
+        tiles = dict(re.findall(r'<span class="panels-label">([A-Z]+)</span><b class="panels-count">(\d+)</b>', html))
+        self.assertEqual(tiles["BLOCKED"], "2")
+        self.assertEqual(html.count(">ON HOLD<"), 2)
 
     def test_tiles_link_to_their_sections(self) -> None:
         for anchor in re.findall(r'class="panels-tile" data-kind="[a-z]+" href="#([a-z]+)"', self.body):
@@ -214,7 +223,7 @@ class Page(unittest.TestCase):
     def test_empty_sources_render_and_running_falls_back_to_tasks(self) -> None:
         html = rb.render(TRACKER, self.cfg, NOW, lanes=LANES)
         tiles = dict(re.findall(r'<span class="panels-label">([A-Z]+)</span><b class="panels-count">(\d+)</b>', html))
-        self.assertEqual(tiles, {"BLOCKED": "3", "DECISIONS": "0", "APPROVED": "0", "RUNNING": "1", "DRIFT": "0", "ORPHANED": "1"})
+        self.assertEqual(tiles, {"BLOCKED": "0", "DECISIONS": "0", "APPROVED": "0", "RUNNING": "1", "DRIFT": "0", "ORPHANED": "1"})
         self.assertIn("rendered 14:30 CDT · tracker 14:30 · 4 tasks", html)
 
     def test_panel_and_tile_colours_are_board_tokens_light_and_dark(self) -> None:
