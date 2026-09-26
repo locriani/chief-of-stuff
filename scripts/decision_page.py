@@ -556,8 +556,8 @@ def _plural(n: int, word: str) -> str:
     return f"{n} {word}{'' if n == 1 else 's'}"
 
 
-def index(pages_dir: Path, ctx: Context, day: str) -> tuple[str, int]:
-    """`decisions.html` (Decisions.dc.html) and its pending count."""
+def index(pages_dir: Path, ctx: Context, day: str) -> tuple[str, list[tuple[str, dict | None, datetime | None, str]]]:
+    """`decisions.html` (Decisions.dc.html) and its pending entries, which the board's DECISIONS panel lists too."""
     pending = entries(pages_dir, ctx)
     rows, held = [], []
     for slug, d, asked, why in pending:
@@ -639,11 +639,11 @@ def index(pages_dir: Path, ctx: Context, day: str) -> tuple[str, int]:
             f"<title>Decisions · {escape(_day(day))}</title>\n{HEAD}</head>\n<body>\n<main class=\"decisions\">\n"
             f'  <header class="top">\n    <div>\n      <h1>Decisions · {escape(_day(day))}</h1>\n'
             f'      <span class="eyebrow">{" · ".join(meta)}</span>\n    </div>\n  </header>\n'
-            + body + "</main>\n</body>\n</html>\n"), len(ready)
+            + body + "</main>\n</body>\n</html>\n"), pending
 
 
-def write_all(pages_dir: Path, ctx: Context, day: str, root: Path | None = None) -> int:
-    """Re-render every readable decision's page from its JSON and the context, and `decisions.html`; the pending count."""
+def write_all(pages_dir: Path, ctx: Context, day: str, root: Path | None = None) -> list[tuple[str, dict | None, datetime | None, str]]:
+    """Re-render every readable decision's page from its JSON and the context, and `decisions.html`; the pending entries."""
     for source in pages_dir.glob("decision-*.json"):
         try:
             page = render(parse(json.loads(source.read_text())), day, ctx.forge, root, ctx, source.stem.removeprefix("decision-"),

@@ -85,5 +85,45 @@ class InstallTest(unittest.TestCase):
         self.assertIn("os.execv", command.read_text())
 
 
+class ModelsCommandTest(unittest.TestCase):
+    """#111: `chief-of-stuff models --class C` reads the rotation so nobody parses the TOML by hand."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        (self.root / "CLAUDE.md").write_text(
+            "# Workspace\n\n## Coordinator\n\n- User: Robin\n- Daily log dir: `daily/`\n"
+            "- Tracker: `daily/<date>-tracker.md`\n- Timezone: America/Chicago\n- Settings: `chief-of-stuff.toml`\n")
+        (self.root / "chief-of-stuff.toml").write_text(
+            '[models.implement]\nrotation = ["codex:gpt-test-coder@medium", "claude:sonnet", "claude:haiku@low"]\n')
+
+    def models(self, *args):
+        return subprocess.run([sys.executable, str(ROOT / "chief_of_stuff.py"), "models", "--root", str(self.root), *args],
+                              capture_output=True, text=True)
+
+    def test_prints_the_suggested_entry(self):
+        done = self.models("--class", "implement")
+        self.assertEqual((done.returncode, done.stdout.strip()), (0, "codex:gpt-test-coder@medium"), done.stderr)
+
+    def test_after_and_not_family(self):
+        self.assertEqual(self.models("--class", "implement", "--after", "codex:gpt-test-coder@medium").stdout.strip(),
+                         "claude:sonnet")
+        self.assertEqual(self.models("--class", "implement", "--not-family", "codex").stdout.strip(), "claude:sonnet")
+
+    def test_exhausted_rotation_exits_nonzero(self):
+        done = self.models("--class", "implement", "--after", "claude:haiku@low")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("rotation exhausted", done.stderr)
+
+    def test_unknown_class_or_no_models_exits_nonzero(self):
+        self.assertIn("no [models.review]", self.models("--class", "review").stderr)
+        (self.root / "chief-of-stuff.toml").write_text('[workers]\nmode = "one-shot"\n')
+        done = self.models("--class", "implement")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("chief-of-stuff-models.md", done.stderr)
+        self.assertFalse((self.root / "chief-of-stuff-models.md").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

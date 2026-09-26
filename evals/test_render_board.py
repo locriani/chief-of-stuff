@@ -318,7 +318,7 @@ class RenderTest(unittest.TestCase):
             self.assertIn(heading, self.html)
         for cut in ("Decisions", "File ownership", "release notes done"):
             self.assertNotIn(cut, self.html)
-        self.assertIn("tracker as of 14:30", self.html)
+        self.assertIn("rendered 14:30 CDT · tracker 14:30", self.html)
         self.assertIn("board-7", self.html)
 
     def test_the_yours_chip_selects_robins_tasks(self) -> None:
@@ -1473,11 +1473,15 @@ class CliTest(unittest.TestCase):
         self.assertRegex(completed, r'(?s)11:20.*href="decision-cache-size\.html".*B, go')
         # The unreadable file is listed, and counted apart from the pending ones (Decisions.dc.html: "1 unreadable").
         self.assertIn("1 unreadable", page)
-        self.assertRegex(board, r'href="decisions\.html"[^>]*>1 decision pending<')
         # Each page is rendered again from its JSON and the tracker: the answered one wears its answer.
         self.assertIn(">ANSWERED · B<", (pages / "decision-cache-size.html").read_text())
         self.assertIn(">PENDING<", (pages / "decision-deploy-window.html").read_text())
         self.assertEqual((pages / "decision-broken.html").exists(), False)
+        # The board's DECISIONS panel lists the same pending entries as decisions.html, the unreadable one apart.
+        self.assertIn('<a class="panels-link" href="decisions.html">decisions page</a><b class="panels-count">1</b>', board)
+        self.assertIn('<a class="panels-name" href="decision-deploy-window.html">Decide deploy-window</a>', board)
+        self.assertIn('<span class="panels-label">DECISIONS</span><b class="panels-count">1</b>', board)
+        self.assertIn('decision-broken.json', board)
 
     def test_summary_line_counts_long_items(self) -> None:
         root = Path(tempfile.mkdtemp())

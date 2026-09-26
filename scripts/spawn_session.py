@@ -232,8 +232,10 @@ def main(argv_in: list[str] | None = None) -> int:
     ap.add_argument("--root", default=".", help="workspace root holding CLAUDE.md")
     ap.add_argument("--coordinator", help="your own session name as a listing shows it, so the session knows who to register with")
     ap.add_argument("--date", help="YYYY-MM-DD; default: today in the workspace timezone")
-    ap.add_argument("--runtime", choices=sorted(TEMPLATES), default="claude",
+    ap.add_argument("--runtime", choices=sorted(TEMPLATES),
                     help="claude (default), agy, codex, or cursor")
+    ap.add_argument("--class", dest="model_class",
+                    help="a [models] task class; with no --model or --runtime, launch its suggested entry")
     ap.add_argument("--launcher", choices=("ghostty", "tmux"),
                     help="terminal launcher; default: [workers] launcher in workspace settings, then ghostty")
     ap.add_argument("--model", default="", help="model id; required for agy")
@@ -245,6 +247,23 @@ def main(argv_in: list[str] | None = None) -> int:
     ap.add_argument("--timeout-minutes", type=int, default=60,
                     help="one-shot run limit before human review (default: 60)")
     args = ap.parse_args(argv_in)
+    try:
+        config = dispatch_prompt._config(Path(args.root))
+        settings = load_settings(Path(args.root), config.settings_path)
+        if args.model_class and not (args.model or args.runtime):
+            # #111: explicit flags always win; otherwise the class's first entry, effort included.
+            if args.model_class not in settings.models:
+                raise SettingsError(f"no [models.{args.model_class}] in the Settings TOML")
+            entry = settings.models[args.model_class][0]
+            args.runtime, args.model = entry.runtime, entry.model
+            # ponytail: only claude takes --effort here; other runtimes' effort needs their own flag.
+            if entry.runtime == "claude":
+                args.effort = args.effort or entry.effort or ""
+    except (dispatch_prompt.RefusedError, SettingsError, OSError) as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 1
+    worker_settings = settings.workers
+    args.runtime = args.runtime or "claude"
     if (args.model or args.runtime == "agy") and not MODEL.fullmatch(args.model):
         print(f"refused: --model needs a model id (agy: one from `agy models`, and it is required), not {args.model!r}", file=sys.stderr)
         return 1
@@ -254,12 +273,6 @@ def main(argv_in: list[str] | None = None) -> int:
     # Compose and launch must use the same absolute cwd.
     args.cwd = os.path.abspath(args.cwd)
 
-    try:
-        config = dispatch_prompt._config(Path(args.root))
-        worker_settings = load_settings(Path(args.root), config.settings_path).workers
-    except (dispatch_prompt.RefusedError, SettingsError, OSError) as exc:
-        print(f"refused: {exc}", file=sys.stderr)
-        return 1
     one_shot = worker_settings.mode == "one-shot" or args.one_shot
     try:
         args.task = dispatch_prompt.resolve_task(Path(args.root), args.date, args.task)
