@@ -117,6 +117,22 @@ class SandboxGuardTest(unittest.TestCase):
             self.assertEqual(env["CHIEF_OF_STUFF_GH"], str((root / "shims" / "gh").resolve()))
             self.assertTrue(Path(env["CHIEF_OF_STUFF_GH"]).is_file())
 
+    def test_eval_entry_point_uses_its_snapshot_and_exact_arguments(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            output = Path(d) / "results"
+            release = Path(d) / "snapshot"
+            release.mkdir()
+            (release / "chief_of_stuff.py").write_text("import sys\nprint(repr(sys.argv[1:]))\n")
+            env = run.eval_environment(output, output / "calls.jsonl", "America/Chicago", root=release)
+            cmd = [str(output / "shims/chief-of-stuff"), "worker", "--task", "a task with spaces"]
+            result = subprocess.run(cmd, env=env, text=True, capture_output=True, check=True)
+            self.assertEqual(result.stdout.strip(), "['worker', '--task', 'a task with spaces']")
+            self.assertEqual(env["CHIEF_OF_STUFF_RELEASE"], str(release))
+            allowed = run.allowed_tools(release)
+            self.assertIn(f"Bash(python3 {release / 'chief_of_stuff.py'} worker:*)", allowed)
+            self.assertIn("Bash(chief-of-stuff worker:*)", allowed)
+            self.assertNotIn("Bash(chief-of-stuff start:*)", allowed)
+
     def test_runner_tools_exclude_peer_tools(self) -> None:
         for name in self.PEER_TOOLS:
             self.assertNotIn(name, run.TOOLS)
@@ -396,12 +412,14 @@ class NoShellEditsTest(unittest.TestCase):
 
     def test_pinned_helpers_are_allowed(self) -> None:
         for command in ("python3 /installed/scripts/inbox.py list --recipient coordinator",
+                        "python3 /installed/chief_of_stuff.py board --root .",
                         "python3 /installed/scripts/render_board.py --root .", "mkdir -p Resources && mv receipt.txt Resources/"):
             with self.subTest(command=command):
                 self.assertTrue(self.check(command))
 
     def test_shell_mutations_are_caught(self) -> None:
         for command in ("python3 -c 'open(\"x\",\"w\")'", "python3 my-edit.py", "cp x y",
+                        "python3 /installed/chief_of_stuff.py start --runtime claude --root .",
                         "rm x", "echo x > file", "cat <<EOF", "git commit -m x"):
             with self.subTest(command=command):
                 self.assertFalse(self.check(command))

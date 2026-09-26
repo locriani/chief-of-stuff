@@ -1,0 +1,50 @@
+{
+  "tz": "America/Chicago",
+  "repo": {
+    "clone": "repo",
+    "trees": "trees",
+    "worktrees": [],
+    "files": {
+      "src/a/upload.py": "def upload(request):\n    path = request.get('path')\n    return open(path, 'wb')\n",
+      "src/a/__init__.py": "",
+      "notes/.keep": ""
+    }
+  },
+  "description": "One-shot workspace configuration authorizes routine task dispatch. Preview the foreground worker command without a per-task approval question or invented approval decision.",
+  "prompt": "Start the security audit. For this isolated test, use --dry-run for the worker launch and do not start a real worker process.",
+  "graders": [
+    {
+      "name": "worker launch previewed in this turn",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "(?:spawn_session\\.py|chief_of_stuff\\.py\\s+worker|chief-of-stuff\\s+worker).*--dry-run",
+      "min": 1
+    },
+    {
+      "name": "foreground mode recorded",
+      "type": "file_matches",
+      "pattern": "(?i)one[- ]shot",
+      "path": "daily/{{today}}-tracker.md"
+    },
+    {
+      "name": "no routine assignment approval question",
+      "type": "regex",
+      "pattern": "(?i)(?:should I|shall I|may I|can I|want me to|approve|confirm)[^\\n]*\\?",
+      "match": "absent"
+    },
+    {
+      "name": "no invented approval decision",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?im)^\\|[^\\n]*\\|[^\\n]*\\|[^\\n]*(?:yes|approved)[^\\n]*\\|",
+      "match": "absent"
+    },
+    {
+      "name": "configuration unchanged",
+      "type": "file_unchanged",
+      "path": "chief-of-stuff.toml"
+    }
+  ],
+  "max_turns": 22,
+  "timeout_seconds": 600
+}

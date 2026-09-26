@@ -29,7 +29,7 @@ class Refused(ValueError):
 
 
 def files(source: Path) -> list[Path]:
-    includes = [source / "agents", source / "scripts", source / "assets", source / ".claude-plugin"]
+    includes = [source / "agents", source / "scripts", source / "assets", source / ".claude-plugin", source / "hooks"]
     result = [source / "start_coordinator.py", source / "chief_of_stuff.py"]
     for folder in includes:
         result.extend(p for p in folder.rglob("*") if p.is_file() and "__pycache__" not in p.parts
@@ -97,7 +97,7 @@ def prompt(runtime: str, release: Path, root: Path) -> str:
                  "while this CLI session is open. It sends notifications for new findings and never "
                  "edits the tracker or board. On the next coordinator turn, read the clock, inbox, "
                  "audit and worker registry; reconcile task state, then render the board. "
-                 "Do not launch a new session without the user's explicit yes.\n\n" + host_schedule + "\n\n")
+                 "Dispatch ready one-shot tasks automatically under Dispatch authority. New interactive sessions need approval.\n\n" + host_schedule + "\n\n")
         rules = re.sub(r"## Check\n.*?(?=## Sessions\n)", check, rules, flags=re.S)
         sessions = ("## Sessions\n\nThe workspace `Sessions:` line may name Claude native list and send tools. "
                     "Use those only when your host exposes them. For every non-Claude worker, "
@@ -115,8 +115,8 @@ def prompt(runtime: str, release: Path, root: Path) -> str:
                   "mailbox for their messages. Claude workers retain their native session tools when available. "
                   "A five-minute watcher audits tasks and unread inbox messages while this session "
                   "is open and sends notifications. "
-                  "On your next turn, reconcile the tracker and board. Never launch a new session without "
-                  "the user's explicit approval. If the named calendar tool is unavailable, "
+                  "On your next turn, reconcile the tracker and board and dispatch ready one-shot tasks automatically. "
+                  "New interactive sessions need approval. If the named calendar tool is unavailable, "
                   "report it, leave calendar facts unverified, and continue work that does not depend on it.\n")
     return (f"You are chief-of-stuff. The installed rules and scripts are pinned at {release}. "
             f"The workspace is {root}. Read its CLAUDE.md for configuration.\n\n{rules}\n\nOpen the day.")
@@ -207,7 +207,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         print(json.dumps({"release": str(release), "runtime": args.runtime, "argv": cmd}))
         return 0
-    child_env = dict(os.environ, CHIEF_OF_STUFF_RELEASE=str(release))
+    child_env = dict(os.environ, CHIEF_OF_STUFF_RELEASE=str(release), CHIEF_OF_STUFF_WORKSPACE=str(root))
     stop = threading.Event()
     monitor = None
     if args.runtime != "claude":

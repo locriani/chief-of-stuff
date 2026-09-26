@@ -696,7 +696,7 @@ class ClaudeModelTest(unittest.TestCase):
 
     def test_model_and_effort_reach_the_claude_command(self):
         self.assertRegex(self.script(model="opus", effort="medium"),
-                         r"/opt/homebrew/bin/claude --agent implementer --name implementer-COpusM-01 "
+                         r"/opt/homebrew/bin/claude --plugin-dir \S+ --agent implementer --name implementer-COpusM-01 "
                          r"--model opus --effort medium --permission-mode plan ")
 
     def test_without_them_the_command_is_unchanged(self):

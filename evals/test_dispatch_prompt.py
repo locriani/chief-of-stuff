@@ -66,6 +66,18 @@ class ComposeTest(unittest.TestCase):
         body = dp.compose(self.root, "2026-09-18", "Security audit")
         self.assertIn("Task: Security audit", body)
 
+    def test_every_runtime_and_mode_forbids_automatic_board_opening(self):
+        (self.root / "CLAUDE.md").write_text(CLAUDE +
+            "- Board: self-hosted; URL http://127.0.0.1:8765/; dir `pages`\n")
+        for runtime in ("claude", "codex", "cursor", "agy"):
+            for one_shot in (False, True):
+                with self.subTest(runtime=runtime, one_shot=one_shot):
+                    body = dp.compose(self.root, "2026-09-18", "Security audit", worktree=self.root / "tree",
+                                      runtime=runtime, one_shot=one_shot)
+                    self.assertIn("never automatically open the board URL or rendered board HTML", body)
+                    self.assertIn("Board URL: http://127.0.0.1:8765/", body)
+                    self.assertIn("even if workspace instructions suggest opening a preview", body)
+
     def test_it_names_the_tracker_path_from_the_coordinator_block(self):
         body = dp.compose(self.root, "2026-09-18", "Security audit")
         self.assertIn(f"Tracker: {self.root.resolve()}/daily/2026-09-18-tracker.md", body)
@@ -576,6 +588,15 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         self.assertIn('every task dispatch runs one-shot; the launcher enforces this without a flag', self.content)
         self.assertIn('pass `--one-shot` for that launch', self.content)
         self.assertNotIn('Pass `--interactive` to override', self.content)
+
+    def test_one_shot_dispatch_is_authorized_by_configuration(self):
+        authority = self._section("Dispatch authority")
+        self.assertIn("Do not ask the user to choose a worker or approve each assignment or launch", authority)
+        self.assertIn("unresolved human-review hold or lane gate", authority)
+        self.assertIn("never invent an approval quote in Decisions", authority)
+        dispatch = self._section("Dispatch")
+        self.assertNotIn("The same explicit user approval for launching a new worker applies", dispatch)
+        self.assertIn("dispatch ready `unassigned` tasks automatically", self._section("Check"))
 
     def test_resume_step_2_task_state_uses_waiting_or_orphaned_not_stopped(self):
         self.assertIn("stops update task state to `waiting` or `orphaned`", self.content)

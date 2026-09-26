@@ -62,6 +62,10 @@ class CommandTest(unittest.TestCase):
                     self.assertIn(flag, args)
                 self.assertNotIn("plan", args)
                 self.assertIn(str(dispatch), args[-1])
+                if runtime == "claude":
+                    release = Path(one_shot.__file__).resolve().parents[1]
+                    self.assertEqual(args[args.index("--plugin-dir") + 1], str(release))
+                    self.assertTrue((release / "hooks/hooks.json").is_file())
 
     def test_exit_zero_without_structured_result_requires_review(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -117,6 +121,13 @@ class RunTest(unittest.TestCase):
         self.assertEqual(report["status"], "done")
         self.assertIn("Working tree clean", report["changes"])
         self.assertNotIn("inbox.py", (self.tree / ".chief-of-stuff/dispatch.md").read_text().lower())
+
+    def test_worker_inherits_the_workspace_for_the_board_guard(self):
+        fake = self._fake('status: done\nreason: done\nchanges: checked\n', write_partial=False)
+        with mock.patch.object(one_shot.subprocess, "run", wraps=subprocess.run) as execute:
+            self.assertEqual(self._run(fake), 0)
+        call = next(call for call in execute.call_args_list if "stdin" in call.kwargs)
+        self.assertEqual(call.kwargs["env"]["CHIEF_OF_STUFF_WORKSPACE"], str(self.root.resolve()))
 
     def test_partial_failure_records_reason_and_changes(self):
         fake = self._fake('status: human_review\nreason: needs product decision\nchanges: changed parser\n')
