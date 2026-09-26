@@ -67,6 +67,13 @@ class CommandTest(unittest.TestCase):
                     self.assertEqual(args[args.index("--plugin-dir") + 1], str(release))
                     self.assertTrue((release / "hooks/hooks.json").is_file())
 
+    def test_agy_print_takes_the_prompt_as_its_value(self):
+        # agy's --print takes a value: a flag after it becomes the prompt, and agy exits 2.
+        dispatch = Path("/tmp/one-shot-tree/.chief-of-stuff/dispatch.md")
+        args = one_shot.command("agy", "/bin/fake", dispatch.parent.parent, dispatch,
+                                agent_type=None, model="gemini-x", effort="")
+        self.assertIn(str(dispatch), args[args.index("--print") + 1])
+
     def test_exit_zero_without_structured_result_requires_review(self):
         with tempfile.TemporaryDirectory() as tmp:
             status, reason, changes = one_shot.worker_result(Path(tmp) / "missing.toon", 0)

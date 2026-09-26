@@ -49,9 +49,11 @@ def command(runtime: str, binary: str, cwd: Path, dispatch: Path, *, agent_type:
         if model:
             argv += ["--model", model]
     elif runtime == "agy":
-        argv = [binary, "--print", "--mode", "accept-edits", "--dangerously-skip-permissions"]
+        argv = [binary, "--mode", "accept-edits", "--dangerously-skip-permissions"]
         if model:
             argv += ["--model", model]
+        # agy's --print takes the prompt as its value, so it goes last, right before the prompt.
+        argv += ["--print"]
     else:
         raise ValueError(f"unknown runtime {runtime}")
     return [*argv, prompt]
