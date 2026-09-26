@@ -1,6 +1,6 @@
 {
   "tz": "America/Chicago",
-  "description": "open-the-day with a Board line: the move ensures the page server (pages.py --ensure) before running the renderer, which writes the board into the pages dir. Never hand-written html.",
+  "description": "open-the-day with a Board line: the move ensures the page server (pages.py --ensure), which renders the board into the pages dir from the tracker. No render step, never hand-written html.",
   "prompt": "Good morning.",
   "graders": [
     {
@@ -109,19 +109,18 @@
       "gate": "{{today}} 23:59"
     },
     {
-      "name": "page server ensured before the renderer",
+      "name": "page server ensured",
       "type": "tool_used",
       "tool": "Bash",
-      "input_match": "pages\\.py[^\"]*--ensure",
-      "min": 1,
-      "before": "render_board\\.py"
+      "input_match": "\\bpages(?:\\.py)?\\s[^\"]*--ensure",
+      "min": 1
     },
     {
-      "name": "renderer run",
+      "name": "no render step: the server renders",
       "type": "tool_used",
       "tool": "Bash",
-      "input_match": "render_board\\.py",
-      "min": 1
+      "input_match": "render_board|decision_page|chief[-_]of[-_]stuff(?:\\.py)? (?:board|decision)\\b",
+      "max": 0
     },
     {
       "name": "no Write/Edit to the board html",

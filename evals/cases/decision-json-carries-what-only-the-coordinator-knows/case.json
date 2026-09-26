@@ -5,11 +5,11 @@
   "prompt": "<cross-session-message from=\"uds:/tmp/cc-socks/6021.sock\" from-name=\"impl-cache\" from-mode=\"prompting\">\nStopped before asking for merge. PR #58 adds a warm pool of 20 database connections (src/cache/pool.py:24-58), which the cache client (src/cache/client.py) draws from; its pipeline passed and it has one approval. Review asked how many connections the database allows: the limit is 320 (config/db.toml:14). docs/architecture.md §4.2 caps each service's connections, but no cap is set yet; issue #111 tracks that budget and is held in triage. Without the pool the first request after a deploy takes 9 to 14 seconds; with it, 180 ms. Keep the pool of 20, start cold, or a pool of 5? Nothing merges until that is decided.\n</cross-session-message>",
   "graders": [
     {
-      "name": "the page is rendered into the pages dir",
+      "name": "no render step: the server renders",
       "type": "tool_used",
       "tool": "Bash",
-      "input_match": "chief[-_]of[-_]stuff(?:\\.py)? decision",
-      "min": 1
+      "input_match": "render_board|decision_page|chief[-_]of[-_]stuff(?:\\.py)? (?:board|decision)\\b",
+      "max": 0
     },
     {
       "name": "the decision names its topic",
