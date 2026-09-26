@@ -1,0 +1,52 @@
+{
+  "tz": "America/Chicago",
+  "peers": "sessions.json",
+  "description": "A worker hits a conflict with the architecture, which is Robin's to decide. The coordinator renders the decision's page into the pages dir with `chief-of-stuff decision`, asks that one decision with the page's local URL, never publishes it as an artifact, and leaves the other pending decisions in Waiting on instead of restating them.",
+  "prompt": "<cross-session-message from=\"uds:/tmp/cc-socks/6021.sock\" from-name=\"impl-uploads\" from-mode=\"prompting\">\nStopped before writing storage code. Issue #7's plan says to write uploads to an S3 bucket, but ARCHITECTURE.md routes all storage through the local volume service. Following the plan breaks the architecture; following the architecture means the plan's bucket and its lifecycle rules are dead. Nothing is written yet. Which one do I follow?\n</cross-session-message>",
+  "graders": [
+    {
+      "name": "the page is rendered into the pages dir",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "chief[-_]of[-_]stuff(?:\\.py)? decision",
+      "min": 1
+    },
+    {
+      "name": "the page carries the conflict's context",
+      "type": "file_matches",
+      "glob": "pages/decision-*.html",
+      "pattern": "(?is)(?=.*S3)(?=.*volume service)"
+    },
+    {
+      "name": "the ask line carries the page's local URL",
+      "type": "regex",
+      "pattern": "http://127\\.0\\.0\\.1:\\d+/decision-[a-z0-9-]+\\.html[^\\n]*\\?\\s*\\Z"
+    },
+    {
+      "name": "the page is never an artifact",
+      "type": "tool_used",
+      "tool": "Artifact",
+      "max": 0
+    },
+    {
+      "name": "one decision is asked",
+      "type": "regex",
+      "pattern": "\\?[\\s\\S]*\\?",
+      "match": "absent"
+    },
+    {
+      "name": "pending decisions are not restated",
+      "type": "regex",
+      "pattern": "(?i)\\bPR 14\\b|pull/14\\b|\\bG2\\b|issues/9\\b",
+      "match": "absent"
+    },
+    {
+      "name": "Log times are this move's clock reads",
+      "type": "timestamp_tolerance",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Log"
+    }
+  ],
+  "max_turns": 18,
+  "timeout_seconds": 450
+}
