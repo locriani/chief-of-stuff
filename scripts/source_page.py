@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A task's change as source and diff, `/issues/<n>/source` (Source48.dc.html, "Source & diff — task !48"): the change's
 files with +additions −deletions, a NEW / CHANGED / REMOVED badge and the other open changes on the same file, then
-each file's unified diff against the merge base. The diff is read from the `[graph]` table's clone, fetched as the
+each file's diff against the merge base, unified or split (a radio pair; CSS shows the one picked). The diff is read from the `[graph]` table's clone, fetched as the
 module graph fetches it; without the table the page lists the files from the sources cache. pages.py renders it on
 request into `issue-<n>-source.html`.
 """
@@ -45,6 +45,17 @@ table.diff td.o,table.diff td.n{width:44px;color:var(--muted);text-align:right;p
 table.diff td.sign{width:18px;text-align:center} table.diff td.tx{white-space:pre}
 tr.add{background:color-mix(in srgb,var(--stage-review) 12%,transparent)} tr.add td.sign{color:var(--stage-review)}
 tr.del{background:color-mix(in srgb,var(--dl) 12%,transparent)} tr.del td.sign{color:var(--dl)}
+.seg{display:flex;align-self:flex-start;border:1px solid var(--line);border-radius:5px;overflow:hidden;background:var(--surface)}
+.seg input{position:absolute;opacity:0} .seg label{font-size:13px;padding:4px 12px;cursor:pointer}
+.seg label+input+label{border-left:1px solid var(--line)} .seg input:checked+label{background:var(--fg);color:var(--surface)}
+.seg input:focus-visible+label{outline:2px solid var(--brass)}
+table.split{display:none;border-collapse:collapse;width:100%;table-layout:fixed;font:12.5px/20px ui-monospace,SFMono-Regular,Menlo,monospace}
+body:has(#layout-split:checked) table.split{display:table} body:has(#layout-split:checked) table.diff{display:none}
+table.split .hunk td{background:var(--ref-bg);color:var(--muted);padding:2px 14px;font-size:11.5px}
+table.split .lno,table.split .rno{width:40px;color:var(--muted);text-align:right;padding-right:8px;font-size:11.5px;user-select:none}
+table.split .rno{border-left:1px solid var(--line)} table.split .left,table.split .right{white-space:pre;overflow:hidden;text-overflow:ellipsis}
+td.left.del{background:color-mix(in srgb,var(--dl) 12%,transparent)} td.right.add{background:color-mix(in srgb,var(--stage-review) 12%,transparent)}
+td.empty{background:repeating-linear-gradient(135deg,var(--ref-bg) 0 4px,var(--surface) 4px 8px)}
 @media (max-width:760px){.src{grid-template-columns:minmax(0,1fr)} ul.files{position:static}}
 </style>
 """
@@ -121,6 +132,42 @@ def _rows(f: File) -> str:
     return "\n".join(out)
 
 
+def _split(f: File) -> str:
+    """The old side left, the new side right; within a change, removed and added lines pair row by row."""
+    def side(row, cls: str) -> str:
+        if row is None:
+            return f'<td class="{cls[0]}no"></td><td class="{cls} empty"></td>'
+        kind, o, n, tx = row
+        return f'<td class="{cls[0]}no">{o if cls == "left" else n}</td><td class="{cls} {kind}">{escape(tx)}</td>'
+
+    out, dels, adds = [], [], []
+
+    def flush():
+        for k in range(max(len(dels), len(adds))):
+            out.append("<tr>" + side(dels[k] if k < len(dels) else None, "left")
+                       + side(adds[k] if k < len(adds) else None, "right") + "</tr>")
+        dels.clear(), adds.clear()
+
+    for row in f.rows:
+        if row[0] == "del":
+            if adds:
+                flush()
+            dels.append(row)
+        elif row[0] == "add":
+            adds.append(row)
+        else:
+            flush()
+            out.append(f'<tr class="hunk"><td colspan="4">{escape(row[3])}</td></tr>' if row[0] == "hunk"
+                       else "<tr>" + side(row, "left") + side(row, "right") + "</tr>")
+    flush()
+    return "\n".join(out)
+
+
+LAYOUT = ('  <div class="seg" role="group" aria-label="Diff layout">'
+          '<input type="radio" name="layout" id="layout-unified" checked><label for="layout-unified">Unified</label>'
+          '<input type="radio" name="layout" id="layout-split"><label for="layout-split">Split</label></div>\n')
+
+
 def render(number: int, trackers: list[tuple[date, str]], sources: board_sources.Sources, now: datetime,
            graph: Graph | None = None, pages: Path | None = None, root: Path | None = None) -> str | None:
     """The page, or None when no task in `trackers` names issue `number`."""
@@ -162,12 +209,14 @@ def render(number: int, trackers: list[tuple[date, str]], sources: board_sources
         items.append(f'      <li><a href="#{escape(anchor(f.path))}">{escape(f.path)}</a><span class="d">{_count(f.add, f.dele)}</span>'
                      f'<span class="b">{chips}</span></li>')
     tables = [f'    <div class="card"><h3>{escape(f.path)}</h3>\n    <table class="diff" id="{escape(anchor(f.path))}" '
-              f'data-path="{escape(f.path)}">\n{_rows(f)}\n    </table></div>' for f in files if f.rows]
+              f'data-path="{escape(f.path)}">\n{_rows(f)}\n    </table>\n'
+              f'    <table class="split" data-split-path="{escape(f.path)}">\n{_split(f)}\n    </table></div>'
+              for f in files if f.rows]
     if not change:
         body = f'  <p class="card">Nothing to diff: no change names {ref} yet.</p>\n'
     else:
         total = f"{len(files)} · +{sum(f.add for f in files)} −{sum(f.dele for f in files)}"
-        body = (f'  <div class="src">\n    <div class="card"><div class="cap">files · {total}</div>\n'
+        body = (LAYOUT if tables else "") + (f'  <div class="src">\n    <div class="card"><div class="cap">files · {total}</div>\n'
                 f'    <ul class="files">\n' + "\n".join(items) + "\n    </ul></div>\n"
                 f'    <div class="diffs">\n' + (f'    <p class="card">{note}</p>\n' if note else "")
                 + "\n".join(tables) + "\n    </div>\n  </div>\n")
