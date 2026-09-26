@@ -329,6 +329,49 @@ class ResumeBlockMatchesTest(unittest.TestCase):
         self.assertIn("resume_block_matches", run.GRADER_TYPES)
 
 
+class MarkdownUnwrappedTest(unittest.TestCase):
+    """One paragraph is one line, and blank lines separate blocks, inside the named section."""
+
+    def _grade(self, body: str, **extra) -> tuple[bool, str]:
+        d = Path(tempfile.mkdtemp())
+        (d / "log.md").write_text("# Day\n\n## Notes\n\nOld notes wrapped at\nseventy-two columns.\n\n## End of day\n\n" + body + "\n## Next\n")
+        rec = run.RunRecord(stream=None, t_start=datetime.now(), t_end=datetime.now(), tz="America/Chicago", fixture_dir=d)
+        return run.grade({"type": "markdown_unwrapped", "path": "log.md", "section": "## End of day", "min_paragraphs": 2, **extra}, rec)
+
+    def test_a_command_must_sit_in_a_fence_with_a_language(self) -> None:
+        cmd = "python3 -m unittest"
+        self.assertTrue(self._grade(f"Shipped.\n\nRerun:\n\n```sh\n{cmd}\n```\n", fenced=[cmd])[0])
+        self.assertFalse(self._grade(f"Shipped.\n\nRerun: `{cmd}`.\n", fenced=[cmd])[0])
+        self.assertFalse(self._grade(f"Shipped.\n\nRerun:\n\n```\n{cmd}\n```\n", fenced=[cmd])[0])
+
+    def test_one_line_paragraphs_lists_tables_and_fences_pass(self) -> None:
+        body = ("Shipped the fix: it is on main and the suite passed.\n\nStill open: the audit.\n\n"
+                "- one\n- two\n  - nested\n\n| a | b |\n|---|---|\n\n```sh\npython3 -m unittest\nrun it again\n```\n")
+        ok, why = self._grade(body)
+        self.assertTrue(ok, why)
+
+    def test_a_paragraph_broken_mid_sentence_fails(self) -> None:
+        ok, why = self._grade("Shipped the fix to main after the suite\npassed on the new commit.\n\nStill open.\n")
+        self.assertFalse(ok)
+        self.assertIn("wrapped", why)
+
+    def test_blocks_touching_without_a_blank_line_fail(self) -> None:
+        ok, why = self._grade("Shipped the fix.\n- still open: the audit\n\nNext: the review.\n")
+        self.assertFalse(ok)
+        self.assertIn("no blank line", why)
+
+    def test_a_fence_touching_prose_fails(self) -> None:
+        ok, why = self._grade("Rerun it with:\n```sh\npython3 -m unittest\n```\n\nThen report.\n")
+        self.assertFalse(ok)
+
+    def test_an_empty_section_fails(self) -> None:
+        ok, why = self._grade("")
+        self.assertFalse(ok, why)
+
+    def test_it_is_registered_as_a_file_grader(self) -> None:
+        self.assertIn("markdown_unwrapped", run.GRADER_TYPES)
+
+
 class GoldenSetTest(unittest.TestCase):
     """The opus set. Zach, 2026-09-19: sonnet to iterate, opus on the golden cases only for green.
 
