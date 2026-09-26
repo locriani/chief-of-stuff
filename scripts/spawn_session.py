@@ -318,11 +318,8 @@ def main(argv_in: list[str] | None = None) -> int:
     ap.add_argument("--effort", default="", choices=("", "low", "medium", "high", "xhigh", "max"),
                     help="claude only; agy's effort is in its model id")
     ap.add_argument("--dry-run", action="store_true", help="print the argv and start nothing")
-    mode = ap.add_mutually_exclusive_group()
-    mode.add_argument("--one-shot", action="store_true",
-                      help="run one noninteractive task; overrides [workers] mode")
-    mode.add_argument("--interactive", action="store_true",
-                      help="open a continuing terminal session; overrides [workers] mode")
+    ap.add_argument("--one-shot", action="store_true",
+                    help="run this task once; [workers] mode = one-shot already requires this for every task")
     ap.add_argument("--timeout-minutes", type=int, default=60,
                     help="one-shot run limit before human review (default: 60)")
     args = ap.parse_args(argv_in)
@@ -345,7 +342,7 @@ def main(argv_in: list[str] | None = None) -> int:
     except (dispatch_prompt.RefusedError, SettingsError, OSError) as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 1
-    one_shot = args.one_shot or (not args.interactive and worker_settings.mode == "one-shot")
+    one_shot = worker_settings.mode == "one-shot" or args.one_shot
 
     if one_shot:
         if args.timeout_minutes < 1:

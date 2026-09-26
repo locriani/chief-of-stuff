@@ -760,7 +760,7 @@ class TmuxLauncherTest(unittest.TestCase):
 
 
 class WorkerModeTest(unittest.TestCase):
-    def test_toml_selects_one_shot_and_flags_override_it(self):
+    def test_toml_requires_one_shot_for_every_dispatch(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             (root / "CLAUDE.md").write_text(CLAUDE + "- Settings: `chief-of-stuff.toml`\n")
@@ -775,13 +775,12 @@ class WorkerModeTest(unittest.TestCase):
                 self.assertEqual(ss.main(args), 0)
                 self.assertEqual(one_shot.call_args.kwargs["task"], "Security audit")
                 self.assertTrue(one_shot.call_args.kwargs["dry_run"])
-            with unittest.mock.patch.object(ss, "resolve", return_value="/bin/claude"):
-                output = io.StringIO()
-                with contextlib.redirect_stdout(output):
-                    self.assertEqual(ss.main(args + ["--interactive"]), 0)
-                self.assertIn("would ask Ghostty for a tab", output.getvalue())
+            with contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as refused:
+                    ss.main(args + ["--interactive"])
+            self.assertEqual(refused.exception.code, 2)
 
-    def test_cli_one_shot_overrides_interactive_toml(self):
+    def test_cli_one_shot_selects_one_task_in_interactive_workspace(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             (root / "CLAUDE.md").write_text(CLAUDE + "- Settings: `chief-of-stuff.toml`\n")

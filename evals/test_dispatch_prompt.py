@@ -572,6 +572,11 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         self.assertIn("chief-of-stuff inbox read <id> --ack", self.content)
         self.assertIn("chief-of-stuff inbox drain --recipient coordinator", self.content)
 
+    def test_one_shot_workspace_requires_one_shot_for_every_task(self):
+        self.assertIn('every task dispatch runs one-shot; the launcher enforces this without a flag', self.content)
+        self.assertIn('pass `--one-shot` for that launch', self.content)
+        self.assertNotIn('Pass `--interactive` to override', self.content)
+
     def test_resume_step_2_task_state_uses_waiting_or_orphaned_not_stopped(self):
         self.assertIn("stops update task state to `waiting` or `orphaned`", self.content)
         self.assertNotIn("stops update task state to `stopped` or `orphaned`", self.content)
