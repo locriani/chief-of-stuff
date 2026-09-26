@@ -37,6 +37,7 @@ COMMANDS = {
     "health": "scripts/probe_health.py",
     "pages": "scripts/pages.py",
     "decision": "scripts/decision_page.py",
+    "log": "scripts/tracker_write.py",
 }
 
 

@@ -1,10 +1,14 @@
 """One-shot workers exit once and leave a reviewable task outcome."""
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -102,6 +106,8 @@ class RunTest(unittest.TestCase):
         path = self.root / "fake-agent"
         path.write_text(f"#!{sys.executable}\nfrom pathlib import Path\nimport sys\n"
                         + "root = Path.cwd() / '.chief-of-stuff'\n"
+                        # What the tracker says while the worker runs.
+                        + f"Path({str(self.root / 'during.md')!r}).write_text(Path({str(self.tracker)!r}).read_text())\n"
                         + ("(Path.cwd() / 'partial.txt').write_text('partial work')\n" if write_partial else "")
                         + ("import subprocess\nsubprocess.run(['git', 'add', 'partial.txt'], check=True)\n"
                            "subprocess.run(['git', '-c', 'user.name=Test', '-c', 'user.email=test@example.test', "
@@ -128,6 +134,33 @@ class RunTest(unittest.TestCase):
         self.assertEqual(report["status"], "done")
         self.assertIn("Working tree clean", report["changes"])
         self.assertNotIn("inbox.py", (self.tree / ".chief-of-stuff/dispatch.md").read_text().lower())
+
+    def test_launch_records_the_worker_its_tree_and_a_log_line_before_it_runs(self):
+        # The coordinator hand-edited all three after every launch, and a row still `open` could launch twice.
+        fake = self._fake('status: done\nreason: done\nchanges: checked\n', write_partial=False)
+        self.assertEqual(self._run(fake), 0)
+        during = (self.root / "during.md").read_text()
+        self.assertRegex(during, r"\| Security audit \| worker01 \| running \d\d:\d\d \|")
+        branch = subprocess.run(["git", "-C", str(self.tree), "branch", "--show-current"],
+                                capture_output=True, text=True, check=True).stdout.strip()
+        self.assertIn(f"| Security audit | `src/a/`; worktree `worker` ({branch}) |", during)
+        self.assertRegex(during, r"(?m)^- \d\d:\d\d one-shot worker01 started: codex, worktree `worker`, "
+                                 r"task Security audit$")
+        self.assertIn(f"worktree `worker` ({branch})", self.tracker.read_text())
+
+    def test_launcher_stamps_in_the_workspace_zone(self):
+        # The workspace is Chicago; a machine on UTC stamped UTC.
+        os.environ["TZ"] = "UTC"
+        time.tzset()
+        self.addCleanup(time.tzset)
+        self.addCleanup(os.environ.pop, "TZ")
+        fake = self._fake('status: done\nreason: done\nchanges: checked\n', write_partial=False)
+        self._run(fake)
+        now = datetime.now(ZoneInfo("America/Chicago"))
+        near = {(now - timedelta(minutes=m)).strftime("%H:%M") for m in (0, 1)}
+        stamps = re.findall(r"(?m)^- (\d\d:\d\d) one-shot", self.tracker.read_text())
+        self.assertEqual(len(stamps), 2)
+        self.assertLessEqual(set(stamps), near)
 
     def test_worker_inherits_the_workspace_for_the_board_guard(self):
         fake = self._fake('status: done\nreason: done\nchanges: checked\n', write_partial=False)
