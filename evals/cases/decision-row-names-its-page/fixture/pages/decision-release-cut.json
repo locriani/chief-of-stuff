@@ -1,0 +1,19 @@
+{
+ "headline": "Cut the release tonight or Monday",
+ "ask": "When should the release be cut?",
+ "options": [
+  {
+   "key": "A",
+   "title": "Tonight",
+   "text": "Ships before the weekend."
+  },
+  {
+   "key": "B",
+   "title": "Monday",
+   "text": "Ships with a full team on hand."
+  }
+ ],
+ "recommended": "B",
+ "why": "Nobody is on call this weekend.",
+ "default": "The release is cut Monday."
+}

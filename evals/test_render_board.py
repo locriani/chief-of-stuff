@@ -5,6 +5,8 @@ import contextlib
 import hashlib
 import http.server
 import io
+import json
+import os
 import re
 import socket
 import sys
@@ -1436,6 +1438,39 @@ class CliTest(unittest.TestCase):
             out = rb.main(["--date", "2026-09-16", "--root", str(root)])
         self.assertTrue(out.exists())
         self.assertNotIn("pages:", buf.getvalue())
+
+    def test_the_board_writes_a_decisions_page_beside_it(self) -> None:
+        # Zach, 2026-09-26 00:50: "a decisions page that automatically links to each pending decision and shows
+        # completed decisions". A decision is answered once a Decisions row, on any day, names its page.
+        root = self.pages_root(free_port())
+        pages = root / "pages"
+        pages.mkdir()
+        ask = {"ask": "Which window?", "options": [{"key": "A", "title": "Tonight"}, {"key": "B", "title": "Monday"}],
+               "recommended": "B", "why": "Quiet.", "default": "Nothing ships."}
+        for n, slug in enumerate(("deploy-window", "uploads-storage", "cache-size")):
+            (pages / f"decision-{slug}.json").write_text(json.dumps(dict(ask, headline=f"Decide {slug}")))
+            (pages / f"decision-{slug}.html").write_text("page")
+            os.utime(pages / f"decision-{slug}.json", (1000 + n, 1000 + n))
+        (pages / "decision-broken.json").write_text("{")
+        os.utime(pages / "decision-broken.json", (999, 999))
+        (root / "daily" / "2026-09-15-tracker.md").write_text(
+            "# Tracker\n\n## Decisions\n\n| time | item | Robin's words |\n|---|---|---|\n"
+            "| 17:00 | option A of decision-uploads-storage | \"A\" |\n")
+        tracker = TRACKER.replace('| 11:15 | Draft release notes | "done" |',
+                                  '| 11:15 | Draft release notes | "done" |\n| 11:20 | option B of decision-cache-size | "B, go" |')
+        (root / "daily" / "2026-09-16-tracker.md").write_text(tracker)
+        with contextlib.redirect_stdout(io.StringIO()):
+            board = rb.main(["--date", "2026-09-16", "--root", str(root)]).read_text()
+        page = (pages / "decisions.html").read_text()
+        pending, completed = page.split("Completed", 1)
+        self.assertRegex(pending, r'(?s)href="decision-deploy-window\.html".*decision-broken')
+        for text in ("Decide deploy-window", "Which window?", "Monday", "Nothing ships."):
+            self.assertIn(text, pending)
+        self.assertNotIn("uploads-storage", pending)
+        self.assertNotIn("cache-size", pending)
+        self.assertIn("Draft release notes", completed)
+        self.assertRegex(completed, r'(?s)11:20.*href="decision-cache-size\.html".*B, go')
+        self.assertRegex(board, r'href="decisions\.html"[^>]*>2 decisions pending<')
 
     def test_summary_line_counts_long_items(self) -> None:
         root = Path(tempfile.mkdtemp())
