@@ -161,7 +161,7 @@ def record_launch(path: Path, task: str, name: str, tree: str, runtime: str, mod
         i = _task_line(lines, task)
         lines[i] = _set_owner_state(lines[i], re.compile(r"\|\s*unassigned\s*\|\s*open\s*\|", re.I),
                                     f"| {name} | running {at} |", "task owner/state is not an unassigned open row")
-        keys = dispatch_prompt.task_keys(task)
+        keys = dispatch_prompt.task_keys(task, dispatch_prompt.task_name(text, task))
         section = False
         owned = None
         for j, line in enumerate(lines):
