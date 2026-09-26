@@ -846,6 +846,36 @@ def decision_rows(tracker_text: str) -> list[list[str]]:
     return [(cells + ["", "", ""])[:3] for cells in rows[1:] if not _is_separator(cells)]
 
 
+def decision_context(root: Path, day: date, now: datetime | None = None) -> decision_page.Context:
+    """What the decisions pages read from the workspace: every tracker's Decisions rows and Log lines, `day`'s
+    tasks, the cached forge sources and the [kanban] label that holds an issue."""
+    cfg = parse_coordinator((root / "CLAUDE.md").read_text(), today=date.today())
+    now = now or datetime.now(cfg.zone).replace(second=0, microsecond=0)
+
+    def at(d: date, hhmm: str) -> datetime | None:
+        m = re.match(r"(\d{1,2}):(\d{2})\b", hhmm.strip())
+        try:
+            return datetime.combine(d, time(int(m[1]), int(m[2])), cfg.zone) if m else None
+        except ValueError:
+            return None
+
+    rows, log = [], []
+    for d, path in daily_trackers(root, cfg):
+        text = path.read_text()
+        rows += [decision_page.Row(d, at(d, t), item, words) for t, item, words in decision_rows(text)]
+        log += [(when, line.strip()[2:]) for line in _section(text, "## Log")
+                if line.strip().startswith("- ") and (when := at(d, line.strip()[2:]))]
+    tracker = root / cfg.tracker_path(day.isoformat())
+    tasks = parse_tracker(tracker.read_text()).tasks if tracker.is_file() else ()
+    try:
+        kanban = load_settings(root, cfg.settings_path).kanban
+    except SettingsError:
+        kanban = None
+    pages = root / cfg.pages_dir if cfg.pages_dir else tracker.parent
+    return decision_page.Context(now, tuple(rows), tuple(sorted(log, key=lambda x: x[0])), tasks, board_sources.load(pages),
+                                 kanban.human_review_label if kanban else "", cfg.user, cfg.backlog)
+
+
 def _anchor(raw: list[str], cols: tuple[str, ...]) -> list[str] | None:
     """A row wider than its table is one cell that grew a pipe. Re-read it from its state column — the one cell
     of a task row a machine can recognise on sight: `item` absorbs the excess on its left and `checklist` the
@@ -1830,14 +1860,15 @@ def merge_order(sources: board_sources.Sources) -> panels.Panel:
                         f"{approved} approved · {len(rows) - approved} in review", foot=f"+ {rest} more" if rest > 0 else "")
 
 
-def decision_panel(pending: list[tuple[str, dict | Exception]], answered: int) -> panels.Panel:
-    """The pending decisions (decision_page.pending) and how many were answered today."""
-    rows = tuple(panels.Row(page, f"unreadable: {d}") if isinstance(d, Exception) else panels.Row(
-        d["headline"], " · ".join([*([f"asked {d['asked']}"] if d.get("asked") else []),
-                                   f"recommended {d['recommended']}", f"default: {d['default']}"]), href=f"{page}.html")
-        for page, d in pending)
-    return panels.Panel("decisions", "DECISIONS", "decisions", len(rows), rows, link=("decisions page", "decisions.html"),
-                        foot=f"{answered} answered today")
+def decision_panel(pending: list[tuple[str, dict | None, datetime | None, str]], answered: int, now: datetime) -> panels.Panel:
+    """The pending decisions (decision_page.entries, as decisions.html lists them) and how many were answered today."""
+    when = decision_page.Context(now).when
+    rows = tuple(panels.Row(f"decision-{slug}.json", f"unreadable: {why}") if d is None else panels.Row(
+        d["headline"], " · ".join([*([f"asked {when(asked)}"] if asked else []),
+                                   f"recommended {d['recommended']}", f"default: {d['default']}"]), href=f"decision-{slug}.html")
+        for slug, d, asked, why in pending)
+    return panels.Panel("decisions", "DECISIONS", "decisions", sum(d is not None for _, d, _, _ in pending), rows,
+                        link=("decisions page", "decisions.html"), foot=f"{answered} answered today")
 
 
 def worker_panel(sources: board_sources.Sources, now: datetime) -> panels.Panel:
@@ -1863,7 +1894,7 @@ def flow_tiles(blocked: int, decisions: int, sources: board_sources.Sources, run
 
 def render(tracker_text: str, log_text: str, cfg: Config, now: datetime,
            requirements: dict[str, str | None] | None = None, lanes: dict | None = None,
-           tracker_day: date | None = None, decisions: list[tuple[str, dict | Exception]] | None = None,
+           tracker_day: date | None = None, decisions: list[tuple[str, dict | None, datetime | None, str]] | None = None,
            kanban: Kanban | None = None, sources: board_sources.Sources = board_sources.EMPTY, answered: int = 0,
            tracker_at: datetime | None = None, stage_log: list[tuple[date, str]] | None = None, slots: int = 1) -> str:
     """`stage_log` is (day, tracker text) for the earlier days the Flow charts reach back over; `slots` is how many
@@ -2118,9 +2149,9 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime,
             *([f"board {url}"] if url else []), *([long_note.removeprefix(" · ")] if long_note else [])]
     head = panels.Header(f"Board · {now.strftime('%a %d %b')}", tuple(meta), now, nearest.name, nearest.at,
                          tuple(f"{k}: {why}" for k, why in sources.errors.items()))
-    tiles = flow_tiles(len(awaiting) + len(unowned) + len(quiet), len(pending), sources, len(running),
+    tiles = flow_tiles(len(awaiting) + len(unowned) + len(quiet), sum(d is not None for _, d, _, _ in pending), sources, len(running),
                        sum(drifts(t, kanban, sources) for t in tasks), len(unowned))
-    panels_html = panels.panels([merge_order(sources), decision_panel(pending, answered), worker_panel(sources, now)])
+    panels_html = panels.panels([merge_order(sources), decision_panel(pending, answered, now), worker_panel(sources, now)])
 
     return f"""<meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -2339,16 +2370,12 @@ def main(argv: list[str] | None = None) -> Path:
         settings = load_settings(root, cfg.settings_path)
     except SettingsError as e:
         sys.exit(f"render_board: {e}")
-    today_rows = decision_rows(tracker_text)
-    answered = [row[1] for _, path in daily_trackers(root, cfg) if path != tracker for row in decision_rows(path.read_text())]
-    named = answered + [row[1] for row in today_rows]
-    decisions, _ = decision_page.index(out.parent, named, today_rows, day)
-    (out.parent / "decisions.html").write_text(decisions)
+    pending = decision_page.write_all(out.parent, decision_context(root, tracker_day, now), day, root)
     reach = (now - flow_chart.WINDOWS[-1][1]).date()
     stage_log = [(d, path.read_text()) for d, path in daily_trackers(root, cfg) if reach <= d < tracker_day]
     page = render(tracker_text, log_text, cfg, now, requirements=req_texts, lanes=settings.lanes,
-                  tracker_day=tracker_day, decisions=decision_page.pending(out.parent, named), kanban=settings.kanban,
-                  sources=board_sources.load(out.parent), answered=len(today_rows),
+                  tracker_day=tracker_day, decisions=pending, kanban=settings.kanban,
+                  sources=board_sources.load(out.parent), answered=len(decision_rows(tracker_text)),
                   tracker_at=datetime.fromtimestamp(tracker.stat().st_mtime, cfg.zone), stage_log=stage_log,
                   slots=settings.workers.max_concurrency or 1)
     out.write_text(page)

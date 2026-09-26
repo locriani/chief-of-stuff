@@ -15,6 +15,11 @@ server thing"). The JSON holds:
     architecture {summary, not_drawn, nodes [{id, name, state, detail, hot}], edges [{from, to, label, state, hot}]}
                                                                                      optional
 
+What the JSON leaves out the page reads from the workspace (render_board.decision_context): `asked` from the first
+Log line naming `decision-<slug>`, else the file's mtime; the answer and its chip from the latest Decisions row naming
+it, the key being the option its words name; a reference's status from the tracker's stage and board_sources. Rendering
+the board re-renders every page, and `decisions.html` lists them (Decisions.dc.html).
+
 A timeline `kind` colours its dot: a lane stage (implement, pr, review, triage, fix, verify, merge), `hot` or
 `designed`. A node's `state` is deployed (the default), inflight, designed or external; an edge's is deployed,
 inflight or designed; `hot` marks what waits on this decision. A reference's `at` pins its files to a commit.
@@ -32,10 +37,11 @@ import json
 import re
 import sys
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, time, timedelta
 from html import escape
 from pathlib import Path
 
+import board_sources
 from backlog import Backlog, BacklogError, GitHubBacklog, backlog_from_config
 from pages import PagesError, from_config
 
@@ -281,7 +287,10 @@ def _figure(arch: dict, linker: Linker) -> str:
             + f"\n      </svg></div>\n      <figcaption>{chips}{not_drawn}</figcaption>\n    </figure>")
 
 
-def render(d: dict, day: str, forge: Backlog | GitHubBacklog | None = None, root: Path | None = None) -> str:
+def render(d: dict, day: str, forge: Backlog | GitHubBacklog | None = None, root: Path | None = None,
+           ctx: Context | None = None, slug: str = "", mtime: float | None = None) -> str:
+    """The page. With a context, what the JSON leaves out is read from it: when it was asked, the answer and the
+    chip, and each reference's status."""
     link = Linker(forge, root)
 
     def md(text: str) -> str:
@@ -304,7 +313,7 @@ def render(d: dict, day: str, forge: Backlog | GitHubBacklog | None = None, root
     opts = []
     for o in d["options"]:
         rec = o["key"] == d["recommended"]
-        title = escape(o["title"]) + (" (recommended)" if rec else "")
+        title = escape(o["title"]) + (' <span class="rec">· recommended</span>' if rec else "")
         opts.append(f'      <div class="opt{" rec" if rec else ""}"><span class="k">{escape(o["key"])}</span><b>{title}</b>'
                     f'\n        <p>{md(o.get("text", ""))}</p>\n      </div>')
     right.append(_section("Options", '    <div class="options">\n' + "\n".join(opts) + "\n    </div>"))
@@ -319,17 +328,23 @@ def render(d: dict, day: str, forge: Backlog | GitHubBacklog | None = None, root
             one = one and pin.resolve(one)
             # A row that is one reference is one plain link: the row's kind already labels it.
             what = f'<a href="{escape(one[2])}">{one[1]}{label}</a>' if one else _md(r["value"], pin) + label
-            status = " · ".join(x for x in (escape(r.get("status", "")), f"@ {escape(r['at'])}" if r.get("at") else "") if x)
+            one_ref = refs_in(str(r.get("value", "")))
+            known = r.get("status") or (ctx.where(one_ref[0]) if ctx and len(one_ref) == 1 else "")
+            status = " · ".join(x for x in (escape(known), f"@ {escape(r['at'])}" if r.get("at") else "") if x)
             rows.append(f'      <span class="cap">{escape(r.get("kind") or r.get("label", ""))}</span><span>{what}</span>'
                         f'<span class="st">{status}</span>')
         right.append(_section("References", '    <div class="card refs">\n' + "\n".join(rows) + "\n    </div>"))
     keys = [o["key"] for o in d["options"]]
     answer = keys[0] if len(keys) == 1 else ", ".join(keys[:-1]) + (", or " if len(keys) > 2 else " or ") + keys[-1]
     sources = f" from {md(d['sources'])}" if d.get("sources") else ""
-    asked = f"asked {d['asked']}" if d.get("asked") else None
-    eyebrow = " · ".join([escape(x) for x in ("Decision", d.get("topic"), day, asked) if x]
+    at = ctx.asked(slug, d, mtime) if ctx else None
+    asked = f"asked {ctx.when(at)}" if at else f"asked {d['asked']}" if d.get("asked") else None
+    row = ctx.answer(slug) if ctx and not d.get("answer") else None
+    chosen = d.get("answer") or (ctx.key(row, keys) if row else "")
+    answered = bool(chosen or row)
+    eyebrow = " · ".join([escape(x) for x in ("Decision", d.get("topic"), _day(day), asked) if x]
                          + ['<a href="decisions.html">decisions</a>', '<a href="/">board</a>'])
-    chip = f"ANSWERED · {escape(d['answer'])}" if d.get("answer") else "PENDING"
+    chip = f"ANSWERED · {escape(chosen)}" if chosen else "ANSWERED" if answered else "PENDING"
     yes = f"\n    <p>{md(d['yes'])}</p>" if d.get("yes") else ""
     where = _figure(d["architecture"], link) if d.get("architecture") else ""
     where = _section("Where it sits", where) if where else ""
@@ -338,7 +353,7 @@ def render(d: dict, day: str, forge: Backlog | GitHubBacklog | None = None, root
             f"<title>{escape(d['headline'])}</title>\n{HEAD}</head>\n<body>\n<main class=\"decision\">\n"
             f'  <header class="top">\n    <div>\n      <span class="eyebrow">{eyebrow}</span>\n'
             f"      <h1>{md(d['headline'])}</h1>\n    </div>\n"
-            f'    <span class="chip{" answered" if d.get("answer") else ""}">{chip}</span>\n  </header>\n\n'
+            f'    <span class="chip{" answered" if answered else ""}">{chip}</span>\n  </header>\n\n'
             f'  <div class="card ask">\n    <span class="cap">ask</span>\n'
             f"    <strong>{md(d['ask'])}</strong>{yes}\n  </div>\n\n"
             + where
@@ -353,6 +368,16 @@ def forge(root: Path) -> Backlog | GitHubBacklog | None:
         return backlog_from_config(root / "CLAUDE.md")
     except (OSError, BacklogError) as e:
         print(f"decision: references stay unlinked — {e}", file=sys.stderr)
+        return None
+
+
+def context(root: Path, day: str) -> Context | None:
+    """The workspace's context for `day`, or None when its block does not parse (the page then shows its JSON alone)."""
+    import render_board  # render_board imports this module, so not at the top
+
+    try:
+        return render_board.decision_context(root, date.fromisoformat(day))
+    except (ValueError, OSError, render_board.ConfigError):
         return None
 
 
@@ -373,7 +398,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     try:
         source = Path(args.source) if args.source else pages_dir / f"decision-{args.name}.json"
-        page = render(parse(json.loads(source.read_text())), args.date, forge(Path(args.root)), Path(args.root))
+        page = render(parse(json.loads(source.read_text())), args.date, forge(Path(args.root)), Path(args.root),
+                      context(Path(args.root), args.date), args.name, source.stat().st_mtime)
     except (OSError, json.JSONDecodeError, DecisionError, KeyError, TypeError, AttributeError) as e:
         print(f"decision: {e}", file=sys.stderr)
         return 2
@@ -384,55 +410,258 @@ def main(argv: list[str] | None = None) -> int:
 
 
 PAGE_REF = re.compile(r"decision-[a-z0-9]+(?:-[a-z0-9]+)*")
+# An issue or PR/MR a text names: `#12`, `!58`, `owner/repo#12`, or its forge URL. `pipeline #8812` is not one.
+REF = re.compile(r"(?<![\w&])(?<![Pp]ipeline )(?<![Rr]un )([#!])(\d+)\b|/(issues|pull|merge_requests)/(\d+)|[\w.-]+/[\w.-]+#(\d+)\b")
+HHMM = re.compile(r"([01]?\d|2[0-3]):([0-5]\d)")
 
 
-def pending(pages_dir: Path, answered: list[str]) -> list[tuple[str, dict | Exception]]:
-    """The decision pages no Decisions item names, newest first: each page's name and its decision, or why it is unreadable."""
-    named = {ref for item in answered for ref in PAGE_REF.findall(item)}
-    out: list[tuple[str, dict | Exception]] = []
-    for source in sorted(pages_dir.glob("decision-*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
-        if source.stem in named:
-            continue
-        try:
-            out.append((source.stem, parse(json.loads(source.read_text()))))
-        except (OSError, json.JSONDecodeError, DecisionError, KeyError, TypeError, AttributeError) as e:
-            out.append((source.stem, e))
+def refs_in(text: str) -> list[str]:
+    out = []
+    for m in REF.finditer(text or ""):
+        ref = m[1] + m[2] if m[1] else ("!" if m[3] == "merge_requests" else "#") + (m[4] or m[5])
+        if ref not in out:
+            out.append(ref)
     return out
 
 
-def index(pages_dir: Path, answered: list[str], today: list[list[str]], day: str) -> tuple[str, int]:
-    """`decisions.html` and its pending count. A page is answered once any Decisions item names it;
-    `today` is today's Decisions rows as (time, item, words)."""
-    pending_pages = []
-    for page, d in pending(pages_dir, answered):
-        rec = None if isinstance(d, Exception) else next((o for o in d["options"] if o["key"] == d["recommended"]), None)
-        if rec is None:
-            pending_pages.append(f'    <div class="side">\n      <code>{page}</code>\n      <p>unreadable: {escape(str(d))}</p>\n    </div>')
+def span(td: timedelta) -> str:
+    """`29m`, `1h 18m`, `4h`, `1d 1h`."""
+    d, m = divmod(max(0, int(td.total_seconds() // 60)), 1440)
+    h, m = divmod(m, 60)
+    if d:
+        return f"{d}d {h}h" if h else f"{d}d"
+    if h:
+        return f"{h}h {m:02d}m" if m else f"{h}h"
+    return f"{m}m"
+
+
+def _day(day: str) -> str:
+    try:
+        d = date.fromisoformat(day)
+    except ValueError:
+        return day
+    return f"{d:%a} {d.day} {d:%b}"
+
+
+@dataclass(frozen=True)
+class Row:
+    """A Decisions row: its tracker's day, its time (None when the cell is not HH:MM), item and words."""
+    day: date
+    when: datetime | None
+    item: str
+    words: str
+
+
+@dataclass(frozen=True)
+class Context:
+    """What the pages read besides a decision's JSON: every tracker's Decisions rows and Log lines (oldest first),
+    the day's Tasks rows, the forge through board_sources, and the [kanban] label that holds an issue."""
+    now: datetime
+    rows: tuple[Row, ...] = ()
+    log: tuple[tuple[datetime, str], ...] = ()
+    tasks: tuple = ()
+    sources: board_sources.Sources = board_sources.EMPTY
+    hold: str = ""
+    user: str = ""
+    forge: Backlog | GitHubBacklog | None = None
+
+    def when(self, at: datetime) -> str:
+        at = at.astimezone(self.now.tzinfo)
+        return f"{at:%H:%M}" if at.date() == self.now.date() else f"{at:%a %H:%M}"
+
+    def asked(self, slug: str, d: dict, mtime: float | None) -> datetime | None:
+        """The JSON's `asked`, else the first Log line naming the page, else the file's mtime."""
+        base = datetime.fromtimestamp(mtime, self.now.tzinfo) if mtime is not None else None
+        m = HHMM.fullmatch(str(d.get("asked") or ""))
+        if m:
+            return datetime.combine((base or self.now).date(), time(int(m[1]), int(m[2])), self.now.tzinfo)
+        page = f"decision-{slug}"
+        return next((at for at, text in self.log if page in PAGE_REF.findall(text)), base)
+
+    def answer(self, slug: str) -> Row | None:
+        """The latest Decisions row naming the page."""
+        page = f"decision-{slug}"
+        return next((r for r in reversed(self.rows) if page in PAGE_REF.findall(r.item)), None)
+
+    def key(self, row: Row, keys: list[str]) -> str:
+        """The option key the user's words name, else the one the item names."""
+        for text in (row.words, row.item):
+            hit = next((w for w in re.findall(r"[\w-]+", text) if w in keys), None)
+            if hit:
+                return hit
+        return ""
+
+    def holding(self, slug: str, d: dict) -> list[str]:
+        """The issues and PRs/MRs the decision holds: its `holds`, its one-ref references, and the refs of every
+        task whose item names the page."""
+        page = f"decision-{slug}"
+        found = [r for h in d.get("holds") or [] for r in refs_in(str(h))]
+        for r in d.get("references") or []:
+            one = refs_in(str(r.get("value", "")))
+            found += one if len(one) == 1 else []
+        for t in self.tasks:
+            if page in PAGE_REF.findall(t.item):
+                found += refs_in(t.issue) + refs_in(t.item)
+        return list(dict.fromkeys(found))
+
+    def change(self, ref: str) -> board_sources.Change | None:
+        c = self.sources.changes
+        return c.get(ref) or (c.get("#" + ref[1:]) if ref.startswith("!") else None)
+
+    def stage(self, ref: str) -> str:
+        return next((t.stage for t in self.tasks if t.stage and ref in refs_in(t.issue) + refs_in(t.item)), "")
+
+    def where(self, ref: str) -> str:
+        """Where a ref stands now: `merged 01:15`, `closed`, or its tracker stage with the forge's word on it
+        (`merge · passed`, `triage · hold`, `open · failed`)."""
+        c = self.change(ref) or next((c for c in self.sources.changes.values() if ref in c.issues), None)
+        i = self.sources.issues.get(ref)
+        if c and c.state == "merged":
+            return "merged" + (f" {c.merged_at.astimezone(self.now.tzinfo):%H:%M}" if c.merged_at else "")
+        if (c or i) and (c or i).state == "closed":
+            return "closed"
+        stage = next(filter(None, (self.stage(r) for r in (ref, *((c.ref, *c.issues) if c else ())))), "")
+        held = i and self.hold and self.hold in i.labels
+        return " · ".join(x for x in (stage or ("open" if c else ""), c and c.pipeline, "hold" if held else "") if x)
+
+    def ref(self, ref: str) -> str:
+        found = self.change(ref) or self.sources.issues.get(ref)
+        url = found.url if found else Linker(self.forge).href(escape(ref))
+        return f'<a class="ref" href="{escape(url)}">{escape(ref)}</a>' if url else f'<a class="ref">{escape(ref)}</a>'
+
+    def is_change(self, ref: str) -> bool:
+        return ref.startswith("!") or bool(self.change(ref))
+
+
+BAD = (OSError, json.JSONDecodeError, DecisionError, KeyError, TypeError, AttributeError, StopIteration)
+
+
+def entries(pages_dir: Path, ctx: Context) -> list[tuple[str, dict | None, datetime | None, str]]:
+    """Every decision no Decisions row has answered, as (slug, decision, asked, why it is unreadable): the newest
+    ask first, the unreadable last."""
+    out = []
+    for source in pages_dir.glob("decision-*.json"):
+        slug = source.stem.removeprefix("decision-")
+        if ctx.answer(slug):
             continue
-        pending_pages.append(f'    <div class="side">\n      <a href="{page}.html"><b>{_md(d["headline"])}</b></a>\n'
-                             f'      <p>{_md(d["ask"])}</p>\n      <p>Recommended: {escape(rec["key"])}, {_md(rec.get("title", ""))}</p>\n'
-                             f'      <p>Default: {_md(d["default"])}</p>\n    </div>')
+        try:
+            d, why = parse(json.loads(source.read_text())), ""
+        except BAD as e:
+            d, why = None, str(e)
+        out.append((slug, d, ctx.asked(slug, d or {}, source.stat().st_mtime), why))
+    return sorted(out, key=lambda e: (e[1] is None, -e[2].timestamp() if e[2] else 0, e[0]))
 
-    def link(m: re.Match) -> str:
-        return f'<a href="{m[0]}.html">{m[0]}</a>' if (pages_dir / f"{m[0]}.html").is_file() else m[0]
 
-    rows = "\n".join(f"        <tr><th>{escape(t)}</th><td>{PAGE_REF.sub(link, _md(item))}</td><td>{_md(words)}</td></tr>"
-                     for t, item, words in today)
-    body = [_section(f"Pending · {len(pending_pages)}", "\n".join(pending_pages) or "    <p>none</p>"),
-            _section(f"Completed · {len(today)}",
-                     f'    <div class="tablewrap">\n      <table class="facts">\n{rows}\n      </table>\n    </div>' if today else "    <p>none</p>")]
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}{'' if n == 1 else 's'}"
+
+
+def index(pages_dir: Path, ctx: Context, day: str) -> tuple[str, list[tuple[str, dict | None, datetime | None, str]]]:
+    """`decisions.html` (Decisions.dc.html) and its pending entries, which the board's DECISIONS panel lists too."""
+    pending = entries(pages_dir, ctx)
+    rows, held = [], []
+    for slug, d, asked, why in pending:
+        when = f'<span class="when">{ctx.when(asked)}</span>' if asked else ""
+        if d is None:
+            name = escape(f"decision-{slug}.json")
+            rows.append(f'      <div class="row pend unread">\n        <span class="stack">{when}</span>\n'
+                        f'        <span class="stack"><a class="ref" href="{name}">{name}</a><span class="why">unreadable: {escape(why)}</span></span>\n'
+                        + '        <span class="none">—</span>' * 3 + "\n      </div>")
+            continue
+        holds = ctx.holding(slug, d)
+        held += holds
+        age = f'<span class="age">{span(ctx.now - asked)}</span>' if asked else ""
+        topic = f'<span class="topic">{escape(d["topic"])}</span>' if d.get("topic") else ""
+        opts = "".join(f'<span class="o{" rec" if o["key"] == d["recommended"] else ""}"><span class="key">{escape(o["key"])}</span>'
+                       f'{escape(o.get("title", ""))}{" · recommended" if o["key"] == d["recommended"] else ""}</span>' for o in d["options"])
+        refs = "".join(f"<span>{ctx.ref(r)} {escape(ctx.where(r))}</span>" for r in holds)
+        rows.append(f'      <div class="row pend">\n        <span class="stack">{when}{age}</span>\n'
+                    f'        <span class="stack"><span class="line"><a class="headline" href="decision-{escape(slug)}.html">{escape(d["headline"])}</a>{topic}</span>'
+                    f'<span class="q">{_md(d["ask"])}</span></span>\n        <span class="stack">{opts}</span>\n'
+                    f'        <span class="stack holds">{refs}</span>\n        <span class="fallback">{_md(d["default"])}</span>\n      </div>')
+    try:
+        today = date.fromisoformat(day)
+    except ValueError:
+        today = ctx.now.date()
+    done = []
+    for row in reversed([r for r in ctx.rows if r.day == today]):
+        page = next(iter(PAGE_REF.findall(row.item)), None)
+        source = pages_dir / f"{page}.json" if page else None
+        try:
+            d = parse(json.loads(source.read_text())) if source and source.is_file() else None
+        except BAD:
+            d = None
+        took, key, answer, refs = "", "", "", refs_in(row.item)
+        if d:
+            slug = page.removeprefix("decision-")
+            key = ctx.key(row, [o["key"] for o in d["options"]]) or d.get("answer", "")
+            answer = next((o.get("title", "") for o in d["options"] if o["key"] == key), "")
+            asked = ctx.asked(slug, d, source.stat().st_mtime)
+            took = f"in {span(row.when - asked)}" if asked and row.when and row.when >= asked else ""
+            refs += ctx.holding(slug, d)
+            head = f'<a class="headline" href="{escape(page)}.html">{escape(d["headline"])}</a><span class="page">{escape(page)}</span>'
+        else:
+            first, _, rest = re.sub(r'^\(via [^)]*\)\s*', "", row.words).strip(' "“”').partition(" ")
+            if first.rstrip(",.;:").lower() in ("yes", "no"):
+                key, answer = first.rstrip(",.;:").lower(), rest.strip(' "“”')
+            head = f'<span class="headline">{_md(row.item)}</span><span class="page">{escape(page) if page else "Decisions row"}</span>'
+        ref = refs[0] if refs else ""
+        since = f"{ctx.ref(ref)} {escape(ctx.where(ref))}" if ref else ""
+        keyed = f'<span class="key">{escape(key)}</span>' if key else ""
+        done.append(f'      <div class="row done">\n        <span class="stack"><span class="when">{ctx.when(row.when) if row.when else ""}</span>'
+                    f'<span class="took">{took}</span></span>\n        <span class="stack">{head}</span>\n'
+                    f"        <span>{keyed}{escape(answer)}</span>\n        <span class=\"words\">{escape(row.words)}</span>\n"
+                    f'        <span class="since">{since}</span>\n      </div>')
+    ready = [a for _, d, a, _ in pending if d is not None]
+    held = list(dict.fromkeys(held))
+    mrs = sum(1 for r in held if ctx.is_change(r))
+    unread = len(pending) - len(ready)
+    meta = [f"rendered {ctx.now:%H:%M} {ctx.now:%Z}".rstrip(), f"{len(ready)} pending"]
+    if any(ready):
+        meta.append(f"oldest {span(ctx.now - min(a for a in ready if a))}")
+    if held:
+        meta.append(f"holding {_plural(len(held) - mrs, 'issue')}, {_plural(mrs, 'merge request')}")
+    if unread:
+        meta.append(f"{unread} unreadable")
+    meta.append(f"{len(done)} completed today")
+    meta += [f"{escape(k)}: {escape(why)}" for k, why in ctx.sources.errors.items()]
+    meta.append('<a href="/">board</a>')
+    words = f"{escape(ctx.user)}'s words" if ctx.user else "words"
+    none = '      <div class="row"><span class="none">none</span></div>'
+    body = (f'  <section>\n    <h2 class="pend">PENDING · {len(ready)}</h2>\n    <div class="list">\n'
+            '      <div class="row pend head cap"><span>asked</span><span>decision</span><span>options</span><span>holding</span><span>if unanswered</span></div>\n'
+            + ("\n".join(rows) or none) + "\n    </div>\n  </section>\n"
+            f'  <section>\n    <h2>COMPLETED · {len(done)}</h2>\n    <div class="list fin">\n'
+            f'      <div class="row done head cap"><span>answered</span><span>decision</span><span>answer</span><span>{words}</span><span>since</span></div>\n'
+            + ("\n".join(done) or none) + "\n    </div>\n  </section>\n")
     return (f"<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n"
             f"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
-            f"<title>Decisions · {escape(day)}</title>\n{HEAD}</head>\n<body>\n<main>\n"
-            f"  <header><h1>Decisions · {escape(day)}</h1></header>\n" + "".join(body) + "</main>\n</body>\n</html>\n"), len(pending_pages)
+            f"<title>Decisions · {escape(_day(day))}</title>\n{HEAD}</head>\n<body>\n<main class=\"decisions\">\n"
+            f'  <header class="top">\n    <div>\n      <h1>Decisions · {escape(_day(day))}</h1>\n'
+            f'      <span class="eyebrow">{" · ".join(meta)}</span>\n    </div>\n  </header>\n'
+            + body + "</main>\n</body>\n</html>\n"), pending
+
+
+def write_all(pages_dir: Path, ctx: Context, day: str, root: Path | None = None) -> list[tuple[str, dict | None, datetime | None, str]]:
+    """Re-render every readable decision's page from its JSON and the context, and `decisions.html`; the pending entries."""
+    for source in pages_dir.glob("decision-*.json"):
+        try:
+            page = render(parse(json.loads(source.read_text())), day, ctx.forge, root, ctx, source.stem.removeprefix("decision-"),
+                          source.stat().st_mtime)
+        except BAD:
+            continue
+        source.with_suffix(".html").write_text(page)
+    html, pending = index(pages_dir, ctx, day)
+    (pages_dir / "decisions.html").write_text(html)
+    return pending
 
 
 HEAD = f'<link rel="stylesheet" href="{FONTS}">\n' + """<style>
 /* The board's parchment scheme (render_board.py) and the architecture review's state encoding (frank-lloyd-aight
    docs/review-page.md). Okabe-Ito colours the timeline stages, as on the board Gantt. */
-:root{--bg:#f4efe1;--surface:#fbf8ef;--fg:#2f2630;--muted:#6e6470;--line:#ddd3bd;--brass:#a7843e;--dl:#c9533a;--link:#8a6c30;--ref-bg:#efe7d3;--deployed:#2b3542;--inflight:#a8660f;--inflight-soft:#f6ead6;--designed:#2c58a0;--designed-soft:#dfe8f6;--ext:#8a8f98;--ext-soft:#f1eee6;--ext-ink:#5f6b7b;--stage-implement:#0072B2;--stage-pr:#56B4E9;--stage-review:#009E73;--stage-triage:#E69F00;--stage-fix:#D55E00;--stage-verify:#CC79A7;--stage-merge:#000000}
-@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;--bg:#1c1813;--surface:#262019;--fg:#efe6d2;--muted:#b3a791;--line:#3d352a;--brass:#d4b06a;--dl:#f08566;--link:#e2c27f;--ref-bg:#342b1f;--deployed:#d9d2c4;--inflight:#e8ad55;--inflight-soft:#35281a;--designed:#8fb3f0;--designed-soft:#1f2735;--ext:#8f8a80;--ext-soft:#2d2822;--ext-ink:#c4bdb0;--stage-implement:#3D95D6;--stage-pr:#56B4E9;--stage-review:#009E73;--stage-triage:#E69F00;--stage-fix:#D55E00;--stage-verify:#CC79A7;--stage-merge:#efe6d2}}
-:root[data-theme="dark"]{color-scheme:dark;--bg:#1c1813;--surface:#262019;--fg:#efe6d2;--muted:#b3a791;--line:#3d352a;--brass:#d4b06a;--dl:#f08566;--link:#e2c27f;--ref-bg:#342b1f;--deployed:#d9d2c4;--inflight:#e8ad55;--inflight-soft:#35281a;--designed:#8fb3f0;--designed-soft:#1f2735;--ext:#8f8a80;--ext-soft:#2d2822;--ext-ink:#c4bdb0;--stage-implement:#3D95D6;--stage-pr:#56B4E9;--stage-review:#009E73;--stage-triage:#E69F00;--stage-fix:#D55E00;--stage-verify:#CC79A7;--stage-merge:#efe6d2}
+:root{--bg:#f4efe1;--surface:#fbf8ef;--fg:#2f2630;--muted:#6e6470;--line:#ddd3bd;--brass:#a7843e;--dl:#c9533a;--link:#8a6c30;--ref-bg:#efe7d3;--deployed:#2b3542;--inflight:#a8660f;--inflight-soft:#f6ead6;--designed:#2c58a0;--designed-soft:#dfe8f6;--ext:#8a8f98;--ext-soft:#f1eee6;--ext-ink:#5f6b7b;--stage-implement:#0072B2;--stage-pr:#56B4E9;--stage-review:#009E73;--stage-triage:#E69F00;--stage-fix:#D55E00;--stage-verify:#CC79A7;--stage-merge:#000000;--now:#4f6b3a}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;--bg:#1c1813;--surface:#262019;--fg:#efe6d2;--muted:#b3a791;--line:#3d352a;--brass:#d4b06a;--dl:#f08566;--link:#e2c27f;--ref-bg:#342b1f;--deployed:#d9d2c4;--inflight:#e8ad55;--inflight-soft:#35281a;--designed:#8fb3f0;--designed-soft:#1f2735;--ext:#8f8a80;--ext-soft:#2d2822;--ext-ink:#c4bdb0;--stage-implement:#3D95D6;--stage-pr:#56B4E9;--stage-review:#009E73;--stage-triage:#E69F00;--stage-fix:#D55E00;--stage-verify:#CC79A7;--stage-merge:#efe6d2;--now:#a8c67e}}
+:root[data-theme="dark"]{color-scheme:dark;--bg:#1c1813;--surface:#262019;--fg:#efe6d2;--muted:#b3a791;--line:#3d352a;--brass:#d4b06a;--dl:#f08566;--link:#e2c27f;--ref-bg:#342b1f;--deployed:#d9d2c4;--inflight:#e8ad55;--inflight-soft:#35281a;--designed:#8fb3f0;--designed-soft:#1f2735;--ext:#8f8a80;--ext-soft:#2d2822;--ext-ink:#c4bdb0;--stage-implement:#3D95D6;--stage-pr:#56B4E9;--stage-review:#009E73;--stage-triage:#E69F00;--stage-fix:#D55E00;--stage-verify:#CC79A7;--stage-merge:#efe6d2;--now:#a8c67e}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 "Alegreya Sans","Gill Sans",system-ui,sans-serif;padding:24px 16px 48px}
 main{max-width:1280px;margin:0 auto;display:flex;flex-direction:column;gap:16px}
@@ -503,13 +732,34 @@ svg .e-inflight{stroke:var(--inflight);stroke-width:1.5;stroke-dasharray:6 4}
 svg .e-designed{stroke:var(--designed);stroke-width:1.5;stroke-dasharray:2 3}
 svg rect.hot,svg line.hot{stroke:var(--dl);stroke-width:2}
 svg .ar-e{fill:var(--deployed)} svg .ar-e-inflight{fill:var(--inflight)} svg .ar-e-designed{fill:var(--designed)} svg .ar-hot{fill:var(--dl)}
-.facts{width:100%;border-collapse:collapse;font-size:13px}
-.facts th,.facts td{text-align:left;vertical-align:top;padding:5px 8px;border-top:1px dotted var(--line)}
-.facts th{font-weight:500;color:var(--muted);white-space:nowrap;width:1%}
-.tablewrap{overflow-x:auto}
 .foot{font-size:12.5px;color:var(--muted);border-top:1px solid var(--line);padding-top:8px}
-main:not(.decision) .side{background:var(--surface);border:1px solid var(--line);border-radius:5px;padding:10px 14px}
-main:not(.decision) section{display:grid;gap:8px}
+.opt .rec{font-weight:500;color:var(--link)}
+/* decisions.html (Decisions.dc.html): a list, pending then completed. */
+.decisions{font-size:13.5px;line-height:1.45}
+.decisions section{display:grid;gap:8px}
+h2.pend{color:var(--link)}
+.list{background:var(--surface);border:1px solid var(--line);border-top:3px solid var(--brass);border-radius:5px}
+.list.fin{border-top-color:var(--now)}
+.row{display:grid;align-items:baseline;gap:14px;padding:9px 14px}
+.row+.row{border-top:1px dotted var(--line)}
+.row.head{padding:6px 14px}
+.row.pend{grid-template-columns:78px minmax(0,2.3fr) minmax(0,1.5fr) minmax(0,1fr) minmax(0,1.4fr)}
+.row.done{grid-template-columns:78px minmax(0,2fr) minmax(0,1.2fr) minmax(0,1.3fr) minmax(0,1.2fr)}
+.stack{display:flex;flex-direction:column;gap:2px;min-width:0;align-items:flex-start}
+.holds{gap:3px}
+.line{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px}
+.row .when,.age,.took,.page{font-family:ui-monospace,monospace;font-variant-numeric:tabular-nums}
+.row .when{font-size:12.5px} .age{font-size:11.5px;color:var(--dl)} .took{font-size:11.5px;color:var(--muted)}
+.headline{font-weight:700;font-size:14.5px;color:var(--fg)} .done .headline{font-size:inherit}
+.topic{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);border:1px solid var(--line);border-radius:3px;padding:0 5px}
+.page{font-size:11px;color:var(--muted)}
+.key{display:inline-block;font:700 11px/1.45 ui-monospace,monospace;border-radius:3px;padding:0 5px;margin-right:4px;border:1px solid var(--line);color:var(--muted)}
+.o.rec{font-weight:700} .o.rec .key,.done .key{color:var(--surface);background:var(--link);border-color:var(--link)}
+.done .key{background:var(--now);border-color:var(--now)}
+.words{font-style:italic}
+.holds>span,.fallback,.since,.none{font-size:12.5px;color:var(--muted)}
+.unread{border-left:3px dashed var(--dl)} .unread .why{color:var(--dl)} .unread .when{color:var(--muted)}
+@media (max-width:760px){.row.pend,.row.done{grid-template-columns:minmax(0,1fr);gap:4px}.row.head{display:none}.row .stack:first-child{flex-direction:row;gap:8px}.unread .none{display:none}}
 @media (max-width:900px){.cols{grid-template-columns:minmax(0,1fr)}}
 @media (max-width:480px){header.top{flex-direction:column;align-items:flex-start;gap:6px}.refs{grid-template-columns:minmax(0,1fr)}}
 </style>

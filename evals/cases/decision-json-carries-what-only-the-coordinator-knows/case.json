@@ -1,0 +1,51 @@
+{
+  "tz": "America/Chicago",
+  "peers": "sessions.json",
+  "description": "A worker stops on a decision that touches code (a cache pool in a pull request) and an issue (the connection budget held in triage). The decision JSON carries what only the coordinator knows: a topic, the components around the decision as an architecture, a kind on each step of how it got here, and a kind on each reference. What the page can read for itself (when it was asked, the answer, a reference's status) is left to the page.",
+  "prompt": "<cross-session-message from=\"uds:/tmp/cc-socks/6021.sock\" from-name=\"impl-cache\" from-mode=\"prompting\">\nStopped before asking for merge. PR #58 adds a warm pool of 20 database connections (src/cache/pool.py:24-58), which the cache client (src/cache/client.py) draws from; its pipeline passed and it has one approval. Review asked how many connections the database allows: the limit is 320 (config/db.toml:14). docs/architecture.md §4.2 caps each service's connections, but no cap is set yet; issue #111 tracks that budget and is held in triage. Without the pool the first request after a deploy takes 9 to 14 seconds; with it, 180 ms. Keep the pool of 20, start cold, or a pool of 5? Nothing merges until that is decided.\n</cross-session-message>",
+  "graders": [
+    {
+      "name": "the page is rendered into the pages dir",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "chief[-_]of[-_]stuff(?:\\.py)? decision",
+      "min": 1
+    },
+    {
+      "name": "the decision names its topic",
+      "rule": "The JSON holds `headline`, `topic` (the area it is in, in a word or two), ...",
+      "type": "file_matches",
+      "glob": "pages/decision-*.json",
+      "pattern": "\"topic\"\\s*:\\s*\"[^\"\\s][^\"]*\""
+    },
+    {
+      "name": "the components around the decision are drawn",
+      "rule": "When the ask concerns components, `architecture` draws them: `nodes` (...), `edges` (...), `summary` and `not_drawn`.",
+      "type": "file_matches",
+      "glob": "pages/decision-*.html",
+      "pattern": "<figure class=\"card fig\">"
+    },
+    {
+      "name": "each step of how it got here has a kind",
+      "rule": "`timeline` (`when`, `text`, `kind`: the lane stage the step happened in, or `hot` for what went wrong): each step that led to the ask, from the Log, the messages and the forge",
+      "type": "file_matches",
+      "glob": "pages/decision-*.json",
+      "pattern": "(?s)\"timeline\"\\s*:\\s*\\[\\s*\\{(?:[^\\[\\]]|\\[[^\\[\\]]*\\])*?\"kind\"\\s*:\\s*\"[a-z]+\""
+    },
+    {
+      "name": "each reference has a kind",
+      "rule": "`references` (`kind`: issue, PR, MR, code, doc, note, pipeline or commit, `value`, `label`)",
+      "type": "file_matches",
+      "glob": "pages/decision-*.json",
+      "pattern": "(?s)\"references\"\\s*:\\s*\\[\\s*\\{(?:[^\\[\\]]|\\[[^\\[\\]]*\\])*?\"kind\"\\s*:\\s*\"(?:issue|PR|MR|code|doc|note|pipeline|commit)\""
+    },
+    {
+      "name": "the page is never an artifact",
+      "type": "tool_used",
+      "tool": "Artifact",
+      "max": 0
+    }
+  ],
+  "max_turns": 18,
+  "timeout_seconds": 450
+}

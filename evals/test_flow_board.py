@@ -122,14 +122,14 @@ class Workers(unittest.TestCase):
 
 class Decisions(unittest.TestCase):
     def test_pending_rows_carry_asked_recommended_and_default(self) -> None:
-        d = {"headline": "Cache warmup: keep the pool?", "asked": "01:41", "recommended": "A", "default": "pool stays"}
-        p = rb.decision_panel([("decision-cache", d), ("decision-bad", ValueError("no ask"))], 4)
-        self.assertEqual((p.id, p.count, p.foot, p.link), ("decisions", 2, "4 answered today", ("decisions page", "decisions.html")))
+        d = {"headline": "Cache warmup: keep the pool?", "recommended": "A", "default": "pool stays"}
+        p = rb.decision_panel([("cache", d, NOW.replace(hour=1, minute=41), ""), ("bad", None, None, "no ask")], 4, NOW)
+        self.assertEqual((p.id, p.count, p.foot, p.link), ("decisions", 1, "4 answered today", ("decisions page", "decisions.html")))
         self.assertEqual(p.rows[0], panels.Row("Cache warmup: keep the pool?", "asked 01:41 · recommended A · default: pool stays",
                                                href="decision-cache.html"))
-        self.assertEqual(p.rows[1], panels.Row("decision-bad", "unreadable: no ask"))
+        self.assertEqual(p.rows[1], panels.Row("decision-bad.json", "unreadable: no ask"))
 
-    def test_the_pending_list_is_the_decisions_page_count(self) -> None:
+    def test_the_pending_list_is_the_decisions_page_list(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             pages = Path(tmp)
             ask = {"headline": "H", "ask": "A?", "options": [{"key": "A", "title": "a"}, {"key": "B", "title": "b"}],
@@ -137,10 +137,11 @@ class Decisions(unittest.TestCase):
             for slug in ("one", "two", "done"):
                 (pages / f"decision-{slug}.json").write_text(json.dumps(ask))
             (pages / "decision-broken.json").write_text("{")
-            found = decision_page.pending(pages, ["option A of decision-done"])
-            self.assertEqual(sorted(p for p, _ in found), ["decision-broken", "decision-one", "decision-two"])
-            self.assertIsInstance(dict(found)["decision-broken"], Exception)
-            self.assertEqual(decision_page.index(pages, ["option A of decision-done"], [], "2026-09-16")[1], len(found))
+            ctx = decision_page.Context(NOW, rows=(decision_page.Row(NOW.date(), None, "option A of decision-done", ""),))
+            found = decision_page.entries(pages, ctx)
+            self.assertEqual(sorted(slug for slug, *_ in found), ["broken", "one", "two"])
+            self.assertIsNone(next(d for slug, d, *_ in found if slug == "broken"))
+            self.assertEqual(decision_page.index(pages, ctx, "2026-09-16")[1], found)
 
 
 class Build(unittest.TestCase):
@@ -184,7 +185,7 @@ class Page(unittest.TestCase):
     def setUp(self) -> None:
         self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
         self.html = rb.render(TRACKER, LOG, self.cfg, NOW, lanes=LANES, kanban=KANBAN, sources=SOURCES,
-                              decisions=[("decision-x", {"headline": "Pick", "asked": "10:00", "recommended": "B", "default": "d"})],
+                              decisions=[("x", {"headline": "Pick", "recommended": "B", "default": "d"}, NOW.replace(hour=10, minute=0), "")],
                               answered=1, tracker_at=NOW - timedelta(minutes=5))
         self.body = self.html.split("</style>", 1)[1]
 
