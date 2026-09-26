@@ -354,9 +354,12 @@ def _draw(change: board_sources.Change, g: Graph, clone: Path, pages: Path) -> t
                      *(a for x in g.exclude for a in ("--exclude", x)), "--max-nodes", str(g.max_nodes),
                      "--out", str(out / "page.html")])
         summary.write_text((said.splitlines() or [""])[0])  # written last: it marks the drawing done
-    # An older branch-graph ignores --max-nodes and writes one page.mmd.
+    said = summary.read_text()
+    if re.search(r"\bviews=0\b", said):  # every changed module is excluded: nothing to draw
+        return [], said
+    # An older branch-graph ignores --max-nodes, writes one page.mmd, and says no views=.
     views = sorted(out.glob("page-*.mmd"), key=lambda f: int(f.stem[5:])) or [out / "page.mmd"]
-    return [DRIFT[0].sub(DRIFT[1], f.read_text()) for f in views], summary.read_text()
+    return [DRIFT[0].sub(DRIFT[1], f.read_text()) for f in views], said
 
 
 def _graph(change: board_sources.Change | None, graph: Graph | None, pages: Path | None, root: Path | None,
@@ -378,6 +381,8 @@ def _graph(change: board_sources.Change | None, graph: Graph | None, pages: Path
         views, summary = _draw(change, graph, root / graph.clone, pages)
     except (OSError, ValueError) as e:
         return section(f'    <p class="card">The module graph is unavailable: {escape(str(e))}</p>')
+    if not views:
+        return section('    <p class="card">No module outside the excluded set changed.</p>')
     head += (f' <span class="cap">{len(views)} view{"s" * (len(views) != 1)} · '
              f"at most {graph.max_nodes} modules each</span>")
     figures = []
@@ -388,8 +393,10 @@ def _graph(change: board_sources.Change | None, graph: Graph | None, pages: Path
     chips = "".join(f'<span class="chip {k}">{label}</span>' for k, label in LEGEND)
     rest = sum(int(x) for x in re.findall(r"(\d+) more modules untouched", "".join(views)))
     rest = f"<span>Not drawn: {rest} modules.</span>" if rest else ""
+    # Decision.dc.html's caption: "nodes +1 −1 ~1 · edges +2 −1 · drift 1".
+    caption = re.sub(r" (?:excluded|views)=\S*", "", summary).replace(" edges", " · edges").replace(" drift=", " · drift ")
     return section('    <figure class="graph"><div class="views">\n' + "\n".join(figures) + "\n    </div>\n"
-                   f'    <figcaption>{chips}<span class="sum">{escape(summary)}</span>{rest}</figcaption></figure>\n    {MERMAID}')
+                   f'    <figcaption>{chips}<span class="sum">{escape(caption)}</span>{rest}</figcaption></figure>\n    {MERMAID}')
 
 
 def saved(d: dict) -> dict | None:

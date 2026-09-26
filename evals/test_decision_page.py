@@ -12,7 +12,8 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import date, datetime, timedelta
-from html import escape
+from dataclasses import replace
+from html import escape, unescape
 from pathlib import Path
 from unittest import mock
 from zoneinfo import ZoneInfo
@@ -708,9 +709,11 @@ class MainTest(unittest.TestCase):
 
 MMD = 'flowchart LR\n  n0["agent/a"]\n  n1["agent/b"]:::added\n  n1 --> n0\n'
 SUMMARY = "nodes +1 −0 ~0 edges +1 −0 drift=0"
+# The caption reads the summary as Decision.dc.html draws it: "nodes +1 −1 ~1 · edges +2 −1 · drift 1".
+CAPTION = "nodes +1 −0 ~0 · edges +1 −0 · drift 0"
 # A stand-in for the branch-graph CLI, found first on PATH: it logs its arguments, and writes page.html and page.mmd
 # beside --out and prints its summary line as the real one does (it does not make --out's directory either). Given
-# VIEWS and --max-nodes, it writes page-1.mmd … page-K.mmd instead of page.mmd, each opening `%% view: <title>` and
+# VIEWS (a list, maybe empty) and --max-nodes, it writes page-1.mmd … page-K.mmd instead of page.mmd, each opening `%% view: <title>` and
 # closing with a comment naming the cap it was drawn with, and its summary ends ` excluded=E views=K`. Without VIEWS
 # it is an older branch-graph that takes the flags but still writes only page.mmd.
 FAKE = """import argparse, json, pathlib, sys
@@ -725,7 +728,7 @@ if FAIL:
     sys.exit("branch-graph: no import root agent at " + args.head)
 out = pathlib.Path(args.out)
 out.write_text("<!doctype html><p>graph</p>")
-if VIEWS and args.max_nodes:
+if VIEWS is not None and args.max_nodes:
     for i, (title, mmd) in enumerate(VIEWS, 1):
         (out.parent / f"page-{i}.mmd").write_text(f"%% view: {title}\\n{mmd}  %% drawn with max-nodes {args.max_nodes}\\n")
     print(f"{SUMMARY} excluded=9 views={len(VIEWS)}")
@@ -787,10 +790,10 @@ class ModuleGraphTest(unittest.TestCase):
         path.start()
         self.addCleanup(path.stop)
 
-    def fake(self, fail: bool = False, views: list | None = None):
+    def fake(self, fail: bool = False, views: list | None = None, summary: str = SUMMARY):
         tool = self.bin / "branch-graph"
         tool.write_text(f"#!{sys.executable}\nLOG, FAIL, MMD, SUMMARY, VIEWS = "
-                        f"{str(self.log)!r}, {fail!r}, {MMD!r}, {SUMMARY!r}, {views!r}\n" + FAKE)
+                        f"{str(self.log)!r}, {fail!r}, {MMD!r}, {summary!r}, {views!r}\n" + FAKE)
         tool.chmod(0o755)
 
     def runs(self) -> list[dict]:
@@ -821,6 +824,11 @@ class ModuleGraphTest(unittest.TestCase):
         self.assertIsNotNone(m, "the page has no MODULE GRAPH section")
         return m[0]
 
+    def caption(self, section: str) -> tuple[int, str]:
+        """Where the one <figcaption> starts, and its text with tags dropped and spaces collapsed."""
+        [m] = re.finditer(r"<figcaption[^>]*>(.*?)</figcaption>", section, re.S)
+        return m.start(), " ".join(unescape(re.sub(r"<[^>]+>", " ", m[1])).split())
+
     def assert_drawn(self, section: str, ref: str):
         self.assertRegex(section, re.compile(rf'<h2[^>]*>\s*MODULE GRAPH\b.*?<a [^>]*href="{re.escape(self.url)}"[^>]*>{ref}</a>.*?</h2>', re.S))
         self.assertIn('<pre class="mermaid">', section)
@@ -829,7 +837,9 @@ class ModuleGraphTest(unittest.TestCase):
                 self.assertTrue(escape(line, quote=False) in section or escape(line) in section)
         self.assertNotIn("n1 --> n0", section)
         # The legend and summary follow the drawing (Decision.dc.html: one shared row after the views).
-        self.assertGreater(section.find(SUMMARY), section.rindex("</pre>"))
+        at, text = self.caption(section)
+        self.assertGreater(at, section.rindex("</pre>"))
+        self.assertIn(CAPTION, text)
 
     def test_a_github_pr_is_drawn_from_its_fetched_head_against_its_merge_base(self):
         self.workspace()
@@ -968,10 +978,13 @@ class ModuleGraphTest(unittest.TestCase):
         section = self.section(self.page())
         self.assertEqual(len(self.views(section)), len(VIEWS))
         last = section.rindex("</pre>")
-        for text in (">NEW<", ">DRIFT<", SUMMARY):
+        for text in (">NEW<", ">DRIFT<"):
             with self.subTest(text=text):
                 self.assertEqual(section.count(text), 1)
                 self.assertGreater(section.index(text), last)
+        at, text = self.caption(section)
+        self.assertGreater(at, last)
+        self.assertIn(CAPTION, text)
 
     def test_a_drawing_made_with_other_settings_is_not_served(self):
         self.fake(views=VIEWS)
@@ -992,10 +1005,72 @@ class ModuleGraphTest(unittest.TestCase):
 
     def test_an_older_tool_that_writes_only_page_mmd_still_draws_it(self):
         self.workspace()
+        for drawn in ("drawn now", "served from the cache"):
+            with self.subTest(drawn):
+                section = self.section(self.page())
+                self.assert_drawn(section, "#58")
+                self.assertEqual(section.count('<pre class="mermaid">'), 1)
+                self.assertNotIn("unavailable", section)
+        [run] = self.runs()
+        self.assertEqual(run["max_nodes"], "12")
+        [out] = (self.pages / ".graphs").iterdir()
+        self.assertEqual(sorted(f.name for f in out.glob("*.mmd")), ["page.mmd"])
+        self.assertNotIn("views=", (out / "summary.txt").read_text())
+
+    # Issue #178: when every changed module is excluded, branch-graph draws no view (`views=0`) and the section said
+    # "The module graph is unavailable: [Errno 2] … page.mmd"; its caption printed the tool's raw summary line.
+
+    def assert_nothing_outside_the_excluded_set(self, page: str, section: str):
+        self.assertIn("outside the excluded set", section)
+        self.assertNotIn('<pre class="mermaid">', section)
+        for text in ("unavailable", "Errno", "page.mmd"):
+            with self.subTest(text=text):
+                self.assertNotIn(text, page)
+
+    def test_a_change_touching_only_excluded_modules_says_so_without_an_error(self):
+        self.fake(views=[])
+        self.workspace()
+        for drawn in ("drawn now", "served from the cache"):
+            with self.subTest(drawn):
+                page = self.page()
+                self.assert_nothing_outside_the_excluded_set(page, self.section(page))
+        self.assertEqual(len(self.runs()), 1)
+        [out] = (self.pages / ".graphs").iterdir()
+        self.assertEqual(list(out.glob("*.mmd")), [])
+        self.assertTrue((out / "summary.txt").read_text().endswith("views=0"))
+
+    def test_the_task_page_says_so_too(self):
+        import issue_page as ip
+        self.fake(views=[])
+        self.workspace()
+        self.page()  # draws the change once; the task page is served from the same cache
+        cache = self.pages / bs.CACHE
+        sources = bs.load(self.pages)
+        change = replace(sources.changes["#58"], issues=("#109",))
+        bs._write(cache, bs.Sources({}, {}, {"#58": change}, (), {}))
+        (self.root / "daily").mkdir()
+        (self.root / "daily" / f"{date.today()}-tracker.md").write_text(
+            "# Tracker\n\n## Tasks\n\n| name | item | owner | state | since | due | size | lane | stage | issue | checklist |\n"
+            + "|---" * 11 + f"|\n| Warm pool | Warm the pool | Robin | waiting | {date.today()} |  | S |  |  | #109 | c |\n"
+            "\n## Log\n")
+        out = ip.write(self.root, self.pages, 109)
+        self.assertIsNotNone(out, "no task page for #109")
+        page = out.read_text()
+        m = re.search(r"<section[^>]*>\s*<h2[^>]*>\s*Architecture\b.*?</section>", page, re.S)
+        self.assertIsNotNone(m, "the task page has no Architecture section")
+        self.assert_nothing_outside_the_excluded_set(page, m[0])
+        self.assertEqual(len(self.runs()), 1)
+
+    def test_the_caption_reads_the_summary_as_designed(self):
+        self.fake(views=VIEWS[:2], summary="nodes +1 −1 ~1 edges +2 −1 drift=1")  # the fake adds excluded=9 views=2
+        self.workspace()
         section = self.section(self.page())
-        self.assert_drawn(section, "#58")
-        self.assertEqual(section.count('<pre class="mermaid">'), 1)
-        self.assertEqual(self.runs()[0]["max_nodes"], "12")
+        self.assertEqual(len(self.views(section)), 2)
+        _, text = self.caption(section)
+        self.assertIn("nodes +1 −1 ~1 · edges +2 −1 · drift 1", text)
+        for raw in ("drift=", "excluded=", "views="):
+            with self.subTest(raw=raw):
+                self.assertNotIn(raw, text)
 
 
 if __name__ == "__main__":
