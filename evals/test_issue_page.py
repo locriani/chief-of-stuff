@@ -489,6 +489,165 @@ class BoardLinkTest(unittest.TestCase):
         self.assertEqual(set(re.findall(r'href="(/issues/[^"]*)"', flow)), {f"/issues/{r[1:]}" for r in refs})
 
 
+# Compact workers and history (Task.dc.html: WORKERS, HOW IT GOT HERE, the line under FLOW). A task's item is the
+# launcher's task text, often a long prompt; the launcher writes it whole into its started line.
+LONG = ("Cap uploads at 25 MB across the form and the API. The form refuses a larger file before sending it and "
+        "names the limit in its message. Keep the limit in one setting that both sides read, so a later change edits "
+        "one place. Add tests for exactly 25 MB, one byte over, and an empty file. Leave the storage layer and the "
+        "retry logic alone, since another task owns those files. When done, open a merge request that closes the "
+        "issue and lists what was tested.")
+LONG_REVIEW = ("Review the upload limit change against the acceptance list and the error format guide. Leave one "
+               "thread per finding with the file and line, and say whether each is blocking. Check that the tests "
+               "cover the boundary sizes the issue names, and that nothing outside the upload module changed.")
+SENTENCES = ("Keep the limit in one setting that both sides read", "Leave one thread per finding with the file and line")
+TREE_W, TREE_R = "worktree `trees/upload-limit` (feat/upload-limit)", "worktree `trees/upload-review` (feat/upload-review)"
+WORK_YESTERDAY = f"""# Tracker
+
+## Tasks
+
+{HEAD}| Upload size limit | {LONG} | unassigned | open | {YESTERDAY} |  | M | build | implement | #109 | c |
+
+## File ownership
+
+| context | paths |
+|---|---|
+| Upload size limit | `src/upload/` |
+
+## Log
+
+- 20:00 stage: Upload size limit → implement
+"""
+WORK_TODAY = f"""# Tracker
+
+## Tasks
+
+{HEAD}| Upload size limit | {LONG} | unassigned | open | {YESTERDAY} |  | M | build | review | #109 | c |
+| Review round 1 | {LONG_REVIEW} | unassigned | open | {TODAY} |  | S | build | review | #109 | c |
+
+## File ownership
+
+| context | paths |
+|---|---|
+| Upload size limit | `src/upload/` |
+| Review round 1 | `src/upload/review/` |
+
+## Log
+
+- 00:00 stage: Upload size limit → review
+- 00:10 stage: Review round 1 → review
+"""
+REOPEN = ("| Robin | waiting |", "| unassigned | open |")
+
+
+def work_trackers() -> list:
+    """impl-w1 is launched three times on "Upload size limit": 20:05–21:35 and 22:00–23:35 yesterday at implement,
+    00:20–01:10 today at review. rev-w2 is launched once on "Review round 1" at review, 00:40, still running at NOW
+    (02:10), so it overlaps impl-w1's 00:20–01:10.
+    Workers: impl-w1 1h30m + 1h35m + 0h50m = 3h55m; rev-w2 1h30m; header 5h25m · 2 sessions.
+    Flow: worked (the union) 1h30m + 1h35m + 00:20→02:10 1h50m = 4h55m; elapsed 20:05 yesterday → 02:10 = 6h05m;
+    waiting 1h10m. Summing without the union would give 5h25m."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "tracker.md"
+        path.write_text(WORK_YESTERDAY)
+        one_shot.record_launch(path, LONG, "impl-w1", TREE_W, "claude", "opus", "20:05")
+        one_shot.update_tracker(path, LONG, "impl-w1", "Robin", "done", "implemented", "src/upload/limits.py", "21:35")
+        path.write_text(path.read_text().replace(*REOPEN))
+        one_shot.record_launch(path, LONG, "impl-w1", TREE_W, "claude", "opus", "22:00")
+        one_shot.update_tracker(path, LONG, "impl-w1", "Robin", "done", "fixed the limit", "src/upload/form.py", "23:35")
+        yesterday = path.read_text()
+        path.write_text(WORK_TODAY)
+        one_shot.record_launch(path, LONG, "impl-w1", TREE_W, "claude", "opus", "00:20")
+        one_shot.record_launch(path, LONG_REVIEW, "rev-w2", TREE_R, "codex", "gpt-5.5", "00:40")
+        one_shot.update_tracker(path, LONG, "impl-w1", "Robin", "done", "answered review", "src/upload/form.py", "01:10")
+        return [(YESTERDAY, yesterday), (TODAY, path.read_text())]
+
+
+def work_page() -> str:
+    return page(src=sources(MR), trackers=work_trackers())
+
+
+def rows(got: str, names: tuple[str, ...]) -> dict[str, str]:
+    """Each name's slice of `got`, from the name to the next name (or the end)."""
+    starts = sorted((got.find(n), n) for n in names)
+    if -1 in [s for s, _ in starts]:
+        raise AssertionError(f"not every worker in {got!r}")
+    return {n: got[s:e] for (s, n), (e, _) in zip(starts, starts[1:] + [(len(got), "")])}
+
+
+class CompactWorkersTest(unittest.TestCase):
+    """Workers and How it got here are compact lines, not the launcher's whole Log line; Flow shows worked vs
+    waiting."""
+
+    def test_no_line_carries_the_task_prompt(self):
+        # Rule 1: "No Workers row and no How-it-got-here line carries the task prompt text." The task is named by
+        # its tracker name at most.
+        html = work_page()
+        self.assertIn("rev-w2", text(section(html, "Workers")))  # the fixture launched its workers
+        for sentence in SENTENCES:
+            with self.subTest(sentence=sentence):
+                self.assertNotIn(sentence, text(html))
+        for heading in ("Workers", "How it got here"):
+            got = text(section(html, heading))
+            for item in (LONG, LONG_REVIEW):
+                with self.subTest(section=heading, item=item[:20]):
+                    self.assertNotIn(item[:40], got)
+
+    def test_one_row_per_worker(self):
+        # Rule 2: "Each row shows the worker's name, its kind with ×N when it was launched N>1 times, its runtime and
+        # model, the stages it worked, its total run time and its state." Stages: "the task's stage at each launch,
+        # in order, without repeats." Run time: "the sum of each launch's start to end, or start to now while it is
+        # still running", as <h>h<mm>m.
+        got = rows(text(re.sub(r"<h2\b.*?</h2>", "", section(work_page(), "Workers"), flags=re.S)), ("impl-w1", "rev-w2"))
+        w1, w2 = got["impl-w1"], got["rev-w2"]
+        self.assertRegex(w1, r"one-shot\s*×3\b")
+        self.assertNotRegex(w2, r"×\s*\d")
+        self.assertRegex(w2, r"\bone-shot\b")
+        self.assertRegex(w1, r"\bclaude\W+opus\b")
+        self.assertRegex(w2, r"\bcodex\W+gpt-5\.5\b")
+        self.assertRegex(w1, r"\bimplement\W+review\b")
+        self.assertEqual(len(re.findall(r"\bimplement\b", w1)), 1, w1)
+        self.assertEqual(len(re.findall(r"\breview\b", w1)), 1, w1)
+        self.assertEqual(len(re.findall(r"\breview\b", w2)), 1, w2)
+        self.assertRegex(w1, r"(?<![\dh])3h55m\b")
+        self.assertRegex(w2, r"(?<![\dh])1h30m\b")
+        self.assertNotRegex(w1, r"(?i)\brunning\b")
+        self.assertRegex(w1, r"(?i)\bcompleted\b|\bdone\b")
+        self.assertRegex(w2, r"(?i)\brunning\b")
+
+    def test_the_workers_header_sums_run_time_and_counts_workers(self):
+        # Rule 3: "It reads `Workers · <sum of all workers' run time> · <number of distinct workers> sessions`."
+        h2 = text(re.search(r"<h2\b.*?</h2>", section(work_page(), "Workers"), re.S)[0])
+        self.assertRegex(h2, r"(?i)^Workers\s*·\s*5h25m\s*·\s*2 sessions$")
+
+    def test_how_it_got_here_is_one_short_line_per_launcher_event(self):
+        # Rule 4: "Each line has the time, then `<stage> started`, or `ended <status>`, then the worker, then the
+        # tree. Lines are in time order. Stage moves that already appear stay as they are."
+        got = text(section(work_page(), "How it got here"))
+        w, r = r"impl-w1\W+trees/upload-limit\b", r"rev-w2\W+trees/upload-review\b"
+        lines = (r"20:00\W+stage: Upload size limit → implement",
+                 rf"20:05\W+implement started\W+{w}", rf"21:35\W+ended completed\W+{w}",
+                 rf"22:00\W+implement started\W+{w}", rf"23:35\W+ended completed\W+{w}",
+                 r"00:00\W+stage: Upload size limit → review", r"00:10\W+stage: Review round 1 → review",
+                 rf"00:20\W+review started\W+{w}", rf"00:40\W+review started\W+{r}", rf"01:10\W+ended completed\W+{w}")
+        at = []
+        for line in lines:
+            with self.subTest(line=line):
+                m = re.search(rf"(?i){line}", got)
+                self.assertIsNotNone(m, got)
+                at.append(m.start())
+        self.assertEqual(at, sorted(at))
+
+    def test_flow_shows_time_worked_of_time_elapsed_and_waiting(self):
+        # Rule 5: "It reads `Worked <A> of <B> elapsed · <C> waiting`": A is the union of all launch intervals, so
+        # overlaps count once; B runs from the first launch to the task's end, or to now while open; C = B − A.
+        html = work_page()
+        start = re.search(r"<h2[^>]*>\s*Flow\b", html)
+        self.assertIsNotNone(start, "no Flow section")
+        after = next((m.start() for m in re.finditer(r"<h2[^>]*>\s*(?!Flow\b)", html[start.end():])), None)
+        flow = text(html[start.start():start.end() + after if after is not None else len(html)])
+        self.assertRegex(flow, r"(?i)\bWorked\s+4h55m\s+of\s+6h05m\s+elapsed\s*·\s*1h10m\s+waiting\b")
+
+
 ZONE = "America/Chicago"
 ROUTE_TRACKER = """# Tracker
 
