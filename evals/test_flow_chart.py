@@ -327,10 +327,14 @@ class OneShotTest(unittest.TestCase):
         self.assertEqual(row.segments[-1].end, at(TODAY, "01:50"))
         self.assertTrue(all(g.end <= at(TODAY, "01:50") for g in row.segments))
 
-    def test_stage_lines_win_over_launcher_lines(self):
+    def test_stage_lines_take_over_from_their_first_move(self):
+        # A coordinator that starts writing stage moves mid-run keeps the history the launcher recorded before them.
         text = tw.append_log(self.tracker(), "- 01:40 stage: Audit headers → review")
+        text = tw.append_log(text, "- 01:50 one-shot w9 started: codex, worktree `a`, task Security audit")
         _, row = self.built(text)["Audit headers"]
-        self.assertEqual([(g.category, g.start, g.end) for g in row.segments], [("review", at(TODAY, "01:40"), NOW)])
+        self.assertEqual([(g.category, g.start, g.end) for g in row.segments],
+                         [("implement", at(TODAY, "00:20"), at(TODAY, "01:30")), ("pr", at(TODAY, "01:30"), at(TODAY, "01:40")),
+                          ("review", at(TODAY, "01:40"), NOW)])
 
 
 if __name__ == "__main__":
