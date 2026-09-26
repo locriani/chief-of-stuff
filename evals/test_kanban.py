@@ -144,6 +144,29 @@ class GitLabUpdaterTest(unittest.TestCase):
         self.assertIn("changed outside the tracker", got.error)
         write.assert_not_called()
 
+    def test_a_launcher_hold_moves_with_its_stage(self):
+        # A one-shot's review hold sits beside a non-hold stage; no --from-stage matched it, so five cards stuck.
+        held = dict(self.before, labels=["02 - TEST", "!! - HUMAN REVIEW REQUIRED", "kind::code"])
+        moved = dict(held, labels=["04 - REVIEW", "!! - HUMAN REVIEW REQUIRED", "kind::code"])
+        with mock.patch.object(kanban.backlog, "_get", side_effect=[(held, {}, ""), (moved, {}, "")]), \
+             mock.patch.object(kanban.backlog, "existing_labels", return_value=(set(FLOW.stages) | {FLOW.human_review_label}, "")), \
+             mock.patch.object(kanban.backlog, "_call", return_value=(moved, {}, "")) as write:
+            got = kanban.sync_gitlab(self.cfg, self.ref, FLOW, "review", token="test", commit=True,
+                                     expected_stage="test")
+        self.assertEqual(got.error, "")
+        # Only the user clears a hold the stage did not set.
+        self.assertEqual(write.call_args.args[4], {"add_labels": "04 - REVIEW", "remove_labels": "02 - TEST"})
+
+    def test_a_card_holding_only_the_hold_can_be_initialized(self):
+        held = dict(self.before, labels=["!! - HUMAN REVIEW REQUIRED", "kind::code"])
+        moved = dict(held, labels=["04 - REVIEW", "!! - HUMAN REVIEW REQUIRED", "kind::code"])
+        with mock.patch.object(kanban.backlog, "_get", side_effect=[(held, {}, ""), (moved, {}, "")]), \
+             mock.patch.object(kanban.backlog, "existing_labels", return_value=(set(FLOW.stages) | {FLOW.human_review_label}, "")), \
+             mock.patch.object(kanban.backlog, "_call", return_value=(moved, {}, "")) as write:
+            got = kanban.sync_gitlab(self.cfg, self.ref, FLOW, "review", token="test", commit=True, initialize=True)
+        self.assertEqual(got.error, "")
+        self.assertEqual(write.call_args.args[4], {"add_labels": "04 - REVIEW"})
+
     def test_invalid_prior_stage_is_refused_without_writing(self):
         with mock.patch.object(kanban.backlog, "_get") as read, \
              mock.patch.object(kanban.backlog, "_call") as write:
@@ -225,6 +248,14 @@ class GitHubUpdaterTest(unittest.TestCase):
         self.assertTrue(got.done, got.error)
         self.assertFalse(got.project_add)
         self.assertFalse(any(a[:2] == ["project", "item-add"] for a in self.calls))
+
+    def test_a_launcher_hold_moves_with_its_project_status(self):
+        self.labels = ["kind::code", FLOW.human_review_label]
+        self.status = "Test"
+        got = kanban.sync_github(self.ref, self.config, "review", gh=self.gh, commit=True, expected_stage="test")
+        self.assertTrue(got.done, got.error)
+        self.assertEqual(self.status, "Review")
+        self.assertIn(FLOW.human_review_label, self.labels)
 
     def test_configured_status_field_is_requested(self):
         kanban.sync_github(self.ref, self.config, "implement", gh=self.gh)
