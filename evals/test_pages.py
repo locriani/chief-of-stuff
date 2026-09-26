@@ -61,6 +61,10 @@ class ServeTest(unittest.TestCase):
         self.assertEqual(resp.getheader("Cache-Control"), "no-cache")
         self.assertTrue(resp.getheader("Server").startswith(pg.SERVER))
 
+    def test_text_is_served_as_utf8(self):
+        # A page with no <meta charset> was read as Windows-1252: "Decision · x" showed as "Decision Â· x".
+        self.assertEqual(get(self.port, "/arch-review.html").getheader("Content-Type"), "text/html; charset=utf-8")
+
     def test_all_lists_every_page(self):
         resp = get(self.port, "/all")
         self.assertEqual(resp.status, 200)

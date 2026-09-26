@@ -79,6 +79,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         return io.BytesIO(body)
 
+    def guess_type(self, path):
+        # Every page here is written as UTF-8; without a charset a browser falls back to Windows-1252.
+        kind = super().guess_type(path)
+        return f"{kind}; charset=utf-8" if kind.startswith("text/") else kind
+
     def end_headers(self):
         self.send_header("Cache-Control", "no-cache")
         super().end_headers()
