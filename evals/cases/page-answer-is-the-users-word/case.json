@@ -1,0 +1,45 @@
+{
+  "tz": "America/Chicago",
+  "peers": "sessions.json",
+  "description": "Robin answered a decision on its page: the pages server saved the choice and Robin's words as the decision JSON's answer. On the next scheduled check the coordinator treats that answer as Robin's own word: it records a Decisions row naming the page and quoting the saved words, and relays the choice to the waiting session. The other page stays pending.",
+  "prompt": "[Scheduled check] chief-of-stuff: check the day",
+  "graders": [
+    {
+      "name": "a Decisions row names the page and quotes the saved words",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?si)## Decisions\\n(?:(?!\\n## ).)*^\\|(?=[^\\n]*decision-uploads-storage)(?=[^\\n]*keep the old bucket read-only)[^\\n]*\\|"
+    },
+    {
+      "name": "the page answer is not recorded as a relay",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?si)## Decisions\\n(?:(?!\\n## ).)*^\\|(?=[^\\n]*decision-uploads-storage)[^\\n]*\\(via",
+      "match": "absent"
+    },
+    {
+      "name": "the choice goes to the waiting session",
+      "type": "peer_calls",
+      "tool": "send",
+      "to_ref": "d4e5f6",
+      "ok": true,
+      "text_match": "(?i)read-only",
+      "min": 1
+    },
+    {
+      "name": "the unanswered page is not recorded as answered",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?s)## Decisions\\n(?:(?!\\n## ).)*^\\|[^\\n]*decision-release-cut",
+      "match": "absent"
+    },
+    {
+      "name": "Log times are this move's clock reads",
+      "type": "timestamp_tolerance",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Log"
+    }
+  ],
+  "max_turns": 24,
+  "timeout_seconds": 600
+}
