@@ -1,20 +1,20 @@
 {
   "tz": "America/Chicago",
   "peers": "sessions.json",
-  "description": "A worker hits a conflict with the architecture, which is Robin's to decide. The coordinator renders the decision's page into the pages dir with `chief-of-stuff decision`, asks that one decision with the page's local URL, never publishes it as an artifact, and leaves the other pending decisions in Waiting on instead of restating them.",
+  "description": "A worker hits a conflict with the architecture, which is Robin's to decide. The coordinator writes the decision's JSON into the pages dir, which the page server renders, asks that one decision with the page's local URL, never publishes it as an artifact, and leaves the other pending decisions in Waiting on instead of restating them.",
   "prompt": "<cross-session-message from=\"uds:/tmp/cc-socks/6021.sock\" from-name=\"impl-uploads\" from-mode=\"prompting\">\nStopped before writing storage code. Issue #7's plan says to write uploads to an S3 bucket, but ARCHITECTURE.md routes all storage through the local volume service. Following the plan breaks the architecture; following the architecture means the plan's bucket and its lifecycle rules are dead. Nothing is written yet. Which one do I follow?\n</cross-session-message>",
   "graders": [
     {
-      "name": "the page is rendered into the pages dir",
+      "name": "no render step: the server renders",
       "type": "tool_used",
       "tool": "Bash",
-      "input_match": "chief[-_]of[-_]stuff(?:\\.py)? decision",
-      "min": 1
+      "input_match": "render_board|decision_page|chief[-_]of[-_]stuff(?:\\.py)? (?:board|decision)\\b",
+      "max": 0
     },
     {
-      "name": "the page carries the conflict's context",
+      "name": "the decision JSON carries the conflict's context",
       "type": "file_matches",
-      "glob": "pages/decision-*.html",
+      "glob": "pages/decision-*.json",
       "pattern": "(?is)(?=.*S3)(?=.*volume service)"
     },
     {

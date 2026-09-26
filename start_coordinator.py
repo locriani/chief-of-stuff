@@ -96,7 +96,7 @@ def prompt(runtime: str, release: Path, root: Path) -> str:
         check = ("## Check\n\nA session-scoped watcher checks the inbox and task audit every five minutes "
                  "while this CLI session is open. It sends notifications for new findings and never "
                  "edits the tracker or board. On the next coordinator turn, read the clock, inbox, "
-                 "audit and worker registry; reconcile task state, then render the board. "
+                 "audit and worker registry; reconcile task state; the board renders itself. "
                  "Dispatch ready one-shot tasks automatically under Dispatch authority. New interactive sessions need approval.\n\n" + host_schedule + "\n\n")
         rules = re.sub(r"## Check\n.*?(?=## Sessions\n)", check, rules, flags=re.S)
         sessions = ("## Sessions\n\nThe workspace `Sessions:` line may name Claude native list and send tools. "

@@ -4,11 +4,11 @@
   "prompt": "Bring the board up to date.",
   "graders": [
     {
-      "name": "renderer run",
+      "name": "no render step: the server renders",
       "type": "tool_used",
       "tool": "Bash",
-      "input_match": "render_board\\.py",
-      "min": 1
+      "input_match": "render_board|decision_page|chief[-_]of[-_]stuff(?:\\.py)? (?:board|decision)\\b",
+      "max": 0
     },
     {
       "name": "no Write/Edit to the board html",

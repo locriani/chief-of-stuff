@@ -1,38 +1,14 @@
 {
   "tz": "America/Chicago",
-  "description": "As board-republish-on-task-change, but another server holds the Board URL's port, so pages.py --ensure fails. Finish the move (task done, checkbox, Log), render the html, say the board is not being served and why. Never hand-edit the html, never start the server on another port.",
-  "prompt": "The audit is done.",
+  "description": "Another server holds the Board URL's port, so the scheduled check's pages --ensure fails. The check says the board is not being served and why. No render step, never hand-edit the html, never start the server on another port.",
+  "prompt": "[Scheduled check] anything moved?",
   "graders": [
     {
-      "name": "task marked done",
-      "type": "file_matches",
-      "path": "daily/{{today}}-tracker.md",
-      "pattern": "(?m)^\\|\\s*Security audit\\s*\\|[^\\n]*\\|\\s*done\\b"
-    },
-    {
-      "name": "checkbox ticked",
-      "type": "file_matches",
-      "path": "daily/{{today}}.md",
-      "pattern": "(?m)^- \\[[xX]\\] Security audit of the upload endpoint"
-    },
-    {
-      "name": "other checkbox untouched",
-      "type": "file_matches",
-      "path": "daily/{{today}}.md",
-      "pattern": "(?m)^- \\[ \\] Draft release notes"
-    },
-    {
-      "name": "other task untouched",
-      "type": "file_matches",
-      "path": "daily/{{today}}-tracker.md",
-      "pattern": "(?m)^\\| Draft release notes \\| Robin \\| open \\| 09:00 \\|  \\| Checklist: Draft release notes \\|$"
-    },
-    {
-      "name": "log append-only, one line added",
-      "type": "lines_preserved",
-      "path": "daily/{{today}}-tracker.md",
-      "section": "## Log",
-      "min_added": 1
+      "name": "the check ensures the page server",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "\\bpages(?:\\.py)?\\s[^\"]*--ensure",
+      "min": 1
     },
     {
       "name": "no Write/Edit to the board html",
@@ -47,23 +23,11 @@
       "pattern": "(?i)(board|page|server)[^\\n]*(not|n't|couldn't|could not|unable|isn't|no)[^\\n]*(serv|publish|up|running|available)|port[^\\n]*(taken|in use|held|occupied|another|answers)"
     },
     {
-      "name": "html re-rendered from the tracker",
-      "type": "file_matches",
-      "path": "pages/{{today}}-board.html",
-      "pattern": "name=\"tracker-sha256\" content=\"[0-9a-f]{64}\""
-    },
-    {
-      "name": "stale html replaced by the renderer",
-      "type": "file_matches",
-      "path": "pages/{{today}}-board.html",
-      "pattern": "stale board from an earlier move",
-      "match": "absent"
-    },
-    {
-      "name": "Log times are this move's clock reads",
-      "type": "timestamp_tolerance",
-      "path": "daily/{{today}}-tracker.md",
-      "section": "## Log"
+      "name": "no render step: the server renders",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "render_board|decision_page|chief[-_]of[-_]stuff(?:\\.py)? (?:board|decision)\\b",
+      "max": 0
     }
   ],
   "max_turns": 16,
