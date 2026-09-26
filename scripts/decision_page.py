@@ -19,8 +19,8 @@ What the JSON leaves out the page reads from the workspace (render_board.decisio
 Log line naming `decision-<slug>`, else the file's mtime; the answer and its chip from the latest Decisions row naming
 it, the key being the option its words name; a reference's status from the tracker's stage and board_sources. Rendering
 the board re-renders every page, and `decisions.html` lists them (Decisions.dc.html). MODULE GRAPH is drawn by the
-branch-graph CLI, into `<pages dir>/.graphs/<sha>/`, for the first change the references name that board_sources knows,
-from the clone the settings' `[graph]` table names.
+branch-graph CLI, into `<pages dir>/.graphs/<sha>-<settings hash>/`, for the first change the references name that
+board_sources knows, from the clone the settings' `[graph]` table names.
 
 A timeline `kind` colours its dot: a lane stage (implement, pr, review, triage, fix, verify, merge), `hot` or
 `designed`. A node's `state` is deployed (the default), inflight, designed or external; an edge's is deployed,
@@ -35,6 +35,7 @@ copy under `--root` when there is one. With no forge, or a reference it cannot p
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -302,8 +303,15 @@ def _figure(arch: dict, linker: Linker) -> str:
             + f"\n      </svg></div>\n      <figcaption>{chips}{not_drawn}</figcaption>\n    </figure>")
 
 
+# Mermaid draws in the page's own tokens: nodes on surface, lines and text in fg, borders in line.
+# ponytail: read once at load, so a theme switch after load keeps the old colours until a reload.
 MERMAID = ('<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>'
-           "<script>mermaid.initialize({startOnLoad:true})</script>")
+           "<script>{const v=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();"
+           "mermaid.initialize({startOnLoad:true,theme:'base',themeVariables:{primaryColor:v('--surface'),"
+           "background:v('--surface'),primaryTextColor:v('--fg'),textColor:v('--fg'),lineColor:v('--fg'),"
+           "primaryBorderColor:v('--line')}})}</script>")
+# branch-graph styles drift edges by width only (older ones in its own orange); they take the legend's DRIFT colour.
+DRIFT = (re.compile(r"^(\s*linkStyle [\d,]+ )(?:stroke:#\w+,)?", re.M), r"\1stroke:#E69F00,")
 LEGEND = (("new", "NEW"), ("changed", "CHANGED"), ("removed", "REMOVED"), ("drift", "DRIFT"))
 
 
@@ -319,8 +327,11 @@ def _run(cmd: list[str], timeout: int = 120) -> str:
     return out.stdout
 
 
-def _draw(change: board_sources.Change, g: Graph, clone: Path, out: Path) -> tuple[str, str]:
-    """(mermaid, summary) from branch-graph for the change's head against its merge base, drawn once per commit."""
+def _draw(change: board_sources.Change, g: Graph, clone: Path, pages: Path) -> tuple[list[str], str]:
+    """(mermaid views, summary) from branch-graph for the change's head against its merge base, drawn once per commit
+    and settings."""
+    key = hashlib.sha256(json.dumps([g.exclude, g.max_nodes]).encode()).hexdigest()[:8]
+    out = pages / ".graphs" / f"{change.head}-{key}"
     summary = out / "summary.txt"
     if not summary.is_file():
         if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", change.head):
@@ -334,9 +345,12 @@ def _draw(change: board_sources.Change, g: Graph, clone: Path, out: Path) -> tup
         out.mkdir(parents=True, exist_ok=True)
         said = _run(["branch-graph", "--repo", str(clone), "--base", base, "--head", change.head, "--root", g.root,
                      "--depth", str(g.depth), *(["--rules", str(clone / g.rules)] if g.rules else []),
+                     *(a for x in g.exclude for a in ("--exclude", x)), "--max-nodes", str(g.max_nodes),
                      "--out", str(out / "page.html")])
         summary.write_text((said.splitlines() or [""])[0])  # written last: it marks the drawing done
-    return (out / "page.mmd").read_text(), summary.read_text()
+    # An older branch-graph ignores --max-nodes and writes one page.mmd.
+    views = sorted(out.glob("page-*.mmd"), key=lambda f: int(f.stem[5:])) or [out / "page.mmd"]
+    return [DRIFT[0].sub(DRIFT[1], f.read_text()) for f in views], summary.read_text()
 
 
 def _graph(d: dict, ctx: Context | None, root: Path | None) -> str:
@@ -357,15 +371,21 @@ def _graph(d: dict, ctx: Context | None, root: Path | None) -> str:
     if not (ctx.graph and ctx.pages and root):
         return section('    <p class="card">The module graph is not configured: the settings have no <code>[graph]</code> table.</p>')
     try:
-        mmd, summary = _draw(change, ctx.graph, root / ctx.graph.clone, ctx.pages / ".graphs" / change.head)
+        views, summary = _draw(change, ctx.graph, root / ctx.graph.clone, ctx.pages)
     except (OSError, ValueError) as e:
         return section(f'    <p class="card">The module graph is unavailable: {escape(str(e))}</p>')
+    head += (f' <span class="cap">{len(views)} view{"s" * (len(views) != 1)} · '
+             f"at most {ctx.graph.max_nodes} modules each</span>")
+    figures = []
+    for n, mmd in enumerate(views, 1):
+        title = re.match(r"%% view: (.*)", mmd)
+        figures.append(f'      <figure class="card fig view"><div class="cap">{n}{" · " + escape(title[1]) if title else ""}</div>'
+                       f'<div class="scroll"><pre class="mermaid">{escape(mmd)}</pre></div></figure>')
     chips = "".join(f'<span class="chip {k}">{label}</span>' for k, label in LEGEND)
-    rest = re.search(r"(\d+) more modules untouched", mmd)
-    rest = f"<span>Not drawn: {rest[1]} modules.</span>" if rest else ""
-    return section(f'    <figure class="card fig">\n      <div class="scroll"><pre class="mermaid">{escape(mmd)}</pre></div>\n'
-                   f'      <figcaption>{chips}<span class="sum">{escape(summary)}</span>{rest}</figcaption>\n'
-                   f"    </figure>\n    {MERMAID}")
+    rest = sum(int(x) for x in re.findall(r"(\d+) more modules untouched", "".join(views)))
+    rest = f"<span>Not drawn: {rest} modules.</span>" if rest else ""
+    return section('    <figure class="graph"><div class="views">\n' + "\n".join(figures) + "\n    </div>\n"
+                   f'    <figcaption>{chips}<span class="sum">{escape(summary)}</span>{rest}</figcaption></figure>\n    {MERMAID}')
 
 
 def saved(d: dict) -> dict | None:
@@ -860,6 +880,12 @@ figcaption .chip.removed{border:1.5px dashed var(--stage-fix);color:var(--fg);ba
 figcaption .chip.drift{border:2.5px solid var(--stage-triage);color:var(--fg)}
 figcaption .sum{font-family:ui-monospace,monospace}
 pre.mermaid{margin:0}
+.graph{margin:0} .views{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr));gap:12px}
+.view .scroll{max-height:480px;overflow:auto}
+/* branch-graph's classDefs are shape only; its node classes take the legend's colours (mermaid's own rules are id-scoped). */
+.view svg .node.added rect{fill:color-mix(in srgb,var(--stage-review) 14%,var(--surface))!important;stroke:var(--stage-review)!important}
+.view svg .node.changed rect{fill:color-mix(in srgb,var(--stage-implement) 14%,var(--surface))!important;stroke:var(--stage-implement)!important}
+.view svg .node.removed rect{fill:color-mix(in srgb,var(--stage-fix) 14%,var(--surface))!important;stroke:var(--stage-fix)!important}
 svg text{font-family:"Alegreya Sans",system-ui,sans-serif;fill:var(--fg)}
 svg .t{font-size:14px;font-weight:700} svg .t-ext{fill:var(--ext-ink)}
 svg .tm{font-family:ui-monospace,monospace;font-size:10.5px;fill:var(--link)}

@@ -116,11 +116,13 @@ class ModelEntry:
 @dataclass(frozen=True)
 class Graph:
     """The decision page's MODULE GRAPH: the clone branch-graph reads (under the workspace root), its import root,
-    module depth, and the rules file inside the clone."""
+    module depth, the rules file inside the clone, the module globs it leaves out, and the most modules one view holds."""
     clone: str
     root: str
     depth: int = 2
     rules: str | None = None
+    exclude: tuple[str, ...] = ("tests.*", "evals.*")
+    max_nodes: int = 12
 
 
 @dataclass(frozen=True)
@@ -209,7 +211,13 @@ def _graph(table) -> Graph:
     rules = table.get("rules")
     if rules is not None and (not isinstance(rules, str) or not rules.strip()):
         raise SettingsError("[graph] rules must be a path inside the clone")
-    return Graph(table["clone"], table["root"], depth, rules)
+    exclude = table.get("exclude", Graph.exclude)
+    if not isinstance(exclude, (list, tuple)) or not all(isinstance(x, str) and x.strip() for x in exclude):
+        raise SettingsError("[graph] exclude must be a list of module globs")
+    cap = table.get("max_nodes", Graph.max_nodes)
+    if type(cap) is not int or cap < 3:
+        raise SettingsError("[graph] max_nodes must be a whole number of at least 3")
+    return Graph(table["clone"], table["root"], depth, rules, tuple(exclude), cap)
 
 
 def _workflow(table) -> Workflow:
