@@ -208,17 +208,22 @@ class RenderOnRequestTest(unittest.TestCase):
         self.tracker.write_text(TRACKER.format(day=self.day, task="Security audit"))
         self.pages = self.root / "pages"
         self.pages.mkdir()
-        self.calls = []
+        self.calls, self.refreshed = [], threading.Event()
         self.server = pg.make_server(self.pages, 0, root=self.root, refresh=self.fake_refresh, every=3600)
         self.port = self.server.server_address[1]
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
+        # The first refresh writes .sources.json, a page source; a test racing it sees a re-render it didn't cause.
+        self.assertTrue(self.refreshed.wait(10))
 
     def fake_refresh(self, root, now):
         self.calls.append(now)
         import board_sources
-        return board_sources.refresh(root, now)
+        try:
+            return board_sources.refresh(root, now)
+        finally:
+            self.refreshed.set()
 
     def board(self) -> Path:
         return self.pages / f"{self.day}-board.html"
