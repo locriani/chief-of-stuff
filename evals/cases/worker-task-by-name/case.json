@@ -1,0 +1,26 @@
+{
+  "tz": "America/Chicago",
+  "repo": {
+    "clone": "repo",
+    "trees": "trees",
+    "worktrees": [],
+    "files": {
+      "src/a/upload.py": "def upload(request):\n    path = request.get('path')\n    return open(path, 'wb')\n",
+      "src/a/__init__.py": "",
+      "notes/.keep": ""
+    }
+  },
+  "description": "A Tasks row with a name is launched by that name: `worker --task` resolves a unique name to its item, so the coordinator needs no lookup of its own.",
+  "prompt": "Start the upload audit. For this isolated test, use --dry-run for the worker launch and do not start a real worker process.",
+  "graders": [
+    {
+      "name": "worker launched by the task's name",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "(?:spawn_session\\.py|chief_of_stuff\\.py\\s+worker|chief-of-stuff\\s+worker)[^\\n]*--task[= ]['\"]?upload-audit['\"]?(?:\\s|$)",
+      "min": 1
+    }
+  ],
+  "max_turns": 22,
+  "timeout_seconds": 600
+}
