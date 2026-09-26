@@ -50,7 +50,8 @@ def command(runtime: str, binary: str, cwd: Path, dispatch: Path, *, agent_type:
     elif runtime == "codex":
         # `never` returns blocked operations to the model instead of waiting for a human.
         argv = [binary, "-a", "never", "exec", "-C", str(cwd), "--sandbox", "workspace-write",
-                "--ephemeral"]
+                # Network for fetch, push, and forge APIs; file writes stay confined.
+                "-c", "sandbox_workspace_write.network_access=true", "--ephemeral"]
         # A linked worktree's git metadata lives in the main repo's git dir, outside the sandbox.
         git_dir = subprocess.run(["git", "-C", str(cwd), "rev-parse", "--path-format=absolute",
                                   "--git-common-dir"], capture_output=True, text=True, check=False,
