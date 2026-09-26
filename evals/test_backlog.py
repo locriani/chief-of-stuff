@@ -662,8 +662,8 @@ class GitLabIssueRefTest(unittest.TestCase):
         self.assertEqual(seen, [(GL, "all")])
 
     def test_file_with_names_the_backend_writer(self):
-        self.assertIn("backlog.py --create", bl.file_with(GH))
-        self.assertIn("backlog.py --create", bl.file_with(GL))
+        self.assertIn("chief-of-stuff backlog --create", bl.file_with(GH))
+        self.assertIn("chief-of-stuff backlog --create", bl.file_with(GL))
 
 
 class IssueStatesTest(unittest.TestCase):

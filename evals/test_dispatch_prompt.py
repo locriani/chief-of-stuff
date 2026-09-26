@@ -746,7 +746,7 @@ class IssueDispatchTest(unittest.TestCase):
         with self.assertRaises(dp.RefusedError) as e:
             dp.compose(root, "2026-09-18", "Unfiled task")
         self.assertIn("names no issue", str(e.exception))
-        self.assertIn("backlog.py --create", str(e.exception))
+        self.assertIn("chief-of-stuff backlog --create", str(e.exception))
 
     def test_a_gitlab_backlog_refuses_too_and_links_to_gitlab(self):
         """Zach, 2026-09-23 22:40: "make everything use gitlab now that we have that going"."""
@@ -755,7 +755,7 @@ class IssueDispatchTest(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         with self.assertRaises(dp.RefusedError) as e:
             dp.compose(root, "2026-09-18", "Unfiled task")
-        self.assertIn("backlog.py --create", str(e.exception))
+        self.assertIn("chief-of-stuff backlog --create", str(e.exception))
         self.assertIn("Issue: https://gl.example/o/backlog/-/issues/12",
                       dp.compose(root, "2026-09-18", "Security audit").splitlines())
 
