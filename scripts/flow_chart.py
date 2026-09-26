@@ -2,11 +2,13 @@
 
 `chief-of-stuff log --stage` writes `- HH:MM stage: <name> → <stage>`. A segment runs from each move to the
 next and the last to now; a lane's last stage ends the row. A held task is hatched from now through the
-window, and an open task with an estimated end draws its remaining stages ahead as forecast.
+window, and an open task with an estimated end draws its remaining stages ahead as forecast. An open task at
+its lane's first stage with no move yet is queued: forecast only, after the running forecasts, in worker slots.
 """
 
 from __future__ import annotations
 
+import heapq
 import re
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
@@ -41,16 +43,25 @@ def moves(text: str, day: date, zone: ZoneInfo) -> list[Move]:
 
 
 def _clock(at: datetime, now: datetime) -> str:
-    return f"{at:%H:%M}" if at - now < 24 * H else f"{at:%a}"
+    return f"~{at:%H:%M}" if at.date() == now.date() else f"{at:%a}"
 
 
-def build(log: list[Move], tasks, lanes: dict, held: set[str], ends: dict[str, datetime],
-          now: datetime) -> list[tuple[str, gantt.Row]]:
-    """(status, row) per task with a move, first moved first. `tasks` are tracker rows, later ones winning;
-    `held` names the held tasks; `ends` maps a task's item to its estimated end. Status is `merged`, `held`
-    or the task's state word."""
+def _ahead(stages: list[str], start: datetime, end: datetime) -> list[gantt.Segment]:
+    # ponytail: the estimate split evenly over the stages left; per-stage durations once the Log has enough of them.
+    step = (end - start) / len(stages)
+    return [gantt.Segment(start + step * i, start + step * (i + 1), s, "forecast") for i, s in enumerate(stages)]
+
+
+def build(log: list[Move], tasks, lanes: dict, held: set[str], ends: dict[str, datetime], now: datetime,
+          durations: dict[str, timedelta] | None = None, slots: int = 1) -> list[tuple[str, gantt.Row]]:
+    """(status, row) per task with a move, first moved first, then the queued tasks in tracker order. `tasks` are
+    tracker rows, later ones winning; `held` names the held tasks; `ends` maps a task's item to its estimated end;
+    `durations` maps a queued task's item to how long it will take, and `slots` is how many run at once.
+    Status is `merged`, `held` or the task's state word."""
     by_name = {t.name.strip().casefold(): t for t in tasks if t.name.strip()}
     terminal = {lane.stages[-1] for lane in lanes.values()}
+    horizon = now + WINDOWS[-1][2]
+    busy: list[datetime] = []
     log = sorted(log, key=lambda m: m.at)
     out = []
     for key in dict.fromkeys(m.name.casefold() for m in log):
@@ -66,14 +77,32 @@ def build(log: list[Move], tasks, lanes: dict, held: set[str], ends: dict[str, d
             status, note = "held", f"hold · {last.stage}"
         elif task and lane and last.stage in lane.stages and (end := ends.get(task.item)) and end > now:
             ahead = [last.stage] + [s for s in lane.stages[lane.stages.index(last.stage) + 1:] if s not in terminal]
-            # ponytail: the estimate split evenly over the stages left; per-stage durations once the Log has enough of them.
-            step = (end - now) / len(ahead)
-            segs += [gantt.Segment(now + step * i, now + step * (i + 1), s, "forecast") for i, s in enumerate(ahead)]
-            status, note = task.kind, f"{last.stage} · ~{_clock(end, now)}"
+            segs += _ahead(ahead, now, end)
+            busy.append(end)
+            status, note = task.kind, f"{last.stage} · {_clock(end, now)}"
         else:
             status, note = (task.kind if task else ""), last.stage
         out.append((status, gantt.Row(task.issue.strip() if task else "", task.name.strip() if task else last.name,
                                       note, tuple(segs))))
+    # Each slot is free once the forecast holding it ends; more forecasts than slots wait for the (n-k+1)th end.
+    slots = max(1, slots)
+    busy += [now] * (slots - len(busy))
+    heapq.heapify(busy)
+    moved = {m.name.casefold() for m in log}
+    for t in tasks:
+        key, lane = t.name.strip().casefold(), lanes.get(t.lane.strip())
+        if (not key or by_name[key] is not t or key in moved or t.kind != "open" or t.name.strip() in held
+                or not lane or t.stage.strip() != lane.stages[0] or not (took := (durations or {}).get(t.item))):
+            continue
+        while len(busy) > slots:
+            heapq.heappop(busy)
+        start = heapq.heappop(busy)
+        if start >= horizon:
+            break
+        heapq.heappush(busy, start + took)
+        stages = [s for s in lane.stages if s not in terminal]
+        out.append((t.kind, gantt.Row(t.issue.strip(), t.name.strip(), f"queued · {_clock(start + took, now)}",
+                                      tuple(_ahead(stages, start, start + took)))))
     return out
 
 
@@ -99,6 +128,7 @@ def section(rows: list[tuple[str, gantt.Row]], now: datetime) -> str:
 
 def css() -> str:
     """gantt.py's stylesheet on the board's stage tokens, with a phone layout of the Phone artboard's widths."""
-    return gantt.css(COLOURS) + (".gantt-legend{border-top:1px solid var(--gantt-edge);padding-top:5px}\n"
+    return gantt.css(COLOURS) + (".gantt-legend .gantt-forecast:not([data-cat]){--c:var(--stage-implement)}\n"
+                                 ".gantt-legend{border-top:1px solid var(--gantt-edge);padding-top:5px}\n"
                                  "@media (max-width:520px){.gantt,.gantt-legend{--gantt-label:96px;--gantt-note:0px}"
                                  ".gantt-note,.gantt-ref{display:none}.gantt-axis{font-size:8.5px}}\n")

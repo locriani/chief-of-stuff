@@ -1704,6 +1704,13 @@ def held(task: Task, kanban: Kanban | None) -> bool:
     return kanban is not None and kanban.holds(task.stage.strip())
 
 
+def queue_durations(active: list[Task], hist: dict[str, tuple[timedelta, int]]) -> dict[str, timedelta]:
+    """By item, the mean time closed tasks of each task's size took, as `estimates` reads it; empty with no history."""
+    if not hist:
+        return {}
+    return {t.item: (hist[size] if (size := t.size.strip().upper()) and size in hist else hist[ALL_SIZES])[0] for t in active}
+
+
 def build_columns(tasks: list[Task], lanes: dict | None, kanban: Kanban | None = None) -> tuple[list[columns.Column], columns.Column]:
     """The Build board: a column per lane stage, a card per task at it, and the tasks with no lane in the footer."""
     lanes = lanes or {}
@@ -1723,8 +1730,9 @@ def build_columns(tasks: list[Task], lanes: dict | None, kanban: Kanban | None =
 def render(tracker_text: str, log_text: str, cfg: Config, now: datetime,
            requirements: dict[str, str | None] | None = None, lanes: dict | None = None,
            tracker_day: date | None = None, decisions: int | None = None, kanban: Kanban | None = None,
-           stage_log: list[tuple[date, str]] | None = None) -> str:
-    """`stage_log` is (day, tracker text) for the earlier days the Flow charts reach back over."""
+           stage_log: list[tuple[date, str]] | None = None, slots: int = 1) -> str:
+    """`stage_log` is (day, tracker text) for the earlier days the Flow charts reach back over; `slots` is how many
+    queued tasks run at once, `[workers] max_concurrency`."""
     cfg = with_decision_deadlines(cfg, tracker_text, tracker_day or now.date())
     sha = hashlib.sha256(tracker_text.encode()).hexdigest()
     tracker = parse_tracker(tracker_text)
@@ -1752,7 +1760,8 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime,
     # before the axis draws clamped-left, as a carried bar always has.
     hour = now.replace(minute=0, second=0, microsecond=0)
     axis_a, axis_b = hour - DAY_BEHIND, hour + DAY_AHEAD
-    est = estimates(active, cfg, now, history(tasks, cfg, now))
+    hist = history(tasks, cfg, now)
+    est = estimates(active, cfg, now, hist)
     day_bars, day_folded = today_rows(active, cfg, now, axis_b, est, gantt.tick_step(axis_b - axis_a, MAX_TICKS))
     day_ticks = gantt.ticks(axis_a, axis_b, gantt.tick_step(axis_b - axis_a, MAX_TICKS), "%H:%M", origin=axis_a)
     day_events = [e for e in events if e.end > axis_a and e.start < axis_b]
@@ -1943,7 +1952,8 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime,
     known = [t for _, text in stage_log or [] for t in parse_tracker(text).tasks] + tasks
     ends = {t.item: end for t in active if (end := _end(t, cfg, now, now, est))[1] in ("due", "derived")}
     flow_html = flow_chart.section(flow_chart.build(flow_moves, known, lanes or {}, {t.name.strip() for t in tasks if held(t, kanban)},
-                                                    {item: end[0] for item, end in ends.items()}, now), now)
+                                                    {item: end[0] for item, end in ends.items()}, now,
+                                                    queue_durations(active, hist), slots), now)
     blocked_html = f"""<h2>Blocked</h2>
 <div class="cards">
 {blocked_card("Awaiting you", [task_line(l) for l in awaiting])}
@@ -2192,7 +2202,8 @@ def main(argv: list[str] | None = None) -> Path:
     reach = (now - flow_chart.WINDOWS[-1][1]).date()
     stage_log = [(d, path.read_text()) for d, path in daily_trackers(root, cfg) if reach <= d < tracker_day]
     page = render(tracker_text, log_text, cfg, now, requirements=req_texts, lanes=settings.lanes,
-                  tracker_day=tracker_day, decisions=pending, kanban=settings.kanban, stage_log=stage_log)
+                  tracker_day=tracker_day, decisions=pending, kanban=settings.kanban, stage_log=stage_log,
+                  slots=settings.workers.max_concurrency or 1)
     out.write_text(page)
     parsed = parse_tracker(tracker_text)
     hist = history(list(parsed.tasks), cfg, now)
