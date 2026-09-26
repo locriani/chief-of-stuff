@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import heapq
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
@@ -36,6 +36,7 @@ class Move:
     name: str
     stage: str
     launch: bool = False
+    line: str = field(default="", compare=False)  # the Log line it was read from
 
 
 def moves(text: str, day: date, zone: ZoneInfo) -> list[Move]:
@@ -50,12 +51,12 @@ def moves(text: str, day: date, zone: ZoneInfo) -> list[Move]:
             continue
         at = datetime.combine(day, time(int(m[1]), int(m[2])), tzinfo=zone)
         if m.re is LINE:
-            out.append(Move(at, m[3].strip(), m[4]))
+            out.append(Move(at, m[3].strip(), m[4], line=line))
         elif m.re is STARTED:
             task_of[m[3]] = m[4]
-            out.append(Move(at, m[4], "implement", True))
+            out.append(Move(at, m[4], "implement", True, line))
         elif m[3] in task_of:
-            out.append(Move(at, task_of[m[3]], "pr" if m[4].startswith("completed") else "review", True))
+            out.append(Move(at, task_of[m[3]], "pr" if m[4].startswith("completed") else "review", True, line))
     return out
 
 

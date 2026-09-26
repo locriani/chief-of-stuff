@@ -39,6 +39,7 @@ class Row:
     name: str
     note: str
     segments: tuple[Segment, ...]
+    href: str = ""  # where the ref links, if anywhere
 
 
 @dataclass(frozen=True)
@@ -110,7 +111,8 @@ def render(rows: list[Row], win: Window, ticks: list[tuple[datetime, str]] | Non
     out.append((f'<span class="gantt-nowline" style="left:{now}"></span>' if on else "") + "</div>")
     for r in rows:
         segs = "".join(_bar(g, win) for g in r.segments if g.end > win.start and g.start < win.end)
-        out.append(f'<div class="gantt-row"><span class="gantt-label"><span class="gantt-ref">{_esc(r.ref)}</span>'
+        ref = f'<a href="{_esc(r.href)}" class="gantt-ref">{_esc(r.ref)}</a>' if r.href else f'<span class="gantt-ref">{_esc(r.ref)}</span>'
+        out.append(f'<div class="gantt-row"><span class="gantt-label">{ref}'
                    f'<span class="gantt-name">{_esc(r.name)}</span></span><span class="gantt-track">{segs}</span>'
                    f'<span class="gantt-note">{_esc(r.note)}</span></div>')
     out.append("</div></figure>")
