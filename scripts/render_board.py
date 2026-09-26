@@ -1205,10 +1205,10 @@ def decision_panel(pending: list[tuple[str, dict | None, datetime | None, str]],
     when = decision_page.Context(now).when
     rows = tuple(panels.Row(f"decision-{slug}.json", f"unreadable: {why}") if d is None else panels.Row(
         d["headline"], " · ".join([*([f"asked {when(asked)}"] if asked else []),
-                                   f"recommended {d['recommended']}", f"default: {d['default']}"]), href=f"decision-{slug}.html")
+                                   f"recommended {d['recommended']}", f"default: {d['default']}"]), href=f"/decisions/{slug}")
         for slug, d, asked, why in pending)
     return panels.Panel("decisions", "DECISIONS", "decisions", sum(d is not None for _, d, _, _ in pending), rows,
-                        link=("decisions page", "decisions.html"), foot=f"{answered} answered today")
+                        link=("decisions page", "/decisions"), foot=f"{answered} answered today")
 
 
 def worker_panel(sources: board_sources.Sources, now: datetime) -> panels.Panel:
