@@ -1265,11 +1265,14 @@ def render(tracker_text: str, cfg: Config, now: datetime, lanes: dict | None = N
                   for m in flow_chart.moves(text, day, zone)]
     known = [t for _, text in stage_log or [] for t in parse_tracker(text).tasks] + tasks
     ends = {t.item: end for t in active if (end := _end(t, cfg, now, now, est))[1] in ("due", "derived")}
-    flow_html = flow_chart.section(flow_chart.build(flow_moves, known, lanes or {}, {t.name.strip() for t in tasks if held(t, kanban)},
-                                                    {item: end[0] for item, end in ends.items()}, now,
-                                                    queue_durations(active, hist), slots,
-                                                    frozenset(t.name.strip() for t in tasks
-                                                              if any(c.state == "open" and c.approved for c in task_changes(t, sources)))), now)
+    flow_rows = flow_chart.build(flow_moves, known, lanes or {}, {t.name.strip() for t in tasks if held(t, kanban)},
+                                 {item: end[0] for item, end in ends.items()}, now,
+                                 queue_durations(active, hist), slots,
+                                 frozenset(t.name.strip() for t in tasks
+                                           if any(c.state == "open" and c.approved for c in task_changes(t, sources))))
+    # An issue's row links to its page, pages.py's /issues/<n>.
+    flow_html = flow_chart.section([(s, replace(r, href=f"/issues/{int(m[1])}") if (m := TRAILING_NUMBER.search(r.ref)) else r)
+                                    for s, r in flow_rows], now)
 
     pending = decisions or []
     meta = [f"rendered {now:%H:%M} {now:%Z}", f"tracker {(tracker_at or now).astimezone(zone):%H:%M}",

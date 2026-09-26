@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Serve the workspace's pages locally: the board and any page a session writes beside it.
 
-The pages are routes: `/` the board, `/decisions` the list, `/decisions/<slug>` a decision page. Each is
-rendered into its file (`<day>-board.html`, `decisions.html`, `decision-<slug>.html`), which only the routes serve:
+The pages are routes: `/` the board, `/decisions` the list, `/decisions/<slug>` a decision page, `/issues/<n>` a
+tracker issue's page. Each is rendered into its file (`<day>-board.html`, `decisions.html`, `decision-<slug>.html`,
+`issue-<n>.html`), which only the routes serve:
 a request for the file's own name is a 404. A GET re-renders a page when
 one of its sources (the trackers, CLAUDE.md, the settings TOML, the decision JSON, `.sources.json`) is
 newer than the file, and a thread refreshes `.sources.json` from the forge every minute. An open tab
@@ -47,8 +48,9 @@ SERVER = "chief-of-stuff-pages"
 PID = ".pid"
 CACHE = ".sources.json"
 REFRESH = 60  # seconds between forge reads
-RENDERED = re.compile(r"\d{4}-\d{2}-\d{2}-board\.html|decisions\.html|decision-[a-z0-9]+(?:-[a-z0-9]+)*\.html")
+RENDERED = re.compile(r"\d{4}-\d{2}-\d{2}-board\.html|decisions\.html|decision-[a-z0-9]+(?:-[a-z0-9]+)*\.html|issue-\d+\.html")
 ROUTE = re.compile(r"/decisions/([a-z0-9]+(?:-[a-z0-9]+)*)")
+ISSUE = re.compile(r"/issues/(\d+)")
 MAX_BODY = 16 * 1024  # a write-in is a sentence or a paragraph
 # ponytail: one lock for every render; per-page locks if renders ever get slow.
 RENDER = threading.Lock()
@@ -94,6 +96,7 @@ def fresh(root: Path, pages_dir: Path, name: str) -> str:
     """Re-render the page `name` when a source is newer than its file. Returns the render error, or "".
     On an error the last good file stays where it is."""
     import decision_page
+    import issue_page
     import render_board
     try:
         cfg = render_board.parse_coordinator((root / "CLAUDE.md").read_text(), today=date.today())
@@ -101,6 +104,8 @@ def fresh(root: Path, pages_dir: Path, name: str) -> str:
         if name.startswith("decision-"):
             if not (pages_dir / f"{name[:-5]}.json").is_file():
                 return ""
+            day = today
+        elif name.startswith("issue-"):
             day = today
         elif name == "decisions.html":
             days = [d.isoformat() for d, _ in render_board.daily_trackers(root, cfg)]
@@ -116,6 +121,8 @@ def fresh(root: Path, pages_dir: Path, name: str) -> str:
         with RENDER:
             if name.startswith("decision-"):
                 decision_page.write(root, pages_dir, name[len("decision-"):-5], day)
+            elif name.startswith("issue-"):
+                issue_page.write(root, pages_dir, int(name[len("issue-"):-5]))
             else:
                 render_board.write(root, day)
         return ""
@@ -146,7 +153,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def _allowed(self) -> bool:
         """Refuse a foreign Host or a dotfile; map `/` to today's (else the newest) board, `/all` to the listing and
-        `/decisions[/<slug>]` to its file; refuse a rendered page's file name; re-render a page its sources outdate."""
+        `/decisions[/<slug>]` and `/issues/<n>` to its file; refuse a rendered page's file name; re-render a page its sources outdate."""
         port = self.server.server_address[1]
         if self.headers.get("Host", "") not in (f"127.0.0.1:{port}", f"localhost:{port}"):
             self.send_error(403, "Host is not this machine")
@@ -180,6 +187,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.send_error(404, "no such decision")
                 return False
             self.path = f"/decision-{m[1]}.html"
+        elif path.startswith("/issues/"):
+            m = ISSUE.fullmatch(path)
+            if not m:
+                self.send_error(404, "no such issue")
+                return False
+            self.path = f"/issue-{int(m[1])}.html"
         elif RENDERED.fullmatch(Path(self.translate_path(path)).name.lower()):
             # A rendered page is a route only. The resolved name, lowercased: `//x` and a case-insensitive disk reach it too.
             self.send_error(404)
@@ -187,6 +200,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         name = self.path.split("?")[0].lstrip("/")
         if root is not None and RENDERED.fullmatch(name):
             self.banner = fresh(root, Path(self.directory), name)
+        if name.startswith("issue-") and not self.banner and not (Path(self.directory) / name).is_file():
+            self.send_error(404, "no task names this issue")  # issue_page.write removes the page then
+            return False
         return True
 
     def _poke(self):
