@@ -3,9 +3,12 @@
 
 from __future__ import annotations
 
+import fcntl
+import os
 import re
 import shlex
 import subprocess
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -22,6 +25,8 @@ from shell_setup import clean_env, login_argv, resolve
 
 RESULT = Path(dispatch_prompt.PROMPT_DIR) / "worker-result.toon"
 REPORT = Path(dispatch_prompt.PROMPT_DIR) / "one-shot-report.toon"
+# `<launcher pid> <task>` while a one-shot runs in this tree; the count behind `[workers] max_concurrency`.
+PIDFILE = Path(dispatch_prompt.PROMPT_DIR) / "one-shot.pid"
 NO_COMMITS = "No new commits detected"
 RELAUNCHED = ": relaunch requested for {task} — "
 BOOTSTRAP = ("Read {dispatch} first. It is your entire one-shot assignment. Work in {cwd}. "
@@ -262,6 +267,51 @@ def reconcile(root: Path, day: str, task: str, name: str, cwd: Path, exit_code: 
     return report
 
 
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def running_workers(trees: Path) -> list[str]:
+    """The tasks of one-shots whose launcher is alive. A launcher that died, or a restart that killed it,
+    holds no slot. ponytail: pid reuse can count a dead launcher; add the process start time if it bites."""
+    tasks = []
+    for f in sorted(trees.glob(f"*/{PIDFILE}")):
+        try:
+            pid, _, task = f.read_text().partition(" ")
+            if _alive(int(pid)):
+                tasks.append(task.strip() or f.parent.parent.name)
+        except (OSError, ValueError):
+            continue
+    return tasks
+
+
+@contextmanager
+def slot(trees: Path, cwd: Path, task: str, cap: int | None):
+    """Claim a worker slot under the Worktrees dir's lock, so two sessions launching at once cannot both
+    take the last one; release it when the run ends."""
+    lock = os.open(trees, os.O_RDONLY)
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        busy = running_workers(trees)
+        if cap is not None and len(busy) >= cap:
+            raise ValueError(f"{len(busy)} one-shot workers running ({', '.join(busy)}); "
+                             f"[workers] max_concurrency is {cap}")
+        (cwd / PIDFILE).parent.mkdir(exist_ok=True)
+        (cwd / PIDFILE).write_text(f"{os.getpid()} {task}\n")
+    finally:
+        os.close(lock)
+    try:
+        yield
+    finally:
+        (cwd / PIDFILE).unlink(missing_ok=True)
+
+
 def run(*, root: Path, day: str | None, task: str, cwd: Path, name: str,
         runtime: str, agent_type: str | None, model: str, effort: str, dry_run: bool,
         timeout_minutes: int = 60) -> int:
@@ -280,6 +330,13 @@ def run(*, root: Path, day: str | None, task: str, cwd: Path, name: str,
         return 0
     if not cwd.is_dir():
         raise ValueError(f"no worktree at {cwd}")
+    trees = root / worktrees_dir((root / "CLAUDE.md").read_text())
+    with slot(trees, cwd, task, load_settings(root, cfg.settings_path).workers.max_concurrency):
+        return _launch(root, cfg, chosen_day, task, cwd, name, runtime, model, body, argv, timeout_minutes)
+
+
+def _launch(root: Path, cfg, chosen_day: str, task: str, cwd: Path, name: str, runtime: str, model: str,
+            body: str, argv: list[str], timeout_minutes: int) -> int:
     # Same clean login-shell path as interactive sessions; auth and user PATH come from shell setup.
     from spawn_session import write_dispatch
     write_dispatch(cwd, body)

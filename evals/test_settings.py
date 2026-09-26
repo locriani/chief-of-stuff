@@ -94,6 +94,13 @@ class SettingsTest(unittest.TestCase):
             with self.subTest(text=text), self.assertRaises(st.SettingsError):
                 st.load(self.root, self.write('[workflow]\n' + text + '\n'))
 
+    def test_worker_cap_is_absent_or_a_positive_whole_number(self):
+        self.assertIsNone(st.load(self.root, None).workers.max_concurrency)
+        self.assertEqual(st.load(self.root, self.write('[workers]\nmax_concurrency = 3\n')).workers.max_concurrency, 3)
+        for bad in ("0", "-1", "2.5", '"3"', "true"):
+            with self.subTest(bad=bad), self.assertRaises(st.SettingsError):
+                st.load(self.root, self.write(f"[workers]\nmax_concurrency = {bad}\n"))
+
     def test_worker_launcher_defaults_to_ghostty_and_accepts_tmux(self):
         self.assertEqual(st.load(self.root, None).workers.launcher, "ghostty")
         self.assertEqual(st.load(self.root, None).workers.mode, "interactive")

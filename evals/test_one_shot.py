@@ -231,6 +231,41 @@ class RunTest(unittest.TestCase):
         self.assertIn("partial.txt", report["changes"])
         self.assertIn("partial", report["changes"])
 
+    def _cap(self, n: int) -> None:
+        (self.root / "CLAUDE.md").write_text(CLAUDE + "- Settings: `cos.toml`\n")
+        (self.root / "cos.toml").write_text(f"[workers]\nmode = \"one-shot\"\nmax_concurrency = {n}\n")
+
+    def _other(self, pid: int) -> None:
+        other = self.root / "trees/other" / one_shot.PIDFILE
+        other.parent.mkdir(parents=True)
+        other.write_text(f"{pid} Export header\n")
+
+    def test_a_launch_at_the_cap_is_refused_naming_the_running_ones(self):
+        self._cap(1)
+        self._other(os.getpid())
+        before = self.tracker.read_text()
+        with self.assertRaisesRegex(ValueError, r"Export header.*max_concurrency is 1"):
+            self._run(self._fake('status: done\nreason: r\nchanges: c\n'))
+        self.assertEqual(self.tracker.read_text(), before)
+        self.assertFalse((self.root / "during.md").exists(), "the worker must not start")
+
+    def test_a_launcher_that_has_exited_holds_no_slot(self):
+        self._cap(1)
+        gone = subprocess.Popen([sys.executable, "-c", "pass"])
+        gone.wait()
+        self._other(gone.pid)
+        fake = self._fake('status: done\nreason: r\nchanges: c\n', write_partial=False)
+        self.assertEqual(self._run(fake), 0)
+
+    def test_a_running_worker_is_counted_and_released_when_it_exits(self):
+        probe = self.root / "pid-during.txt"
+        fake = self._fake('status: done\nreason: r\nchanges: c\n', write_partial=False)
+        fake.write_text(fake.read_text().replace(
+            "sys.exit(", f"Path({str(probe)!r}).write_text((root / 'one-shot.pid').read_text())\nsys.exit(", 1))
+        self.assertEqual(self._run(fake), 0)
+        self.assertEqual(probe.read_text(), f"{os.getpid()} Security audit\n")
+        self.assertEqual(one_shot.running_workers(self.root / "trees"), [])
+
     def test_dry_run_writes_nothing(self):
         fake = self._fake('status: done\nreason: done\nchanges: changed\n')
         with mock.patch.object(one_shot, "resolve", return_value=str(fake)):
