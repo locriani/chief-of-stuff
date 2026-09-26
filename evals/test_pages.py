@@ -269,6 +269,23 @@ class RenderOnRequestTest(unittest.TestCase):
             with self.subTest(missing=missing):
                 self.assertEqual(get(self.port, missing).status, 404)
 
+    def test_a_page_rendered_by_an_older_release_is_rendered_again(self):
+        # A new release changes the renderer, not the sources: every page written before it is out of date.
+        (self.pages / "decision-cache-ttl.json").write_text(
+            '{"headline": "Cache TTL", "ask": "Keep 5 minutes?", "options": [{"key": "A", "title": "Keep", '
+            '"text": "no change"}, {"key": "B", "title": "Drop", "text": "slower"}], "recommended": "A", "why": "fine", "default": "A at 17:00"}')
+        self.assertEqual(get(self.port, "/decisions/cache-ttl").status, 200)
+        get(self.port, "/")
+        old = 1_000_000_000  # 2001: newer than no source, older than any release
+        for f in [*self.pages.glob("*.json"), self.tracker, self.root / "CLAUDE.md"]:
+            os.utime(f, (old - 10, old - 10))
+        for f in self.pages.glob("*.html"):
+            f.write_text("rendered by an older release")
+            os.utime(f, (old, old))
+        for path in ("/decisions/cache-ttl", "/decisions", "/"):
+            with self.subTest(path=path):
+                self.assertNotIn(b"rendered by an older release", get(self.port, path).body)
+
     def test_dotfiles_and_foreign_hosts_are_still_refused(self):
         self.assertEqual(get(self.port, "/.sources.json").status, 404)
         self.assertEqual(get(self.port, "/", host="evil.test").status, 403)
