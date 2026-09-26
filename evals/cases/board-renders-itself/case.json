@@ -1,0 +1,47 @@
+{
+  "golden": true,
+  "golden_why": "board: \"The pages render themselves: the page server re-renders a page from its sources (the tracker, CLAUDE.md, the settings, the decision JSON) whenever one of them changed, so never run `chief-of-stuff board` or `chief-of-stuff decision`, and never write HTML.\"",
+  "tz": "America/Chicago",
+  "description": "A task goes done with a Board line and a stale html on disk. The coordinator edits the tracker and runs no render step: the page server renders the board from the tracker on the next request, so the page it serves matches the final tracker.",
+  "prompt": "The audit is done.",
+  "graders": [
+    {
+      "name": "task marked done",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^\\|\\s*Security audit\\s*\\|[^\\n]*\\|\\s*done\\b"
+    },
+    {
+      "name": "no render step: the server renders",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "render_board|decision_page|chief[-_]of[-_]stuff(?:\\.py)? (?:board|decision)\\b",
+      "max": 0
+    },
+    {
+      "name": "no Write/Edit to any html",
+      "type": "tool_used",
+      "tool": "Write|Edit",
+      "input_match": "\\.html",
+      "max": 0
+    },
+    {
+      "name": "the served board shows the audit done",
+      "type": "board_published",
+      "min": 1,
+      "tasks": [
+        "Security audit",
+        "Draft release notes"
+      ],
+      "html_match": "<div class=\"columns-card-name\">Security audit</div>(<div class=\"columns-refs\">[^<]*</div>)?<div class=\"columns-who\"><span class=\"columns-owner\">[^<]*</span><span class=\"columns-tag columns-chip\" data-cat=\"done\">"
+    },
+    {
+      "name": "the served board matches the final tracker",
+      "type": "board_matches_tracker",
+      "tracker": "daily/{{today}}-tracker.md",
+      "html": "pages/{{today}}-board.html"
+    }
+  ],
+  "max_turns": 16,
+  "timeout_seconds": 300
+}

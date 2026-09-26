@@ -3,6 +3,8 @@ pages wiring (Zach, 2026-09-24 14:07: "we should host our own webserver"; the mo
 
 from __future__ import annotations
 
+import json
+
 import hashlib
 import json
 import os
@@ -107,6 +109,19 @@ class BoardGraderTest(unittest.TestCase):
         (self.after / "pages" / f"{day}-board.html").write_text("<p>stale</p>")
         (self.after / "daily" / f"{day}-tracker.md").write_text(TRACKER + "- 10:05 edited after the render\n")
         ok, detail = self.grade({"type": "board_matches_tracker", "tracker": f"daily/{day}-tracker.md"})
+        self.assertTrue(ok, detail)
+
+    def test_a_graded_decision_page_is_the_one_the_server_renders(self) -> None:
+        # The agent writes only the JSON; a pages/ grader reads the page a GET would serve.
+        day = datetime.now(CT).date().isoformat()
+        (self.after / "CLAUDE.md").write_text(
+            "## Coordinator\n- User: Robin\n- Daily log dir: `daily/`\n- Tracker: `daily/<date>-tracker.md`\n"
+            "- Timezone: America/Chicago\n- Board: self-hosted; URL http://127.0.0.1:8765/; dir `pages/`\n")
+        (self.after / "daily" / f"{day}-tracker.md").write_text(TRACKER)
+        (self.after / "pages" / "decision-pool.json").write_text(json.dumps({
+            "headline": "Pool size", "ask": "Which size?", "recommended": "A", "why": "Fits.", "default": "A.",
+            "options": [{"key": "A", "title": "Ten", "text": "Fits."}, {"key": "B", "title": "Twenty", "text": "Over."}]}))
+        ok, detail = self.grade({"type": "file_matches", "glob": "pages/decision-*.html", "pattern": "Pool size"})
         self.assertTrue(ok, detail)
 
     REQS = "# Final\n\n## Submission\n\n- [ ] Security audit of the upload endpoint\n- [ ] Demo video\n  - [ ] Multi-turn question\n\n## Engineering\n\n- [x] Deployed URL — evidence: https://example.test\n"

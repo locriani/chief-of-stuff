@@ -437,6 +437,8 @@ def _glob_matches(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
 
 
 def _file_matches(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
+    if rec.fixture_dir and g.get("glob", g.get("path", "")).startswith("pages/"):
+        serve_board(rec.fixture_dir)
     if "glob" in g:
         return _glob_matches(g, rec)
     text = _read(rec.fixture_dir, g["path"])
@@ -810,8 +812,9 @@ def load_cases(patterns: list[str], golden_only: bool = False) -> list[Case]:
 
 
 def serve_board(root: Path) -> None:
-    """What a GET of `/` does in pages.py: re-render today's board when its sources are newer. The agent
-    never renders; the page server does, so a grader reads the page the server would serve."""
+    """What a GET of `/`, of each decision page and of `decisions.html` does in pages.py: re-render each
+    when its sources are newer. The agent never renders; the page server does, so a grader reads the
+    pages the server would serve."""
     sys.path.insert(0, str(PLUGIN_ROOT / "scripts"))
     import pages
     try:
@@ -819,8 +822,9 @@ def serve_board(root: Path) -> None:
         name = pages.today_board(root)
     except Exception:  # no Board line or no CLAUDE.md: there is no server to render, only files
         return
-    if name:
-        pages.fresh(root, pages_dir, name)
+    decisions = [f"{p.stem}.html" for p in pages_dir.glob("decision-*.json")]
+    for page in [name] * bool(name) + decisions + ["decisions.html"] * bool(name or decisions):
+        pages.fresh(root, pages_dir, page)
 
 
 def _last_published_html(rec: RunRecord) -> tuple[str | None, str]:
