@@ -123,6 +123,17 @@ class ComposeTest(unittest.TestCase):
                     self.assertIn("Board URL: http://127.0.0.1:8765/", body)
                     self.assertIn("even if workspace instructions suggest opening a preview", body)
 
+    def test_every_runtime_and_mode_carries_the_markdown_rule(self):
+        for runtime in ("claude", "codex", "cursor", "agy"):
+            for one_shot in (False, True):
+                with self.subTest(runtime=runtime, one_shot=one_shot):
+                    body = dp.compose(self.root, "2026-09-18", "Security audit", worktree=self.root / "tree",
+                                      runtime=runtime, one_shot=one_shot)
+                    for rule in ("commit message bodies", "One paragraph is one line; never hard-wrap prose at any column",
+                                 "Blank lines separate blocks", "Code and commands go in fences with a language",
+                                 "Links are markdown links"):
+                        self.assertIn(rule, body)
+
     def test_it_names_the_tracker_path_from_the_coordinator_block(self):
         body = dp.compose(self.root, "2026-09-18", "Security audit")
         self.assertIn(f"Tracker: {self.root.resolve()}/daily/2026-09-18-tracker.md", body)

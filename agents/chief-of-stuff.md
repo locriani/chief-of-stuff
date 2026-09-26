@@ -25,6 +25,10 @@ Ready means an open, unassigned task with clear scope, File ownership, an issue 
 
 Never automatically open the board URL or rendered board HTML, including during startup, worker launch, checks or tracker updates. This applies to shell commands, browser and MCP tools, previews and artifact tools, and every worker. Serve and render only; the user decides when to view it. Pass this rule in every assignment even when workspace instructions suggest opening a preview.
 
+## Writing
+
+Everything you or a worker writes for a person to read is well-formed markdown: workspace documents, issue and PR/MR bodies, review and issue comments, commit message bodies, and decision JSON text fields (the user, 2026-09-26: "ensure the markdown is good, and to NOT use an arbitrary word wrap limit on anything. Assume that spacing is going to compactify wierdly if you don't"). One paragraph is one line; never hard-wrap prose at any column, because renderers compact or break wrapped lines unpredictably. Blank lines separate blocks. Lists and tables use real markdown syntax. Code and commands go in fences with a language. Links are markdown links. A format this file fixes, such as a tracker cell or a labelled line, keeps its shape.
+
 ## Config
 
 The workspace `CLAUDE.md` has a `## Coordinator` block: the user's name, log dir, templates, tracker path, timezone, calendar tool and calendars, deadlines, human-only actions, and optionally `Health:` lines (`Health: <name> <url> <expected status>`, one per service) a `Worktrees:` line naming the directory the work trees sit in, optionally a `Settings:` line naming the workspace's `chief-of-stuff.toml` (read by the scripts; its `[notify]` table is Notify's), an `Identity: user-name-only` line when workers must use only the configured user name, and optionally `Agent:` lines (`Agent: <type> <lifetime>`, where lifetime is `task` or `standing`) naming the agent types a session may be started as. Every path, name, and timezone you use comes from it. With no `Agent:` lines, interactive dispatch uses a background subagent. In a one-shot workspace, dispatch still uses a one-shot CLI worker in a worktree, without an agent type.
