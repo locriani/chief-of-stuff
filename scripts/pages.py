@@ -2,8 +2,8 @@
 """Serve the workspace's pages locally: the board and any page a session writes beside it.
 
 The pages are routes: `/` the board, `/decisions` the list, `/decisions/<slug>` a decision page, `/issues/<n>` a
-tracker issue's page. Each is rendered into its file (`<day>-board.html`, `decisions.html`, `decision-<slug>.html`,
-`issue-<n>.html`), which only the routes serve:
+tracker issue's page, `/issues/<n>/source` its change's source and diff. Each is rendered into its file
+(`<day>-board.html`, `decisions.html`, `decision-<slug>.html`, `issue-<n>.html`, `issue-<n>-source.html`), which only the routes serve:
 a request for the file's own name is a 404. A GET re-renders a page when
 one of its sources (the trackers, CLAUDE.md, the settings TOML, the decision JSON, `.sources.json`) is
 newer than the file, and a thread refreshes `.sources.json` from the forge every minute. An open tab
@@ -48,9 +48,9 @@ SERVER = "chief-of-stuff-pages"
 PID = ".pid"
 CACHE = ".sources.json"
 REFRESH = 60  # seconds between forge reads
-RENDERED = re.compile(r"\d{4}-\d{2}-\d{2}-board\.html|decisions\.html|decision-[a-z0-9]+(?:-[a-z0-9]+)*\.html|issue-\d+\.html")
+RENDERED = re.compile(r"\d{4}-\d{2}-\d{2}-board\.html|decisions\.html|decision-[a-z0-9]+(?:-[a-z0-9]+)*\.html|issue-\d+(?:-source)?\.html")
 ROUTE = re.compile(r"/decisions/([a-z0-9]+(?:-[a-z0-9]+)*)")
-ISSUE = re.compile(r"/issues/(\d+)")
+ISSUE = re.compile(r"/issues/(\d+)(/source)?")
 MAX_BODY = 16 * 1024  # a write-in is a sentence or a paragraph
 # ponytail: one lock for every render; per-page locks if renders ever get slow.
 RENDER = threading.Lock()
@@ -98,6 +98,7 @@ def fresh(root: Path, pages_dir: Path, name: str) -> str:
     import decision_page
     import issue_page
     import render_board
+    import source_page
     try:
         cfg = render_board.parse_coordinator((root / "CLAUDE.md").read_text(), today=date.today())
         today = datetime.now(cfg.zone).date().isoformat()
@@ -121,6 +122,8 @@ def fresh(root: Path, pages_dir: Path, name: str) -> str:
         with RENDER:
             if name.startswith("decision-"):
                 decision_page.write(root, pages_dir, name[len("decision-"):-5], day)
+            elif name.endswith("-source.html"):
+                source_page.write(root, pages_dir, int(name[len("issue-"):-len("-source.html")]))
             elif name.startswith("issue-"):
                 issue_page.write(root, pages_dir, int(name[len("issue-"):-5]))
             else:
@@ -192,7 +195,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if not m:
                 self.send_error(404, "no such issue")
                 return False
-            self.path = f"/issue-{int(m[1])}.html"
+            self.path = f"/issue-{int(m[1])}{'-source' if m[2] else ''}.html"
         elif RENDERED.fullmatch(Path(self.translate_path(path)).name.lower()):
             # A rendered page is a route only. The resolved name, lowercased: `//x` and a case-insensitive disk reach it too.
             self.send_error(404)
