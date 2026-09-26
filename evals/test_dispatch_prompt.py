@@ -57,6 +57,51 @@ def workspace(tracker: str = TRACKER, claude_md: str = CLAUDE):
     return tmp, root
 
 
+NAMED = """# Tracker 2026-09-18
+
+## Tasks
+
+| name | item | owner | state | since | due | size | checklist |
+|---|---|---|---|---|---|---|---|
+| alpha | Harden the upload handler against path traversal | unassigned | open | 09:00 |  | M | Checklist: harden |
+| twin | Rotate the staging keys | unassigned | open | 09:00 |  | S | Checklist: rotate |
+| twin | Rotate the demo keys | unassigned | open | 09:00 |  | S | Checklist: rotate |
+
+## File ownership
+
+| context | paths |
+|---|---|
+| alpha | `src/a/` |
+
+## Log
+
+- 09:00 opened the day
+"""
+
+
+class TaskByNameTest(unittest.TestCase):
+    """The coordinator kept a script to turn a Tasks name into the item `--task` wanted (#51)."""
+
+    def setUp(self):
+        tmp, self.root = workspace(NAMED)
+        self.addCleanup(tmp.cleanup)
+
+    def test_a_name_resolves_to_its_item_and_its_ownership_row(self):
+        item = dp.resolve_task(self.root, "2026-09-18", "alpha")
+        self.assertEqual(item, "Harden the upload handler against path traversal")
+        self.assertIn("Owns: `src/a/`", dp.compose(self.root, "2026-09-18", item))
+
+    def test_an_item_still_resolves_to_itself(self):
+        item = "Harden the upload handler against path traversal"
+        self.assertEqual(dp.resolve_task(self.root, "2026-09-18", item), item)
+
+    def test_a_shared_name_is_refused_and_lists_the_items(self):
+        with self.assertRaises(dp.RefusedError) as e:
+            dp.resolve_task(self.root, "2026-09-18", "twin")
+        self.assertIn("Rotate the staging keys", str(e.exception))
+        self.assertIn("Rotate the demo keys", str(e.exception))
+
+
 class ComposeTest(unittest.TestCase):
     def setUp(self):
         self.tmp, self.root = workspace()

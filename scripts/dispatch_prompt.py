@@ -225,15 +225,39 @@ def _clean(label: str, value: str) -> str:
     return value
 
 
-def task_keys(item: str) -> set[str]:
-    """What a File ownership row may be keyed on: the full item, its colon prefix, or its board short name."""
-    return {item.strip(), item.split(": ", 1)[0].strip(), short_name(item).strip()} - {""}
+def task_keys(item: str, name: str = "") -> set[str]:
+    """What a File ownership row may be keyed on: the Tasks name, the full item, its colon prefix, or its board short name."""
+    return {name.strip(), item.strip(), item.split(": ", 1)[0].strip(), short_name(item).strip()} - {""}
+
+
+def task_name(text: str, item: str) -> str:
+    """The `name` cell of the Tasks row whose item is `item`, or "" when there is none."""
+    rows = [row for row in parse_tracker(text).tasks if row.item.strip() == item.strip()]
+    return rows[0].name.strip() if len(rows) == 1 else ""
+
+
+def resolve_task(root: Path, day: str | None, task: str) -> str:
+    """The item `task` names: an item as written, or else the one Tasks row whose `name` it is."""
+    cfg = _config(root)
+    relative = cfg.tracker_path(day or datetime.now(cfg.zone).date().isoformat())
+    try:
+        tasks = parse_tracker((root / relative).read_text()).tasks
+    except OSError as exc:
+        raise RefusedError(f"cannot read {relative}: {exc}") from None
+    wanted = task.strip()
+    if any(row.item.strip() == wanted for row in tasks):
+        return wanted
+    named = [row.item.strip() for row in tasks if row.name.strip() == wanted]
+    if len(named) > 1:
+        raise RefusedError(f"{len(named)} Tasks rows are named {wanted!r}; pass the item instead: "
+                           + "; ".join(repr(item) for item in named))
+    return named[0] if named else task
 
 
 def _owns(text: str, item: str, relative: str) -> str:
-    """Find task-owned paths by full item, colon prefix, or board short name."""
+    """Find task-owned paths by Tasks name, full item, colon prefix, or board short name."""
     head = item.split(": ", 1)[0].strip()
-    keys = task_keys(item)
+    keys = task_keys(item, task_name(text, item))
     for row in ownership.parse("\n".join(_section(text, ownership.HEADING))):
         if row.context in keys:
             return _clean("the File ownership row", row.paths)

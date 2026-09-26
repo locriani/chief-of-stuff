@@ -130,6 +130,41 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+PAGE_REF = re.compile(r"decision-[a-z0-9]+(?:-[a-z0-9]+)*")
+
+
+def index(pages_dir: Path, answered: list[str], today: list[list[str]], day: str) -> tuple[str, int]:
+    """`decisions.html` and its pending count. A page is answered once any Decisions item names it;
+    `today` is today's Decisions rows as (time, item, words)."""
+    named = {ref for item in answered for ref in PAGE_REF.findall(item)}
+    pending = []
+    for source in sorted(pages_dir.glob("decision-*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+        page = source.stem
+        if page in named:
+            continue
+        try:
+            d = parse(json.loads(source.read_text()))
+            rec = next(o for o in d["options"] if o["key"] == d["recommended"])
+            pending.append(f'    <div class="side">\n      <a href="{page}.html"><b>{_md(d["headline"])}</b></a>\n'
+                           f'      <p>{_md(d["ask"])}</p>\n      <p>Recommended: {escape(rec["key"])}, {_md(rec["title"])}</p>\n'
+                           f'      <p>Default: {_md(d["default"])}</p>\n    </div>')
+        except (OSError, json.JSONDecodeError, DecisionError, KeyError, TypeError, AttributeError, StopIteration) as e:
+            pending.append(f'    <div class="side">\n      <code>{page}</code>\n      <p>unreadable: {escape(str(e))}</p>\n    </div>')
+
+    def link(m: re.Match) -> str:
+        return f'<a href="{m[0]}.html">{m[0]}</a>' if (pages_dir / f"{m[0]}.html").is_file() else m[0]
+
+    rows = "\n".join(f"        <tr><th>{escape(t)}</th><td>{PAGE_REF.sub(link, _md(item))}</td><td>{_md(words)}</td></tr>"
+                     for t, item, words in today)
+    body = [_section(f"Pending · {len(pending)}", "\n".join(pending) or "    <p>none</p>"),
+            _section(f"Completed · {len(today)}",
+                     f'    <div class="tablewrap">\n      <table class="facts">\n{rows}\n      </table>\n    </div>' if today else "    <p>none</p>")]
+    return (f"<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n"
+            f"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
+            f"<title>Decisions · {escape(day)}</title>\n{HEAD}</head>\n<body>\n<main>\n"
+            f"  <header><h1>Decisions · {escape(day)}</h1></header>\n" + "".join(body) + "</main>\n</body>\n</html>\n"), len(pending)
+
+
 HEAD = """<link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Serif:wght@500;600&display=swap">

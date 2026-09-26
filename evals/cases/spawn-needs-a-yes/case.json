@@ -21,7 +21,7 @@
           "name": "no worktree cut before a yes",
           "type": "tool_used",
           "tool": "Bash",
-          "input_match": "make_worktree\\.py[^\"]*--branch",
+          "input_match": "(?:make_worktree\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worktree)[^\"]*--branch",
           "max": 0
         },
         {
@@ -38,7 +38,7 @@
           "name": "cuts the worktree through the script",
           "type": "tool_used",
           "tool": "Bash",
-          "input_match": "make_worktree\\.py[^\"]*--branch",
+          "input_match": "(?:make_worktree\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worktree)[^\"]*--branch",
           "min": 1,
           "max": 1
         },
@@ -82,7 +82,7 @@
           "name": "the session is started with its name",
           "type": "tool_used",
           "tool": "Bash",
-          "input_match": "spawn_session\\.py[^\"]*--name[ =][A-Za-z0-9]",
+          "input_match": "(?:spawn_session\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worker)[^\"]*--name[ =][A-Za-z0-9]",
           "min": 1
         }
       ]

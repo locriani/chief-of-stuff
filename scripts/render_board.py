@@ -21,6 +21,7 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from backlog import Backlog, BacklogError, GitHubBacklog, issue_ref, parse_backlog  # noqa: E402
 from settings import SettingsError, load as load_settings  # noqa: E402
+import decision_page  # noqa: E402
 
 HHMM = re.compile(r"^(\d{1,2}):(\d{2})$")
 # Accept both separators in a completed time range.
@@ -805,13 +806,13 @@ def with_decision_deadlines(cfg: Config, tracker_text: str, tracker_day: date,
     return replace(cfg, deadlines=tuple(sorted(base.values(), key=lambda deadline: deadline.at)))
 
 
-def with_workspace_decision_deadlines(root: Path, cfg: Config, tracker_text: str, tracker_day: date) -> Config:
-    """Carry future deadlines forward from earlier daily trackers, then apply today's decisions."""
+def daily_trackers(root: Path, cfg: Config) -> list[tuple[date, Path]]:
+    """Every day's tracker in the workspace, oldest first."""
     template = cfg.tracker_template
     if template.count("<date>") != 1:
-        return with_decision_deadlines(cfg, tracker_text, tracker_day)
+        return []
     prefix, suffix = template.split("<date>")
-    history = []
+    found = []
     for path in root.glob(f"{prefix}*{suffix}"):
         if not path.is_file() or not path.resolve().is_relative_to(root.resolve()):
             continue
@@ -823,11 +824,22 @@ def with_workspace_decision_deadlines(root: Path, cfg: Config, tracker_text: str
             day = date.fromisoformat(token)
         except ValueError:
             continue
+        found.append((day, path))
+    return sorted(found)
+
+
+def with_workspace_decision_deadlines(root: Path, cfg: Config, tracker_text: str, tracker_day: date) -> Config:
+    """Carry future deadlines forward from earlier daily trackers, then apply today's decisions."""
+    for day, path in daily_trackers(root, cfg):
         if day < tracker_day:
-            history.append((day, path))
-    for day, path in sorted(history):
-        cfg = with_decision_deadlines(cfg, path.read_text(), day, min_day=tracker_day)
+            cfg = with_decision_deadlines(cfg, path.read_text(), day, min_day=tracker_day)
     return with_decision_deadlines(cfg, tracker_text, tracker_day)
+
+
+def decision_rows(tracker_text: str) -> list[list[str]]:
+    """The Decisions table's rows as (time, item, words), header and separator left out."""
+    rows = [_cells(line) for line in _section(tracker_text, "## Decisions") if line.strip().startswith("|")]
+    return [(cells + ["", "", ""])[:3] for cells in rows[1:] if not _is_separator(cells)]
 
 
 def _anchor(raw: list[str], cols: tuple[str, ...]) -> list[str] | None:
@@ -1685,11 +1697,13 @@ def requirements_section(d: Deadline, text: str | None) -> str:
 
 def render(tracker_text: str, log_text: str, cfg: Config, now: datetime,
            requirements: dict[str, str | None] | None = None, lanes: dict | None = None,
-           tracker_day: date | None = None) -> str:
+           tracker_day: date | None = None, decisions: int | None = None) -> str:
     cfg = with_decision_deadlines(cfg, tracker_text, tracker_day or now.date())
     sha = hashlib.sha256(tracker_text.encode()).hexdigest()
     tracker = parse_tracker(tracker_text)
     today, zone = now.date(), cfg.zone
+    decisions_note = ("" if decisions is None else
+                      f' · <a href="decisions.html">{decisions} decision{"" if decisions == 1 else "s"} pending</a>')
     events = parse_calendar(log_text, today, zone)
     # A body event is drawn once, as a segment of the body track; drawn as a band as well it would
     # read as two things happening at once. Every other event stays the band it was.
@@ -2044,7 +2058,7 @@ body{{padding:12px 12px 36px}}
 <div class="header">{logo_tag()}<div class="head-text">
 <h1>Board · {now.strftime('%a %d %b')}</h1>
 <div class="clock" id="clock">Now — {_esc(tzname)} · {_esc(nearest.name)} ({nearest.at.strftime('%H:%M')} {_esc(tzname)})</div>
-<div class="meta">tracker as of {now.strftime('%H:%M')} {_esc(tzname)} <span id="ago"></span> · kept by chief-of-stuff · board {_esc(url or 'not yet published')}{long_note}</div>
+<div class="meta">tracker as of {now.strftime('%H:%M')} {_esc(tzname)} <span id="ago"></span> · kept by chief-of-stuff · board {_esc(url or 'not yet published')}{long_note}{decisions_note}</div>
 {resume_strip(parse_resume(tracker_text))}</div></div>
 
 {due_html}{blocked_html}
@@ -2139,8 +2153,12 @@ def main(argv: list[str] | None = None) -> Path:
         lanes = load_settings(root, cfg.settings_path).lanes
     except SettingsError as e:
         sys.exit(f"render_board: {e}")
+    today_rows = decision_rows(tracker_text)
+    answered = [row[1] for _, path in daily_trackers(root, cfg) if path != tracker for row in decision_rows(path.read_text())]
+    decisions, pending = decision_page.index(out.parent, answered + [row[1] for row in today_rows], today_rows, day)
+    (out.parent / "decisions.html").write_text(decisions)
     page = render(tracker_text, log_text, cfg, now, requirements=req_texts, lanes=lanes,
-                  tracker_day=tracker_day)
+                  tracker_day=tracker_day, decisions=pending)
     out.write_text(page)
     parsed = parse_tracker(tracker_text)
     hist = history(list(parsed.tasks), cfg, now)
