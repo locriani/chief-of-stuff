@@ -250,8 +250,8 @@ class Page(unittest.TestCase):
         self.assertIn("+'s'", script)
 
     def test_build_cards_link_to_their_items(self) -> None:
-        self.assertIn('<a class="columns-card-name" href="https://forge/48">Cut the release</a>', self.body)
-        self.assertIn('<a href="https://forge/i/9">#9</a>', self.body)
+        self.assertIn('<a class="columns-card-name" href="https://forge/48" target="_blank" rel="noopener">Cut the release</a>', self.body)
+        self.assertIn('<a href="https://forge/i/9" target="_blank" rel="noopener">#9</a>', self.body)
         self.assertNotIn('href="#"', self.body)
 
     def test_the_page_fits_a_phone(self) -> None:

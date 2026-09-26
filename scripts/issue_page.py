@@ -16,6 +16,7 @@ from pathlib import Path
 import board_sources
 import flow_chart
 from decision_page import HEAD, _graph, _md, _section, span
+from fragment import href
 from render_board import (Config, ConfigError, TRAILING_NUMBER, _resolve_due, daily_trackers, parse_coordinator,
                           parse_tracker)
 from settings import Graph, SettingsError, load as load_settings
@@ -98,7 +99,7 @@ def _change(c: board_sources.Change, changes) -> str:
     rows.append(("threads", f"{len(c.threads) - resolved} open", "", f"{resolved} resolved"))
     body = "\n".join(f'      <div class="chk"><span class="cap">{cap}</span><span class="mk {escape(cls)}">{escape(mark)}</span>'
                      f"<span>{note}</span></div>" for cap, mark, cls, note in rows)
-    return (f'  <section>\n    <h2>{word} · <a class="ref" data-k="{kind}" href="{escape(c.url)}">{escape(c.ref)}</a></h2>\n'
+    return (f'  <section>\n    <h2>{word} · <a class="ref" data-k="{kind}" {href(c.url)}>{escape(c.ref)}</a></h2>\n'
             f'    <div class="card mr">\n      <strong>{escape(c.title)}</strong> <span class="chip">{escape(state.upper())}{merged}</span>'
             f' <span class="meta">→ {escape(c.base)}</span>\n{body}\n    </div>\n  </section>\n')
 
@@ -137,7 +138,7 @@ def _review(c: board_sources.Change, now: datetime) -> str:
     rows = []
     for t in sorted(newest, key=lambda t: t.resolved):
         when = f" · {_clock(t.at.astimezone(now.tzinfo), now)}" if t.at else ""
-        link = f' · <a href="{escape(t.url)}">thread</a>' if t.url else ""
+        link = f' · <a {href(t.url)}>thread</a>' if t.url else ""
         rows.append(f'      <div class="rv"><span class="mk{" passed" if t.resolved else ""}">{"Resolved" if t.resolved else "Open"}</span>'
                     f"<span><b>{escape(t.author)}</b>{when}{link}</span><p>{escape(t.body)}</p></div>")
     resolved = sum(t.resolved for t in c.threads)
@@ -228,14 +229,14 @@ def render(number: int, trackers: list[tuple[date, str]], sources: board_sources
                      f'task {escape(started[5])} · {_clock(runs[0].at, now)}</span></span><span class="when">{took}</span>'
                      f'<span class="st{" running" if live else ""}">{escape(state)}</span></div>')
 
-    refs = [("issue", f'<a href="{escape(issue.url)}">{ref} {escape(issue.title)}</a>' if issue else f"{ref} {escape(name)}",
+    refs = [("issue", f'<a {href(issue.url)}>{ref} {escape(issue.title)}</a>' if issue else f"{ref} {escape(name)}",
              issue.state if issue else "")]
-    refs += [("MR" if c.ref.startswith("!") else "PR", f'<a href="{escape(c.url)}">{escape(c.ref)} {escape(c.title)}</a>',
+    refs += [("MR" if c.ref.startswith("!") else "PR", f'<a {href(c.url)}>{escape(c.ref)} {escape(c.title)}</a>',
               " · ".join(filter(None, (c.state, c.pipeline)))) for c in changes]
     refs_html = "\n".join(f'      <span class="cap">{cap}</span><span>{what}</span><span class="st">{escape(st)}</span>' for cap, what, st in refs)
 
     lane = next((t.lane.strip() for t in reversed(mine) if t.lane.strip()), "")
-    eyebrow = " · ".join(["Task", f'<a class="ref" data-k="issue" href="{escape(issue.url)}">{ref}</a>' if issue else ref,
+    eyebrow = " · ".join(["Task", f'<a class="ref" data-k="issue" {href(issue.url)}>{ref}</a>' if issue else ref,
                           *([f"lane {escape(lane)}"] if lane else []), '<a href="/">board</a>', f"rendered {now:%H:%M %Z}"])
     flow = flow_chart.section(rows, now)
     return (f"<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n"

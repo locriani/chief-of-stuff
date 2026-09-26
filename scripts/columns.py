@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 
-from fragment import colour as _colour, css_str as _css_str, esc as _esc, kind as _kind
+from fragment import colour as _colour, css_str as _css_str, esc as _esc, href as _href, kind as _kind
 
 LIMIT = 3
 # Okabe-Ito on parchment. (fill, ink, border): a tag's background, its text, and its border shorthand.
@@ -56,7 +56,7 @@ def _tag(role: str, category: str, text: str) -> str:
 
 def _link(text: str, url: str, cls: str = "", tag: str = "span") -> str:
     c = f' class="{cls}"' if cls else ""
-    return f'<a{c} href="{_esc(url)}">{_esc(text)}</a>' if url else f"<{tag}{c}>{_esc(text)}</{tag}>"
+    return f'<a{c} {_href(url)}>{_esc(text)}</a>' if url else f"<{tag}{c}>{_esc(text)}</{tag}>"
 
 
 def _card(c: Card) -> str:

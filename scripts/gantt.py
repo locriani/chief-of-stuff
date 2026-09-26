@@ -11,7 +11,7 @@ import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from fragment import colour as _colour, css_str as _css_str, esc as _esc, kind as _kind
+from fragment import colour as _colour, css_str as _css_str, esc as _esc, href as _href, kind as _kind
 
 HOUR, DAY = timedelta(hours=1), timedelta(days=1)
 STEPS = tuple(HOUR * h for h in (1, 2, 3, 4, 6, 12)) + tuple(DAY * d for d in (1, 2, 7))
@@ -111,7 +111,7 @@ def render(rows: list[Row], win: Window, ticks: list[tuple[datetime, str]] | Non
     out.append((f'<span class="gantt-nowline" style="left:{now}"></span>' if on else "") + "</div>")
     for r in rows:
         segs = "".join(_bar(g, win) for g in r.segments if g.end > win.start and g.start < win.end)
-        ref = f'<a href="{_esc(r.href)}" class="gantt-ref">{_esc(r.ref)}</a>' if r.href else f'<span class="gantt-ref">{_esc(r.ref)}</span>'
+        ref = f'<a {_href(r.href)} class="gantt-ref">{_esc(r.ref)}</a>' if r.href else f'<span class="gantt-ref">{_esc(r.ref)}</span>'
         out.append(f'<div class="gantt-row"><span class="gantt-label">{ref}'
                    f'<span class="gantt-name">{_esc(r.name)}</span></span><span class="gantt-track">{segs}</span>'
                    f'<span class="gantt-note">{_esc(r.note)}</span></div>')

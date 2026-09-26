@@ -71,7 +71,7 @@ class Panel(unittest.TestCase):
         self.assertIn('<span class="panels-note">1 approved · 1 in review</span>', html)
         self.assertIn('<a class="panels-link" href="decisions.html">decisions page</a>', html)
         self.assertIn('<b class="panels-count">2</b>', html)
-        self.assertIn('<span class="panels-num">1</span><a class="panels-ref" href="https://x/41">!41</a>', html)
+        self.assertIn('<span class="panels-num">1</span><a class="panels-ref" href="https://x/41" target="_blank" rel="noopener">!41</a>', html)
         self.assertIn('<span class="panels-ref">!48</span>', html)
         self.assertIn('<span class="panels-facts">approved · pipeline passed</span>', html)
         self.assertIn('<div class="panels-foot">4 answered today</div>', html)

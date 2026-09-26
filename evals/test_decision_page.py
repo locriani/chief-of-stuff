@@ -74,7 +74,7 @@ class RenderTest(unittest.TestCase):
         page = dp.render(dp.parse(decision()), "2026-09-25")
         self.assertIn("<code>s3://bucket</code> &lt;now&gt;", page)
         self.assertIn("<b>Breaks</b>", page)
-        self.assertIn('<a href="https://github.com/o/backlog/issues/7">https://github.com/o/backlog/issues/7</a>', page)
+        self.assertIn('<a href="https://github.com/o/backlog/issues/7" target="_blank" rel="noopener">https://github.com/o/backlog/issues/7</a>', page)
         self.assertNotIn("<now>", page)
 
     def test_no_option_is_selected_until_the_user_selects_one(self):
@@ -196,7 +196,7 @@ class LinkTest(unittest.TestCase):
                 ("doc", "https://github.com/o/app/blob/HEAD/docs/architecture.md#connection-budgets",
                  "docs/architecture.md#connection-budgets")):
             with self.subTest(label=label):
-                self.assertIn(f'<a class="ref" data-k="{kind}" href="{href}">{label}</a>', out)
+                self.assertIn(f'<a class="ref" data-k="{kind}" href="{href}" target="_blank" rel="noopener">{label}</a>', out)
 
     def test_gitlab(self):
         out = refs("#12, !58, !58#note_2291, a41c9e2, src/cache/pool.py:24-58, pipeline #8812", GL)
@@ -218,7 +218,7 @@ class LinkTest(unittest.TestCase):
 
     def test_a_code_span_that_is_one_reference_links(self):
         self.assertEqual(refs("`src/app.py:3`", GH),
-                         '<a class="ref" data-k="code" href="https://github.com/o/app/blob/HEAD/src/app.py#L3">src/app.py:3</a>')
+                         '<a class="ref" data-k="code" href="https://github.com/o/app/blob/HEAD/src/app.py#L3" target="_blank" rel="noopener">src/app.py:3</a>')
         self.assertEqual(refs("`s3://bucket` and `make test`", GH), "<code>s3://bucket</code> and <code>make test</code>")
 
     def test_sections_and_symbols_resolve_against_a_local_copy(self):
@@ -227,12 +227,12 @@ class LinkTest(unittest.TestCase):
         (root / "docs" / "architecture.md").write_text("# Arch\n\n## 4.1 Queues\n\n## 4.2 Connection budgets\n")
         (root / "src").mkdir()
         (root / "src" / "pool.py").write_text("import os\n\n\ndef warm(n):\n    pass\n")
-        self.assertIn('href="https://github.com/o/app/blob/HEAD/docs/architecture.md#42-connection-budgets">'
+        self.assertIn('href="https://github.com/o/app/blob/HEAD/docs/architecture.md#42-connection-budgets" target="_blank" rel="noopener">'
                       'docs/architecture.md §4.2</a>', refs("docs/architecture.md §4.2", GH, root))
-        self.assertIn('href="https://github.com/o/app/blob/HEAD/src/pool.py#L4">src/pool.py:warm</a>',
+        self.assertIn('href="https://github.com/o/app/blob/HEAD/src/pool.py#L4" target="_blank" rel="noopener">src/pool.py:warm</a>',
                       refs("src/pool.py:warm", GH, root))
         # Without the copy the file is still the right place; the section is not guessed.
-        self.assertIn('href="https://github.com/o/app/blob/HEAD/docs/architecture.md">docs/architecture.md §4.2</a>',
+        self.assertIn('href="https://github.com/o/app/blob/HEAD/docs/architecture.md" target="_blank" rel="noopener">docs/architecture.md §4.2</a>',
                       refs("docs/architecture.md §4.2", GH))
 
     def test_a_pinned_reference_links_at_its_commit(self):
@@ -273,7 +273,7 @@ class DesignTest(unittest.TestCase):
             self.assertIn(cls, page)
         for word in ("get / set", "holds 20 open", "Warm pool", "Not drawn: auth, the job queue."):
             self.assertIn(word, page)
-        self.assertIn('<a href="https://github.com/o/app/blob/HEAD/src/cache/pool.py">', page)
+        self.assertIn('<a href="https://github.com/o/app/blob/HEAD/src/cache/pool.py" target="_blank" rel="noopener">', page)
         for chip in ("DEPLOYED", "IN FLIGHT", "DESIGNED", "EXTERNAL", "WAITING ON THIS"):
             self.assertIn(chip, page)
 
@@ -459,7 +459,7 @@ class IndexTest(unittest.TestCase):
                      '<label class="o"><input type="radio" name="key" value="A"><span class="key">A</span>keep the pool<span class="tag">recommended</span></label>',
                      '<label class="o"><input type="radio" name="key" value="B"><span class="key">B</span>start cold</label>',
                      '<form class="stack" method="post" action="/decisions/cache-warmup">', '<input type="hidden" name="back" value="/decisions">',
-                     '<input type="text" name="words"', '<button type="submit">save</button>', '<a class="ref" href="https://x/#111">#111</a> triage · hold', '<a class="ref" href="https://x/!58">!58</a> merge · passed',
+                     '<input type="text" name="words"', '<button type="submit">save</button>', '<a class="ref" href="https://x/#111" target="_blank" rel="noopener">#111</a> triage · hold', '<a class="ref" href="https://x/!58" target="_blank" rel="noopener">!58</a> merge · passed',
                      "The pool stays."):
             with self.subTest(text=text):
                 self.assertIn(text, pending)

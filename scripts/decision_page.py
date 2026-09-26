@@ -43,11 +43,12 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
-from html import escape
+from html import escape, unescape
 from pathlib import Path
 
 import board_sources
 from backlog import Backlog, BacklogError, GitHubBacklog, backlog_from_config
+from fragment import href
 from pages import PagesError, from_config
 from settings import Graph
 
@@ -195,7 +196,7 @@ def _md(text: str, linker: Linker = Linker()) -> str:
 
     def chip(m: re.Match) -> str | None:
         r = linker.resolve(m)
-        return f'<a class="ref" data-k="{r[0]}" href="{escape(r[2])}">{r[1]}</a>' if r else None
+        return f'<a class="ref" data-k="{r[0]}" {href(r[2])}>{r[1]}</a>' if r else None
 
     def one(m: re.Match) -> str:
         if m["tag"]:
@@ -204,7 +205,7 @@ def _md(text: str, linker: Linker = Linker()) -> str:
             whole = TOKEN.fullmatch(m["code"])
             return (whole and chip(whole)) or f"<code>{m['code']}</code>"
         if m["url"]:
-            return f'<a href="{m["url"]}">{m["url"]}</a>'
+            return f'<a {href(unescape(m["url"]))}>{m["url"]}</a>'
         return chip(m) or m[0]
 
     return TOKEN.sub(one, out)
@@ -284,10 +285,10 @@ def _figure(arch: dict, linker: Linker) -> str:
              f'<text class="t{" t-ext" if state == "external" else ""}" x="{cx}" y="{y + 27}" text-anchor="middle">{escape(n["name"])}</text>']
         if n.get("detail"):
             detail = escape(n["detail"], quote=False)
-            href = linker.href(detail)
-            text = (f'<text class="{"tm" if href else "tl"}{" warn" if n.get("hot") else ""}" x="{cx}" y="{y + 47}" '
+            url = linker.href(detail)
+            text = (f'<text class="{"tm" if url else "tl"}{" warn" if n.get("hot") else ""}" x="{cx}" y="{y + 47}" '
                     f'text-anchor="middle">{detail}</text>')
-            g.append(f'<a href="{escape(href)}">{text}</a>' if href else text)
+            g.append(f'<a {href(url)}>{text}</a>' if url else text)
         shapes.append("".join(g) + "</g>")
     defs = "".join(f'<marker id="ar-{m}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" '
                    f'orient="auto-start-reverse"><path class="ar-{m}" d="M0,0 L10,5 L0,10 z"/></marker>' for m in sorted(marks))
@@ -364,7 +365,7 @@ def _graph(change: board_sources.Change | None, graph: Graph | None, pages: Path
     decision and issue pages share it."""
     if change:
         kind = "MR" if change.ref.startswith("!") else "PR"
-        head += f' · <a class="ref" data-k="{kind}" href="{escape(change.url)}">{escape(change.ref)}</a>'
+        head += f' · <a class="ref" data-k="{kind}" {href(change.url)}>{escape(change.ref)}</a>'
 
     def section(body: str) -> str:
         return f"  <section>\n    <h2>{head}</h2>\n{body}\n  </section>\n"
@@ -466,7 +467,7 @@ def render(d: dict, day: str, forge: Backlog | GitHubBacklog | None = None, root
             one = TOKEN.fullmatch(escape(r["value"], quote=False))
             one = one and pin.resolve(one)
             # A row that is one reference is one plain link: the row's kind already labels it.
-            what = f'<a href="{escape(one[2])}">{one[1]}{label}</a>' if one else _md(r["value"], pin) + label
+            what = f'<a {href(one[2])}>{one[1]}{label}</a>' if one else _md(r["value"], pin) + label
             one_ref = refs_in(str(r.get("value", "")))
             known = r.get("status") or (ctx.where(one_ref[0]) if ctx and len(one_ref) == 1 else "")
             status = " · ".join(x for x in (escape(known), f"@ {escape(r['at'])}" if r.get("at") else "") if x)
@@ -678,7 +679,7 @@ class Context:
     def ref(self, ref: str) -> str:
         found = self.change(ref) or self.sources.issues.get(ref)
         url = found.url if found else Linker(self.forge).href(escape(ref))
-        return f'<a class="ref" href="{escape(url)}">{escape(ref)}</a>' if url else f'<a class="ref">{escape(ref)}</a>'
+        return f'<a class="ref" {href(url)}>{escape(ref)}</a>' if url else f'<a class="ref">{escape(ref)}</a>'
 
     def is_change(self, ref: str) -> bool:
         return ref.startswith("!") or bool(self.change(ref))
