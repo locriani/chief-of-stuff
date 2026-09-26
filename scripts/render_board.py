@@ -1032,31 +1032,6 @@ def _tasks(n: int) -> str:
     return f"{n} {'task' if n == 1 else 'tasks'}"
 
 
-# A poll cycle runs about an hour, so under half an hour is current, under two hours is last cycle,
-# and past that a node is reporting a memory of the morning. Baked in Python at render: the fade has
-    # to survive with JavaScript off, and docs/archive/design-inputs.md §50 settled that this page runs none.
-STAMP_FRESH = timedelta(minutes=30)
-STAMP_AGING = timedelta(hours=2)
-
-
-def _age(session: Session, cfg: Config, now: datetime) -> tuple[datetime | None, int | None]:
-    """When the session last spoke, and how long ago in minutes.
-
-    A reply time later than now is last night's, not this evening's: the cell carries HH:MM and no
-    date, and a coordinator reading 23:50 at 14:30 is looking at fifteen hours of silence.
-    """
-    at = _hhmm(session.last_reply, now.date(), cfg.zone)
-    if at is None:
-        return None, None
-    if at > now:
-        at -= timedelta(days=1)
-    return at, int((now - at).total_seconds() // 60)
-
-
-def _band(minutes: int) -> str:
-    return "fresh" if minutes < STAMP_FRESH.total_seconds() / 60 else ("aging" if minutes < STAMP_AGING.total_seconds() / 60 else "stale")
-
-
 ORPHANED = "orphaned"
 
 
@@ -1275,10 +1250,7 @@ def render(tracker_text: str, cfg: Config, now: datetime, lanes: dict | None = N
     hist = history(tasks, cfg, now)
     est = estimates(active, cfg, now, hist)
 
-    # BLOCKED counts what is on the user, what nobody owns, and the sessions that stopped reporting.
-    awaiting = [task for task in active if task.owner.strip().lower() == cfg.user.lower()]
     unowned = [task for task in active if task.kind == "orphaned"]
-    quiet = [s for s in tracker.sessions if _band(_age(s, cfg, now)[1] or 10**6) == "stale" or not s.state.strip()]
     running = [task for task in active if task.kind == "running"]
 
     build_cols, no_lane = build_columns(tasks, lanes, kanban, sources, now)
@@ -1293,7 +1265,9 @@ def render(tracker_text: str, cfg: Config, now: datetime, lanes: dict | None = N
     ends = {t.item: end for t in active if (end := _end(t, cfg, now, now, est))[1] in ("due", "derived")}
     flow_html = flow_chart.section(flow_chart.build(flow_moves, known, lanes or {}, {t.name.strip() for t in tasks if held(t, kanban)},
                                                     {item: end[0] for item, end in ends.items()}, now,
-                                                    queue_durations(active, hist), slots), now)
+                                                    queue_durations(active, hist), slots,
+                                                    frozenset(t.name.strip() for t in tasks
+                                                              if any(c.state == "open" and c.approved for c in task_changes(t, sources)))), now)
 
     pending = decisions or []
     meta = [f"rendered {now:%H:%M} {now:%Z}", f"tracker {(tracker_at or now).astimezone(zone):%H:%M}",
@@ -1301,7 +1275,8 @@ def render(tracker_text: str, cfg: Config, now: datetime, lanes: dict | None = N
             _tasks(len(tasks)), f"{len(no_lane.cards)} in no lane"]
     head = panels.Header(f"Board · {now.strftime('%a %d %b')}", tuple(meta), now, nearest.name, nearest.at,
                          tuple(f"{k}: {why}" for k, why in sources.errors.items()))
-    tiles = flow_tiles(len(awaiting) + len(unowned) + len(quiet), sum(d is not None for _, d, _, _ in pending), sources, len(running),
+    # BLOCKED counts the ON HOLD cards (Flow.dc.html v22), by the flag that draws them.
+    tiles = flow_tiles(sum(held(t, kanban) for t in tasks), sum(d is not None for _, d, _, _ in pending), sources, len(running),
                        sum(drifts(t, kanban, sources) for t in tasks), len(unowned))
     panels_html = panels.panels([merge_order(sources), decision_panel(pending, answered, now), worker_panel(sources, now)])
 

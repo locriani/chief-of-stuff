@@ -4,11 +4,13 @@ import re
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+import board_sources as bs  # noqa: E402
 import flow_chart as fc  # noqa: E402
 import gantt  # noqa: E402
 import render_board as rb  # noqa: E402
@@ -60,9 +62,9 @@ def moves() -> list[fc.Move]:
 
 
 def rows(ends: dict | None = None, durations: dict | None = None, slots: int = 1,
-         tracker: str = TODAY_TRACKER) -> dict[str, tuple[str, gantt.Row]]:
+         tracker: str = TODAY_TRACKER, approved: frozenset = frozenset()) -> dict[str, tuple[str, gantt.Row]]:
     tasks = rb.parse_tracker(tracker).tasks
-    built = fc.build(moves(), tasks, LANES, {"Cache warmup"}, ends or {}, NOW, durations or {}, slots)
+    built = fc.build(moves(), tasks, LANES, {"Cache warmup"}, ends or {}, NOW, durations or {}, slots, approved)
     return {row.name: (status, row) for status, row in built}
 
 
@@ -113,6 +115,13 @@ class BuildTest(unittest.TestCase):
         self.assertEqual(ahead, [("pr", NOW, NOW + H), ("review", NOW + H, NOW + 2 * H),
                                  ("triage", NOW + 2 * H, NOW + 3 * H), ("merge", NOW + 3 * H, end)])
         self.assertEqual(row.note, "pr · ~06:10")
+
+    def test_an_approved_task_ends_with_its_forecast_merge(self):
+        # Flow.dc.html's 24-hour chart: "approved · merge ~02:40"; with no estimate, its 7-day label "approved".
+        got = rows({"Cap uploads": NOW + 4 * H}, approved=frozenset({"Upload size limit"}))
+        status, row = got["Upload size limit"]
+        self.assertEqual((status, row.note), ("running", "approved · merge ~06:10"))
+        self.assertEqual(rows(approved=frozenset({"Upload size limit"}))["Upload size limit"][1].note, "approved")
 
     def test_a_held_task_gets_no_forecast(self):
         _, row = rows({"Warm the pool": NOW + 4 * H})["Cache warmup"]
@@ -210,6 +219,15 @@ class BoardTest(unittest.TestCase):
         html = rb.render(tracker, self.cfg(), NOW, lanes=LANES, tracker_day=TODAY, kanban=KANBAN)
         self.assertIn("Session timeout", html[html.index("Flow · 24 hours"):])
         self.assertIn("queued · ~", html)
+
+    def test_an_open_approved_change_labels_its_task_approved(self):
+        change = bs.Change("!48", "u", "Cap uploads", "open", False, "passed", True, 1, None, "main", (), ("#109",))
+        html = rb.render(TODAY_TRACKER, self.cfg(), NOW, lanes=LANES, tracker_day=TODAY, kanban=KANBAN,
+                         sources=bs.Sources({}, {}, {"!48": change}, (), {}))
+        self.assertIn(">approved · merge Sun<", html[html.index("Flow · 24 hours"):])
+        html = rb.render(TODAY_TRACKER, self.cfg(), NOW, lanes=LANES, tracker_day=TODAY, kanban=KANBAN,
+                         sources=bs.Sources({}, {}, {"!48": replace(change, approved=False)}, (), {}))
+        self.assertNotIn(">approved", html[html.index("Flow · 24 hours"):])
 
     def test_no_stage_line_no_flow_and_no_chart_css(self):
         plain = TODAY_TRACKER.split("- 00:30")[0]
