@@ -288,9 +288,28 @@ class GitLabStageTwoTest(unittest.TestCase):
 
         with mock.patch.dict(os.environ, {"CHIEF_OF_STUFF_GITLAB_TOKEN": "tok"}):
             got = bs.refresh(root, NOW, call=call)
-        self.query = calls[0]["query"]
+        self.queries = [c["query"] for c in calls]
+        self.query = " ".join(self.queries)
         self.assertEqual(bs.load(root / "pages"), got)  # the page reads these back from the cache
         return got
+
+    def test_jobs_and_threads_are_asked_for_open_merge_requests_only(self):
+        # A live GitLab refused the board's one query at complexity 298 of 250 once every change carried its
+        # jobs and discussions. Only an open change's card lists them, so only open changes ask for them.
+        self.refresh()
+        main = [q for q in self.queries if "discussions" not in q and "jobs" not in q]
+        detail = [q for q in self.queries if "discussions" in q or "jobs" in q]
+        self.assertEqual(len(main), 1)
+        self.assertIn("merged:", main[0])
+        self.assertEqual(len(detail), 1)
+        self.assertNotIn("merged:", detail[0])
+        self.assertIn('mergeRequests(iids: ["54"])', detail[0])
+
+    def test_no_open_merge_request_asks_for_no_jobs_or_threads(self):
+        got = self.refresh({**self.MR, "state": "merged", "mergedAt": "2026-09-26T06:00:00Z"})
+        self.assertNotIn("discussions", self.query)
+        self.assertNotIn("jobs", self.query)
+        self.assertEqual((got.changes["!54"].jobs, got.changes["!54"].threads), ((), ()))
 
     def test_per_file_additions_and_deletions(self):
         # B1: Change carries per-file additions and deletions (diffStats).
