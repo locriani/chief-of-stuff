@@ -67,7 +67,7 @@ class RenderTest(unittest.TestCase):
         for text in ("Decision · Storage · Fri 25 Sep", "Should the worker follow the architecture?",
                      "What the plan says", "Where it stands", "How it got here", "Options",
                      "Recommendation", "The architecture is the newer decision.", "If you don't answer",
-                     "The worker waits.", "References", "Answer here or in chat: A, B, or your own words."):
+                     "The worker waits.", "References", "Answer here or in chat: A, B, or C in your own words."):
             self.assertIn(text, page)
 
     def test_text_is_escaped_and_marked_up(self):
@@ -90,6 +90,31 @@ class RenderTest(unittest.TestCase):
         self.assertNotIn("checked", page)
         self.assertNotIn("opt rec", page)
         self.assertNotRegex(page, r"<script[^>]* src=")
+
+    def test_the_write_in_is_the_next_option_in_one_grouped_card(self):
+        # Canvas Decision artboard, 2026-09-26: "make this just label "D" with the same look as the other items", and
+        # "all OPTIONS are a grouped thing kind of like HOW IT GOT HERE is a grouped thing".
+        page = dp.render(dp.parse(decision()), "2026-09-25", slug="uploads")
+        form = page[page.index('<form class="options'):page.index("</form>", page.index('<form class="options'))]
+        self.assertEqual(form.count('<label class="opt">'), 3)
+        wi = form[form.rindex('<label class="opt">'):]
+        self.assertRegex(wi, r'<span class="k"><input type="radio" name="key" value=""> C</span><b>Your own answer</b>')
+        self.assertIn('<input type="text" name="words"', wi)
+        self.assertIn('<button type="submit">save</button>', wi)
+        self.assertNotIn("write in", page)
+        css = dp.HEAD
+        self.assertRegex(css, r"\.options\{[^}]*border-top:3px solid var\(--brass\)")
+        self.assertRegex(css, r"\.opt\+\.opt\{[^}]*border-top:1px dotted var\(--line\)")
+        self.assertNotRegex(css, r"(?<![\w-])\.opt\{[^}]*border:1px solid")
+
+    def test_the_list_pages_write_in_keeps_its_field_and_button_styling(self):
+        # The decisions list's inline write-in (`.row .wi`) sizes its field and button; their box comes from `.wi`.
+        self.assertRegex(dp.HEAD, r"(?<![\w-])\.wi input\[type=text\]\{[^}]*border:1px solid var\(--line\)")
+        self.assertRegex(dp.HEAD, r"(?<![\w-])\.wi button\{[^}]*border:1px solid var\(--brass\)")
+
+    def test_choosing_the_write_in_does_not_post_an_empty_answer(self):
+        # The radios post on change; the write-in has no key, so it posts only through save with its words.
+        self.assertIn("e.target.value", dp.ANSWER_JS)
 
     def test_a_saved_page_answer_shows_the_decision_answered(self):
         saved = {"key": "B", "words": "B, and log it", "at": "2026-09-25T02:08:00-05:00"}
