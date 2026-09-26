@@ -662,8 +662,8 @@ class GitLabIssueRefTest(unittest.TestCase):
         self.assertEqual(seen, [(GL, "all")])
 
     def test_file_with_names_the_backend_writer(self):
-        self.assertIn("backlog.py --create", bl.file_with(GH))
-        self.assertIn("backlog.py --create", bl.file_with(GL))
+        self.assertIn("chief-of-stuff backlog --create", bl.file_with(GH))
+        self.assertIn("chief-of-stuff backlog --create", bl.file_with(GL))
 
 
 class IssueStatesTest(unittest.TestCase):
@@ -685,6 +685,17 @@ class IssueStatesTest(unittest.TestCase):
 
 
 class GitHubWriteTest(unittest.TestCase):
+    def test_eval_binary_override_is_absolute_and_does_not_depend_on_path(self):
+        with tempfile.TemporaryDirectory() as d:
+            fake = Path(d) / "fake-gh"
+            fake.write_text(f"#!{sys.executable}\nimport sys\nprint('fake:' + ' '.join(sys.argv[1:]))\n")
+            fake.chmod(0o755)
+            with patch.dict(os.environ, {"CHIEF_OF_STUFF_GH": str(fake), "PATH": "/usr/bin:/bin"}):
+                code, out, err = bl.run_gh(["issue", "list"])
+            self.assertEqual((code, out.strip(), err), (0, "fake:issue list", ""))
+        with patch.dict(os.environ, {"CHIEF_OF_STUFF_GH": "./gh"}):
+            self.assertIn("absolute", bl.run_gh(["issue", "list"])[2])
+
     def test_create_preview_and_commit_use_generic_writer(self):
         gh = FakeGh()
         self.assertEqual(bl.write_line(bl.create(GH, "a title", body="b", gh=gh)), "would create: a title")

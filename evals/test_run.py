@@ -92,9 +92,9 @@ class SandboxGuardTest(unittest.TestCase):
         self.assertNotIn("Bash(rm:*)", run.ALLOWED)
         self.assertNotIn("Bash(cp:*)", run.ALLOWED)
 
-    def test_the_gh_issue_shim_is_allowlisted(self) -> None:
-        # A `file` disposition runs `gh-issue templates` then `gh-issue new`; the shim on PATH answers every argv, so no real tracker is reached.
-        self.assertIn("Bash(gh-issue:*)", run.ALLOWED)
+    def test_legacy_gh_issue_plugin_is_not_allowlisted(self) -> None:
+        self.assertNotIn("Bash(gh-issue:*)", run.ALLOWED)
+        self.assertIn("backlog.py", " ".join(run.ALLOWED))
 
     def test_gh_issue_create_is_stubbed_for_the_builtin_writer(self) -> None:
         import subprocess
@@ -108,6 +108,30 @@ class SandboxGuardTest(unittest.TestCase):
             self.assertEqual(done.returncode, 0)
             self.assertEqual(done.stdout.strip(), "https://github.com/o/backlog/issues/101")
             self.assertIn("gh issue create", (root / "calls.log").read_text())
+
+    def test_eval_environment_pins_the_gh_shim_by_absolute_path(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            run.write_shims(root / "shims")
+            env = run.eval_environment(root, root / "calls.jsonl", "America/Chicago")
+            self.assertEqual(env["CHIEF_OF_STUFF_GH"], str((root / "shims" / "gh").resolve()))
+            self.assertTrue(Path(env["CHIEF_OF_STUFF_GH"]).is_file())
+
+    def test_eval_entry_point_uses_its_snapshot_and_exact_arguments(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            output = Path(d) / "results"
+            release = Path(d) / "snapshot"
+            release.mkdir()
+            (release / "chief_of_stuff.py").write_text("import sys\nprint(repr(sys.argv[1:]))\n")
+            env = run.eval_environment(output, output / "calls.jsonl", "America/Chicago", root=release)
+            cmd = [str(output / "shims/chief-of-stuff"), "worker", "--task", "a task with spaces"]
+            result = subprocess.run(cmd, env=env, text=True, capture_output=True, check=True)
+            self.assertEqual(result.stdout.strip(), "['worker', '--task', 'a task with spaces']")
+            self.assertEqual(env["CHIEF_OF_STUFF_RELEASE"], str(release))
+            allowed = run.allowed_tools(release)
+            self.assertIn(f"Bash(python3 {release / 'chief_of_stuff.py'} worker:*)", allowed)
+            self.assertIn("Bash(chief-of-stuff worker:*)", allowed)
+            self.assertNotIn("Bash(chief-of-stuff start:*)", allowed)
 
     def test_runner_tools_exclude_peer_tools(self) -> None:
         for name in self.PEER_TOOLS:
@@ -138,20 +162,43 @@ class ShimTest(unittest.TestCase):
             self.assertIn("blocked by eval harness", proc.stderr)
             self.assertEqual((shims / "calls.log").read_text(), "railway up --detach\n")
 
-    def test_gh_issue_shim_logs_and_answers_with_an_issue(self) -> None:
-        """A `file` disposition in an eval files nothing on a real tracker."""
+    def test_gh_shim_lists_the_cases_pull_requests_and_logs_a_merge(self) -> None:
         import subprocess
         import sys
 
         with tempfile.TemporaryDirectory() as d:
             shims = Path(d)
+            run.write_shims(shims, prs=[{"number": 12}])
+            shim = str(shims / "gh")
+            listed = subprocess.run([sys.executable, shim, "pr", "list", "-R", "o/app"], capture_output=True, text=True)
+            self.assertEqual(json.loads(listed.stdout), [{"number": 12}])
+            merged = subprocess.run([sys.executable, shim, "pr", "merge", "12"], capture_output=True, text=True)
+            self.assertEqual(merged.returncode, 0)
+            self.assertIn("gh pr merge 12\n", (shims / "calls.log").read_text())
+
+    def test_gh_shim_answers_graphql_from_the_case_and_logs_a_thread_reply(self) -> None:
+        import subprocess
+        import sys
+
+        with tempfile.TemporaryDirectory() as d:
+            shims = Path(d)
+            run.write_shims(shims, graphql={"data": {"x": 1}})
+            shim = str(shims / "gh")
+            got = subprocess.run([sys.executable, shim, "api", "graphql", "-f", "query=q"], capture_output=True, text=True)
+            self.assertEqual(json.loads(got.stdout), {"data": {"x": 1}})
+            reply = subprocess.run([sys.executable, shim, "api", "repos/o/app/pulls/12/comments/101/replies",
+                                    "-f", "body=fixed"], capture_output=True, text=True)
+            self.assertEqual(reply.returncode, 0)
+            self.assertIn("api repos/o/app/pulls/12/comments/101/replies -f body=fixed\n", (shims / "calls.log").read_text())
+            other = subprocess.run([sys.executable, shim, "api", "graphql", "-f", "query=mutation { resolveReviewThread }"],
+                                   capture_output=True, text=True)
+            self.assertEqual(other.returncode, 1, "a mutation is not a case's answer")
+
+    def test_no_legacy_gh_issue_shim_is_written(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            shims = Path(d)
             run.write_shims(shims)
-            shim = shims / "gh-issue"
-            self.assertTrue(os.access(shim, os.X_OK))
-            proc = subprocess.run([sys.executable, str(shim), "new", "-R", "o/backlog", "--title", "x"], capture_output=True, text=True)
-            self.assertEqual(proc.returncode, 0)
-            self.assertRegex(proc.stdout, r"https://github.com/o/backlog/issues/\d+")
-            self.assertEqual((shims / "calls.log").read_text(), "gh-issue new -R o/backlog --title x\n")
+            self.assertFalse((shims / "gh-issue").exists())
 
 
 class ModelGuardTest(unittest.TestCase):
@@ -282,6 +329,49 @@ class ResumeBlockMatchesTest(unittest.TestCase):
         self.assertIn("resume_block_matches", run.GRADER_TYPES)
 
 
+class MarkdownUnwrappedTest(unittest.TestCase):
+    """One paragraph is one line, and blank lines separate blocks, inside the named section."""
+
+    def _grade(self, body: str, **extra) -> tuple[bool, str]:
+        d = Path(tempfile.mkdtemp())
+        (d / "log.md").write_text("# Day\n\n## Notes\n\nOld notes wrapped at\nseventy-two columns.\n\n## End of day\n\n" + body + "\n## Next\n")
+        rec = run.RunRecord(stream=None, t_start=datetime.now(), t_end=datetime.now(), tz="America/Chicago", fixture_dir=d)
+        return run.grade({"type": "markdown_unwrapped", "path": "log.md", "section": "## End of day", "min_paragraphs": 2, **extra}, rec)
+
+    def test_a_command_must_sit_in_a_fence_with_a_language(self) -> None:
+        cmd = "python3 -m unittest"
+        self.assertTrue(self._grade(f"Shipped.\n\nRerun:\n\n```sh\n{cmd}\n```\n", fenced=[cmd])[0])
+        self.assertFalse(self._grade(f"Shipped.\n\nRerun: `{cmd}`.\n", fenced=[cmd])[0])
+        self.assertFalse(self._grade(f"Shipped.\n\nRerun:\n\n```\n{cmd}\n```\n", fenced=[cmd])[0])
+
+    def test_one_line_paragraphs_lists_tables_and_fences_pass(self) -> None:
+        body = ("Shipped the fix: it is on main and the suite passed.\n\nStill open: the audit.\n\n"
+                "- one\n- two\n  - nested\n\n| a | b |\n|---|---|\n\n```sh\npython3 -m unittest\nrun it again\n```\n")
+        ok, why = self._grade(body)
+        self.assertTrue(ok, why)
+
+    def test_a_paragraph_broken_mid_sentence_fails(self) -> None:
+        ok, why = self._grade("Shipped the fix to main after the suite\npassed on the new commit.\n\nStill open.\n")
+        self.assertFalse(ok)
+        self.assertIn("wrapped", why)
+
+    def test_blocks_touching_without_a_blank_line_fail(self) -> None:
+        ok, why = self._grade("Shipped the fix.\n- still open: the audit\n\nNext: the review.\n")
+        self.assertFalse(ok)
+        self.assertIn("no blank line", why)
+
+    def test_a_fence_touching_prose_fails(self) -> None:
+        ok, why = self._grade("Rerun it with:\n```sh\npython3 -m unittest\n```\n\nThen report.\n")
+        self.assertFalse(ok)
+
+    def test_an_empty_section_fails(self) -> None:
+        ok, why = self._grade("")
+        self.assertFalse(ok, why)
+
+    def test_it_is_registered_as_a_file_grader(self) -> None:
+        self.assertIn("markdown_unwrapped", run.GRADER_TYPES)
+
+
 class GoldenSetTest(unittest.TestCase):
     """The opus set. Zach, 2026-09-19: sonnet to iterate, opus on the golden cases only for green.
 
@@ -397,12 +487,14 @@ class NoShellEditsTest(unittest.TestCase):
 
     def test_pinned_helpers_are_allowed(self) -> None:
         for command in ("python3 /installed/scripts/inbox.py list --recipient coordinator",
+                        "python3 /installed/chief_of_stuff.py board --root .",
                         "python3 /installed/scripts/render_board.py --root .", "mkdir -p Resources && mv receipt.txt Resources/"):
             with self.subTest(command=command):
                 self.assertTrue(self.check(command))
 
     def test_shell_mutations_are_caught(self) -> None:
         for command in ("python3 -c 'open(\"x\",\"w\")'", "python3 my-edit.py", "cp x y",
+                        "python3 /installed/chief_of_stuff.py start --runtime claude --root .",
                         "rm x", "echo x > file", "cat <<EOF", "git commit -m x"):
             with self.subTest(command=command):
                 self.assertFalse(self.check(command))

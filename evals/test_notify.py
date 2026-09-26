@@ -119,7 +119,39 @@ class NotifyTest(unittest.TestCase):
             ("daily 06:00", "☀️ Open the day"),
             ("daily 22:00", "🌙 Close the day"),
         ]))
-        self.assertIn("https://claude.ai/artifact/board-7", text)
+        self.assertNotIn("https://", text)
+
+    def test_no_row_carries_a_url_to_open(self):
+        """Zach, 2026-09-25 22:00: "the notification script is opening the URL again. Let's make it so it never
+        actually opens the URL". md-notify opens a row's Open cell, so the script writes none."""
+        w = self.ws()
+        w.run("sync")
+        w.run("add", "--kind", "awaiting", "--what", "Robin to approve the deploy")
+        for line in w.queue.read_text().split("\n"):
+            if nt._is_data(line):
+                self.assertEqual(nt._cells(line)[3], "", line)
+
+    def test_sync_and_add_clear_urls_already_in_owned_rows(self):
+        """A queue written by an earlier release keeps its Open cells until something rewrites the row."""
+        w = self.ws()
+        board = "https://claude.ai/artifact/board-7"
+        w.queue.parent.mkdir(parents=True)
+        w.queue.write_text(nt.TEMPLATE.replace(
+            "| When (CT) | Title | Message | Open |\n|---|---|---|---|\n",
+            "| When (CT) | Title | Message | Open |\n|---|---|---|---|\n"
+            f"| 2026-09-23 13:00 | 🙋 Awaiting you — deploy (13:00) | deploy | {board} |\n"
+            "| 2026-09-23 13:30 | Dentist | someone else's row | https://example.com/dentist |\n").replace(
+            "| Every | Title | Message | Open |\n|---|---|---|---|\n",
+            "| Every | Title | Message | Open |\n|---|---|---|---|\n"
+            f"| daily 06:00 | ☀️ Open the day | Open the day with the coordinator. | {board} |\n"))
+        w.run("add", "--kind", "stopped", "--what", "impl07")
+        self.assertNotIn(board, w.queue.read_text())
+        self.assertIn("https://example.com/dentist", w.queue.read_text())
+        w.queue.write_text(w.queue.read_text().replace("Open the day with the coordinator. |  |",
+                                                       f"Open the day with the coordinator. | {board} |"))
+        w.run("sync")
+        self.assertNotIn(board, w.queue.read_text())
+        self.assertIn("https://example.com/dentist", w.queue.read_text())
 
     def test_a_warning_already_past_is_never_written(self):
         """A one-shot row resurfaces every 15 minutes until tapped, so a past one would nag for nothing."""

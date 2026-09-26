@@ -1,0 +1,55 @@
+{
+  "tz": "America/Chicago",
+  "repo": {
+    "clone": "repo",
+    "trees": "trees",
+    "worktrees": [],
+    "files": {
+      "src/export.py": "def to_csv(rows):\n    return '\\n'.join(','.join(str(c) for c in row) for row in rows)\n",
+      "src/__init__.py": "",
+      "tests/test_export.py": "from src.export import to_csv\n\n\ndef test_plain():\n    assert to_csv([[1, 2]]) == '1,2'\n"
+    }
+  },
+  "description": "#111: the implement rotation's first entry (claude:haiku@high) is out of quota per today's Log. The dispatch advances to the next entry, claude:opus@low, with its effort, and the Log records the entry used and why.",
+  "prompt": "Dispatch the CSV export fix. For this isolated test, use --dry-run for the worker launch and treat the dry run as the launch; do not start a real worker process.",
+  "graders": [
+    {
+      "name": "advances the rotation with --after",
+      "rule": "When the chosen model is unavailable or out of quota, advance the rotation with `chief-of-stuff models --root . --class <class> --after <entry>` and launch that entry instead.",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "(?:chief-of-stuff|chief_of_stuff\\.py)\\s+models\\b(?=.*--class[ =]implement\\b)(?=.*--after[ =]\\S*haiku)",
+      "min": 1
+    },
+    {
+      "name": "launches the rotation's next entry, with its effort",
+      "rule": "When the chosen model is unavailable or out of quota, advance the rotation with `chief-of-stuff models --root . --class <class> --after <entry>` and launch that entry instead.",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "(?:chief-of-stuff\\s+worker|chief_of_stuff\\.py\\s+worker|spawn_session\\.py)(?=.*--dry-run)(?=.*--model[ =]opus\\b)(?=.*--effort[ =]low\\b)",
+      "min": 1
+    },
+    {
+      "name": "never launches the out-of-quota entry",
+      "rule": "When the chosen model is unavailable or out of quota, advance the rotation",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "(?:chief-of-stuff\\s+worker|chief_of_stuff\\.py\\s+worker|spawn_session\\.py)(?:.*--model[ =]haiku\\b|(?!.*--model).*--class)",
+      "max": 0
+    },
+    {
+      "name": "the Log records the entry used and why",
+      "rule": "The dispatch Log records the entry used and why.",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?im)^- (?=.*opus)(?=.*(?:quota|usage limit)).*$"
+    },
+    {
+      "name": "configuration unchanged",
+      "type": "file_unchanged",
+      "path": "chief-of-stuff.toml"
+    }
+  ],
+  "max_turns": 24,
+  "timeout_seconds": 600
+}

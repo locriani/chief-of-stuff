@@ -63,15 +63,21 @@ SPAWN_SESSION = PLUGIN_ROOT / "scripts" / "spawn_session.py"
 # The plugin's own scripts are the only ones the agent may run: html, health and merge state come
 # from code, never from the agent. git and curl stay off the allowlist — the scripts call them.
 SCRIPTS = ("render_board.py", "pages.py", "probe_health.py", "audit_tasks.py", "make_worktree.py",
-           "spawn_session.py", "notify.py", "inbox.py", "backlog.py", "kanban.py", "process_status.py")
+           "spawn_session.py", "notify.py", "inbox.py", "backlog.py", "kanban.py", "process_status.py",
+           "decision_page.py", "tracker_write.py", "merge_approved.py", "review_threads.py", "install_model_guidance.py",
+           "board_sources.py")
+OPERATIONS = ("board", "pages", "health", "audit", "worktree", "worker", "notify", "inbox",
+              "backlog", "kanban", "processes", "decision", "log", "merge-approved", "review-threads", "models", "sources")
 
 
 def allowed_tools(root: Path) -> list[str]:
     """The allowlist, rooted. Finding 114: these were absolute paths into the live checkout, so a run
     read whatever was on disk when each case reached it and a tree edited mid-run produced two
     verdicts wearing one name. Rooting them lets a run point at a snapshot of its own."""
-    return (["Bash(date:*)", "Bash(TZ=*)", "Bash(mv:*)", "Bash(mkdir:*)", "Bash(gh-issue:*)"]
+    return (["Bash(date:*)", "Bash(TZ=*)", "Bash(mv:*)", "Bash(mkdir:*)"]
             + [f"Bash(python3 {root / 'scripts' / name}:*)" for name in SCRIPTS]
+            + [f"Bash(python3 {root / 'chief_of_stuff.py'} {op}:*)" for op in OPERATIONS]
+            + [f"Bash(chief-of-stuff {op}:*)" for op in OPERATIONS]
             + ["Read", "Glob", "Grep", "Write(./**)", "Edit(./**)"])
 
 
@@ -323,7 +329,9 @@ def _no_shell_edits(_g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
                 break
             if re.fullmatch(r"python(?:3(?:\.\d+)?)?", name):
                 script = Path(tokens[i + 1]) if i + 1 < len(tokens) else Path("")
-                if script.parent.name != "scripts" or script.name not in SAFE_SCRIPTS:
+                router = (script.name == "chief_of_stuff.py" and i + 2 < len(tokens)
+                          and tokens[i + 2] in OPERATIONS)
+                if not router and (script.parent.name != "scripts" or script.name not in SAFE_SCRIPTS):
                     violations.append(command)
                     break
     return (not violations), ("no shell edits" if not violations else f"shell edit call(s): {violations[:3]}")
@@ -429,6 +437,8 @@ def _glob_matches(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
 
 
 def _file_matches(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
+    if rec.fixture_dir and g.get("glob", g.get("path", "")).startswith("pages/"):
+        serve_board(rec.fixture_dir)
     if "glob" in g:
         return _glob_matches(g, rec)
     text = _read(rec.fixture_dir, g["path"])
@@ -462,8 +472,11 @@ def before_snapshot(work: Path, dest: Path) -> None:
 
 def _no_new_files(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
     """`except` entries are exact paths or globs (`Resources/**`)."""
-    # The page server's pid and log are pages.py's, never the agent's own work.
-    allowed = [str(e) for e in g.get("except", [])] + ["pages/.pid", ".chief-of-stuff/pages.log"]
+    # The page server's pid, log, sources cache and decisions list, and the mailbox's own ignore file, are the
+    # scripts', never the agent's work.
+    allowed = [str(e) for e in g.get("except", [])] + ["pages/.pid", ".chief-of-stuff/pages.log",
+                                                      ".chief-of-stuff/mailbox/.gitignore", "pages/.sources*",
+                                                      "pages/decisions.html"]
     new = sorted(f for f in _files(rec.fixture_dir) - _files(rec.before_dir) if not any(fnmatch.fnmatch(f, e) for e in allowed))
     return (not new), (f"new files: {new}" if new else "no new files")
 
@@ -681,7 +694,70 @@ def _resume_block_matches(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]
                         else "/%s/ in no field of %d" % (g["pattern"], len(block)))
 
 
+def _md_kind(line: str) -> str:
+    s = line.strip()
+    if not s:
+        return "blank"
+    if s.startswith(("```", "~~~")):
+        return "fence"
+    if re.match(r"#{1,6}\s", s):
+        return "heading"
+    if re.match(r"(?:[-*+]|\d+[.)])\s", s):
+        return "list"
+    return "table" if s.startswith("|") else "quote" if s.startswith(">") else "prose"
+
+
+def _markdown_unwrapped(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
+    """Enforces "One paragraph is one line; never hard-wrap prose at any column.", "Blank lines
+    separate blocks." and, for each string in `fenced`, "Code and commands go in fences with a
+    language." over `section` of `path` (the whole file when no section is named).
+
+    A wrap is a prose line ending without terminal punctuation followed by a lowercase continuation.
+    Two adjacent non-blank lines are one block only when both are list items, table rows or quote
+    lines; anything else touching is a missing blank line. Fenced code is skipped.
+    """
+    text = _read(rec.fixture_dir, g["path"])
+    if text is None:
+        return False, f"{g['path']} missing"
+    lines = text.splitlines()
+    if "section" in g:
+        level = len(g["section"]) - len(g["section"].lstrip("#"))
+        start = next((i for i, l in enumerate(lines) if l.strip() == g["section"].strip()), None)
+        if start is None:
+            return False, f"{g['path']}: no {g['section']!r}"
+        end = next((j for j in range(start + 1, len(lines))
+                    if re.match(rf"#{{1,{level}}}\s", lines[j])), len(lines))
+        lines = lines[start:end]
+    problems, paragraphs, fenced, prev, code = [], 0, False, ("blank", ""), []
+    for line in lines:
+        kind = _md_kind(line)
+        if fenced:
+            fenced = kind != "fence"
+            if not fenced:
+                prev = ("fence", line)
+            elif re.match(r"\s*(?:```|~~~)\s*\w", prev[1]):
+                code.append(line)
+            continue
+        paragraphs += kind == "prose"
+        was, prev_line = prev
+        if was != "blank" and kind != "blank":
+            if was == kind == "prose" and not re.search(r"[.!?:;][)\]\"'*_`]*$", prev_line.rstrip()) \
+                    and re.match(r"\s*[a-z]", line):
+                problems.append(f"wrapped: {prev_line.strip()[-30:]!r} / {line.strip()[:30]!r}")
+            elif not (was == kind and kind in ("list", "table", "quote")):
+                problems.append(f"no blank line: {prev_line.strip()[:30]!r} / {line.strip()[:30]!r}")
+        fenced = kind == "fence"
+        prev = (kind, line)
+    problems += [f"not in a fence with a language: {c!r}" for c in g.get("fenced", [])
+                 if not any(c in line for line in code)]
+    want = int(g.get("min_paragraphs", 1))
+    if paragraphs < want:
+        problems.append(f"{paragraphs} prose line(s); want >= {want}")
+    return (not problems), ("; ".join(problems[:4]) if problems else f"{paragraphs} paragraph(s), none wrapped")
+
+
 FILE_GRADERS = {
+    "markdown_unwrapped": _markdown_unwrapped,
     "file_moved": _file_moved,
     "file_unchanged": _file_unchanged,
     "file_matches": _file_matches,
@@ -735,8 +811,25 @@ def load_cases(patterns: list[str], golden_only: bool = False) -> list[Case]:
     return cases
 
 
+def serve_board(root: Path) -> None:
+    """What a GET of `/`, of each decision page and of `decisions.html` does in pages.py: re-render each
+    when its sources are newer. The agent never renders; the page server does, so a grader reads the
+    pages the server would serve."""
+    sys.path.insert(0, str(PLUGIN_ROOT / "scripts"))
+    import pages
+    try:
+        pages_dir, _ = pages.from_config(root)
+        name = pages.today_board(root)
+    except Exception:  # no Board line or no CLAUDE.md: there is no server to render, only files
+        return
+    decisions = [f"{p.stem}.html" for p in pages_dir.glob("decision-*.json")]
+    for page in [name] * bool(name) + decisions + ["decisions.html"] * bool(name or decisions):
+        pages.fresh(root, pages_dir, page)
+
+
 def _last_published_html(rec: RunRecord) -> tuple[str | None, str]:
-    """The newest `*-board.html` the renderer wrote in the case's tree: the page pages.py serves."""
+    """The newest `*-board.html` in the case's tree, after the page server's render: the page pages.py serves."""
+    serve_board(rec.fixture_dir)
     boards = sorted(rec.fixture_dir.rglob("*-board.html"), key=lambda p: p.name)
     if not boards:
         return None, "no board rendered"
@@ -781,53 +874,9 @@ def _board_matches_tracker(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str
     return True, f"board sha {want[:12]} matches the tracker"
 
 
-CITED = re.compile(r'<[^>]*\bdata-item="[^"]*"[^>]*>')
-ATTR = re.compile(r'data-([a-z-]+)="([^"]*)"')
-
-
-def _board_bars(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
-    """Bars cite their sources: each listed task (its own bar, or a member folded into a summary row) has the given data-*-src (and label); every end source is a known kind."""
-    html_text, note = _last_published_html(rec)
-    if html_text is None:
-        return False, note
-    bars = {}
-    for tag in CITED.findall(html_text):
-        attrs = dict(ATTR.findall(tag))
-        if "end-src" in attrs:
-            bars.setdefault(attrs["item"], attrs)
-    problems = [f"{item!r}: end src {a.get('end-src')!r}" for item, a in bars.items() if a.get("end-src") not in ("due", "state", "deadline", "derived")]
-    for want in g.get("bars", []):
-        a = bars.get(_esc_html(want["item"]))
-        if a is None:
-            problems.append(f"no bar for {want['item']!r}")
-            continue
-        for key in ("start_src", "end_src", "label"):
-            if key in want and a.get(key.replace("_", "-")) != want[key]:
-                problems.append(f"{want['item']!r}: {key} {a.get(key.replace('_', '-'))!r}, want {want[key]!r}")
-    for name in g.get("deadline_lines", []):
-        if f'data-deadline-name="{_esc_html(name)}"' not in html_text:
-            problems.append(f"no deadline line for {name!r}")
-    return (not problems), ("; ".join(problems) if problems else f"{len(bars)} bar(s) cite their sources")
-
-
-def _board_requirements(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
-    """The last published board has the deadline's requirements section with `done` of `total` ticked."""
-    html_text, note = _last_published_html(rec)
-    if html_text is None:
-        return False, note
-    m = re.search(rf'<section class="reqs" data-deadline="{re.escape(_esc_html(g["deadline"]))}" data-done="(\d+)" data-total="(\d+)"', html_text)
-    if not m:
-        return False, f"no requirements section for {g['deadline']!r}"
-    done, total = int(m[1]), int(m[2])
-    ok = done == g["done"] and total == g["total"]
-    return ok, f"{g['deadline']}: {done} of {total}; want {g['done']} of {g['total']}"
-
-
 BOARD_GRADERS = {
     "board_published": _board_published,
     "board_matches_tracker": _board_matches_tracker,
-    "board_bars": _board_bars,
-    "board_requirements": _board_requirements,
 }
 
 
@@ -1097,9 +1146,9 @@ def host_prompt(runtime: str, arm: str, prompt: str, root: Path, work: Path) -> 
         return prompt
     # The same rendered host instructions used by an installed coordinator, pinned to this run's snapshot.
     sys.path.insert(0, str(PLUGIN_ROOT))
-    from start_coordinator import prompt as coordinator_prompt
+    from start_coordinator import START, prompt as coordinator_prompt
     text = coordinator_prompt(runtime, root, work)
-    text = text.rsplit("\n\nOpen the day.", 1)[0]
+    text = text.rsplit("\n\n" + START, 1)[0]
     return text + "\n\nUser turn: " + prompt
 
 
@@ -1354,17 +1403,6 @@ print("railway: blocked by eval harness", file=sys.stderr)
 sys.exit(1)
 '''
 
-# A `file` disposition runs `gh-issue new`; in an eval it is recorded and answered, and reaches no tracker.
-GH_ISSUE_SHIM = '''#!/usr/bin/env python3
-import sys
-from pathlib import Path
-
-with open(Path(__file__).parent / "calls.log", "a") as log:
-    log.write(" ".join(["gh-issue", *sys.argv[1:]]) + "\\n")
-repo = sys.argv[sys.argv.index("-R") + 1] if "-R" in sys.argv else "o/backlog"
-print(f"https://github.com/{repo}/issues/101")
-'''
-
 GH_SHIM = '''#!/usr/bin/env python3
 import json, sys
 from pathlib import Path
@@ -1377,8 +1415,16 @@ if args[:2] == ["issue", "create"]:
     print(f"https://github.com/{repo}/issues/101")
 elif args[:2] == ["issue", "list"]:
     print("[]")
-elif args[:2] in (["issue", "close"], ["issue", "comment"]):
+elif args[:2] in (["issue", "close"], ["issue", "comment"], ["pr", "merge"]):
     pass
+elif args[:2] == ["pr", "list"]:
+    prs = Path(__file__).parent / "prs.json"
+    print(prs.read_text() if prs.exists() else "[]")
+elif args[:2] == ["api", "graphql"] and "mutation" not in " ".join(args):
+    graph = Path(__file__).parent / "graphql.json"
+    print(graph.read_text() if graph.exists() else '{"data": {"repository": {"pullRequests": {"nodes": []}}}}')
+elif args[:1] == ["api"] and len(args) > 1 and args[1].endswith("/replies"):
+    print("{}")
 else:
     print("gh: blocked by eval harness", file=sys.stderr)
     sys.exit(1)
@@ -1428,17 +1474,36 @@ def write_recorder(shim_dir: Path, calls_log: Path, tz: str) -> list[str]:
     return ["python3", str(recorder), "{type}", "{cwd}", "{title}"]
 
 
-def write_shims(shim_dir: Path) -> None:
+def write_shims(shim_dir: Path, prs: list | None = None, graphql: dict | None = None) -> None:
     shim_dir.mkdir(parents=True, exist_ok=True)
     railway = shim_dir / "railway"
     railway.write_text(RAILWAY_SHIM)
     railway.chmod(0o755)
-    gh_issue = shim_dir / "gh-issue"
-    gh_issue.write_text(GH_ISSUE_SHIM)
-    gh_issue.chmod(0o755)
     gh = shim_dir / "gh"
     gh.write_text(GH_SHIM)
     gh.chmod(0o755)
+    if prs is not None:
+        # A case's open pull requests, as `gh pr list --json` returns them.
+        (shim_dir / "prs.json").write_text(json.dumps(prs))
+    if graphql is not None:
+        # What `gh api graphql` answers for the case: its review threads.
+        (shim_dir / "graphql.json").write_text(json.dumps(graphql))
+
+
+def eval_environment(out: Path, calls_log: Path, tz: str, root: Path | None = None) -> dict[str, str]:
+    """Pin external issue writes to the fake CLI even if a host resets its shell PATH."""
+    shims = out / "shims"
+    shims.mkdir(parents=True, exist_ok=True)
+    release = root or PLUGIN_ROOT
+    entry = shims / "chief-of-stuff"
+    entry.write_text(f"#!{sys.executable}\nimport os, sys\n"
+                     f"os.execv(sys.executable, [sys.executable, {str(release / 'chief_of_stuff.py')!r}, *sys.argv[1:]])\n")
+    entry.chmod(0o755)
+    return dict(os.environ,
+                PATH=f"{shims}{os.pathsep}{os.environ['PATH']}",
+                CHIEF_OF_STUFF_GH=str((shims / "gh").resolve()),
+                CHIEF_OF_STUFF_RELEASE=str(release),
+                CHIEF_OF_STUFF_LAUNCHER=json.dumps(write_recorder(shims, calls_log, tz)))
 
 
 def run_one(case: Case, arm: str, model: str, out: Path, root: Path | None = None,
@@ -1463,14 +1528,11 @@ def run_one(case: Case, arm: str, model: str, out: Path, root: Path | None = Non
             make_repo.build(work, spec["repo"])
         # After every piece of setup, so the baseline is what the agent was handed, not a part of it.
         before_snapshot(work, out / "fixture-before")
-        write_shims(out / "shims")
+        write_shims(out / "shims", spec.get("gh_prs"), spec.get("gh_graphql"))
         calls_log.parent.mkdir(parents=True, exist_ok=True)
         calls_log.touch()
-        env = dict(
-            os.environ,
-            PATH=f"{out / 'shims'}{os.pathsep}{os.environ['PATH']}",
-            CHIEF_OF_STUFF_LAUNCHER=json.dumps(write_recorder(out / "shims", calls_log, tz)),
-        )
+        env = eval_environment(out, calls_log, tz, root=root)
+        env["CHIEF_OF_STUFF_WORKSPACE"] = str(work)
         mcp_config = None
         if "calendar" in spec:
             # Events live in the results dir, not the agent's cwd, so the calendar is reachable only through the mock.

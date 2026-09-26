@@ -42,10 +42,10 @@ class Sync:
         return not self.error
 
 
-def label_delta(config: Kanban, current: tuple[str, ...], stage: str) -> Delta:
+def label_delta(config: Kanban, current: tuple[str, ...], stage: str, keep_hold: bool = False) -> Delta:
     """Exactly one numbered stage and an independent hold, preserving every other label."""
     desired = config.label_for(stage)
-    hold = config.holds(stage)
+    hold = config.holds(stage) or keep_hold
     managed = set(config.stages) | {config.human_review_label}
     remove = tuple(label for label in current if label in managed and label != desired
                    and not (label == config.human_review_label and hold))
@@ -59,13 +59,14 @@ def after(current: tuple[str, ...], delta: Delta) -> tuple[str, ...]:
 
 
 def drift(config: Kanban, labels: tuple[str, ...], stage: str,
-          *, project_status: str | None = None) -> str:
+          *, project_status: str | None = None, allow_extra_hold: bool = False) -> str:
     """Describe a board disagreement; the audit never repairs one silently."""
     try:
         target = config.label_for(stage)
     except KeyError:
         return f"unmapped tracker stage {stage}"
-    hold = config.human_review_label if config.holds(stage) else None
+    hold = config.human_review_label if (config.holds(stage) or
+           (allow_extra_hold and config.human_review_label in labels)) else None
     managed = set(config.stages) | {config.human_review_label}
     expected = {x for x in (hold, target if config.github_project is None else None) if x}
     actual = set(labels) & managed
@@ -81,8 +82,14 @@ def drift(config: Kanban, labels: tuple[str, ...], stage: str,
     return "; ".join(problems)
 
 
-def _guard(current, desired, prior, *, expected_stage: str | None, initialize: bool) -> str:
-    if current == desired or (expected_stage is not None and current == prior) or (initialize and not current):
+def extra_hold(config: Kanban, current, expected_stage: str | None) -> bool:
+    """A review hold the recorded stage did not set: the launcher's, which only the user clears."""
+    return config.human_review_label in current and not (expected_stage and config.holds(expected_stage))
+
+
+def _guard(current, desired, priors, *, expected_stage: str | None, initialize: bool, blanks=(frozenset(),)) -> str:
+    """Write only over a state the tracker explains: the recorded stage, with or without the launcher's hold."""
+    if current == desired or (expected_stage is not None and current in priors) or (initialize and current in blanks):
         return ""
     if expected_stage is None and not initialize:
         return "commit needs --from-stage or --initialize"
@@ -116,13 +123,15 @@ def sync_gitlab(cfg: backlog.Backlog, ref: backlog.IssueRef, config: Kanban, sta
     if not isinstance(row, dict) or not isinstance(row.get("labels"), list):
         return Sync(ref, stage, error="GitLab issue has no readable labels")
     current = tuple(str(label) for label in row["labels"])
-    delta = label_delta(config, current, stage)
+    held = extra_hold(config, current, expected_stage)
+    delta = label_delta(config, current, stage, keep_hold=held)
     managed = set(config.stages) | {config.human_review_label}
-    prior = set(label_delta(config, (), expected_stage).add) if expected_stage else set()
+    prior = frozenset(label_delta(config, (), expected_stage).add) if expected_stage else frozenset()
+    hold = frozenset({config.human_review_label})
     desired = set(after(current, delta)) & managed
     if commit:
-        error = _guard(set(current) & managed, desired, prior,
-                       expected_stage=expected_stage, initialize=initialize)
+        error = _guard(frozenset(current) & managed, desired, (prior, prior | hold),
+                       expected_stage=expected_stage, initialize=initialize, blanks=(frozenset(), hold))
         if error:
             return Sync(ref, stage, delta, error=error)
     if not delta.changed:
@@ -225,11 +234,59 @@ def _github_labels_exist(gh, ref: backlog.IssueRef, names: tuple[str, ...]) -> s
     return f"missing label in GitHub: {', '.join(sorted(missing))}" if missing else ""
 
 
-def _github_label_delta(config: Kanban, current: tuple[str, ...], stage: str) -> Delta:
+def add_human_hold(ref: backlog.IssueRef, home: backlog.Backlog | backlog.GitHubBacklog,
+                   config: Kanban, *, gh=None, token: str | None = None) -> str:
+    """Add only the review hold; leave the numbered stage and Project Status untouched.
+
+    Return an error string, or empty string when the hold is verified. This is used when a
+    one-shot worker exits unfinished, including after partial edits.
+    """
+    label = config.human_review_label
+    if ref.host == backlog.GITHUB:
+        gh = gh or backlog.run_gh
+        current, error = _github_issue(gh, ref)
+        if error or label in current:
+            return error
+        error = _github_labels_exist(gh, ref, (label,))
+        if error:
+            return error
+        code, _, stderr = gh(["issue", "edit", str(ref.number), "-R", ref.repo, "--add-label", label])
+        if code:
+            return stderr.strip() or f"gh exited {code}"
+        updated, error = _github_issue(gh, ref)
+        return error or ("GitHub review hold was not applied" if label not in updated else "")
+    if not isinstance(home, backlog.Backlog) or ref.host != backlog.home_of(home)[0]:
+        return "issue host does not match the configured backlog"
+    project = home if home.project == ref.repo else backlog.Backlog(home.host, ref.repo, home.env, home.account)
+    secret = token if token is not None else backlog.token(project)
+    if not secret:
+        return f"no token: set ${home.env} or add it to the Keychain as {home.service}"
+    url = f"{project.issues_url}/{ref.number}"
+    row, _, error = backlog._get(url, secret, backlog.TIMEOUT)
+    if error:
+        return error
+    if not isinstance(row, dict) or not isinstance(row.get("labels"), list):
+        return "GitLab issue has no readable labels"
+    if label in row["labels"]:
+        return ""
+    labels, error = backlog.existing_labels(project, token=secret)
+    if error:
+        return error
+    if label not in labels:
+        return f"missing label in GitLab: {label}"
+    _, _, error = backlog._call("PUT", url, secret, backlog.TIMEOUT, {"add_labels": label})
+    if error:
+        return error
+    updated, _, error = backlog._get(url, secret, backlog.TIMEOUT)
+    return error or ("GitLab review hold was not applied" if not isinstance(updated, dict) or
+                     label not in updated.get("labels", []) else "")
+
+
+def _github_label_delta(config: Kanban, current: tuple[str, ...], stage: str, keep_hold: bool = False) -> Delta:
     if config.github_project is None:
-        return label_delta(config, current, stage)
+        return label_delta(config, current, stage, keep_hold)
     # A Project Status is the numbered stage; only the human hold lives on its issue.
-    hold = config.holds(stage)
+    hold = config.holds(stage) or keep_hold
     remove = tuple(x for x in current if x in config.stages or
                    (x == config.human_review_label and not hold))
     add = (config.human_review_label,) if hold and config.human_review_label not in current else ()
@@ -255,11 +312,12 @@ def sync_github(ref: backlog.IssueRef, config: Kanban, stage: str, *, gh=None,
     current, error = _github_issue(gh, ref)
     if error:
         return Sync(ref, stage, error=error)
-    delta = _github_label_delta(config, current, stage)
+    delta = _github_label_delta(config, current, stage, keep_hold=extra_hold(config, current, expected_stage))
     managed = set(config.stages) | {config.human_review_label}
-    current_labels = set(current) & managed
+    current_labels = frozenset(current) & managed
     desired_labels = set(after(current, delta)) & managed
-    prior_labels = set(_github_label_delta(config, (), expected_stage).add) if expected_stage else set()
+    prior_labels = frozenset(_github_label_delta(config, (), expected_stage).add) if expected_stage else frozenset()
+    hold = frozenset({config.human_review_label})
     project = config.github_project
     present, old_status, wanted = False, None, None
     if project:
@@ -285,15 +343,15 @@ def sync_github(ref: backlog.IssueRef, config: Kanban, stage: str, *, gh=None,
         current_state = (old_status if present else None, frozenset(current_labels))
         desired_state = (wanted, frozenset(desired_labels))
         prior_state = (prior_status, frozenset(prior_labels))
-        blank = (None, frozenset())
-        if current_state == blank and initialize:
+        blanks = ((None, frozenset()), (None, hold))
+        if current_state in blanks and initialize:
             error = ""
         else:
-            error = _guard(current_state, desired_state, prior_state,
+            error = _guard(current_state, desired_state, (prior_state, (prior_status, prior_labels | hold)),
                            expected_stage=expected_stage, initialize=False)
     else:
-        error = _guard(current_labels, desired_labels, prior_labels,
-                       expected_stage=expected_stage, initialize=initialize)
+        error = _guard(current_labels, desired_labels, (prior_labels, prior_labels | hold),
+                       expected_stage=expected_stage, initialize=initialize, blanks=(frozenset(), hold))
     if error:
         return Sync(ref, stage, delta, error=error, current_status=old_status, project_status=wanted)
     error = _github_labels_exist(gh, ref, delta.add)

@@ -1,0 +1,29 @@
+{
+  "tz": "America/Chicago",
+  "peers": "sessions.json",
+  "description": "Two decision pages are pending. Robin answers the storage one. The Decisions row that records the answer names the page it answers, so the decisions page can count it as answered; the other page is left pending.",
+  "prompt": "A, follow the architecture.",
+  "graders": [
+    {
+      "name": "the Decisions row names the page it answers",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?s)## Decisions\\n(?:(?!\\n## ).)*^\\|[^\\n]*decision-uploads-storage[^\\n]*\\|"
+    },
+    {
+      "name": "the unanswered page is not recorded as answered",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?s)## Decisions\\n(?:(?!\\n## ).)*^\\|[^\\n]*decision-release-cut",
+      "match": "absent"
+    },
+    {
+      "name": "Robin's words are quoted",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?si)## Decisions\\n(?:(?!\\n## ).)*^\\|[^\\n]*follow the architecture"
+    }
+  ],
+  "max_turns": 18,
+  "timeout_seconds": 450
+}

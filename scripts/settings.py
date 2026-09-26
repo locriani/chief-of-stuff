@@ -3,7 +3,7 @@
 
 Zach, 2026-09-22 22:20, on the day open and close times: "Configurable. We're going to need to pull
 settings into a config file. Default to 6 and 22". Notification, lane, budget, and Kanban settings
-live here.
+live here, and so do the suggested models and their rotations (#111).
 
 No `Settings:` line, no file, or no `[notify]` section is notify off, and nothing else changes. A value
 that is there and cannot be read is refused: a guessed day-open time is a notification at the wrong hour.
@@ -22,6 +22,8 @@ HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 OFFSET = re.compile(r"^(\d+)([hm])$")
 WORKER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 DEFAULT_WARNINGS = ("24h", "3h", "1h")
+RUNTIMES = ("claude", "agy", "codex", "cursor")
+EFFORTS = ("high", "medium", "low")
 
 
 class SettingsError(ValueError):
@@ -70,11 +72,21 @@ class Workflow:
     reviewer_session: str | None = None
     delivery: str = "pull-request"
     merge_owner: str = "user"
+    approver: str | None = None
 
 
 @dataclass(frozen=True)
 class Workers:
     launcher: str = "ghostty"
+    mode: str = "interactive"
+    # #100: one-shots running at once across every session in the workspace; None is no cap.
+    max_concurrency: int | None = None
+
+
+@dataclass(frozen=True)
+class Pages:
+    # The user, 2026-09-26: "allow the board server to have up to 4 workers", then "well, N workers. 4 default".
+    workers: int = 4  # pages the pages server renders at once
 
 
 @dataclass(frozen=True)
@@ -97,6 +109,29 @@ class Kanban:
 
 
 @dataclass(frozen=True)
+class ModelEntry:
+    """#111: one `runtime:model-id@effort` entry of a `[models.<class>]` rotation; the ID is verbatim."""
+    runtime: str
+    model: str
+    effort: str | None = None
+
+    def __str__(self) -> str:
+        return f"{self.runtime}:{self.model}" + (f"@{self.effort}" if self.effort else "")
+
+
+@dataclass(frozen=True)
+class Graph:
+    """The decision page's MODULE GRAPH: the clone branch-graph reads (under the workspace root), its import root,
+    module depth, the rules file inside the clone, the module globs it leaves out, and the most modules one view holds."""
+    clone: str
+    root: str
+    depth: int = 2
+    rules: str | None = None
+    exclude: tuple[str, ...] = ("tests.*", "evals.*")
+    max_nodes: int = 12
+
+
+@dataclass(frozen=True)
 class Settings:
     notify: Notify = field(default_factory=Notify)
     lanes: dict[str, Lane] = field(default_factory=dict)
@@ -105,6 +140,55 @@ class Settings:
     kanban: Kanban | None = None
     workflow: Workflow = field(default_factory=Workflow)
     workers: Workers = field(default_factory=Workers)
+    pages: Pages = field(default_factory=Pages)
+    # #111: task class -> rotation; the first entry is the suggested model, the rest the fallback order.
+    models: dict[str, tuple[ModelEntry, ...]] = field(default_factory=dict)
+    graph: Graph | None = None
+
+
+def _entry(where: str, text) -> ModelEntry:
+    runtime, sep, rest = text.partition(":") if isinstance(text, str) else ("", "", "")
+    if not sep or runtime not in RUNTIMES:
+        raise SettingsError(f"{where}: {text!r} is not runtime:model-id with runtime one of {', '.join(RUNTIMES)}")
+    model, at, effort = rest.rpartition("@") if "@" in rest else (rest, "", None)
+    if at and effort not in EFFORTS:
+        raise SettingsError(f"{where}: {text!r} effort must be one of {', '.join(EFFORTS)}")
+    if not model.strip():
+        raise SettingsError(f"{where}: {text!r} has no model ID")
+    return ModelEntry(runtime, model, effort)
+
+
+def _models(table) -> dict[str, tuple[ModelEntry, ...]]:
+    if not isinstance(table, dict):
+        raise SettingsError("[models] must be a table of task classes")
+    models = {}
+    for name, t in table.items():
+        where = f"[models.{name}]"
+        if not isinstance(t, dict) or set(t) != {"rotation"}:
+            raise SettingsError(f"{where}: a table with only rotation, like {{ rotation = [\"claude:opus@high\"] }}")
+        rotation = t["rotation"]
+        if not isinstance(rotation, list) or not rotation:
+            raise SettingsError(f"{where}: rotation is a non-empty list of runtime:model-id@effort entries")
+        entries = tuple(_entry(where, x) for x in rotation)
+        if len(set(entries)) != len(entries):
+            raise SettingsError(f"{where}: an entry appears twice")
+        models[name] = entries
+    return models
+
+
+def pick(rotation: tuple[ModelEntry, ...], after: str | None = None, not_family: str | None = None) -> ModelEntry:
+    """The suggested entry, or the next one after `after` (with or without its @effort); `not_family` skips a runtime."""
+    start = 0
+    if after:
+        hits = [i for i, e in enumerate(rotation) if after in (str(e), f"{e.runtime}:{e.model}")]
+        if not hits:
+            raise SettingsError(f"{after} is not in the rotation")
+        start = hits[0] + 1
+    for entry in rotation[start:]:
+        if entry.runtime != not_family:
+            return entry
+    raise SettingsError("rotation exhausted: no entry left" + (f" after {after}" if after else "") +
+                        (f" outside {not_family}" if not_family else ""))
 
 
 def _workers(table) -> Workers:
@@ -113,7 +197,43 @@ def _workers(table) -> Workers:
     launcher = table.get("launcher", "ghostty")
     if launcher not in ("ghostty", "tmux"):
         raise SettingsError("[workers] launcher must be `ghostty` or `tmux`")
-    return Workers(launcher=launcher)
+    mode = table.get("mode", "interactive")
+    if mode not in ("interactive", "one-shot"):
+        raise SettingsError("[workers] mode must be `interactive` or `one-shot`")
+    cap = table.get("max_concurrency")
+    if cap is not None and (type(cap) is not int or cap < 1):
+        raise SettingsError("[workers] max_concurrency must be a positive whole number")
+    return Workers(launcher=launcher, mode=mode, max_concurrency=cap)
+
+
+def _pages(table) -> Pages:
+    if not isinstance(table, dict):
+        raise SettingsError("[pages] must be a table")
+    n = table.get("workers", Pages.workers)
+    if type(n) is not int or n < 1:
+        raise SettingsError("[pages] workers must be a positive whole number")
+    return Pages(n)
+
+
+def _graph(table) -> Graph:
+    if not isinstance(table, dict):
+        raise SettingsError("[graph] must be a table")
+    for key in ("clone", "root"):
+        if not isinstance(table.get(key), str) or not table[key].strip():
+            raise SettingsError(f"[graph] {key} must be a path")
+    depth = table.get("depth", 2)
+    if type(depth) is not int or depth < 1:
+        raise SettingsError("[graph] depth must be a positive whole number")
+    rules = table.get("rules")
+    if rules is not None and (not isinstance(rules, str) or not rules.strip()):
+        raise SettingsError("[graph] rules must be a path inside the clone")
+    exclude = table.get("exclude", Graph.exclude)
+    if not isinstance(exclude, (list, tuple)) or not all(isinstance(x, str) and x.strip() for x in exclude):
+        raise SettingsError("[graph] exclude must be a list of module globs")
+    cap = table.get("max_nodes", Graph.max_nodes)
+    if type(cap) is not int or cap < 3:
+        raise SettingsError("[graph] max_nodes must be a whole number of at least 3")
+    return Graph(table["clone"], table["root"], depth, rules, tuple(exclude), cap)
 
 
 def _workflow(table) -> Workflow:
@@ -129,11 +249,15 @@ def _workflow(table) -> Workflow:
     if delivery not in ("pull-request", "branch"):
         raise SettingsError("[workflow] delivery must be `pull-request` or `branch`")
     merge_owner = table.get("merge_owner", "user")
-    if merge_owner not in ("user", "worker"):
-        raise SettingsError("[workflow] merge_owner must be `user` or `worker`")
+    if merge_owner not in ("user", "worker", "approval"):
+        raise SettingsError("[workflow] merge_owner must be `user`, `worker` or `approval`")
     if delivery == "branch" and merge_owner != "user":
-        raise SettingsError("[workflow] merge_owner=worker requires delivery=pull-request")
-    return Workflow(**names, delivery=delivery, merge_owner=merge_owner)
+        raise SettingsError(f"[workflow] merge_owner={merge_owner} requires delivery=pull-request")
+    # #97: the forge username whose approval the coordinator merges on; nobody else's counts.
+    approver = table.get("approver")
+    if merge_owner == "approval" and (not isinstance(approver, str) or not approver.strip()):
+        raise SettingsError("[workflow] merge_owner=approval needs approver, the user's forge username")
+    return Workflow(**names, delivery=delivery, merge_owner=merge_owner, approver=approver)
 
 
 def _lane(name: str, table) -> Lane:
@@ -229,14 +353,17 @@ def load(root: Path, settings_path: str | None) -> Settings:
     kanban = _kanban(data["kanban"]) if "kanban" in data else None
     workflow = _workflow(data["workflow"]) if "workflow" in data else Workflow()
     workers = _workers(data["workers"]) if "workers" in data else Workers()
+    models = _models(data["models"]) if "models" in data else {}
+    graph = _graph(data["graph"]) if "graph" in data else None
+    pages = _pages(data["pages"]) if "pages" in data else Pages()
     budgets = data.get("budgets", {})
     if not isinstance(budgets, dict) or not set(budgets) <= {"S", "M", "L", "XL"}:
         raise SettingsError(f"{settings_path}: [budgets] is a table of S, M, L, XL")
     budgets = {size: _offset(v, f"[budgets] {size}") for size, v in budgets.items()}
     table = data.get("notify")
     if table is None:
-        return Settings(lanes=lanes, budgets=budgets, kanban=kanban, workflow=workflow, workers=workers)
+        return Settings(lanes=lanes, budgets=budgets, kanban=kanban, workflow=workflow, workers=workers, pages=pages, models=models, graph=graph)
     if not isinstance(table, dict):
         raise SettingsError(f"{settings_path}: [notify] is not a table")
     return Settings(notify=_notify(table, Path(root)), lanes=lanes, budgets=budgets,
-                    kanban=kanban, workflow=workflow, workers=workers)
+                    kanban=kanban, workflow=workflow, workers=workers, pages=pages, models=models, graph=graph)

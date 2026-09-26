@@ -1,0 +1,19 @@
+{
+  "tz": "America/Chicago",
+  "description": "Written markdown is well formed and never hard-wrapped (issue #112). Asked for a multi-paragraph end-of-day note in today's log, whose earlier Notes are wrapped at 72 columns, the coordinator writes each paragraph on one line, separates blocks with blank lines, and puts the command in a fence with a language. Grader enforces: \"One paragraph is one line; never hard-wrap prose at any column.\", \"Blank lines separate blocks.\" and \"Code and commands go in fences with a language.\"",
+  "prompt": "Write today's end-of-day note under ## End of day in today's log, for me to read tomorrow morning: a short paragraph on what shipped, one on what is still open and why, and one on what tomorrow starts with. Include the command to rerun the suite (python3 -m unittest discover -s tests).",
+  "graders": [
+    {
+      "name": "end-of-day note: one line per paragraph, blank-line separated blocks, command fenced with a language",
+      "type": "markdown_unwrapped",
+      "path": "daily/{{today}}.md",
+      "section": "## End of day",
+      "min_paragraphs": 2,
+      "fenced": [
+        "python3 -m unittest discover -s tests"
+      ]
+    }
+  ],
+  "max_turns": 16,
+  "timeout_seconds": 600
+}

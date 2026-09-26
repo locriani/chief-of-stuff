@@ -1,17 +1,8 @@
 #!/usr/bin/env python3
-"""Audit the tracker's `done` tasks against the trees they were done in.
+"""Audit task completion against worktree and issue state.
 
-A task is `done` when its change is on main. Work sitting on a branch, or uncommitted in a
-worktree, is `waiting` however green its suites — so this reads Tasks and File ownership, asks git
-about each tree once, and prints the rows that have to be reopened.
-
-    python3 audit_tasks.py --date 2026-09-17
-
-Exit code is the number of rows to reopen. Tasks with no tree — decisions, relays, deletions,
-console actions — are never reopened: there is nothing to merge.
-
-Worktrees are resolved under the workspace root and anything that escapes is refused, because the
-paths come from a file the agent can write.
+The exit code counts tasks to reopen. Tasks without worktrees are excluded. Worktree paths must
+remain inside the workspace root.
 """
 
 from __future__ import annotations
@@ -30,26 +21,23 @@ from dispatch_prompt import PROMPT_DIR, STOP_FILE  # noqa: E402
 from backlog import CLOSED, GITHUB, Backlog, BacklogError, GitHubBacklog, file_with, home_of, issue_ref, issue_states  # noqa: E402
 from settings import Kanban, SettingsError, load as load_settings  # noqa: E402
 import kanban as kanban_tool  # noqa: E402
+import ownership  # noqa: E402
 
-# The branch is written in the parenthetical right after the tree name — `worktree wt-x (feat/y)` —
-# which is the only place it survives when the tree itself is gone. Finding 46 turns on that.
-WORKTREE = re.compile(r"\bworktrees?\s+`?([A-Za-z0-9._\-/]+)`?(?:\s*\(([^)]*)\))?")
+# Preserve branch names from ownership rows when worktrees disappear.
+WORKTREE = re.compile(r"\bworktrees?\s+(?P<tick>`)?(?P<name>[A-Za-z0-9._\-/]+)`?(?:\s*\((?P<branch>[^)]*)\))?")
 BRANCHISH = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{1,60}")
-# Prose that shows up inside a branch parenthetical and is never a ref.
+# Exclude prose from branch and worktree matches.
 NOT_A_BRANCH = {"now", "was", "then", "renamed", "from", "to", "branch", "on", "off", "and", "or", "merged", "clean", "dirty", "at"}
-# "its worktree only", "that worktree instead": prose says the word without naming a tree.
 NOT_A_NAME = {"only", "its", "it", "the", "that", "this", "those", "a", "an", "and", "in", "at", "for", "of", "is", "was", "with", "instead", "too", "here", "there"}
+TREE_SHAPED = re.compile(r"[-/_.0-9]")
 REF = re.compile(r"\s*\[[0-9a-f]{4,}\]\s*$")
-# The same ref, anywhere in the cell rather than at the end of it: `coordinator (`gauntlet-b2`
-# [028827])` carries it inside the parenthetical, and that cell is a context like any other.
+# Context refs can appear anywhere in a cell.
 ANY_REF = re.compile(r"\[([0-9a-f]{4,})\]")
-# The commit a `done` state may name. Git's own shape, not a guess: abbreviated to seven or written
-# in full, and nothing else is read as one.
+# Accept abbreviated or full Git hashes in done states.
 SHA = re.compile(r"^[0-9a-f]{7,40}$")
 LANDED, NOT_LANDED, UNKNOWN_SHA = "landed", "not-landed", "unknown"
 PAREN = re.compile(r"\((.*?)\)")
 TOKEN = re.compile(r"[A-Za-z0-9]+")
-# Words that say nothing about which task a row is about.
 STOP = NOT_A_NAME | {"done", "from", "to", "on", "by", "worktree", "worktrees", "off", "main", "new"}
 GIT_ENV = {"GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0"}
 GIT_TIMEOUT = 15
@@ -76,7 +64,7 @@ class Reopen:
 
 @dataclass(frozen=True)
 class Orphan:
-    """Finding 47: work in a tree whose writer is not in `## Sessions`. A fact about owners, not trees."""
+    """Uncommitted work whose owner is absent from Sessions."""
 
     worktree: str
     owner: str
@@ -91,12 +79,7 @@ class Orphan:
 
 @dataclass(frozen=True)
 class Stop:
-    """A session put this task down and said so in its tree. The task never heard.
-
-    A refusal and a session quietly dying are the same silence from the coordinator's side, which is
-    how an hour of finished work sat at `running 02:20` against a session that had stopped. The stop
-    is a file because a message is only as good as somebody reading it, and this walk happens anyway.
-    """
+    """Stop file from a worker whose task still appears active."""
 
     task: str
     kind: str
@@ -114,12 +97,7 @@ class Stop:
 
 @dataclass(frozen=True)
 class QueueFault:
-    """A decision queue that cannot be worked through one row at a time.
-
-    Zach, 2026-09-19 03:26: one at a time, in order, with the context to decide. A queue that repeats
-    a number, keeps rows it has already answered, or carries a row nobody can act on is a list that
-    looks like progress — which is the thing that was banned, in a new place.
-    """
+    """Duplicate, answered, or undecidable queue row."""
 
     row: str
     why: str
@@ -130,10 +108,7 @@ class QueueFault:
 
 @dataclass(frozen=True)
 class IssueFault:
-    """A task the issue tracker does not back, or a done task whose issue is still open.
-
-    Zach, 2026-09-22 22:20: "each entry in the task tracker is actually backed by an entry in github".
-    """
+    """Missing, invalid, or incorrectly open issue."""
 
     task: str
     why: str
@@ -142,9 +117,8 @@ class IssueFault:
         return f"issue: {self.task} — {self.why}"
 
 
-def issue_faults(tasks, home: Backlog | GitHubBacklog, gh=None) -> list[IssueFault]:
-    """One list call per repo the tracker names, then each task against it. A read that fails is one
-    `unknown` finding: an issue nobody could look up is not an issue known to be open."""
+def issue_faults(tasks, home: Backlog | GitHubBacklog, gh=None, lanes: dict | None = None) -> list[IssueFault]:
+    """Compare task issues with one issue-list request per repository."""
     refs = {}
     faults: list[IssueFault] = []
     for task in tasks:
@@ -175,9 +149,15 @@ def issue_faults(tasks, home: Backlog | GitHubBacklog, gh=None) -> list[IssueFau
             faults.append(IssueFault(name, f"{tag} not found in {ref.repo}"))
         elif task.needs_issue and found.state == CLOSED:
             faults.append(IssueFault(name, f"{tag} is closed"))
-        elif task.kind == "done" and found is not None and found.state != CLOSED:
-            faults.append(IssueFault(name, f"done but {tag} is open; backlog.py --close {ref.number} --commit"))
+        elif task.kind == "done" and found is not None and found.state != CLOSED and _ends_issue(task, lanes or {}):
+            faults.append(IssueFault(name, f"done but {tag} is open; chief-of-stuff backlog --close {ref.number} --commit"))
     return faults
+
+
+def _ends_issue(task, lanes: dict) -> bool:
+    """A laned row closes its issue only at the lane's last stage; a review done mid-lane leaves it open."""
+    lane = lanes.get(task.lane.strip())
+    return lane is None or task.stage.strip() == lane.stages[-1]
 
 
 @dataclass(frozen=True)
@@ -252,7 +232,8 @@ def kanban_faults(tasks, home: Backlog | GitHubBacklog, config: Kanban, gh=None)
                 continue
             status = project_items[ref.url]
         issue_config = config if ref.host == GITHUB else replace(config, github_project=None)
-        why = kanban_tool.drift(issue_config, found.labels, task.stage.strip(), project_status=status)
+        why = kanban_tool.drift(issue_config, found.labels, task.stage.strip(), project_status=status,
+                                allow_extra_hold=task.kind == "waiting")
         if why:
             faults.append(KanbanFault(clip_name(task.label), why))
     return faults
@@ -310,12 +291,13 @@ def _worktrees(cell: str) -> tuple[list[str], dict[str, str]]:
     names: list[str] = []
     branches: dict[str, str] = {}
     for m in WORKTREE.finditer(cell):
-        name = m.group(1).rstrip("/.,;:")
-        if not name or name.lower() in NOT_A_NAME or name in names:
+        name = m["name"].rstrip("/.,;:")
+        # A tree name is backticked or shaped like one; a bare word after "worktree" is prose (#72).
+        if not name or name in names or not (m["tick"] or TREE_SHAPED.search(name)):
             continue
         names.append(name)
-        if m.group(2):
-            branches[name] = m.group(2)
+        if m["branch"]:
+            branches[name] = m["branch"]
     return names, branches
 
 
@@ -333,22 +315,7 @@ def branch_candidates(name: str, detail: str) -> list[str]:
 
 def parse_ownership(text: str) -> list[OwnerRow]:
     """File ownership is prose, written as a table or as bullets; both name a context and its paths."""
-    rows: list[OwnerRow] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith(("- ", "* ")) and ":" in stripped:
-            context, _, paths = stripped[2:].partition(":")
-            rows.append(OwnerRow(context.strip(), *_worktrees(paths)))
-            continue
-        if not stripped.startswith("|"):
-            continue
-        cells = _cells(line)
-        if _is_separator(cells) or len(cells) < 2:
-            continue
-        if cells[0].lower() == "context":
-            continue
-        rows.append(OwnerRow(cells[0], *_worktrees(cells[1])))
-    return rows
+    return [OwnerRow(row.context, *_worktrees(row.paths)) for row in ownership.parse(text)]
 
 
 def _bare(name: str) -> str:
@@ -575,16 +542,8 @@ def landed(sha: str, worktree: Path) -> tuple[str, str]:
 
 
 def _push_gap(worktree: Path) -> str:
-    """Local main against origin/main, and the commit main is at.
-
-    House rule 5 (pull requests): the suite has to have been run on main after the merge, and no script can
-    watch that happen. Naming main's commit is what makes the claim checkable rather than
-    unfalsifiable — a `Verified` line pinned to a sha that is no longer main's is stale evidence.
-    """
-    # `main`, not `HEAD`: this runs in whichever worktree the scan reached first, and a worktree's
-    # HEAD is its own branch. The count below always resolved the ref correctly, so a right number
-    # vouched for a wrong name — the failure mode a reader cannot catch, on the one line the post-merge
-    # gate rests on.
+    """Report main's commit and its distance from origin/main for verification."""
+    # Use main, not this worktree's HEAD.
     code, sha = git(["rev-parse", "--short", "main"], worktree)
     at = f"main {sha} " if code == 0 and sha and " " not in sha else "main "
     code, counts = git(["rev-list", "--left-right", "--count", "main...origin/main"], worktree)
@@ -601,32 +560,26 @@ def _push_gap(worktree: Path) -> str:
     return at + ", ".join(parts) + " vs origin/main"
 
 
-# `Stop: permission`, `Lands on: Zach` — the assignment's own labelled lines, read back.
+# Read labeled stop-file fields.
 STOP_FIELD = re.compile(r"(?im)^\s*([A-Za-z][A-Za-z ]*?)\s*:\s*(.*?)\s*$")
-# The two states a stopped task is allowed to be in. Anything else means nobody moved it.
+# Open and waiting tasks need no stop finding.
 SETTLED = ("open", "waiting")
 
 
-# The same guard `dispatch_prompt._clean` applies on the way in, applied on the way out: this file is
-# written by a session and printed into somebody's terminal, so an ANSI or OSC payload in it would be
-# a payload in the report. C0 without tab or newline, DEL, and C1.
+# Strip terminal control sequences from worker-written stop files.
 CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 FIELD_CAP = 200
 UNREADABLE = "unreadable"
 
 
 def _field(value: str) -> str:
-    """One field off the stop, made safe to print: no escapes, and short enough not to bury the report."""
+    """Sanitize and truncate a stop-file field."""
     clean = CONTROL.sub("", value).strip()
     return clean if len(clean) <= FIELD_CAP else clean[:FIELD_CAP] + "…"
 
 
 def read_stop(worktree: Path) -> dict[str, str] | None:
-    """The stop a session left in its own tree, as its fields. None only when there is no stop at all.
-
-    A stop that exists and cannot be read is still a stop. Returning None for it would fail open on
-    exactly the state this exists to surface, so the unreadable case reports itself as one.
-    """
+    """Read a worker stop file; report unreadable files rather than ignoring them."""
     path = worktree / STOP_FILE
     try:
         text = path.read_text()
@@ -637,8 +590,7 @@ def read_stop(worktree: Path) -> dict[str, str] | None:
     return {m.group(1).strip().lower(): _field(m.group(2)) for m in STOP_FIELD.finditer(text)}
 
 
-# `~~1~~` and `**ANSWERED 03:29**`: the two ways the live queue marked a row it had already settled
-# while leaving it in the table.
+# Recognize both answered-row formats.
 ANSWERED = re.compile(r"(?i)\bANSWERED\b|^~~.*~~$")
 DASH = {"", "-", "—", "–", "n/a", "none"}
 
@@ -669,9 +621,7 @@ def queue_faults(tracker_text: str) -> tuple[list[QueueFault], list[str], int]:
         open_rows.append((num, decision))
     if open_rows:
         num, decision = open_rows[0]
-        # A decision cell opens with a bold headline. `clip_name` handles the mark pair itself since
-        # the short_name/clip_name split, so the `_unmark` here is no longer load-bearing for that —
-        # it stays because it also strips backticks, and a name is read here in a terminal line.
+        # Strip Markdown before printing the decision name.
         lines.append(f"next decision: {num} — {clip_name(_unmark(decision))}")
     return faults, lines, len(open_rows)
 
@@ -684,14 +634,12 @@ def audit(root: Path, day: str, gh=None, check_issues: bool = True, now: datetim
     tracker = parse_tracker(tracker_text)
     tasks = tracker.tasks
     owners = parse_ownership("\n".join(_section(tracker_text, "## File ownership")))
-    # The roster, for the join. An empty `## Sessions` is not a roster of nobody: with nothing to
-    # join against, the script says nothing about owners rather than calling every tree orphaned.
+    # An empty Sessions table cannot prove that workers are absent.
     roster = {_bare(s.name) for s in tracker.sessions if s.name.strip()}
-    # The ref column, which is the join proper wherever both sides have one. Empty is not a roster of
-    # nobody here either: a tracker whose refs are blank falls back to the names it does have.
+    # Match refs when available, then fall back to names.
     refs = {_ref(s.ref) or s.ref.strip().lower() for s in tracker.sessions if s.ref.strip()}
     if roster:
-        # The user is not a session and never was; they are exempt from the join, not absent from it.
+        # The workspace user may own a task without a session.
         roster.add(_bare(cfg.user))
 
     report = Report()
@@ -730,9 +678,7 @@ def audit(root: Path, day: str, gh=None, check_issues: bool = True, now: datetim
                 report.reopen.append(Reopen(task.item, task.owner, f"{name} ({branch})", f"its sha {sha} is not on main"))
             elif verdict == UNKNOWN_SHA and why:
                 report.reopen.append(Reopen(task.item, task.owner, f"{name} ({branch})", why))
-        # Finding 47: the audit reports per tree, and this is a fact about owners. Only uncommitted
-        # work counts — an unmerged branch is recoverable by name, a dirty tree nobody is writing in
-        # is not.
+        # Only dirty worktrees with absent owners count as orphans.
         stop = read_stop(path)
         if stop is not None and task is not None and task.kind not in SETTLED and name not in stopped_at:
             stopped_at.add(name)
@@ -753,9 +699,7 @@ def audit(root: Path, day: str, gh=None, check_issues: bool = True, now: datetim
             for name in row.worktrees:
                 visit(row, name, task)
 
-    # Every remaining File ownership row that names a tree. A tree reached only through a task is a
-    # tree nobody can reach once the task lets go of it — and the three orphaned trees this join was
-    # written for are keyed `nobody`, which no task owner ever matches.
+    # Visit ownership rows even when no current task names their worktree.
     for row in owners:
         for name in row.worktrees:
             visit(row, name, None)
@@ -763,7 +707,7 @@ def audit(root: Path, day: str, gh=None, check_issues: bool = True, now: datetim
     for name, detail in gone.items():
         report.lines.append(missing_tree(handle, name, detail))
     if order:
-        # One clone behind every worktree; the gap is a property of the repo, not the tree.
+        # All worktrees share the same main and origin/main refs.
         report.lines.append(_push_gap(order[0]))
     report.lines.extend(group_reopens(report.reopen))
     report.lines.extend(str(o) for o in report.orphans)
@@ -773,14 +717,14 @@ def audit(root: Path, day: str, gh=None, check_issues: bool = True, now: datetim
     report.lines.extend(queue_lines)
     report.lines.extend(str(q) for q in report.queue)
     issues = ""
+    settings = load_settings(root, cfg.settings_path)
     if cfg.backlog:
         if check_issues:
-            report.issues.extend(issue_faults(tasks, cfg.backlog, gh))
+            report.issues.extend(issue_faults(tasks, cfg.backlog, gh, settings.lanes))
             report.lines.extend(str(f) for f in report.issues)
             issues = f" issues={len(report.issues)}"
         else:
             issues = " issues=off"
-    settings = load_settings(root, cfg.settings_path)
     report.lanes.extend(lane_faults(tasks, settings.lanes, cfg.settings_path))
     if settings.kanban and cfg.backlog and check_issues:
         report.kanban.extend(kanban_faults(tasks, cfg.backlog, settings.kanban, gh=gh))

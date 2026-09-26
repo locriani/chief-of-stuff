@@ -696,7 +696,7 @@ class ClaudeModelTest(unittest.TestCase):
 
     def test_model_and_effort_reach_the_claude_command(self):
         self.assertRegex(self.script(model="opus", effort="medium"),
-                         r"/opt/homebrew/bin/claude --agent implementer --name implementer-COpusM-01 "
+                         r"/opt/homebrew/bin/claude --plugin-dir \S+ --agent implementer --name implementer-COpusM-01 "
                          r"--model opus --effort medium --permission-mode plan ")
 
     def test_without_them_the_command_is_unchanged(self):
@@ -757,3 +757,89 @@ class TmuxLauncherTest(unittest.TestCase):
                 self.assertEqual(ss.main(["--cwd", str(tree), "--name", "codex-01", "--task", "Security audit",
                                           "--root", str(root), "--date", "2026-09-18", "--launcher", "tmux"]), 1)
             self.assertFalse((tree / ss.PROMPT_FILE).exists())
+
+
+class WorkerModeTest(unittest.TestCase):
+    def test_toml_requires_one_shot_for_every_dispatch(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "CLAUDE.md").write_text(CLAUDE + "- Settings: `chief-of-stuff.toml`\n")
+            (root / "chief-of-stuff.toml").write_text('[workers]\nmode = "one-shot"\n')
+            (root / "daily").mkdir()
+            (root / "daily" / "2026-09-18-tracker.md").write_text(TRACKER)
+            tree = root / "trees" / "wt-x"
+            tree.mkdir(parents=True)
+            args = ["--cwd", str(tree), "--name", "worker01", "--task", "Security audit",
+                    "--root", str(root), "--date", "2026-09-18", "--dry-run"]
+            with unittest.mock.patch("one_shot.run", return_value=0) as one_shot:
+                self.assertEqual(ss.main(args), 0)
+                self.assertEqual(one_shot.call_args.kwargs["task"], "Security audit")
+                self.assertTrue(one_shot.call_args.kwargs["dry_run"])
+            with contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as refused:
+                    ss.main(args + ["--interactive"])
+            self.assertEqual(refused.exception.code, 2)
+
+    def test_the_launch_is_handed_the_item_for_a_task_name(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "CLAUDE.md").write_text(CLAUDE + "- Settings: `chief-of-stuff.toml`\n")
+            (root / "chief-of-stuff.toml").write_text('[workers]\nmode = "one-shot"\n')
+            (root / "daily").mkdir()
+            (root / "daily" / "2026-09-18-tracker.md").write_text(
+                TRACKER.replace("| item | owner | state | since | due | checklist |\n|---|---|---|---|---|---|",
+                                "| name | item | owner | state | since | due | size | checklist |\n"
+                                "|---|---|---|---|---|---|---|---|", 1)
+                .replace("| Security audit | unassigned | open | 09:00 |  |",
+                         "| audit | Security audit | unassigned | open | 09:00 |  | M |", 1))
+            tree = root / "trees" / "wt-x"
+            tree.mkdir(parents=True)
+            with unittest.mock.patch("one_shot.run", return_value=0) as one_shot:
+                self.assertEqual(ss.main(["--cwd", str(tree), "--name", "worker01", "--task", "audit",
+                                          "--root", str(root), "--date", "2026-09-18", "--dry-run"]), 0)
+            self.assertEqual(one_shot.call_args.kwargs["task"], "Security audit")
+
+    def test_class_takes_the_suggested_entry_and_explicit_flags_win(self):
+        """#111: --class with no --model or --runtime launches the rotation's first entry, effort and all."""
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "CLAUDE.md").write_text(CLAUDE + "- Settings: `chief-of-stuff.toml`\n")
+            (root / "chief-of-stuff.toml").write_text(
+                '[workers]\nmode = "one-shot"\n\n[models.implement]\nrotation = ["claude:haiku@high", "codex:gpt-test"]\n')
+            (root / "daily").mkdir()
+            (root / "daily" / "2026-09-18-tracker.md").write_text(TRACKER)
+            tree = root / "trees" / "wt-x"
+            tree.mkdir(parents=True)
+            args = ["--cwd", str(tree), "--name", "worker01", "--task", "Security audit",
+                    "--root", str(root), "--date", "2026-09-18", "--dry-run", "--class", "implement"]
+            with unittest.mock.patch("one_shot.run", return_value=0) as one_shot:
+                self.assertEqual(ss.main(args), 0)
+                got = one_shot.call_args.kwargs
+                self.assertEqual((got["runtime"], got["model"], got["effort"]), ("claude", "haiku", "high"))
+                self.assertEqual(ss.main(args + ["--runtime", "codex", "--model", "gpt-test"]), 0)
+                got = one_shot.call_args.kwargs
+                self.assertEqual((got["runtime"], got["model"], got["effort"]), ("codex", "gpt-test", ""))
+            (root / "chief-of-stuff.toml").write_text(
+                '[workers]\nmode = "one-shot"\n\n[models.implement]\nrotation = ["codex:gpt-test@medium"]\n')
+            with unittest.mock.patch("one_shot.run", return_value=0) as one_shot:
+                self.assertEqual(ss.main(args), 0)
+                got = one_shot.call_args.kwargs
+                self.assertEqual((got["runtime"], got["model"], got["effort"]), ("codex", "gpt-test", ""))
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(ss.main(args[:-1] + ["review"]), 1)
+            self.assertIn("[models.review]", err.getvalue())
+
+    def test_cli_one_shot_selects_one_task_in_interactive_workspace(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "CLAUDE.md").write_text(CLAUDE + "- Settings: `chief-of-stuff.toml`\n")
+            (root / "chief-of-stuff.toml").write_text('[workers]\nmode = "interactive"\n')
+            (root / "daily").mkdir()
+            (root / "daily" / "2026-09-18-tracker.md").write_text(TRACKER)
+            tree = root / "trees" / "wt-x"
+            tree.mkdir(parents=True)
+            with unittest.mock.patch("one_shot.run", return_value=0) as one_shot:
+                self.assertEqual(ss.main(["--cwd", str(tree), "--name", "worker01",
+                                          "--task", "Security audit", "--root", str(root),
+                                          "--date", "2026-09-18", "--one-shot", "--dry-run"]), 0)
+                one_shot.assert_called_once()

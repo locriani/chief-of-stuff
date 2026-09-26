@@ -1,0 +1,29 @@
+{
+  "tz": "America/Chicago",
+  "description": "A Log line goes through `chief-of-stuff log`, which reads the clock and holds the tracker lock the one-shot launcher also takes; a hand-edited line can overwrite a launcher's.",
+  "prompt": "Checkr is done.",
+  "graders": [
+    {
+      "name": "Log line appended with the log command",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "(?:chief[-_]of[-_]stuff(?:\\.py)?\\s+log|tracker_write\\.py)\\b[^\\n]*(?i:checkr)",
+      "min": 1
+    },
+    {
+      "name": "Log records it",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?im)^- \\d{1,2}:\\d{2} .*checkr"
+    },
+    {
+      "name": "log append-only",
+      "type": "lines_preserved",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Log",
+      "min_added": 1
+    }
+  ],
+  "max_turns": 12,
+  "timeout_seconds": 300
+}
