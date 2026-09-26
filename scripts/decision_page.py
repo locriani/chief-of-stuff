@@ -353,12 +353,10 @@ def _draw(change: board_sources.Change, g: Graph, clone: Path, pages: Path) -> t
     return [DRIFT[0].sub(DRIFT[1], f.read_text()) for f in views], summary.read_text()
 
 
-def _graph(d: dict, ctx: Context | None, root: Path | None) -> str:
-    """MODULE GRAPH: branch-graph's drawing of the first change the references name that the forge knows, or one
-    line saying why there is none."""
-    change = next((c for r in d.get("references") or [] for ref in refs_in(str(r.get("value", "")))
-                   if ctx and (c := ctx.change(ref))), None)
-    head = "MODULE GRAPH"
+def _graph(change: board_sources.Change | None, graph: Graph | None, pages: Path | None, root: Path | None,
+           head: str = "MODULE GRAPH", none: str = "This decision names no change to graph.") -> str:
+    """The module graph section: branch-graph's drawing of `change`, or one line saying why there is none. The
+    decision and issue pages share it."""
     if change:
         kind = "MR" if change.ref.startswith("!") else "PR"
         head += f' · <a class="ref" data-k="{kind}" href="{escape(change.url)}">{escape(change.ref)}</a>'
@@ -367,15 +365,15 @@ def _graph(d: dict, ctx: Context | None, root: Path | None) -> str:
         return f"  <section>\n    <h2>{head}</h2>\n{body}\n  </section>\n"
 
     if not change:
-        return section('    <p class="card">This decision names no change to graph.</p>')
-    if not (ctx.graph and ctx.pages and root):
+        return section(f'    <p class="card">{escape(none)}</p>')
+    if not (graph and pages and root):
         return section('    <p class="card">The module graph is not configured: the settings have no <code>[graph]</code> table.</p>')
     try:
-        views, summary = _draw(change, ctx.graph, root / ctx.graph.clone, ctx.pages)
+        views, summary = _draw(change, graph, root / graph.clone, pages)
     except (OSError, ValueError) as e:
         return section(f'    <p class="card">The module graph is unavailable: {escape(str(e))}</p>')
     head += (f' <span class="cap">{len(views)} view{"s" * (len(views) != 1)} · '
-             f"at most {ctx.graph.max_nodes} modules each</span>")
+             f"at most {graph.max_nodes} modules each</span>")
     figures = []
     for n, mmd in enumerate(views, 1):
         title = re.match(r"%% view: (.*)", mmd)
@@ -483,7 +481,10 @@ def render(d: dict, day: str, forge: Backlog | GitHubBacklog | None = None, root
     yes = f"\n    <p>{md(d['yes'])}</p>" if d.get("yes") else ""
     where = _figure(d["architecture"], link) if d.get("architecture") else ""
     where = _section("Where it sits", where) if where else ""
-    where += _graph(d, ctx, root)
+    # The first change the references name that the forge knows.
+    change = next((c for r in d.get("references") or [] for ref in refs_in(str(r.get("value", "")))
+                   if ctx and (c := ctx.change(ref))), None)
+    where += _graph(change, ctx and ctx.graph, ctx and ctx.pages, root)
     return (f"<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n"
             f"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
             f"<title>{escape(d['headline'])}</title>\n{HEAD}</head>\n<body>\n<main class=\"decision\">\n"
