@@ -4,6 +4,7 @@
 next and the last to now; a lane's last stage ends the row. A held task is hatched from now through the
 window, and an open task with an estimated end draws its remaining stages ahead as forecast. An open task at
 its lane's first stage with no move yet is queued: forecast only, after the running forecasts, in worker slots.
+Rows that share a tracker issue (a review loop's build/Review/Fix/Verify passes) merge into one row.
 Until a task's first `stage:` move, it moves on the one-shot launcher's lines: started → implement, completed → pr,
 HUMAN REVIEW NEEDED → review. A done task's last segment ends at its done time, not now.
 """
@@ -12,7 +13,7 @@ from __future__ import annotations
 
 import heapq
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
@@ -136,7 +137,28 @@ def build(log: list[Move], tasks, lanes: dict, held: set[str], ends: dict[str, d
         stages = [s for s in lane.stages if s not in terminal]
         out.append((t.kind, gantt.Row(t.issue.strip(), t.name.strip(), f"queued · {_clock(start + took, now)}",
                                       tuple(_ahead(stages, start, start + took)))))
-    return out
+    return _merge_issues(out)
+
+
+def _merge_issues(rows: list[tuple[str, gantt.Row]]) -> list[tuple[str, gantt.Row]]:
+    """Rows that share a non-empty ref (the task's issue) merge into one: every segment, sorted by start; the
+    name of whichever row started earliest; the status and note of whichever moved last (highest segment start,
+    ties keeping the later row); placed where the first of its rows was."""
+    groups: dict[str, list[int]] = {}
+    for i, (_, row) in enumerate(rows):
+        if row.ref:
+            groups.setdefault(row.ref, []).append(i)
+    out, drop = list(rows), set()
+    for idxs in groups.values():
+        if len(idxs) < 2:
+            continue
+        entries = [rows[i] for i in idxs]
+        name = min(entries, key=lambda e: e[1].segments[0].start)[1].name
+        status, last_row = max(enumerate(entries), key=lambda p: (p[1][1].segments[-1].start, p[0]))[1]
+        segs = tuple(sorted((g for _, r in entries for g in r.segments), key=lambda g: g.start))
+        out[idxs[0]] = (status, replace(last_row, name=name, segments=segs))
+        drop.update(idxs[1:])
+    return [item for i, item in enumerate(out) if i not in drop]
 
 
 def _span(win: gantt.Window) -> str:
