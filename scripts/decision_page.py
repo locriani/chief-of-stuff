@@ -327,6 +327,18 @@ def _run(cmd: list[str], timeout: int = 120) -> str:
     return out.stdout
 
 
+def fetch(change: board_sources.Change, clone: Path) -> str:
+    """Fetch the change's head into the clone; return its merge base with `origin/<base>`."""
+    if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", change.head):
+        raise ValueError("the forge gave no head commit")
+    n = change.ref[1:]
+    ref = f"refs/merge-requests/{n}/head" if change.ref.startswith("!") else f"pull/{n}/head"
+    # ponytail: the fetch runs synchronously on the GET that renders the page (up to minutes on a big clone); a
+    # background job if that bites.
+    _run(["git", "-C", str(clone), "fetch", "-q", "--end-of-options", "origin", ref, *([change.base] if change.base else [])])
+    return _run(["git", "-C", str(clone), "merge-base", "--end-of-options", f"origin/{change.base}", change.head]).strip()
+
+
 def _draw(change: board_sources.Change, g: Graph, clone: Path, pages: Path) -> tuple[list[str], str]:
     """(mermaid views, summary) from branch-graph for the change's head against its merge base, drawn once per commit
     and settings."""
@@ -334,14 +346,7 @@ def _draw(change: board_sources.Change, g: Graph, clone: Path, pages: Path) -> t
     out = pages / ".graphs" / f"{change.head}-{key}"
     summary = out / "summary.txt"
     if not summary.is_file():
-        if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", change.head):
-            raise ValueError("the forge gave no head commit")
-        n = change.ref[1:]
-        ref = f"refs/merge-requests/{n}/head" if change.ref.startswith("!") else f"pull/{n}/head"
-        # ponytail: the fetch and the tool run synchronously on the GET that renders the page (up to minutes on a
-        # big clone); a background job writing into .graphs if that bites.
-        _run(["git", "-C", str(clone), "fetch", "-q", "--end-of-options", "origin", ref, *([change.base] if change.base else [])])
-        base = _run(["git", "-C", str(clone), "merge-base", "--end-of-options", f"origin/{change.base}", change.head]).strip()
+        base = fetch(change, clone)
         out.mkdir(parents=True, exist_ok=True)
         said = _run(["branch-graph", "--repo", str(clone), "--base", base, "--head", change.head, "--root", g.root,
                      "--depth", str(g.depth), *(["--rules", str(clone / g.rules)] if g.rules else []),
