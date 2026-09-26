@@ -59,9 +59,10 @@ def moves() -> list[fc.Move]:
     return fc.moves(YESTERDAY_TRACKER, YESTERDAY, CT) + fc.moves(TODAY_TRACKER, TODAY, CT)
 
 
-def rows(ends: dict | None = None) -> dict[str, tuple[str, gantt.Row]]:
-    tasks = rb.parse_tracker(TODAY_TRACKER).tasks
-    built = fc.build(moves(), tasks, LANES, {"Cache warmup"}, ends or {}, NOW)
+def rows(ends: dict | None = None, durations: dict | None = None, slots: int = 1,
+         tracker: str = TODAY_TRACKER) -> dict[str, tuple[str, gantt.Row]]:
+    tasks = rb.parse_tracker(tracker).tasks
+    built = fc.build(moves(), tasks, LANES, {"Cache warmup"}, ends or {}, NOW, durations or {}, slots)
     return {row.name: (status, row) for status, row in built}
 
 
@@ -102,7 +103,7 @@ class BuildTest(unittest.TestCase):
         self.assertEqual((status, row.note), ("merged", "merged 00:41"))
         self.assertEqual([(g.category, g.start, g.end) for g in row.segments], [("merge", at(TODAY, "00:30"), at(TODAY, "00:41"))])
 
-    def test_a_task_without_a_move_has_no_row(self):
+    def test_a_task_without_a_move_or_a_duration_has_no_row(self):
         self.assertNotIn("Session timeout", rows())
 
     def test_an_estimated_end_lays_the_remaining_stages_out_as_forecast(self):
@@ -116,6 +117,47 @@ class BuildTest(unittest.TestCase):
     def test_a_held_task_gets_no_forecast(self):
         _, row = rows({"Warm the pool": NOW + 4 * H})["Cache warmup"]
         self.assertNotIn("forecast", [g.kind for g in row.segments])
+
+
+QUEUED = TODAY_TRACKER.replace("| Session timeout |", "| Export format | Export CSV | unassigned | open | 2026-09-26 |  | M | build | implement | #112 | c |\n| Session timeout |")
+
+
+class QueueTest(unittest.TestCase):
+    """Open tasks at their lane's first stage with no move yet: forecast only, after the running forecasts, in tracker order."""
+
+    def queued(self, slots: int = 1, ends: dict | None = None) -> dict[str, tuple[str, gantt.Row]]:
+        return rows(ends if ends is not None else {"Cap uploads": NOW + 4 * H},
+                    {"Export CSV": 5 * H, "Pick a timeout": 30 * H}, slots, QUEUED)
+
+    def test_one_slot_runs_them_back_to_back_after_the_running_forecast(self):
+        got = self.queued()
+        export, timeout = got["Export format"][1], got["Session timeout"][1]
+        self.assertEqual((export.segments[0].start, export.segments[-1].end), (NOW + 4 * H, NOW + 9 * H))
+        self.assertEqual((timeout.segments[0].start, timeout.segments[-1].end), (NOW + 9 * H, NOW + 39 * H))
+        self.assertEqual({g.kind for g in export.segments + timeout.segments}, {"forecast"})
+        self.assertEqual([g.category for g in export.segments], ["implement", "pr", "review", "triage", "merge"])
+        self.assertEqual((got["Export format"][0], export.ref, export.note), ("open", "#112", "queued · ~11:10"))
+        self.assertEqual(timeout.note, "queued · Sun")
+        self.assertEqual(list(got)[-2:], ["Export format", "Session timeout"])
+
+    def test_free_slots_start_now(self):
+        got = self.queued(slots=2)
+        self.assertEqual(got["Export format"][1].segments[0].start, NOW)
+        self.assertEqual(got["Session timeout"][1].segments[0].start, NOW + 4 * H)
+
+    def test_more_running_than_slots_waits_for_a_slot(self):
+        got = self.queued(ends={"Cap uploads": NOW + 4 * H, "Warm the pool": NOW + 2 * H})
+        # The held task draws no forecast and so holds no slot: one running forecast, one slot.
+        self.assertEqual(got["Export format"][1].segments[0].start, NOW + 4 * H)
+
+    def test_nothing_is_laid_out_past_the_longest_window(self):
+        got = rows({}, {"Export CSV": 200 * H, "Pick a timeout": H}, 1, QUEUED)
+        self.assertIn("Export format", got)
+        self.assertNotIn("Session timeout", got)
+
+    def test_queued_rows_count_as_queued(self):
+        html = fc.section(list(self.queued().values()), NOW)
+        self.assertIn("1 merged · 1 running · 1 held · 2 queued · Thu 24 02:10 → Thu 1 02:10", html)
 
 
 class SectionTest(unittest.TestCase):
@@ -137,6 +179,11 @@ class SectionTest(unittest.TestCase):
         self.assertNotIn("24 hours", html)
         self.assertIn("7 days", html)
 
+    def test_the_legend_forecast_swatch_wears_implement(self):
+        self.assertIn(".gantt-legend .gantt-forecast:not([data-cat]){--c:var(--stage-implement)}", fc.css())
+        self.assertIn(".gantt-bar.gantt-forecast{background:repeating-linear-gradient(135deg,color-mix(in srgb,var(--c) 40%,transparent)",
+                      fc.css())
+
     def test_bars_take_the_board_stage_tokens(self):
         css = fc.css()
         for stage in gantt.PALETTE:
@@ -157,6 +204,12 @@ class BoardTest(unittest.TestCase):
         self.assertLess(flow, today)
         self.assertIn('title="implement Fri 22:00–Sat 01:00', html)
         self.assertIn("gantt-hold", html)
+
+    def test_queued_tasks_take_their_size_from_closed_tasks(self):
+        tracker = TODAY_TRACKER.replace("| Locale fallback | Fall back to en | Robin | done 00:41 |", "| Locale fallback | Fall back to en | Robin | done 00:10–00:41 |")
+        html = rb.render(tracker, "", self.cfg(), NOW, lanes=LANES, tracker_day=TODAY, kanban=KANBAN)
+        self.assertIn("Session timeout", html[html.index("Flow · 24 hours"):])
+        self.assertIn("queued · ~", html)
 
     def test_no_stage_line_no_flow_and_no_chart_css(self):
         plain = TODAY_TRACKER.split("- 00:30")[0]
