@@ -4,6 +4,7 @@ import contextlib
 import io
 import sys
 import tempfile
+import tomllib
 import unittest
 from datetime import date
 from pathlib import Path
@@ -12,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import init_workspace as init  # noqa: E402
 import install_model_guidance as guidance  # noqa: E402
 from render_board import parse_coordinator  # noqa: E402
-from settings import load as load_settings  # noqa: E402
+from settings import _models, load as load_settings  # noqa: E402
 
 
 class InitWorkspaceTest(unittest.TestCase):
@@ -47,6 +48,11 @@ class InitWorkspaceTest(unittest.TestCase):
         code, _, err = self.run_init("--worker-mode", "one-shot")
         self.assertEqual(code, 0, err)
         self.assertEqual(load_settings(self.root, "chief-of-stuff.toml").workers.mode, "one-shot")
+        # #111: the example rotation is commented out, so a fresh workspace keeps the markdown guidance.
+        self.assertEqual(load_settings(self.root, "chief-of-stuff.toml").models, {})
+        example = "\n".join(line.removeprefix("# ") for line in
+                            (self.root / "chief-of-stuff.toml").read_text().splitlines() if line.startswith("# "))
+        self.assertIn("implement", _models(tomllib.loads(example)["models"]))
 
     def test_existing_claude_content_is_preserved_and_a_second_init_refuses(self):
         claude = self.root / "CLAUDE.md"

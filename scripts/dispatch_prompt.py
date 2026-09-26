@@ -186,6 +186,11 @@ REPORT = ("Report: when the task is finished, reply to the coordinator with what
           "(branch and worktree), what you did not do, and `Next:` — either the one thing you are "
           "starting now, or `idle and available`. Never neither. If direct messaging fails, send via mailbox: "
           '`python3 {inbox_script} send --to "{coord_mailbox}" --from "<your_ref_or_name>" --type progress --body "<report>"`.')
+WRITING_RULE = ("Markdown: everything you write for a person to read is well-formed markdown: documents, "
+                "issue and PR/MR bodies, review and issue comments, commit message bodies, and decision JSON "
+                "text fields. One paragraph is one line; never hard-wrap prose at any column, because renderers "
+                "compact or break wrapped lines unpredictably. Blank lines separate blocks. Lists and tables use "
+                "real markdown syntax. Code and commands go in fences with a language. Links are markdown links.")
 # Workers commit on their branches and open PRs; the reviewer and user handle review and merge.
 COMMITS = ("Commits: Commit small and often on your own branch — uncommitted work is how work gets "
            "lost. Code reaches main only through a pull request: push the branch and open one "
@@ -334,6 +339,7 @@ def compose(root: Path, day: str | None, task: str, worktree: Path | None = None
             "Do not register, poll a mailbox, schedule checks, start another agent, or send messages.",
             "Do not wait for a plan approval or for a reply. If a decision, missing access, or another blocker prevents completion, stop and report human_review.",
             board_rule,
+            WRITING_RULE,
             f"Task: {item}",
         ]
         if rows[0].checklist.strip():
@@ -412,7 +418,7 @@ def compose(root: Path, day: str | None, task: str, worktree: Path | None = None
         report_text = report_text.replace("If direct messaging fails, send via mailbox:", "Send via mailbox:")
         header_text = header_text.replace("When direct messaging is unavailable, send your ask via:", "Send your ask via:")
 
-    lines = [header_text, board_rule, f"Task: {item}"]
+    lines = [header_text, board_rule, WRITING_RULE, f"Task: {item}"]
     if rows[0].checklist.strip():
         lines.append(f"Requirement: {_clean('the checklist cell', rows[0].checklist.strip())}")
     if issue:

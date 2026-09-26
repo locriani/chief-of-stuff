@@ -64,9 +64,9 @@ SPAWN_SESSION = PLUGIN_ROOT / "scripts" / "spawn_session.py"
 # from code, never from the agent. git and curl stay off the allowlist — the scripts call them.
 SCRIPTS = ("render_board.py", "pages.py", "probe_health.py", "audit_tasks.py", "make_worktree.py",
            "spawn_session.py", "notify.py", "inbox.py", "backlog.py", "kanban.py", "process_status.py",
-           "decision_page.py", "tracker_write.py", "merge_approved.py", "review_threads.py")
+           "decision_page.py", "tracker_write.py", "merge_approved.py", "review_threads.py", "install_model_guidance.py")
 OPERATIONS = ("board", "pages", "health", "audit", "worktree", "worker", "notify", "inbox",
-              "backlog", "kanban", "processes", "decision", "log", "merge-approved", "review-threads")
+              "backlog", "kanban", "processes", "decision", "log", "merge-approved", "review-threads", "models")
 
 
 def allowed_tools(root: Path) -> list[str]:
@@ -689,7 +689,70 @@ def _resume_block_matches(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]
                         else "/%s/ in no field of %d" % (g["pattern"], len(block)))
 
 
+def _md_kind(line: str) -> str:
+    s = line.strip()
+    if not s:
+        return "blank"
+    if s.startswith(("```", "~~~")):
+        return "fence"
+    if re.match(r"#{1,6}\s", s):
+        return "heading"
+    if re.match(r"(?:[-*+]|\d+[.)])\s", s):
+        return "list"
+    return "table" if s.startswith("|") else "quote" if s.startswith(">") else "prose"
+
+
+def _markdown_unwrapped(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
+    """Enforces "One paragraph is one line; never hard-wrap prose at any column.", "Blank lines
+    separate blocks." and, for each string in `fenced`, "Code and commands go in fences with a
+    language." over `section` of `path` (the whole file when no section is named).
+
+    A wrap is a prose line ending without terminal punctuation followed by a lowercase continuation.
+    Two adjacent non-blank lines are one block only when both are list items, table rows or quote
+    lines; anything else touching is a missing blank line. Fenced code is skipped.
+    """
+    text = _read(rec.fixture_dir, g["path"])
+    if text is None:
+        return False, f"{g['path']} missing"
+    lines = text.splitlines()
+    if "section" in g:
+        level = len(g["section"]) - len(g["section"].lstrip("#"))
+        start = next((i for i, l in enumerate(lines) if l.strip() == g["section"].strip()), None)
+        if start is None:
+            return False, f"{g['path']}: no {g['section']!r}"
+        end = next((j for j in range(start + 1, len(lines))
+                    if re.match(rf"#{{1,{level}}}\s", lines[j])), len(lines))
+        lines = lines[start:end]
+    problems, paragraphs, fenced, prev, code = [], 0, False, ("blank", ""), []
+    for line in lines:
+        kind = _md_kind(line)
+        if fenced:
+            fenced = kind != "fence"
+            if not fenced:
+                prev = ("fence", line)
+            elif re.match(r"\s*(?:```|~~~)\s*\w", prev[1]):
+                code.append(line)
+            continue
+        paragraphs += kind == "prose"
+        was, prev_line = prev
+        if was != "blank" and kind != "blank":
+            if was == kind == "prose" and not re.search(r"[.!?:;][)\]\"'*_`]*$", prev_line.rstrip()) \
+                    and re.match(r"\s*[a-z]", line):
+                problems.append(f"wrapped: {prev_line.strip()[-30:]!r} / {line.strip()[:30]!r}")
+            elif not (was == kind and kind in ("list", "table", "quote")):
+                problems.append(f"no blank line: {prev_line.strip()[:30]!r} / {line.strip()[:30]!r}")
+        fenced = kind == "fence"
+        prev = (kind, line)
+    problems += [f"not in a fence with a language: {c!r}" for c in g.get("fenced", [])
+                 if not any(c in line for line in code)]
+    want = int(g.get("min_paragraphs", 1))
+    if paragraphs < want:
+        problems.append(f"{paragraphs} prose line(s); want >= {want}")
+    return (not problems), ("; ".join(problems[:4]) if problems else f"{paragraphs} paragraph(s), none wrapped")
+
+
 FILE_GRADERS = {
+    "markdown_unwrapped": _markdown_unwrapped,
     "file_moved": _file_moved,
     "file_unchanged": _file_unchanged,
     "file_matches": _file_matches,
