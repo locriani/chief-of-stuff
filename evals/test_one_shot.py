@@ -82,6 +82,15 @@ class CommandTest(unittest.TestCase):
             args = one_shot.command("codex", "/bin/fake", tree, tree / "d.md", agent_type=None, model="", effort="")
             self.assertEqual(args[args.index("--add-dir") + 1], str((base / ".git").resolve()))
 
+    def test_codex_reaches_the_network_inside_workspace_write(self):
+        # Remote-facing one-shots fetch, push, and call forge APIs; file writes stay confined.
+        args = one_shot.command("codex", "/bin/fake", Path("/tmp/one-shot-tree"), Path("/tmp/d.md"),
+                                agent_type=None, model="", effort="")
+        pairs = list(zip(args, args[1:]))
+        self.assertIn(("-c", "sandbox_workspace_write.network_access=true"), pairs)
+        self.assertIn(("--sandbox", "workspace-write"), pairs)
+        self.assertFalse([a for a in args if "danger" in a])
+
     def test_agy_print_takes_the_prompt_as_its_value(self):
         # agy's --print takes a value: a flag after it becomes the prompt, and agy exits 2.
         dispatch = Path("/tmp/one-shot-tree/.chief-of-stuff/dispatch.md")
