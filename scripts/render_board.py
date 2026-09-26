@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from backlog import Backlog, BacklogError, GitHubBacklog, issue_ref, parse_backlog  # noqa: E402
 from settings import SettingsError, load as load_settings  # noqa: E402
 import decision_page  # noqa: E402
+import gantt  # noqa: E402
 
 HHMM = re.compile(r"^(\d{1,2}):(\d{2})$")
 # Accept both separators in a completed time range.
@@ -53,7 +54,6 @@ RESUME_CAP = 300    # writer limit from agent rules
 CLAUSE_TIME = re.compile(r"(?:^|(?<=\s)|(?<=\*\*))(?:at\s+)?(\d{1,2}:\d{2}):?(?=\s|$|[,;)])")
 REQ_LINE = re.compile(r"^(\s*)- \[([ xX])\]\s+(.*?)\s*$")
 EVIDENCE = " — evidence: "
-TICK_STEPS_H = (1, 2, 3, 4, 6)
 WEEK_DAYS = 7
 # Rolling 24-hour Today window.
 DAY_BEHIND = timedelta(hours=8)
@@ -1187,11 +1187,6 @@ def _esc(text: str) -> str:
     return html.escape(text, quote=True)
 
 
-def _pct(dt: datetime, a: datetime, b: datetime) -> float:
-    span = (b - a).total_seconds() or 1.0
-    return max(0.0, min(100.0, (dt - a).total_seconds() / span * 100.0))
-
-
 def _est_attrs(b: Bar) -> str:
     """A derived end is a citation only if its inputs are on the bar: position in the queue, the basis, the horizon or the size."""
     est = f' data-est="{b.est.i}/{b.est.n}" data-est-basis="{b.est.basis}" data-est-of="{_esc(b.est.of)}"' if b.est else ""
@@ -1358,7 +1353,7 @@ def grid_marks(axis_a: datetime, axis_b: datetime, kind: str) -> list[tuple[date
     across ~1100px, one every 44px, which reads as hatching rather than as a grid. It follows the tick
     step now, so the lines land under the labels whatever span the axis covers.
     """
-    step = _tick_step(axis_b - axis_a) if kind == "day" else timedelta(days=1)
+    step = gantt.tick_step(axis_b - axis_a, MAX_TICKS) if kind == "day" else timedelta(days=1)
     marks, at = [], axis_a
     last = axis_b if kind == "day" else axis_b - step
     while at <= last:
@@ -1371,7 +1366,6 @@ def grid_marks(axis_a: datetime, axis_b: datetime, kind: str) -> list[tuple[date
 
 def _bar_row(b: Bar, axis_a: datetime, axis_b: datetime, row_class: str = "row") -> str:
     """One task as a positioned row. A top-level bar and a sublane inside a fold are the same markup."""
-    left, right = _pct(b.start, axis_a, axis_b), _pct(b.end, axis_a, axis_b)
     edge = (" clamped" if b.end > axis_b else "") + (" clamped-left" if b.end < axis_a else "")
     classes = f"bar {b.kind}" + (" open-end" if b.end_src == "deadline" else "") + (" derived" if b.end_src == "derived" else "") + edge
     label = f' data-label="{_esc(b.label)}"' if b.label else ""
@@ -1380,7 +1374,7 @@ def _bar_row(b: Bar, axis_a: datetime, axis_b: datetime, row_class: str = "row")
     return (
         f'<div class="{row_class}"><div class="name">{_esc(b.name)}</div><div class="track">'
         f'<div class="{classes}" data-name="{_esc(b.name)}" data-owner="{_esc(b.owner)}" data-item="{_esc(b.item)}" data-start="{_iso(b.start)}" data-end="{_iso(b.end)}" '
-        f'data-start-src="{b.start_src}" data-end-src="{b.end_src}"{label}{_est_attrs(b)}{title} style="left:{left:.2f}%;width:{max(right - left, 0.6):.2f}%">{text}</div></div></div>'
+        f'data-start-src="{b.start_src}" data-end-src="{b.end_src}"{label}{_est_attrs(b)}{title} style="{gantt.place(b.start, b.end, axis_a, axis_b, 0.6)}">{text}</div></div></div>'
     )
 
 
@@ -1437,8 +1431,7 @@ def _load_row(cells: list[dict], axis_a: datetime, axis_b: datetime) -> str:
     peak = max([max(c["committed"], c["available"]) for c in cells] + [1])
     out = ['<div class="load" data-load="week">']
     for c in cells:
-        left = _pct(datetime.combine(c["day"], time(0, 0), tzinfo=axis_a.tzinfo), axis_a, axis_b)
-        right = _pct(datetime.combine(c["day"] + timedelta(days=1), time(0, 0), tzinfo=axis_a.tzinfo), axis_a, axis_b)
+        day_a = datetime.combine(c["day"], time(0, 0), tzinfo=axis_a.tzinfo)
         over = 1 if c["committed"] > c["available"] else 0
         spare = max(c["available"] - c["committed"], 0)
         bits = [("due", c["due"]), ("derived", c["derived"])] if not over else [
@@ -1453,7 +1446,7 @@ def _load_row(cells: list[dict], axis_a: datetime, axis_b: datetime) -> str:
             f'<div class="load-cell" data-day="{c["day"].isoformat()}" data-committed="{c["committed"]}" '
             f'data-due="{c["due"]}" data-derived="{c["derived"]}" data-unsized="{c["unsized"]}" '
             f'data-available="{c["available"]}" data-over="{over}" '
-            f'style="left:{left:.2f}%;width:{max(right - left, 0.6):.2f}%">'
+            f'style="{gantt.place(day_a, day_a + timedelta(days=1), axis_a, axis_b, 0.6)}">'
             f'<span class="at">{_dur(timedelta(minutes=c["committed"]))}{" ⚑" if over else ""}</span>'
             f'<span class="col">{fills}</span></div>'
         )
@@ -1466,11 +1459,10 @@ def _body_row(body: Body, axis_a: datetime, axis_b: datetime) -> str:
     deadline row above them reads as if they were until they are drawn."""
     segs = []
     for ev in body.segments:
-        left, right = _pct(ev.start, axis_a, axis_b), _pct(ev.end, axis_a, axis_b)
         segs.append(
             f'<div class="seg {ev.kind}" data-body="{ev.kind}" data-start="{_iso(ev.start)}" data-end="{_iso(ev.end)}" '
             f'title="{_esc(ev.title)} {ev.start.strftime("%H:%M")}–{ev.end.strftime("%H:%M")}" '
-            f'style="left:{left:.2f}%;width:{max(right - left, 0.6):.2f}%"><em>{_esc(ev.kind)}</em></div>'
+            f'style="{gantt.place(ev.start, ev.end, axis_a, axis_b, 0.6)}"><em>{_esc(ev.kind)}</em></div>'
         )
     return f'<div class="row body"><div class="name">body</div><div class="track">{"".join(segs)}</div></div>'
 
@@ -1479,7 +1471,7 @@ def _strip(rows: list["Body | Swim | Bar | Summary"], axis_a: datetime, axis_b: 
     out = [f'<div class="strip" data-strip="{kind}" data-axis-start="{_iso(axis_a)}" data-axis-end="{_iso(axis_b)}">']
     out.append('<div class="axis">')
     for at, label in ticks:
-        out.append(f'<span class="tick" style="left:{_pct(at, axis_a, axis_b):.2f}%">{_esc(label)}</span>')
+        out.append(f'<span class="tick" style="left:{gantt.position(at, axis_a, axis_b):.2f}%">{_esc(label)}</span>')
     out.append("</div>")
     out.append('<div class="rows">')
     for row in rows:
@@ -1492,7 +1484,6 @@ def _strip(rows: list["Body | Swim | Bar | Summary"], axis_a: datetime, axis_b: 
                 f'<div class="name">{_esc(row.name)} · {row.count}</div><div class="track"></div></div>'
             )
             continue
-        left, right = _pct(row.start, axis_a, axis_b), _pct(row.end, axis_a, axis_b)
         edge = (" clamped" if row.end > axis_b else "") + (" clamped-left" if row.end < axis_a else "")
         if isinstance(row, Bar):
             out.append(_bar_row(row, axis_a, axis_b))
@@ -1507,7 +1498,7 @@ def _strip(rows: list["Body | Swim | Bar | Summary"], axis_a: datetime, axis_b: 
             '<details class="folded"><summary>'
             f'<div class="row {sm.attr}-row"><div class="name">{_esc(sm.name or _tasks(len(sm.members)))}</div><div class="track">'
             f'<div class="bar{hatch} {sm.attr}{edge}" data-{sm.attr}="{_esc(sm.key)}" data-count="{len(sm.members)}" data-start="{_iso(sm.start)}" data-end="{_iso(sm.end)}" '
-            f'style="left:{left:.2f}%;width:{max(right - left, 0.6):.2f}%" title="{_esc(names)}"><em>{_esc(sm.label)}</em>'
+            f'style="{gantt.place(row.start, row.end, axis_a, axis_b, 0.6)}" title="{_esc(names)}"><em>{_esc(sm.label)}</em>'
             + "".join(_member(m) for m in sm.members)
             + "</div></div></div></summary>"
             + "".join(_bar_row(m, axis_a, axis_b, "row sub") for m in sm.members)
@@ -1515,19 +1506,18 @@ def _strip(rows: list["Body | Swim | Bar | Summary"], axis_a: datetime, axis_b: 
         )
     out.append('<div class="overlay">')
     for at, major in grid_marks(axis_a, axis_b, kind):
-        out.append(f'<div class="grid{"" if major else " half"}" style="left:{_pct(at, axis_a, axis_b):.2f}%"></div>')
+        out.append(f'<div class="grid{"" if major else " half"}" style="left:{gantt.position(at, axis_a, axis_b):.2f}%"></div>')
     for ev in events:
-        left, right = _pct(ev.start, axis_a, axis_b), _pct(ev.end, axis_a, axis_b)
-        out.append(f'<div class="band" data-band="{_esc(ev.title)}" style="left:{left:.2f}%;width:{max(right - left, 0.3):.2f}%"></div>')
+        out.append(f'<div class="band" data-band="{_esc(ev.title)}" style="{gantt.place(ev.start, ev.end, axis_a, axis_b, 0.3)}"></div>')
     drawn = [d for d in deadlines if axis_a <= d.at <= axis_b]
     for d in drawn:
-        out.append(f'<div class="dline" data-deadline-name="{_esc(d.name)}" style="left:{_pct(d.at, axis_a, axis_b):.2f}%"></div>')
+        out.append(f'<div class="dline" data-deadline-name="{_esc(d.name)}" style="left:{gantt.position(d.at, axis_a, axis_b):.2f}%"></div>')
     out.append('<div class="nowline" hidden></div></div>')
     out.append("</div>")
     # Deadline labels sit below the rows, one line each, so they never share a line with each other or the axis.
     callouts = []
     for d in drawn:
-        pct = _pct(d.at, axis_a, axis_b)
+        pct = gantt.position(d.at, axis_a, axis_b)
         span = f'<span class="right" style="right:{100 - pct:.2f}%">' if pct > 70 else f'<span style="left:{pct:.2f}%">'
         callouts.append(f'<div class="callout">{span}{_esc(d.name)}</span></div>')
     beyond = [d for d in deadlines if d.at > axis_b]
@@ -1656,14 +1646,6 @@ def week_rows(active: list[Task], cfg: Config, now: datetime, week_a: datetime, 
     return [row for _, row in sorted(keyed, key=lambda kr: kr[0])]
 
 
-def _tick_step(span: timedelta) -> timedelta:
-    hours = span.total_seconds() / 3600
-    for step in TICK_STEPS_H:
-        if int(hours // step) + 1 <= MAX_TICKS:
-            return timedelta(hours=step)
-    return timedelta(hours=TICK_STEPS_H[-1])
-
-
 def _inline(text: str) -> str:
     """Escape, then render the three inline Markdown marks requirement lists use: `code`, **strong**, *em*."""
     out = _esc(text)
@@ -1726,13 +1708,8 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime,
     hour = now.replace(minute=0, second=0, microsecond=0)
     axis_a, axis_b = hour - DAY_BEHIND, hour + DAY_AHEAD
     est = estimates(active, cfg, now, history(tasks, cfg, now))
-    day_bars, day_folded = today_rows(active, cfg, now, axis_b, est, _tick_step(axis_b - axis_a))
-    step = _tick_step(axis_b - axis_a)
-    day_ticks = []
-    t = axis_a
-    while t <= axis_b:
-        day_ticks.append((t, t.strftime("%H:%M")))
-        t += step
+    day_bars, day_folded = today_rows(active, cfg, now, axis_b, est, gantt.tick_step(axis_b - axis_a, MAX_TICKS))
+    day_ticks = gantt.ticks(axis_a, axis_b, gantt.tick_step(axis_b - axis_a, MAX_TICKS), "%H:%M", origin=axis_a)
     day_events = [e for e in events if e.end > axis_a and e.start < axis_b]
     on_axis = sorted((e for e in body_events if e.end > axis_a and e.start < axis_b), key=lambda e: e.start)
     day_body: list[Body] = [Body(tuple(on_axis))] if on_axis else []
@@ -1750,11 +1727,7 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime,
     week_bars = [r for r in week if isinstance(r, Bar)]
     week_groups = [r for r in week if isinstance(r, Summary) and r.attr == "group"]
     load_cells = week_load([week_bar(l, cfg, now, est) for l in active], body_events, week_a, week_b, now, est, history(tasks, cfg, now))
-    week_ticks = []
-    t = week_a
-    while t < week_b:
-        week_ticks.append((t, t.strftime("%a %d")))
-        t += timedelta(days=1)
+    week_ticks = [(t, label) for t, label in gantt.ticks(week_a, week_b, timedelta(days=1), "%a %d") if t < week_b]
 
     def item_cell(item: str, label: str) -> str:
         short = label
