@@ -18,7 +18,9 @@ server thing"). The JSON holds:
 What the JSON leaves out the page reads from the workspace (render_board.decision_context): `asked` from the first
 Log line naming `decision-<slug>`, else the file's mtime; the answer and its chip from the latest Decisions row naming
 it, the key being the option its words name; a reference's status from the tracker's stage and board_sources. Rendering
-the board re-renders every page, and `decisions.html` lists them (Decisions.dc.html).
+the board re-renders every page, and `decisions.html` lists them (Decisions.dc.html). MODULE GRAPH is drawn by the
+branch-graph CLI, into `<pages dir>/.graphs/<sha>/`, for the first change the references name that board_sources knows,
+from the clone the settings' `[graph]` table names.
 
 A timeline `kind` colours its dot: a lane stage (implement, pr, review, triage, fix, verify, merge), `hot` or
 `designed`. A node's `state` is deployed (the default), inflight, designed or external; an edge's is deployed,
@@ -34,7 +36,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
@@ -44,6 +48,7 @@ from pathlib import Path
 import board_sources
 from backlog import Backlog, BacklogError, GitHubBacklog, backlog_from_config
 from pages import PagesError, from_config
+from settings import Graph
 
 # The board's fonts (render_board.FONTS; render_board imports this module, so it cannot import that one).
 FONTS = "https://fonts.googleapis.com/css2?family=Alegreya+Sans:wght@400;500;600&family=Cormorant+SC:wght@600&display=swap"
@@ -297,6 +302,72 @@ def _figure(arch: dict, linker: Linker) -> str:
             + f"\n      </svg></div>\n      <figcaption>{chips}{not_drawn}</figcaption>\n    </figure>")
 
 
+MERMAID = ('<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>'
+           "<script>mermaid.initialize({startOnLoad:true})</script>")
+LEGEND = (("new", "NEW"), ("changed", "CHANGED"), ("removed", "REMOVED"), ("drift", "DRIFT"))
+
+
+def _run(cmd: list[str], timeout: int = 120) -> str:
+    """stdout, or ValueError with the last line of stderr."""
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL,
+                             env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+    except subprocess.TimeoutExpired:
+        raise ValueError(f"{cmd[0]} timed out after {timeout}s") from None
+    if out.returncode:
+        raise ValueError((out.stderr.strip().splitlines() or [f"{cmd[0]} exited {out.returncode}"])[-1])
+    return out.stdout
+
+
+def _draw(change: board_sources.Change, g: Graph, clone: Path, out: Path) -> tuple[str, str]:
+    """(mermaid, summary) from branch-graph for the change's head against its merge base, drawn once per commit."""
+    summary = out / "summary.txt"
+    if not summary.is_file():
+        if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", change.head):
+            raise ValueError("the forge gave no head commit")
+        n = change.ref[1:]
+        ref = f"refs/merge-requests/{n}/head" if change.ref.startswith("!") else f"pull/{n}/head"
+        # ponytail: the fetch and the tool run synchronously on the GET that renders the page (up to minutes on a
+        # big clone); a background job writing into .graphs if that bites.
+        _run(["git", "-C", str(clone), "fetch", "-q", "--end-of-options", "origin", ref, *([change.base] if change.base else [])])
+        base = _run(["git", "-C", str(clone), "merge-base", "--end-of-options", f"origin/{change.base}", change.head]).strip()
+        out.mkdir(parents=True, exist_ok=True)
+        said = _run(["branch-graph", "--repo", str(clone), "--base", base, "--head", change.head, "--root", g.root,
+                     "--depth", str(g.depth), *(["--rules", str(clone / g.rules)] if g.rules else []),
+                     "--out", str(out / "page.html")])
+        summary.write_text((said.splitlines() or [""])[0])  # written last: it marks the drawing done
+    return (out / "page.mmd").read_text(), summary.read_text()
+
+
+def _graph(d: dict, ctx: Context | None, root: Path | None) -> str:
+    """MODULE GRAPH: branch-graph's drawing of the first change the references name that the forge knows, or one
+    line saying why there is none."""
+    change = next((c for r in d.get("references") or [] for ref in refs_in(str(r.get("value", "")))
+                   if ctx and (c := ctx.change(ref))), None)
+    head = "MODULE GRAPH"
+    if change:
+        kind = "MR" if change.ref.startswith("!") else "PR"
+        head += f' · <a class="ref" data-k="{kind}" href="{escape(change.url)}">{escape(change.ref)}</a>'
+
+    def section(body: str) -> str:
+        return f"  <section>\n    <h2>{head}</h2>\n{body}\n  </section>\n"
+
+    if not change:
+        return section('    <p class="card">This decision names no change to graph.</p>')
+    if not (ctx.graph and ctx.pages and root):
+        return section('    <p class="card">The module graph is not configured: the settings have no <code>[graph]</code> table.</p>')
+    try:
+        mmd, summary = _draw(change, ctx.graph, root / ctx.graph.clone, ctx.pages / ".graphs" / change.head)
+    except (OSError, ValueError) as e:
+        return section(f'    <p class="card">The module graph is unavailable: {escape(str(e))}</p>')
+    chips = "".join(f'<span class="chip {k}">{label}</span>' for k, label in LEGEND)
+    rest = re.search(r"(\d+) more modules untouched", mmd)
+    rest = f"<span>Not drawn: {rest[1]} modules.</span>" if rest else ""
+    return section(f'    <figure class="card fig">\n      <div class="scroll"><pre class="mermaid">{escape(mmd)}</pre></div>\n'
+                   f'      <figcaption>{chips}<span class="sum">{escape(summary)}</span>{rest}</figcaption>\n'
+                   f"    </figure>\n    {MERMAID}")
+
+
 def saved(d: dict) -> dict | None:
     """The answer the user saved on the page (pages.py), until a Decisions row takes it up."""
     return d["answer"] if isinstance(d.get("answer"), dict) else None
@@ -388,6 +459,7 @@ def render(d: dict, day: str, forge: Backlog | GitHubBacklog | None = None, root
     yes = f"\n    <p>{md(d['yes'])}</p>" if d.get("yes") else ""
     where = _figure(d["architecture"], link) if d.get("architecture") else ""
     where = _section("Where it sits", where) if where else ""
+    where += _graph(d, ctx, root)
     return (f"<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n"
             f"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
             f"<title>{escape(d['headline'])}</title>\n{HEAD}</head>\n<body>\n<main class=\"decision\">\n"
@@ -510,6 +582,8 @@ class Context:
     hold: str = ""
     user: str = ""
     forge: Backlog | GitHubBacklog | None = None
+    graph: Graph | None = None    # the settings' [graph], which draws MODULE GRAPH into pages/.graphs
+    pages: Path | None = None
 
     def when(self, at: datetime) -> str:
         at = at.astimezone(self.now.tzinfo)
@@ -780,6 +854,12 @@ figcaption .chip.inflight{border:1.5px dashed var(--inflight);color:var(--inflig
 figcaption .chip.designed{border:1.5px dotted var(--designed);color:var(--designed);background:var(--designed-soft)}
 figcaption .chip.hot{border:2px solid var(--dl);color:var(--dl)}
 figcaption .chip.external{border:1.5px solid var(--ext);color:var(--ext-ink);border-radius:9px}
+figcaption .chip.new{border:2px solid var(--stage-review);color:var(--fg);background:color-mix(in srgb,var(--stage-review) 14%,var(--surface))}
+figcaption .chip.changed{border:2px solid var(--stage-implement);color:var(--fg);background:color-mix(in srgb,var(--stage-implement) 14%,var(--surface))}
+figcaption .chip.removed{border:1.5px dashed var(--stage-fix);color:var(--fg);background:color-mix(in srgb,var(--stage-fix) 14%,var(--surface))}
+figcaption .chip.drift{border:2.5px solid var(--stage-triage);color:var(--fg)}
+figcaption .sum{font-family:ui-monospace,monospace}
+pre.mermaid{margin:0}
 svg text{font-family:"Alegreya Sans",system-ui,sans-serif;fill:var(--fg)}
 svg .t{font-size:14px;font-weight:700} svg .t-ext{fill:var(--ext-ink)}
 svg .tm{font-family:ui-monospace,monospace;font-size:10.5px;fill:var(--link)}

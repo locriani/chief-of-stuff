@@ -324,3 +324,45 @@ class ModelsTest(unittest.TestCase):
         self.assertEqual(str(st.pick(rotation, not_family="codex")), "claude:sonnet")
         with self.assertRaisesRegex(st.SettingsError, "rotation exhausted"):
             st.pick(rotation, after="claude:sonnet", not_family="claude")
+
+
+class GraphSettingsTest(unittest.TestCase):
+    """The decision page's MODULE GRAPH: which clone branch-graph reads, its import root, depth and rules."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+
+    def load(self, text: str) -> st.Settings:
+        (self.root / "s.toml").write_text(text)
+        return st.load(self.root, "s.toml")
+
+    def test_absent_graph_is_not_configured(self):
+        self.assertIsNone(st.load(self.root, None).graph)
+        self.assertIsNone(self.load('[workers]\nmode = "one-shot"\n').graph)
+
+    def test_clone_and_root_with_the_default_depth_and_no_rules(self):
+        got = self.load('[graph]\nclone = "repos/app"\nroot = "agent"\n').graph
+        self.assertEqual((got.clone, got.root, got.depth, got.rules), ("repos/app", "agent", 2, None))
+
+    def test_depth_and_rules_are_read(self):
+        got = self.load('[graph]\nclone = "repos/app"\nroot = "agent"\ndepth = 3\nrules = "docs/architecture.md"\n').graph
+        self.assertEqual((got.depth, got.rules), (3, "docs/architecture.md"))
+
+    def test_a_graph_that_cannot_be_read_is_refused(self):
+        base = 'clone = "repos/app"\nroot = "agent"\n'
+        for bad in ('graph = 1\n',
+                    '[graph]\nroot = "agent"\n',
+                    '[graph]\nclone = "repos/app"\n',
+                    '[graph]\nclone = ""\nroot = "agent"\n',
+                    '[graph]\nclone = 3\nroot = "agent"\n',
+                    '[graph]\nclone = "repos/app"\nroot = ""\n',
+                    f'[graph]\n{base}depth = 0\n',
+                    f'[graph]\n{base}depth = "2"\n',
+                    f'[graph]\n{base}depth = 2.5\n',
+                    f'[graph]\n{base}depth = true\n',
+                    f'[graph]\n{base}rules = 5\n',
+                    f'[graph]\n{base}rules = ""\n'):
+            with self.subTest(bad=bad), self.assertRaises(st.SettingsError):
+                self.load(bad)

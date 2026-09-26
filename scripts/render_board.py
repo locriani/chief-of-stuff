@@ -735,12 +735,14 @@ def decision_context(root: Path, day: date, now: datetime | None = None) -> deci
     tracker = root / cfg.tracker_path(day.isoformat())
     tasks = parse_tracker(tracker.read_text()).tasks if tracker.is_file() else ()
     try:
-        kanban = load_settings(root, cfg.settings_path).kanban
+        settings = load_settings(root, cfg.settings_path)
     except SettingsError:
-        kanban = None
+        settings = None
+    kanban = settings and settings.kanban
     pages = root / cfg.pages_dir if cfg.pages_dir else tracker.parent
     return decision_page.Context(now, tuple(rows), tuple(sorted(log, key=lambda x: x[0])), tasks, board_sources.load(pages),
-                                 kanban.human_review_label if kanban else "", cfg.user, cfg.backlog)
+                                 kanban.human_review_label if kanban else "", cfg.user, cfg.backlog,
+                                 settings and settings.graph, pages)
 
 
 def _anchor(raw: list[str], cols: tuple[str, ...]) -> list[str] | None:

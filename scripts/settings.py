@@ -114,6 +114,16 @@ class ModelEntry:
 
 
 @dataclass(frozen=True)
+class Graph:
+    """The decision page's MODULE GRAPH: the clone branch-graph reads (under the workspace root), its import root,
+    module depth, and the rules file inside the clone."""
+    clone: str
+    root: str
+    depth: int = 2
+    rules: str | None = None
+
+
+@dataclass(frozen=True)
 class Settings:
     notify: Notify = field(default_factory=Notify)
     lanes: dict[str, Lane] = field(default_factory=dict)
@@ -124,6 +134,7 @@ class Settings:
     workers: Workers = field(default_factory=Workers)
     # #111: task class -> rotation; the first entry is the suggested model, the rest the fallback order.
     models: dict[str, tuple[ModelEntry, ...]] = field(default_factory=dict)
+    graph: Graph | None = None
 
 
 def _entry(where: str, text) -> ModelEntry:
@@ -184,6 +195,21 @@ def _workers(table) -> Workers:
     if cap is not None and (type(cap) is not int or cap < 1):
         raise SettingsError("[workers] max_concurrency must be a positive whole number")
     return Workers(launcher=launcher, mode=mode, max_concurrency=cap)
+
+
+def _graph(table) -> Graph:
+    if not isinstance(table, dict):
+        raise SettingsError("[graph] must be a table")
+    for key in ("clone", "root"):
+        if not isinstance(table.get(key), str) or not table[key].strip():
+            raise SettingsError(f"[graph] {key} must be a path")
+    depth = table.get("depth", 2)
+    if type(depth) is not int or depth < 1:
+        raise SettingsError("[graph] depth must be a positive whole number")
+    rules = table.get("rules")
+    if rules is not None and (not isinstance(rules, str) or not rules.strip()):
+        raise SettingsError("[graph] rules must be a path inside the clone")
+    return Graph(table["clone"], table["root"], depth, rules)
 
 
 def _workflow(table) -> Workflow:
@@ -304,14 +330,15 @@ def load(root: Path, settings_path: str | None) -> Settings:
     workflow = _workflow(data["workflow"]) if "workflow" in data else Workflow()
     workers = _workers(data["workers"]) if "workers" in data else Workers()
     models = _models(data["models"]) if "models" in data else {}
+    graph = _graph(data["graph"]) if "graph" in data else None
     budgets = data.get("budgets", {})
     if not isinstance(budgets, dict) or not set(budgets) <= {"S", "M", "L", "XL"}:
         raise SettingsError(f"{settings_path}: [budgets] is a table of S, M, L, XL")
     budgets = {size: _offset(v, f"[budgets] {size}") for size, v in budgets.items()}
     table = data.get("notify")
     if table is None:
-        return Settings(lanes=lanes, budgets=budgets, kanban=kanban, workflow=workflow, workers=workers, models=models)
+        return Settings(lanes=lanes, budgets=budgets, kanban=kanban, workflow=workflow, workers=workers, models=models, graph=graph)
     if not isinstance(table, dict):
         raise SettingsError(f"{settings_path}: [notify] is not a table")
     return Settings(notify=_notify(table, Path(root)), lanes=lanes, budgets=budgets,
-                    kanban=kanban, workflow=workflow, workers=workers, models=models)
+                    kanban=kanban, workflow=workflow, workers=workers, models=models, graph=graph)

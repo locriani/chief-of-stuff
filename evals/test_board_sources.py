@@ -108,6 +108,10 @@ class GitHubTest(unittest.TestCase):
         self.assertEqual((pr.state, pr.pipeline, pr.approved, pr.approvals, pr.base, pr.files, pr.issues),
                          ("open", "passed", True, 1, "main", ("src/a.py",), ("#118",)))
 
+    def test_a_change_carries_its_head_commit(self):
+        # headRefOid, which GH_CHANGE already asks for, is the commit the decision page graphs.
+        self.assertEqual(self.got.changes["#58"].head, HEAD)
+
     def test_merged_today_is_included(self):
         merged = self.got.changes["#41"]
         self.assertEqual((merged.state, merged.merged_at.astimezone(ZONE).strftime("%H:%M")), ("merged", "00:41"))
@@ -150,6 +154,24 @@ class GitLabTest(unittest.TestCase):
                          ("open", "pending", True, 1, ("src/search.py",), ("#115",)))
         self.assertEqual(got.issues["#115"].labels, ("stage:3-pr",))
         self.assertEqual(got.errors, {})
+
+    def test_a_change_carries_its_head_commit(self):
+        # diffHeadSha, asked for in the query, is the commit the decision page graphs.
+        root = workspace("GitLab issues; host https://labs.example.test; project team/app", mr="!54")
+        calls = []
+        mr = {"iid": "54", "webUrl": "https://labs.example.test/team/app/-/merge_requests/54", "title": "Search",
+              "state": "opened", "draft": False, "mergedAt": None, "targetBranch": "main", "description": "",
+              "approved": False, "approvedBy": {"nodes": []}, "headPipeline": None, "diffStats": [], "diffHeadSha": HEAD}
+
+        def call(method, url, token, timeout, payload=None):
+            calls.append(payload)
+            return {"data": {"p0": {"mergeRequests": {"nodes": [mr]}, "merged": {"nodes": []}}}}, {}, ""
+
+        with mock.patch.dict(os.environ, {"CHIEF_OF_STUFF_GITLAB_TOKEN": "tok"}):
+            got = bs.refresh(root, NOW, call=call)
+        self.assertIn("diffHeadSha", calls[0]["query"])
+        self.assertEqual(got.changes["!54"].head, HEAD)
+        self.assertEqual(bs.load(root / "pages").changes["!54"].head, HEAD)
 
     def test_no_token_is_an_error_not_a_raise(self):
         root = workspace("GitLab issues; host https://labs.example.test; project team/app")

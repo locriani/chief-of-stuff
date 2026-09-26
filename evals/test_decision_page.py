@@ -5,15 +5,21 @@ import io
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import date, datetime, timedelta
+from html import escape
 from pathlib import Path
+from unittest import mock
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import make_repo  # noqa: E402
 import board_sources as bs  # noqa: E402
 import decision_page as dp  # noqa: E402
 import render_board as rb  # noqa: E402
@@ -664,6 +670,190 @@ class MainTest(unittest.TestCase):
         code, _, _ = self.run_main("--root", str(root), "--from", str(root / "d.json"), "--name", "x")
         self.assertEqual(code, 0)
         self.assertIn('href="https://github.com/o/app/issues/7"', (root / "pages" / "decision-x.html").read_text())
+
+
+MMD = 'flowchart LR\n  n0["agent/a"]\n  n1["agent/b"]:::added\n  n1 --> n0\n'
+SUMMARY = "nodes +1 −0 ~0 edges +1 −0 drift=0"
+# A stand-in for the branch-graph CLI, found first on PATH: it logs its arguments, and writes page.html and page.mmd
+# beside --out and prints its summary line as the real one does (it does not make --out's directory either).
+FAKE = """import argparse, json, pathlib, sys
+p = argparse.ArgumentParser()
+for flag in ("--repo", "--base", "--head", "--root", "--depth", "--rules", "--out"):
+    p.add_argument(flag)
+args = p.parse_args()
+with open(LOG, "a") as f:
+    f.write(json.dumps(vars(args)) + "\\n")
+if FAIL:
+    sys.exit("branch-graph: no import root agent at " + args.head)
+out = pathlib.Path(args.out)
+out.write_text("<!doctype html><p>graph</p>")
+out.with_suffix(".mmd").write_text(MMD)
+print(SUMMARY)
+print("agent/b -> agent/a  agent/b.py:1  allowed")
+"""
+GRAPH = '[graph]\nclone = "repos/app"\nroot = "agent"\nrules = "docs/architecture.md"\n'
+
+
+def forge_repo(root: Path, ref: str) -> tuple[Path, str, str]:
+    """origin.git with main and a change pushed to `ref`, main moved on since, and the workspace's clone at
+    repos/app, which does not hold the change. Returns (clone, the change's merge base, its head)."""
+    dev = make_repo.build(root / "forge", {"clone": "dev", "files": {
+        "agent/a.py": "x = 1\n", "docs/architecture.md": "```import-rules\nagent/b -> agent/a\n```\n"}})
+    base = make_repo.git(["rev-parse", "HEAD"], dev)
+    make_repo.git(["checkout", "-q", "-b", "change"], dev)
+    (dev / "agent" / "b.py").write_text("from agent import a\n")
+    make_repo.git(["add", "-A"], dev)
+    make_repo.git(["commit", "-q", "-m", "change"], dev)
+    head = make_repo.git(["rev-parse", "HEAD"], dev)
+    make_repo.git(["push", "-q", "origin", f"change:{ref}"], dev)
+    make_repo.git(["checkout", "-q", "main"], dev)
+    (dev / "agent" / "c.py").write_text("y = 2\n")
+    make_repo.git(["add", "-A"], dev)
+    make_repo.git(["commit", "-q", "-m", "main moves on"], dev)
+    make_repo.git(["push", "-q", "origin", "main"], dev)
+    clone = root / "repos" / "app"
+    make_repo.git(["clone", "-q", "--no-local", str(root / "forge" / "origin.git"), str(clone)], root)
+    return clone, base, head
+
+
+def rev(clone: Path, name: str) -> str:
+    return subprocess.run(["git", "-C", str(clone), "rev-parse", "--verify", "-q", f"{name}^{{commit}}"],
+                          capture_output=True, text=True).stdout.strip()
+
+
+class ModuleGraphTest(unittest.TestCase):
+    """The user: the decision page "does NOT have the module graph that is required". The page server draws it with
+    the branch-graph CLI from the change the decision names (Decision.dc.html, MODULE GRAPH · !58); the coordinator
+    writes nothing."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.pages = self.root / "pages"
+        self.pages.mkdir()
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        self.log = self.root / "branch-graph.log"
+        self.fake()
+        path = mock.patch.dict(os.environ, {"PATH": f"{self.bin}{os.pathsep}{os.environ.get('PATH', '')}"})
+        path.start()
+        self.addCleanup(path.stop)
+
+    def fake(self, fail: bool = False):
+        tool = self.bin / "branch-graph"
+        tool.write_text(f"#!{sys.executable}\nLOG, FAIL, MMD, SUMMARY = {str(self.log)!r}, {fail!r}, {MMD!r}, {SUMMARY!r}\n" + FAKE)
+        tool.chmod(0o755)
+
+    def runs(self) -> list[dict]:
+        return [json.loads(line) for line in self.log.read_text().splitlines()] if self.log.is_file() else []
+
+    def workspace(self, gitlab: bool = False, graph: str = GRAPH, references: list | None = None, pushed: bool = True):
+        """The forge sources know change 58 (`!58` on GitLab, `#58` on GitHub) at its head; the decision names an
+        unknown change first, then 58."""
+        key, kind, ref = ("!58", "MR", "refs/merge-requests/58/head") if gitlab else ("#58", "PR", "refs/pull/58/head")
+        self.clone, self.base, self.head = forge_repo(self.root, ref if pushed else ref.replace("58", "59"))
+        assert not rev(self.clone, self.head), "the clone must not hold the change before the page fetches it"
+        self.url = ("https://gl.example.test/grp/app/-/merge_requests/58" if gitlab else "https://github.com/o/app/pull/58")
+        backlog = "GitLab issues; host https://gl.example.test; project grp/app" if gitlab else "GitHub; repo o/app"
+        (self.root / "CLAUDE.md").write_text(BLOCK.format(board=f"{BOARD}\n- Settings: `cos.toml`\n- Backlog: {backlog}"))
+        (self.root / "cos.toml").write_text(graph)
+        change = bs.Change(key, self.url, "Warm pool", "open", False, "passed", False, 0, None, "main", ("agent/b.py",), (),
+                           head=self.head)
+        bs._write(self.pages / bs.CACHE, bs.Sources({}, {}, {key: change}, (), {}))
+        if references is None:
+            references = [{"kind": kind, "value": key[0] + "57"}, {"kind": kind, "value": key, "label": "Warm pool"}]
+        (self.pages / "decision-warm-pool.json").write_text(json.dumps(decision(references=references)))
+
+    def page(self) -> str:
+        return dp.write(self.root, self.pages, "warm-pool", "2026-09-26").read_text()
+
+    def section(self, page: str) -> str:
+        m = re.search(r"<section[^>]*>\s*<h2[^>]*>\s*MODULE GRAPH\b.*?</section>", page, re.S)
+        self.assertIsNotNone(m, "the page has no MODULE GRAPH section")
+        return m[0]
+
+    def assert_drawn(self, section: str, ref: str):
+        self.assertRegex(section, re.compile(rf'<h2[^>]*>\s*MODULE GRAPH\b.*?<a [^>]*href="{re.escape(self.url)}"[^>]*>{ref}</a>.*?</h2>', re.S))
+        self.assertIn('<pre class="mermaid">', section)
+        for line in MMD.splitlines():
+            with self.subTest(line=line):
+                self.assertTrue(escape(line, quote=False) in section or escape(line) in section)
+        self.assertNotIn("n1 --> n0", section)
+        self.assertRegex(section, re.compile(rf"<figcaption[^>]*>.*?{re.escape(SUMMARY)}.*?</figcaption>", re.S))
+
+    def test_a_github_pr_is_drawn_from_its_fetched_head_against_its_merge_base(self):
+        self.workspace()
+        page = self.page()
+        self.assert_drawn(self.section(page), "#58")
+        self.assertRegex(page, r"<script[^>]*src=\"[^\"]*mermaid|<script[^>]*>[^<]*mermaid")
+        [run] = self.runs()
+        self.assertEqual(rev(self.clone, run["head"]), self.head)
+        self.assertEqual(rev(self.clone, run["base"]), self.base)
+        self.assertEqual(Path(run["repo"]).resolve(), self.clone.resolve())
+        self.assertEqual((run["root"], run["depth"]), ("agent", "2"))
+        self.assertEqual(Path(run["rules"]).resolve(), (self.clone / "docs" / "architecture.md").resolve())
+        out = Path(run["out"]).resolve()
+        self.assertEqual((out.name, out.parent.name), ("page.html", self.head))
+        self.assertTrue(out.parent.parent.name.startswith("."), "the cache is a dotdir, which the server never serves")
+        self.assertEqual(out.parent.parent.parent, self.pages.resolve())
+
+    def test_a_gitlab_mr_is_drawn_from_its_merge_request_ref(self):
+        self.workspace(gitlab=True)
+        self.assert_drawn(self.section(self.page()), "!58")
+        [run] = self.runs()
+        self.assertEqual(rev(self.clone, run["head"]), self.head)
+        self.assertEqual(rev(self.clone, run["base"]), self.base)
+
+    def test_the_same_head_is_drawn_once(self):
+        self.workspace()
+        self.page()
+        self.assert_drawn(self.section(self.page()), "#58")
+        self.assertEqual(len(self.runs()), 1)
+
+    def test_the_board_rerendering_every_page_keeps_the_graph(self):
+        self.workspace()
+        dp.write_all(self.pages, rb.decision_context(self.root, date(2026, 9, 26)), "2026-09-26", self.root)
+        self.assert_drawn(self.section((self.pages / "decision-warm-pool.html").read_text()), "#58")
+
+    def test_a_decision_naming_no_known_change_says_so_in_one_line(self):
+        self.workspace()
+        for references in ([], [{"kind": "PR", "value": "#57"}], [{"kind": "issue", "value": "#12"}]):
+            with self.subTest(references=references):
+                (self.pages / "decision-warm-pool.json").write_text(json.dumps(decision(references=references)))
+                section = self.section(self.page())
+                self.assertIn("names no change", section)
+                self.assertNotIn('class="mermaid"', section)
+        self.assertEqual(self.runs(), [])
+        # The graph is required, so the section is there even with no workspace behind the page.
+        self.assertIn("names no change", self.section(dp.render(dp.parse(decision()), "2026-09-26")))
+
+    def test_without_graph_settings_the_line_names_the_table(self):
+        self.workspace(graph='[workers]\nmode = "one-shot"\n')
+        section = self.section(self.page())
+        self.assertIn("not configured", section)
+        self.assertIn("[graph]", section)
+        self.assertNotIn('class="mermaid"', section)
+        self.assertEqual(self.runs(), [])
+
+    def test_a_failed_fetch_says_unavailable_and_the_page_still_renders(self):
+        self.workspace(pushed=False)
+        page = self.page()
+        section = self.section(page)
+        self.assertIn("unavailable", section)
+        self.assertNotIn('class="mermaid"', section)
+        self.assertEqual(self.runs(), [])
+        for text in ("The plan and the architecture disagree on where uploads go", "Follow the architecture", "The worker waits."):
+            self.assertIn(text, page)
+
+    def test_a_failed_tool_says_unavailable_with_its_reason(self):
+        self.fake(fail=True)
+        self.workspace()
+        page = self.page()
+        section = self.section(page)
+        self.assertIn("unavailable", section)
+        self.assertIn("no import root agent", section)
+        self.assertNotIn('class="mermaid"', section)
+        self.assertIn("Follow the architecture", page)
 
 
 if __name__ == "__main__":

@@ -49,7 +49,7 @@ GH_CHANGE = ("number url title state isDraft mergedAt baseRefName body headRefOi
              "... on CheckRun { status conclusion } ... on StatusContext { state } } } } } } }")
 GL_ISSUE = "iid webUrl title state labels { nodes { title } }"
 GL_CHANGE = ("iid webUrl title state draft mergedAt targetBranch description approved "
-             "approvedBy { nodes { username } } headPipeline { status } diffStats { path }")
+             "approvedBy { nodes { username } } headPipeline { status } diffStats { path } diffHeadSha")
 
 
 @dataclass(frozen=True)
@@ -66,6 +66,7 @@ class Change:          # a PR or MR
     base: str
     files: tuple[str, ...]
     issues: tuple[str, ...]   # issue refs it closes, e.g. ("#111",)
+    head: str = ""            # the head commit's sha, which the decision page graphs
 
 
 @dataclass(frozen=True)
@@ -147,7 +148,7 @@ def _gh_change(key: str, p: dict, approver: str) -> Change:
                   None if pipeline == "none" else pipeline, approved,
                   sum(r.get("state") == "APPROVED" for r in reviews), _when(p.get("mergedAt")),
                   p.get("baseRefName") or "", tuple(f["path"] for f in (p.get("files") or {}).get("nodes") or []),
-                  _closes(p.get("body")))
+                  _closes(p.get("body")), p.get("headRefOid") or "")
 
 
 def github(home: backlog.GitHubBacklog, wanted: dict[str, set[int]], since: datetime, approver: str, gh):
@@ -202,7 +203,7 @@ def _gl_change(m: dict, approver: str) -> Change:
                   _gl_pipeline((m.get("headPipeline") or {}).get("status")),
                   approver in by if approver else bool(m.get("approved")), len(by), _when(m.get("mergedAt")),
                   m.get("targetBranch") or "", tuple(d["path"] for d in m.get("diffStats") or []),
-                  _closes(m.get("description")))
+                  _closes(m.get("description")), m.get("diffHeadSha") or "")
 
 
 def gitlab(home: backlog.Backlog, wanted: dict[str, set[int]], mrs: set[int], since: datetime, approver: str, call):
