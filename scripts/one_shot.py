@@ -50,6 +50,12 @@ def command(runtime: str, binary: str, cwd: Path, dispatch: Path, *, agent_type:
         # `never` returns blocked operations to the model instead of waiting for a human.
         argv = [binary, "-a", "never", "exec", "-C", str(cwd), "--sandbox", "workspace-write",
                 "--ephemeral"]
+        # A linked worktree's git metadata lives in the main repo's git dir, outside the sandbox.
+        git_dir = subprocess.run(["git", "-C", str(cwd), "rev-parse", "--path-format=absolute",
+                                  "--git-common-dir"], capture_output=True, text=True, check=False,
+                                 timeout=15)
+        if git_dir.returncode == 0:
+            argv += ["--add-dir", str(Path(git_dir.stdout.strip()).resolve())]
         if model:
             argv += ["--model", model]
     elif runtime == "cursor":
