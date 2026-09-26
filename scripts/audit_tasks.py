@@ -252,7 +252,8 @@ def kanban_faults(tasks, home: Backlog | GitHubBacklog, config: Kanban, gh=None)
                 continue
             status = project_items[ref.url]
         issue_config = config if ref.host == GITHUB else replace(config, github_project=None)
-        why = kanban_tool.drift(issue_config, found.labels, task.stage.strip(), project_status=status)
+        why = kanban_tool.drift(issue_config, found.labels, task.stage.strip(), project_status=status,
+                                allow_extra_hold=task.kind == "waiting")
         if why:
             faults.append(KanbanFault(clip_name(task.label), why))
     return faults

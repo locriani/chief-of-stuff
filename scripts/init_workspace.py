@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from backlog import BacklogError, parse_backlog
+from install_model_guidance import destination as guidance_destination, install as install_guidance
 from render_board import ConfigError, parse_coordinator
 from settings import SettingsError, load as load_settings
 
@@ -71,8 +72,8 @@ def coordinator_block(*, user: str, timezone: str, daily_dir: str, worktrees: st
     return block
 
 
-def settings_text(launcher: str) -> str:
-    text = f'[notify]\nadapter = "off"\n\n[workers]\nlauncher = "{launcher}"\n'
+def settings_text(launcher: str, mode: str = "interactive") -> str:
+    text = f'[notify]\nadapter = "off"\n\n[workers]\nlauncher = "{launcher}"\nmode = "{mode}"\n'
     tomllib.loads(text)
     return text
 
@@ -87,6 +88,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--agent", action="append", default=[], metavar="NAME:task|standing",
                     help="worker type and lifetime; repeat for multiple types")
     ap.add_argument("--launcher", choices=("ghostty", "tmux"), default="ghostty")
+    ap.add_argument("--worker-mode", choices=("interactive", "one-shot"), default="interactive",
+                    help="default dispatch mode written to [workers] in the workspace TOML")
     ap.add_argument("--board-port", type=int, help="configure local board serving on this fixed port")
     backlog = ap.add_mutually_exclusive_group()
     backlog.add_argument("--github-repo", help="GitHub owner/repository")
@@ -116,6 +119,7 @@ def main(argv: list[str] | None = None) -> int:
         if COORDINATOR.search(existing):
             raise InitError(f"{claude} already has a ## Coordinator block")
         settings = root / "chief-of-stuff.toml"
+        guidance = guidance_destination(root)
         if settings.exists():
             if not settings.is_file():
                 raise InitError(f"{settings} is not a settings file")
@@ -123,12 +127,13 @@ def main(argv: list[str] | None = None) -> int:
                 load_settings(root, settings.name)
             except SettingsError as exc:
                 raise InitError(f"existing settings are invalid: {exc}") from None
-        new_settings = settings_text(args.launcher)
+        new_settings = settings_text(args.launcher, args.worker_mode)
         if args.dry_run:
             print(f"would {'append to' if claude.exists() else 'create'}: {claude}\n{block}")
             print(f"would {'keep existing' if settings.exists() else 'create'}: {settings}")
             if not settings.exists():
                 print(new_settings)
+            print(f"would {'keep existing' if guidance.exists() else 'create'}: {guidance}")
             return 0
         if not settings.exists():
             with settings.open("x") as fh:
@@ -138,7 +143,8 @@ def main(argv: list[str] | None = None) -> int:
         else:
             with claude.open("x") as fh:
                 fh.write("# Workspace\n\n" + block)
-        print(f"configured {root}; settings in {settings}")
+        install_guidance(root)
+        print(f"configured {root}; settings in {settings}; model guidance in {guidance}")
         return 0
     except (InitError, OSError) as exc:
         print(f"refused: {exc}", file=sys.stderr)

@@ -75,6 +75,7 @@ class Workflow:
 @dataclass(frozen=True)
 class Workers:
     launcher: str = "ghostty"
+    mode: str = "interactive"
 
 
 @dataclass(frozen=True)
@@ -113,7 +114,10 @@ def _workers(table) -> Workers:
     launcher = table.get("launcher", "ghostty")
     if launcher not in ("ghostty", "tmux"):
         raise SettingsError("[workers] launcher must be `ghostty` or `tmux`")
-    return Workers(launcher=launcher)
+    mode = table.get("mode", "interactive")
+    if mode not in ("interactive", "one-shot"):
+        raise SettingsError("[workers] mode must be `interactive` or `one-shot`")
+    return Workers(launcher=launcher, mode=mode)
 
 
 def _workflow(table) -> Workflow:

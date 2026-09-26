@@ -94,7 +94,8 @@ AS_ESCAPE = str.maketrans({'"': '\\"', "\\": "\\\\"})
 # when the user has said so, and a limit that binds the coordinator binds nobody else. A dispatched
 # session gets what a terminal the user opened would have, minus the coordinator's identity.
 KEEP = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "TERM_PROGRAM", "TMPDIR",
-        "LANG", "LC_ALL", "LC_CTYPE", "COLORTERM", "TZ", "SSH_AUTH_SOCK", "XDG_CONFIG_HOME")
+        "LANG", "LC_ALL", "LC_CTYPE", "COLORTERM", "TZ", "SSH_AUTH_SOCK", "XDG_CONFIG_HOME",
+        "CHIEF_OF_STUFF_RELEASE")
 OSASCRIPT = "/usr/bin/osascript"
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "fish", "env", "eval", "exec", "xargs"}
 METACHARACTERS = re.compile(r"[;&|`$<>\n]")
@@ -317,6 +318,10 @@ def main(argv_in: list[str] | None = None) -> int:
     ap.add_argument("--effort", default="", choices=("", "low", "medium", "high", "xhigh", "max"),
                     help="claude only; agy's effort is in its model id")
     ap.add_argument("--dry-run", action="store_true", help="print the argv and start nothing")
+    ap.add_argument("--one-shot", action="store_true",
+                    help="run this task once; [workers] mode = one-shot already requires this for every task")
+    ap.add_argument("--timeout-minutes", type=int, default=60,
+                    help="one-shot run limit before human review (default: 60)")
     args = ap.parse_args(argv_in)
     if (args.model or args.runtime == "agy") and not MODEL.fullmatch(args.model):
         print(f"refused: --model needs a model id (agy: one from `agy models`, and it is required), not {args.model!r}", file=sys.stderr)
@@ -331,13 +336,37 @@ def main(argv_in: list[str] | None = None) -> int:
     # file mtime, and before that a tab that died silently. One value, one meaning, both callers.
     args.cwd = os.path.abspath(args.cwd)
 
+    try:
+        config = dispatch_prompt._config(Path(args.root))
+        worker_settings = load_settings(Path(args.root), config.settings_path).workers
+    except (dispatch_prompt.RefusedError, SettingsError, OSError) as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 1
+    one_shot = worker_settings.mode == "one-shot" or args.one_shot
+
+    if one_shot:
+        if args.timeout_minutes < 1:
+            print("refused: --timeout-minutes must be positive", file=sys.stderr)
+            return 1
+        if args.launcher:
+            print("refused: --launcher applies to interactive sessions, not --one-shot", file=sys.stderr)
+            return 1
+        try:
+            import one_shot
+            return one_shot.run(root=Path(args.root).resolve(), day=args.date, task=args.task,
+                                cwd=Path(args.cwd), name=args.title, runtime=args.runtime,
+                                agent_type=args.agent_type, model=args.model, effort=args.effort,
+                                dry_run=args.dry_run, timeout_minutes=args.timeout_minutes)
+        except (ValueError, OSError, dispatch_prompt.RefusedError, ShellError, SettingsError) as exc:
+            print(f"refused: {exc}", file=sys.stderr)
+            return 1
+
     override = os.environ.get(ENV)
     try:
         body = dispatch_prompt.compose(Path(args.root), args.date, args.task,
                                       worktree=Path(args.cwd), coordinator=args.coordinator, name=args.title,
                                       runtime=args.runtime)
-        config = dispatch_prompt._config(Path(args.root))
-        selected = args.launcher or load_settings(Path(args.root), config.settings_path).workers.launcher
+        selected = args.launcher or worker_settings.launcher
         # The override is the eval harness's recorder and the only path that still builds an argv.
         worker = dict(cwd=args.cwd, agent_type=args.agent_type, title=args.title, runtime=args.runtime,
                       model=args.model, effort=args.effort, workspace=args.root)
