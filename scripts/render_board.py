@@ -1,14 +1,13 @@
 """Render a tracker-based daily board without opening a server or browser.
 
-The page carries tracker and deadline metadata and draws its live clock client-side. Today and
-Week charts fold tasks outside their visible windows into summary rows. The renderer writes the
-board HTML and prints its path and summary.
+The page is the Flow board (Flow.dc.html): header, tiles, BUILD, the MERGE ORDER, DECISIONS and WORKERS
+panels, and the Flow charts. It carries tracker and deadline metadata and ticks its clocks client-side.
+The renderer writes the board HTML and prints its path and summary.
 """
 
 from __future__ import annotations
 
 import argparse
-import base64
 import hashlib
 import html
 import re
@@ -19,13 +18,12 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from backlog import Backlog, BacklogError, GitHubBacklog, issue_ref, parse_backlog  # noqa: E402
+from backlog import Backlog, BacklogError, GitHubBacklog, parse_backlog  # noqa: E402
 from settings import Kanban, SettingsError, load as load_settings  # noqa: E402
 import board_sources  # noqa: E402
 import columns  # noqa: E402
 import decision_page  # noqa: E402
 import flow_chart  # noqa: E402
-import gantt  # noqa: E402
 import panels  # noqa: E402
 
 HHMM = re.compile(r"^(\d{1,2}):(\d{2})$")
@@ -44,25 +42,13 @@ TASK_HEADERS = (TASK_COLS_LANED, TASK_COLS_ISSUED, TASK_COLS_NAMED, TASK_COLS_SI
 DATE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{1,2}):(\d{2}))?$")
 DECISION_DEADLINE = re.compile(r"^deadline:\s*(.+?)\s+(?:(\d{4}-\d{2}-\d{2})[ T])?(\d{1,2}):(\d{2})$", re.I)
 BULLET = re.compile(r"^(\s*)-\s*([^:]+?):\s*(.*?)\s*$")
-CAL_LIST = re.compile(r"^\s*-\s*(\d{1,2}:\d{2})\s*[–—-]\s*(\d{1,2}:\d{2})\s*(?:[A-Z]{2,5}\s+)?(.+?)\s*$")
-TIME_RANGE = re.compile(r"^(\d{1,2}:\d{2})\s*[–—-]\s*(\d{1,2}:\d{2})$")
 NO_ESTIMATE = "no estimate"
-LOGO = Path(__file__).resolve().parent.parent / "assets" / "logo.webp"
 FONTS = "https://fonts.googleapis.com/css2?family=Alegreya+Sans:wght@400;500;600&family=Cormorant+SC:wght@600&display=swap"
 SHORT_NAME = 48
 LONG_ITEM = 80
-# Separate display folding from the writer's 300-character limit.
-RESUME_FOLD = 160   # display threshold
 RESUME_CAP = 300    # writer limit from agent rules
-# Preserve Markdown delimiters when lifting times from bold clauses.
-CLAUSE_TIME = re.compile(r"(?:^|(?<=\s)|(?<=\*\*))(?:at\s+)?(\d{1,2}:\d{2}):?(?=\s|$|[,;)])")
 REQ_LINE = re.compile(r"^(\s*)- \[([ xX])\]\s+(.*?)\s*$")
 EVIDENCE = " — evidence: "
-WEEK_DAYS = 7
-# Rolling 24-hour Today window.
-DAY_BEHIND = timedelta(hours=8)
-DAY_AHEAD = timedelta(hours=16)
-MAX_TICKS = 9
 
 
 class ConfigError(Exception):
@@ -324,38 +310,6 @@ class Tracker:
     sessions: tuple[Session, ...] = ()
 
 
-# The four kinds of the body track. A body kind is recognised by its own name as a whole word in the
-# event's title and by nothing else: the design names these four, and a wider vocabulary (workout,
-# breakfast, lunch, dinner on their own) is a decision rather than an implementation of it.
-BODY_KINDS = ("sleep", "eat", "gym", "recreation")
-BODY_WORD = {k: re.compile(rf"(?i)\b{k}\b") for k in BODY_KINDS}
-
-
-def body_kind(title: str) -> str:
-    """The body kind an event's title names, or "" when it names none."""
-    for kind in BODY_KINDS:
-        if BODY_WORD[kind].search(title):
-            return kind
-    return ""
-
-
-@dataclass(frozen=True)
-class Event:
-    start: datetime
-    end: datetime
-    title: str
-
-    @property
-    def kind(self) -> str:
-        return body_kind(self.title)
-
-
-@dataclass(frozen=True)
-class Body:
-    """The body track: one row whose track carries every body event on the axis, in clock order."""
-    segments: tuple[Event, ...]
-
-
 @dataclass(frozen=True)
 class Bar:
     item: str
@@ -370,24 +324,6 @@ class Bar:
     est: "Estimate | None" = None
     size: str = ""
     deadline: str = ""
-
-
-@dataclass(frozen=True)
-class Swim:
-    """A swimlane header: the deadline a run of rows answers to. The rows under it are its owners."""
-    name: str
-    count: int
-
-
-@dataclass(frozen=True)
-class Summary:
-    key: str
-    label: str
-    start: datetime
-    end: datetime
-    members: tuple[Bar, ...]
-    name: str = ""
-    attr: str = "summary"
 
 
 def _unmark(text: str) -> str:
@@ -489,37 +425,6 @@ def _depth0_split(text: str) -> list[str]:
         i += 1
     parts.append(text[start:])
     return [p.strip().rstrip(".").strip() for p in parts if p.strip().rstrip(".").strip()]
-
-
-def history_lines(item: str, label: str | None = None) -> list[tuple[str, str]]:
-    """What an item cell carries past its name, one (time, text) per clause; the first HH:MM outside parentheses is pulled out.
-
-    `label` is the task's written name when it has one. The coordinator writes it as a bold headline
-    on the front of the cell (`**Deploy main.** 21:16: …`), so the headline is the name said twice:
-    strip it, whichever form it is in, rather than printing its asterisks.
-    """
-    full = item.strip()
-    short = label or short_name(item)
-    for head in ([f"**{label}.**", f"**{label}**", label] if label else []) + [short]:
-        if head and full.startswith(head):
-            short = head
-            break
-    if short == full:
-        return []
-    rest = full[len(short) :] if not short.endswith("…") and full.startswith(short) else full
-    lines = []
-    for clause in _depth0_split(rest.lstrip(": ").strip()):
-        when = ""
-        for m in CLAUSE_TIME.finditer(clause):
-            if clause[: m.start()].count("(") == clause[: m.start()].count(")"):
-                when = m.group(1)
-                clause = (clause[: m.start()] + " " + clause[m.end() :]).strip()
-                clause = re.sub(r"\s{2,}", " ", clause).strip(" ,:")
-                # The strip cannot see past an opening mark: `** : copied` is what lifting the time leaves.
-                clause = re.sub(r"^(\*\*)[\s,:]+", r"\1", clause)
-                break
-        lines.append((when, clause))
-    return lines
 
 
 # --- parsing -------------------------------------------------------------------------------------
@@ -658,9 +563,6 @@ def parse_resume(text: str) -> dict[str, str]:
 # drawn after them rather than dropped. It used to be an allowlist of four, so the day the ruleset
 # gained `Re-arm` the renderer began discarding it without a word.
 RESUME_STRIP = ("as of", "in flight", "next", "waiting on", "re-arm", "verified")
-RESUME_CLIP = 110
-# What is left of a mark once the pairs are gone: an unclosed `**` or a lone backtick.
-MARK_LEFTOVER = re.compile(r"\*\*|`")
 
 
 def _clip(value: str, cap: int) -> str:
@@ -671,24 +573,6 @@ def _clip(value: str, cap: int) -> str:
     return f"{head or value[:cap]} …"
 
 
-def _summary_text(value: str) -> str:
-    """The plain-text head of a fold. It is escaped and never inlined, so no mark belongs in it.
-
-    Two ways one used to arrive, with the same look on the board. `_unmark` strips pairs, so clipping
-    first cuts a long `**` span in half and leaves a mark with no partner for it to match — hence
-    unmark, then clip. And a mark the writer never closed has no partner to begin with, which no
-    ordering fixes; the summary is plain text either way, so what is left of a mark is dropped.
-    """
-    return _clip(MARK_LEFTOVER.sub("", _unmark(value)), RESUME_CLIP)
-
-
-def _resume_value(value: str) -> str:
-    """A long field folds, the way `item_cell()` folds a long task item. Same board, same idiom."""
-    if len(value) <= RESUME_FOLD:
-        return _inline(value)
-    return f'<details class="long"><summary>{_esc(_summary_text(value))}</summary>{_inline(value)}</details>'
-
-
 def resume_fields(block: dict[str, str]) -> list[str]:
     """The fields that will be drawn, in reading order. The renderer and the summary line share it.
 
@@ -696,23 +580,6 @@ def resume_fields(block: dict[str, str]) -> list[str]:
     is a check. `resume=N fields` is taken from here so the two can never disagree again.
     """
     return [k for k in RESUME_STRIP if block.get(k)] + [k for k in block if k not in RESUME_STRIP and block[k]]
-
-
-def resume_strip(block: dict[str, str]) -> str:
-    """Where the last move left off, one row per field. Absent when the tracker has no block.
-
-    It was one inline run joined with ` · `, which is fine at two fields and unreadable at six — and
-    six is what a busy day writes. The fields are already a label and a value; they want a list.
-    """
-    order = resume_fields(block)
-    if not order:
-        return ""
-    rows = []
-    for k in order:
-        long = ' class="long-field"' if len(block[k]) > RESUME_FOLD else ""
-        rows.append(f"<dt>{_esc(k)}</dt><dd{long}>{_resume_value(block[k])}</dd>")
-    rows = "".join(rows)
-    return f'<dl class="resume">{rows}</dl>\n'
 
 
 def _split_row(line: str) -> list[str]:
@@ -938,36 +805,6 @@ def _hhmm(value: str, day: date, zone: ZoneInfo) -> datetime | None:
     return datetime.combine(day, time(int(m[1]), int(m[2])), tzinfo=zone) if m else None
 
 
-def parse_calendar(log_text: str, today: date, zone: ZoneInfo) -> list[Event]:
-    events: list[Event] = []
-    for line in _section(log_text, "## Calendar"):
-        m = CAL_LIST.match(line)
-        if m:
-            start, end = _hhmm(m[1], today, zone), _hhmm(m[2], today, zone)
-            if start and end:
-                events.append(Event(start, end, m[3]))
-            continue
-        if line.strip().startswith("|"):
-            cells = _cells(line)
-            if _is_separator(cells):
-                continue
-            times: list[datetime] = []
-            title = ""
-            for c in cells:
-                r = TIME_RANGE.match(c)
-                if r:
-                    times += [t for t in (_hhmm(r[1], today, zone), _hhmm(r[2], today, zone)) if t]
-                elif HHMM.match(c):
-                    t = _hhmm(c, today, zone)
-                    if t:
-                        times.append(t)
-                elif c and not title:
-                    title = c
-            if len(times) >= 2 and title and not (HHMM.match(title)):
-                events.append(Event(times[0], times[1], title))
-    return events
-
-
 # --- bars ----------------------------------------------------------------------------------------
 
 
@@ -1061,12 +898,6 @@ class Estimate:
         return (f"{self.label}: where this task lands if {owner}'s queue of {self.n} drains evenly by {self.of}, "
                 "running first, then oldest first. Not a claim about effort; set a due to override.")
 
-
-# The chips over the one task table. `all` first and always checked, then the two owner questions the
-# Unassigned and queue tables used to be, then the three tracker states a task can be in.
-FILTERS = ("all", "mine", "unassigned", "running", "orphaned", "done")
-FILTER_LABELS = {"all": "all", "mine": "yours", "unassigned": "unassigned",
-                 "running": "running", "orphaned": "orphaned", "done": "done"}
 
 UNASSIGNED = re.compile(r"(?i)^unassigned$")
 
@@ -1186,31 +1017,7 @@ def day_bar(task: Task, cfg: Config, now: datetime, est: dict[str, Estimate] | N
     return replace(bar, deadline=_deadline_for(task, bar, cfg, now).name)
 
 
-def week_bar(task: Task, cfg: Config, now: datetime, est: dict[str, Estimate] | None = None) -> Bar:
-    today, zone = now.date(), cfg.zone
-    day_start = datetime.combine(today, time(0, 0), tzinfo=zone)
-    m = DATE.match(task.since.strip())
-    if m:
-        start, start_src = datetime(int(m[1]), int(m[2]), int(m[3]), tzinfo=zone), "since"
-    elif task.kind == "running" and (t := task.state_time):
-        start, start_src = _hhmm(t, today, zone), "state"
-    elif t := _hhmm(task.since, today, zone):
-        start, start_src = t, "since"
-    else:
-        start, start_src = day_start, "carried"
-    end, end_src, label = _end(task, cfg, now, start, est)
-    bar = Bar(task.item, task.owner, task.label, task.kind, start, end, start_src, end_src, label, est.get(task.item) if est and end_src == "derived" else None, task.size.strip().upper())
-    return replace(bar, deadline=_deadline_for(task, bar, cfg, now).name)
-
-
 # --- rendering -----------------------------------------------------------------------------------
-
-
-def logo_tag() -> str:
-    """The brand mark, inlined: the board is one file and the artifact host serves no other asset."""
-    if not LOGO.is_file():
-        return ""
-    return f'<img class="logo" alt="Chief of Stuff" src="data:image/webp;base64,{base64.b64encode(LOGO.read_bytes()).decode()}">'
 
 
 def _iso(dt: datetime) -> str:
@@ -1221,45 +1028,8 @@ def _esc(text: str) -> str:
     return html.escape(text, quote=True)
 
 
-def _est_attrs(b: Bar) -> str:
-    """A derived end is a citation only if its inputs are on the bar: position in the queue, the basis, the horizon or the size."""
-    est = f' data-est="{b.est.i}/{b.est.n}" data-est-basis="{b.est.basis}" data-est-of="{_esc(b.est.of)}"' if b.est else ""
-    return est + (f' data-size="{_esc(b.size)}"' if b.size else "")
-
-
-def _member(b: Bar) -> str:
-    label = f' data-label="{_esc(b.label)}"' if b.label else ""
-    return f'<span class="member" data-item="{_esc(b.item)}" data-start-src="{b.start_src}" data-end-src="{b.end_src}"{label}{_est_attrs(b)}></span>'
-
-
 def _tasks(n: int) -> str:
     return f"{n} {'task' if n == 1 else 'tasks'}"
-
-
-LEGEND = [
-    ("key bar running", "running"),
-    ("key bar open", "open"),
-    ("key bar orphaned", "orphaned"),
-    ("key bar open-end", "no estimate"),
-    ("key bar derived", "estimated"),
-    ("key bar summary", "folded rows"),
-    ("key bar done", "done"),
-    ("key seg sleep", "sleep"),
-    ("key seg eat", "eat"),
-    ("key seg gym", "gym"),
-    ("key seg recreation", "recreation"),
-    ("key fill due", "committed"),
-    ("key fill derived", "derived, no due written"),
-    ("key fill over", "over work time"),
-    ("key fill free", "uncommitted"),
-    ("key band", "calendar event"),
-    ("key nowline", "now"),
-    ("key dline", "deadline"),
-]
-
-
-def legend() -> str:
-    return '<div class="legend">' + "".join(f'<span class="item"><span class="{cls}"></span> {label}</span>' for cls, label in LEGEND) + "</div>\n"
 
 
 # A poll cycle runs about an hour, so under half an hour is current, under two hours is last cycle,
@@ -1267,9 +1037,6 @@ def legend() -> str:
     # to survive with JavaScript off, and docs/archive/design-inputs.md §50 settled that this page runs none.
 STAMP_FRESH = timedelta(minutes=30)
 STAMP_AGING = timedelta(hours=2)
-# Every kind a node can draw. The first four are reported; the rest the coordinator works out,
-# `gone` from the Tasks join because a session cannot report that it is gone.
-SESSION_KINDS = ("planning", "working", "waiting", "idle", "starting", "ready", "gone", "unknown", "unreported")
 
 
 def _age(session: Session, cfg: Config, now: datetime) -> tuple[datetime | None, int | None]:
@@ -1286,281 +1053,11 @@ def _age(session: Session, cfg: Config, now: datetime) -> tuple[datetime | None,
     return at, int((now - at).total_seconds() // 60)
 
 
-def _age_text(minutes: int) -> str:
-    return f"{minutes // 60}h{minutes % 60:02d}m" if minutes >= 60 else f"{minutes}m"
-
-
 def _band(minutes: int) -> str:
     return "fresh" if minutes < STAMP_FRESH.total_seconds() / 60 else ("aging" if minutes < STAMP_AGING.total_seconds() / 60 else "stale")
 
 
-def _stamp(session: Session, cfg: Config, now: datetime) -> tuple[str, str]:
-    """The node's age, as html and as the `data-age` citation it is drawn from."""
-    at, minutes = _age(session, cfg, now)
-    if at is None:
-        if not session.last_reply.strip():
-            return '<span class="stamp never">no reply yet</span>', ""
-        # A cell that is not HH:MM is shown as written rather than guessed at or dropped.
-        return f'<span class="stamp unparsed">as of {_esc(session.last_reply.strip())}</span>', ""
-    return (f'<span class="stamp {_band(minutes)}">as of {at.strftime("%H:%M")} · {_age_text(minutes)}</span>',
-            f' data-as-of="{at.strftime("%H:%M")}" data-age="{minutes}" data-band="{_band(minutes)}"')
-
-
-def _facts(session: Session) -> str:
-    rows = [("doing", session.doing), ("waiting for", session.waits_for), ("free at", session.free_at),
-            ("constraints", session.constraints)]
-    body = "".join(f"<dt>{label}</dt><dd>{_inline(value.strip())}</dd>" for label, value in rows if value.strip())
-    warn = f'<dt>warning</dt><dd class="warn">{_esc(session.warning)}</dd>' if session.warning else ""
-    return f'<dl class="facts">{body}{warn}</dl>' if body or warn else ""
-
-
-def _session_node(session: Session, cfg: Config, now: datetime, gone: set[str]) -> str:
-    kind = "gone" if session.label in gone else session.kind
-    stamp, cite = _stamp(session, cfg, now)
-    who = session.waits_on
-    # An edge, not a state: `waiting on` carries who and then why, and the enum stays four words wide.
-    edge = f'<span class="edge">→ {_esc(who)}</span>' if who else ""
-    kids = "".join(f"<li>{_esc(name)}</li>" for name in session.child_names)
-    kid_list = f'<ul class="kids">{kids}</ul>' if kids else ""
-    ref = f' data-ref="{_esc(session.ref.strip())}"' if session.ref.strip() else ""
-    waits = f' data-waits-on="{_esc(who)}"' if who else ""
-    return (f'<li><details class="node {kind}"{ref} data-state="{kind}"{cite}{waits}>'
-            f'<summary><span class="chip {kind}">{kind}</span><span class="who">{_esc(session.label)}</span>'
-            f"{edge}{stamp}</summary>{_facts(session)}{kid_list}</details></li>")
-
-
 ORPHANED = "orphaned"
-
-
-def gone_sessions(tasks: tuple[Task, ...], sessions: tuple[Session, ...]) -> set[str]:
-    """Sessions the registry still lists whose task says its owner left. The join, in the renderer.
-
-    A session cannot report that it is gone, so this is the coordinator's to work out, and it is the
-    one state the board takes over a session's own word: `orphaned` on the task and `working` in the
-    registry are the same row contradicting itself, and the task is the column that was updated last.
-    """
-    left = {_bare_name(task.owner) for task in tasks if task.kind == ORPHANED}
-    left -= {""}
-    return {s.label for s in sessions if _bare_name(s.name) in left}
-
-
-def session_graph(sessions: tuple[Session, ...], cfg: Config, now: datetime, gone: set[str] | None = None) -> str:
-    """The coordinator, its sessions, and their subagents, as one disclosure tree.
-
-    Nested `<details>` and nothing else: the idiom `_strip()` already uses for folded rows, and the
-    one shape a tree can take here. It is not a `Bar` — `_strip` positions everything as a percentage
-    of a time axis, and a tree has no time axis.
-
-    A subagent gets a list item and never a node: it has no ref, is in no listing, answers no poll and
-    cannot be sent to, and a node beside its peers would say all four were false.
-    """
-    if not sessions:
-        return ""
-    gone = gone or set()
-    nodes = "\n".join(_session_node(s, cfg, now, gone) for s in sessions)
-    stale = sum(1 for s in sessions if (m := _age(s, cfg, now)[1]) is not None and _band(m) == "stale")
-    unheard = sum(1 for s in sessions if _age(s, cfg, now)[0] is None)
-    kids = sum(len(s.child_names) for s in sessions)
-    notes = [f"{len(sessions)} {'session' if len(sessions) == 1 else 'sessions'}"]
-    if kids:
-        notes.append(f"{kids} {'subagent' if kids == 1 else 'subagents'}")
-    if stale:
-        notes.append(f"{stale} stale")
-    if unheard:
-        notes.append(f"{unheard} never replied")
-    return f"""<section class="graph" data-sessions="{len(sessions)}">
-<h2>Sessions · {len(sessions)}</h2>
-<details class="node coordinator" open>
-<summary><span class="chip coordinator">coordinator</span><span class="who">chief-of-stuff</span><span class="stamp fresh">{" · ".join(notes)}</span></summary>
-<ul class="peers">
-{nodes}
-</ul>
-</details>
-</section>
-"""
-
-
-def grid_marks(axis_a: datetime, axis_b: datetime, kind: str) -> list[tuple[datetime, bool]]:
-    """A line per tick on the day strip (a half line between), every day on the week strip (a half line at midday).
-
-    The day grid followed the clock, not the axis: an hourly grid over a rolling 24 hours is 25 lines
-    across ~1100px, one every 44px, which reads as hatching rather than as a grid. It follows the tick
-    step now, so the lines land under the labels whatever span the axis covers.
-    """
-    step = gantt.tick_step(axis_b - axis_a, MAX_TICKS) if kind == "day" else timedelta(days=1)
-    marks, at = [], axis_a
-    last = axis_b if kind == "day" else axis_b - step
-    while at <= last:
-        marks.append((at, True))
-        if at + step / 2 <= axis_b:
-            marks.append((at + step / 2, False))
-        at += step
-    return marks
-
-
-def _bar_row(b: Bar, axis_a: datetime, axis_b: datetime, row_class: str = "row") -> str:
-    """One task as a positioned row. A top-level bar and a sublane inside a fold are the same markup."""
-    edge = (" clamped" if b.end > axis_b else "") + (" clamped-left" if b.end < axis_a else "")
-    classes = f"bar {b.kind}" + (" open-end" if b.end_src == "deadline" else "") + (" derived" if b.end_src == "derived" else "") + edge
-    label = f' data-label="{_esc(b.label)}"' if b.label else ""
-    title = f' title="{_esc(b.est.title(b.owner))}"' if b.est else ""
-    text = f"<em>{_esc(b.label)}</em>" if b.label else ""
-    return (
-        f'<div class="{row_class}"><div class="name">{_esc(b.name)}</div><div class="track">'
-        f'<div class="{classes}" data-name="{_esc(b.name)}" data-owner="{_esc(b.owner)}" data-item="{_esc(b.item)}" data-start="{_iso(b.start)}" data-end="{_iso(b.end)}" '
-        f'data-start-src="{b.start_src}" data-end-src="{b.end_src}"{label}{_est_attrs(b)}{title} style="{gantt.place(b.start, b.end, axis_a, axis_b, 0.6)}">{text}</div></div></div>'
-    )
-
-
-def week_load(bars: list[Bar], body: list[Event], week_a: datetime, week_b: datetime, now: datetime,
-              est: dict[str, Estimate], hist: dict[str, tuple[timedelta, int]]) -> list[dict]:
-    """What each day of the week axis has committed to it, against the work time it has left.
-
-    The week strip says when tasks land; it does not say whether they can. A day carrying eighteen
-    hours of estimated work and thirteen hours awake looks exactly like a day carrying four.
-
-    Committed is estimated WORK, not the wall-clock span of the bar: a task running since Monday and
-    due Friday occupies four days of the strip and is not four days of work. The duration comes from
-    the task's own estimate, else the mean of closed tasks of its size, else the mean of all of them;
-    a task none of those can size is counted apart rather than guessed at. Each task is charged to
-    the day it lands, which is the day its slipping would be felt. Every active task counts, folded
-    into a summary row or not — a day's load is not lighter because the strip drew its tasks as one.
-
-    Work time available is the day minus the body track, and today starts at `now` rather than at
-    midnight because the morning is already spent. Beyond today the calendar holds no events, so
-    nothing is booked and the whole day reads as available — true of the inputs rather than useful.
-    """
-    def work(b: Bar) -> timedelta | None:
-        if (e := est.get(b.item)) is not None:
-            return e.slot
-        if b.size and b.size in hist:
-            return hist[b.size][0]
-        return hist[ALL_SIZES][0] if ALL_SIZES in hist else None
-
-    cells = []
-    day = week_a
-    while day < week_b:
-        nxt = min(day + timedelta(days=1), week_b)
-        open_a = max(day, now)
-        booked = sum(max(0, int((min(e.end, nxt) - max(e.start, open_a)).total_seconds() // 60)) for e in body)
-        available = max(0, int((nxt - open_a).total_seconds() // 60) - booked)
-        lands = [b for b in bars if day <= b.end < nxt]
-        due_m = derived_m = unsized = 0
-        for b in lands:
-            w = work(b)
-            if w is None:
-                unsized += 1
-            elif b.end_src == "derived":
-                derived_m += int(w.total_seconds() // 60)
-            else:
-                due_m += int(w.total_seconds() // 60)
-        cells.append({"day": day.date(), "due": due_m, "derived": derived_m, "unsized": unsized,
-                      "committed": due_m + derived_m, "available": available})
-        day = nxt
-    return cells
-
-
-def _load_row(cells: list[dict], axis_a: datetime, axis_b: datetime) -> str:
-    """One cell per day, the bar scaled against the busiest day so the columns are comparable."""
-    peak = max([max(c["committed"], c["available"]) for c in cells] + [1])
-    out = ['<div class="load" data-load="week">']
-    for c in cells:
-        day_a = datetime.combine(c["day"], time(0, 0), tzinfo=axis_a.tzinfo)
-        over = 1 if c["committed"] > c["available"] else 0
-        spare = max(c["available"] - c["committed"], 0)
-        bits = [("due", c["due"]), ("derived", c["derived"])] if not over else [
-            ("due", min(c["due"], c["available"])),
-            ("derived", max(min(c["committed"], c["available"]) - c["due"], 0)),
-            ("over", c["committed"] - c["available"]),
-        ]
-        fills = "".join(
-            f'<span class="fill {k}" style="height:{m / peak * 100:.2f}%"></span>' for k, m in bits if m > 0
-        ) + (f'<span class="fill free" style="height:{spare / peak * 100:.2f}%"></span>' if spare else "")
-        out.append(
-            f'<div class="load-cell" data-day="{c["day"].isoformat()}" data-committed="{c["committed"]}" '
-            f'data-due="{c["due"]}" data-derived="{c["derived"]}" data-unsized="{c["unsized"]}" '
-            f'data-available="{c["available"]}" data-over="{over}" '
-            f'style="{gantt.place(day_a, day_a + timedelta(days=1), axis_a, axis_b, 0.6)}">'
-            f'<span class="at">{_dur(timedelta(minutes=c["committed"]))}{" ⚑" if over else ""}</span>'
-            f'<span class="col">{fills}</span></div>'
-        )
-    out.append("</div>")
-    return "\n".join(out)
-
-
-def _body_row(body: Body, axis_a: datetime, axis_b: datetime) -> str:
-    """The body track. Hours already spent asleep, eating or off are not available for work, and a
-    deadline row above them reads as if they were until they are drawn."""
-    segs = []
-    for ev in body.segments:
-        segs.append(
-            f'<div class="seg {ev.kind}" data-body="{ev.kind}" data-start="{_iso(ev.start)}" data-end="{_iso(ev.end)}" '
-            f'title="{_esc(ev.title)} {ev.start.strftime("%H:%M")}–{ev.end.strftime("%H:%M")}" '
-            f'style="{gantt.place(ev.start, ev.end, axis_a, axis_b, 0.6)}"><em>{_esc(ev.kind)}</em></div>'
-        )
-    return f'<div class="row body"><div class="name">body</div><div class="track">{"".join(segs)}</div></div>'
-
-
-def _strip(rows: list["Body | Swim | Bar | Summary"], axis_a: datetime, axis_b: datetime, events: list[Event], deadlines: list[Deadline], ticks: list[tuple[datetime, str]], kind: str) -> str:
-    out = [f'<div class="strip" data-strip="{kind}" data-axis-start="{_iso(axis_a)}" data-axis-end="{_iso(axis_b)}">']
-    out.append('<div class="axis">')
-    for at, label in ticks:
-        out.append(f'<span class="tick" style="left:{gantt.position(at, axis_a, axis_b):.2f}%">{_esc(label)}</span>')
-    out.append("</div>")
-    out.append('<div class="rows">')
-    for row in rows:
-        if isinstance(row, Body):
-            out.append(_body_row(row, axis_a, axis_b))
-            continue
-        if isinstance(row, Swim):
-            out.append(
-                f'<div class="row swim-row" data-swimlane="{_esc(row.name)}" data-count="{row.count}">'
-                f'<div class="name">{_esc(row.name)} · {row.count}</div><div class="track"></div></div>'
-            )
-            continue
-        edge = (" clamped" if row.end > axis_b else "") + (" clamped-left" if row.end < axis_a else "")
-        if isinstance(row, Bar):
-            out.append(_bar_row(row, axis_a, axis_b))
-            continue
-        sm = row
-        names = " · ".join(m.name for m in sm.members)
-        hatch = " open-end" if sm.attr == "summary" else ""
-        # The folded names were always in the html as empty `.member` spans, readable by a grader and
-        # by nobody else. The disclosure opens onto the members drawn as rows on the same axis — sublanes,
-        # not a list of names (Zach, 2026-09-18 12:55) — and the citations stay on the summary bar.
-        out.append(
-            '<details class="folded"><summary>'
-            f'<div class="row {sm.attr}-row"><div class="name">{_esc(sm.name or _tasks(len(sm.members)))}</div><div class="track">'
-            f'<div class="bar{hatch} {sm.attr}{edge}" data-{sm.attr}="{_esc(sm.key)}" data-count="{len(sm.members)}" data-start="{_iso(sm.start)}" data-end="{_iso(sm.end)}" '
-            f'style="{gantt.place(row.start, row.end, axis_a, axis_b, 0.6)}" title="{_esc(names)}"><em>{_esc(sm.label)}</em>'
-            + "".join(_member(m) for m in sm.members)
-            + "</div></div></div></summary>"
-            + "".join(_bar_row(m, axis_a, axis_b, "row sub") for m in sm.members)
-            + "</details>"
-        )
-    out.append('<div class="overlay">')
-    for at, major in grid_marks(axis_a, axis_b, kind):
-        out.append(f'<div class="grid{"" if major else " half"}" style="left:{gantt.position(at, axis_a, axis_b):.2f}%"></div>')
-    for ev in events:
-        out.append(f'<div class="band" data-band="{_esc(ev.title)}" style="{gantt.place(ev.start, ev.end, axis_a, axis_b, 0.3)}"></div>')
-    drawn = [d for d in deadlines if axis_a <= d.at <= axis_b]
-    for d in drawn:
-        out.append(f'<div class="dline" data-deadline-name="{_esc(d.name)}" style="left:{gantt.position(d.at, axis_a, axis_b):.2f}%"></div>')
-    out.append('<div class="nowline" hidden></div></div>')
-    out.append("</div>")
-    # Deadline labels sit below the rows, one line each, so they never share a line with each other or the axis.
-    callouts = []
-    for d in drawn:
-        pct = gantt.position(d.at, axis_a, axis_b)
-        span = f'<span class="right" style="right:{100 - pct:.2f}%">' if pct > 70 else f'<span style="left:{pct:.2f}%">'
-        callouts.append(f'<div class="callout">{span}{_esc(d.name)}</span></div>')
-    beyond = [d for d in deadlines if d.at > axis_b]
-    if beyond:
-        callouts.append(f'<div class="callout later">{_esc(" · ".join(f"{d.name} {d.at:%a %d}" for d in beyond))} →</div>')
-    if callouts:
-        out.append('<div class="callouts">' + "".join(callouts) + "</div>")
-    out.append("</div>")
-    return "\n".join(out)
 
 
 def _deadline_for(task: Task, bar: Bar, cfg: Config, now: datetime) -> Deadline:
@@ -1568,147 +1065,6 @@ def _deadline_for(task: Task, bar: Bar, cfg: Config, now: datetime) -> Deadline:
         if d.name.lower() == task.due.strip().lower() or (bar.end_src != "due" and d.at == bar.end):
             return d
     return governing_deadline(cfg, now)
-
-
-def swimlanes(bars: list[Bar]) -> list["Swim | Bar"]:
-    """Deadline outer, owner inner — the two groupings Zach asked for at once (2026-09-19).
-
-    Deadlines keep the order they are first drawn in; tasks answering to none come last, under one
-    header, because nothing in them can make him late.
-    """
-    order: list[str] = []
-    for b in bars:
-        if b.deadline not in order:
-            order.append(b.deadline)
-    first = {n: i for i, n in enumerate(order)}  # positions before the sort: the list is what is being sorted
-    order.sort(key=lambda n: (n == "", first[n]))
-    rows: list[Swim | Bar] = []
-    for name in order:
-        members = [b for b in bars if b.deadline == name]
-        rows.append(Swim(name or "no deadline", len(members)))
-        rows.extend(sorted(members, key=lambda b: b.owner.lower()))
-    return rows
-
-
-def today_rows(active: list[Task], cfg: Config, now: datetime, axis_b: datetime, est: dict[str, Estimate] | None = None, floor: timedelta | None = None) -> tuple[list[Bar], list[Bar]]:
-    """Own bars: running tasks and tasks whose cited end falls by the axis end. Everything else folds.
-
-    A derived end folds too when its slot is narrower than `floor` (the axis tick): a session with five
-    tasks and four hours left would otherwise unfold into five 48-minute slivers exactly when the strip
-    most needs reading. The estimate survives in the folded row's `.member` span.
-    """
-    own, folded = [], []
-    for task in active:
-        b = day_bar(task, cfg, now, est)
-        narrow = b.est is not None and floor is not None and b.est.slot < floor
-        if (task.kind == "running" and task.state_time) or (b.end_src != "deadline" and b.end <= axis_b and not narrow):
-            own.append(b)
-        else:
-            folded.append(b)
-    return own, folded
-
-
-def done_rows(done: list[Task], cfg: Config, now: datetime, axis_a: datetime) -> list[Bar]:
-    """Tasks finished inside the strip's past: `done HH:MM`, or `done HH:MM–HH:MM` for the whole run.
-
-    The tracker writes clock times with no date, so a done time later than now is yesterday's. The start is
-    the range's start, else a same-day `since` that is not after the end, else the end itself, drawn as the
-    narrowest bar. A bare `done` has no position and is not drawn.
-    """
-    today, zone = now.date(), cfg.zone
-    bars = []
-    for task in done:
-        if not (t := task.state_time) or (end := _hhmm(t, today, zone)) is None:
-            continue
-        if end > now:
-            end -= timedelta(days=1)
-        if not axis_a <= end <= now:
-            continue
-        start, start_src = end, "state"
-        if task.ran and (s := _hhmm(task.ran[0], end.date(), zone)):
-            start, start_src = (s if s <= end else s - timedelta(days=1)), "ran"
-        elif (s := _hhmm(task.since, end.date(), zone)) and s <= end:
-            start, start_src = s, "since"
-        bars.append(Bar(task.item, task.owner, task.label, "done", start, end, start_src, "state", None, size=task.size.strip().upper()))
-    return sorted(bars, key=lambda b: b.end)
-
-
-def week_axis_end(cfg: Config, week_a: datetime) -> datetime:
-    last = max([d.at for d in cfg.deadlines] + [week_a])
-    day_after_last = datetime.combine(last.date() + timedelta(days=1), time(0, 0), tzinfo=week_a.tzinfo)
-    return max(min(week_a + timedelta(days=WEEK_DAYS), day_after_last), week_a + timedelta(days=1))
-
-
-def week_rows(active: list[Task], cfg: Config, now: datetime, week_a: datetime, week_b: datetime, est: dict[str, Estimate] | None = None) -> list[Bar | Summary]:
-    """Running tasks get a bar. Tasks with a concrete due group by due day (a lone task keeps its bar); overdue and
-    past-the-axis tasks get one row each. The rest fold into one row per deadline. Returned in drawing order."""
-    keyed: list[tuple[tuple, Bar | Summary]] = []
-    days: dict[date, list[Bar]] = {}
-    overdue: list[Bar] = []
-    later: list[Bar] = []
-    groups: dict[Deadline, list[Bar]] = {}
-    instants = {d.at for d in cfg.deadlines}
-    for task in active:
-        b = week_bar(task, cfg, now, est)
-        named = any(d.name.lower() == task.due.strip().lower() for d in cfg.deadlines)
-        if task.kind == "running" and task.state_time:
-            keyed.append(((1, b.start), b))
-        elif b.end_src in ("due", "derived") and not named and b.end not in instants:
-            if b.end < week_a:
-                overdue.append(b)
-            elif b.end >= week_b:
-                later.append(b)
-            else:
-                days.setdefault(b.end.date(), []).append(b)
-        else:
-            groups.setdefault(_deadline_for(task, b, cfg, now), []).append(b)
-    if overdue:
-        keyed.append(((0,), Summary("overdue", f"due {min(b.end for b in overdue):%a %d}", week_a, max(b.end for b in overdue), tuple(overdue), f"Overdue · {_tasks(len(overdue))}", "group")))
-    for day, bars in days.items():
-        if len(bars) == 1:
-            keyed.append(((2, bars[0].end), bars[0]))
-            continue
-        end = max(b.end for b in bars)
-        due_n, est_n = sum(b.end_src == "due" for b in bars), sum(b.end_src == "derived" for b in bars)
-        label = " · ".join(part for part, n in ((f"{due_n} due", due_n), (f"{est_n} est.", est_n)) if n)
-        keyed.append(((2, end), Summary(day.isoformat(), label, max(week_a, min(b.start for b in bars)), end, tuple(bars), f"{day:%a %d} · {_tasks(len(bars))}", "group")))
-    if later:
-        keyed.append(((3,), Summary("later", f"due {min(b.end for b in later):%a %d}", week_a, max(b.end for b in later), tuple(later), f"Later · {_tasks(len(later))}", "group")))
-    for d, bars in groups.items():
-        label = f"→ {d.name}" + (f" {d.at:%a %d}" if d.at > week_b else "")
-        keyed.append(((4, d.at), Summary(d.name, label, week_a, d.at, tuple(bars))))
-    return [row for _, row in sorted(keyed, key=lambda kr: kr[0])]
-
-
-def _inline(text: str) -> str:
-    """Escape, then render the three inline Markdown marks requirement lists use: `code`, **strong**, *em*."""
-    out = _esc(text)
-    out = re.sub(r"`([^`]+)`", r"<code>\1</code>", out)
-    out = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", out)
-    return re.sub(r"(?<![*\w])\*(?!\s)(.+?)(?<!\s)\*(?![*\w])", r"<em>\1</em>", out)
-
-
-def requirements_section(d: Deadline, text: str | None) -> str:
-    if text is None:
-        return f'<p class="warn" data-requirements-missing="{_esc(d.name)}">{_esc(d.name)} requirements file not found: {_esc(d.requirements or "")}</p>'
-    groups = parse_requirements(text)
-    items = [r for _, reqs in groups for r in reqs]
-    done, total = sum(r.done for r in items), len(items)
-    out = [
-        f'<section class="reqs" data-deadline="{_esc(d.name)}" data-done="{done}" data-total="{total}">',
-        f"<h2>{_esc(d.name)} requirements · {done} of {total}</h2>",
-        f'<div class="meter"><span style="width:{(done / total * 100) if total else 0:.1f}%"></span></div>',
-    ]
-    for name, reqs in groups:
-        g_done = sum(r.done for r in reqs)
-        opened = " open" if g_done < len(reqs) else ""
-        out.append(f'<details class="req-group"{opened}><summary>{_esc(name)} · {g_done} of {len(reqs)}</summary><ul>')
-        for r in reqs:
-            evidence = f'<span class="evidence">{_inline(r.evidence)}</span>' if r.evidence else ""
-            out.append(f'<li class="req {"done" if r.done else "open"} depth-{r.depth}"><span class="box">{"☑" if r.done else "☐"}</span><span class="text">{_inline(r.text)}</span>{evidence}</li>')
-        out.append("</ul></details>")
-    out.append("</section>")
-    return "\n".join(out)
 
 
 def stage_order(lanes: dict) -> list[str]:
@@ -1886,234 +1242,42 @@ def flow_tiles(blocked: int, decisions: int, sources: board_sources.Sources, run
     """Six counts, each linking to where its items are listed. RUNNING counts workers, or running tasks when no
     worker source is read."""
     approved = sum(c.state == "open" and c.approved for c in sources.changes.values())
-    return [panels.Tile("BLOCKED", blocked, "blocked", "blocked"), panels.Tile("DECISIONS", decisions, "decisions", "decisions"),
+    return [panels.Tile("BLOCKED", blocked, "flow", "blocked"), panels.Tile("DECISIONS", decisions, "decisions", "decisions"),
             panels.Tile("APPROVED", approved, "merge", "approved"),
             panels.Tile("RUNNING", len(sources.workers) or running, "workers", "running"),
-            panels.Tile("DRIFT", drift, "build", "drift"), panels.Tile("ORPHANED", orphaned, "blocked", "orphaned")]
+            panels.Tile("DRIFT", drift, "flow", "drift"), panels.Tile("ORPHANED", orphaned, "flow", "orphaned")]
 
 
-def render(tracker_text: str, log_text: str, cfg: Config, now: datetime,
-           requirements: dict[str, str | None] | None = None, lanes: dict | None = None,
+def render(tracker_text: str, cfg: Config, now: datetime, lanes: dict | None = None,
            tracker_day: date | None = None, decisions: list[tuple[str, dict | None, datetime | None, str]] | None = None,
            kanban: Kanban | None = None, sources: board_sources.Sources = board_sources.EMPTY, answered: int = 0,
            tracker_at: datetime | None = None, stage_log: list[tuple[date, str]] | None = None, slots: int = 1) -> str:
-    """`stage_log` is (day, tracker text) for the earlier days the Flow charts reach back over; `slots` is how many
-    queued tasks run at once, `[workers] max_concurrency`."""
+    """The Flow board (Flow.dc.html): header, tiles, BUILD, the MERGE ORDER, DECISIONS and WORKERS panels, and the
+    Flow charts. `stage_log` is (day, tracker text) for the earlier days the Flow charts reach back over; `slots` is
+    how many queued tasks run at once, `[workers] max_concurrency`."""
     cfg = with_decision_deadlines(cfg, tracker_text, tracker_day or now.date())
     sha = hashlib.sha256(tracker_text.encode()).hexdigest()
     tracker = parse_tracker(tracker_text)
     today, zone = now.date(), cfg.zone
-    events = parse_calendar(log_text, today, zone)
-    # A body event is drawn once, as a segment of the body track; drawn as a band as well it would
-    # read as two things happening at once. Every other event stays the band it was.
-    body_events = [e for e in events if e.kind]
-    events = [e for e in events if not e.kind]
-    # Only tasks from here on. A standing session with no task is on the Sessions graph, which reads
-    # `## Sessions`; `gone_sessions` still reads every row, so its orphaned placeholder still marks it gone.
+    # A standing session with no task is not a task.
     tasks = [task for task in tracker.tasks if not task.standing]
-    standing = len(tracker.tasks) - len(tasks)
     active = [task for task in tasks if task.kind != "done"]
-    done = [task for task in tasks if task.kind == "done"]
     nearest = nearest_deadline(cfg, now)
-    url = cfg.board_url or tracker.board_url
-
-    # Day strip: a rolling 24 hours, 8 behind this hour and 16 ahead of it (Zach, 2026-09-22). It first
-    # ended at the nearest deadline or midnight, so at 23:00 only an hour of it lay ahead of now; then it
-    # ran 24 hours forward from this hour (2026-09-19), so nothing already done was on it. The past third
-    # carries last night's sleep, today's earlier events and the tasks done in it; a bar that started
-    # before the axis draws clamped-left, as a carried bar always has.
-    hour = now.replace(minute=0, second=0, microsecond=0)
-    axis_a, axis_b = hour - DAY_BEHIND, hour + DAY_AHEAD
     hist = history(tasks, cfg, now)
     est = estimates(active, cfg, now, hist)
-    day_bars, day_folded = today_rows(active, cfg, now, axis_b, est, gantt.tick_step(axis_b - axis_a, MAX_TICKS))
-    day_ticks = gantt.ticks(axis_a, axis_b, gantt.tick_step(axis_b - axis_a, MAX_TICKS), "%H:%M", origin=axis_a)
-    day_events = [e for e in events if e.end > axis_a and e.start < axis_b]
-    on_axis = sorted((e for e in body_events if e.end > axis_a and e.start < axis_b), key=lambda e: e.start)
-    day_body: list[Body] = [Body(tuple(on_axis))] if on_axis else []
-    # Folded work is still to do, so its row starts at this hour, not at the axis's past edge.
-    day_summaries = [Summary("today", "no estimate, or due or estimated after today", hour, axis_b, tuple(day_folded))] if day_folded else []
-    day_done = done_rows(done, cfg, now, axis_a)
-    # One closed row, opening onto the done tasks as sublanes: 27 of them pushed the work still ahead off the
-    # first screen (Zach, 2026-09-22 18:57: "have done collapse down to an expandable row too").
-    day_done_rows = [Summary("done", f"{len(day_done)} done", min(b.start for b in day_done), max(b.end for b in day_done), tuple(day_done), f"Done · {_tasks(len(day_done))}", "done")] if day_done else []
 
-    # Week strip: today to the day after the last deadline, at most 7 days, one column per day.
-    week_a = datetime.combine(today, time(0, 0), tzinfo=zone)
-    week_b = week_axis_end(cfg, week_a)
-    week = week_rows(active, cfg, now, week_a, week_b, est)
-    week_bars = [r for r in week if isinstance(r, Bar)]
-    week_groups = [r for r in week if isinstance(r, Summary) and r.attr == "group"]
-    load_cells = week_load([week_bar(l, cfg, now, est) for l in active], body_events, week_a, week_b, now, est, history(tasks, cfg, now))
-    week_ticks = [(t, label) for t, label in gantt.ticks(week_a, week_b, timedelta(days=1), "%a %d") if t < week_b]
-
-    def item_cell(item: str, label: str) -> str:
-        short = label
-        if short == _unmark(item).strip():
-            return _esc(_unmark(item))
-        lines = history_lines(item, label) or [("", item)]
-        body = "".join(f"<li><time>{_esc(t)}</time><span>{_inline(text)}</span></li>" if t
-                       else f'<li class="notime"><span>{_inline(text)}</span></li>' for t, text in lines)
-        return f'<details><summary>{_esc(short)}</summary><ul class="hist">{body}</ul></details>'
-
-    def task_filters(task: Task) -> list[str]:
-        """The chips that keep this row. A filter is mechanical and selects over the whole table,
-        done rows included: `yours` answers "which tasks name Robin", and the groups keep the state
-        reading that the old queue table bought by excluding done."""
-        owner = task.owner.strip().lower()
-        tokens = ["all"]
-        if owner == cfg.user.strip().lower():
-            tokens.append("mine")
-        if owner in ("unassigned", ""):
-            tokens.append("unassigned")
-        if task.kind in ("running", "orphaned", "done"):
-            tokens.append(task.kind)
-        return tokens
-
-    # The issue column exists only where the block names a backlog; the board reads the cell and
-    # never the network, so whether the issue is open is audit_tasks.py's to say.
-    issued = cfg.backlog is not None
-    span = 7 if issued else 6
-    issue_head = "<th>issue</th>" if issued else ""
-
-    def issue_cell(task: Task) -> str:
-        if not issued:
-            return ""
-        cell = task.issue.strip()
-        ref = issue_ref(cell, cfg.backlog) if cell else None
-        if ref:
-            body = f'<a href="{_esc(ref.url)}">{_esc(ref.label(cfg.backlog))}</a>'
-        elif cell:
-            body = f'<span class="warn">not an issue: {_esc(cell)}</span>'
-        elif task.needs_issue:
-            body = '<span class="warn">no issue</span>'
-        else:
-            body = ""
-        return f"<td>{body}</td>"
-
-    def stage_mark(task: Task) -> str:
-        name, stage = task.lane.strip(), task.stage.strip()
-        if not name:
-            return ""
-        lane = (lanes or {}).get(name)
-        text = f"{stage} · {name}"
-        if lane and stage in lane.gates:
-            return f' <span class="stage gate">{_esc(text)} — waiting on you</span>'
-        return f' <span class="stage">{_esc(text)}</span>'
-
-    def task_rows(group: list[Task]) -> str:
-        rows = []
-        for task in group:
-            warn = f' <span class="warn">{_esc(task.warning)}</span>' if task.warning else ""
-            size = f' data-size="{_esc(task.size)}"' if task.size.strip() else ""
-            keeps = " ".join(task_filters(task))
-            rows.append(f'<tr data-state="{_esc(task.kind)}" data-in="{keeps}"{size}><td>{item_cell(task.item, task.label)}{warn}</td><td>{_esc(task.owner)}</td><td>{_esc(task.state)}{stage_mark(task)}</td><td>{_esc(task.since)}</td><td>{_esc(task.due)}</td><td>{_esc(task.size)}</td>{issue_cell(task)}</tr>')
-        return "\n".join(rows) or f'<tr data-in="all"><td colspan="{span}" class="muted">none</td></tr>'
-
-    running = [l for l in active if l.kind == "running"]
-    orphaned = [l for l in active if l.kind == "orphaned"]
-    waiting = [l for l in active if l.kind not in ("running", "orphaned")]
-
-    def group_head(label: str, group: list[Task], note: str = "") -> str:
-        keeps = " ".join(f for f in FILTERS if f == "all" or any(f in task_filters(l) for l in group))
-        tail = f" · {_esc(note)}" if note else ""
-        return f'<tr class="group" data-in="{keeps}"><th colspan="{span}">{_esc(label)} · {len(group)}{tail}</th></tr>'
-
-    orphan_group = f'\n{group_head("orphaned", orphaned, "nobody owns these")}\n{task_rows(orphaned)}' if orphaned else ""
-    # Unassigned and `<user>'s queue` were the Tasks table printed twice more. They are chips over
-    # the one table now; the counts are the only thing those tables said that the rows do not.
-    counts = {f: sum(1 for l in tasks if f in task_filters(l)) for f in FILTERS}
-    # Each radio sits immediately before its own label, so `:checked`/`:focus-visible` need one rule
-    # between them and not one per chip, and the radios still precede the table they filter.
-    chips = "".join(
-        f'<input type="radio" name="lf" id="lf-{f}"{" checked" if f == "all" else ""}>'
-        f'<label for="lf-{f}">{_esc(FILTER_LABELS[f])} <b>{counts[f]}</b></label>'
-        for f in FILTERS
-    )
-    requirements = requirements or {}
-    req_decks = [d for d in cfg.deadlines if d.requirements and d.at >= now]
-    req_html = "\n".join(requirements_section(d, requirements.get(d.name)) for d in req_decks)
-    req_meta = "".join(
-        f'\n<meta name="requirements-sha256" data-deadline="{_esc(d.name)}" content="{hashlib.sha256(requirements[d.name].encode()).hexdigest()}">'
-        for d in req_decks
-        if requirements.get(d.name) is not None
-    )
-    # 1 · DUE NEXT — a card per governing deadline, in the order the deadlines fall. A flat list
-    # sorted by time answers "what is next" but not "what makes me late for the thing with a clock
-    # on it": a task answering to tomorrow sitting between two of this morning's reads as one of
-    # them. Tasks answering to no deadline come last, because nothing in them can make him late.
-    def _clock(at: datetime) -> str:
-        return at.strftime("%H:%M") if at.date() == today else at.strftime("%a %d %H:%M")
-
-    due_groups: dict[str, list[tuple[Task, Bar]]] = {}
-    for task in active:
-        b = day_bar(task, cfg, now, est)
-        due_groups.setdefault(_deadline_for(task, b, cfg, now).name, []).append((task, b))
-    order = [d.name for d in cfg.deadlines if d.name in due_groups]
-    order += [n for n in due_groups if n not in order]
-
-    def due_card(name: str, group: list[tuple[Task, Bar]]) -> str:
-        at = next((d.at for d in cfg.deadlines if d.name == name), None)
-        # A task with no estimate has no time to sort by; it is counted in the head rather than
-        # given a row it cannot fill. `NO_ESTIMATE` is the meaning the rest of the page uses.
-        timed = sorted((p for p in group if p[1].label != NO_ESTIMATE), key=lambda p: p[1].end)
-        no_est = sum(1 for _, b in group if b.label == NO_ESTIMATE)
-        rows = "\n".join(
-            f'<div class="due-row" data-kind="{_esc(task.kind)}" data-at-src="{b.end_src}">'
-            f'<span class="at">{"~" if b.end_src == "derived" else ""}{_clock(b.end)}'
-            f'{" ⚑" if task.kind == "orphaned" else ""}</span>'
-            f'<span class="what">{_esc(task.label)}</span>'
-            f'<span class="who">{_esc(task.owner)}</span>'
-            f'<span class="state">{_esc(task.state)}</span>'
-            f'<span class="size">{_esc(task.size)}</span></div>'
-            for task, b in timed
-        ) or '<div class="due-row muted"><span class="what">nothing with a time on it</span></div>'
-        head = f"{_esc(name)} · {_clock(at)}" if at else _esc(name)
-        return (f'<div class="card due-card"><div class="card-head"><b>{head}</b>'
-                f'<span class="meta">{_tasks(len(group))} · {no_est} with no estimate</span>'
-                f"</div>\n{rows}</div>")
-
-    due_html = f"""<h2>Due next</h2>
-<div class="cards due">
-{chr(10).join(due_card(n, due_groups[n]) for n in order) or '<div class="card muted">nothing with a time on it</div>'}
-</div>
-"""
-
-    # 2 · BLOCKED — the band that is never folded: on you, unowned, or a session that stopped reporting.
+    # BLOCKED counts what is on the user, what nobody owns, and the sessions that stopped reporting.
     awaiting = [task for task in active if task.owner.strip().lower() == cfg.user.lower()]
     unowned = [task for task in active if task.kind == "orphaned"]
     quiet = [s for s in tracker.sessions if _band(_age(s, cfg, now)[1] or 10**6) == "stale" or not s.state.strip()]
-
-    # BLOCKED is never folded, so it cannot be allowed to grow without bound either: each card
-    # shows its first three and says how many more there are.
-    BLOCKED_SHOWN = 3
-
-    def blocked_card(title: str, rows: list[str]) -> str:
-        body = "".join(f'<li class="blocked-row">{r}</li>' for r in rows[:BLOCKED_SHOWN]) or '<li class="muted">none</li>'
-        if len(rows) > BLOCKED_SHOWN:
-            body += f'<li class="more">+ {len(rows) - BLOCKED_SHOWN} more</li>'
-        return f'<div class="card"><h3>{_esc(title)} · {len(rows)}</h3><ul>{body}</ul></div>'
-
-    def task_line(l: Task) -> str:
-        return f"{_esc(l.label)} <span class='muted'>· {_esc(l.due.strip()) or 'no due'}</span>"
-
-    def quiet_line(s: Session) -> str:
-        """A session name on its own does not say what the silence costs: how long, and how many
-        tasks are waiting behind it."""
-        minutes = _age(s, cfg, now)[1]
-        silence = f"silent {_dur(timedelta(minutes=minutes))}" if minutes is not None else "never reported"
-        held = sum(1 for l in active if _bare_name(l.owner) == _bare_name(s.name))
-        return (f"{_esc(s.name)} <span class='warn'>· {silence}</span> "
-                f"<span class='muted'>· {_tasks(held)}</span>")
+    running = [task for task in active if task.kind == "running"]
 
     build_cols, no_lane = build_columns(tasks, lanes, kanban, sources, now)
     issues = sum(1 for t in tasks if t.issue.strip())
     changes = sum(1 for c in sources.changes.values() if c.state == "open")
     changes_note = f" · {_plural(changes, 'merge request')}" if changes else ""
-    laned = any(t.lane.strip() for t in tasks)
-    build_html = (f'<section id="build"><h2>Build</h2>\n<div class="meta">{_tasks(len(tasks))} · {_plural(issues, "issue")}{changes_note}</div>\n'
-                  f'{columns.render(build_cols, no_lane if no_lane.cards else None)}</section>\n'
-                  if laned else "")
+    build_html = (f'<section id="flow"><h2>Build</h2>\n<div class="meta">{_tasks(len(tasks))} · {_plural(issues, "issue")}{changes_note}</div>\n'
+                  f'{columns.render(build_cols, no_lane if no_lane.cards else None)}</section>\n')
     flow_moves = [m for day, text in [*(stage_log or []), (tracker_day or today, tracker_text)]
                   for m in flow_chart.moves(text, day, zone)]
     known = [t for _, text in stage_log or [] for t in parse_tracker(text).tasks] + tasks
@@ -2121,32 +1285,11 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime,
     flow_html = flow_chart.section(flow_chart.build(flow_moves, known, lanes or {}, {t.name.strip() for t in tasks if held(t, kanban)},
                                                     {item: end[0] for item, end in ends.items()}, now,
                                                     queue_durations(active, hist), slots), now)
-    blocked_html = f"""<section id="blocked"><h2>Blocked</h2>
-<div class="cards">
-{blocked_card("Awaiting you", [task_line(l) for l in awaiting])}
-{blocked_card("Orphaned", [task_line(l) for l in unowned])}
-{blocked_card("Not reporting", [quiet_line(s) for s in quiet])}
-</div></section>
-"""
 
-    filter_css = "\n".join(
-        # `~*` and not `~table`: the rows only have to be somewhere after the chips, not directly
-        # under them. Stage 6 wrapped the table in `.scroll` for the phone and `~table` stopped
-        # matching, which cost all six chips their whole job in silence. Naming the wrapper here
-        # would just move the next break to the next wrapper.
-        f'#lf-{f}:checked~* tr[data-in]:not([data-in~="{f}"]){{display:none}}' for f in FILTERS
-    )
-    long_items = sum(1 for task in tasks if len(task.item) > LONG_ITEM)
-    orphan_note = f" · {sum(1 for l in active if l.kind == 'orphaned')} orphaned" if any(l.kind == "orphaned" for l in active) else ""
-    long_note = f" · {long_items} {'task carries' if long_items == 1 else 'tasks carry'} history in the item cell" if long_items else ""
-    standing_note = (f'<div class="meta">{standing} standing {"session" if standing == 1 else "sessions"} with no task '
-                     f'{"is not a task" if standing == 1 else "are not tasks"}; see Sessions</div>\n') if standing else ""
-    tzname = now.strftime("%Z")
     pending = decisions or []
-    meta = [f"rendered {now:%H:%M} {tzname}", f"tracker {(tracker_at or now).astimezone(zone):%H:%M}",
+    meta = [f"rendered {now:%H:%M} {now:%Z}", f"tracker {(tracker_at or now).astimezone(zone):%H:%M}",
             *(f"{k} {sources.fetched[k].astimezone(zone):%H:%M}" for k in ("kanban", "merge requests", "workers") if k in sources.fetched),
-            _tasks(len(tasks)), *([f"{len(no_lane.cards)} in no lane"] if laned else []),
-            *([f"board {url}"] if url else []), *([long_note.removeprefix(" · ")] if long_note else [])]
+            _tasks(len(tasks)), f"{len(no_lane.cards)} in no lane"]
     head = panels.Header(f"Board · {now.strftime('%a %d %b')}", tuple(meta), now, nearest.name, nearest.at,
                          tuple(f"{k}: {why}" for k, why in sources.errors.items()))
     tiles = flow_tiles(len(awaiting) + len(unowned) + len(quiet), sum(d is not None for _, d, _, _ in pending), sources, len(running),
@@ -2157,155 +1300,27 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime,
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Board {today.isoformat()}</title>
 <link rel="stylesheet" href="{FONTS}">
-<meta name="tracker-sha256" content="{sha}">{req_meta}
+<meta name="tracker-sha256" content="{sha}">
 <style>
-:root{{--bg:#f4efe1;--surface:#fbf8ef;--fg:#2f2630;--muted:#6e6470;--line:#ddd3bd;--brass:#a7843e;--band:rgba(111,99,180,.14);--open:#9daa72;--noest:#2f8f86;--fold:#8a7f9c;--running:#6f63b4;--done:#bdb3a2;--dl:#c9533a;--now:#4f6b3a;--est:#b5567a;--bar-ink:#fbf8ef;--seg-ink:#2f2630;--sleep:#332288;--eat:#D55E00;--gym:#117733;--recreation:#F0E442;--stage-implement:#0072B2;--stage-pr:#56B4E9;--stage-review:#009E73;--stage-triage:#E69F00;--stage-fix:#D55E00;--stage-verify:#CC79A7;--stage-merge:#000000}}
-@media (prefers-color-scheme:dark){{:root:not([data-theme="light"]){{color-scheme:dark;--bg:#1c1813;--surface:#262019;--fg:#efe6d2;--muted:#b3a791;--line:#3d352a;--brass:#d4b06a;--band:rgba(160,150,230,.16);--open:#aab77d;--noest:#62c2b6;--fold:#b7acc9;--running:#aba1e8;--done:#4a4236;--dl:#f08566;--now:#a8c67e;--est:#e59bb8;--bar-ink:#1c1813;--seg-ink:#1c1813;--sleep:#9c93e2;--eat:#f0955f;--gym:#72c28d;--recreation:#e6d95c;--stage-implement:#3D95D6;--stage-pr:#56B4E9;--stage-review:#009E73;--stage-triage:#E69F00;--stage-fix:#D55E00;--stage-verify:#CC79A7;--stage-merge:#efe6d2}}:root:not([data-theme="light"]) :is(.gantt,.gantt-legend){{--gantt-ink:var(--fg);--gantt-muted:var(--muted);--gantt-bg:var(--bg);--gantt-rule:var(--line);--gantt-edge:var(--line);--gantt-grid:var(--line);--gantt-past:var(--surface);--gantt-now:var(--dl);--gantt-hold:var(--dl)}}}}
-:root[data-theme="dark"]{{color-scheme:dark;--bg:#1c1813;--surface:#262019;--fg:#efe6d2;--muted:#b3a791;--line:#3d352a;--brass:#d4b06a;--band:rgba(160,150,230,.16);--open:#aab77d;--noest:#62c2b6;--fold:#b7acc9;--running:#aba1e8;--done:#4a4236;--dl:#f08566;--now:#a8c67e;--est:#e59bb8;--bar-ink:#1c1813;--seg-ink:#1c1813;--sleep:#9c93e2;--eat:#f0955f;--gym:#72c28d;--recreation:#e6d95c;--stage-implement:#3D95D6;--stage-pr:#56B4E9;--stage-review:#009E73;--stage-triage:#E69F00;--stage-fix:#D55E00;--stage-verify:#CC79A7;--stage-merge:#efe6d2}}
+:root{{--bg:#f4efe1;--surface:#fbf8ef;--fg:#2f2630;--muted:#6e6470;--line:#ddd3bd;--brass:#a7843e;--dl:#c9533a;--stage-implement:#0072B2;--stage-pr:#56B4E9;--stage-review:#009E73;--stage-triage:#E69F00;--stage-fix:#D55E00;--stage-verify:#CC79A7;--stage-merge:#000000}}
+@media (prefers-color-scheme:dark){{:root:not([data-theme="light"]){{color-scheme:dark;--bg:#1c1813;--surface:#262019;--fg:#efe6d2;--muted:#b3a791;--line:#3d352a;--brass:#d4b06a;--dl:#f08566;--stage-implement:#3D95D6;--stage-pr:#56B4E9;--stage-review:#009E73;--stage-triage:#E69F00;--stage-fix:#D55E00;--stage-verify:#CC79A7;--stage-merge:#efe6d2}}:root:not([data-theme="light"]) :is(.gantt,.gantt-legend){{--gantt-ink:var(--fg);--gantt-muted:var(--muted);--gantt-bg:var(--bg);--gantt-rule:var(--line);--gantt-edge:var(--line);--gantt-grid:var(--line);--gantt-past:var(--surface);--gantt-now:var(--dl);--gantt-hold:var(--dl)}}}}
+:root[data-theme="dark"]{{color-scheme:dark;--bg:#1c1813;--surface:#262019;--fg:#efe6d2;--muted:#b3a791;--line:#3d352a;--brass:#d4b06a;--dl:#f08566;--stage-implement:#3D95D6;--stage-pr:#56B4E9;--stage-review:#009E73;--stage-triage:#E69F00;--stage-fix:#D55E00;--stage-verify:#CC79A7;--stage-merge:#efe6d2}}
 :root[data-theme="dark"] :is(.gantt,.gantt-legend){{--gantt-ink:var(--fg);--gantt-muted:var(--muted);--gantt-bg:var(--bg);--gantt-rule:var(--line);--gantt-edge:var(--line);--gantt-grid:var(--line);--gantt-past:var(--surface);--gantt-now:var(--dl);--gantt-hold:var(--dl)}}
 body{{background:var(--bg);color:var(--fg);font:14px/1.5 "Alegreya Sans","Gill Sans",system-ui,sans-serif;padding:16px 16px 48px;max-width:1280px;margin:0 auto}}
 h1{{font-family:"Cormorant SC","Cormorant Garamond",Georgia,serif;font-size:26px;font-weight:600;letter-spacing:.04em;margin:0 0 2px}}
-h2{{font-family:"Cormorant SC","Cormorant Garamond",Georgia,serif;font-size:19px;font-weight:600;letter-spacing:.05em;margin:28px 0 8px;border-bottom:1px solid var(--brass);padding-bottom:4px}}
-.header{{display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap;margin-bottom:4px}} .header .logo{{width:160px;max-width:100%;border:1px solid var(--brass);border-radius:4px;display:block}}
+h2{{display:inline-block;font-family:"Cormorant SC","Cormorant Garamond",Georgia,serif;font-size:17px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;margin:28px 10px 8px 0}}
+h2+.meta{{display:inline-block}}
+.header{{display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap;margin-bottom:4px}}
 .header>.panels-head{{flex:1 1 320px;min-width:0}}
-.meta{{color:var(--muted);font-size:13px}} .clock{{font-family:ui-monospace,monospace;font-size:14px;font-variant-numeric:tabular-nums;margin:6px 0}}
-table{{border-collapse:collapse;width:100%;max-width:100%}} .tasks table{{table-layout:fixed}} .tasks{{overflow-wrap:anywhere}} .tasks th:first-child{{width:40%}} .tasks th:nth-child(2){{width:18%}} td,th{{text-align:left;padding:4px 8px;border-bottom:1px solid var(--line);vertical-align:top}} th{{color:var(--muted);font-weight:600;font-size:12px;letter-spacing:.04em;text-transform:uppercase}}
-tr.group th{{background:color-mix(in srgb,var(--brass) 18%,transparent);color:var(--fg);font-family:"Cormorant SC","Cormorant Garamond",Georgia,serif;font-weight:600;font-size:14px;letter-spacing:.12em;text-transform:uppercase;border-top:2px solid var(--brass);padding:6px 8px}}
-.tasks{{position:relative}} .tasks>input{{position:absolute;width:1px;height:1px;opacity:0;margin:0}}
-.tasks>label{{display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-size:12.5px;padding:3px 10px;min-height:26px;margin:0 6px 8px 0;border:1px solid var(--line);border-radius:13px;background:var(--surface)}}
-.tasks>label b{{font-weight:400;font-variant-numeric:tabular-nums;opacity:.7}}
-.tasks>input:checked+label{{background:var(--fg);color:var(--surface);border-color:var(--fg)}}
-.tasks>input:focus-visible+label{{outline:2px solid var(--brass);outline-offset:2px}}
-{filter_css}
+.meta{{color:var(--muted);font-size:12px}}
 {flow_chart.css() if flow_html else ""}{panels.css(PANEL_COLOURS, PANEL_TOKENS)}{columns.css(CARD_COLOURS)}.columns{{--columns-ink:var(--fg);--columns-muted:var(--muted);--columns-card:var(--surface);--columns-rule:var(--line);--columns-gate-ink:var(--brass);--columns-bg:color-mix(in srgb,var(--brass) 10%,var(--bg));--columns-gate:color-mix(in srgb,var(--brass) 14%,var(--surface))}}
-.cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px;margin:8px 0}} .cards.due{{grid-template-columns:repeat(auto-fit,minmax(330px,1fr))}}
-.card{{background:var(--surface);border:1px solid var(--line);border-radius:5px;padding:8px 11px}} .due-card{{border-left:3px solid var(--dl)}}
-.card h3,.card-head b{{margin:0 0 5px;font-family:"Cormorant SC","Cormorant Garamond",Georgia,serif;font-size:13.5px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--brass)}}
-.card ul{{margin:0;padding:0;list-style:none}} .card li,.due-row{{font-size:12.5px;line-height:1.7}} .card .more{{color:var(--muted)}}
-.card-head{{display:flex;align-items:baseline;gap:8px;border-bottom:1px dotted var(--line);padding-bottom:5px;margin-bottom:6px}}
-.due-row{{display:flex;align-items:center;gap:10px}} .due-row .at{{width:62px;flex:none;font-family:ui-monospace,monospace;font-variant-numeric:tabular-nums}}
-.due-row[data-at-src="derived"] .at{{color:var(--est)}} .due-row[data-kind="orphaned"] .at,.due-row[data-kind="orphaned"] .who{{color:var(--dl)}}
-.due-row .what{{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
-.due-row .who{{width:84px;flex:none;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
-.due-row .state{{flex:none;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}} .due-row .size{{width:16px;flex:none;text-align:center;color:var(--muted)}}
-.load{{position:relative;height:66px;margin:6px 0 2px}}
-.load-cell{{position:absolute;top:0;bottom:0;display:flex;flex-direction:column;justify-content:flex-end;padding:0 4px;box-sizing:border-box}}
-.load-cell .at{{font-size:10.5px;color:var(--muted);text-align:center;font-variant-numeric:tabular-nums;margin-bottom:2px}} .load-cell[data-over="1"] .at{{color:var(--dl);font-weight:700}}
-.load-cell .col{{display:flex;flex-direction:column-reverse;height:48px;background:var(--line);border-radius:3px 3px 0 0;overflow:hidden}}
-.fill{{display:block;width:100%}} .fill.due{{background:var(--now)}} .fill.derived{{background:var(--est)}} .fill.over{{background:var(--dl)}}
-.key.fill{{display:inline-block;width:18px;height:10px;border-radius:2px}} .key.fill.free{{background:var(--line)}}
-.scroll{{overflow-x:auto;max-width:100%}}
-.muted{{color:var(--muted)}} .warn{{color:var(--dl);font-size:12px}} .stage{{color:var(--muted);font-size:12px}} .stage.gate{{color:var(--dl)}}
-.strip{{position:relative;margin:8px 0 4px;--name-w:30%}} .axis{{position:relative;height:18px;margin-left:var(--name-w);font-size:11px;color:var(--muted)}} .tick{{position:absolute;transform:translateX(-50%);white-space:nowrap}}
-.rows{{position:relative}} .row{{display:flex;align-items:center;height:26px}} .name{{width:var(--name-w);flex:none;padding-right:8px;box-sizing:border-box;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}} .track{{position:relative;flex:1;height:18px;border-left:1px solid var(--line)}}
-.summary-row .name{{color:var(--muted)}} details.folded>summary{{list-style:none;cursor:pointer}} details.folded>summary::-webkit-details-marker{{display:none}} details.folded>summary .name::before{{content:"\u25b8 "}} details.folded[open]>summary .name::before{{content:"\u25be "}} .row.sub{{height:22px}} .row.sub .name{{padding-left:18px;color:var(--muted);font-size:12px}} .row.sub .bar{{height:14px;line-height:14px;font-size:10px;top:2px}}
-.row.body .name{{color:var(--muted)}}
-.seg{{position:absolute;top:0;height:18px;border-radius:3px;color:var(--seg-ink);font-size:11px;line-height:18px;padding:0 6px;overflow:hidden;white-space:nowrap;box-sizing:border-box}}
-.seg.sleep{{background:var(--sleep)}} .seg.eat{{background:var(--eat)}} .seg.gym{{background:var(--gym)}} .seg.recreation{{background:var(--recreation)}}
-.seg.sleep,.seg.gym{{color:var(--bar-ink)}}
-.seg em{{font-style:normal;opacity:.85}}
-.key.seg{{position:static;padding:0;display:inline-block;width:18px;height:10px;border-radius:2px}}
-.bar{{position:absolute;top:0;height:18px;border-radius:3px;background:var(--open);color:var(--bar-ink);font-size:11px;line-height:18px;padding:0 6px;overflow:hidden;white-space:nowrap;box-sizing:border-box}}
-.bar.running{{background:var(--running)}} .bar.orphaned{{background:var(--surface);color:var(--fg);outline:2px dashed var(--dl);outline-offset:-2px}} .bar.open-end{{background:var(--noest)}} .bar.derived{{background:var(--est)}} .bar.summary{{background:var(--fold)}} .bar.done{{background:var(--done);color:var(--fg)}} .bar.clamped{{border-right:3px solid var(--dl)}} .bar.clamped-left{{border-left:3px solid var(--dl)}} .group-row .name{{font-weight:600}} .bar em{{font-style:normal;opacity:.85}} .member{{display:none}}
-.overlay{{position:absolute;top:0;bottom:0;left:var(--name-w);right:0;pointer-events:none}}
-.band{{position:absolute;top:0;bottom:0;background:var(--band)}}
-.grid{{position:absolute;top:0;bottom:0;border-left:1px solid var(--line)}} .grid.half{{border-left:1px dotted var(--line);opacity:.6}}
-.legend{{display:flex;flex-wrap:wrap;gap:4px 14px;margin:6px 0 2px;font-size:12px;color:var(--muted)}} .legend .item{{position:relative;display:inline-flex;align-items:center;gap:5px}}
-/* Keys borrow the chart classes for colour only: those are position:absolute, and an absolute key with no positioned ancestor lands in the page corner. */
-.legend .key{{position:static;flex:none;display:inline-block;width:18px;height:10px;border-radius:2px;top:auto;bottom:auto;left:auto;right:auto}}
-.legend .key.nowline{{width:0;height:12px;border-radius:0;border-left:2px solid var(--now)}} .legend .key.dline{{width:0;height:12px;border-radius:0;border-left:2px dashed var(--dl);transform:none}}
-.legend .key.band{{height:12px;background:var(--band);border:1px solid var(--line)}}
-.key{{display:inline-block;width:18px;height:10px;border-radius:2px}} .key.bar{{position:static;background:var(--open);padding:0}}
-.key.bar.running{{background:var(--running)}} .key.bar.orphaned{{background:var(--surface);outline:2px dashed var(--dl);outline-offset:-2px}} .key.bar.open-end{{background:var(--noest)}} .key.bar.derived{{background:var(--est)}} .key.bar.summary{{background:var(--fold)}} .key.bar.done{{background:var(--done)}}
-.key.band{{background:var(--band);border:1px solid var(--line)}} .key.nowline{{width:0;height:12px;border-left:2px solid var(--now);border-radius:0}} .key.dline{{width:0;height:12px;border-left:2px dashed var(--dl);border-radius:0}}
-.dline{{position:absolute;top:0;bottom:0;border-left:2px dashed var(--dl);transform:translateX(-1px)}}
-.callouts{{margin-left:var(--name-w);margin-top:2px}} .callout{{position:relative;height:16px;font-size:11px;line-height:16px;color:var(--dl);white-space:nowrap}}
-.callout span{{position:absolute;top:0;padding-left:4px}} .callout span.right{{padding:0 4px 0 0}} .callout.later{{text-align:right}}
-.nowline{{position:absolute;top:0;bottom:0;border-left:2px solid var(--now)}}
-details summary{{cursor:pointer}} details[open] summary{{margin-bottom:4px}}
-.reqs h2{{display:flex;gap:8px;align-items:baseline}} .meter{{height:4px;background:var(--line);border-radius:2px;margin:-4px 0 8px;overflow:hidden}} .meter span{{display:block;height:100%;background:var(--now)}}
-.req-group{{margin:6px 0}} .req-group summary{{font-family:"Cormorant SC","Cormorant Garamond",Georgia,serif;font-weight:600;font-size:15px;letter-spacing:.04em}} .req-group ul{{list-style:none;margin:4px 0 8px;padding:6px 8px;background:var(--surface);border-radius:4px;display:grid;gap:3px}}
-.req{{display:grid;grid-template-columns:1.4em 1fr;column-gap:6px;font-size:13px}} .req.depth-1{{margin-left:1.6em}} .req.depth-2{{margin-left:3.2em}} .req.done .text{{color:var(--muted)}}
-.req code{{font-family:ui-monospace,monospace;font-size:12px}} .req .evidence{{grid-column:2;color:var(--muted);font-size:12px}} .req .box{{font-variant-numeric:tabular-nums}}
-.hist{{list-style:none;margin:4px 0 2px;padding:0 0 0 10px;border-left:2px solid var(--line);font-size:12px;line-height:1.5;color:var(--muted);display:grid;gap:3px}}
-.hist li{{display:grid;grid-template-columns:3em 1fr;gap:8px}} .hist li.notime{{display:block}} .hist time{{font-family:ui-monospace,monospace;font-variant-numeric:tabular-nums;color:var(--fg)}}
-.graph{{margin:0}} .graph h2{{margin-top:22px}} .graph>.meta{{margin:-2px 0 6px}}
-.graph summary{{list-style:none;cursor:pointer;display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 8px;padding:2px 0}}
-.graph summary::-webkit-details-marker{{display:none}} .graph summary::before{{content:"\u25b8";color:var(--muted);font-size:10px;flex:none;width:.7em}} .graph details[open]>summary::before{{content:"\u25be"}}
-.peers{{list-style:none;margin:2px 0 0;padding:0 0 0 14px;border-left:1px solid var(--line)}} .peers>li{{padding:1px 0}}
-.kids{{list-style:none;margin:2px 0 6px;padding:0 0 0 22px;font-size:12px;color:var(--muted);display:flex;flex-wrap:wrap;gap:0 14px}} .kids li::before{{content:"\u2514\u2009";color:var(--line)}}
-.facts{{margin:2px 0 4px;padding:0 0 0 22px;display:grid;grid-template-columns:auto 1fr;gap:1px 8px;font-size:12px}} .facts dt{{color:var(--muted);text-transform:uppercase;letter-spacing:.05em;font-size:10px;padding-top:2px}} .facts dd{{margin:0;min-width:0;overflow-wrap:anywhere}}
-.who{{font-size:13px}} .edge{{color:var(--muted);font-size:12px}}
-.stamp{{margin-left:auto;font-size:11px;font-variant-numeric:tabular-nums;color:var(--muted);white-space:nowrap}}
-/* The claim fades, the name never does: a stale node is the one you most need to read. */
-.stamp.stale{{color:var(--dl)}} .stamp.never,.stamp.unparsed{{color:var(--dl)}} .node[data-band="aging"]>summary .chip{{opacity:.66}} .node[data-band="stale"]>summary .chip{{opacity:.4}}
-.chip{{flex:none;font-size:10px;letter-spacing:.07em;text-transform:uppercase;padding:1px 7px;border-radius:9px;border:1px solid var(--line);color:var(--fg);background:var(--surface)}}
-.chip.planning{{background:var(--noest);color:var(--bar-ink);border-color:var(--noest)}}
-.chip.working{{background:var(--running);color:var(--bar-ink);border-color:var(--running)}}
-.chip.waiting{{background:var(--brass);color:var(--bar-ink);border-color:var(--brass)}}
-.chip.idle{{background:var(--done);color:var(--fg);border-color:var(--done)}}
-.chip.starting{{background:var(--open);color:var(--bar-ink);border-color:var(--open)}}
-.chip.ready{{background:var(--now);color:var(--bar-ink);border-color:var(--now)}}
-.chip.unknown{{background:var(--dl);color:var(--bar-ink);border-color:var(--dl)}}
-.chip.unreported{{background:var(--muted);color:var(--bar-ink);border-color:var(--muted)}}
-.chip.gone{{background:var(--surface);color:var(--dl);border:1px dashed var(--dl)}}
-.chip.coordinator{{background:var(--bg);color:var(--brass);border-color:var(--brass)}}
-.resume{{margin:6px 0 0;font-size:13px;color:var(--fg);border-left:3px solid var(--brass);padding:2px 0 2px 8px;display:grid;grid-template-columns:auto 1fr;gap:2px 10px}}
-.resume dt{{color:var(--muted);font-weight:600;font-size:10px;letter-spacing:.06em;text-transform:uppercase;padding-top:3px;white-space:nowrap}}
-.resume dd{{margin:0;min-width:0;overflow-wrap:anywhere}} .resume dd.long-field{{border-bottom:1px dotted var(--brass)}}
-.resume details.long>summary{{color:var(--fg)}} .resume details.long[open]>summary{{color:var(--muted)}}
-.resume details.long[open]{{max-height:12em;overflow-y:auto}}
-@media (max-width:520px){{.resume{{grid-template-columns:1fr;gap:0}} .resume dt{{padding-top:4px}}}}
-@media (max-width:520px){{.strip{{--name-w:36%}}}}
-@media (max-width:420px){{
-body{{padding:12px 12px 36px}}
-.strip{{--name-w:96px}}
-.cards,.cards.due{{grid-template-columns:1fr}}
-.due-row{{flex-wrap:wrap;gap:0 8px;align-items:baseline;padding:5px 0;border-top:1px dotted var(--line)}}
-.due-row .at{{flex:0 0 52px;width:52px;white-space:nowrap;order:0}}
-.due-row .what{{flex:1 1 calc(100% - 60px);white-space:normal;order:1;min-width:0}}
-.due-row .who{{order:2;flex:0 0 auto;width:auto;margin-left:60px}}
-.due-row .state,.due-row .size{{order:3;flex:0 0 auto;width:auto;margin-left:0}}
-.due-row .who::after,.due-row .state::after{{content:" ·";color:var(--muted)}}
-.load{{height:58px}} .load-cell .col{{height:40px}} .load-cell .at{{font-size:9.5px}}
-.tasks>label{{font-size:12px;padding:3px 9px}}
-.row.body .name,.strip .name{{font-size:11px}}
-.axis .tick:last-child{{transform:translateX(-100%)}}
-}}
+@media (max-width:420px){{body{{padding:12px 12px 36px}}}}
 </style>
 <div class="board" data-rendered-at="{_iso(now)}" data-tz="{_esc(cfg.tz)}" data-deadline="{_iso(nearest.at)}" data-deadline-name="{_esc(nearest.name)}">
-<div class="header">{logo_tag()}{panels.header(head)}</div>
-{resume_strip(parse_resume(tracker_text))}
+<div class="header">{panels.header(head)}</div>
 {panels.tiles(tiles)}
 {build_html}{panels_html}
-{flow_html}
-
-{due_html}{blocked_html}
-<h2>Today</h2>
-<div class="meta">{len(day_done)} done · {len(day_bars)} scheduled · {len(day_folded)} folded into one row (no estimate, or due or estimated after today) · bands are calendar events · green line is now{orphan_note}</div>
-{legend()}{_strip(day_body + day_done_rows + swimlanes(day_bars) + day_summaries, axis_a, axis_b, day_events, [nearest], day_ticks, "day")}
-
-<h2>Week</h2>
-<div class="meta">{len(week_bars)} bars · {len(week_groups)} rows grouped by due day · the rest folded into one row per deadline · dashed lines are deadlines</div>
-{_load_row(load_cells, week_a, week_b)}
-{_strip(week, week_a, week_b, [], list(cfg.deadlines), week_ticks, "week")}
-
-{req_html}
-
-<h2>Tasks</h2>
-{standing_note}<div class="tasks">
-{chips}
-<div class="scroll"><table><tr><th>item</th><th>owner</th><th>state</th><th>since</th><th>due</th><th>size</th>{issue_head}</tr>
-{group_head("running", running)}
-{task_rows(running)}{orphan_group}
-{group_head("open · waiting", waiting)}
-{task_rows(waiting)}
-{group_head("done", done)}
-{task_rows(done)}
-</table></div>
-</div>
-{session_graph(tracker.sessions, cfg, now, gone_sessions(tracker.tasks, tracker.sessions))}
-</div>
+{flow_html}</div>
 <script>
 (function(){{
   var root=document.querySelector('.board'),tz=root.dataset.tz,dl=new Date(root.dataset.deadline);
@@ -2315,11 +1330,6 @@ body{{padding:12px 12px 36px}}
     var now=new Date(),ms=dl-now,sign=ms<0?'-':'',m=Math.floor(Math.abs(ms)/60000);
     root.querySelector('.panels-now').textContent=hm(now);
     root.querySelector('.panels-left').textContent=sign+Math.floor(m/60)+'h'+pad(m%60)+'m';
-    document.querySelectorAll('.strip').forEach(function(s){{
-      var a=new Date(s.dataset.axisStart),b=new Date(s.dataset.axisEnd),line=s.querySelector('.nowline');
-      if(now<a||now>b){{line.hidden=true;return;}}
-      line.hidden=false;line.style.left=((now-a)/(b-a)*100)+'%';
-    }});
   }}
   tick();setInterval(tick,30000);
   // Served by pages.py: reload when the file behind this address changes (a re-render, or a new day's board).
@@ -2353,8 +1363,6 @@ def write(root: Path, day: str | None = None) -> tuple[Path, Config, datetime, s
     tracker = root / cfg.tracker_path(day)
     if not tracker.is_file():
         raise ConfigError(f"tracker not found at {tracker}")
-    log = root / cfg.log_path(day)
-    log_text = log.read_text() if log.is_file() else ""
     tracker_text = tracker.read_text()
     cfg = with_workspace_decision_deadlines(root, cfg, tracker_text, tracker_day)
     out = (root / cfg.pages_dir if cfg.pages_dir else tracker.parent) / f"{day}-board.html"
@@ -2367,7 +1375,7 @@ def write(root: Path, day: str | None = None) -> tuple[Path, Config, datetime, s
     pending = decision_page.write_all(out.parent, decision_context(root, tracker_day, now), day, root)
     reach = (now - flow_chart.WINDOWS[-1][1]).date()
     stage_log = [(d, path.read_text()) for d, path in daily_trackers(root, cfg) if reach <= d < tracker_day]
-    page = render(tracker_text, log_text, cfg, now, requirements=req_texts, lanes=settings.lanes,
+    page = render(tracker_text, cfg, now, lanes=settings.lanes,
                   tracker_day=tracker_day, decisions=pending, kanban=settings.kanban,
                   sources=board_sources.load(out.parent), answered=len(decision_rows(tracker_text)),
                   tracker_at=datetime.fromtimestamp(tracker.stat().st_mtime, cfg.zone), stage_log=stage_log,

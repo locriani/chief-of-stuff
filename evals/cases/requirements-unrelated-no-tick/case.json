@@ -1,6 +1,6 @@
 {
   "tz": "America/Chicago",
-  "description": "A task that is not evidence for any requirement goes done: the requirements file stays byte-identical and the board still shows 1 of 6.",
+  "description": "A task that is not evidence for any requirement goes done: the requirements file stays byte-identical and the board is re-rendered from the final tracker.",
   "prompt": "Draft release notes is done.",
   "graders": [
     {
@@ -46,13 +46,6 @@
       "type": "timestamp_tolerance",
       "path": "daily/{{today}}-tracker.md",
       "section": "## Log"
-    },
-    {
-      "name": "board shows 1 of 6",
-      "type": "board_requirements",
-      "deadline": "Final",
-      "done": 1,
-      "total": 6
     }
   ],
   "max_turns": 16,
