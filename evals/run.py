@@ -64,9 +64,10 @@ SPAWN_SESSION = PLUGIN_ROOT / "scripts" / "spawn_session.py"
 # from code, never from the agent. git and curl stay off the allowlist — the scripts call them.
 SCRIPTS = ("render_board.py", "pages.py", "probe_health.py", "audit_tasks.py", "make_worktree.py",
            "spawn_session.py", "notify.py", "inbox.py", "backlog.py", "kanban.py", "process_status.py",
-           "decision_page.py", "tracker_write.py", "merge_approved.py", "review_threads.py", "install_model_guidance.py")
+           "decision_page.py", "tracker_write.py", "merge_approved.py", "review_threads.py", "install_model_guidance.py",
+           "board_sources.py")
 OPERATIONS = ("board", "pages", "health", "audit", "worktree", "worker", "notify", "inbox",
-              "backlog", "kanban", "processes", "decision", "log", "merge-approved", "review-threads", "models")
+              "backlog", "kanban", "processes", "decision", "log", "merge-approved", "review-threads", "models", "sources")
 
 
 def allowed_tools(root: Path) -> list[str]:
@@ -469,9 +470,11 @@ def before_snapshot(work: Path, dest: Path) -> None:
 
 def _no_new_files(g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
     """`except` entries are exact paths or globs (`Resources/**`)."""
-    # The page server's pid and log and the mailbox's own ignore file are the scripts', never the agent's work.
+    # The page server's pid, log, sources cache and decisions list, and the mailbox's own ignore file, are the
+    # scripts', never the agent's work.
     allowed = [str(e) for e in g.get("except", [])] + ["pages/.pid", ".chief-of-stuff/pages.log",
-                                                      ".chief-of-stuff/mailbox/.gitignore"]
+                                                      ".chief-of-stuff/mailbox/.gitignore", "pages/.sources*",
+                                                      "pages/decisions.html"]
     new = sorted(f for f in _files(rec.fixture_dir) - _files(rec.before_dir) if not any(fnmatch.fnmatch(f, e) for e in allowed))
     return (not new), (f"new files: {new}" if new else "no new files")
 
@@ -806,8 +809,23 @@ def load_cases(patterns: list[str], golden_only: bool = False) -> list[Case]:
     return cases
 
 
+def serve_board(root: Path) -> None:
+    """What a GET of `/` does in pages.py: re-render today's board when its sources are newer. The agent
+    never renders; the page server does, so a grader reads the page the server would serve."""
+    sys.path.insert(0, str(PLUGIN_ROOT / "scripts"))
+    import pages
+    try:
+        pages_dir, _ = pages.from_config(root)
+        name = pages.today_board(root)
+    except Exception:  # no Board line or no CLAUDE.md: there is no server to render, only files
+        return
+    if name:
+        pages.fresh(root, pages_dir, name)
+
+
 def _last_published_html(rec: RunRecord) -> tuple[str | None, str]:
-    """The newest `*-board.html` the renderer wrote in the case's tree: the page pages.py serves."""
+    """The newest `*-board.html` in the case's tree, after the page server's render: the page pages.py serves."""
+    serve_board(rec.fixture_dir)
     boards = sorted(rec.fixture_dir.rglob("*-board.html"), key=lambda p: p.name)
     if not boards:
         return None, "no board rendered"

@@ -96,6 +96,18 @@ class BoardGraderTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("stale", detail)
 
+    def test_the_graded_board_is_the_one_the_server_renders(self) -> None:
+        # The agent runs no render step; the grader reads what a GET of `/` would serve after a tracker edit.
+        day = datetime.now(CT).date().isoformat()
+        (self.after / "CLAUDE.md").write_text(
+            "## Coordinator\n- User: Robin\n- Daily log dir: `daily/`\n- Tracker: `daily/<date>-tracker.md`\n"
+            "- Timezone: America/Chicago\n- Board: self-hosted; URL http://127.0.0.1:8765/; dir `pages/`\n")
+        (self.after / "daily" / f"{day}-tracker.md").write_text(TRACKER)
+        (self.after / "pages" / f"{day}-board.html").write_text("<p>stale</p>")
+        (self.after / "daily" / f"{day}-tracker.md").write_text(TRACKER + "- 10:05 edited after the render\n")
+        ok, detail = self.grade({"type": "board_matches_tracker", "tracker": f"daily/{day}-tracker.md"})
+        self.assertTrue(ok, detail)
+
     def test_board_bars(self) -> None:
         g = {"type": "board_bars", "bars": [{"item": "Notes", "end_src": "deadline", "label": "no estimate"}, {"item": "Audit", "start_src": "since", "end_src": "state"}], "deadline_lines": ["Final"]}
         self.assertTrue(self.grade(g)[0], self.grade(g)[1])

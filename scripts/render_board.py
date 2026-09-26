@@ -2337,28 +2337,22 @@ body{{padding:12px 12px 36px}}
 # --- cli -----------------------------------------------------------------------------------------
 
 
-def main(argv: list[str] | None = None) -> Path:
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--date", help="YYYY-MM-DD; default: today in the workspace timezone")
-    ap.add_argument("--root", default=".", help="workspace root holding CLAUDE.md")
-    args = ap.parse_args(argv)
-    root = Path(args.root)
+def write(root: Path, day: str | None = None) -> tuple[Path, Config, datetime, str, dict]:
+    """Write `<day>-board.html` and `decisions.html` into the pages dir. The page server calls this in
+    process; a missing CLAUDE.md, tracker or setting raises ConfigError."""
     claude_md = root / "CLAUDE.md"
     if not claude_md.is_file():
-        sys.exit(f"render_board: no CLAUDE.md at {root}")
-    try:
-        cfg = parse_coordinator(claude_md.read_text(), today=date.today())
-    except ConfigError as e:
-        sys.exit(f"render_board: {e}")
+        raise ConfigError(f"no CLAUDE.md at {root}")
+    cfg = parse_coordinator(claude_md.read_text(), today=date.today())
     now = datetime.now(cfg.zone).replace(second=0, microsecond=0)
-    day = args.date or now.date().isoformat()
+    day = day or now.date().isoformat()
     try:
         tracker_day = date.fromisoformat(day)
     except ValueError:
-        sys.exit(f"render_board: invalid date {day!r}; use YYYY-MM-DD")
+        raise ConfigError(f"invalid date {day!r}; use YYYY-MM-DD") from None
     tracker = root / cfg.tracker_path(day)
     if not tracker.is_file():
-        sys.exit(f"render_board: tracker not found at {tracker}")
+        raise ConfigError(f"tracker not found at {tracker}")
     log = root / cfg.log_path(day)
     log_text = log.read_text() if log.is_file() else ""
     tracker_text = tracker.read_text()
@@ -2369,7 +2363,7 @@ def main(argv: list[str] | None = None) -> Path:
     try:
         settings = load_settings(root, cfg.settings_path)
     except SettingsError as e:
-        sys.exit(f"render_board: {e}")
+        raise ConfigError(str(e)) from None
     pending = decision_page.write_all(out.parent, decision_context(root, tracker_day, now), day, root)
     reach = (now - flow_chart.WINDOWS[-1][1]).date()
     stage_log = [(d, path.read_text()) for d, path in daily_trackers(root, cfg) if reach <= d < tracker_day]
@@ -2379,6 +2373,18 @@ def main(argv: list[str] | None = None) -> Path:
                   tracker_at=datetime.fromtimestamp(tracker.stat().st_mtime, cfg.zone), stage_log=stage_log,
                   slots=settings.workers.max_concurrency or 1)
     out.write_text(page)
+    return out, cfg, now, tracker_text, req_texts
+
+
+def main(argv: list[str] | None = None) -> Path:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--date", help="YYYY-MM-DD; default: today in the workspace timezone")
+    ap.add_argument("--root", default=".", help="workspace root holding CLAUDE.md")
+    args = ap.parse_args(argv)
+    try:
+        out, cfg, now, tracker_text, req_texts = write(Path(args.root), args.date)
+    except ConfigError as e:
+        sys.exit(f"render_board: {e}")
     parsed = parse_tracker(tracker_text)
     hist = history(list(parsed.tasks), cfg, now)
     est = estimates([task for task in parsed.tasks if task.kind != "done"], cfg, now, hist)
