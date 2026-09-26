@@ -77,6 +77,8 @@ class Workflow:
 class Workers:
     launcher: str = "ghostty"
     mode: str = "interactive"
+    # #100: one-shots running at once across every session in the workspace; None is no cap.
+    max_concurrency: int | None = None
 
 
 @dataclass(frozen=True)
@@ -118,7 +120,10 @@ def _workers(table) -> Workers:
     mode = table.get("mode", "interactive")
     if mode not in ("interactive", "one-shot"):
         raise SettingsError("[workers] mode must be `interactive` or `one-shot`")
-    return Workers(launcher=launcher, mode=mode)
+    cap = table.get("max_concurrency")
+    if cap is not None and (type(cap) is not int or cap < 1):
+        raise SettingsError("[workers] max_concurrency must be a positive whole number")
+    return Workers(launcher=launcher, mode=mode, max_concurrency=cap)
 
 
 def _workflow(table) -> Workflow:
