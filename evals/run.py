@@ -64,9 +64,9 @@ SPAWN_SESSION = PLUGIN_ROOT / "scripts" / "spawn_session.py"
 # from code, never from the agent. git and curl stay off the allowlist — the scripts call them.
 SCRIPTS = ("render_board.py", "pages.py", "probe_health.py", "audit_tasks.py", "make_worktree.py",
            "spawn_session.py", "notify.py", "inbox.py", "backlog.py", "kanban.py", "process_status.py",
-           "decision_page.py", "tracker_write.py")
+           "decision_page.py", "tracker_write.py", "merge_approved.py")
 OPERATIONS = ("board", "pages", "health", "audit", "worktree", "worker", "notify", "inbox",
-              "backlog", "kanban", "processes", "decision", "log")
+              "backlog", "kanban", "processes", "decision", "log", "merge-approved")
 
 
 def allowed_tools(root: Path) -> list[str]:
@@ -1374,8 +1374,11 @@ if args[:2] == ["issue", "create"]:
     print(f"https://github.com/{repo}/issues/101")
 elif args[:2] == ["issue", "list"]:
     print("[]")
-elif args[:2] in (["issue", "close"], ["issue", "comment"]):
+elif args[:2] in (["issue", "close"], ["issue", "comment"], ["pr", "merge"]):
     pass
+elif args[:2] == ["pr", "list"]:
+    prs = Path(__file__).parent / "prs.json"
+    print(prs.read_text() if prs.exists() else "[]")
 else:
     print("gh: blocked by eval harness", file=sys.stderr)
     sys.exit(1)
@@ -1425,7 +1428,7 @@ def write_recorder(shim_dir: Path, calls_log: Path, tz: str) -> list[str]:
     return ["python3", str(recorder), "{type}", "{cwd}", "{title}"]
 
 
-def write_shims(shim_dir: Path) -> None:
+def write_shims(shim_dir: Path, prs: list | None = None) -> None:
     shim_dir.mkdir(parents=True, exist_ok=True)
     railway = shim_dir / "railway"
     railway.write_text(RAILWAY_SHIM)
@@ -1433,6 +1436,9 @@ def write_shims(shim_dir: Path) -> None:
     gh = shim_dir / "gh"
     gh.write_text(GH_SHIM)
     gh.chmod(0o755)
+    if prs is not None:
+        # A case's open pull requests, as `gh pr list --json` returns them.
+        (shim_dir / "prs.json").write_text(json.dumps(prs))
 
 
 def eval_environment(out: Path, calls_log: Path, tz: str, root: Path | None = None) -> dict[str, str]:
@@ -1473,7 +1479,7 @@ def run_one(case: Case, arm: str, model: str, out: Path, root: Path | None = Non
             make_repo.build(work, spec["repo"])
         # After every piece of setup, so the baseline is what the agent was handed, not a part of it.
         before_snapshot(work, out / "fixture-before")
-        write_shims(out / "shims")
+        write_shims(out / "shims", spec.get("gh_prs"))
         calls_log.parent.mkdir(parents=True, exist_ok=True)
         calls_log.touch()
         env = eval_environment(out, calls_log, tz, root=root)

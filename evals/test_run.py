@@ -162,6 +162,20 @@ class ShimTest(unittest.TestCase):
             self.assertIn("blocked by eval harness", proc.stderr)
             self.assertEqual((shims / "calls.log").read_text(), "railway up --detach\n")
 
+    def test_gh_shim_lists_the_cases_pull_requests_and_logs_a_merge(self) -> None:
+        import subprocess
+        import sys
+
+        with tempfile.TemporaryDirectory() as d:
+            shims = Path(d)
+            run.write_shims(shims, prs=[{"number": 12}])
+            shim = str(shims / "gh")
+            listed = subprocess.run([sys.executable, shim, "pr", "list", "-R", "o/app"], capture_output=True, text=True)
+            self.assertEqual(json.loads(listed.stdout), [{"number": 12}])
+            merged = subprocess.run([sys.executable, shim, "pr", "merge", "12"], capture_output=True, text=True)
+            self.assertEqual(merged.returncode, 0)
+            self.assertIn("gh pr merge 12\n", (shims / "calls.log").read_text())
+
     def test_no_legacy_gh_issue_shim_is_written(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             shims = Path(d)

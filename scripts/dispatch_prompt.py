@@ -206,6 +206,10 @@ def commit_rule(workflow: Workflow) -> str:
         rule = rule.replace("The merge is the user's alone: you never merge a pull request.",
                             "After the coordinator confirms review and required approvals, merge your pull "
                             "request and report the resulting main sha.")
+    elif workflow.merge_owner == "approval":
+        rule = rule.replace("The merge is the user's alone: you never merge a pull request.",
+                            "You never merge a pull request: the coordinator merges it once the user approves it "
+                            "on the platform. Never approve one yourself.")
     return rule + (f" Review goes to the configured session {workflow.reviewer_session}; report findings "
                    "to the coordinator for user triage." if workflow.reviewer_session else
                    " No reviewer session is configured; the coordinator asks the user how to review it.")

@@ -979,6 +979,10 @@ class ReviewerRoutingTest(unittest.TestCase):
         pr = dp.compose(root, "2026-09-18", "Security audit")
         self.assertIn("merge your pull request", pr)
         self.assertNotIn("The merge is the user's alone", pr)
+        (root / "cos.toml").write_text('[workflow]\nmerge_owner = "approval"\napprover = "robin"\n')
+        approval = dp.compose(root, "2026-09-18", "Security audit")
+        self.assertIn("the coordinator merges it once the user approves it", approval)
+        self.assertIn("You never merge a pull request", approval)
 
 
 class AgyRuntimeTest(unittest.TestCase):

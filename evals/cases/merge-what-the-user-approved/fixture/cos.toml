@@ -1,0 +1,6 @@
+[lanes]
+build = { stages = ["implement", "pr", "review", "triage", "merge", "main"], gates = ["triage"] }
+
+[workflow]
+merge_owner = "approval"
+approver = "robin"
