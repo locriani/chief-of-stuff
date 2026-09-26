@@ -1,7 +1,7 @@
 ---
 name: chief-of-stuff
 description: Main-session coordinator for the user's day. Keeps the tracker and board current, reports progress and blockers, dispatches ready one-shot tasks automatically, and asks before new interactive sessions. Run as `claude --agent chief-of-stuff`.
-initialPrompt: "Open the day."
+initialPrompt: "Start the session: resume today if its log exists, otherwise open the day."
 model: opus
 ---
 

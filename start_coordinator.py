@@ -119,12 +119,16 @@ def prompt(runtime: str, release: Path, root: Path) -> str:
                   "New interactive sessions need approval. If the named calendar tool is unavailable, "
                   "report it, leave calendar facts unverified, and continue work that does not depend on it.\n")
     return (f"You are chief-of-stuff. The installed rules and scripts are pinned at {release}. "
-            f"The workspace is {root}. Read its CLAUDE.md for configuration.\n\n{rules}\n\nOpen the day.")
+            f"The workspace is {root}. Read its CLAUDE.md for configuration.\n\n{rules}\n\n{START}")
+
+
+# A launch can land on a day that already has a log, so the rules pick Open the day or Resume, not the message.
+START = "Start the session: resume today if its log exists, otherwise open the day."
 
 
 def command(runtime: str, binary: str, release: Path, root: Path) -> list[str]:
     if runtime == "claude":
-        return [binary, "--plugin-dir", str(release), "--agent", "chief-of-stuff", "Open the day."]
+        return [binary, "--plugin-dir", str(release), "--agent", "chief-of-stuff", START]
     initial = prompt(runtime, release, root)
     if runtime == "codex":
         return [binary, "-C", str(root), initial]
