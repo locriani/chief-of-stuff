@@ -62,6 +62,8 @@ def _plugin_version() -> str:
 
 
 VERSION = _plugin_version()
+# The renderer's own code counts as a source: a release upgrade changes it, not the sources.
+RENDERER_MTIME_NS = max(p.stat().st_mtime_ns for p in Path(__file__).resolve().parent.glob("*.py"))
 
 
 def _version(server_header: str) -> tuple[int, ...]:
@@ -108,7 +110,7 @@ def fresh(root: Path, pages_dir: Path, name: str) -> str:
             if not (root / cfg.tracker_path(day)).is_file():
                 return ""
         target = pages_dir / name
-        newest = max((p.stat().st_mtime_ns for p in _sources(root, cfg, pages_dir, day) if p.is_file()), default=0)
+        newest = max(RENDERER_MTIME_NS, max((p.stat().st_mtime_ns for p in _sources(root, cfg, pages_dir, day) if p.is_file()), default=0))
         if target.is_file() and target.stat().st_mtime_ns >= newest:
             return ""
         with RENDER:
