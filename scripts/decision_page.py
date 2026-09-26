@@ -448,7 +448,7 @@ def render(d: dict, day: str, forge: Backlog | GitHubBacklog | None = None, root
     wi_key = chr(ord("A") + len(d["options"]))
     on = " checked" if page and page.get("key") == "" else ""
     opts.append(f'      <label class="opt"><span class="k"><input type="radio" name="key" value=""{on}> {wi_key}</span>'
-                f'<b>Your own answer</b>\n        <span class="d"><input type="text" name="words" aria-label="Your own answer">'
+                f'<b>Your own answer</b>\n        <span class="d wi"><input type="text" name="words" aria-label="Your own answer">'
                 f'<button type="submit">save</button></span>\n      </label>')
     fmt = (lambda t: ctx.when(t)) if ctx else (lambda t: f"{t:%H:%M}")
     done = f'    <div class="card answered">{_saved_html(d, fmt)}</div>\n' if page else ""
@@ -861,9 +861,10 @@ label.opt,label.o{cursor:pointer} label.o:hover{border-color:var(--brass)}
 .opt .k{font:700 16px/1.3 ui-monospace,monospace;color:var(--muted)}
 .opt input,.o input{accent-color:var(--brass);margin:0 4px 0 0}
 .opt .d{grid-column:2}
-.opt .d input[type=text]{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:3px;padding:4px 8px;margin-right:6px;min-width:0}
-.opt .d button{font:inherit;font-size:13px;color:var(--link);background:var(--ref-bg);border:1px solid var(--brass);border-radius:3px;padding:3px 12px;cursor:pointer}
 .tag{font-size:10px;font-weight:500;letter-spacing:.08em;text-transform:uppercase;color:var(--link);margin-left:6px}
+.wi input[type=text]{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:3px;padding:4px 8px;min-width:0}
+.wi button{font:inherit;font-size:13px;color:var(--link);background:var(--ref-bg);border:1px solid var(--brass);border-radius:3px;padding:3px 12px;cursor:pointer}
+.d.wi input[type=text]{margin-right:6px}
 .answered{border-left:3px solid var(--now);display:flex;flex-direction:column;gap:2px;margin-bottom:8px}
 span.saved{font:11.5px ui-monospace,monospace;color:var(--now)}
 .row.saved{border-left:3px solid var(--now)}
