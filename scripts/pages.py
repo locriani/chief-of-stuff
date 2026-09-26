@@ -26,6 +26,7 @@ name to 127.0.0.1, but that page still sends its own name as the Host.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import functools
 import http.server
 import io
@@ -52,8 +53,16 @@ RENDERED = re.compile(r"\d{4}-\d{2}-\d{2}-board\.html|decisions\.html|decision-[
 ROUTE = re.compile(r"/decisions/([a-z0-9]+(?:-[a-z0-9]+)*)")
 ISSUE = re.compile(r"/issues/(\d+)(/source)?")
 MAX_BODY = 16 * 1024  # a write-in is a sentence or a paragraph
-# ponytail: one lock for every render; per-page locks if renders ever get slow.
-RENDER = threading.Lock()
+# ponytail: a lock per page (never freed; a workspace has tens of pages) under the server's `[pages] workers` slots.
+# An answer saved mid-render of another page (the board) can leave that page stale until the next forge refresh.
+PAGE_LOCKS: dict[str, threading.Lock] = {}
+PAGE_LOCKS_GUARD = threading.Lock()
+
+
+def page_lock(path: Path) -> threading.Lock:
+    """The lock one page's renders and its answer saves take, so neither overlaps another of the same page."""
+    with PAGE_LOCKS_GUARD:
+        return PAGE_LOCKS.setdefault(str(path), threading.Lock())
 
 
 def _plugin_version() -> str:
@@ -92,9 +101,9 @@ def today_board(root: Path) -> str | None:
     return f"{day}-board.html" if (root / cfg.tracker_path(day)).is_file() else None
 
 
-def fresh(root: Path, pages_dir: Path, name: str) -> str:
-    """Re-render the page `name` when a source is newer than its file. Returns the render error, or "".
-    On an error the last good file stays where it is."""
+def fresh(root: Path, pages_dir: Path, name: str, slots=contextlib.nullcontext()) -> str:
+    """Re-render the page `name` when a source is newer than its file, inside one of `slots`. Returns the render
+    error, or "". On an error the last good file stays where it is."""
     import decision_page
     import issue_page
     import render_board
@@ -116,18 +125,19 @@ def fresh(root: Path, pages_dir: Path, name: str) -> str:
             if not (root / cfg.tracker_path(day)).is_file():
                 return ""
         target = pages_dir / name
-        newest = max(RENDERER_MTIME_NS, max((p.stat().st_mtime_ns for p in _sources(root, cfg, pages_dir, day) if p.is_file()), default=0))
-        if target.is_file() and target.stat().st_mtime_ns >= newest:
-            return ""
-        with RENDER:
-            if name.startswith("decision-"):
-                decision_page.write(root, pages_dir, name[len("decision-"):-5], day)
-            elif name.endswith("-source.html"):
-                source_page.write(root, pages_dir, int(name[len("issue-"):-len("-source.html")]))
-            elif name.startswith("issue-"):
-                issue_page.write(root, pages_dir, int(name[len("issue-"):-5]))
-            else:
-                render_board.write(root, day)
+        with page_lock(target):  # checked under the lock: a request that waited finds the page already rendered
+            newest = max(RENDERER_MTIME_NS, max((p.stat().st_mtime_ns for p in _sources(root, cfg, pages_dir, day) if p.is_file()), default=0))
+            if target.is_file() and target.stat().st_mtime_ns >= newest:
+                return ""
+            with slots:
+                if name.startswith("decision-"):
+                    decision_page.write(root, pages_dir, name[len("decision-"):-5], day)
+                elif name.endswith("-source.html"):
+                    source_page.write(root, pages_dir, int(name[len("issue-"):-len("-source.html")]))
+                elif name.startswith("issue-"):
+                    issue_page.write(root, pages_dir, int(name[len("issue-"):-5]))
+                else:
+                    render_board.write(root, day)
         return ""
     except Exception as e:  # any renderer failure: the server keeps serving the last good page
         return f"{type(e).__name__}: {e}"
@@ -202,7 +212,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return False
         name = self.path.split("?")[0].lstrip("/")
         if root is not None and RENDERED.fullmatch(name):
-            self.banner = fresh(root, Path(self.directory), name)
+            self.banner = fresh(root, Path(self.directory), name, self.server.slots)
         if name.startswith("issue-") and not self.banner and not (Path(self.directory) / name).is_file():
             self.send_error(404, "no task names this issue")  # issue_page.write removes the page then
             return False
@@ -264,7 +274,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         form = parse_qs(self.rfile.read(size).decode("utf-8", "replace"))
         key, words = form.get("key", [""])[0], form.get("words", [""])[0].strip()
         import decision_page
-        with RENDER:
+        with page_lock(Path(self.directory) / f"decision-{m[1]}.html"):
             try:
                 d = decision_page.parse(json.loads(source.read_text()))
             except decision_page.BAD as e:
@@ -314,12 +324,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         pass
 
 
+def _workers(root: Path | None) -> int:
+    """`[pages] workers` from the workspace settings; the default when they cannot be read (a render shows why)."""
+    from render_board import parse_coordinator
+    from settings import Pages, load
+    try:
+        cfg = parse_coordinator((root / "CLAUDE.md").read_text(), today=date.today())
+        return load(root, cfg.settings_path).pages.workers
+    except Exception:  # no root, no CLAUDE.md, or a settings file that does not read
+        return Pages.workers
+
+
 def make_server(pages_dir: Path, port: int, root: Path | None = None, refresh=None,
                 every: float = REFRESH) -> http.server.ThreadingHTTPServer:
     """With `root`, pages render on request and a Refresher keeps `.sources.json` current."""
     server = http.server.ThreadingHTTPServer(("127.0.0.1", port),
                                              functools.partial(Handler, directory=str(pages_dir)))
-    server.root, server.refresher = root, None
+    server.root, server.refresher, server.slots = root, None, threading.BoundedSemaphore(_workers(root))
     if root is not None:
         if refresh is None:
             from board_sources import refresh
