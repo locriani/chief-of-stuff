@@ -69,6 +69,18 @@ class CoordinatorLaunchTest(unittest.TestCase):
         self.assertIn("session-scoped watcher", codex[-1])
         self.assertNotIn("${CLAUDE_PLUGIN_ROOT}", codex[-1])
 
+    def test_first_message_does_not_presume_a_new_day(self):
+        # A launch on a day that already has a log is a Resume; "Open the day." told it otherwise.
+        release = start.install(ROOT, self.install_dir)
+        for runtime in start.BINARIES:
+            with self.subTest(runtime=runtime):
+                first = start.command(runtime, "/bin/fake", release, self.root)[-1]
+                self.assertTrue(first.endswith(start.START), first[-120:])
+                self.assertNotIn("Open the day.", first)
+        # A bare `claude --agent chief-of-stuff` sends the frontmatter's initialPrompt instead.
+        front = (ROOT / "agents" / "chief-of-stuff.md").read_text().split("---", 2)[1]
+        self.assertIn(f'initialPrompt: "{start.START}"', front)
+
     def test_coordinator_prompts_use_host_mailbox_checks(self):
         release = start.install(ROOT, self.install_dir)
         expected = {"claude": "[Mailbox check] chief-of-stuff",
