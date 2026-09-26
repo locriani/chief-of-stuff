@@ -366,3 +366,31 @@ class GraphSettingsTest(unittest.TestCase):
                     f'[graph]\n{base}rules = ""\n'):
             with self.subTest(bad=bad), self.assertRaises(st.SettingsError):
                 self.load(bad)
+
+    # The user: a real MR drew dozens of tests.* modules and was unreadable; hide test modules and cap each view.
+    def test_test_modules_are_excluded_and_views_hold_twelve_by_default(self):
+        got = self.load('[graph]\nclone = "repos/app"\nroot = "agent"\n').graph
+        self.assertEqual((tuple(got.exclude), got.max_nodes), (("tests.*", "evals.*"), 12))
+
+    def test_exclude_and_max_nodes_are_read(self):
+        got = self.load('[graph]\nclone = "repos/app"\nroot = "agent"\nexclude = ["legacy.*", "vendor.*"]\nmax_nodes = 3\n').graph
+        self.assertEqual((tuple(got.exclude), got.max_nodes), (("legacy.*", "vendor.*"), 3))
+
+    def test_an_empty_exclude_excludes_nothing(self):
+        got = self.load('[graph]\nclone = "repos/app"\nroot = "agent"\nexclude = []\n').graph
+        self.assertEqual(tuple(got.exclude), ())
+
+    def test_a_bad_exclude_or_max_nodes_is_refused(self):
+        base = '[graph]\nclone = "repos/app"\nroot = "agent"\n'
+        for bad in ('exclude = "tests.*"\n',
+                    'exclude = [1]\n',
+                    'exclude = [""]\n',
+                    'exclude = ["tests.*", 2]\n',
+                    'max_nodes = 2\n',
+                    'max_nodes = 0\n',
+                    'max_nodes = -5\n',
+                    'max_nodes = "12"\n',
+                    'max_nodes = 12.5\n',
+                    'max_nodes = true\n'):
+            with self.subTest(bad=bad), self.assertRaises(st.SettingsError):
+                self.load(base + bad)

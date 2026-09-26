@@ -675,11 +675,15 @@ class MainTest(unittest.TestCase):
 MMD = 'flowchart LR\n  n0["agent/a"]\n  n1["agent/b"]:::added\n  n1 --> n0\n'
 SUMMARY = "nodes +1 −0 ~0 edges +1 −0 drift=0"
 # A stand-in for the branch-graph CLI, found first on PATH: it logs its arguments, and writes page.html and page.mmd
-# beside --out and prints its summary line as the real one does (it does not make --out's directory either).
+# beside --out and prints its summary line as the real one does (it does not make --out's directory either). Given
+# VIEWS and --max-nodes, it writes page-1.mmd … page-K.mmd instead of page.mmd, each opening `%% view: <title>` and
+# closing with a comment naming the cap it was drawn with, and its summary ends ` excluded=E views=K`. Without VIEWS
+# it is an older branch-graph that takes the flags but still writes only page.mmd.
 FAKE = """import argparse, json, pathlib, sys
 p = argparse.ArgumentParser()
-for flag in ("--repo", "--base", "--head", "--root", "--depth", "--rules", "--out"):
+for flag in ("--repo", "--base", "--head", "--root", "--depth", "--rules", "--out", "--max-nodes"):
     p.add_argument(flag)
+p.add_argument("--exclude", action="append")
 args = p.parse_args()
 with open(LOG, "a") as f:
     f.write(json.dumps(vars(args)) + "\\n")
@@ -687,10 +691,20 @@ if FAIL:
     sys.exit("branch-graph: no import root agent at " + args.head)
 out = pathlib.Path(args.out)
 out.write_text("<!doctype html><p>graph</p>")
-out.with_suffix(".mmd").write_text(MMD)
-print(SUMMARY)
+if VIEWS and args.max_nodes:
+    for i, (title, mmd) in enumerate(VIEWS, 1):
+        (out.parent / f"page-{i}.mmd").write_text(f"%% view: {title}\\n{mmd}  %% drawn with max-nodes {args.max_nodes}\\n")
+    print(f"{SUMMARY} excluded=9 views={len(VIEWS)}")
+else:
+    out.with_suffix(".mmd").write_text(MMD)
+    print(SUMMARY)
 print("agent/b -> agent/a  agent/b.py:1  allowed")
 """
+# Eleven views, so a page that sorts page-10 before page-2 draws them out of order; one title needs escaping.
+VIEW_TITLES = [f"pkg{i}.core" for i in range(1, 12)]
+VIEW_TITLES[2] = "pkg3 & <core>"
+VIEWS = [(t, f'flowchart LR\n  n0["pkg{i}/core"]\n  n1["pkg{i}/edge"]:::added\n  n1 --> n0\n')
+         for i, t in enumerate(VIEW_TITLES, 1)]
 GRAPH = '[graph]\nclone = "repos/app"\nroot = "agent"\nrules = "docs/architecture.md"\n'
 
 
@@ -739,9 +753,10 @@ class ModuleGraphTest(unittest.TestCase):
         path.start()
         self.addCleanup(path.stop)
 
-    def fake(self, fail: bool = False):
+    def fake(self, fail: bool = False, views: list | None = None):
         tool = self.bin / "branch-graph"
-        tool.write_text(f"#!{sys.executable}\nLOG, FAIL, MMD, SUMMARY = {str(self.log)!r}, {fail!r}, {MMD!r}, {SUMMARY!r}\n" + FAKE)
+        tool.write_text(f"#!{sys.executable}\nLOG, FAIL, MMD, SUMMARY, VIEWS = "
+                        f"{str(self.log)!r}, {fail!r}, {MMD!r}, {SUMMARY!r}, {views!r}\n" + FAKE)
         tool.chmod(0o755)
 
     def runs(self) -> list[dict]:
@@ -779,7 +794,8 @@ class ModuleGraphTest(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertTrue(escape(line, quote=False) in section or escape(line) in section)
         self.assertNotIn("n1 --> n0", section)
-        self.assertRegex(section, re.compile(rf"<figcaption[^>]*>.*?{re.escape(SUMMARY)}.*?</figcaption>", re.S))
+        # The legend and summary follow the drawing (Decision.dc.html: one shared row after the views).
+        self.assertGreater(section.find(SUMMARY), section.rindex("</pre>"))
 
     def test_a_github_pr_is_drawn_from_its_fetched_head_against_its_merge_base(self):
         self.workspace()
@@ -793,9 +809,11 @@ class ModuleGraphTest(unittest.TestCase):
         self.assertEqual((run["root"], run["depth"]), ("agent", "2"))
         self.assertEqual(Path(run["rules"]).resolve(), (self.clone / "docs" / "architecture.md").resolve())
         out = Path(run["out"]).resolve()
-        self.assertEqual((out.name, out.parent.name), ("page.html", self.head))
-        self.assertTrue(out.parent.parent.name.startswith("."), "the cache is a dotdir, which the server never serves")
-        self.assertEqual(out.parent.parent.parent, self.pages.resolve())
+        self.assertEqual(out.name, "page.html")
+        # The cache is keyed by the head and the settings that draw it, under a dotdir the server never serves.
+        cache, *key, _ = out.relative_to(self.pages.resolve()).parts
+        self.assertTrue(cache.startswith("."), "the cache is a dotdir, which the server never serves")
+        self.assertTrue(any(self.head in part for part in key), "the cache path names the head")
 
     def test_a_gitlab_mr_is_drawn_from_its_merge_request_ref(self):
         self.workspace(gitlab=True)
@@ -854,6 +872,96 @@ class ModuleGraphTest(unittest.TestCase):
         self.assertIn("no import root agent", section)
         self.assertNotIn('class="mermaid"', section)
         self.assertIn("Follow the architecture", page)
+
+    # The user: a real MR drew dozens of tests.* modules and was unreadable. Test modules are hidden, and a big graph
+    # is split so no view holds more than max_nodes (Decision.dc.html, MODULE GRAPH: "2 views · at most 12 modules
+    # each", one figure per view, one legend and summary after them).
+
+    def views(self, section: str) -> list[str]:
+        """Each view's figure, from its <figure to the next one, in page order."""
+        return [c for c in section.split("<figure")[1:] if '<pre class="mermaid">' in c]
+
+    def test_the_tool_hides_test_modules_and_caps_views_by_default(self):
+        self.workspace()
+        self.page()
+        [run] = self.runs()
+        self.assertEqual(run["exclude"], ["tests.*", "evals.*"])
+        self.assertEqual(run["max_nodes"], "12")
+
+    def test_the_tool_gets_one_exclude_per_glob_and_the_cap_the_settings_name(self):
+        self.workspace(graph=GRAPH + 'exclude = ["legacy.*", "vendor.*"]\nmax_nodes = 5\n')
+        self.page()
+        [run] = self.runs()
+        self.assertEqual(run["exclude"], ["legacy.*", "vendor.*"])
+        self.assertEqual(run["max_nodes"], "5")
+
+    def test_an_empty_exclude_passes_no_exclude(self):
+        self.workspace(graph=GRAPH + "exclude = []\n")
+        self.page()
+        [run] = self.runs()
+        self.assertIsNone(run["exclude"])
+        self.assertEqual(run["max_nodes"], "12")
+
+    def test_every_view_is_its_own_titled_figure_in_numeric_order(self):
+        self.fake(views=VIEWS)
+        self.workspace()
+        section = self.section(self.page())
+        figures = self.views(section)
+        self.assertEqual(len(figures), len(VIEWS))
+        for n, (figure, (title, mmd)) in enumerate(zip(figures, VIEWS), 1):
+            with self.subTest(view=n):
+                [pre] = re.findall(r'<pre class="mermaid">(.*?)</pre>', figure, re.S)
+                for line in mmd.splitlines():
+                    self.assertTrue(escape(line, quote=False) in pre or escape(line) in pre, line)
+                self.assertNotIn("n1 --> n0", pre)
+                rest = figure.replace(pre, "")
+                self.assertIn(escape(title, quote=False), rest)
+                self.assertNotIn("%% view", rest)
+        self.assertNotIn("<core>", section)
+
+    def test_the_heading_counts_the_views_and_names_the_cap(self):
+        self.fake(views=VIEWS)
+        self.workspace()
+        section = self.section(self.page())
+        self.assertRegex(section, rf"\b{len(VIEWS)} views\b")
+        self.assertIn("at most 12 modules each", section)
+        (self.root / "cos.toml").write_text(GRAPH + "max_nodes = 5\n")
+        self.assertIn("at most 5 modules each", self.section(self.page()))
+
+    def test_one_legend_and_summary_follow_the_views(self):
+        self.fake(views=VIEWS)
+        self.workspace()
+        section = self.section(self.page())
+        self.assertEqual(len(self.views(section)), len(VIEWS))
+        last = section.rindex("</pre>")
+        for text in (">NEW<", ">DRIFT<", SUMMARY):
+            with self.subTest(text=text):
+                self.assertEqual(section.count(text), 1)
+                self.assertGreater(section.index(text), last)
+
+    def test_a_drawing_made_with_other_settings_is_not_served(self):
+        self.fake(views=VIEWS)
+        self.workspace()
+        self.page()
+        self.assertIn("drawn with max-nodes 12", self.section(self.page()))
+        self.assertEqual(len(self.runs()), 1)
+        (self.root / "cos.toml").write_text(GRAPH + "max_nodes = 5\n")
+        section = self.section(self.page())
+        self.assertIn("drawn with max-nodes 5", section)
+        self.assertNotIn("drawn with max-nodes 12", section)
+        self.assertEqual(len(self.runs()), 2)
+        self.page()
+        self.assertEqual(len(self.runs()), 2, "the same settings reuse the drawing")
+        (self.root / "cos.toml").write_text(GRAPH + 'max_nodes = 5\nexclude = ["tests.*"]\n')
+        self.page()
+        self.assertEqual([r["exclude"] for r in self.runs()], [["tests.*", "evals.*"]] * 2 + [["tests.*"]])
+
+    def test_an_older_tool_that_writes_only_page_mmd_still_draws_it(self):
+        self.workspace()
+        section = self.section(self.page())
+        self.assert_drawn(section, "#58")
+        self.assertEqual(section.count('<pre class="mermaid">'), 1)
+        self.assertEqual(self.runs()[0]["max_nodes"], "12")
 
 
 if __name__ == "__main__":
