@@ -94,7 +94,8 @@ AS_ESCAPE = str.maketrans({'"': '\\"', "\\": "\\\\"})
 # when the user has said so, and a limit that binds the coordinator binds nobody else. A dispatched
 # session gets what a terminal the user opened would have, minus the coordinator's identity.
 KEEP = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "TERM_PROGRAM", "TMPDIR",
-        "LANG", "LC_ALL", "LC_CTYPE", "COLORTERM", "TZ", "SSH_AUTH_SOCK", "XDG_CONFIG_HOME")
+        "LANG", "LC_ALL", "LC_CTYPE", "COLORTERM", "TZ", "SSH_AUTH_SOCK", "XDG_CONFIG_HOME",
+        "CHIEF_OF_STUFF_RELEASE")
 OSASCRIPT = "/usr/bin/osascript"
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "fish", "env", "eval", "exec", "xargs"}
 METACHARACTERS = re.compile(r"[;&|`$<>\n]")
@@ -317,8 +318,11 @@ def main(argv_in: list[str] | None = None) -> int:
     ap.add_argument("--effort", default="", choices=("", "low", "medium", "high", "xhigh", "max"),
                     help="claude only; agy's effort is in its model id")
     ap.add_argument("--dry-run", action="store_true", help="print the argv and start nothing")
-    ap.add_argument("--one-shot", action="store_true",
-                    help="run one noninteractive task in the foreground, then record its outcome")
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--one-shot", action="store_true",
+                      help="run one noninteractive task; overrides [workers] mode")
+    mode.add_argument("--interactive", action="store_true",
+                      help="open a continuing terminal session; overrides [workers] mode")
     ap.add_argument("--timeout-minutes", type=int, default=60,
                     help="one-shot run limit before human review (default: 60)")
     args = ap.parse_args(argv_in)
@@ -335,7 +339,15 @@ def main(argv_in: list[str] | None = None) -> int:
     # file mtime, and before that a tab that died silently. One value, one meaning, both callers.
     args.cwd = os.path.abspath(args.cwd)
 
-    if args.one_shot:
+    try:
+        config = dispatch_prompt._config(Path(args.root))
+        worker_settings = load_settings(Path(args.root), config.settings_path).workers
+    except (dispatch_prompt.RefusedError, SettingsError, OSError) as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 1
+    one_shot = args.one_shot or (not args.interactive and worker_settings.mode == "one-shot")
+
+    if one_shot:
         if args.timeout_minutes < 1:
             print("refused: --timeout-minutes must be positive", file=sys.stderr)
             return 1
@@ -357,8 +369,7 @@ def main(argv_in: list[str] | None = None) -> int:
         body = dispatch_prompt.compose(Path(args.root), args.date, args.task,
                                       worktree=Path(args.cwd), coordinator=args.coordinator, name=args.title,
                                       runtime=args.runtime)
-        config = dispatch_prompt._config(Path(args.root))
-        selected = args.launcher or load_settings(Path(args.root), config.settings_path).workers.launcher
+        selected = args.launcher or worker_settings.launcher
         # The override is the eval harness's recorder and the only path that still builds an argv.
         worker = dict(cwd=args.cwd, agent_type=args.agent_type, title=args.title, runtime=args.runtime,
                       model=args.model, effort=args.effort, workspace=args.root)

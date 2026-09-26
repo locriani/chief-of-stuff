@@ -40,6 +40,8 @@ class CoordinatorLaunchTest(unittest.TestCase):
         self.assertEqual(first, again)
         self.assertTrue((first / "scripts" / "spawn_session.py").is_file())
         self.assertTrue((first / "scripts" / "init_workspace.py").is_file())
+        self.assertTrue((first / "scripts" / "install_model_guidance.py").is_file())
+        self.assertTrue((first / "assets" / "worker-model-guidance.md").is_file())
         self.assertTrue((first / "scripts" / "process_status.py").is_file())
         self.assertTrue((first / "scripts" / "one_shot.py").is_file())
         self.assertTrue((first / "scripts" / "_vendor" / "toon_format" / "decoder.py").is_file())
@@ -76,8 +78,8 @@ class CoordinatorLaunchTest(unittest.TestCase):
                 rendered = start.prompt(runtime, release, self.root)
                 self.assertIn(marker, rendered)
                 self.assertIn("list --recipient coordinator --unread", rendered)
-                self.assertIn("process_status.py --root", rendered)
-                self.assertIn("kanban.py --root", rendered)
+                self.assertIn("chief-of-stuff processes --root", rendered)
+                self.assertIn("chief-of-stuff kanban --root", rendered)
         self.assertEqual(start.WATCH_INTERVAL, 5 * 60)
 
     def test_missing_calendar_server_does_not_block_launch(self):
@@ -153,8 +155,9 @@ class CoordinatorLaunchTest(unittest.TestCase):
         bin_dir.mkdir()
         fake = bin_dir / "agent"
         record = Path(self.tmp.name) / "cursor-argv.json"
-        fake.write_text("#!/usr/bin/env python3\nimport json,sys\n"
-                        f"open({str(record)!r}, 'w').write(json.dumps(sys.argv[1:]))\n")
+        fake.write_text("#!/usr/bin/env python3\nimport json,os,sys\n"
+                        f"open({str(record)!r}, 'w').write(json.dumps({{'argv': sys.argv[1:], "
+                        "'pinned': os.environ.get('CHIEF_OF_STUFF_RELEASE')}))\n")
         fake.chmod(0o755)
         home = Path(self.tmp.name) / "home"
         home.mkdir()
@@ -164,9 +167,11 @@ class CoordinatorLaunchTest(unittest.TestCase):
                                "--root", str(self.root), "--install-dir", str(self.install_dir)],
                               env=env, capture_output=True, text=True, timeout=15)
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        argv = json.loads(record.read_text())
+        launched = json.loads(record.read_text())
+        argv = launched["argv"]
         self.assertEqual(argv[:2], ["--workspace", str(self.root.resolve())])
         self.assertIn("## Host adapter", argv[-1])
+        self.assertEqual(Path(launched["pinned"]).parent, (self.install_dir / "versions").resolve())
 
 
 class WorkerRuntimeTest(unittest.TestCase):

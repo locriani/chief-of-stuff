@@ -1,7 +1,7 @@
 {
   "name": "chief-of-stuff",
   "description": "Coordinator for daily work: reads the clock and configured integrations, maintains the tracker and board, and proposes worker launches for approval. Supports Claude Code and the versioned cross-runtime launcher.",
-  "version": "0.37.0",
+  "version": "0.38.0",
   "author": {
     "name": "Zach Gardner",
     "email": "locriani@gmail.com"

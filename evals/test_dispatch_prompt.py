@@ -569,8 +569,8 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         self.content = self.agent_file.read_text()
 
     def test_resume_step_2_script_paths_are_fully_qualified(self):
-        self.assertIn("python3 ${CLAUDE_PLUGIN_ROOT}/scripts/inbox.py read <id> --ack", self.content)
-        self.assertIn("python3 ${CLAUDE_PLUGIN_ROOT}/scripts/inbox.py drain --recipient coordinator", self.content)
+        self.assertIn("chief-of-stuff inbox read <id> --ack", self.content)
+        self.assertIn("chief-of-stuff inbox drain --recipient coordinator", self.content)
 
     def test_resume_step_2_task_state_uses_waiting_or_orphaned_not_stopped(self):
         self.assertIn("stops update task state to `waiting` or `orphaned`", self.content)
@@ -578,13 +578,13 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
 
     def test_dual_transport_sending_and_registration_rules(self):
         self.assertIn("Dual-transport sending", self.content)
-        self.assertIn("python3 ${CLAUDE_PLUGIN_ROOT}/scripts/inbox.py send --to <recipient> --from coordinator", self.content)
+        self.assertIn("chief-of-stuff inbox send --to <recipient> --from coordinator", self.content)
         self.assertIn("Dual-transport registration", self.content)
-        self.assertIn("python3 ${CLAUDE_PLUGIN_ROOT}/scripts/inbox.py list --recipient coordinator --unread", self.content)
+        self.assertIn("chief-of-stuff inbox list --recipient coordinator --unread", self.content)
 
     def test_the_board_is_served_from_this_mac(self):
         # Zach, 2026-09-24 14:07: "we should host our own webserver and ensure they are set up as part of the agent's boot loop."
-        ensure = "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/pages.py --ensure"
+        ensure = "chief-of-stuff pages --ensure"
         for move in ("## Open the day", "## Resume", "## Check"):
             section = self.content.split(move, 1)[1].split("\n## ", 1)[0]
             self.assertIn(ensure, section, move)
@@ -602,7 +602,7 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
     def test_the_reviewer_hand_off_names_its_mailbox(self):
         # autonomous-review-pipeline-design, 22:45: without --mailbox-dir the reviewer's report landed in the reviewed repo.
         pipeline = self.content.split("## Pipeline", 1)[1].split("\n## ", 1)[0]
-        self.assertIn("`Report by: python3 ${CLAUDE_PLUGIN_ROOT}/scripts/inbox.py --mailbox-dir <workspace root>/.chief-of-stuff/mailbox send --to coordinator --from <reviewer session> --type review --task \"<task>\"`", pipeline)
+        self.assertIn("`Report by: chief-of-stuff inbox --mailbox-dir <workspace root>/.chief-of-stuff/mailbox send --to coordinator --from <reviewer session> --type review --task \"<task>\"`", pipeline)
         self.assertNotIn("`inbox.py send --to reviewer", pipeline)
         # A sonnet run sent the placeholder itself; the reviewer runs in another tree, so only an absolute path lands.
         self.assertIn("`<workspace root>` written out as an absolute path", pipeline)
@@ -629,7 +629,7 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
     def test_the_issue_rule_is_for_any_backlog_and_gitlab_files_with_backlog_py(self):
         # The user, 2026-09-23 22:40: "remove the github issue remote and make everything use gitlab now that we have that going".
         self.assertNotRegex(self.content, r"GitHub `?[Bb]acklog")
-        self.assertIn("backlog.py --create", self._section("Tracker"))
+        self.assertIn("chief-of-stuff backlog --create", self._section("Tracker"))
 
     def test_the_check_is_armed_every_fifteen_minutes(self):
         # The user, 2026-09-24 01:35: "a 15 minute timer loop that kicks you to check, evaluate state each time and hand off things again if needed".
@@ -645,7 +645,7 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         self.assertIn("A verify pass with nothing open moves the task to `merge`", triage)
 
     def test_github_issue_writes_use_the_pinned_backlog_script(self):
-        self.assertIn("${CLAUDE_PLUGIN_ROOT}/scripts/backlog.py --create", self.content)
+        self.assertIn("chief-of-stuff backlog --create", self.content)
         self.assertNotIn("~/.claude/plugins/cache/ai-additions", self.content)
 
     def test_live_prompt_does_not_name_the_original_workspace_user(self):

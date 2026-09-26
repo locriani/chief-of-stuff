@@ -96,9 +96,17 @@ class SettingsTest(unittest.TestCase):
 
     def test_worker_launcher_defaults_to_ghostty_and_accepts_tmux(self):
         self.assertEqual(st.load(self.root, None).workers.launcher, "ghostty")
+        self.assertEqual(st.load(self.root, None).workers.mode, "interactive")
         self.assertEqual(st.load(self.root, self.write('[workers]\nlauncher = "tmux"\n')).workers.launcher, "tmux")
         with self.assertRaises(st.SettingsError):
             st.load(self.root, self.write('[workers]\nlauncher = "shell"\n'))
+
+    def test_worker_mode_accepts_one_shot_and_refuses_unknown_values(self):
+        self.assertEqual(st.load(self.root, self.write('[workers]\nmode = "one-shot"\n')).workers.mode,
+                         "one-shot")
+        for value in ('"background"', 'true', '17'):
+            with self.subTest(value=value), self.assertRaises(st.SettingsError):
+                st.load(self.root, self.write(f'[workers]\nmode = {value}\n'))
 
 
 if __name__ == "__main__":

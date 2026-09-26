@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -29,23 +30,27 @@ class Refused(ValueError):
 
 def files(source: Path) -> list[Path]:
     includes = [source / "agents", source / "scripts", source / "assets", source / ".claude-plugin"]
-    result = [source / "start_coordinator.py"]
+    result = [source / "start_coordinator.py", source / "chief_of_stuff.py"]
     for folder in includes:
         result.extend(p for p in folder.rglob("*") if p.is_file() and "__pycache__" not in p.parts
                       and p.suffix != ".pyc")
     return sorted(result)
 
 
-def install(source: Path, install_dir: Path) -> Path:
+def release_target(source: Path, install_dir: Path) -> Path:
     manifest = source / ".claude-plugin" / "plugin.json"
     version = json.loads(manifest.read_text())["version"]
     digest = hashlib.sha256()
-    selected = files(source)
-    for path in selected:
+    for path in files(source):
         digest.update(str(path.relative_to(source)).encode() + b"\0" + path.read_bytes())
-    target = install_dir / "versions" / f"{version}-{digest.hexdigest()[:12]}"
+    return install_dir / "versions" / f"{version}-{digest.hexdigest()[:12]}"
+
+
+def install(source: Path, install_dir: Path) -> Path:
+    target = release_target(source, install_dir)
     if target.exists():
         return target
+    selected = files(source)
     target.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".chief-install-", dir=target.parent) as stage_name:
         stage = Path(stage_name)
@@ -96,7 +101,7 @@ def prompt(runtime: str, release: Path, root: Path) -> str:
         rules = re.sub(r"## Check\n.*?(?=## Sessions\n)", check, rules, flags=re.S)
         sessions = ("## Sessions\n\nThe workspace `Sessions:` line may name Claude native list and send tools. "
                     "Use those only when your host exposes them. For every non-Claude worker, "
-                    "run the pinned `scripts/process_status.py --root <workspace>` to check "
+                    "run `chief-of-stuff processes --root <workspace>` to check "
                     "registered worker PIDs in one batch. The assigned name, worktree and process "
                     "identify it; do not invent a Claude ref. Receive registrations and reports "
                     "through the shared mailbox and send replies there. A missing registration "
@@ -105,8 +110,8 @@ def prompt(runtime: str, release: Path, root: Path) -> str:
         rules = re.sub(r"## Sessions\n.*?(?=## Relay\n)", sessions, rules, flags=re.S)
         rules += ("\n\n## Host adapter\n\nYou run in " + runtime + ". Use your host's own tools to read, edit and run the pinned scripts above. "
                   "The `Sessions:` line in CLAUDE.md describes Claude's peer tools; you do not have those tools. "
-                  "Check non-Claude workers with the pinned `scripts/process_status.py --root <workspace>` "
-                  "batch helper; use the shared `scripts/inbox.py` "
+                  "Check non-Claude workers with the `chief-of-stuff processes --root <workspace>` "
+                  "batch helper; use the shared `chief-of-stuff inbox` "
                   "mailbox for their messages. Claude workers retain their native session tools when available. "
                   "A five-minute watcher audits tasks and unread inbox messages while this session "
                   "is open and sends notifications. "
@@ -202,13 +207,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         print(json.dumps({"release": str(release), "runtime": args.runtime, "argv": cmd}))
         return 0
+    child_env = dict(os.environ, CHIEF_OF_STUFF_RELEASE=str(release))
     stop = threading.Event()
     monitor = None
     if args.runtime != "claude":
         monitor = threading.Thread(target=watcher, args=(root, release, stop), daemon=True)
         monitor.start()
     try:
-        return subprocess.call(launch_cmd, cwd=root)
+        return subprocess.call(launch_cmd, cwd=root, env=child_env)
     finally:
         stop.set()
         if monitor:

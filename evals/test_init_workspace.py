@@ -10,6 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import init_workspace as init  # noqa: E402
+import install_model_guidance as guidance  # noqa: E402
 from render_board import parse_coordinator  # noqa: E402
 from settings import load as load_settings  # noqa: E402
 
@@ -39,6 +40,13 @@ class InitWorkspaceTest(unittest.TestCase):
         self.assertIn("- Agent: implementer task", (self.root / "CLAUDE.md").read_text())
         settings = load_settings(self.root, config.settings_path)
         self.assertEqual((settings.notify.adapter, settings.workers.launcher), ("off", "tmux"))
+        self.assertEqual(settings.workers.mode, "interactive")
+        self.assertIn("Choice order", (self.root / guidance.NAME).read_text())
+
+    def test_initializer_can_select_one_shot_default(self):
+        code, _, err = self.run_init("--worker-mode", "one-shot")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(load_settings(self.root, "chief-of-stuff.toml").workers.mode, "one-shot")
 
     def test_existing_claude_content_is_preserved_and_a_second_init_refuses(self):
         claude = self.root / "CLAUDE.md"
@@ -57,12 +65,28 @@ class InitWorkspaceTest(unittest.TestCase):
         self.assertIn("would create", out)
         self.assertFalse((self.root / "CLAUDE.md").exists())
         self.assertFalse((self.root / "chief-of-stuff.toml").exists())
+        self.assertFalse((self.root / guidance.NAME).exists())
 
     def test_existing_settings_are_kept(self):
         settings = self.root / "chief-of-stuff.toml"
         settings.write_text('[workers]\nlauncher = "tmux"\n')
         self.assertEqual(self.run_init()[0], 0)
         self.assertEqual(settings.read_text(), '[workers]\nlauncher = "tmux"\n')
+
+    def test_existing_model_guidance_is_preserved(self):
+        path = self.root / guidance.NAME
+        path.write_text("Use the model selected by Robin.\n")
+        self.assertEqual(self.run_init()[0], 0)
+        self.assertEqual(path.read_text(), "Use the model selected by Robin.\n")
+
+    def test_guidance_only_installs_into_an_existing_workspace(self):
+        (self.root / "CLAUDE.md").write_text("## Coordinator\n")
+        self.assertEqual(guidance.main(["--root", str(self.root)]), 0)
+        path = self.root / guidance.NAME
+        self.assertIn("Suggested routing", path.read_text())
+        path.write_text("My model policy.\n")
+        self.assertEqual(guidance.main(["--root", str(self.root)]), 0)
+        self.assertEqual(path.read_text(), "My model policy.\n")
 
     def test_gitlab_backlog_is_configured_without_a_token_value(self):
         code, _, err = self.run_init("--gitlab-host", "https://gitlab.example.com",
