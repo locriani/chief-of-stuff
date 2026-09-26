@@ -69,14 +69,20 @@ def hm(start: datetime, end: datetime) -> str:
     return f"{'-' if m < 0 else ''}{abs(m) // 60}h{abs(m) % 60:02d}m"
 
 
+def hms(start: datetime, end: datetime) -> str:
+    """`end - start` as `8h49m23s`, negative once `end` has passed."""
+    s = int((end - start).total_seconds())  # toward zero, as the board's ticking clock counts
+    return f"{'-' if s < 0 else ''}{abs(s) // 3600}h{abs(s) // 60 % 60:02d}m{abs(s) % 60:02d}s"
+
+
 def header(h: Header) -> str:
     warn = "".join(f'<div class="panels-warn">{_esc(w)}</div>' for w in h.warnings)
     return (f'<header class="panels-head"><div class="panels-heading"><h1>{_esc(h.title)}</h1>'
             f'<div class="panels-meta">{_esc(" · ".join(h.meta))}</div>{warn}</div>'
             f'<div class="panels-clocks"><div class="panels-clock"><span class="panels-clock-name">now</span>'
-            f'<time class="panels-now" datetime="{h.now.isoformat(timespec="seconds")}">{h.now:%H:%M}</time></div>'
+            f'<time class="panels-now" datetime="{h.now.isoformat(timespec="seconds")}">{h.now:%H:%M:%S}</time></div>'
             f'<div class="panels-clock panels-due"><span class="panels-clock-name">{_esc(h.deadline)} in</span>'
-            f'<time class="panels-left" datetime="{h.deadline_at.isoformat(timespec="seconds")}">{hm(h.now, h.deadline_at)}</time>'
+            f'<time class="panels-left" datetime="{h.deadline_at.isoformat(timespec="seconds")}">{hms(h.now, h.deadline_at)}</time>'
             "</div></div></header>")
 
 

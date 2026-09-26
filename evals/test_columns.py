@@ -28,12 +28,19 @@ class Render(unittest.TestCase):
         self.assertEqual(re.findall(r'<span class="columns-count">(\d+)</span>', html), ["2", "0"])
 
     def test_a_card_carries_name_refs_owner_and_a_chip(self) -> None:
-        card = C("Rate limit headers", "running", refs="#118 · !54", owner="worker-07", state="running 01:28")
+        card = C("Rate limit headers", "running", refs=(("#118", "https://forge/i/118"), ("!54", "")), owner="worker-07",
+                 state="running 01:28", href="https://forge/i/118")
         html = columns.render([columns.Column("implement", (card,))])
-        for part in ('<div class="columns-card-name">Rate limit headers</div>', '<div class="columns-refs">#118 · !54</div>',
+        for part in ('<a class="columns-card-name" href="https://forge/i/118">Rate limit headers</a>',
+                     '<div class="columns-refs"><a href="https://forge/i/118">#118</a><span>!54</span></div>',
                      '<span class="columns-owner">worker-07</span>',
                      '<span class="columns-tag columns-chip" data-cat="running">running 01:28</span>'):
             self.assertIn(part, html)
+
+    def test_an_unlinked_card_never_links_to_a_placeholder(self) -> None:
+        html = columns.render([columns.Column("implement", (C("Plain", "open", refs=(("#1", ""),)),))])
+        self.assertIn('<div class="columns-card-name">Plain</div>', html)
+        self.assertNotIn("href", html)
 
     def test_marks_draw_only_when_there_are_some(self) -> None:
         held = C("a", "waiting", marks=(columns.Mark("hold", "hold"),))
@@ -118,13 +125,19 @@ class Adapter(unittest.TestCase):
 
     def test_every_lane_stage_is_a_column_even_an_empty_one(self) -> None:
         cols, _ = self.build()
-        self.assertEqual([c.name for c in cols], ["implement", "pr", "review", "triage", "merge", "main"])
-        self.assertEqual([len(c.cards) for c in cols], [1, 0, 0, 1, 0, 1])
+        self.assertEqual([c.name for c in cols], ["implement", "review", "triage", "merge", "main"])
+        self.assertEqual([len(c.cards) for c in cols], [1, 0, 1, 0, 1])
+
+    def test_a_card_at_pr_draws_in_the_next_stage_column(self) -> None:
+        tasks = [rb.Task("x", "w", "open", "", "", "", name="Open the PR", lane="build", stage="pr")]
+        cols, _ = rb.build_columns(tasks, self.LANES)
+        self.assertNotIn("pr", [c.name for c in cols])
+        self.assertEqual([c.name for c in next(c for c in cols if c.name == "review").cards], ["Open the PR"])
 
     def test_a_card_is_the_task_in_tracker_words(self) -> None:
         card = self.build()[0][0].cards[0]
         self.assertEqual((card.name, card.kind, card.refs, card.owner, card.state),
-                         ("Rate limit headers", "running", "#118", "worker-07", "running 01:28"))
+                         ("Rate limit headers", "running", (("#118", ""),), "worker-07", "running 01:28"))
 
     def test_gates_come_from_the_lanes(self) -> None:
         cols, _ = self.build()
