@@ -238,15 +238,20 @@ def reconcile(root: Path, day: str, task: str, name: str, cwd: Path, exit_code: 
         status = "human_review"
         reason = f"worker reported completion but the worktree is not clean: {actual}"
     commits = committed_changes(cwd, before_head)
+    # The result lands on the day the run ends, falling back to the launch day's (#93).
+    path = root / cfg.tracker_path(day)
+    end = root / cfg.tracker_path(datetime.now(cfg.zone).date().isoformat())
+    if end.exists() and any(row.item.strip() == task for row in parse_tracker(end.read_text()).tasks):
+        path = end
     if status == "relaunch":
         # A relaunch is for a run that changed nothing, once: anything else is someone's to look at.
         if actual or commits != NO_COMMITS:
             status, reason = "human_review", f"worker asked to be relaunched but left changes: {reason}"
-        elif RELAUNCHED.format(task=task) in (root / cfg.tracker_path(day)).read_text():
+        elif RELAUNCHED.format(task=task) in path.read_text():
             status, reason = "human_review", f"already relaunched once today and stopped again: {reason}"
     summary = (changes + f"\nCommits from this run:\n{commits}" +
                (f"\nWorking tree:\n{actual}" if actual else "\nWorking tree clean"))
-    rows = [row for row in parse_tracker((root / cfg.tracker_path(day)).read_text()).tasks if row.item.strip() == task]
+    rows = [row for row in parse_tracker(path.read_text()).tasks if row.item.strip() == task]
     row = rows[0] if len(rows) == 1 else None
     errors = []
     if row is None or row.owner.strip().lower() != name.lower() or row.kind != "running":
@@ -272,7 +277,7 @@ def reconcile(root: Path, day: str, task: str, name: str, cwd: Path, exit_code: 
             if not commented.done:
                 errors.append(f"issue comment: {commented.error}")
     try:
-        update_tracker(root / cfg.tracker_path(day), task, name, cfg.user, status, reason, summary,
+        update_tracker(path, task, name, cfg.user, status, reason, summary,
                        tracker_write.stamp(cfg.zone))
     except (OSError, ValueError) as exc:
         errors.append(f"tracker: {exc}")
