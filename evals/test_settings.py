@@ -101,6 +101,16 @@ class SettingsTest(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(st.SettingsError):
                 st.load(self.root, self.write(f"[workers]\nmax_concurrency = {bad}\n"))
 
+    def test_pages_workers_defaults_to_four_and_is_a_positive_whole_number(self):
+        # The user, 2026-09-26: "allow the board server to have up to 4 workers", then "well, N workers. 4 default".
+        # Rule: "[pages] workers that is not a positive whole number raises SettingsError naming [pages] workers".
+        self.assertEqual(st.load(self.root, None).pages.workers, 4)
+        self.assertEqual(st.load(self.root, self.write("[pages]\n")).pages.workers, 4)
+        self.assertEqual(st.load(self.root, self.write("[pages]\nworkers = 2\n")).pages.workers, 2)
+        for bad in ("0", "-1", "2.5", '"3"', "true"):
+            with self.subTest(bad=bad), self.assertRaisesRegex(st.SettingsError, r"\[pages\] workers"):
+                st.load(self.root, self.write(f"[pages]\nworkers = {bad}\n"))
+
     def test_worker_launcher_defaults_to_ghostty_and_accepts_tmux(self):
         self.assertEqual(st.load(self.root, None).workers.launcher, "ghostty")
         self.assertEqual(st.load(self.root, None).workers.mode, "interactive")
