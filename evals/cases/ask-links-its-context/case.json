@@ -8,7 +8,7 @@
       "name": "the page is rendered into the pages dir",
       "type": "tool_used",
       "tool": "Bash",
-      "input_match": "chief-of-stuff(?:\\.py)? decision",
+      "input_match": "chief[-_]of[-_]stuff(?:\\.py)? decision",
       "min": 1
     },
     {
