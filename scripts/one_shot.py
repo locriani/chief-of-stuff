@@ -21,6 +21,8 @@ from shell_setup import clean_env, login_argv, resolve
 
 RESULT = Path(dispatch_prompt.PROMPT_DIR) / "worker-result.toon"
 REPORT = Path(dispatch_prompt.PROMPT_DIR) / "one-shot-report.toon"
+NO_COMMITS = "No new commits detected"
+RELAUNCHED = ": relaunch requested for {task} — "
 BOOTSTRAP = ("Read {dispatch} first. It is your entire one-shot assignment. Work in {cwd}. "
              "Finish in this invocation and write the requested TOON result before exiting.")
 
@@ -65,7 +67,7 @@ def worker_result(path: Path, exit_code: int) -> tuple[str, str, str]:
         data = toon_decode(path.read_text())
     except (OSError, ValueError, TypeError) as exc:
         return "human_review", f"worker did not write a valid TOON result ({exc}); exit {exit_code}", ""
-    if not isinstance(data, dict) or data.get("status") not in ("done", "human_review") or any(
+    if not isinstance(data, dict) or data.get("status") not in ("done", "human_review", "relaunch") or any(
         not isinstance(data.get(k), str) or not data[k].strip() for k in ("reason", "changes")
     ):
         return "human_review", f"worker result is incomplete or invalid; exit {exit_code}", ""
@@ -95,7 +97,7 @@ def git_head(cwd: Path) -> str | None:
 def committed_changes(cwd: Path, before: str | None) -> str:
     after = git_head(cwd)
     if not before or not after or before == after:
-        return "No new commits detected"
+        return NO_COMMITS
     try:
         out = subprocess.run(["git", "log", "--format=%h %s", "--stat", f"{before}..{after}"],
                              cwd=cwd, capture_output=True, text=True, timeout=15, check=False)
@@ -109,7 +111,7 @@ def _brief(value: str) -> str:
 
 
 def update_tracker(path: Path, task: str, name: str, owner: str, status: str, reason: str, changes: str) -> None:
-    """Set the dispatched row to waiting and append a durable local result note."""
+    """Set the dispatched row to waiting, or leave it ready on a relaunch, and append a durable local result note."""
     text = path.read_text()
     rows = [row for row in parse_tracker(text).tasks if row.item.strip() == task]
     if len(rows) != 1 or rows[0].owner.strip().lower() != "unassigned":
@@ -132,13 +134,17 @@ def update_tracker(path: Path, task: str, name: str, owner: str, status: str, re
     pattern = re.compile(r"\|\s*unassigned\s*\|\s*(?:open|waiting)\s*\|", re.I)
     if "|" in owner or "\n" in owner:
         raise ValueError("configured user name cannot be written as a tracker owner")
-    replaced, count = pattern.subn(lambda _: f"| {owner} | waiting |", lines[i])
-    if count != 1:
-        raise ValueError("task owner/state is not an unassigned open row")
-    lines[i] = replaced
     stamp = datetime.now().strftime("%H:%M")
-    note = (f"- {stamp} one-shot {name}: {'completed; awaiting integration' if status == 'done' else 'HUMAN REVIEW NEEDED'}"
-            f" — {_brief(reason)}. Changes: {_brief(changes)}.\n")
+    if status == "relaunch":
+        # The row stays unassigned and open: ready, so the coordinator dispatches it again.
+        note = f"- {stamp} one-shot {name}{RELAUNCHED.format(task=task)}{_brief(reason)}.\n"
+    else:
+        replaced, count = pattern.subn(lambda _: f"| {owner} | waiting |", lines[i])
+        if count != 1:
+            raise ValueError("task owner/state is not an unassigned open row")
+        lines[i] = replaced
+        note = (f"- {stamp} one-shot {name}: {'completed; awaiting integration' if status == 'done' else 'HUMAN REVIEW NEEDED'}"
+                f" — {_brief(reason)}. Changes: {_brief(changes)}.\n")
     log = next((j for j, line in enumerate(lines) if line.rstrip() == "## Log"), None)
     if log is None:
         if lines and not lines[-1].endswith("\n"):
@@ -166,7 +172,14 @@ def reconcile(root: Path, day: str, task: str, name: str, cwd: Path, exit_code: 
     if status == "done" and actual:
         status = "human_review"
         reason = f"worker reported completion but the worktree is not clean: {actual}"
-    summary = (changes + f"\nCommits from this run:\n{committed_changes(cwd, before_head)}" +
+    commits = committed_changes(cwd, before_head)
+    if status == "relaunch":
+        # A relaunch is for a run that changed nothing, once: anything else is someone's to look at.
+        if actual or commits != NO_COMMITS:
+            status, reason = "human_review", f"worker asked to be relaunched but left changes: {reason}"
+        elif RELAUNCHED.format(task=task) in (root / cfg.tracker_path(day)).read_text():
+            status, reason = "human_review", f"already relaunched once today and stopped again: {reason}"
+    summary = (changes + f"\nCommits from this run:\n{commits}" +
                (f"\nWorking tree:\n{actual}" if actual else "\nWorking tree clean"))
     rows = [row for row in parse_tracker((root / cfg.tracker_path(day)).read_text()).tasks if row.item.strip() == task]
     row = rows[0] if len(rows) == 1 else None

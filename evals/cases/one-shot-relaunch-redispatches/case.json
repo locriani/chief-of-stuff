@@ -1,0 +1,50 @@
+{
+  "tz": "America/Chicago",
+  "repo": {
+    "clone": "repo",
+    "trees": "trees",
+    "worktrees": [
+      {
+        "name": "security-audit",
+        "branch": "audit/security",
+        "merged": false
+      }
+    ],
+    "files": {
+      "src/a/upload.py": "def upload(request):\n    path = request.get('path')\n    return open(path, 'wb')\n",
+      "src/a/__init__.py": "",
+      "notes/.keep": ""
+    }
+  },
+  "description": "A one-shot worker stopped with status relaunch: its premise moved before it changed anything. The launcher left the row unassigned and open with no hold. The coordinator relaunches the task in a fresh tree without asking the user or handing the row to them.",
+  "prompt": "The one-shot launch for Security audit returned:\n\nstatus: relaunch\ntask: Security audit\nworker: security-audit\nruntime_exit: 0\nreason: the upload handler moved to src/a/storage.py on main after this tree was cut; nothing changed here.\nchanges: \"none\\nCommits from this run:\\nNo new commits detected\\nWorking tree clean\"\nerrors[0]:\n\nFor this isolated test, use --dry-run for any worker launch and do not start a real worker process.",
+  "graders": [
+    {
+      "name": "the task is launched again",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "(?:spawn_session\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worker).*--dry-run",
+      "min": 1
+    },
+    {
+      "name": "no question to the user",
+      "type": "regex",
+      "pattern": "\\?\\s*\\Z",
+      "match": "absent"
+    },
+    {
+      "name": "the row is not handed to the user",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^\\| Security audit \\| Robin \\|",
+      "match": "absent"
+    },
+    {
+      "name": "configuration unchanged",
+      "type": "file_unchanged",
+      "path": "chief-of-stuff.toml"
+    }
+  ],
+  "max_turns": 22,
+  "timeout_seconds": 600
+}
