@@ -21,9 +21,11 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from backlog import Backlog, BacklogError, GitHubBacklog, issue_ref, parse_backlog  # noqa: E402
 from settings import Kanban, SettingsError, load as load_settings  # noqa: E402
+import board_sources  # noqa: E402
 import columns  # noqa: E402
 import decision_page  # noqa: E402
 import gantt  # noqa: E402
+import panels  # noqa: E402
 
 HHMM = re.compile(r"^(\d{1,2}):(\d{2})$")
 # Accept both separators in a completed time range.
@@ -1699,32 +1701,164 @@ def stage_order(lanes: dict) -> list[str]:
     return order
 
 
-def build_columns(tasks: list[Task], lanes: dict | None, kanban: Kanban | None = None) -> tuple[list[columns.Column], columns.Column]:
-    """The Build board: a column per lane stage, a card per task at it, and the tasks with no lane in the footer."""
+TRAILING_NUMBER = re.compile(r"(\d+)\s*$")
+PIPELINE_MARK = {"passed": "passed", "failed": "failed", "running": "pending", "pending": "pending"}
+
+
+def issue_key(cell: str) -> str:
+    """The `#N` a board source keys an issue by, from an issue cell: `#118`, `group/app#118` or the issue's URL."""
+    m = TRAILING_NUMBER.search(cell)
+    return f"#{m[1]}" if m else cell.strip()
+
+
+def task_changes(task: Task, sources: board_sources.Sources) -> tuple[board_sources.Change, ...]:
+    """The changes naming the task's issue: the open ones, or else the merged ones."""
+    # ponytail: keyed by `#N` alone, so two projects' #N collide; key by host and project when a board spans them.
+    key = issue_key(task.issue) if task.issue.strip() else None
+    named = [c for c in sources.changes.values() if key and key in c.issues and c.state != "closed"]
+    return tuple(c for c in named if c.state == "open") or tuple(named)
+
+
+def change_marks(changes: tuple[board_sources.Change, ...]) -> tuple[columns.Mark, ...]:
+    return tuple(m for c in changes for m in (
+        *((columns.Mark(c.pipeline, PIPELINE_MARK[c.pipeline]),) if c.pipeline in PIPELINE_MARK else ()),
+        *((columns.Mark("approved", "approved"),) if c.approved else ())))
+
+
+def drifts(task: Task, kanban: Kanban | None, sources: board_sources.Sources) -> bool:
+    """The forge's labels disagree with the tracker's stage, by the same check the audit runs (kanban.drift)."""
+    import kanban as kanban_tool  # kanban imports this module
+    issue = sources.issues.get(issue_key(task.issue)) if task.issue.strip() else None
+    # ponytail: labels only; a GitHub Project's Status is not in the sources, so a project board never drifts here.
+    if kanban is None or kanban.github_project or issue is None or not task.stage.strip() or task.kind == "done":
+        return False
+    return bool(kanban_tool.drift(kanban, issue.labels, task.stage.strip(), allow_extra_hold=task.kind == "waiting"))
+
+
+def merged_today(sources: board_sources.Sources, now: datetime) -> list[board_sources.Change]:
+    return sorted((c for c in sources.changes.values() if c.state == "merged" and c.merged_at
+                   and c.merged_at.astimezone(now.tzinfo).date() == now.date()), key=lambda c: c.merged_at, reverse=True)
+
+
+def build_columns(tasks: list[Task], lanes: dict | None, kanban: Kanban | None = None,
+                  sources: board_sources.Sources = board_sources.EMPTY, now: datetime | None = None) -> tuple[list[columns.Column], columns.Column]:
+    """The Build board: a column per lane stage, a card per task at it, and the tasks with no lane in the footer.
+    Sources add each card's changes and marks, and a `main` column of the changes merged today."""
     lanes = lanes or {}
     gates = {g for lane in lanes.values() for g in lane.gates}
 
     def card(task: Task) -> columns.Card:
         held = kanban is not None and kanban.holds(task.stage.strip())
-        return columns.Card(task.label, task.kind, task.issue.strip(), task.owner, task.state,
+        changes = task_changes(task, sources)
+        issue = issue_key(task.issue) if changes or issue_key(task.issue) in sources.issues else task.issue.strip()
+        refs = " · ".join([issue] * bool(issue) + [c.ref for c in changes])
+        marks = change_marks(changes) + ((columns.Mark("drift", "drift"),) if drifts(task, kanban, sources) else ())
+        return columns.Card(task.label, task.kind, refs, task.owner, task.state, marks,
                             flag=columns.Mark("ON HOLD", "hold") if held else None)
 
     laned = [t for t in tasks if t.lane.strip() and t.stage.strip()]
     order = list(dict.fromkeys(stage_order(lanes) + [t.stage.strip() for t in laned]))
     cols = [columns.Column(stage, tuple(card(t) for t in laned if t.stage.strip() == stage),
                            *(("gate", "gate") if stage in gates else ())) for stage in order]
+    merged = merged_today(sources, now) if now else []
+    if merged:
+        cards = tuple(columns.Card(c.title, "merged today", " · ".join([*c.issues[:1], c.ref]),
+                                   f"merged {c.merged_at.astimezone(now.tzinfo):%H:%M}", "done") for c in merged)
+        at = next((i for i, c in enumerate(cols) if c.name == "main"), None)
+        if at is None:
+            cols.append(columns.Column("main", cards))
+        else:
+            cols[at] = replace(cols[at], cards=cols[at].cards + cards)
     return cols, columns.Column("no lane", tuple(card(t) for t in tasks if not (t.lane.strip() and t.stage.strip())))
+
+
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}{'' if n == 1 else 's'}"
+
+
+# The panels' and the new marks' colours are the board's own tokens, so the dark scheme reaches them.
+PANEL_TOKENS = {"ink": "var(--fg)", "muted": "var(--muted)", "card": "var(--surface)", "rule": "var(--line)",
+                "edge": "var(--brass)", "link": "var(--brass)", "hot": "var(--dl)", "hot-ink": "var(--surface)"}
+PANEL_COLOURS = {"blocked": "var(--dl)", "decisions": "var(--brass)", "approved": "var(--stage-review)",
+                 "running": "var(--stage-implement)", "drift": "var(--dl)", "orphaned": "var(--muted)",
+                 "merge": "var(--stage-review)", "workers": "var(--stage-implement)"}
+CARD_COLOURS = {**columns.PALETTE, "merged today": columns.PALETTE["done"],
+                "approved": ("var(--stage-review)", "var(--surface)", "1px solid var(--stage-review)"),
+                "passed": ("var(--surface)", "var(--fg)", "1px solid var(--stage-review)"),
+                "failed": ("var(--surface)", "var(--dl)", "1px solid var(--dl)"),
+                "pending": ("var(--surface)", "var(--fg)", "1px solid var(--stage-pr)"),
+                "drift": ("var(--surface)", "var(--dl)", "1px dashed var(--dl)")}
+
+
+MERGE_SHOWN = 5
+
+
+def merge_order(sources: board_sources.Sources) -> panels.Panel:
+    """Open changes in the order to merge them: approved first, then in review; within each, a passed pipeline
+    first, then those sharing no file with another open change (#75's least-conflict order, by file overlap)."""
+    # ponytail: overlap by file names; #75's trial merge (`git merge-tree`) when overlap proves too coarse.
+    open_ = [c for c in sources.changes.values() if c.state == "open"]
+    shared = {c.ref: sorted({o.ref for o in open_ if o is not c and set(o.files) & set(c.files)}) for c in open_}
+    overlap = {c.ref: len({f for o in open_ if o is not c for f in set(o.files) & set(c.files)}) for c in open_}
+
+    def number(c: board_sources.Change) -> int:
+        m = TRAILING_NUMBER.search(c.ref)
+        return int(m[1]) if m else 0
+
+    ready = sorted((c for c in open_ if not c.draft),
+                   key=lambda c: (not c.approved, c.pipeline != "passed", bool(shared[c.ref]), number(c)))
+    rows = tuple(panels.Row(c.title, " · ".join([
+        "approved" if c.approved else "in review",
+        *([f"pipeline {c.pipeline}"] if c.pipeline else []),
+        *([f"base {c.base}"] if c.base else []),
+        f"shares {_plural(overlap[c.ref], 'file')} with {', '.join(shared[c.ref])}" if shared[c.ref] else "no shared files",
+    ]), num=str(i), ref=c.ref, href=c.url) for i, c in enumerate(ready, 1))
+    approved = sum(c.approved for c in ready)
+    rest = len(rows) - MERGE_SHOWN
+    return panels.Panel("merge", "MERGE ORDER", "merge", len(rows), rows[:MERGE_SHOWN],
+                        f"{approved} approved · {len(rows) - approved} in review", foot=f"+ {rest} more" if rest > 0 else "")
+
+
+def decision_panel(pending: list[tuple[str, dict | Exception]], answered: int) -> panels.Panel:
+    """The pending decisions (decision_page.pending) and how many were answered today."""
+    rows = tuple(panels.Row(page, f"unreadable: {d}") if isinstance(d, Exception) else panels.Row(
+        d["headline"], " · ".join([*([f"asked {d['asked']}"] if d.get("asked") else []),
+                                   f"recommended {d['recommended']}", f"default: {d['default']}"]), href=f"{page}.html")
+        for page, d in pending)
+    return panels.Panel("decisions", "DECISIONS", "decisions", len(rows), rows, link=("decisions page", "decisions.html"),
+                        foot=f"{answered} answered today")
+
+
+def worker_panel(sources: board_sources.Sources, now: datetime) -> panels.Panel:
+    def facts(w: board_sources.Worker) -> str:
+        where = w.tree if w.kind == "one-shot" else (f"last reply {w.last.astimezone(now.tzinfo):%H:%M}" if w.last else "")
+        return " · ".join(x for x in (w.kind, " ".join(x for x in (w.runtime, w.model) if x), w.task, where) if x)
+
+    rows = tuple(panels.Row(w.name, facts(w), side=panels.hm(w.started, now) if w.started else "") for w in sources.workers)
+    kinds = [w.kind for w in sources.workers]
+    note = " · ".join(f"{kinds.count(k)} {k}" for k in dict.fromkeys(kinds))
+    return panels.Panel("workers", "WORKERS", "workers", len(rows), rows, note)
+
+
+def flow_tiles(blocked: int, decisions: int, sources: board_sources.Sources, running: int, drift: int, orphaned: int) -> list[panels.Tile]:
+    """Six counts, each linking to where its items are listed. RUNNING counts workers, or running tasks when no
+    worker source is read."""
+    approved = sum(c.state == "open" and c.approved for c in sources.changes.values())
+    return [panels.Tile("BLOCKED", blocked, "blocked", "blocked"), panels.Tile("DECISIONS", decisions, "decisions", "decisions"),
+            panels.Tile("APPROVED", approved, "merge", "approved"),
+            panels.Tile("RUNNING", len(sources.workers) or running, "workers", "running"),
+            panels.Tile("DRIFT", drift, "build", "drift"), panels.Tile("ORPHANED", orphaned, "blocked", "orphaned")]
 
 
 def render(tracker_text: str, log_text: str, cfg: Config, now: datetime,
            requirements: dict[str, str | None] | None = None, lanes: dict | None = None,
-           tracker_day: date | None = None, decisions: int | None = None, kanban: Kanban | None = None) -> str:
+           tracker_day: date | None = None, decisions: list[tuple[str, dict | Exception]] | None = None,
+           kanban: Kanban | None = None, sources: board_sources.Sources = board_sources.EMPTY, answered: int = 0,
+           tracker_at: datetime | None = None) -> str:
     cfg = with_decision_deadlines(cfg, tracker_text, tracker_day or now.date())
     sha = hashlib.sha256(tracker_text.encode()).hexdigest()
     tracker = parse_tracker(tracker_text)
     today, zone = now.date(), cfg.zone
-    decisions_note = ("" if decisions is None else
-                      f' · <a href="decisions.html">{decisions} decision{"" if decisions == 1 else "s"} pending</a>')
     events = parse_calendar(log_text, today, zone)
     # A body event is drawn once, as a segment of the body track; drawn as a band as well it would
     # read as two things happening at once. Every other event stays the band it was.
@@ -1927,17 +2061,20 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime,
         return (f"{_esc(s.name)} <span class='warn'>· {silence}</span> "
                 f"<span class='muted'>· {_tasks(held)}</span>")
 
-    build_cols, no_lane = build_columns(tasks, lanes, kanban)
+    build_cols, no_lane = build_columns(tasks, lanes, kanban, sources, now)
     issues = sum(1 for t in tasks if t.issue.strip())
-    build_html = (f'<h2>Build</h2>\n<div class="meta">{_tasks(len(tasks))} · {issues} issue{"" if issues == 1 else "s"}</div>\n'
-                  f'{columns.render(build_cols, no_lane if no_lane.cards else None)}\n'
-                  if any(t.lane.strip() for t in tasks) else "")
-    blocked_html = f"""<h2>Blocked</h2>
+    changes = sum(1 for c in sources.changes.values() if c.state == "open")
+    changes_note = f" · {_plural(changes, 'merge request')}" if changes else ""
+    laned = any(t.lane.strip() for t in tasks)
+    build_html = (f'<section id="build"><h2>Build</h2>\n<div class="meta">{_tasks(len(tasks))} · {_plural(issues, "issue")}{changes_note}</div>\n'
+                  f'{columns.render(build_cols, no_lane if no_lane.cards else None)}</section>\n'
+                  if laned else "")
+    blocked_html = f"""<section id="blocked"><h2>Blocked</h2>
 <div class="cards">
 {blocked_card("Awaiting you", [task_line(l) for l in awaiting])}
 {blocked_card("Orphaned", [task_line(l) for l in unowned])}
 {blocked_card("Not reporting", [quiet_line(s) for s in quiet])}
-</div>
+</div></section>
 """
 
     filter_css = "\n".join(
@@ -1953,8 +2090,19 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime,
     standing_note = (f'<div class="meta">{standing} standing {"session" if standing == 1 else "sessions"} with no task '
                      f'{"is not a task" if standing == 1 else "are not tasks"}; see Sessions</div>\n') if standing else ""
     tzname = now.strftime("%Z")
+    pending = decisions or []
+    meta = [f"rendered {now:%H:%M} {tzname}", f"tracker {(tracker_at or now).astimezone(zone):%H:%M}",
+            *(f"{k} {sources.fetched[k].astimezone(zone):%H:%M}" for k in ("kanban", "merge requests", "workers") if k in sources.fetched),
+            _tasks(len(tasks)), *([f"{len(no_lane.cards)} in no lane"] if laned else []),
+            *([f"board {url}"] if url else []), *([long_note.removeprefix(" · ")] if long_note else [])]
+    head = panels.Header(f"Board · {now.strftime('%a %d %b')}", tuple(meta), now, nearest.name, nearest.at,
+                         tuple(f"{k}: {why}" for k, why in sources.errors.items()))
+    tiles = flow_tiles(len(awaiting) + len(unowned) + len(quiet), len(pending), sources, len(running),
+                       sum(drifts(t, kanban, sources) for t in tasks), len(unowned))
+    panels_html = panels.panels([merge_order(sources), decision_panel(pending, answered), worker_panel(sources, now)])
 
     return f"""<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Board {today.isoformat()}</title>
 <link rel="stylesheet" href="{FONTS}">
 <meta name="tracker-sha256" content="{sha}">{req_meta}
@@ -1963,11 +2111,11 @@ def render(tracker_text: str, log_text: str, cfg: Config, now: datetime,
 @media (prefers-color-scheme:dark){{:root:not([data-theme="light"]){{color-scheme:dark;--bg:#1c1813;--surface:#262019;--fg:#efe6d2;--muted:#b3a791;--line:#3d352a;--brass:#d4b06a;--band:rgba(160,150,230,.16);--open:#aab77d;--noest:#62c2b6;--fold:#b7acc9;--running:#aba1e8;--done:#4a4236;--dl:#f08566;--now:#a8c67e;--est:#e59bb8;--bar-ink:#1c1813;--seg-ink:#1c1813;--sleep:#9c93e2;--eat:#f0955f;--gym:#72c28d;--recreation:#e6d95c;--stage-implement:#3D95D6;--stage-pr:#56B4E9;--stage-review:#009E73;--stage-triage:#E69F00;--stage-fix:#D55E00;--stage-verify:#CC79A7;--stage-merge:#efe6d2}}:root:not([data-theme="light"]) :is(.gantt,.gantt-legend){{--gantt-ink:var(--fg);--gantt-muted:var(--muted);--gantt-bg:var(--bg);--gantt-rule:var(--line);--gantt-edge:var(--line);--gantt-grid:var(--line);--gantt-past:var(--surface);--gantt-now:var(--dl);--gantt-hold:var(--dl)}}}}
 :root[data-theme="dark"]{{color-scheme:dark;--bg:#1c1813;--surface:#262019;--fg:#efe6d2;--muted:#b3a791;--line:#3d352a;--brass:#d4b06a;--band:rgba(160,150,230,.16);--open:#aab77d;--noest:#62c2b6;--fold:#b7acc9;--running:#aba1e8;--done:#4a4236;--dl:#f08566;--now:#a8c67e;--est:#e59bb8;--bar-ink:#1c1813;--seg-ink:#1c1813;--sleep:#9c93e2;--eat:#f0955f;--gym:#72c28d;--recreation:#e6d95c;--stage-implement:#3D95D6;--stage-pr:#56B4E9;--stage-review:#009E73;--stage-triage:#E69F00;--stage-fix:#D55E00;--stage-verify:#CC79A7;--stage-merge:#efe6d2}}
 :root[data-theme="dark"] :is(.gantt,.gantt-legend){{--gantt-ink:var(--fg);--gantt-muted:var(--muted);--gantt-bg:var(--bg);--gantt-rule:var(--line);--gantt-edge:var(--line);--gantt-grid:var(--line);--gantt-past:var(--surface);--gantt-now:var(--dl);--gantt-hold:var(--dl)}}
-body{{background:var(--bg);color:var(--fg);font:14px/1.5 "Alegreya Sans","Gill Sans",system-ui,sans-serif;padding:16px 16px 48px;max-width:1100px;margin:0 auto}}
+body{{background:var(--bg);color:var(--fg);font:14px/1.5 "Alegreya Sans","Gill Sans",system-ui,sans-serif;padding:16px 16px 48px;max-width:1280px;margin:0 auto}}
 h1{{font-family:"Cormorant SC","Cormorant Garamond",Georgia,serif;font-size:26px;font-weight:600;letter-spacing:.04em;margin:0 0 2px}}
 h2{{font-family:"Cormorant SC","Cormorant Garamond",Georgia,serif;font-size:19px;font-weight:600;letter-spacing:.05em;margin:28px 0 8px;border-bottom:1px solid var(--brass);padding-bottom:4px}}
-.header{{display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:4px}} .header .logo{{width:260px;max-width:100%;border:1px solid var(--brass);border-radius:4px;display:block}}
-.head-text{{flex:1 1 260px;min-width:0}}
+.header{{display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap;margin-bottom:4px}} .header .logo{{width:160px;max-width:100%;border:1px solid var(--brass);border-radius:4px;display:block}}
+.header>.panels-head{{flex:1 1 320px;min-width:0}}
 .meta{{color:var(--muted);font-size:13px}} .clock{{font-family:ui-monospace,monospace;font-size:14px;font-variant-numeric:tabular-nums;margin:6px 0}}
 table{{border-collapse:collapse;width:100%;max-width:100%}} .tasks table{{table-layout:fixed}} .tasks{{overflow-wrap:anywhere}} .tasks th:first-child{{width:40%}} .tasks th:nth-child(2){{width:18%}} td,th{{text-align:left;padding:4px 8px;border-bottom:1px solid var(--line);vertical-align:top}} th{{color:var(--muted);font-weight:600;font-size:12px;letter-spacing:.04em;text-transform:uppercase}}
 tr.group th{{background:color-mix(in srgb,var(--brass) 18%,transparent);color:var(--fg);font-family:"Cormorant SC","Cormorant Garamond",Georgia,serif;font-weight:600;font-size:14px;letter-spacing:.12em;text-transform:uppercase;border-top:2px solid var(--brass);padding:6px 8px}}
@@ -1977,7 +2125,7 @@ tr.group th{{background:color-mix(in srgb,var(--brass) 18%,transparent);color:va
 .tasks>input:checked+label{{background:var(--fg);color:var(--surface);border-color:var(--fg)}}
 .tasks>input:focus-visible+label{{outline:2px solid var(--brass);outline-offset:2px}}
 {filter_css}
-{columns.css()}.columns{{--columns-ink:var(--fg);--columns-muted:var(--muted);--columns-card:var(--surface);--columns-rule:var(--line);--columns-gate-ink:var(--brass);--columns-bg:color-mix(in srgb,var(--brass) 10%,var(--bg));--columns-gate:color-mix(in srgb,var(--brass) 14%,var(--surface))}}
+{panels.css(PANEL_COLOURS, PANEL_TOKENS)}{columns.css(CARD_COLOURS)}.columns{{--columns-ink:var(--fg);--columns-muted:var(--muted);--columns-card:var(--surface);--columns-rule:var(--line);--columns-gate-ink:var(--brass);--columns-bg:color-mix(in srgb,var(--brass) 10%,var(--bg));--columns-gate:color-mix(in srgb,var(--brass) 14%,var(--surface))}}
 .cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px;margin:8px 0}} .cards.due{{grid-template-columns:repeat(auto-fit,minmax(330px,1fr))}}
 .card{{background:var(--surface);border:1px solid var(--line);border-radius:5px;padding:8px 11px}} .due-card{{border-left:3px solid var(--dl)}}
 .card h3,.card-head b{{margin:0 0 5px;font-family:"Cormorant SC","Cormorant Garamond",Georgia,serif;font-size:13.5px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--brass)}}
@@ -2074,15 +2222,13 @@ body{{padding:12px 12px 36px}}
 }}
 </style>
 <div class="board" data-rendered-at="{_iso(now)}" data-tz="{_esc(cfg.tz)}" data-deadline="{_iso(nearest.at)}" data-deadline-name="{_esc(nearest.name)}">
-<div class="header">{logo_tag()}<div class="head-text">
-<h1>Board · {now.strftime('%a %d %b')}</h1>
-<div class="clock" id="clock">Now — {_esc(tzname)} · {_esc(nearest.name)} ({nearest.at.strftime('%H:%M')} {_esc(tzname)})</div>
-<div class="meta">tracker as of {now.strftime('%H:%M')} {_esc(tzname)} <span id="ago"></span> · kept by chief-of-stuff · board {_esc(url or 'not yet published')}{long_note}{decisions_note}</div>
-{resume_strip(parse_resume(tracker_text))}</div></div>
+<div class="header">{logo_tag()}{panels.header(head)}</div>
+{resume_strip(parse_resume(tracker_text))}
+{panels.tiles(tiles)}
+{build_html}{panels_html}
+<!-- flow charts -->
 
 {due_html}{blocked_html}
-
-{build_html}
 <h2>Today</h2>
 <div class="meta">{len(day_done)} done · {len(day_bars)} scheduled · {len(day_folded)} folded into one row (no estimate, or due or estimated after today) · bands are calendar events · green line is now{orphan_note}</div>
 {legend()}{_strip(day_body + day_done_rows + swimlanes(day_bars) + day_summaries, axis_a, axis_b, day_events, [nearest], day_ticks, "day")}
@@ -2110,14 +2256,13 @@ body{{padding:12px 12px 36px}}
 </div>
 <script>
 (function(){{
-  var root=document.querySelector('.board'),tz=root.dataset.tz,dl=new Date(root.dataset.deadline),ra=new Date(root.dataset.renderedAt);
+  var root=document.querySelector('.board'),tz=root.dataset.tz,dl=new Date(root.dataset.deadline);
   function hm(d){{return new Intl.DateTimeFormat('en-GB',{{timeZone:tz,hour:'2-digit',minute:'2-digit'}}).format(d);}}
-  function tzn(d){{var p=new Intl.DateTimeFormat('en-US',{{timeZone:tz,timeZoneName:'short'}}).formatToParts(d);for(var i=0;i<p.length;i++)if(p[i].type==='timeZoneName')return p[i].value;return tz;}}
   function pad(n){{return (n<10?'0':'')+n;}}
   function tick(){{
     var now=new Date(),ms=dl-now,sign=ms<0?'-':'',m=Math.floor(Math.abs(ms)/60000);
-    document.getElementById('clock').textContent='Now '+hm(now)+' '+tzn(now)+' · '+root.dataset.deadlineName+' in '+sign+Math.floor(m/60)+'h'+pad(m%60)+'m ('+hm(dl)+' '+tzn(dl)+')';
-    var ago=Math.floor((now-ra)/60000);document.getElementById('ago').textContent='('+(ago<1?'just now':ago+'m ago')+')';
+    root.querySelector('.panels-now').textContent=hm(now);
+    root.querySelector('.panels-left').textContent=sign+Math.floor(m/60)+'h'+pad(m%60)+'m';
     document.querySelectorAll('.strip').forEach(function(s){{
       var a=new Date(s.dataset.axisStart),b=new Date(s.dataset.axisEnd),line=s.querySelector('.nowline');
       if(now<a||now>b){{line.hidden=true;return;}}
@@ -2175,10 +2320,13 @@ def main(argv: list[str] | None = None) -> Path:
         sys.exit(f"render_board: {e}")
     today_rows = decision_rows(tracker_text)
     answered = [row[1] for _, path in daily_trackers(root, cfg) if path != tracker for row in decision_rows(path.read_text())]
-    decisions, pending = decision_page.index(out.parent, answered + [row[1] for row in today_rows], today_rows, day)
+    named = answered + [row[1] for row in today_rows]
+    decisions, _ = decision_page.index(out.parent, named, today_rows, day)
     (out.parent / "decisions.html").write_text(decisions)
     page = render(tracker_text, log_text, cfg, now, requirements=req_texts, lanes=settings.lanes,
-                  tracker_day=tracker_day, decisions=pending, kanban=settings.kanban)
+                  tracker_day=tracker_day, decisions=decision_page.pending(out.parent, named), kanban=settings.kanban,
+                  sources=board_sources.load(out.parent), answered=len(today_rows),
+                  tracker_at=datetime.fromtimestamp(tracker.stat().st_mtime, cfg.zone))
     out.write_text(page)
     parsed = parse_tracker(tracker_text)
     hist = history(list(parsed.tasks), cfg, now)

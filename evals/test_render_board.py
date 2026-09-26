@@ -318,7 +318,7 @@ class RenderTest(unittest.TestCase):
             self.assertIn(heading, self.html)
         for cut in ("Decisions", "File ownership", "release notes done"):
             self.assertNotIn(cut, self.html)
-        self.assertIn("tracker as of 14:30", self.html)
+        self.assertIn("rendered 14:30 CDT · tracker 14:30", self.html)
         self.assertIn("board-7", self.html)
 
     def test_the_yours_chip_selects_robins_tasks(self) -> None:
@@ -1471,7 +1471,9 @@ class CliTest(unittest.TestCase):
         self.assertNotIn("cache-size", pending)
         self.assertIn("Draft release notes", completed)
         self.assertRegex(completed, r'(?s)11:20.*href="decision-cache-size\.html".*B, go')
-        self.assertRegex(board, r'href="decisions\.html"[^>]*>2 decisions pending<')
+        self.assertIn('<a class="panels-link" href="decisions.html">decisions page</a><b class="panels-count">2</b>', board)
+        self.assertIn('<a class="panels-name" href="decision-deploy-window.html">Decide deploy-window</a>', board)
+        self.assertIn('<span class="panels-label">DECISIONS</span><b class="panels-count">2</b>', board)
 
     def test_summary_line_counts_long_items(self) -> None:
         root = Path(tempfile.mkdtemp())
