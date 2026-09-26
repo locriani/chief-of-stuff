@@ -13,6 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import decision_page as dp  # noqa: E402
 import render_board as rb  # noqa: E402
+import gantt  # noqa: E402
 from backlog import Backlog, GitHubBacklog  # noqa: E402
 
 BLOCK = """# Workspace
@@ -254,11 +255,86 @@ class DesignTest(unittest.TestCase):
     def test_the_page_wears_the_board_scheme(self):
         page = self.page()
         self.assertIn(rb.FONTS, page)
-        source = (Path(__file__).resolve().parent.parent / "scripts" / "render_board.py").read_text()
-        board = dict(re.findall(r"(--[\w-]+):([^;}]+)", re.search(r"^:root\{\{(.*?)\}\}$", source, re.M)[1]))
-        for token in ("--bg", "--surface", "--fg", "--muted", "--line", "--brass", "--dl"):
-            with self.subTest(token=token):
-                self.assertIn(f"{token}:{board[token]}", page)
+        board, mine = scheme(board_css()), scheme(page)
+        for theme in ("light", "dark"):
+            for token in SHARED:
+                with self.subTest(theme=theme, token=token):
+                    self.assertEqual(mine[theme][token], board[theme][token])
+
+    def test_a_node_name_is_never_stroked(self):
+        page = self.page(architecture=ARCH)
+        stroked = {"n", "n-inflight", "n-designed", "ext"}
+        for classes in re.findall(r'<text class="([^"]*)"', page):
+            with self.subTest(classes=classes):
+                self.assertFalse(stroked & set(classes.split()))
+
+
+def board_css() -> str:
+    return (Path(__file__).resolve().parent.parent / "scripts" / "render_board.py").read_text().replace("{{", "{").replace("}}", "}")
+
+
+def scheme(css: str) -> dict[str, dict[str, str]]:
+    """The tokens of the light `:root` and of each dark block, which must agree."""
+    def tokens(block: str) -> dict[str, str]:
+        return dict(re.findall(r"(--[\w-]+):([^;}]+)", block))
+    light = tokens(re.search(r"^:root\{(.*?)\}$", css, re.M)[1])
+    auto = re.search(r'^@media \(prefers-color-scheme:dark\)\{:root:not\(\[data-theme="light"\]\)\{(.*?)\}', css, re.M)[1]
+    forced = re.search(r'^:root\[data-theme="dark"\]\{(.*?)\}', css, re.M)[1]
+    assert tokens(auto) == tokens(forced), "the two dark blocks differ"
+    return {"light": light, "dark": tokens(auto)}
+
+
+def contrast(a: str, b: str) -> float:
+    """WCAG 2 contrast ratio of two #rrggbb colours."""
+    def lum(h: str) -> float:
+        c = [int(h.lstrip("#")[i:i + 2], 16) / 255 for i in (0, 2, 4)]
+        r, g, b_ = (x / 12.92 if x <= 0.04045 else ((x + 0.055) / 1.055) ** 2.4 for x in c)
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b_
+    hi, lo = sorted((lum(a), lum(b)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+STAGES = ("implement", "pr", "review", "triage", "fix", "verify", "merge")
+SHARED = ("--bg", "--surface", "--fg", "--muted", "--line", "--brass", "--dl") + tuple(f"--stage-{s}" for s in STAGES)
+# (text, ground) pairs as the stylesheets use them: every one is text that must read at WCAG AA.
+BOARD_TEXT = [("--fg", "--bg"), ("--fg", "--surface"), ("--muted", "--bg"), ("--muted", "--surface"), ("--brass", "--surface"),
+              ("--brass", "--bg"), ("--dl", "--bg"), ("--dl", "--surface"), ("--est", "--surface"), ("--fg", "--done"),
+              ("--seg-ink", "--eat"), ("--seg-ink", "--recreation"), ("--bar-ink", "--sleep"), ("--bar-ink", "--gym")] + [
+              ("--bar-ink", f"--{bar}") for bar in ("open", "running", "noest", "est", "fold")] + [
+              (f"--stage-{s}", "--bg") for s in STAGES]
+PAGE_TEXT = [("--link", "--ref-bg"), ("--link", "--surface"), ("--deployed", "--surface"), ("--inflight", "--inflight-soft"),
+             ("--designed", "--designed-soft"), ("--ext-ink", "--ext-soft"), ("--dl", "--ext-soft")]
+
+
+class DarkSchemeTest(unittest.TestCase):
+    """The user, 2026-09-26: "we need new dark mode colors for the entire scheme"."""
+
+    def test_the_board_dark_scheme_reads_at_aa(self):
+        dark = scheme(board_css())["dark"]
+        for text, ground in BOARD_TEXT:
+            with self.subTest(text=text, ground=ground):
+                self.assertGreaterEqual(contrast(dark[text], dark[ground]), 4.5)
+
+    def test_the_decision_page_dark_scheme_reads_at_aa(self):
+        dark = scheme(dp.HEAD)["dark"]
+        for text, ground in PAGE_TEXT:
+            with self.subTest(text=text, ground=ground):
+                self.assertGreaterEqual(contrast(dark[text], dark[ground]), 4.5)
+
+    def test_stages_keep_okabe_ito_in_light_and_merge_has_a_dark_stand_in(self):
+        themes = scheme(board_css())
+        for stage, colour in gantt.PALETTE.items():
+            with self.subTest(stage=stage):
+                self.assertEqual(themes["light"][f"--stage-{stage}"].lower(), (colour if isinstance(colour, str) else colour[0]).lower())
+        self.assertGreater(contrast(themes["dark"]["--stage-merge"], themes["dark"]["--bg"]), 7)
+
+    def test_the_board_sets_every_gantt_colour_for_dark(self):
+        css = board_css()
+        colours = set(re.findall(r"(--gantt-[\w-]+):#", gantt.BASE_CSS))
+        for block in (re.search(r'^@media \(prefers-color-scheme:dark\)\{.*$', css, re.M)[0],
+                      "\n".join(re.findall(r'^:root\[data-theme="dark"\].*$', css, re.M))):
+            set_here = set(re.findall(r"(--gantt-[\w-]+):var\(--[\w-]+\)", block))
+            self.assertEqual(colours - set_here, set())
 
 
 class MainTest(unittest.TestCase):

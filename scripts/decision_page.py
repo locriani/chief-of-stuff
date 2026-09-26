@@ -259,7 +259,7 @@ def _figure(arch: dict, linker: Linker) -> str:
         rx = ' rx="14"' if state == "external" else ""
         cx = round(x + w / 2, 1)
         g = [f'<g data-node="{escape(n["id"])}"><rect class="{cls}" x="{x}" y="{y}" width="{w}" height="{h}"{rx}/>',
-             f'<text class="t{" ext" if state == "external" else ""}" x="{cx}" y="{y + 27}" text-anchor="middle">{escape(n["name"])}</text>']
+             f'<text class="t{" t-ext" if state == "external" else ""}" x="{cx}" y="{y + 27}" text-anchor="middle">{escape(n["name"])}</text>']
         if n.get("detail"):
             detail = escape(n["detail"], quote=False)
             href = linker.href(detail)
@@ -421,9 +421,9 @@ def index(pages_dir: Path, answered: list[str], today: list[list[str]], day: str
 HEAD = f'<link rel="stylesheet" href="{FONTS}">\n' + """<style>
 /* The board's parchment scheme (render_board.py) and the architecture review's state encoding (frank-lloyd-aight
    docs/review-page.md). Okabe-Ito colours the timeline stages, as on the board Gantt. */
-:root{--bg:#f4efe1;--surface:#fbf8ef;--fg:#2f2630;--muted:#6e6470;--line:#ddd3bd;--brass:#a7843e;--dl:#c9533a;--link:#8a6c30;--ref-bg:#efe7d3;--deployed:#2b3542;--inflight:#a8660f;--inflight-soft:#f6ead6;--designed:#2c58a0;--designed-soft:#dfe8f6;--ext:#8a8f98;--ext-soft:#f1eee6;--ext-ink:#5f6b7b}
-@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;--bg:#1e1a20;--surface:#29232b;--fg:#efe8d6;--muted:#a89fa8;--line:#3d3440;--brass:#c9a45c;--dl:#f0775a;--link:#d9b673;--ref-bg:#3a3024;--deployed:#cfd7e1;--inflight:#e3a84e;--inflight-soft:#2e2415;--designed:#86aef0;--designed-soft:#1a2638;--ext:#8a8f98;--ext-soft:#2f2a33;--ext-ink:#b3bac4}}
-:root[data-theme="dark"]{color-scheme:dark;--bg:#1e1a20;--surface:#29232b;--fg:#efe8d6;--muted:#a89fa8;--line:#3d3440;--brass:#c9a45c;--dl:#f0775a;--link:#d9b673;--ref-bg:#3a3024;--deployed:#cfd7e1;--inflight:#e3a84e;--inflight-soft:#2e2415;--designed:#86aef0;--designed-soft:#1a2638;--ext:#8a8f98;--ext-soft:#2f2a33;--ext-ink:#b3bac4}
+:root{--bg:#f4efe1;--surface:#fbf8ef;--fg:#2f2630;--muted:#6e6470;--line:#ddd3bd;--brass:#a7843e;--dl:#c9533a;--link:#8a6c30;--ref-bg:#efe7d3;--deployed:#2b3542;--inflight:#a8660f;--inflight-soft:#f6ead6;--designed:#2c58a0;--designed-soft:#dfe8f6;--ext:#8a8f98;--ext-soft:#f1eee6;--ext-ink:#5f6b7b;--stage-implement:#0072B2;--stage-pr:#56B4E9;--stage-review:#009E73;--stage-triage:#E69F00;--stage-fix:#D55E00;--stage-verify:#CC79A7;--stage-merge:#000000}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;--bg:#1c1813;--surface:#262019;--fg:#efe6d2;--muted:#b3a791;--line:#3d352a;--brass:#d4b06a;--dl:#f08566;--link:#e2c27f;--ref-bg:#342b1f;--deployed:#d9d2c4;--inflight:#e8ad55;--inflight-soft:#35281a;--designed:#8fb3f0;--designed-soft:#1f2735;--ext:#8f8a80;--ext-soft:#2d2822;--ext-ink:#c4bdb0;--stage-implement:#3D95D6;--stage-pr:#56B4E9;--stage-review:#009E73;--stage-triage:#E69F00;--stage-fix:#D55E00;--stage-verify:#CC79A7;--stage-merge:#efe6d2}}
+:root[data-theme="dark"]{color-scheme:dark;--bg:#1c1813;--surface:#262019;--fg:#efe6d2;--muted:#b3a791;--line:#3d352a;--brass:#d4b06a;--dl:#f08566;--link:#e2c27f;--ref-bg:#342b1f;--deployed:#d9d2c4;--inflight:#e8ad55;--inflight-soft:#35281a;--designed:#8fb3f0;--designed-soft:#1f2735;--ext:#8f8a80;--ext-soft:#2d2822;--ext-ink:#c4bdb0;--stage-implement:#3D95D6;--stage-pr:#56B4E9;--stage-review:#009E73;--stage-triage:#E69F00;--stage-fix:#D55E00;--stage-verify:#CC79A7;--stage-merge:#efe6d2}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 "Alegreya Sans","Gill Sans",system-ui,sans-serif;padding:24px 16px 48px}
 main{max-width:1280px;margin:0 auto;display:flex;flex-direction:column;gap:16px}
@@ -459,9 +459,9 @@ code{font-family:ui-monospace,monospace;font-size:.88em;background:var(--ref-bg)
 .step .when{font-family:ui-monospace,monospace;font-size:12.5px;color:var(--muted);font-variant-numeric:tabular-nums}
 .dot{width:9px;height:9px;border-radius:50%;margin-top:5px;background:var(--brass)}
 .dot[data-k="hot"]{background:var(--dl)} .dot[data-k="designed"]{background:var(--designed)}
-.dot[data-k="implement"]{background:#0072B2} .dot[data-k="pr"]{background:#56B4E9} .dot[data-k="review"]{background:#009E73}
-.dot[data-k="triage"]{background:#E69F00} .dot[data-k="fix"]{background:#D55E00} .dot[data-k="verify"]{background:#CC79A7}
-.dot[data-k="merge"]{background:#F0E442;box-shadow:0 0 0 1px #8a7a1a}
+.dot[data-k="implement"]{background:var(--stage-implement)} .dot[data-k="pr"]{background:var(--stage-pr)}
+.dot[data-k="review"]{background:var(--stage-review)} .dot[data-k="triage"]{background:var(--stage-triage)}
+.dot[data-k="fix"]{background:var(--stage-fix)} .dot[data-k="verify"]{background:var(--stage-verify)} .dot[data-k="merge"]{background:var(--stage-merge)}
 .options{display:flex;flex-direction:column;gap:8px}
 .opt{display:grid;grid-template-columns:26px minmax(0,1fr);gap:2px 8px;background:var(--surface);border:1px solid var(--line);border-radius:5px;padding:10px 14px}
 .opt.rec{border:2px solid var(--brass)}
@@ -480,7 +480,7 @@ figcaption .chip.designed{border:1.5px dotted var(--designed);color:var(--design
 figcaption .chip.hot{border:2px solid var(--dl);color:var(--dl)}
 figcaption .chip.external{border:1.5px solid var(--ext);color:var(--ext-ink);border-radius:9px}
 svg text{font-family:"Alegreya Sans",system-ui,sans-serif;fill:var(--fg)}
-svg .t{font-size:14px;font-weight:700} svg .t.ext{fill:var(--ext-ink)}
+svg .t{font-size:14px;font-weight:700} svg .t-ext{fill:var(--ext-ink)}
 svg .tm{font-family:ui-monospace,monospace;font-size:10.5px;fill:var(--link)}
 svg .tl{font-size:11.5px;fill:var(--muted)}
 svg .tl.inflight{fill:var(--inflight)} svg .tl.designed{fill:var(--designed)} svg .tl.hot,svg .warn{fill:var(--dl);font-weight:700}
@@ -488,7 +488,7 @@ svg .halo{paint-order:stroke;stroke:var(--surface);stroke-width:4px;stroke-linej
 svg .n{fill:var(--surface);stroke:var(--deployed);stroke-width:1.5}
 svg .n-inflight{fill:var(--inflight-soft);stroke:var(--inflight);stroke-width:1.5;stroke-dasharray:6 4}
 svg .n-designed{fill:var(--designed-soft);stroke:var(--designed);stroke-width:1.5;stroke-dasharray:2 3}
-svg .ext{fill:var(--ext-soft);stroke:var(--ext);stroke-width:1.5}
+svg rect.ext{fill:var(--ext-soft);stroke:var(--ext);stroke-width:1.5}
 svg .e{stroke:var(--deployed);stroke-width:1.5}
 svg .e-inflight{stroke:var(--inflight);stroke-width:1.5;stroke-dasharray:6 4}
 svg .e-designed{stroke:var(--designed);stroke-width:1.5;stroke-dasharray:2 3}

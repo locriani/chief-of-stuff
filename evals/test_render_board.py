@@ -723,7 +723,7 @@ class WeekByDayTest(unittest.TestCase):
 
 
 LIGHT = {"--bg": "#F4EFE1", "--surface": "#FBF8EF", "--fg": "#2F2630", "--muted": "#6E6470", "--line": "#DDD3BD", "--brass": "#A7843E", "--open": "#9DAA72", "--running": "#6F63B4", "--done": "#BDB3A2", "--dl": "#C9533A", "--now": "#4F6B3A", "--bar-ink": "#FBF8EF"}
-DARK = {"--bg": "#1E1A20", "--surface": "#29232B", "--fg": "#EFE8D6", "--muted": "#A89FA8", "--line": "#3D3440", "--brass": "#C9A45C", "--open": "#6F7F48", "--running": "#9A8FDA", "--done": "#5A5058", "--dl": "#F0775A", "--now": "#9DBB6E", "--bar-ink": "#1E1A20"}
+DARK = {"--bg": "#1C1813", "--surface": "#262019", "--fg": "#EFE6D2", "--muted": "#B3A791", "--line": "#3D352A", "--brass": "#D4B06A", "--open": "#AAB77D", "--running": "#ABA1E8", "--done": "#4A4236", "--dl": "#F08566", "--now": "#A8C67E", "--bar-ink": "#1C1813"}
 
 
 class BrandTest(unittest.TestCase):
@@ -992,7 +992,8 @@ class BodyTrackTest(unittest.TestCase):
 
     def test_cream_ink_on_sleep_and_gym_alone(self) -> None:
         rule = re.search(r"\.seg\{([^}]*)\}", self.css).group(1)
-        self.assertIn("color:var(--fg)", rule)
+        # Dark ink on every other segment: the board's own --fg in light, a dark ink in dark where the segments are light tints.
+        self.assertIn("color:var(--seg-ink)", rule)
         cream = re.search(r"([.a-z,]*)\{color:var\(--bar-ink\)\}", self.css)
         self.assertEqual(sorted(cream.group(1).split(",")), [".seg.gym", ".seg.sleep"])
 
