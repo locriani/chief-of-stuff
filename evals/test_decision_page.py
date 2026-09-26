@@ -3,6 +3,7 @@ in the future you don't serve it as an artifact but serve it using the localhost
 
 import io
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -11,6 +12,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import decision_page as dp  # noqa: E402
+import render_board as rb  # noqa: E402
+from backlog import Backlog, GitHubBacklog  # noqa: E402
 
 BLOCK = """# Workspace
 
@@ -103,6 +106,161 @@ class ParseTest(unittest.TestCase):
             dp.parse(decision(sides=[{"label": "x", "status": "maybe", "text": "y"}]))
 
 
+GH = GitHubBacklog(repo="o/app")
+GL = Backlog(host="https://gl.example", project="grp/app")
+
+
+def refs(text: str, forge=None, root=None, at=None) -> str:
+    return dp._md(text, dp.Linker(forge, root, at))
+
+
+class LinkTest(unittest.TestCase):
+    """References in the text link to the configured forge; nothing is linked that the forge cannot place."""
+
+    def test_github(self):
+        out = refs("#12, !58, a41c9e2, src/cache/pool.py:24-58, config/db.toml:14, pipeline #8812, src/gateway/ "
+                   "and docs/architecture.md#connection-budgets", GH)
+        for kind, href, label in (
+                ("issue", "https://github.com/o/app/issues/12", "#12"),
+                ("PR", "https://github.com/o/app/pull/58", "!58"),
+                ("commit", "https://github.com/o/app/commit/a41c9e2", "a41c9e2"),
+                ("code", "https://github.com/o/app/blob/HEAD/src/cache/pool.py#L24-L58", "src/cache/pool.py:24-58"),
+                ("code", "https://github.com/o/app/blob/HEAD/config/db.toml#L14", "config/db.toml:14"),
+                ("pipeline", "https://github.com/o/app/actions/runs/8812", "#8812"),
+                ("code", "https://github.com/o/app/tree/HEAD/src/gateway/", "src/gateway/"),
+                ("doc", "https://github.com/o/app/blob/HEAD/docs/architecture.md#connection-budgets",
+                 "docs/architecture.md#connection-budgets")):
+            with self.subTest(label=label):
+                self.assertIn(f'<a class="ref" data-k="{kind}" href="{href}">{label}</a>', out)
+
+    def test_gitlab(self):
+        out = refs("#12, !58, !58#note_2291, a41c9e2, src/cache/pool.py:24-58, pipeline #8812", GL)
+        for kind, href in (("issue", "https://gl.example/grp/app/-/issues/12"),
+                           ("MR", "https://gl.example/grp/app/-/merge_requests/58"),
+                           ("note", "https://gl.example/grp/app/-/merge_requests/58#note_2291"),
+                           ("commit", "https://gl.example/grp/app/-/commit/a41c9e2"),
+                           ("code", "https://gl.example/grp/app/-/blob/HEAD/src/cache/pool.py#L24-58"),
+                           ("pipeline", "https://gl.example/grp/app/-/pipelines/8812")):
+            with self.subTest(kind=kind):
+                self.assertIn(f'data-k="{kind}" href="{href}"', out)
+
+    def test_no_forge_links_nothing(self):
+        self.assertNotIn("<a", refs("#12, !58, a41c9e2, src/cache/pool.py:24, pipeline #8812"))
+
+    def test_what_is_not_a_reference_stays_text(self):
+        text = "colour #c9533a, e.g. this, on 2026-09-25, a defaced cafe, o/backlog#7, v1.2 and 3.5 hours"
+        self.assertEqual(refs(text, GH), text)
+
+    def test_a_code_span_that_is_one_reference_links(self):
+        self.assertEqual(refs("`src/app.py:3`", GH),
+                         '<a class="ref" data-k="code" href="https://github.com/o/app/blob/HEAD/src/app.py#L3">src/app.py:3</a>')
+        self.assertEqual(refs("`s3://bucket` and `make test`", GH), "<code>s3://bucket</code> and <code>make test</code>")
+
+    def test_sections_and_symbols_resolve_against_a_local_copy(self):
+        root = Path(tempfile.mkdtemp())
+        (root / "docs").mkdir()
+        (root / "docs" / "architecture.md").write_text("# Arch\n\n## 4.1 Queues\n\n## 4.2 Connection budgets\n")
+        (root / "src").mkdir()
+        (root / "src" / "pool.py").write_text("import os\n\n\ndef warm(n):\n    pass\n")
+        self.assertIn('href="https://github.com/o/app/blob/HEAD/docs/architecture.md#42-connection-budgets">'
+                      'docs/architecture.md §4.2</a>', refs("docs/architecture.md §4.2", GH, root))
+        self.assertIn('href="https://github.com/o/app/blob/HEAD/src/pool.py#L4">src/pool.py:warm</a>',
+                      refs("src/pool.py:warm", GH, root))
+        # Without the copy the file is still the right place; the section is not guessed.
+        self.assertIn('href="https://github.com/o/app/blob/HEAD/docs/architecture.md">docs/architecture.md §4.2</a>',
+                      refs("docs/architecture.md §4.2", GH))
+
+    def test_a_pinned_reference_links_at_its_commit(self):
+        self.assertIn("https://github.com/o/app/blob/a41c9e2/src/cache/pool.py#L24-L58",
+                      refs("src/cache/pool.py:24-58", GH, at="a41c9e2"))
+
+
+ARCH = {
+    "summary": "Requests reach the cache, which the warm pool keeps connected to the database.",
+    "nodes": [
+        {"id": "clients", "name": "Clients", "state": "external", "detail": "browser, mobile"},
+        {"id": "cache", "name": "Cache", "state": "deployed", "detail": "src/cache/client.py"},
+        {"id": "db", "name": "Database", "state": "external", "detail": "limit 320 connections", "hot": True},
+        {"id": "pool", "name": "Warm pool", "state": "inflight", "detail": "src/cache/pool.py"},
+        {"id": "budget", "name": "Connection budget", "state": "designed", "detail": "docs/architecture.md §4.2"},
+    ],
+    "edges": [
+        {"from": "clients", "to": "cache", "label": "get / set"},
+        {"from": "cache", "to": "db", "label": "miss: query"},
+        {"from": "pool", "to": "db", "label": "holds 20 open", "state": "inflight"},
+        {"from": "pool", "to": "cache", "label": "warms", "state": "inflight"},
+        {"from": "budget", "to": "pool", "label": "caps", "state": "designed"},
+    ],
+    "not_drawn": "auth, the job queue.",
+}
+
+
+class DesignTest(unittest.TestCase):
+    def page(self, forge=None, **over) -> str:
+        return dp.render(dp.parse(decision(**over)), "2026-09-25", forge)
+
+    def test_where_it_sits_draws_the_architecture_in_the_review_encoding(self):
+        page = self.page(GH, architecture=ARCH)
+        self.assertIn("Where it sits", page)
+        self.assertIn(f'aria-label="{ARCH["summary"]}"', page)
+        for cls in ('class="ext"', 'class="n"', 'class="n-inflight"', 'class="n-designed"', 'class="ext hot"',
+                    'class="e"', 'class="e-inflight"', 'class="e-designed"'):
+            self.assertIn(cls, page)
+        for word in ("get / set", "holds 20 open", "Warm pool", "Not drawn: auth, the job queue."):
+            self.assertIn(word, page)
+        self.assertIn('<a href="https://github.com/o/app/blob/HEAD/src/cache/pool.py">', page)
+        for chip in ("DEPLOYED", "IN FLIGHT", "DESIGNED", "EXTERNAL", "WAITING ON THIS"):
+            self.assertIn(chip, page)
+
+    def test_every_edge_of_an_acyclic_figure_points_right(self):
+        page = self.page(architecture=ARCH)
+        x = {m[1]: float(m[2]) for m in re.finditer(r'<g data-node="([^"]+)"><rect[^>]* x="([\d.]+)"', page)}
+        self.assertEqual(set(x), {n["id"] for n in ARCH["nodes"]})
+        for e in ARCH["edges"]:
+            with self.subTest(edge=e["label"]):
+                self.assertLess(x[e["from"]], x[e["to"]])
+
+    def test_an_architecture_is_checked(self):
+        for arch, word in (({"nodes": [{"id": "a", "name": "A", "state": "shipped"}], "edges": []}, "state"),
+                           ({"nodes": [{"id": "a", "name": "A"}], "edges": [{"from": "a", "to": "z"}]}, "z")):
+            with self.subTest(word=word), self.assertRaisesRegex(dp.DecisionError, word):
+                dp.parse(decision(architecture=arch))
+
+    def test_how_it_got_here_colours_each_step(self):
+        page = self.page(GH, timeline=[{"when": "Fri 16:20", "text": "Deploy timed out.", "kind": "hot"},
+                                       {"when": "01:41", "text": "Held in triage. #111", "kind": "triage"},
+                                       {"when": "02:00", "text": "No kind."}])
+        self.assertIn('<span class="dot" data-k="hot"></span>', page)
+        self.assertIn('<span class="dot" data-k="triage"></span>', page)
+        self.assertIn('<span class="dot"></span>', page)
+        self.assertIn('href="https://github.com/o/app/issues/111"', page)
+
+    def test_references_carry_kind_status_and_pin(self):
+        page = self.page(GH, references=[{"kind": "code", "value": "src/cache/pool.py:24-58", "at": "a41c9e2"},
+                                         {"kind": "MR", "value": "!58", "label": "Warm the cache pool", "status": "open · passed"},
+                                         {"label": "Plan", "value": "https://github.com/o/backlog/issues/7"}])
+        self.assertIn("blob/a41c9e2/src/cache/pool.py#L24-L58", page)
+        self.assertIn("@ a41c9e2", page)
+        self.assertIn("Warm the cache pool", page)
+        self.assertIn("open · passed", page)
+        self.assertRegex(page, r'<span class="cap">Plan</span>')
+
+    def test_the_chip_says_pending_until_the_answer_is_recorded(self):
+        self.assertIn(">PENDING<", self.page())
+        self.assertIn(">ANSWERED · B<", self.page(answer="B"))
+        with self.assertRaisesRegex(dp.DecisionError, "answer"):
+            dp.parse(decision(answer="Z"))
+
+    def test_the_page_wears_the_board_scheme(self):
+        page = self.page()
+        self.assertIn(rb.FONTS, page)
+        source = (Path(__file__).resolve().parent.parent / "scripts" / "render_board.py").read_text()
+        board = dict(re.findall(r"(--[\w-]+):([^;}]+)", re.search(r"^:root\{\{(.*?)\}\}$", source, re.M)[1]))
+        for token in ("--bg", "--surface", "--fg", "--muted", "--line", "--brass", "--dl"):
+            with self.subTest(token=token):
+                self.assertIn(f"{token}:{board[token]}", page)
+
+
 class MainTest(unittest.TestCase):
     def workspace(self, board: str = BOARD) -> Path:
         root = Path(tempfile.mkdtemp())
@@ -153,6 +311,12 @@ class MainTest(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("recommended", err)
         self.assertFalse((root / "pages").exists())
+
+    def test_links_against_the_workspace_backlog(self):
+        root = self.workspace(board=BOARD + "\n- Backlog: GitHub; repo o/app")
+        code, _, _ = self.run_main("--root", str(root), "--from", str(root / "d.json"), "--name", "x")
+        self.assertEqual(code, 0)
+        self.assertIn('href="https://github.com/o/app/issues/7"', (root / "pages" / "decision-x.html").read_text())
 
 
 if __name__ == "__main__":
