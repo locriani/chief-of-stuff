@@ -251,3 +251,76 @@ options = ["Plan", "Plan Review", "Test", "Build", "Review", "Fix"]
                       'owner = "org"\nnumber = 7\noptions = ["one"]'):
             with self.subTest(extra=extra), self.assertRaises(st.SettingsError):
                 self.load(KANBAN + "\n[kanban.github_project]\n" + extra + "\n")
+
+
+MODELS = '''[models.deep]
+rotation = ["claude:opus@high", "codex:gpt-test:preview@medium"]
+
+[models.implement]
+rotation = ["codex:gpt-test-coder@medium", "claude:sonnet", "claude:haiku@low"]
+'''
+
+
+class ModelsTest(unittest.TestCase):
+    """#111: "I want, as part of the toml, the suggested models and model rotations to use." Each entry is
+    `runtime:model-id@effort`; effort is part of the entry (Zach: "effort should be part of the model id")."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+
+    def load(self, text: str) -> st.Settings:
+        (self.root / "s.toml").write_text(text)
+        return st.load(self.root, "s.toml")
+
+    def test_absent_models_is_empty(self):
+        self.assertEqual(self.load('[workers]\nmode = "one-shot"\n').models, {})
+
+    def test_rotation_is_read_in_order(self):
+        got = self.load(MODELS).models
+        self.assertEqual([str(e) for e in got["implement"]],
+                         ["codex:gpt-test-coder@medium", "claude:sonnet", "claude:haiku@low"])
+        first = got["deep"][1]
+        # The runtime splits on the first colon and effort on the last @: the ID keeps its own colon.
+        self.assertEqual((first.runtime, first.model, first.effort), ("codex", "gpt-test:preview", "medium"))
+        self.assertIsNone(got["implement"][1].effort)
+
+    def test_bad_tables_are_refused(self):
+        for bad in (
+            '[models]\ndeep = "claude:opus"\n',
+            '[models.deep]\n',
+            '[models.deep]\nrotation = []\n',
+            '[models.deep]\nrotation = "claude:opus"\n',
+            '[models.deep]\nrotation = ["gemini:pro"]\n',
+            '[models.deep]\nrotation = ["opus"]\n',
+            '[models.deep]\nrotation = ["claude:"]\n',
+            '[models.deep]\nrotation = ["claude:@high"]\n',
+            '[models.deep]\nrotation = ["claude:opus@max"]\n',
+            '[models.deep]\nrotation = ["claude:opus@"]\n',
+            '[models.deep]\nrotation = ["claude:opus", "claude:opus"]\n',
+            '[models.deep]\nrotation = [1]\n',
+            '[models.deep]\nrotation = ["claude:opus"]\neffort = "high"\n',
+        ):
+            with self.subTest(bad=bad), self.assertRaises(st.SettingsError):
+                self.load(bad)
+
+    def test_pick_suggests_the_first_entry(self):
+        rotation = self.load(MODELS).models["implement"]
+        self.assertEqual(str(st.pick(rotation)), "codex:gpt-test-coder@medium")
+
+    def test_after_advances_the_rotation(self):
+        rotation = self.load(MODELS).models["implement"]
+        self.assertEqual(str(st.pick(rotation, after="codex:gpt-test-coder@medium")), "claude:sonnet")
+        # The entry without its effort names the same entry.
+        self.assertEqual(str(st.pick(rotation, after="codex:gpt-test-coder")), "claude:sonnet")
+        with self.assertRaisesRegex(st.SettingsError, "rotation exhausted"):
+            st.pick(rotation, after="claude:haiku@low")
+        with self.assertRaisesRegex(st.SettingsError, "not in the rotation"):
+            st.pick(rotation, after="claude:opus")
+
+    def test_not_family_skips_that_runtime(self):
+        rotation = self.load(MODELS).models["implement"]
+        self.assertEqual(str(st.pick(rotation, not_family="codex")), "claude:sonnet")
+        with self.assertRaisesRegex(st.SettingsError, "rotation exhausted"):
+            st.pick(rotation, after="claude:sonnet", not_family="claude")

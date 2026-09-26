@@ -3,7 +3,7 @@
 
 Zach, 2026-09-22 22:20, on the day open and close times: "Configurable. We're going to need to pull
 settings into a config file. Default to 6 and 22". Notification, lane, budget, and Kanban settings
-live here.
+live here, and so do the suggested models and their rotations (#111).
 
 No `Settings:` line, no file, or no `[notify]` section is notify off, and nothing else changes. A value
 that is there and cannot be read is refused: a guessed day-open time is a notification at the wrong hour.
@@ -22,6 +22,8 @@ HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 OFFSET = re.compile(r"^(\d+)([hm])$")
 WORKER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 DEFAULT_WARNINGS = ("24h", "3h", "1h")
+RUNTIMES = ("claude", "agy", "codex", "cursor")
+EFFORTS = ("high", "medium", "low")
 
 
 class SettingsError(ValueError):
@@ -101,6 +103,17 @@ class Kanban:
 
 
 @dataclass(frozen=True)
+class ModelEntry:
+    """#111: one `runtime:model-id@effort` entry of a `[models.<class>]` rotation; the ID is verbatim."""
+    runtime: str
+    model: str
+    effort: str | None = None
+
+    def __str__(self) -> str:
+        return f"{self.runtime}:{self.model}" + (f"@{self.effort}" if self.effort else "")
+
+
+@dataclass(frozen=True)
 class Settings:
     notify: Notify = field(default_factory=Notify)
     lanes: dict[str, Lane] = field(default_factory=dict)
@@ -109,6 +122,53 @@ class Settings:
     kanban: Kanban | None = None
     workflow: Workflow = field(default_factory=Workflow)
     workers: Workers = field(default_factory=Workers)
+    # #111: task class -> rotation; the first entry is the suggested model, the rest the fallback order.
+    models: dict[str, tuple[ModelEntry, ...]] = field(default_factory=dict)
+
+
+def _entry(where: str, text) -> ModelEntry:
+    runtime, sep, rest = text.partition(":") if isinstance(text, str) else ("", "", "")
+    if not sep or runtime not in RUNTIMES:
+        raise SettingsError(f"{where}: {text!r} is not runtime:model-id with runtime one of {', '.join(RUNTIMES)}")
+    model, at, effort = rest.rpartition("@") if "@" in rest else (rest, "", None)
+    if at and effort not in EFFORTS:
+        raise SettingsError(f"{where}: {text!r} effort must be one of {', '.join(EFFORTS)}")
+    if not model.strip():
+        raise SettingsError(f"{where}: {text!r} has no model ID")
+    return ModelEntry(runtime, model, effort)
+
+
+def _models(table) -> dict[str, tuple[ModelEntry, ...]]:
+    if not isinstance(table, dict):
+        raise SettingsError("[models] must be a table of task classes")
+    models = {}
+    for name, t in table.items():
+        where = f"[models.{name}]"
+        if not isinstance(t, dict) or set(t) != {"rotation"}:
+            raise SettingsError(f"{where}: a table with only rotation, like {{ rotation = [\"claude:opus@high\"] }}")
+        rotation = t["rotation"]
+        if not isinstance(rotation, list) or not rotation:
+            raise SettingsError(f"{where}: rotation is a non-empty list of runtime:model-id@effort entries")
+        entries = tuple(_entry(where, x) for x in rotation)
+        if len(set(entries)) != len(entries):
+            raise SettingsError(f"{where}: an entry appears twice")
+        models[name] = entries
+    return models
+
+
+def pick(rotation: tuple[ModelEntry, ...], after: str | None = None, not_family: str | None = None) -> ModelEntry:
+    """The suggested entry, or the next one after `after` (with or without its @effort); `not_family` skips a runtime."""
+    start = 0
+    if after:
+        hits = [i for i, e in enumerate(rotation) if after in (str(e), f"{e.runtime}:{e.model}")]
+        if not hits:
+            raise SettingsError(f"{after} is not in the rotation")
+        start = hits[0] + 1
+    for entry in rotation[start:]:
+        if entry.runtime != not_family:
+            return entry
+    raise SettingsError("rotation exhausted: no entry left" + (f" after {after}" if after else "") +
+                        (f" outside {not_family}" if not_family else ""))
 
 
 def _workers(table) -> Workers:
@@ -243,14 +303,15 @@ def load(root: Path, settings_path: str | None) -> Settings:
     kanban = _kanban(data["kanban"]) if "kanban" in data else None
     workflow = _workflow(data["workflow"]) if "workflow" in data else Workflow()
     workers = _workers(data["workers"]) if "workers" in data else Workers()
+    models = _models(data["models"]) if "models" in data else {}
     budgets = data.get("budgets", {})
     if not isinstance(budgets, dict) or not set(budgets) <= {"S", "M", "L", "XL"}:
         raise SettingsError(f"{settings_path}: [budgets] is a table of S, M, L, XL")
     budgets = {size: _offset(v, f"[budgets] {size}") for size, v in budgets.items()}
     table = data.get("notify")
     if table is None:
-        return Settings(lanes=lanes, budgets=budgets, kanban=kanban, workflow=workflow, workers=workers)
+        return Settings(lanes=lanes, budgets=budgets, kanban=kanban, workflow=workflow, workers=workers, models=models)
     if not isinstance(table, dict):
         raise SettingsError(f"{settings_path}: [notify] is not a table")
     return Settings(notify=_notify(table, Path(root)), lanes=lanes, budgets=budgets,
-                    kanban=kanban, workflow=workflow, workers=workers)
+                    kanban=kanban, workflow=workflow, workers=workers, models=models)
