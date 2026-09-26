@@ -18,7 +18,7 @@ import kanban
 import ownership
 import tracker_write
 from audit_tasks import worktrees_dir
-from _vendor.toon_format import decode as toon_decode, encode as toon_encode
+from _vendor.toon_format import ToonDecodeError, decode as toon_decode, encode as toon_encode
 from render_board import _cells, _is_separator, parse_tracker
 from settings import load as load_settings
 from shell_setup import clean_env, login_argv, resolve
@@ -70,9 +70,13 @@ def command(runtime: str, binary: str, cwd: Path, dispatch: Path, *, agent_type:
 def worker_result(path: Path, exit_code: int) -> tuple[str, str, str]:
     """Do not infer success from the CLI exit code or a free-form final response."""
     try:
-        data = toon_decode(path.read_text())
-    except (OSError, ValueError, TypeError) as exc:
+        raw = path.read_text()
+    except OSError as exc:
         return "human_review", f"worker did not write a valid TOON result ({exc}); exit {exit_code}", ""
+    try:
+        data = toon_decode(raw)
+    except (ToonDecodeError, ValueError, TypeError) as exc:
+        return "human_review", f"worker wrote an unreadable TOON result ({exc}); exit {exit_code}: {_brief(raw)}", ""
     if not isinstance(data, dict) or data.get("status") not in ("done", "human_review", "relaunch") or any(
         not isinstance(data.get(k), str) or not data[k].strip() for k in ("reason", "changes")
     ):
