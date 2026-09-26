@@ -21,13 +21,15 @@ from dispatch_prompt import PROMPT_DIR, STOP_FILE  # noqa: E402
 from backlog import CLOSED, GITHUB, Backlog, BacklogError, GitHubBacklog, file_with, home_of, issue_ref, issue_states  # noqa: E402
 from settings import Kanban, SettingsError, load as load_settings  # noqa: E402
 import kanban as kanban_tool  # noqa: E402
+import ownership  # noqa: E402
 
 # Preserve branch names from ownership rows when worktrees disappear.
-WORKTREE = re.compile(r"\bworktrees?\s+`?([A-Za-z0-9._\-/]+)`?(?:\s*\(([^)]*)\))?")
+WORKTREE = re.compile(r"\bworktrees?\s+(?P<tick>`)?(?P<name>[A-Za-z0-9._\-/]+)`?(?:\s*\((?P<branch>[^)]*)\))?")
 BRANCHISH = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{1,60}")
 # Exclude prose from branch and worktree matches.
 NOT_A_BRANCH = {"now", "was", "then", "renamed", "from", "to", "branch", "on", "off", "and", "or", "merged", "clean", "dirty", "at"}
 NOT_A_NAME = {"only", "its", "it", "the", "that", "this", "those", "a", "an", "and", "in", "at", "for", "of", "is", "was", "with", "instead", "too", "here", "there"}
+TREE_SHAPED = re.compile(r"[-/_.0-9]")
 REF = re.compile(r"\s*\[[0-9a-f]{4,}\]\s*$")
 # Context refs can appear anywhere in a cell.
 ANY_REF = re.compile(r"\[([0-9a-f]{4,})\]")
@@ -283,12 +285,13 @@ def _worktrees(cell: str) -> tuple[list[str], dict[str, str]]:
     names: list[str] = []
     branches: dict[str, str] = {}
     for m in WORKTREE.finditer(cell):
-        name = m.group(1).rstrip("/.,;:")
-        if not name or name.lower() in NOT_A_NAME or name in names:
+        name = m["name"].rstrip("/.,;:")
+        # A tree name is backticked or shaped like one; a bare word after "worktree" is prose (#72).
+        if not name or name in names or not (m["tick"] or TREE_SHAPED.search(name)):
             continue
         names.append(name)
-        if m.group(2):
-            branches[name] = m.group(2)
+        if m["branch"]:
+            branches[name] = m["branch"]
     return names, branches
 
 
@@ -306,22 +309,7 @@ def branch_candidates(name: str, detail: str) -> list[str]:
 
 def parse_ownership(text: str) -> list[OwnerRow]:
     """File ownership is prose, written as a table or as bullets; both name a context and its paths."""
-    rows: list[OwnerRow] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith(("- ", "* ")) and ":" in stripped:
-            context, _, paths = stripped[2:].partition(":")
-            rows.append(OwnerRow(context.strip(), *_worktrees(paths)))
-            continue
-        if not stripped.startswith("|"):
-            continue
-        cells = _cells(line)
-        if _is_separator(cells) or len(cells) < 2:
-            continue
-        if cells[0].lower() == "context":
-            continue
-        rows.append(OwnerRow(cells[0], *_worktrees(cells[1])))
-    return rows
+    return [OwnerRow(row.context, *_worktrees(row.paths)) for row in ownership.parse(text)]
 
 
 def _bare(name: str) -> str:

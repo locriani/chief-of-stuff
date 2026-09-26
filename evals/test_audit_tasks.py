@@ -186,6 +186,14 @@ class ProseTest(unittest.TestCase):
         )
         self.assertEqual(rows[0].worktrees, ["openemr-agent-smart"])
 
+    def test_a_plain_word_after_worktree_is_not_a_tree(self):
+        """A tree name is backticked or shaped like one; `preserved` was reported as a tree never created (#72)."""
+        rows = al.parse_ownership("| impl-x | `src/x.py`; worktree preserved for review |")
+        self.assertEqual(rows[0].worktrees, [])
+
+    def test_a_backticked_plain_word_is_a_tree(self):
+        self.assertEqual(al.parse_ownership("| a | worktree `demo` |")[0].worktrees, ["demo"])
+
     def test_trailing_punctuation_is_not_part_of_the_name(self):
         rows = al.parse_ownership("| a | worktree wt-audit, and notes/release.md |")
         self.assertEqual(rows[0].worktrees, ["wt-audit"])
