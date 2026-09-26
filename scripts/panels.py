@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from fragment import colour as _colour, css_str as _css_str, esc as _esc, kind as _kind
+from fragment import colour as _colour, css_str as _css_str, esc as _esc, href as _href, kind as _kind
 
 # Okabe-Ito on parchment: a kind's accent, its top rule and its count.
 PALETTE: dict[str, str] = {
@@ -95,9 +95,9 @@ def tiles(ts: list[Tile]) -> str:
 
 def _row(r: Row) -> str:
     num = f'<span class="panels-num">{_esc(r.num)}</span>' if r.num else ""
-    ref = ((f'<a class="panels-ref" href="{_esc(r.href)}">{_esc(r.ref)}</a>' if r.href else f'<span class="panels-ref">{_esc(r.ref)}</span>')
+    ref = ((f'<a class="panels-ref" {_href(r.href)}>{_esc(r.ref)}</a>' if r.href else f'<span class="panels-ref">{_esc(r.ref)}</span>')
            if r.ref else "")
-    name = (f'<a class="panels-name" href="{_esc(r.href)}">{_esc(r.name)}</a>' if r.href and not r.ref
+    name = (f'<a class="panels-name" {_href(r.href)}>{_esc(r.name)}</a>' if r.href and not r.ref
             else f'<span class="panels-name">{_esc(r.name)}</span>')
     side = f'<span class="panels-side">{_esc(r.side)}</span>' if r.side else ""
     facts = f'<span class="panels-facts">{_esc(r.facts)}</span>' if r.facts else ""
@@ -106,7 +106,7 @@ def _row(r: Row) -> str:
 
 def _panel(p: Panel) -> str:
     note = f'<span class="panels-note">{_esc(p.note)}</span>' if p.note else ""
-    link = f'<a class="panels-link" href="{_esc(p.link[1])}">{_esc(p.link[0])}</a>' if p.link else ""
+    link = f'<a class="panels-link" {_href(p.link[1])}>{_esc(p.link[0])}</a>' if p.link else ""
     foot = f'<div class="panels-foot">{_esc(p.foot)}</div>' if p.foot else ""
     rows = "".join(map(_row, p.rows)) or '<div class="panels-row panels-empty">none</div>'
     return (f'<section class="panels-panel" id="{_kind(p.id)}" data-kind="{_kind(p.kind)}">'

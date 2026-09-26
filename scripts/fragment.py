@@ -1,4 +1,4 @@
-"""Escaping and validation shared by the HTML-fragment charts (gantt.py, columns.py).
+"""Escaping and validation shared by the HTML-fragment charts (gantt.py, columns.py) and the pages' links.
 It imports nothing from the plugin, so each chart lifts out with this file and no other."""
 
 from __future__ import annotations
@@ -12,6 +12,12 @@ COLOUR = re.compile(r"[#\w(),.%/ -]+")  # a colour, var() or border shorthand; n
 
 def esc(text: str) -> str:
     return html.escape(text, quote=True)
+
+
+def href(url: str) -> str:
+    """`href="url"`, opening in a new tab when `url` is external (http/https); in-app routes stay in the tab."""
+    blank = ' target="_blank" rel="noopener"' if url.lower().startswith(("http://", "https://")) else ""
+    return f'href="{esc(url)}"{blank}'
 
 
 def kind(name: str) -> str:

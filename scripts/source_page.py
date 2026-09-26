@@ -20,6 +20,7 @@ import backlog
 import board_sources
 import decision_page
 from decision_page import HEAD
+from fragment import href
 from issue_page import _paths, _shared, anchor, inputs, put
 from render_board import TRAILING_NUMBER, parse_tracker
 from settings import Graph
@@ -127,7 +128,7 @@ def _note(n: Note, now: datetime) -> str:
     t = n.thread
     when = f" · {t.at.astimezone(now.tzinfo):%H:%M}" if t.at else ""
     return (f'<div class="nt{" resolved" if t.resolved else ""}"><span><b>{"Resolved" if t.resolved else "Open"} thread · '
-            f'{escape(t.author)}{when}</b> · <a href="{escape(t.url)}">thread</a></span><p>{escape(t.body)}</p></div>')
+            f'{escape(t.author)}{when}</b> · <a {href(t.url)}>thread</a></span><p>{escape(t.body)}</p></div>')
 
 
 class File:
