@@ -107,19 +107,26 @@ def span_s(seconds: int) -> str:
     return f"{seconds}s" if seconds < 60 else span(timedelta(seconds=seconds))
 
 
-def _files(c: board_sources.Change, changes) -> str:
-    """FILES CHANGED: each file, its +additions −deletions when known, "also !N" for another open change on it."""
+def anchor(path: str) -> str:
+    """The id of a file's diff on the source page, which the task page's file links point at."""
+    return "f-" + re.sub(r"[^A-Za-z0-9_.-]", "-", path)
+
+
+def _files(c: board_sources.Change, changes, number: int) -> str:
+    """FILES CHANGED: a link to the source page; each file, linked to its diff there, its +additions −deletions when
+    known, "also !N" for another open change on it."""
     stats, shared = {f.path: f for f in c.stats}, _shared(c, changes)
-    rows = []
+    rows = [f'      <div class="fl"><span class="cap">files changed</span><a href="/issues/{number}/source">open source &amp; diff</a>'
+            "<span></span></div>"]
     for p in _paths(c):
         f = stats.get(p)
-        rows.append(f'      <div class="fl"><span class="path">{escape(p)}</span>'
+        rows.append(f'      <div class="fl"><a class="path" href="/issues/{number}/source#{escape(anchor(p))}">{escape(p)}</a>'
                     f'<span class="d">{f"+{f.additions} −{f.deletions}" if f else ""}</span>'
                     f'<span class="meta">{"also " + escape(", ".join(shared[p])) if p in shared else ""}</span></div>')
     if c.stats:
         rows.append(f'      <div class="fl total"><span class="cap">total</span><span class="d">+{sum(f.additions for f in c.stats)} '
                     f'−{sum(f.deletions for f in c.stats)}</span><span></span></div>')
-    return _section(f"Files changed · {len(rows) - bool(c.stats)}", '    <div class="card">\n' + "\n".join(rows) + "\n    </div>")
+    return _section(f"Files changed · {len(rows) - 1 - bool(c.stats)}", '    <div class="card">\n' + "\n".join(rows) + "\n    </div>")
 
 
 def _review(c: board_sources.Change, now: datetime) -> str:
@@ -199,7 +206,7 @@ def render(number: int, trackers: list[tuple[date, str]], sources: board_sources
     current = {t.name.strip().casefold(): t for t in mine}.values()
     why_not = ("the issue is closed" if issue and issue.state == "closed" else
                "the task is done" if status == "merged" or all(t.kind == "done" for t in current) else "")
-    ahead = _next(rows, change, every, why_not, now) + (_files(change, every) if change and _paths(change) else "")
+    ahead = _next(rows, change, every, why_not, now) + (_files(change, every, number) if change and _paths(change) else "")
     ahead += _graph(change, graph, pages, root, "Architecture", f"No change names {ref} to graph.")
 
     steps = "\n".join(f'      <div class="step"><span class="when">{_clock(m.at, now)}</span><span class="dot" data-k="{escape(m.stage)}">'
@@ -247,22 +254,31 @@ def render(number: int, trackers: list[tuple[date, str]], sources: board_sources
             + "  </div>\n  </div>\n</main>\n</body>\n</html>\n")
 
 
-def write(root: Path, pages_dir: Path, number: int) -> Path | None:
-    """Render `issue-<number>.html` from the trackers the Flow chart reaches back over; with no page, remove the file
-    and return None. The page server calls this in process."""
+def inputs(root: Path):
+    """(cfg, now, trackers the Flow chart reaches back over, settings) for a page of one issue."""
     cfg = parse_coordinator((root / "CLAUDE.md").read_text(), today=date.today())
     now = datetime.now(cfg.zone).replace(microsecond=0)
     reach = (now - flow_chart.WINDOWS[-1][1]).date()
     trackers = [(d, path.read_text()) for d, path in daily_trackers(root, cfg) if reach <= d <= now.date()]
     try:
-        settings = load_settings(root, cfg.settings_path)
+        return cfg, now, trackers, load_settings(root, cfg.settings_path)
     except SettingsError as e:
         raise ConfigError(str(e)) from None
-    page = render(number, trackers, board_sources.load(pages_dir), now, settings.lanes, cfg, settings.graph, pages_dir, root)
-    out = pages_dir / f"issue-{number}.html"
+
+
+def put(out: Path, page: str | None) -> Path | None:
+    """Write the page, or remove the file and return None when there is none."""
     if page is None:
         out.unlink(missing_ok=True)
         return None
-    pages_dir.mkdir(parents=True, exist_ok=True)
+    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(page)
     return out
+
+
+def write(root: Path, pages_dir: Path, number: int) -> Path | None:
+    """Render `issue-<number>.html`; with no page, remove the file and return None. The page server calls this in
+    process."""
+    cfg, now, trackers, settings = inputs(root)
+    page = render(number, trackers, board_sources.load(pages_dir), now, settings.lanes, cfg, settings.graph, pages_dir, root)
+    return put(pages_dir / f"issue-{number}.html", page)
