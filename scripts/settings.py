@@ -70,6 +70,7 @@ class Workflow:
     reviewer_session: str | None = None
     delivery: str = "pull-request"
     merge_owner: str = "user"
+    approver: str | None = None
 
 
 @dataclass(frozen=True)
@@ -133,11 +134,15 @@ def _workflow(table) -> Workflow:
     if delivery not in ("pull-request", "branch"):
         raise SettingsError("[workflow] delivery must be `pull-request` or `branch`")
     merge_owner = table.get("merge_owner", "user")
-    if merge_owner not in ("user", "worker"):
-        raise SettingsError("[workflow] merge_owner must be `user` or `worker`")
+    if merge_owner not in ("user", "worker", "approval"):
+        raise SettingsError("[workflow] merge_owner must be `user`, `worker` or `approval`")
     if delivery == "branch" and merge_owner != "user":
-        raise SettingsError("[workflow] merge_owner=worker requires delivery=pull-request")
-    return Workflow(**names, delivery=delivery, merge_owner=merge_owner)
+        raise SettingsError(f"[workflow] merge_owner={merge_owner} requires delivery=pull-request")
+    # #97: the forge username whose approval the coordinator merges on; nobody else's counts.
+    approver = table.get("approver")
+    if merge_owner == "approval" and (not isinstance(approver, str) or not approver.strip()):
+        raise SettingsError("[workflow] merge_owner=approval needs approver, the user's forge username")
+    return Workflow(**names, delivery=delivery, merge_owner=merge_owner, approver=approver)
 
 
 def _lane(name: str, table) -> Lane:
