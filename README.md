@@ -91,7 +91,7 @@ The optional [Kanban walk](docs/kanban.md) maps tracker stages to configurable b
 
 `chief-of-stuff log --root /path/to/workspace "<text>"` appends `- HH:MM <text>` to today's tracker Log, stamped in the workspace zone. Every script-side tracker write, the one-shot launcher's included, holds the same lock on a `.<tracker>.lock` file beside the tracker. `chief-of-stuff log --root /path/to/workspace --stage "<task name>" <stage>` sets that task's `stage` cell and appends `- HH:MM stage: <name> → <stage>` under the same lock; it refuses a name that matches no row or two, and a stage outside the task's lane. The board's Flow charts draw each task's stages from these lines, over the trackers of the last two days.
 
-A decision's page is `<pages dir>/decision-<slug>.json`, served as `http://127.0.0.1:<port>/decision-<slug>.html` and rendered on request; `chief-of-stuff decision --root /path/to/workspace --name <slug>` renders it by hand. The JSON fields are listed in `scripts/decision_page.py`.
+A decision's page is `<pages dir>/decision-<slug>.json`, served as `http://127.0.0.1:<port>/decisions/<slug>` and rendered on request; `chief-of-stuff decision --root /path/to/workspace --name <slug>` renders it by hand. The JSON fields are listed in `scripts/decision_page.py`.
 
 The board and `notify.py sync` also read precise deadlines from tracker `## Decisions` rows: put `deadline: <name> YYYY-MM-DD HH:MM` in the `item` column, or `deadline: <name> HH:MM` for a time on that tracker's date. A later decision for the same name updates its marker, task horizon, and future notification warnings. A decision without an exact time supplies no instant. Run notification sync after a precise deadline decision changes.
 

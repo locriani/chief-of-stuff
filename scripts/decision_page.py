@@ -4,7 +4,7 @@
     python3 decision_page.py --root R --name <slug> [--from decision.json] [--date YYYY-MM-DD]
 
 The decision is read from `<pages dir>/decision-<slug>.json` unless `--from` names another file: a
-file, because Claude Code refuses JSON piped through a heredoc. The page is `<pages dir>/decision-<slug>.html`, served by pages.py at `http://127.0.0.1:<port>/decision-<slug>.html`.
+file, because Claude Code refuses JSON piped through a heredoc. The page is `<pages dir>/decision-<slug>.html`, served by pages.py at `http://127.0.0.1:<port>/decisions/<slug>`.
 Never a claude.ai artifact (Zach, 2026-09-25: "don't serve it as an artifact but serve it using the localhost
 server thing"). The JSON holds:
 
@@ -320,7 +320,7 @@ def _answer_form(slug: str, cls: str, opts: str, back: str = "") -> str:
     """Options the user picks from, nothing picked, and a write-in. A plain form post without JS; with JS
     (ANSWER_JS) picking an option saves at once."""
     back = f'<input type="hidden" name="back" value="{back}">' if back else ""
-    return f'<form class="{cls}" method="post" action="/decision/{escape(slug)}/answer">{back}{opts}'
+    return f'<form class="{cls}" method="post" action="/decisions/{escape(slug)}">{back}{opts}'
 
 
 def render(d: dict, day: str, forge: Backlog | GitHubBacklog | None = None, root: Path | None = None,
@@ -383,7 +383,7 @@ def render(d: dict, day: str, forge: Backlog | GitHubBacklog | None = None, root
     chosen = answer_key(d) or (ctx.key(row, keys) if row else "")
     answered = bool(chosen or row or page)
     eyebrow = " · ".join([escape(x) for x in ("Decision", d.get("topic"), _day(day), asked) if x]
-                         + ['<a href="decisions.html">decisions</a>', '<a href="/">board</a>'])
+                         + ['<a href="/decisions">decisions</a>', '<a href="/">board</a>'])
     chip = f"ANSWERED · {escape(chosen)}" if chosen else "ANSWERED" if answered else "PENDING"
     yes = f"\n    <p>{md(d['yes'])}</p>" if d.get("yes") else ""
     where = _figure(d["architecture"], link) if d.get("architecture") else ""
@@ -441,7 +441,7 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, json.JSONDecodeError, DecisionError, KeyError, TypeError, AttributeError) as e:
         print(f"decision: {e}", file=sys.stderr)
         return 2
-    print(f"http://127.0.0.1:{port}/decision-{args.name}.html")
+    print(f"http://127.0.0.1:{port}/decisions/{args.name}")
     return 0
 
 
@@ -625,10 +625,10 @@ def index(pages_dir: Path, ctx: Context, day: str) -> tuple[str, list[tuple[str,
                            f'{escape(o.get("title", ""))}{"<span class=\"tag\">recommended</span>" if o["key"] == d["recommended"] else ""}</label>'
                            for o in d["options"])
             opts = _answer_form(slug, "stack", opts + '<span class="wi"><input type="text" name="words" placeholder="write in" aria-label="write in">'
-                                '<button type="submit">save</button></span>', "decisions.html") + "</form>"
+                                '<button type="submit">save</button></span>', "/decisions") + "</form>"
         refs = "".join(f"<span>{ctx.ref(r)} {escape(ctx.where(r))}</span>" for r in holds)
         rows.append(f'      <div class="row pend{" saved" if saved(d) else ""}">\n        <span class="stack">{when}{age}</span>\n'
-                    f'        <span class="stack"><span class="line"><a class="headline" href="decision-{escape(slug)}.html">{escape(d["headline"])}</a>{topic}</span>'
+                    f'        <span class="stack"><span class="line"><a class="headline" href="/decisions/{escape(slug)}">{escape(d["headline"])}</a>{topic}</span>'
                     f'<span class="q">{_md(d["ask"])}</span></span>\n        {opts}\n'
                     f'        <span class="stack holds">{refs}</span>\n        <span class="fallback">{_md(d["default"])}</span>\n      </div>')
     try:
@@ -651,7 +651,7 @@ def index(pages_dir: Path, ctx: Context, day: str) -> tuple[str, list[tuple[str,
             asked = ctx.asked(slug, d, source.stat().st_mtime)
             took = f"in {span(row.when - asked)}" if asked and row.when and row.when >= asked else ""
             refs += ctx.holding(slug, d)
-            head = f'<a class="headline" href="{escape(page)}.html">{escape(d["headline"])}</a><span class="page">{escape(page)}</span>'
+            head = f'<a class="headline" href="/decisions/{escape(slug)}">{escape(d["headline"])}</a><span class="page">{escape(page)}</span>'
         else:
             first, _, rest = re.sub(r'^\(via [^)]*\)\s*', "", row.words).strip(' "“”').partition(" ")
             if first.rstrip(",.;:").lower() in ("yes", "no"):
@@ -833,7 +833,7 @@ h2.pend{color:var(--link)}
 # Picking an option saves it at once; the write-in saves on its button. Without JS the form posts and the server
 # redirects back to the page.
 ANSWER_JS = """<script>
-document.querySelectorAll('form[action$="/answer"]').forEach(function (f) {
+document.querySelectorAll('form[action^="/decisions/"]').forEach(function (f) {
   function send() {
     fetch(f.action, {method: 'POST', body: new URLSearchParams(new FormData(f))})
       .then(function (r) { if (r.ok) location.reload(); });

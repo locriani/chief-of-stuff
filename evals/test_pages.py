@@ -247,10 +247,28 @@ class RenderOnRequestTest(unittest.TestCase):
         (self.pages / "decision-cache-ttl.json").write_text(
             '{"headline": "Cache TTL", "ask": "Keep 5 minutes?", "options": [{"key": "A", "title": "Keep", '
             '"text": "no change"}, {"key": "B", "title": "Drop", "text": "slower"}], "recommended": "A", "why": "fine", "default": "A at 17:00"}')
-        resp = get(self.port, "/decision-cache-ttl.html")
+        resp = get(self.port, "/decisions/cache-ttl")
         self.assertEqual(resp.status, 200)
         self.assertIn(b"Cache TTL", resp.body)
-        self.assertIn(b"Cache TTL", get(self.port, "/decisions.html").body)
+        self.assertIn(b"Cache TTL", get(self.port, "/decisions").body)
+
+    def test_pages_are_routes_and_old_file_urls_redirect_to_them(self):
+        # The user, 2026-09-26: "pages should be: / /decisions /decisions/id actually an app".
+        (self.pages / "decision-cache-ttl.json").write_text(
+            '{"headline": "Cache TTL", "ask": "Keep 5 minutes?", "options": [{"key": "A", "title": "Keep", '
+            '"text": "no change"}, {"key": "B", "title": "Drop", "text": "slower"}], "recommended": "A", "why": "fine", "default": "A at 17:00"}')
+        page = get(self.port, "/decisions/cache-ttl")
+        self.assertEqual(page.status, 200)
+        self.assertIn(b"Cache TTL", page.body)
+        self.assertIn(b'href="/decisions"', page.body)
+        self.assertIn(b'href="/decisions/cache-ttl"', get(self.port, "/decisions").body)
+        for old, new in (("/decisions.html", "/decisions"), ("/decision-cache-ttl.html", "/decisions/cache-ttl")):
+            with self.subTest(old=old):
+                resp = get(self.port, old)
+                self.assertEqual((resp.status, resp.getheader("Location")), (301, new))
+        for missing in ("/decisions/nope", "/decisions/../decisions", "/decisions/cache-ttl.json"):
+            with self.subTest(missing=missing):
+                self.assertEqual(get(self.port, missing).status, 404)
 
     def test_dotfiles_and_foreign_hosts_are_still_refused(self):
         self.assertEqual(get(self.port, "/.sources.json").status, 404)
@@ -295,35 +313,35 @@ class AnswerTest(unittest.TestCase):
 
     def test_a_choice_is_saved_and_the_page_shows_it_answered(self):
         mtime = self.json.stat().st_mtime_ns
-        get(self.port, "/decision-cache-ttl.html")
-        resp = post(self.port, "/decision/cache-ttl/answer", b"key=B&words=", origin=self.origin)
-        self.assertEqual((resp.status, resp.getheader("Location")), (303, "/decision-cache-ttl.html"))
+        get(self.port, "/decisions/cache-ttl")
+        resp = post(self.port, "/decisions/cache-ttl", b"key=B&words=", origin=self.origin)
+        self.assertEqual((resp.status, resp.getheader("Location")), (303, "/decisions/cache-ttl"))
         saved = self.answer()
         self.assertEqual((saved["key"], saved["words"]), ("B", ""))
         self.assertLess(abs(datetime.fromisoformat(saved["at"]).timestamp() - time.time()), 60)
         self.assertEqual(self.json.stat().st_mtime_ns, mtime)  # the file's time stays when it was asked
-        page = get(self.port, "/decision-cache-ttl.html").body.decode()
+        page = get(self.port, "/decisions/cache-ttl").body.decode()
         self.assertIn(">ANSWERED · B<", page)
         self.assertIn("answered, saved", page)
-        listing = get(self.port, "/decisions.html").body.decode()
+        listing = get(self.port, "/decisions").body.decode()
         self.assertIn('<div class="row pend saved">', listing)
 
     def test_a_write_in_is_saved_with_the_words_and_goes_back_to_the_list(self):
-        resp = post(self.port, "/decision/cache-ttl/answer", "words=neither — ask the owner&back=decisions.html".encode(),
+        resp = post(self.port, "/decisions/cache-ttl", "words=neither — ask the owner&back=/decisions".encode(),
                     host=f"localhost:{self.port}", origin=f"http://localhost:{self.port}")
-        self.assertEqual((resp.status, resp.getheader("Location")), (303, "/decisions.html"))
+        self.assertEqual((resp.status, resp.getheader("Location")), (303, "/decisions"))
         self.assertEqual((self.answer()["key"], self.answer()["words"]), (None, "neither — ask the owner"))
-        self.assertIn("“neither — ask the owner”", get(self.port, "/decisions.html").body.decode())
+        self.assertIn("“neither — ask the owner”", get(self.port, "/decisions").body.decode())
 
     def test_what_is_not_the_users_answer_is_refused_and_nothing_is_saved(self):
-        cases = (("/decision/cache-ttl/answer", b"key=B", "evil.test", self.origin, 403),
-                 ("/decision/cache-ttl/answer", b"key=B", None, "http://evil.test", 403),
-                 ("/decision/cache-ttl/answer", b"key=B", None, "null", 403),
-                 ("/decision/nope/answer", b"key=B", None, self.origin, 404),
-                 ("/decision/../x/answer", b"key=B", None, self.origin, 404),
-                 ("/decision/cache-ttl/answer", b"key=Z", None, self.origin, 400),
-                 ("/decision/cache-ttl/answer", b"words=+", None, self.origin, 400),
-                 ("/decision/cache-ttl/answer", b"words=" + b"x" * 70000, None, self.origin, 413),
+        cases = (("/decisions/cache-ttl", b"key=B", "evil.test", self.origin, 403),
+                 ("/decisions/cache-ttl", b"key=B", None, "http://evil.test", 403),
+                 ("/decisions/cache-ttl", b"key=B", None, "null", 403),
+                 ("/decisions/nope", b"key=B", None, self.origin, 404),
+                 ("/decisions/../x", b"key=B", None, self.origin, 404),
+                 ("/decisions/cache-ttl", b"key=Z", None, self.origin, 400),
+                 ("/decisions/cache-ttl", b"words=+", None, self.origin, 400),
+                 ("/decisions/cache-ttl", b"words=" + b"x" * 70000, None, self.origin, 413),
                  ("/decision-cache-ttl.html", b"key=B", None, self.origin, 404))
         for path, body, host, origin, status in cases:
             with self.subTest(path=path, body=body[:20], host=host, origin=origin):
@@ -332,7 +350,7 @@ class AnswerTest(unittest.TestCase):
 
     def test_an_unreadable_decision_takes_no_answer(self):
         self.json.write_text("{")
-        self.assertEqual(post(self.port, "/decision/cache-ttl/answer", b"key=B", origin=self.origin).status, 409)
+        self.assertEqual(post(self.port, "/decisions/cache-ttl", b"key=B", origin=self.origin).status, 409)
 
 
 if __name__ == "__main__":

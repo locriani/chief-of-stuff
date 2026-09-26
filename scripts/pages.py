@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Serve the workspace's pages locally: the board and any page a session writes beside it.
 
-The pages render themselves: a GET of the board, `decisions.html` or a decision page re-renders it when
+The pages are routes: `/` the board, `/decisions` the list, `/decisions/<slug>` a decision page. Each is
+rendered into its file (`<day>-board.html`, `decisions.html`, `decision-<slug>.html`), and a GET re-renders it when
 one of its sources (the trackers, CLAUDE.md, the settings TOML, the decision JSON, `.sources.json`) is
 newer than the file, and a thread refreshes `.sources.json` from the forge every minute. An open tab
 reloads itself when the file changes.
@@ -9,7 +10,7 @@ reloads itself when the file changes.
     python3 pages.py --ensure [--root R]              # start it unless it is already serving; print status only
     python3 pages.py serve --dir D --port P --root R  # what --ensure starts, detached
 
-A decision page posts the user's answer to `POST /decision/<slug>/answer` (`key` and/or `words`, form-encoded).
+A decision page posts the user's answer to `POST /decisions/<slug>` (`key` and/or `words`, form-encoded).
 The server saves it as the decision JSON's `answer` ({key, words, at}) for the coordinator's next pass, and
 redirects back to the page, which then shows the decision answered.
 
@@ -45,7 +46,8 @@ PID = ".pid"
 CACHE = ".sources.json"
 REFRESH = 60  # seconds between forge reads
 RENDERED = re.compile(r"\d{4}-\d{2}-\d{2}-board\.html|decisions\.html|decision-[a-z0-9]+(?:-[a-z0-9]+)*\.html")
-ANSWER = re.compile(r"/decision/([a-z0-9]+(?:-[a-z0-9]+)*)/answer")
+ROUTE = re.compile(r"/decisions/([a-z0-9]+(?:-[a-z0-9]+)*)")
+OLD = re.compile(r"/decision(?:s|-([a-z0-9]+(?:-[a-z0-9]+)*))\.html")  # the file URLs before the routes
 MAX_BODY = 16 * 1024  # a write-in is a sentence or a paragraph
 # ponytail: one lock for every render; per-page locks if renders ever get slow.
 RENDER = threading.Lock()
@@ -140,8 +142,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     banner = ""
 
     def _allowed(self) -> bool:
-        """Refuse a foreign Host or a dotfile; map `/` to today's (else the newest) board and `/all` to the
-        listing; re-render a page its sources outdate."""
+        """Refuse a foreign Host or a dotfile; map `/` to today's (else the newest) board, `/all` to the listing and
+        `/decisions[/<slug>]` to its file; redirect the old file URLs; re-render a page its sources outdate."""
         port = self.server.server_address[1]
         if self.headers.get("Host", "") not in (f"127.0.0.1:{port}", f"localhost:{port}"):
             self.send_error(403, "Host is not this machine")
@@ -167,6 +169,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.path = "/" + (name or boards[-1].name)
         elif path == "/all":
             self.path = "/"
+        elif path == "/decisions":
+            self.path = "/decisions.html"
+        elif path.startswith("/decisions/"):
+            m = ROUTE.fullmatch(path)
+            if not m or not (Path(self.directory) / f"decision-{m[1]}.json").is_file():
+                self.send_error(404, "no such decision")
+                return False
+            self.path = f"/decision-{m[1]}.html"
+        elif old := OLD.fullmatch(path):
+            self.send_response(301)
+            self.send_header("Location", f"/decisions/{old[1]}" if old[1] else "/decisions")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return False
         name = self.path.split("?")[0].lstrip("/")
         if root is not None and RENDERED.fullmatch(name):
             self.banner = fresh(root, Path(self.directory), name)
@@ -214,7 +230,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         origin = self.headers.get("Origin")
         if self.headers.get("Host", "") not in own or (origin is not None and origin not in [f"http://{h}" for h in own]):
             return self.send_error(403, "not a page of this server")
-        m = ANSWER.fullmatch(self.path.split("?")[0])
+        m = ROUTE.fullmatch(self.path.split("?")[0])
         source = Path(self.directory) / f"decision-{m[1]}.json" if m else None
         if source is None or not source.is_file():
             return self.send_error(404, "no such decision")
@@ -247,7 +263,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 if RENDERED.fullmatch(page.name):
                     os.utime(page, (0, 0))
         self.send_response(303)
-        self.send_header("Location", "/decisions.html" if form.get("back") == ["decisions.html"] else f"/decision-{m[1]}.html")
+        self.send_header("Location", "/decisions" if form.get("back") == ["/decisions"] else f"/decisions/{m[1]}")
         self.send_header("Content-Length", "0")
         self.end_headers()
 
