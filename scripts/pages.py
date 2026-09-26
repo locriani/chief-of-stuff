@@ -9,6 +9,10 @@ reloads itself when the file changes.
     python3 pages.py --ensure [--root R]              # start it unless it is already serving; print status only
     python3 pages.py serve --dir D --port P --root R  # what --ensure starts, detached
 
+A decision page posts the user's answer to `POST /decision/<slug>/answer` (`key` and/or `words`, form-encoded).
+The server saves it as the decision JSON's `answer` ({key, words, at}) for the coordinator's next pass, and
+redirects back to the page, which then shows the decision answered.
+
 The `## Coordinator` block's `Board:` line names both halves: `URL http://127.0.0.1:<port>/` and
 ``dir `<pages dir>` ``. It listens on 127.0.0.1 only, and it answers only requests whose Host is
 127.0.0.1 or localhost. `/` is today's board once today's tracker exists, else the newest one; `/all` lists every page. Binding to loopback does not stop a page elsewhere from rebinding its own
@@ -34,13 +38,15 @@ import urllib.request
 from datetime import date, datetime
 from pathlib import Path
 from html import escape
-from urllib.parse import quote, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
 SERVER = "chief-of-stuff-pages"
 PID = ".pid"
 CACHE = ".sources.json"
 REFRESH = 60  # seconds between forge reads
 RENDERED = re.compile(r"\d{4}-\d{2}-\d{2}-board\.html|decisions\.html|decision-[a-z0-9]+(?:-[a-z0-9]+)*\.html")
+ANSWER = re.compile(r"/decision/([a-z0-9]+(?:-[a-z0-9]+)*)/answer")
+MAX_BODY = 16 * 1024  # a write-in is a sentence or a paragraph
 # ponytail: one lock for every render; per-page locks if renders ever get slow.
 RENDER = threading.Lock()
 
@@ -199,6 +205,51 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         if self._allowed():
             self._send_with_banner(True) if self.banner else super().do_GET()
+
+    def do_POST(self):
+        """Save the user's answer beside the decision. Only this machine's own pages may post: the Host and, when a
+        browser sends one, the Origin must be this server's."""
+        port = self.server.server_address[1]
+        own = (f"127.0.0.1:{port}", f"localhost:{port}")
+        origin = self.headers.get("Origin")
+        if self.headers.get("Host", "") not in own or (origin is not None and origin not in [f"http://{h}" for h in own]):
+            return self.send_error(403, "not a page of this server")
+        m = ANSWER.fullmatch(self.path.split("?")[0])
+        source = Path(self.directory) / f"decision-{m[1]}.json" if m else None
+        if source is None or not source.is_file():
+            return self.send_error(404, "no such decision")
+        try:
+            size = int(self.headers["Content-Length"])
+        except (TypeError, ValueError):
+            return self.send_error(411)
+        if size > MAX_BODY:
+            self.close_connection = True
+            return self.send_error(413, f"an answer is at most {MAX_BODY} bytes")
+        form = parse_qs(self.rfile.read(size).decode("utf-8", "replace"))
+        key, words = form.get("key", [""])[0], form.get("words", [""])[0].strip()
+        import decision_page
+        with RENDER:
+            try:
+                d = decision_page.parse(json.loads(source.read_text()))
+            except decision_page.BAD as e:
+                return self.send_error(409, f"the decision does not read: {e}")
+            if (key and key not in [o["key"] for o in d["options"]]) or not (key or words):
+                return self.send_error(400, "an answer is one of the options' keys, or words")
+            d["answer"] = {"key": key or None, "words": words, "at": datetime.now().astimezone().isoformat(timespec="seconds")}
+            stat = source.stat()
+            tmp = source.with_name(f".{source.name}.tmp")
+            tmp.write_text(json.dumps(d, indent=2, ensure_ascii=False) + "\n")
+            os.replace(tmp, source)
+            # The file's time is when it was asked (decision_page.Context.asked), so it keeps it; the pages it
+            # outdates are marked stale instead, and the next GET renders them.
+            os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+            for page in Path(self.directory).iterdir():
+                if RENDERED.fullmatch(page.name):
+                    os.utime(page, (0, 0))
+        self.send_response(303)
+        self.send_header("Location", "/decisions.html" if form.get("back") == ["decisions.html"] else f"/decision-{m[1]}.html")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def do_HEAD(self):
         if self._allowed():

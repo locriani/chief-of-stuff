@@ -9,7 +9,7 @@ Never a claude.ai artifact (Zach, 2026-09-25: "don't serve it as an artifact but
 server thing"). The JSON holds:
 
     headline, ask, options [{key, title, text}], recommended (a key), why, default   required
-    topic, asked (HH:MM), answer (a key, once answered), yes, sources,
+    topic, asked (HH:MM), answer (a key, or what the user saved on the page: {key or null, words, at}), yes, sources,
     sections [{heading, text: paragraph or [paragraph]}], sides [{label, status: open|done, text}],
     timeline [{when, text, kind}], references [{label, value, kind, status, at}],
     architecture {summary, not_drawn, nodes [{id, name, state, detail, hot}], edges [{from, to, label, state, hot}]}
@@ -69,8 +69,18 @@ def parse(data: dict) -> dict:
         raise DecisionError("a decision needs at least two options, each with its own key")
     if data["recommended"] not in keys:
         raise DecisionError(f"recommended {data['recommended']!r} is not one of the options {', '.join(keys)}")
-    if data.get("answer") and data["answer"] not in keys:
-        raise DecisionError(f"answer {data['answer']!r} is not one of the options {', '.join(keys)}")
+    answer = data.get("answer")
+    if isinstance(answer, dict):
+        if answer.get("key") and answer["key"] not in keys:
+            raise DecisionError(f"answer {answer['key']!r} is not one of the options {', '.join(keys)}")
+        if not answer.get("key") and not str(answer.get("words") or "").strip():
+            raise DecisionError("a saved answer needs a key or words")
+        try:
+            datetime.fromisoformat(answer["at"])
+        except (KeyError, TypeError, ValueError):
+            raise DecisionError("a saved answer needs the time it was saved (at)") from None
+    elif answer and answer not in keys:
+        raise DecisionError(f"answer {answer!r} is not one of the options {', '.join(keys)}")
     for side in data.get("sides", []):
         if side.get("status") not in ("open", "done"):
             raise DecisionError(f"side {side.get('label')!r} has status {side.get('status')!r}, not open or done")
@@ -287,6 +297,32 @@ def _figure(arch: dict, linker: Linker) -> str:
             + f"\n      </svg></div>\n      <figcaption>{chips}{not_drawn}</figcaption>\n    </figure>")
 
 
+def saved(d: dict) -> dict | None:
+    """The answer the user saved on the page (pages.py), until a Decisions row takes it up."""
+    return d["answer"] if isinstance(d.get("answer"), dict) else None
+
+
+def answer_key(d: dict) -> str:
+    a = d.get("answer")
+    return (a.get("key") or "") if isinstance(a, dict) else (a or "")
+
+
+def _saved_html(d: dict, when) -> str:
+    """The saved answer: its option, the user's words, and when it was saved."""
+    a = saved(d)
+    title = next((o.get("title", "") for o in d["options"] if o["key"] == a.get("key")), "")
+    key = f'<span><span class="key">{escape(a["key"])}</span>{escape(title)}</span>' if a.get("key") else ""
+    words = f'<span class="words">“{escape(a["words"].strip())}”</span>' if str(a.get("words") or "").strip() else ""
+    return f'{key}{words}<span class="saved">answered, saved {when(datetime.fromisoformat(a["at"]))}</span>'
+
+
+def _answer_form(slug: str, cls: str, opts: str, back: str = "") -> str:
+    """Options the user picks from, nothing picked, and a write-in. A plain form post without JS; with JS
+    (ANSWER_JS) picking an option saves at once."""
+    back = f'<input type="hidden" name="back" value="{back}">' if back else ""
+    return f'<form class="{cls}" method="post" action="/decision/{escape(slug)}/answer">{back}{opts}'
+
+
 def render(d: dict, day: str, forge: Backlog | GitHubBacklog | None = None, root: Path | None = None,
            ctx: Context | None = None, slug: str = "", mtime: float | None = None) -> str:
     """The page. With a context, what the JSON leaves out is read from it: when it was asked, the answer and the
@@ -310,13 +346,18 @@ def render(d: dict, day: str, forge: Backlog | GitHubBacklog | None = None, root
             + (f' data-k="{escape(t["kind"])}"' if t.get("kind") else "")
             + f'></span><span>{md(t["text"])}</span></div>' for t in d["timeline"])
         left.append(_section("How it got here", f'    <div class="card timeline">\n{steps}\n    </div>'))
+    page = saved(d)
     opts = []
     for o in d["options"]:
-        rec = o["key"] == d["recommended"]
-        title = escape(o["title"]) + (' <span class="rec">· recommended</span>' if rec else "")
-        opts.append(f'      <div class="opt{" rec" if rec else ""}"><span class="k">{escape(o["key"])}</span><b>{title}</b>'
-                    f'\n        <p>{md(o.get("text", ""))}</p>\n      </div>')
-    right.append(_section("Options", '    <div class="options">\n' + "\n".join(opts) + "\n    </div>"))
+        tag = '<span class="tag">recommended</span>' if o["key"] == d["recommended"] else ""
+        on = " checked" if page and page.get("key") == o["key"] else ""
+        opts.append(f'      <label class="opt"><span class="k"><input type="radio" name="key" value="{escape(o["key"])}"{on}> {escape(o["key"])}</span>'
+                    f'<b>{escape(o["title"])}{tag}</b>\n        <span class="d">{md(o.get("text", ""))}</span>\n      </label>')
+    opts.append('      <div class="opt wi"><span class="cap">write in</span><span></span><input type="text" name="words" aria-label="write in">'
+                '<button type="submit">save</button></div>')
+    fmt = (lambda t: ctx.when(t)) if ctx else (lambda t: f"{t:%H:%M}")
+    done = f'    <div class="card answered">{_saved_html(d, fmt)}</div>\n' if page else ""
+    right.append(_section("Options", done + "    " + _answer_form(slug, "options", "\n" + "\n".join(opts)) + "\n    </form>"))
     right.append(_section("Recommendation", f'    <div class="card"><p>{md(d["why"])}</p></div>'))
     right.append(_section("If you don't answer", f'    <div class="card default"><p>{md(d["default"])}</p></div>'))
     if d.get("references"):
@@ -335,13 +376,12 @@ def render(d: dict, day: str, forge: Backlog | GitHubBacklog | None = None, root
                         f'<span class="st">{status}</span>')
         right.append(_section("References", '    <div class="card refs">\n' + "\n".join(rows) + "\n    </div>"))
     keys = [o["key"] for o in d["options"]]
-    answer = keys[0] if len(keys) == 1 else ", ".join(keys[:-1]) + (", or " if len(keys) > 2 else " or ") + keys[-1]
     sources = f" from {md(d['sources'])}" if d.get("sources") else ""
     at = ctx.asked(slug, d, mtime) if ctx else None
     asked = f"asked {ctx.when(at)}" if at else f"asked {d['asked']}" if d.get("asked") else None
-    row = ctx.answer(slug) if ctx and not d.get("answer") else None
-    chosen = d.get("answer") or (ctx.key(row, keys) if row else "")
-    answered = bool(chosen or row)
+    row = ctx.answer(slug) if ctx and not answer_key(d) else None
+    chosen = answer_key(d) or (ctx.key(row, keys) if row else "")
+    answered = bool(chosen or row or page)
     eyebrow = " · ".join([escape(x) for x in ("Decision", d.get("topic"), _day(day), asked) if x]
                          + ['<a href="decisions.html">decisions</a>', '<a href="/">board</a>'])
     chip = f"ANSWERED · {escape(chosen)}" if chosen else "ANSWERED" if answered else "PENDING"
@@ -359,7 +399,7 @@ def render(d: dict, day: str, forge: Backlog | GitHubBacklog | None = None, root
             + where
             + '  <div class="cols">\n  <div class="col">\n' + "".join(left) + '  </div>\n  <div class="col">\n'
             + "".join(right) + "  </div>\n  </div>\n"
-            + f'\n  <p class="foot">Prepared by the coordinator{sources}. Answer in chat: {answer}.</p>\n</main>\n</body>\n</html>\n')
+            + f'\n  <p class="foot">Prepared by the coordinator{sources}. Answer here or in chat: {", ".join(keys)}, or your own words.</p>\n</main>\n{ANSWER_JS}</body>\n</html>\n')
 
 
 def forge(root: Path) -> Backlog | GitHubBacklog | None:
@@ -578,12 +618,18 @@ def index(pages_dir: Path, ctx: Context, day: str) -> tuple[str, list[tuple[str,
         held += holds
         age = f'<span class="age">{span(ctx.now - asked)}</span>' if asked else ""
         topic = f'<span class="topic">{escape(d["topic"])}</span>' if d.get("topic") else ""
-        opts = "".join(f'<span class="o{" rec" if o["key"] == d["recommended"] else ""}"><span class="key">{escape(o["key"])}</span>'
-                       f'{escape(o.get("title", ""))}{" · recommended" if o["key"] == d["recommended"] else ""}</span>' for o in d["options"])
+        if saved(d):
+            opts = f'<span class="stack">{_saved_html(d, ctx.when)}</span>'
+        else:
+            opts = "".join(f'<label class="o"><input type="radio" name="key" value="{escape(o["key"])}"><span class="key">{escape(o["key"])}</span>'
+                           f'{escape(o.get("title", ""))}{"<span class=\"tag\">recommended</span>" if o["key"] == d["recommended"] else ""}</label>'
+                           for o in d["options"])
+            opts = _answer_form(slug, "stack", opts + '<span class="wi"><input type="text" name="words" placeholder="write in" aria-label="write in">'
+                                '<button type="submit">save</button></span>', "decisions.html") + "</form>"
         refs = "".join(f"<span>{ctx.ref(r)} {escape(ctx.where(r))}</span>" for r in holds)
-        rows.append(f'      <div class="row pend">\n        <span class="stack">{when}{age}</span>\n'
+        rows.append(f'      <div class="row pend{" saved" if saved(d) else ""}">\n        <span class="stack">{when}{age}</span>\n'
                     f'        <span class="stack"><span class="line"><a class="headline" href="decision-{escape(slug)}.html">{escape(d["headline"])}</a>{topic}</span>'
-                    f'<span class="q">{_md(d["ask"])}</span></span>\n        <span class="stack">{opts}</span>\n'
+                    f'<span class="q">{_md(d["ask"])}</span></span>\n        {opts}\n'
                     f'        <span class="stack holds">{refs}</span>\n        <span class="fallback">{_md(d["default"])}</span>\n      </div>')
     try:
         today = date.fromisoformat(day)
@@ -600,7 +646,7 @@ def index(pages_dir: Path, ctx: Context, day: str) -> tuple[str, list[tuple[str,
         took, key, answer, refs = "", "", "", refs_in(row.item)
         if d:
             slug = page.removeprefix("decision-")
-            key = ctx.key(row, [o["key"] for o in d["options"]]) or d.get("answer", "")
+            key = ctx.key(row, [o["key"] for o in d["options"]]) or answer_key(d)
             answer = next((o.get("title", "") for o in d["options"] if o["key"] == key), "")
             asked = ctx.asked(slug, d, source.stat().st_mtime)
             took = f"in {span(row.when - asked)}" if asked and row.when and row.when >= asked else ""
@@ -623,6 +669,8 @@ def index(pages_dir: Path, ctx: Context, day: str) -> tuple[str, list[tuple[str,
     mrs = sum(1 for r in held if ctx.is_change(r))
     unread = len(pending) - len(ready)
     meta = [f"rendered {ctx.now:%H:%M} {ctx.now:%Z}".rstrip(), f"{len(ready)} pending"]
+    if n_saved := sum(1 for _, d, _, _ in pending if d is not None and saved(d)):
+        meta.append(f"{n_saved} saved")
     if any(ready):
         meta.append(f"oldest {span(ctx.now - min(a for a in ready if a))}")
     if held:
@@ -645,7 +693,7 @@ def index(pages_dir: Path, ctx: Context, day: str) -> tuple[str, list[tuple[str,
             f"<title>Decisions · {escape(_day(day))}</title>\n{HEAD}</head>\n<body>\n<main class=\"decisions\">\n"
             f'  <header class="top">\n    <div>\n      <h1>Decisions · {escape(_day(day))}</h1>\n'
             f'      <span class="eyebrow">{" · ".join(meta)}</span>\n    </div>\n  </header>\n'
-            + body + "</main>\n</body>\n</html>\n"), pending
+            + body + "</main>\n" + ANSWER_JS + "</body>\n</html>\n"), pending
 
 
 def write_all(pages_dir: Path, ctx: Context, day: str, root: Path | None = None) -> list[tuple[str, dict | None, datetime | None, str]]:
@@ -707,10 +755,19 @@ code{font-family:ui-monospace,monospace;font-size:.88em;background:var(--ref-bg)
 .dot[data-k="review"]{background:var(--stage-review)} .dot[data-k="triage"]{background:var(--stage-triage)}
 .dot[data-k="fix"]{background:var(--stage-fix)} .dot[data-k="verify"]{background:var(--stage-verify)} .dot[data-k="merge"]{background:var(--stage-merge)}
 .options{display:flex;flex-direction:column;gap:8px}
-.opt{display:grid;grid-template-columns:26px minmax(0,1fr);gap:2px 8px;background:var(--surface);border:1px solid var(--line);border-radius:5px;padding:10px 14px}
-.opt.rec{border:2px solid var(--brass)}
-.opt .k{font:700 16px/1.3 ui-monospace,monospace;color:var(--muted)} .opt.rec .k{color:var(--link)}
-.opt p{grid-column:2}
+.opt{display:grid;grid-template-columns:44px minmax(0,1fr);gap:2px 8px;background:var(--surface);border:1px solid var(--line);border-radius:5px;padding:10px 14px}
+label.opt,label.o{cursor:pointer} label.opt:hover,label.o:hover{border-color:var(--brass)}
+.opt .k{font:700 16px/1.3 ui-monospace,monospace;color:var(--muted)}
+.opt input,.o input{accent-color:var(--brass);margin:0 4px 0 0}
+.opt .d{grid-column:2}
+.tag{font-size:10px;font-weight:500;letter-spacing:.08em;text-transform:uppercase;color:var(--link);margin-left:6px}
+.wi{grid-template-columns:44px minmax(0,1fr) auto;align-items:center}
+.wi .cap{grid-column:1/-1}
+.wi input[type=text]{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:3px;padding:4px 8px;min-width:0}
+.wi button{font:inherit;font-size:13px;color:var(--link);background:var(--ref-bg);border:1px solid var(--brass);border-radius:3px;padding:3px 12px;cursor:pointer}
+.answered{border-left:3px solid var(--now);display:flex;flex-direction:column;gap:2px;margin-bottom:8px}
+span.saved{font:11.5px ui-monospace,monospace;color:var(--now)}
+.row.saved{border-left:3px solid var(--now)}
 .default{border-left:3px solid var(--muted)}
 .refs{display:grid;grid-template-columns:70px minmax(0,1fr) auto;gap:5px 10px;font-size:13px;align-items:baseline}
 .refs .st{color:var(--muted);font-size:12px}
@@ -739,7 +796,6 @@ svg .e-designed{stroke:var(--designed);stroke-width:1.5;stroke-dasharray:2 3}
 svg rect.hot,svg line.hot{stroke:var(--dl);stroke-width:2}
 svg .ar-e{fill:var(--deployed)} svg .ar-e-inflight{fill:var(--inflight)} svg .ar-e-designed{fill:var(--designed)} svg .ar-hot{fill:var(--dl)}
 .foot{font-size:12.5px;color:var(--muted);border-top:1px solid var(--line);padding-top:8px}
-.opt .rec{font-weight:500;color:var(--link)}
 /* decisions.html (Decisions.dc.html): a list, pending then completed. */
 .decisions{font-size:13.5px;line-height:1.45}
 .decisions section{display:grid;gap:8px}
@@ -760,8 +816,11 @@ h2.pend{color:var(--link)}
 .topic{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);border:1px solid var(--line);border-radius:3px;padding:0 5px}
 .page{font-size:11px;color:var(--muted)}
 .key{display:inline-block;font:700 11px/1.45 ui-monospace,monospace;border-radius:3px;padding:0 5px;margin-right:4px;border:1px solid var(--line);color:var(--muted)}
-.o.rec{font-weight:700} .o.rec .key,.done .key{color:var(--surface);background:var(--link);border-color:var(--link)}
-.done .key{background:var(--now);border-color:var(--now)}
+.done .key,.saved .key,.answered .key{color:var(--surface);background:var(--now);border-color:var(--now)}
+.o{display:block;color:var(--fg);border:1px solid transparent;border-radius:3px;padding:1px 4px;margin:0 -5px}
+.row .wi{display:flex;gap:4px;margin-top:2px;align-self:stretch}
+.row .wi input[type=text]{flex:1 1 auto;padding:1px 6px;font-size:12.5px}
+.row .wi button{padding:0 8px;font-size:12px}
 .words{font-style:italic}
 .holds>span,.fallback,.since,.none{font-size:12.5px;color:var(--muted)}
 .unread{border-left:3px dashed var(--dl)} .unread .why{color:var(--dl)} .unread .when{color:var(--muted)}
@@ -769,6 +828,20 @@ h2.pend{color:var(--link)}
 @media (max-width:900px){.cols{grid-template-columns:minmax(0,1fr)}}
 @media (max-width:480px){header.top{flex-direction:column;align-items:flex-start;gap:6px}.refs{grid-template-columns:minmax(0,1fr)}}
 </style>
+"""
+
+# Picking an option saves it at once; the write-in saves on its button. Without JS the form posts and the server
+# redirects back to the page.
+ANSWER_JS = """<script>
+document.querySelectorAll('form[action$="/answer"]').forEach(function (f) {
+  function send() {
+    fetch(f.action, {method: 'POST', body: new URLSearchParams(new FormData(f))})
+      .then(function (r) { if (r.ok) location.reload(); });
+  }
+  f.addEventListener('change', function (e) { if (e.target.name === 'key') send(); });
+  f.addEventListener('submit', function (e) { e.preventDefault(); send(); });
+});
+</script>
 """
 
 
