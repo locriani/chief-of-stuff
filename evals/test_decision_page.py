@@ -107,6 +107,11 @@ class RenderTest(unittest.TestCase):
         self.assertRegex(css, r"\.opt\+\.opt\{[^}]*border-top:1px dotted var\(--line\)")
         self.assertNotRegex(css, r"(?<![\w-])\.opt\{[^}]*border:1px solid")
 
+    def test_the_list_pages_write_in_keeps_its_field_and_button_styling(self):
+        # The decisions list's inline write-in (`.row .wi`) sizes its field and button; their box comes from `.wi`.
+        self.assertRegex(dp.HEAD, r"(?<![\w-])\.wi input\[type=text\]\{[^}]*border:1px solid var\(--line\)")
+        self.assertRegex(dp.HEAD, r"(?<![\w-])\.wi button\{[^}]*border:1px solid var\(--brass\)")
+
     def test_choosing_the_write_in_does_not_post_an_empty_answer(self):
         # The radios post on change; the write-in has no key, so it posts only through save with its words.
         self.assertIn("e.target.value", dp.ANSWER_JS)
