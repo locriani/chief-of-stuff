@@ -3509,6 +3509,13 @@ class LaneColumnsTest(unittest.TestCase):
         self.assertIn('<span class="stage">review · build</span>', html)
         self.assertIn('<span class="stage gate">triage · build — waiting on you</span>', html)
 
+    def test_the_board_draws_build_only_when_a_task_has_a_lane(self) -> None:
+        cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        html = rb.render(TRACKER_LANED, LOG, cfg, NOW, lanes=self.LANES)
+        self.assertIn('<h2>Build</h2>\n<div class="meta">3 tasks · 1 issue</div>\n<figure class="columns"', html)
+        self.assertIn('.columns-tag[data-cat="running"]', html)
+        self.assertNotIn('<figure class="columns"', rb.render(TRACKER, LOG, cfg, NOW))
+
     def test_no_lanes_no_gate(self) -> None:
         html = rb.render(TRACKER_LANED, LOG, rb.parse_coordinator(CLAUDE_MD, today=NOW.date()), NOW)
         self.assertIn('<span class="stage">triage · build</span>', html)
