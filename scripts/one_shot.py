@@ -3,17 +3,18 @@
 
 from __future__ import annotations
 
-import os
 import re
 import shlex
 import subprocess
-import tempfile
 from datetime import datetime
 from pathlib import Path
 
 import backlog
 import dispatch_prompt
 import kanban
+import ownership
+import tracker_write
+from audit_tasks import worktrees_dir
 from _vendor.toon_format import decode as toon_decode, encode as toon_encode
 from render_board import _cells, _is_separator, parse_tracker
 from settings import load as load_settings
@@ -110,57 +111,101 @@ def _brief(value: str) -> str:
     return " ".join(value.split())[:500]
 
 
-def update_tracker(path: Path, task: str, name: str, owner: str, status: str, reason: str, changes: str) -> None:
-    """Set the dispatched row to waiting, or leave it ready on a relaunch, and append a durable local result note."""
-    text = path.read_text()
-    rows = [row for row in parse_tracker(text).tasks if row.item.strip() == task]
-    if len(rows) != 1 or rows[0].owner.strip().lower() != "unassigned":
-        raise ValueError("task row changed during the one-shot run; tracker needs manual reconciliation")
-    lines = text.splitlines(keepends=True)
+def _task_line(lines: list[str], task: str) -> int:
     in_tasks = False
     hits = []
     for i, line in enumerate(lines):
         if line.startswith("## "):
             in_tasks = line.rstrip() in ("## Tasks", "## Lanes")
-        if in_tasks and line.startswith("|") and not _is_separator(_cells(line)):
-            cells = _cells(line)
-            if task in cells:
-                hits.append(i)
+        if in_tasks and line.startswith("|") and not _is_separator(_cells(line)) and task in _cells(line):
+            hits.append(i)
     if len(hits) != 1:
         raise ValueError("could not identify one task table row for reconciliation")
-    i = hits[0]
+    return hits[0]
+
+
+def _set_owner_state(line: str, old: re.Pattern, new: str, why: str) -> str:
     # Owner and state are adjacent in every supported tracker table. Replace only that
     # span; leave the item and every other cell byte-for-byte as approved.
-    pattern = re.compile(r"\|\s*unassigned\s*\|\s*(?:open|waiting)\s*\|", re.I)
+    replaced, count = old.subn(lambda _: new, line)
+    if count != 1:
+        raise ValueError(why)
+    return replaced
+
+
+def _running(name: str) -> re.Pattern:
+    return re.compile(rf"\|\s*{re.escape(name)}\s*\|\s*running\s+\d{{1,2}}:\d{{2}}\s*\|", re.I)
+
+
+def _tree_note(root: Path, cwd: Path) -> str:
+    """How the File ownership row names the tree: relative to the Worktrees dir, as audit reads it."""
+    base = (root / worktrees_dir((root / "CLAUDE.md").read_text())).resolve()
+    try:
+        tree = str(cwd.resolve().relative_to(base))
+    except ValueError:
+        tree = str(cwd.resolve())
+    branch = subprocess.run(["git", "-C", str(cwd), "branch", "--show-current"],
+                            capture_output=True, text=True, check=False).stdout.strip()
+    if any(c in tree + branch for c in "|`()\n"):
+        raise ValueError(f"tree {tree!r} on {branch!r} cannot be written into a File ownership row")
+    return f"worktree `{tree}` ({branch or 'detached'})"
+
+
+def record_launch(path: Path, task: str, name: str, tree: str, runtime: str, model: str, at: str) -> None:
+    """Before the worker runs: the row is the worker's and running, File ownership names its tree, and the Log says so."""
+    if "|" in name or "\n" in name:
+        raise ValueError("worker name cannot be written as a tracker owner")
+
+    def change(text: str) -> str:
+        lines = text.splitlines(keepends=True)
+        i = _task_line(lines, task)
+        lines[i] = _set_owner_state(lines[i], re.compile(r"\|\s*unassigned\s*\|\s*open\s*\|", re.I),
+                                    f"| {name} | running {at} |", "task owner/state is not an unassigned open row")
+        keys = dispatch_prompt.task_keys(task)
+        section = False
+        owned = None
+        for j, line in enumerate(lines):
+            if line.startswith("## "):
+                section = line.rstrip() == ownership.HEADING
+            elif section and any(row.context in keys for row in ownership.parse(line)):
+                owned = j
+                break
+        if owned is None:
+            raise ValueError(f"no File ownership row for {task!r}")
+        body = lines[owned].rstrip("\n")
+        if body.lstrip().startswith("|"):
+            if len(_cells(body)) != 2:
+                raise ValueError("the File ownership row is not a two-cell `| context | paths |` row")
+            cut = body.rstrip().rstrip("|").rstrip()
+            lines[owned] = f"{cut}; {tree} |\n"
+        else:
+            lines[owned] = f"{body.rstrip()}; {tree}\n"
+        return tracker_write.append_log("".join(lines), f"- {at} one-shot {name} started: {' '.join(filter(None, (runtime, model)))}, {tree.split(' (')[0]}, task {task}", create=True)
+
+    tracker_write.edit(path, change)
+
+
+def update_tracker(path: Path, task: str, name: str, owner: str, status: str, reason: str, changes: str,
+                   at: str) -> None:
+    """Set the dispatched row to waiting, or back to ready on a relaunch, and append a durable local result note."""
     if "|" in owner or "\n" in owner:
         raise ValueError("configured user name cannot be written as a tracker owner")
-    stamp = datetime.now().strftime("%H:%M")
-    if status == "relaunch":
-        # The row stays unassigned and open: ready, so the coordinator dispatches it again.
-        note = f"- {stamp} one-shot {name}{RELAUNCHED.format(task=task)}{_brief(reason)}.\n"
-    else:
-        replaced, count = pattern.subn(lambda _: f"| {owner} | waiting |", lines[i])
-        if count != 1:
-            raise ValueError("task owner/state is not an unassigned open row")
-        lines[i] = replaced
-        note = (f"- {stamp} one-shot {name}: {'completed; awaiting integration' if status == 'done' else 'HUMAN REVIEW NEEDED'}"
-                f" — {_brief(reason)}. Changes: {_brief(changes)}.\n")
-    log = next((j for j, line in enumerate(lines) if line.rstrip() == "## Log"), None)
-    if log is None:
-        if lines and not lines[-1].endswith("\n"):
-            lines[-1] += "\n"
-        lines.extend(["\n## Log\n", "\n", note])
-    else:
-        end = next((j for j in range(log + 1, len(lines)) if lines[j].startswith("## ")), len(lines))
-        lines.insert(end, note)
-    # A temporary sibling keeps readers from seeing a half-written tracker.
-    with tempfile.NamedTemporaryFile("w", dir=path.parent, prefix=f".{path.name}.", delete=False) as temp:
-        temp.write("".join(lines))
-        temporary = Path(temp.name)
-    try:
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
+
+    def change(text: str) -> str:
+        lines = text.splitlines(keepends=True)
+        i = _task_line(lines, task)
+        running, why = _running(name), "task row changed during the one-shot run; tracker needs manual reconciliation"
+        if status == "relaunch":
+            # Back to unassigned and open: ready, so the coordinator dispatches it again.
+            lines[i] = _set_owner_state(lines[i], running, "| unassigned | open |", why)
+            note = f"- {at} one-shot {name}{RELAUNCHED.format(task=task)}{_brief(reason)}."
+        else:
+            lines[i] = _set_owner_state(lines[i], running, f"| {owner} | waiting |", why)
+            note = (f"- {at} one-shot {name}: {'completed; awaiting integration' if status == 'done' else 'HUMAN REVIEW NEEDED'}"
+                    f" — {_brief(reason)}. Changes: {_brief(changes)}.")
+        return tracker_write.append_log("".join(lines), note, create=True)
+
+    tracker_write.edit(path, change)
 
 
 def reconcile(root: Path, day: str, task: str, name: str, cwd: Path, exit_code: int,
@@ -184,7 +229,7 @@ def reconcile(root: Path, day: str, task: str, name: str, cwd: Path, exit_code: 
     rows = [row for row in parse_tracker((root / cfg.tracker_path(day)).read_text()).tasks if row.item.strip() == task]
     row = rows[0] if len(rows) == 1 else None
     errors = []
-    if row is None or row.owner.strip().lower() != "unassigned" or row.kind != "open":
+    if row is None or row.owner.strip().lower() != name.lower() or row.kind != "running":
         report = {"status": "human_review", "task": task, "worker": name, "runtime_exit": exit_code,
                   "reason": "task row changed during the one-shot run; reconcile it manually",
                   "changes": summary, "errors": ["tracker: task row changed; no issue or tracker update was made"]}
@@ -207,7 +252,8 @@ def reconcile(root: Path, day: str, task: str, name: str, cwd: Path, exit_code: 
             if not commented.done:
                 errors.append(f"issue comment: {commented.error}")
     try:
-        update_tracker(root / cfg.tracker_path(day), task, name, cfg.user, status, reason, summary)
+        update_tracker(root / cfg.tracker_path(day), task, name, cfg.user, status, reason, summary,
+                       tracker_write.stamp(cfg.zone))
     except (OSError, ValueError) as exc:
         errors.append(f"tracker: {exc}")
     report = {"status": status, "task": task, "worker": name, "runtime_exit": exit_code,
@@ -239,6 +285,8 @@ def run(*, root: Path, day: str | None, task: str, cwd: Path, name: str,
     write_dispatch(cwd, body)
     logs = cwd / dispatch_prompt.PROMPT_DIR
     before_head = git_head(cwd)
+    record_launch(root / cfg.tracker_path(chosen_day), task, name, _tree_note(root, cwd), runtime, model,
+                  tracker_write.stamp(cfg.zone))
     env = clean_env()
     env["CHIEF_OF_STUFF_WORKSPACE"] = str(root.resolve())
     try:

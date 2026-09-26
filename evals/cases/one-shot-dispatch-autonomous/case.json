@@ -21,10 +21,10 @@
       "min": 1
     },
     {
-      "name": "foreground mode recorded",
+      "name": "row left for the launcher to write",
       "type": "file_matches",
-      "pattern": "(?i)one[- ]shot",
-      "path": "daily/{{today}}-tracker.md"
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^\\| Security audit \\| unassigned \\| open \\|"
     },
     {
       "name": "no routine assignment approval question",

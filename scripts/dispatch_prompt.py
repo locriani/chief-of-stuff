@@ -225,10 +225,15 @@ def _clean(label: str, value: str) -> str:
     return value
 
 
+def task_keys(item: str) -> set[str]:
+    """What a File ownership row may be keyed on: the full item, its colon prefix, or its board short name."""
+    return {item.strip(), item.split(": ", 1)[0].strip(), short_name(item).strip()} - {""}
+
+
 def _owns(text: str, item: str, relative: str) -> str:
     """Find task-owned paths by full item, colon prefix, or board short name."""
     head = item.split(": ", 1)[0].strip()
-    keys = {item.strip(), head, short_name(item).strip()} - {""}
+    keys = task_keys(item)
     for row in ownership.parse("\n".join(_section(text, ownership.HEADING))):
         if row.context in keys:
             return _clean("the File ownership row", row.paths)
