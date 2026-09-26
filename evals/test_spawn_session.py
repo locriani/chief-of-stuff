@@ -780,6 +780,25 @@ class WorkerModeTest(unittest.TestCase):
                     ss.main(args + ["--interactive"])
             self.assertEqual(refused.exception.code, 2)
 
+    def test_the_launch_is_handed_the_item_for_a_task_name(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "CLAUDE.md").write_text(CLAUDE + "- Settings: `chief-of-stuff.toml`\n")
+            (root / "chief-of-stuff.toml").write_text('[workers]\nmode = "one-shot"\n')
+            (root / "daily").mkdir()
+            (root / "daily" / "2026-09-18-tracker.md").write_text(
+                TRACKER.replace("| item | owner | state | since | due | checklist |\n|---|---|---|---|---|---|",
+                                "| name | item | owner | state | since | due | size | checklist |\n"
+                                "|---|---|---|---|---|---|---|---|", 1)
+                .replace("| Security audit | unassigned | open | 09:00 |  |",
+                         "| audit | Security audit | unassigned | open | 09:00 |  | M |", 1))
+            tree = root / "trees" / "wt-x"
+            tree.mkdir(parents=True)
+            with unittest.mock.patch("one_shot.run", return_value=0) as one_shot:
+                self.assertEqual(ss.main(["--cwd", str(tree), "--name", "worker01", "--task", "audit",
+                                          "--root", str(root), "--date", "2026-09-18", "--dry-run"]), 0)
+            self.assertEqual(one_shot.call_args.kwargs["task"], "Security audit")
+
     def test_cli_one_shot_selects_one_task_in_interactive_workspace(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)

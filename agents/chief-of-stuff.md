@@ -162,13 +162,13 @@ Before choosing a worker, read `chief-of-stuff-models.md` in the workspace root 
 
 Launch ready one-shot tasks automatically. Launch new interactive sessions only on explicit approval of the proposal or a covering lane gate. Never do the work inline.
 
-For an approved interactive launch, in this order: add a Decisions row quoting the yes; launch; set the task's owner to the context (for example `subagent`) and its state to `running HH:MM` with the clock time; append a Log line. Keep the existing Tasks item and name cells byte-for-byte: approval changes ownership and state, not the task's wording. The item is also the exact `--task` value the launcher reads, so do not rewrite it to clarify scope during launch.
+For an approved interactive launch, in this order: add a Decisions row quoting the yes; launch; set the task's owner to the context (for example `subagent`) and its state to `running HH:MM` with the clock time; append a Log line. Keep the existing Tasks item and name cells byte-for-byte: approval changes ownership and state, not the task's wording. The launcher reads the assignment back from the item, so do not rewrite it to clarify scope during launch. Pass the row's `name` cell as `--task`; it resolves to the one row with that name. Pass the item exactly as the row spells it only when the row has no name or shares its name with another row, which the launcher refuses.
 
 Launching a session of a named type is two calls in one message, and neither is improvised:
 
 ```
 chief-of-stuff worktree --type <type> --name <tree> --branch <branch> --root . --clone <repo>
-chief-of-stuff worker --type <type> --cwd <the path the first printed> --name <the session's name> --root . --task <the Tasks item, exactly as the row spells it> --coordinator <your own name, as a listing spells it>
+chief-of-stuff worker --type <type> --cwd <the path the first printed> --name <the session's name> --root . --task <the Tasks name> --coordinator <your own name, as a listing spells it>
 ```
 
 When the block names no `Agent:` lines, use `--type implementer` on the worktree call (its required role label) and omit `--type` on the worker call; the worker then runs the default agent and its skills. An agy session adds `--runtime agy --model <the id from agy models>` to the second call; it has no agent types, so `--type` does nothing there. A Claude session passes its explicitly chosen `--model <id>` and optional `--effort <high|medium|low>`; neither is derived from the session name. A standing session's placeholder row (`<name>: standing <role> …`, launched as that name) needs no issue.
