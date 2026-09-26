@@ -51,8 +51,9 @@ GH_CHANGE = ("number url title state isDraft mergedAt baseRefName body headRefOi
              "... on CheckRun { name status conclusion startedAt completedAt } ... on StatusContext { state } } } } } } }")
 GL_ISSUE = "iid webUrl title state description labels { nodes { title } }"
 GL_CHANGE = ("iid webUrl title state draft mergedAt targetBranch description approved conflicts "
-             "approvedBy { nodes { username } } headPipeline { status jobs { nodes { name status duration } } } "
-             "diffStats { path additions deletions } diffHeadSha "
+             "approvedBy { nodes { username } } headPipeline { status } diffStats { path additions deletions } diffHeadSha")
+# Jobs and discussions only for open changes, in a second query: in GL_CHANGE they took it past GitLab's complexity cap of 250.
+GL_DETAIL = ("iid headPipeline { jobs { nodes { name status duration } } } "
              "discussions { nodes { resolvable resolved notes(first: 1) { nodes { author { username } body createdAt url } } } }")
 
 
@@ -250,9 +251,7 @@ def _gl_pipeline(status: str | None) -> str | None:
     return GITLAB_PIPELINE.get(s) or ("pending" if s in GL_WAITING else "running")
 
 
-def _gl_change(m: dict, approver: str) -> Change:
-    by = {(u or {}).get("username") for u in (m.get("approvedBy") or {}).get("nodes") or []}
-    state = {"opened": "open", "locked": "closed"}.get(m["state"], m["state"])
+def _gl_detail(m: dict) -> tuple[tuple[Job, ...], tuple[ReviewThread, ...]]:
     pipe = m.get("headPipeline") or {}
     jobs = tuple(Job(j.get("name") or "", _gl_pipeline(j.get("status")) or "pending",
                      None if j.get("duration") is None else int(j["duration"]))
@@ -261,15 +260,22 @@ def _gl_change(m: dict, approver: str) -> Change:
                                  _when(n.get("createdAt")), n.get("url") or "")
                     for d in (m.get("discussions") or {}).get("nodes") or [] if d.get("resolvable")
                     for n in ((d.get("notes") or {}).get("nodes") or [])[:1])
+    return jobs, threads
+
+
+def _gl_change(m: dict, approver: str) -> Change:
+    by = {(u or {}).get("username") for u in (m.get("approvedBy") or {}).get("nodes") or []}
+    state = {"opened": "open", "locked": "closed"}.get(m["state"], m["state"])
+    pipe = m.get("headPipeline") or {}
     return Change(f"!{m['iid']}", m["webUrl"], m["title"], state, bool(m.get("draft")), _gl_pipeline(pipe.get("status")),
                   approver in by if approver else bool(m.get("approved")), len(by), _when(m.get("mergedAt")),
                   m.get("targetBranch") or "", tuple(d["path"] for d in m.get("diffStats") or []),
-                  _closes(m.get("description")), m.get("diffHeadSha") or "", _stats(m.get("diffStats") or []), jobs,
-                  bool(m.get("conflicts")), threads)
+                  _closes(m.get("description")), m.get("diffHeadSha") or "", _stats(m.get("diffStats") or []), (),
+                  bool(m.get("conflicts")))
 
 
 def gitlab(home: backlog.Backlog, wanted: dict[str, set[int]], mrs: set[int], since: datetime, approver: str, call):
-    """(issues, changes, error) from one POST to the host's /api/graphql, with the Backlog's token."""
+    """(issues, changes, error) from the host's /api/graphql, with the Backlog's token: one POST, and one more for open changes' jobs and threads."""
     secret = backlog.token(home)
     if not secret:
         return None, None, f"no token: set ${home.env} or add it to the Keychain as {home.service}"
@@ -300,7 +306,22 @@ def gitlab(home: backlog.Backlog, wanted: dict[str, set[int]], mrs: set[int], si
                                 node.get("description") or "")
         for node in ((p.get("mergeRequests") or {}).get("nodes") or []) + ((p.get("merged") or {}).get("nodes") or []):
             changes.setdefault(f"!{node['iid']}", _gl_change(node, approver))
-    return issues, changes, _graphql_errors(body)
+    error = _graphql_errors(body)
+    opened = sorted(int(k[1:]) for k, c in changes.items() if c.state == "open")
+    if opened:
+        query = (f"query {{ p0: project(fullPath: {json.dumps(home.project)}) {{ "
+                 f"mergeRequests(iids: {json.dumps([str(n) for n in opened])}) {{ nodes {{ {GL_DETAIL} }} }} }} }}")
+        body, _, err = call("POST", f"{home.host.rstrip('/')}/api/graphql", secret, backlog.TIMEOUT, {"query": query})
+        if err or not isinstance(body, dict) or not isinstance(body.get("data"), dict):
+            # The board still renders the changes without their jobs and threads.
+            return issues, changes, error or err or _graphql_errors(body if isinstance(body, dict) else {}) or "GitLab did not answer"
+        for node in ((body["data"].get("p0") or {}).get("mergeRequests") or {}).get("nodes") or []:
+            key = f"!{node['iid']}"
+            if key in changes:
+                jobs, threads = _gl_detail(node)
+                changes[key] = replace(changes[key], jobs=jobs, threads=threads)
+        error = error or _graphql_errors(body)
+    return issues, changes, error
 
 
 def forge(root: Path, cfg: Config, tracker: Tracker, since: datetime, gh, call):
