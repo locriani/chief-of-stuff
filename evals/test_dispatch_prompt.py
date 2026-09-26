@@ -984,6 +984,16 @@ class ReviewerRoutingTest(unittest.TestCase):
         self.assertIn("the coordinator merges it once the user approves it", approval)
         self.assertIn("You never merge a pull request", approval)
 
+    def test_a_worker_answers_the_review_threads_it_fixes_and_never_resolves_them(self):
+        tmp, root = workspace(claude_md=CLAUDE + "- Settings: `cos.toml`\n")
+        self.addCleanup(tmp.cleanup)
+        (root / "cos.toml").write_text('[workflow]\napprover = "robin"\n')
+        body = dp.compose(root, "2026-09-18", "Security audit")
+        self.assertIn(f"chief-of-stuff review-threads --root {root.resolve()} --reply", body)
+        self.assertIn("never resolve", body)
+        (root / "cos.toml").write_text('[workflow]\ndelivery = "branch"\n')
+        self.assertNotIn("--reply", dp.compose(root, "2026-09-18", "Security audit"))
+
 
 class AgyRuntimeTest(unittest.TestCase):
     """An agy session cannot list sessions or message one: the mailbox is its only channel."""

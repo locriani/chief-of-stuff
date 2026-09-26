@@ -23,7 +23,7 @@ from urllib.parse import quote, urlencode
 
 import backlog
 from render_board import ConfigError, parse_coordinator
-from settings import SettingsError, load as load_settings
+from settings import SettingsError, Workflow, load as load_settings
 
 FAILED = {"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"}
 GITLAB_PIPELINE = {"success": "passed", "failed": "failed", "canceled": "failed"}
@@ -112,6 +112,17 @@ def gitlab_requests(home: backlog.Backlog, project: str, approver: str, token: s
     return out
 
 
+def forge(root: Path, repo: str | None) -> tuple[Workflow, backlog.Backlog, bool, str]:
+    """The workspace's workflow settings, its forge, whether that is GitHub, and the repo to act on."""
+    cfg = parse_coordinator((root / "CLAUDE.md").read_text(), today=date.today())
+    workflow = load_settings(root, cfg.settings_path).workflow
+    home = cfg.backlog
+    if home is None:
+        raise ConfigError("no Backlog: line names the forge")
+    github = isinstance(home, backlog.GitHubBacklog)
+    return workflow, home, github, repo or (home.repo if github else home.project)
+
+
 def main(argv: list[str] | None = None, gh=backlog.run_gh, call=backlog._call) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--root", type=Path, required=True, help="workspace holding CLAUDE.md")
@@ -119,8 +130,7 @@ def main(argv: list[str] | None = None, gh=backlog.run_gh, call=backlog._call) -
     ap.add_argument("--merge", type=int, metavar="N", help="merge N if it is ready")
     args = ap.parse_args(argv)
     try:
-        cfg = parse_coordinator((args.root / "CLAUDE.md").read_text(), today=date.today())
-        workflow = load_settings(args.root, cfg.settings_path).workflow
+        workflow, home, github, repo = forge(args.root, args.repo)
     except (OSError, ConfigError, SettingsError) as exc:
         print(f"merge-approved: {exc}", file=sys.stderr)
         return 2
@@ -128,12 +138,6 @@ def main(argv: list[str] | None = None, gh=backlog.run_gh, call=backlog._call) -
         print(f"merge-approved: [workflow] merge_owner is {workflow.merge_owner}; merging on approval is "
               "off, and merging stays the user's", file=sys.stderr)
         return 2
-    home = cfg.backlog
-    if home is None:
-        print("merge-approved: no Backlog: line names the forge", file=sys.stderr)
-        return 2
-    github = isinstance(home, backlog.GitHubBacklog)
-    repo = args.repo or (home.repo if github else home.project)
     try:
         if github:
             found = github_requests(repo, workflow.approver, gh)

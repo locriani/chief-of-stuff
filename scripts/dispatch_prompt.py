@@ -196,7 +196,7 @@ COMMITS = ("Commits: Commit small and often on your own branch — uncommitted w
            "The merge is the user's alone: you never merge a pull request.")
 
 
-def commit_rule(workflow: Workflow) -> str:
+def commit_rule(workflow: Workflow, root: Path) -> str:
     if workflow.delivery == "branch":
         return ("Commits: Commit small and often on your own branch. Report the branch, head sha and "
                 "test result to the coordinator when the task is ready. Do not push or merge shared branches "
@@ -210,6 +210,10 @@ def commit_rule(workflow: Workflow) -> str:
         rule = rule.replace("The merge is the user's alone: you never merge a pull request.",
                             "You never merge a pull request: the coordinator merges it once the user approves it "
                             "on the platform. Never approve one yourself.")
+    rule += (" When your task names a review thread (`#12/<id>` or `!5/<id>`), push the fix, then answer the "
+             f"thread with `chief-of-stuff review-threads --root {shlex.quote(str(root.resolve()))} --reply <ref> "
+             "--body \"<sha>: <what changed>\"`. Answer it even when you disagree, saying why; never resolve a "
+             "thread, resolving is the user's.")
     return rule + (f" Review goes to the configured session {workflow.reviewer_session}; report findings "
                    "to the coordinator for user triage." if workflow.reviewer_session else
                    " No reviewer session is configured; the coordinator asks the user how to review it.")
@@ -422,7 +426,7 @@ def compose(root: Path, day: str | None, task: str, worktree: Path | None = None
         f"Inbox: {INBOX_SCRIPT}",
         f"Owns: {owns}" + ("" if owns.lower() == "none" else
                            " — yours to keep true; drift left in them is your error. Do not touch any other file."),
-        commit_rule(workflow),
+        commit_rule(workflow, root),
         report_text,
     ]
     body = "\n".join(lines) + "\n"
