@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import board_sources as bs  # noqa: E402
 import flow_chart as fc  # noqa: E402
 import gantt  # noqa: E402
+import one_shot  # noqa: E402
 import render_board as rb  # noqa: E402
 import settings as st  # noqa: E402
 import tracker_write as tw  # noqa: E402
@@ -258,6 +259,82 @@ class BoardTest(unittest.TestCase):
         html = rb.main(["--root", str(root)]).read_text()
         self.assertIn('title="implement ', html)
         self.assertNotIn("Too old", html)
+
+
+ONE_SHOT_TRACKER = """# Tracker
+
+## Tasks
+
+| name | item | owner | state | since | due | size | lane | stage | issue | checklist |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Audit headers | Security audit | unassigned | open | 2026-09-26 |  | S |  |  | #120 | c |
+| Trim logs | Log trim | unassigned | open | 2026-09-26 |  | S |  |  | #121 | c |
+| Pin fonts | Font pin | unassigned | open | 2026-09-26 |  | S |  |  | #122 | c |
+
+## File ownership
+
+| context | paths |
+|---|---|
+| Security audit | `src/a/` |
+| Log trim | `src/b/` |
+| Font pin | `src/c/` |
+
+## Log
+
+- 00:05 opened the day
+"""
+
+
+class OneShotTest(unittest.TestCase):
+    """A task with no `stage:` lines draws from the one-shot launcher's own Log lines, at the times they record (#149)."""
+
+    def tracker(self) -> str:
+        # The launcher's real writers produce the lines the chart reads.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "tracker.md"
+            path.write_text(ONE_SHOT_TRACKER)
+            one_shot.record_launch(path, "Security audit", "w1", "worktree `a` (a)", "codex", "", "00:20")
+            one_shot.record_launch(path, "Log trim", "w2", "worktree `b` (b)", "codex", "", "01:00")
+            one_shot.record_launch(path, "Font pin", "w3", "worktree `c` (c)", "codex", "", "00:30")
+            one_shot.update_tracker(path, "Security audit", "w1", "Robin", "done", "fixed", "a.py", "01:30")
+            one_shot.update_tracker(path, "Font pin", "w3", "Robin", "human_review", "unclear", "c.py", "01:10")
+            return path.read_text()
+
+    def built(self, text: str) -> dict[str, tuple[str, gantt.Row]]:
+        got = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(), {}, NOW)
+        return {row.name: (status, row) for status, row in got}
+
+    def test_a_running_one_shot_draws_from_its_launch_to_now(self):
+        status, row = self.built(self.tracker())["Trim logs"]
+        self.assertEqual((status, row.ref), ("running", "#121"))
+        self.assertEqual([(g.category, g.start, g.end) for g in row.segments],
+                         [("implement", at(TODAY, "01:00"), NOW)])
+
+    def test_a_finished_one_shot_moves_on_at_its_completion(self):
+        status, row = self.built(self.tracker())["Audit headers"]
+        self.assertEqual(status, "waiting")
+        self.assertEqual([(g.category, g.start, g.end) for g in row.segments],
+                         [("implement", at(TODAY, "00:20"), at(TODAY, "01:30")), ("pr", at(TODAY, "01:30"), NOW)])
+
+    def test_a_one_shot_needing_review_moves_to_review(self):
+        _, row = self.built(self.tracker())["Pin fonts"]
+        self.assertEqual([(g.category, g.start, g.end) for g in row.segments],
+                         [("implement", at(TODAY, "00:30"), at(TODAY, "01:10")), ("review", at(TODAY, "01:10"), NOW)])
+
+    def test_a_done_task_ends_at_its_done_time(self):
+        text = self.tracker().replace("| Robin | waiting |", "| Robin | done 00:20–01:50 |", 1)
+        _, row = self.built(text)["Audit headers"]
+        self.assertEqual(row.segments[-1].end, at(TODAY, "01:50"))
+        self.assertTrue(all(g.end <= at(TODAY, "01:50") for g in row.segments))
+
+    def test_stage_lines_take_over_from_their_first_move(self):
+        # A coordinator that starts writing stage moves mid-run keeps the history the launcher recorded before them.
+        text = tw.append_log(self.tracker(), "- 01:40 stage: Audit headers → review")
+        text = tw.append_log(text, "- 01:50 one-shot w9 started: codex, worktree `a`, task Security audit")
+        _, row = self.built(text)["Audit headers"]
+        self.assertEqual([(g.category, g.start, g.end) for g in row.segments],
+                         [("implement", at(TODAY, "00:20"), at(TODAY, "01:30")), ("pr", at(TODAY, "01:30"), at(TODAY, "01:40")),
+                          ("review", at(TODAY, "01:40"), NOW)])
 
 
 if __name__ == "__main__":

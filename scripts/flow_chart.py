@@ -4,6 +4,8 @@
 next and the last to now; a lane's last stage ends the row. A held task is hatched from now through the
 window, and an open task with an estimated end draws its remaining stages ahead as forecast. An open task at
 its lane's first stage with no move yet is queued: forecast only, after the running forecasts, in worker slots.
+Until a task's first `stage:` move, it moves on the one-shot launcher's lines: started → implement, completed → pr,
+HUMAN REVIEW NEEDED → review. A done task's last segment ends at its done time, not now.
 """
 
 from __future__ import annotations
@@ -18,6 +20,8 @@ import gantt
 from fragment import esc
 
 LINE = re.compile(r"^- (\d{1,2}):(\d{2}) stage: (.+) → (\S+)\s*$")
+STARTED = re.compile(r"^- (\d{1,2}):(\d{2}) one-shot (\S+) started: .*, task (.+?)\s*$")
+ENDED = re.compile(r"^- (\d{1,2}):(\d{2}) one-shot (\S+): (completed; awaiting integration|HUMAN REVIEW NEEDED)\b")
 H = timedelta(hours=1)
 # (title, behind now, ahead of now), after the Flow artboard.
 WINDOWS = (("24 hours", 6 * H, 18 * H), ("7 days", 48 * H, 120 * H))
@@ -30,15 +34,27 @@ class Move:
     at: datetime
     name: str
     stage: str
+    launch: bool = False
 
 
 def moves(text: str, day: date, zone: ZoneInfo) -> list[Move]:
-    """The `stage:` lines of the tracker's `## Log`, stamped on `day`."""
+    """The `stage:` and one-shot launcher lines of the tracker's `## Log`, stamped on `day`. A launcher move names
+    the task key of its worker's latest started line."""
     log = next((part for part in re.split(r"(?m)^## ", text) if part.split("\n", 1)[0].strip() == "Log"), "")
-    out = []
+    out, task_of = [], {}
     for line in log.splitlines():
-        if (m := LINE.match(line.strip())) and int(m[1]) < 24 and int(m[2]) < 60:
-            out.append(Move(datetime.combine(day, time(int(m[1]), int(m[2])), tzinfo=zone), m[3].strip(), m[4]))
+        line = line.strip()
+        m = LINE.match(line) or STARTED.match(line) or ENDED.match(line)
+        if not m or int(m[1]) >= 24 or int(m[2]) >= 60:
+            continue
+        at = datetime.combine(day, time(int(m[1]), int(m[2])), tzinfo=zone)
+        if m.re is LINE:
+            out.append(Move(at, m[3].strip(), m[4]))
+        elif m.re is STARTED:
+            task_of[m[3]] = m[4]
+            out.append(Move(at, m[4], "implement", True))
+        elif m[3] in task_of:
+            out.append(Move(at, task_of[m[3]], "pr" if m[4].startswith("completed") else "review", True))
     return out
 
 
@@ -61,15 +77,29 @@ def build(log: list[Move], tasks, lanes: dict, held: set[str], ends: dict[str, d
     `approved` names the tasks whose open change is approved, labelled `approved · merge ~HH:MM` by their end.
     Status is `merged`, `held` or the task's state word."""
     by_name = {t.name.strip().casefold(): t for t in tasks if t.name.strip()}
+    # A move names a task by its name or its item; the name wins.
+    find = {**{t.item.strip().casefold(): t for t in tasks if t.item.strip()}, **by_name}
+
+    def key_of(m: Move) -> str:
+        return t.name.strip().casefold() if (t := find.get(m.name.strip().casefold())) and t.name.strip() else m.name.casefold()
+
     terminal = {lane.stages[-1] for lane in lanes.values()}
     horizon = now + WINDOWS[-1][2]
     busy: list[datetime] = []
     log = sorted(log, key=lambda m: m.at)
+    first = {}
+    for m in log:
+        if not m.launch:
+            first.setdefault(key_of(m), m.at)
+    log = [m for m in log if not (m.launch and (f := first.get(key_of(m))) and m.at >= f)]
     out = []
-    for key in dict.fromkeys(m.name.casefold() for m in log):
-        mine = [m for m in log if m.name.casefold() == key]
-        task, last = by_name.get(key), mine[-1]
-        segs = [gantt.Segment(m.at, nxt.at if nxt else now, m.stage, "done")
+    for key in dict.fromkeys(map(key_of, log)):
+        mine = [m for m in log if key_of(m) == key]
+        task, last = find.get(key) or find.get(mine[-1].name.strip().casefold()), mine[-1]
+        stop = now
+        if task and task.kind == "done" and (t := task.state_time):
+            stop = min(now, datetime.combine(now.date(), time.fromisoformat(t.zfill(5)), tzinfo=now.tzinfo))
+        segs = [gantt.Segment(m.at, nxt.at if nxt else stop, m.stage, "done")
                 for m, nxt in zip(mine, mine[1:] + [None]) if m.stage not in terminal]
         lane = lanes.get(task.lane.strip()) if task else None
         if last.stage in terminal:
@@ -91,7 +121,7 @@ def build(log: list[Move], tasks, lanes: dict, held: set[str], ends: dict[str, d
     slots = max(1, slots)
     busy += [now] * (slots - len(busy))
     heapq.heapify(busy)
-    moved = {m.name.casefold() for m in log}
+    moved = set(map(key_of, log))
     for t in tasks:
         key, lane = t.name.strip().casefold(), lanes.get(t.lane.strip())
         if (not key or by_name[key] is not t or key in moved or t.kind != "open" or t.name.strip() in held
