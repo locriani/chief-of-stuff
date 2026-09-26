@@ -76,7 +76,7 @@ The optional [Kanban walk](docs/kanban.md) maps tracker stages to configurable b
 
 `chief-of-stuff board` writes the board file only. `chief-of-stuff pages --ensure --root /path/to/workspace` serves it and prints a status without opening or printing the URL. Only the user opens the board when they want to view it.
 
-`chief-of-stuff log --root /path/to/workspace "<text>"` appends `- HH:MM <text>` to today's tracker Log, stamped in the workspace zone. Every script-side tracker write, the one-shot launcher's included, holds the same lock on a `.<tracker>.lock` file beside the tracker.
+`chief-of-stuff log --root /path/to/workspace "<text>"` appends `- HH:MM <text>` to today's tracker Log, stamped in the workspace zone. Every script-side tracker write, the one-shot launcher's included, holds the same lock on a `.<tracker>.lock` file beside the tracker. `chief-of-stuff log --root /path/to/workspace --stage "<task name>" <stage>` sets that task's `stage` cell and appends `- HH:MM stage: <name> → <stage>` under the same lock; it refuses a name that matches no row or two, and a stage outside the task's lane. The board's Flow charts draw each task's stages from these lines, over the trackers of the last two days.
 
 `chief-of-stuff decision --root /path/to/workspace --name <slug>` renders `<pages dir>/decision-<slug>.json` into `decision-<slug>.html` beside the board and prints its `http://127.0.0.1:<port>/` URL. The JSON fields are listed in `scripts/decision_page.py`.
 
