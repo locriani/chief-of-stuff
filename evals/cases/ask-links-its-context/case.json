@@ -20,7 +20,7 @@
     {
       "name": "the ask line carries the page's local URL",
       "type": "regex",
-      "pattern": "http://127\\.0\\.0\\.1:\\d+/decision-[a-z0-9-]+\\.html[^\\n]*\\?\\s*\\Z"
+      "pattern": "http://127\\.0\\.0\\.1:\\d+/decisions/[a-z0-9-]+[^\\n]*\\?\\s*\\Z"
     },
     {
       "name": "the page is never an artifact",
