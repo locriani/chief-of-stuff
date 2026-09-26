@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -28,24 +29,28 @@ class Refused(ValueError):
 
 
 def files(source: Path) -> list[Path]:
-    includes = [source / "agents", source / "scripts", source / "assets", source / ".claude-plugin"]
-    result = [source / "start_coordinator.py"]
+    includes = [source / "agents", source / "scripts", source / "assets", source / ".claude-plugin", source / "hooks"]
+    result = [source / "start_coordinator.py", source / "chief_of_stuff.py"]
     for folder in includes:
         result.extend(p for p in folder.rglob("*") if p.is_file() and "__pycache__" not in p.parts
                       and p.suffix != ".pyc")
     return sorted(result)
 
 
-def install(source: Path, install_dir: Path) -> Path:
+def release_target(source: Path, install_dir: Path) -> Path:
     manifest = source / ".claude-plugin" / "plugin.json"
     version = json.loads(manifest.read_text())["version"]
     digest = hashlib.sha256()
-    selected = files(source)
-    for path in selected:
+    for path in files(source):
         digest.update(str(path.relative_to(source)).encode() + b"\0" + path.read_bytes())
-    target = install_dir / "versions" / f"{version}-{digest.hexdigest()[:12]}"
+    return install_dir / "versions" / f"{version}-{digest.hexdigest()[:12]}"
+
+
+def install(source: Path, install_dir: Path) -> Path:
+    target = release_target(source, install_dir)
     if target.exists():
         return target
+    selected = files(source)
     target.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".chief-install-", dir=target.parent) as stage_name:
         stage = Path(stage_name)
@@ -91,12 +96,12 @@ def prompt(runtime: str, release: Path, root: Path) -> str:
         check = ("## Check\n\nA session-scoped watcher checks the inbox and task audit every five minutes "
                  "while this CLI session is open. It sends notifications for new findings and never "
                  "edits the tracker or board. On the next coordinator turn, read the clock, inbox, "
-                 "audit and worker registry; reconcile task state, then render the board. "
-                 "Do not launch a new session without the user's explicit yes.\n\n" + host_schedule + "\n\n")
+                 "audit and worker registry; reconcile task state; the board renders itself. "
+                 "Dispatch ready one-shot tasks automatically under Dispatch authority. New interactive sessions need approval.\n\n" + host_schedule + "\n\n")
         rules = re.sub(r"## Check\n.*?(?=## Sessions\n)", check, rules, flags=re.S)
         sessions = ("## Sessions\n\nThe workspace `Sessions:` line may name Claude native list and send tools. "
                     "Use those only when your host exposes them. For every non-Claude worker, "
-                    "run the pinned `scripts/process_status.py --root <workspace>` to check "
+                    "run `chief-of-stuff processes --root <workspace>` to check "
                     "registered worker PIDs in one batch. The assigned name, worktree and process "
                     "identify it; do not invent a Claude ref. Receive registrations and reports "
                     "through the shared mailbox and send replies there. A missing registration "
@@ -105,21 +110,25 @@ def prompt(runtime: str, release: Path, root: Path) -> str:
         rules = re.sub(r"## Sessions\n.*?(?=## Relay\n)", sessions, rules, flags=re.S)
         rules += ("\n\n## Host adapter\n\nYou run in " + runtime + ". Use your host's own tools to read, edit and run the pinned scripts above. "
                   "The `Sessions:` line in CLAUDE.md describes Claude's peer tools; you do not have those tools. "
-                  "Check non-Claude workers with the pinned `scripts/process_status.py --root <workspace>` "
-                  "batch helper; use the shared `scripts/inbox.py` "
+                  "Check non-Claude workers with the `chief-of-stuff processes --root <workspace>` "
+                  "batch helper; use the shared `chief-of-stuff inbox` "
                   "mailbox for their messages. Claude workers retain their native session tools when available. "
                   "A five-minute watcher audits tasks and unread inbox messages while this session "
                   "is open and sends notifications. "
-                  "On your next turn, reconcile the tracker and board. Never launch a new session without "
-                  "the user's explicit approval. If the named calendar tool is unavailable, "
+                  "On your next turn, reconcile the tracker and board and dispatch ready one-shot tasks automatically. "
+                  "New interactive sessions need approval. If the named calendar tool is unavailable, "
                   "report it, leave calendar facts unverified, and continue work that does not depend on it.\n")
     return (f"You are chief-of-stuff. The installed rules and scripts are pinned at {release}. "
-            f"The workspace is {root}. Read its CLAUDE.md for configuration.\n\n{rules}\n\nOpen the day.")
+            f"The workspace is {root}. Read its CLAUDE.md for configuration.\n\n{rules}\n\n{START}")
+
+
+# A launch can land on a day that already has a log, so the rules pick Open the day or Resume, not the message.
+START = "Start the session: resume today if its log exists, otherwise open the day."
 
 
 def command(runtime: str, binary: str, release: Path, root: Path) -> list[str]:
     if runtime == "claude":
-        return [binary, "--plugin-dir", str(release), "--agent", "chief-of-stuff", "Open the day."]
+        return [binary, "--plugin-dir", str(release), "--agent", "chief-of-stuff", START]
     initial = prompt(runtime, release, root)
     if runtime == "codex":
         return [binary, "-C", str(root), initial]
@@ -202,13 +211,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         print(json.dumps({"release": str(release), "runtime": args.runtime, "argv": cmd}))
         return 0
+    child_env = dict(os.environ, CHIEF_OF_STUFF_RELEASE=str(release), CHIEF_OF_STUFF_WORKSPACE=str(root))
     stop = threading.Event()
     monitor = None
     if args.runtime != "claude":
         monitor = threading.Thread(target=watcher, args=(root, release, stop), daemon=True)
         monitor.start()
     try:
-        return subprocess.call(launch_cmd, cwd=root)
+        return subprocess.call(launch_cmd, cwd=root, env=child_env)
     finally:
         stop.set()
         if monitor:

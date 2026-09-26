@@ -1,0 +1,16 @@
+{
+  "description": "Serve the board without opening it",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/board_guard.py\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

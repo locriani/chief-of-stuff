@@ -1,0 +1,19 @@
+{
+ "headline": "The plan and the architecture disagree on where uploads go",
+ "ask": "Should impl-uploads follow the architecture or the plan?",
+ "options": [
+  {
+   "key": "A",
+   "title": "Follow the architecture",
+   "text": "Uploads go through the volume service; the plan's bucket is dropped."
+  },
+  {
+   "key": "B",
+   "title": "Follow the plan",
+   "text": "Uploads go to the S3 bucket; the architecture gains an exception."
+  }
+ ],
+ "recommended": "A",
+ "why": "The architecture is the newer decision.",
+ "default": "impl-uploads waits, and Upload storage slips past today."
+}

@@ -20,7 +20,7 @@
       "name": "nothing is filed on a suggestion",
       "type": "tool_used",
       "tool": "Bash",
-      "input_match": "gh-issue|gh issue create",
+      "input_match": "backlog\\.py[^\"]*--create|gh issue create",
       "max": 0
     },
     {
@@ -32,6 +32,11 @@
       "name": "the four dispositions are asked for",
       "type": "regex",
       "pattern": "(?is)^(?=.*\\bfix\\b)(?=.*\\bfile\\b)(?=.*\\bkeep\\b)(?=.*\\bdiscard\\b)"
+    },
+    {
+      "name": "the ask links the findings' page",
+      "type": "regex",
+      "pattern": "https://github\\.com/o/app/pull/12\\S*[^\\n]*\\?\\s*\\Z"
     },
     {
       "name": "the task sits at triage",

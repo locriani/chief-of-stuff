@@ -94,11 +94,36 @@ class SettingsTest(unittest.TestCase):
             with self.subTest(text=text), self.assertRaises(st.SettingsError):
                 st.load(self.root, self.write('[workflow]\n' + text + '\n'))
 
+    def test_worker_cap_is_absent_or_a_positive_whole_number(self):
+        self.assertIsNone(st.load(self.root, None).workers.max_concurrency)
+        self.assertEqual(st.load(self.root, self.write('[workers]\nmax_concurrency = 3\n')).workers.max_concurrency, 3)
+        for bad in ("0", "-1", "2.5", '"3"', "true"):
+            with self.subTest(bad=bad), self.assertRaises(st.SettingsError):
+                st.load(self.root, self.write(f"[workers]\nmax_concurrency = {bad}\n"))
+
+    def test_pages_workers_defaults_to_four_and_is_a_positive_whole_number(self):
+        # The user, 2026-09-26: "allow the board server to have up to 4 workers", then "well, N workers. 4 default".
+        # Rule: "[pages] workers that is not a positive whole number raises SettingsError naming [pages] workers".
+        self.assertEqual(st.load(self.root, None).pages.workers, 4)
+        self.assertEqual(st.load(self.root, self.write("[pages]\n")).pages.workers, 4)
+        self.assertEqual(st.load(self.root, self.write("[pages]\nworkers = 2\n")).pages.workers, 2)
+        for bad in ("0", "-1", "2.5", '"3"', "true"):
+            with self.subTest(bad=bad), self.assertRaisesRegex(st.SettingsError, r"\[pages\] workers"):
+                st.load(self.root, self.write(f"[pages]\nworkers = {bad}\n"))
+
     def test_worker_launcher_defaults_to_ghostty_and_accepts_tmux(self):
         self.assertEqual(st.load(self.root, None).workers.launcher, "ghostty")
+        self.assertEqual(st.load(self.root, None).workers.mode, "interactive")
         self.assertEqual(st.load(self.root, self.write('[workers]\nlauncher = "tmux"\n')).workers.launcher, "tmux")
         with self.assertRaises(st.SettingsError):
             st.load(self.root, self.write('[workers]\nlauncher = "shell"\n'))
+
+    def test_worker_mode_accepts_one_shot_and_refuses_unknown_values(self):
+        self.assertEqual(st.load(self.root, self.write('[workers]\nmode = "one-shot"\n')).workers.mode,
+                         "one-shot")
+        for value in ('"background"', 'true', '17'):
+            with self.subTest(value=value), self.assertRaises(st.SettingsError):
+                st.load(self.root, self.write(f'[workers]\nmode = {value}\n'))
 
 
 if __name__ == "__main__":
@@ -236,3 +261,146 @@ options = ["Plan", "Plan Review", "Test", "Build", "Review", "Fix"]
                       'owner = "org"\nnumber = 7\noptions = ["one"]'):
             with self.subTest(extra=extra), self.assertRaises(st.SettingsError):
                 self.load(KANBAN + "\n[kanban.github_project]\n" + extra + "\n")
+
+
+MODELS = '''[models.deep]
+rotation = ["claude:opus@high", "codex:gpt-test:preview@medium"]
+
+[models.implement]
+rotation = ["codex:gpt-test-coder@medium", "claude:sonnet", "claude:haiku@low"]
+'''
+
+
+class ModelsTest(unittest.TestCase):
+    """#111: "I want, as part of the toml, the suggested models and model rotations to use." Each entry is
+    `runtime:model-id@effort`; effort is part of the entry (Zach: "effort should be part of the model id")."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+
+    def load(self, text: str) -> st.Settings:
+        (self.root / "s.toml").write_text(text)
+        return st.load(self.root, "s.toml")
+
+    def test_absent_models_is_empty(self):
+        self.assertEqual(self.load('[workers]\nmode = "one-shot"\n').models, {})
+
+    def test_rotation_is_read_in_order(self):
+        got = self.load(MODELS).models
+        self.assertEqual([str(e) for e in got["implement"]],
+                         ["codex:gpt-test-coder@medium", "claude:sonnet", "claude:haiku@low"])
+        first = got["deep"][1]
+        # The runtime splits on the first colon and effort on the last @: the ID keeps its own colon.
+        self.assertEqual((first.runtime, first.model, first.effort), ("codex", "gpt-test:preview", "medium"))
+        self.assertIsNone(got["implement"][1].effort)
+
+    def test_bad_tables_are_refused(self):
+        for bad in (
+            '[models]\ndeep = "claude:opus"\n',
+            '[models.deep]\n',
+            '[models.deep]\nrotation = []\n',
+            '[models.deep]\nrotation = "claude:opus"\n',
+            '[models.deep]\nrotation = ["gemini:pro"]\n',
+            '[models.deep]\nrotation = ["opus"]\n',
+            '[models.deep]\nrotation = ["claude:"]\n',
+            '[models.deep]\nrotation = ["claude:@high"]\n',
+            '[models.deep]\nrotation = ["claude:opus@max"]\n',
+            '[models.deep]\nrotation = ["claude:opus@"]\n',
+            '[models.deep]\nrotation = ["claude:opus", "claude:opus"]\n',
+            '[models.deep]\nrotation = [1]\n',
+            '[models.deep]\nrotation = ["claude:opus"]\neffort = "high"\n',
+        ):
+            with self.subTest(bad=bad), self.assertRaises(st.SettingsError):
+                self.load(bad)
+
+    def test_pick_suggests_the_first_entry(self):
+        rotation = self.load(MODELS).models["implement"]
+        self.assertEqual(str(st.pick(rotation)), "codex:gpt-test-coder@medium")
+
+    def test_after_advances_the_rotation(self):
+        rotation = self.load(MODELS).models["implement"]
+        self.assertEqual(str(st.pick(rotation, after="codex:gpt-test-coder@medium")), "claude:sonnet")
+        # The entry without its effort names the same entry.
+        self.assertEqual(str(st.pick(rotation, after="codex:gpt-test-coder")), "claude:sonnet")
+        with self.assertRaisesRegex(st.SettingsError, "rotation exhausted"):
+            st.pick(rotation, after="claude:haiku@low")
+        with self.assertRaisesRegex(st.SettingsError, "not in the rotation"):
+            st.pick(rotation, after="claude:opus")
+
+    def test_not_family_skips_that_runtime(self):
+        rotation = self.load(MODELS).models["implement"]
+        self.assertEqual(str(st.pick(rotation, not_family="codex")), "claude:sonnet")
+        with self.assertRaisesRegex(st.SettingsError, "rotation exhausted"):
+            st.pick(rotation, after="claude:sonnet", not_family="claude")
+
+
+class GraphSettingsTest(unittest.TestCase):
+    """The decision page's MODULE GRAPH: which clone branch-graph reads, its import root, depth and rules."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+
+    def load(self, text: str) -> st.Settings:
+        (self.root / "s.toml").write_text(text)
+        return st.load(self.root, "s.toml")
+
+    def test_absent_graph_is_not_configured(self):
+        self.assertIsNone(st.load(self.root, None).graph)
+        self.assertIsNone(self.load('[workers]\nmode = "one-shot"\n').graph)
+
+    def test_clone_and_root_with_the_default_depth_and_no_rules(self):
+        got = self.load('[graph]\nclone = "repos/app"\nroot = "agent"\n').graph
+        self.assertEqual((got.clone, got.root, got.depth, got.rules), ("repos/app", "agent", 2, None))
+
+    def test_depth_and_rules_are_read(self):
+        got = self.load('[graph]\nclone = "repos/app"\nroot = "agent"\ndepth = 3\nrules = "docs/architecture.md"\n').graph
+        self.assertEqual((got.depth, got.rules), (3, "docs/architecture.md"))
+
+    def test_a_graph_that_cannot_be_read_is_refused(self):
+        base = 'clone = "repos/app"\nroot = "agent"\n'
+        for bad in ('graph = 1\n',
+                    '[graph]\nroot = "agent"\n',
+                    '[graph]\nclone = "repos/app"\n',
+                    '[graph]\nclone = ""\nroot = "agent"\n',
+                    '[graph]\nclone = 3\nroot = "agent"\n',
+                    '[graph]\nclone = "repos/app"\nroot = ""\n',
+                    f'[graph]\n{base}depth = 0\n',
+                    f'[graph]\n{base}depth = "2"\n',
+                    f'[graph]\n{base}depth = 2.5\n',
+                    f'[graph]\n{base}depth = true\n',
+                    f'[graph]\n{base}rules = 5\n',
+                    f'[graph]\n{base}rules = ""\n'):
+            with self.subTest(bad=bad), self.assertRaises(st.SettingsError):
+                self.load(bad)
+
+    # The user: a real MR drew dozens of tests.* modules and was unreadable; hide test modules and cap each view.
+    def test_test_modules_are_excluded_and_views_hold_twelve_by_default(self):
+        got = self.load('[graph]\nclone = "repos/app"\nroot = "agent"\n').graph
+        self.assertEqual((tuple(got.exclude), got.max_nodes), (("tests.*", "evals.*"), 12))
+
+    def test_exclude_and_max_nodes_are_read(self):
+        got = self.load('[graph]\nclone = "repos/app"\nroot = "agent"\nexclude = ["legacy.*", "vendor.*"]\nmax_nodes = 3\n').graph
+        self.assertEqual((tuple(got.exclude), got.max_nodes), (("legacy.*", "vendor.*"), 3))
+
+    def test_an_empty_exclude_excludes_nothing(self):
+        got = self.load('[graph]\nclone = "repos/app"\nroot = "agent"\nexclude = []\n').graph
+        self.assertEqual(tuple(got.exclude), ())
+
+    def test_a_bad_exclude_or_max_nodes_is_refused(self):
+        base = '[graph]\nclone = "repos/app"\nroot = "agent"\n'
+        for bad in ('exclude = "tests.*"\n',
+                    'exclude = [1]\n',
+                    'exclude = [""]\n',
+                    'exclude = ["tests.*", 2]\n',
+                    'max_nodes = 2\n',
+                    'max_nodes = 0\n',
+                    'max_nodes = -5\n',
+                    'max_nodes = "12"\n',
+                    'max_nodes = 12.5\n',
+                    'max_nodes = true\n'):
+            with self.subTest(bad=bad), self.assertRaises(st.SettingsError):
+                self.load(base + bad)

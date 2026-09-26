@@ -57,6 +57,51 @@ def workspace(tracker: str = TRACKER, claude_md: str = CLAUDE):
     return tmp, root
 
 
+NAMED = """# Tracker 2026-09-18
+
+## Tasks
+
+| name | item | owner | state | since | due | size | checklist |
+|---|---|---|---|---|---|---|---|
+| alpha | Harden the upload handler against path traversal | unassigned | open | 09:00 |  | M | Checklist: harden |
+| twin | Rotate the staging keys | unassigned | open | 09:00 |  | S | Checklist: rotate |
+| twin | Rotate the demo keys | unassigned | open | 09:00 |  | S | Checklist: rotate |
+
+## File ownership
+
+| context | paths |
+|---|---|
+| alpha | `src/a/` |
+
+## Log
+
+- 09:00 opened the day
+"""
+
+
+class TaskByNameTest(unittest.TestCase):
+    """The coordinator kept a script to turn a Tasks name into the item `--task` wanted (#51)."""
+
+    def setUp(self):
+        tmp, self.root = workspace(NAMED)
+        self.addCleanup(tmp.cleanup)
+
+    def test_a_name_resolves_to_its_item_and_its_ownership_row(self):
+        item = dp.resolve_task(self.root, "2026-09-18", "alpha")
+        self.assertEqual(item, "Harden the upload handler against path traversal")
+        self.assertIn("Owns: `src/a/`", dp.compose(self.root, "2026-09-18", item))
+
+    def test_an_item_still_resolves_to_itself(self):
+        item = "Harden the upload handler against path traversal"
+        self.assertEqual(dp.resolve_task(self.root, "2026-09-18", item), item)
+
+    def test_a_shared_name_is_refused_and_lists_the_items(self):
+        with self.assertRaises(dp.RefusedError) as e:
+            dp.resolve_task(self.root, "2026-09-18", "twin")
+        self.assertIn("Rotate the staging keys", str(e.exception))
+        self.assertIn("Rotate the demo keys", str(e.exception))
+
+
 class ComposeTest(unittest.TestCase):
     def setUp(self):
         self.tmp, self.root = workspace()
@@ -65,6 +110,29 @@ class ComposeTest(unittest.TestCase):
     def test_it_names_the_task_as_the_tracker_spells_it(self):
         body = dp.compose(self.root, "2026-09-18", "Security audit")
         self.assertIn("Task: Security audit", body)
+
+    def test_every_runtime_and_mode_forbids_automatic_board_opening(self):
+        (self.root / "CLAUDE.md").write_text(CLAUDE +
+            "- Board: self-hosted; URL http://127.0.0.1:8765/; dir `pages`\n")
+        for runtime in ("claude", "codex", "cursor", "agy"):
+            for one_shot in (False, True):
+                with self.subTest(runtime=runtime, one_shot=one_shot):
+                    body = dp.compose(self.root, "2026-09-18", "Security audit", worktree=self.root / "tree",
+                                      runtime=runtime, one_shot=one_shot)
+                    self.assertIn("never automatically open the board URL or rendered board HTML", body)
+                    self.assertIn("Board URL: http://127.0.0.1:8765/", body)
+                    self.assertIn("even if workspace instructions suggest opening a preview", body)
+
+    def test_every_runtime_and_mode_carries_the_markdown_rule(self):
+        for runtime in ("claude", "codex", "cursor", "agy"):
+            for one_shot in (False, True):
+                with self.subTest(runtime=runtime, one_shot=one_shot):
+                    body = dp.compose(self.root, "2026-09-18", "Security audit", worktree=self.root / "tree",
+                                      runtime=runtime, one_shot=one_shot)
+                    for rule in ("commit message bodies", "One paragraph is one line; never hard-wrap prose at any column",
+                                 "Blank lines separate blocks", "Code and commands go in fences with a language",
+                                 "Links are markdown links"):
+                        self.assertIn(rule, body)
 
     def test_it_names_the_tracker_path_from_the_coordinator_block(self):
         body = dp.compose(self.root, "2026-09-18", "Security audit")
@@ -140,6 +208,13 @@ class AssignmentTest(unittest.TestCase):
 
     def test_it_names_the_paths_the_task_owns(self):
         self.assertIn("Owns: `src/a/`, `notes/audit.md`", self.body())
+
+    def test_a_bullet_row_is_read_like_a_table_row(self):
+        """Audit reads bullets; a dispatch refusing the same row sent the coordinator to rewrite it (#74)."""
+        tmp, root = workspace(TRACKER.replace("| context | paths |\n|---|---|\n| Security audit | `src/a/`, `notes/audit.md` |",
+                                              "- Security audit: `src/a/`, `notes/audit.md`"))
+        self.addCleanup(tmp.cleanup)
+        self.assertIn("Owns: `src/a/`, `notes/audit.md`", dp.compose(root, "2026-09-18", "Security audit"))
 
     def test_owning_nothing_is_said_rather_than_left_out(self):
         tmp, root = workspace(TRACKER.replace("| Security audit | `src/a/`, `notes/audit.md` |",
@@ -569,8 +644,22 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         self.content = self.agent_file.read_text()
 
     def test_resume_step_2_script_paths_are_fully_qualified(self):
-        self.assertIn("python3 ${CLAUDE_PLUGIN_ROOT}/scripts/inbox.py read <id> --ack", self.content)
-        self.assertIn("python3 ${CLAUDE_PLUGIN_ROOT}/scripts/inbox.py drain --recipient coordinator", self.content)
+        self.assertIn("chief-of-stuff inbox read <id> --ack", self.content)
+        self.assertIn("chief-of-stuff inbox drain --recipient coordinator", self.content)
+
+    def test_one_shot_workspace_requires_one_shot_for_every_task(self):
+        self.assertIn('every task dispatch runs one-shot; the launcher enforces this without a flag', self.content)
+        self.assertIn('pass `--one-shot` for that launch', self.content)
+        self.assertNotIn('Pass `--interactive` to override', self.content)
+
+    def test_one_shot_dispatch_is_authorized_by_configuration(self):
+        authority = self._section("Dispatch authority")
+        self.assertIn("Do not ask the user to choose a worker or approve each assignment or launch", authority)
+        self.assertIn("unresolved human-review hold or lane gate", authority)
+        self.assertIn("never invent an approval quote in Decisions", authority)
+        dispatch = self._section("Dispatch")
+        self.assertNotIn("The same explicit user approval for launching a new worker applies", dispatch)
+        self.assertIn("dispatch ready `unassigned` tasks automatically", self._section("Check"))
 
     def test_resume_step_2_task_state_uses_waiting_or_orphaned_not_stopped(self):
         self.assertIn("stops update task state to `waiting` or `orphaned`", self.content)
@@ -578,13 +667,13 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
 
     def test_dual_transport_sending_and_registration_rules(self):
         self.assertIn("Dual-transport sending", self.content)
-        self.assertIn("python3 ${CLAUDE_PLUGIN_ROOT}/scripts/inbox.py send --to <recipient> --from coordinator", self.content)
+        self.assertIn("chief-of-stuff inbox send --to <recipient> --from coordinator", self.content)
         self.assertIn("Dual-transport registration", self.content)
-        self.assertIn("python3 ${CLAUDE_PLUGIN_ROOT}/scripts/inbox.py list --recipient coordinator --unread", self.content)
+        self.assertIn("chief-of-stuff inbox list --recipient coordinator --unread", self.content)
 
     def test_the_board_is_served_from_this_mac(self):
         # Zach, 2026-09-24 14:07: "we should host our own webserver and ensure they are set up as part of the agent's boot loop."
-        ensure = "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/pages.py --ensure"
+        ensure = "chief-of-stuff pages --ensure"
         for move in ("## Open the day", "## Resume", "## Check"):
             section = self.content.split(move, 1)[1].split("\n## ", 1)[0]
             self.assertIn(ensure, section, move)
@@ -602,7 +691,7 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
     def test_the_reviewer_hand_off_names_its_mailbox(self):
         # autonomous-review-pipeline-design, 22:45: without --mailbox-dir the reviewer's report landed in the reviewed repo.
         pipeline = self.content.split("## Pipeline", 1)[1].split("\n## ", 1)[0]
-        self.assertIn("`Report by: python3 ${CLAUDE_PLUGIN_ROOT}/scripts/inbox.py --mailbox-dir <workspace root>/.chief-of-stuff/mailbox send --to coordinator --from <reviewer session> --type review --task \"<task>\"`", pipeline)
+        self.assertIn("`Report by: chief-of-stuff inbox --mailbox-dir <workspace root>/.chief-of-stuff/mailbox send --to coordinator --from <reviewer session> --type review --task \"<task>\"`", pipeline)
         self.assertNotIn("`inbox.py send --to reviewer", pipeline)
         # A sonnet run sent the placeholder itself; the reviewer runs in another tree, so only an absolute path lands.
         self.assertIn("`<workspace root>` written out as an absolute path", pipeline)
@@ -629,7 +718,7 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
     def test_the_issue_rule_is_for_any_backlog_and_gitlab_files_with_backlog_py(self):
         # The user, 2026-09-23 22:40: "remove the github issue remote and make everything use gitlab now that we have that going".
         self.assertNotRegex(self.content, r"GitHub `?[Bb]acklog")
-        self.assertIn("backlog.py --create", self._section("Tracker"))
+        self.assertIn("chief-of-stuff backlog --create", self._section("Tracker"))
 
     def test_the_check_is_armed_every_fifteen_minutes(self):
         # The user, 2026-09-24 01:35: "a 15 minute timer loop that kicks you to check, evaluate state each time and hand off things again if needed".
@@ -645,7 +734,7 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         self.assertIn("A verify pass with nothing open moves the task to `merge`", triage)
 
     def test_github_issue_writes_use_the_pinned_backlog_script(self):
-        self.assertIn("${CLAUDE_PLUGIN_ROOT}/scripts/backlog.py --create", self.content)
+        self.assertIn("chief-of-stuff backlog --create", self.content)
         self.assertNotIn("~/.claude/plugins/cache/ai-additions", self.content)
 
     def test_live_prompt_does_not_name_the_original_workspace_user(self):
@@ -713,7 +802,7 @@ class IssueDispatchTest(unittest.TestCase):
         with self.assertRaises(dp.RefusedError) as e:
             dp.compose(root, "2026-09-18", "Unfiled task")
         self.assertIn("names no issue", str(e.exception))
-        self.assertIn("backlog.py --create", str(e.exception))
+        self.assertIn("chief-of-stuff backlog --create", str(e.exception))
 
     def test_a_gitlab_backlog_refuses_too_and_links_to_gitlab(self):
         """Zach, 2026-09-23 22:40: "make everything use gitlab now that we have that going"."""
@@ -722,7 +811,7 @@ class IssueDispatchTest(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         with self.assertRaises(dp.RefusedError) as e:
             dp.compose(root, "2026-09-18", "Unfiled task")
-        self.assertIn("backlog.py --create", str(e.exception))
+        self.assertIn("chief-of-stuff backlog --create", str(e.exception))
         self.assertIn("Issue: https://gl.example/o/backlog/-/issues/12",
                       dp.compose(root, "2026-09-18", "Security audit").splitlines())
 
@@ -901,6 +990,20 @@ class ReviewerRoutingTest(unittest.TestCase):
         pr = dp.compose(root, "2026-09-18", "Security audit")
         self.assertIn("merge your pull request", pr)
         self.assertNotIn("The merge is the user's alone", pr)
+        (root / "cos.toml").write_text('[workflow]\nmerge_owner = "approval"\napprover = "robin"\n')
+        approval = dp.compose(root, "2026-09-18", "Security audit")
+        self.assertIn("the coordinator merges it once the user approves it", approval)
+        self.assertIn("You never merge a pull request", approval)
+
+    def test_a_worker_answers_the_review_threads_it_fixes_and_never_resolves_them(self):
+        tmp, root = workspace(claude_md=CLAUDE + "- Settings: `cos.toml`\n")
+        self.addCleanup(tmp.cleanup)
+        (root / "cos.toml").write_text('[workflow]\napprover = "robin"\n')
+        body = dp.compose(root, "2026-09-18", "Security audit")
+        self.assertIn(f"chief-of-stuff review-threads --root {root.resolve()} --reply", body)
+        self.assertIn("never resolve", body)
+        (root / "cos.toml").write_text('[workflow]\ndelivery = "branch"\n')
+        self.assertNotIn("--reply", dp.compose(root, "2026-09-18", "Security audit"))
 
 
 class AgyRuntimeTest(unittest.TestCase):

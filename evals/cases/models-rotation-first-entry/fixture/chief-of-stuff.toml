@@ -1,0 +1,11 @@
+[workers]
+mode = "one-shot"
+
+[models.deep]
+rotation = ["claude:opus@high", "claude:sonnet@high"]
+
+[models.implement]
+rotation = ["claude:haiku@high", "claude:opus@low", "claude:sonnet@medium"]
+
+[models.review]
+rotation = ["claude:opus@high"]

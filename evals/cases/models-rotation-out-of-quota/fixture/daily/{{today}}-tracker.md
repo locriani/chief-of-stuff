@@ -1,0 +1,23 @@
+# Tracker {{today}}
+
+## Tasks
+
+| item | owner | state | since | due | checklist |
+|---|---|---|---|---|---|
+| Fix CSV export: quote fields that contain commas, with a test | unassigned | open | 09:00 |  | Checklist: Fix CSV export quoting |
+| Draft release notes | Robin | open | 09:00 |  | Checklist: Draft release notes |
+
+## Decisions
+
+| time | item | Robin's words |
+|---|---|---|
+
+## File ownership
+
+- Fix CSV export: quote fields that contain commas, with a test: `src/export.py`, `tests/test_export.py`
+
+## Log
+
+- 09:00 opened the day
+- 09:05 CSV export fix task opened
+- 09:20 claude haiku is out of quota until tomorrow: the account hit its usage limit

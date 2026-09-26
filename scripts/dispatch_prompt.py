@@ -1,14 +1,7 @@
 #!/usr/bin/env python3
-"""Compose the assignment a spawned session wakes up holding, from the tracker and nothing else.
+"""Compose worker assignments from approved tracker rows.
 
-The prompt is derived, never authored. A coordinator that wants to tell a worker something writes it
-into the tracker first, where the user reads it before saying yes — so what was approved and what
-the worker receives are the same text from the same place.
-
-That is also what bans shell expansion. The six lines never travel as prose through a command line,
-where a `$(...)` would be expanded by the shell before any script existed to check it. The only
-variable argument is the task name, and a name that is not a row in the tracker is refused, so an
-expansion that got this far produces a refusal instead of a payload.
+Assignments come from the tracker, not a free-form command line. Unknown tasks are refused.
 """
 
 from __future__ import annotations
@@ -24,10 +17,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from backlog import file_with, issue_ref  # noqa: E402
 from render_board import ConfigError, _cells, _is_separator, _section, parse_coordinator, parse_tracker, short_name  # noqa: E402
 from settings import SettingsError, Workflow, load as load_settings  # noqa: E402
+import ownership  # noqa: E402
 
 
 class RefusedError(ValueError):
-    """Something did not survive its check against the tracker. Nothing was composed."""
+    """Invalid tracker data; no assignment composed."""
 
 
 def _config(root: Path):
@@ -38,39 +32,25 @@ def _config(root: Path):
 
 
 UNASSIGNED = "unassigned"
-# `(via <session>)` is what this file's rules mark session-origin text with. A Tasks item or an
-# ownership row carrying it is peer text that reached the tracker, and it must not reach a worker as
-# an instruction. This is the one place that treats session text as data rather than as text merely
-# lacking authority.
+# Session-origin text must not become worker instructions.
 VIA = "(via "
-# C0 without tab or newline, DEL, and C1. Not the shell metacharacters the plan first named: there
-# is no command line left for those to mean anything on, and the live File ownership column is full
-# of legitimate semicolons. What survives is the vector that is real for a file read into a
-# terminal — an ANSI or OSC payload, which begins with an escape.
+# Reject terminal control sequences; ordinary shell punctuation is valid tracker text.
 CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
-# A sanity bound, not a filter: live item cells run to 1700 characters and have to compose.
+# Allow long tracker items while bounding assignment size.
 LINE_CAP = 2400
-# 12500 from 12000 when the header gained the fixed-name paragraph, and 13000 when it gained ponytail
-# and the review step, and 14200 when an agy session gained its mailbox-only paragraph and every inbox
-# command its mailbox path: each time keeping the old headroom.
 BODY_CAP = 16000
-# A bare session name, optionally carrying the six hex characters a listing shows beside it.
+# Session listings may append a six-character ref.
 SESSION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}(?: \[[0-9a-f]{6}\])?")
-# The name a session is started with: bare, because the ref is the harness's and arrives later.
+# Launch names do not include refs.
 GIVEN_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
-# What the mailbox commands say where the session's own name goes, until a launch has given it one.
 UNNAMED = "<your_ref_or_name>"
 
-# The dispatch travels into the tree as a file, and a stop travels back out of it the same way. A
-# message is lost if nobody reads it; a file in the worktree is still there when the auditor walks
-# past. `spawn_session` re-exports these, and `audit_tasks` reads the second.
+# Persist assignments and stop reports in the worktree.
 PROMPT_DIR = ".chief-of-stuff"
 STOP_FILE = f"{PROMPT_DIR}/stop.md"
-# The plugin's own copy, beside this file. A workspace has no `scripts/inbox.py`; the line used to
-# name one anyway, and a session following it found nothing there.
+# Use the installed inbox script, not a workspace path.
 INBOX_SCRIPT = Path(__file__).resolve().parent / "inbox.py"
-# An agy (Antigravity) session has no session listing, no direct messages and no Claude skills, so the
-# mailbox is its only channel (Zach, 2026-09-23 18:42).
+# Antigravity uses the mailbox for session messages.
 AGY = ("**You run under Antigravity, not Claude Code.** You cannot list sessions or message one: every "
        "registration, ask, progress report and stop below goes through the mailbox commands, with "
        "`--from \"{name}\"`, and your ref is your name. Check your mailbox "
@@ -206,16 +186,12 @@ REPORT = ("Report: when the task is finished, reply to the coordinator with what
           "(branch and worktree), what you did not do, and `Next:` — either the one thing you are "
           "starting now, or `idle and available`. Never neither. If direct messaging fails, send via mailbox: "
           '`python3 {inbox_script} send --to "{coord_mailbox}" --from "<your_ref_or_name>" --type progress --body "<report>"`.')
-# This line said "Write only: do not commit or push." until 0.12.0, against the workspace rule it was
-# supposed to carry: every session makes meaningful small commits, because uncommitted work is how
-# work gets lost. The gate was never the commit; it is the merge. Since 0.23.0 the merge is a pull
-# request's (Zach, 2026-09-23 15:31: "all code changes should require a PR" … "This will fully
-# supersede CIMP"), and the GitHub repos refuse a direct push to main. Who merges: the user, always
-# (17:26: "I'll review and click the auto merge button on all PRs from here on forward"). Opening it
-# and applying the cuts are the session's own since 0.27.0 (19:40: "PRs should be autononmous"; 19:51:
-# "I want ponytail cuts to be automatically applied, I think").
-# #33 stage 3 (Zach, 2026-09-23: "Reviewer + my triage"): the `reviewer` session reviews every pull request and
-# the user disposes of each finding, so a session no longer reviews or cuts its own.
+WRITING_RULE = ("Markdown: everything you write for a person to read is well-formed markdown: documents, "
+                "issue and PR/MR bodies, review and issue comments, commit message bodies, and decision JSON "
+                "text fields. One paragraph is one line; never hard-wrap prose at any column, because renderers "
+                "compact or break wrapped lines unpredictably. Blank lines separate blocks. Lists and tables use "
+                "real markdown syntax. Code and commands go in fences with a language. Links are markdown links.")
+# Workers commit on their branches and open PRs; the reviewer and user handle review and merge.
 COMMITS = ("Commits: Commit small and often on your own branch — uncommitted work is how work gets "
            "lost. Code reaches main only through a pull request: push the branch and open one "
            "(`gh pr create`, or `glab mr create` on GitLab) when the work is finished and its suite is "
@@ -225,7 +201,7 @@ COMMITS = ("Commits: Commit small and often on your own branch — uncommitted w
            "The merge is the user's alone: you never merge a pull request.")
 
 
-def commit_rule(workflow: Workflow) -> str:
+def commit_rule(workflow: Workflow, root: Path) -> str:
     if workflow.delivery == "branch":
         return ("Commits: Commit small and often on your own branch. Report the branch, head sha and "
                 "test result to the coordinator when the task is ready. Do not push or merge shared branches "
@@ -235,6 +211,14 @@ def commit_rule(workflow: Workflow) -> str:
         rule = rule.replace("The merge is the user's alone: you never merge a pull request.",
                             "After the coordinator confirms review and required approvals, merge your pull "
                             "request and report the resulting main sha.")
+    elif workflow.merge_owner == "approval":
+        rule = rule.replace("The merge is the user's alone: you never merge a pull request.",
+                            "You never merge a pull request: the coordinator merges it once the user approves it "
+                            "on the platform. Never approve one yourself.")
+    rule += (" When your task names a review thread (`#12/<id>` or `!5/<id>`), push the fix, then answer the "
+             f"thread with `chief-of-stuff review-threads --root {shlex.quote(str(root.resolve()))} --reply <ref> "
+             "--body \"<sha>: <what changed>\"`. Answer it even when you disagree, saying why; never resolve a "
+             "thread, resolving is the user's.")
     return rule + (f" Review goes to the configured session {workflow.reviewer_session}; report findings "
                    "to the coordinator for user triage." if workflow.reviewer_session else
                    " No reviewer session is configured; the coordinator asks the user how to review it.")
@@ -254,37 +238,50 @@ def _clean(label: str, value: str) -> str:
     return value
 
 
-def _owns(text: str, item: str, relative: str) -> str:
-    """The paths this task may edit, from the File ownership table, keyed on the task.
+def task_keys(item: str, name: str = "") -> set[str]:
+    """What a File ownership row may be keyed on: the Tasks name, the full item, its colon prefix, or its board short name."""
+    return {name.strip(), item.strip(), item.split(": ", 1)[0].strip(), short_name(item).strip()} - {""}
 
-    Written before the proposal, so the paths are on the board when the user reads it — and after the
-    spawn the coordinator rewrites that context cell to name the tree, which is why the short name is
-    accepted too.
-    """
-    # Three spellings, all writable by hand: the item entire, the name before its first colon, and
-    # the board's own short name. `short_name` no longer ellipsises -- that cut moved to `clip_name`
-    # when the task cell stopped truncating -- so it now returns a structural split or the name
-    # whole, and it can no longer name a key nobody could type. It CAN return the item unchanged,
-    # in which case these are two spellings and not three: a head under twelve characters is left
-    # alone, so `Ready probe: **...**` is addressable as the item or as `Ready probe`, and by
-    # nothing shorter. That is the spelling to write in the File ownership context cell.
+
+def task_name(text: str, item: str) -> str:
+    """The `name` cell of the Tasks row whose item is `item`, or "" when there is none."""
+    rows = [row for row in parse_tracker(text).tasks if row.item.strip() == item.strip()]
+    return rows[0].name.strip() if len(rows) == 1 else ""
+
+
+def resolve_task(root: Path, day: str | None, task: str) -> str:
+    """The item `task` names: an item as written, or else the one Tasks row whose `name` it is."""
+    cfg = _config(root)
+    relative = cfg.tracker_path(day or datetime.now(cfg.zone).date().isoformat())
+    try:
+        tasks = parse_tracker((root / relative).read_text()).tasks
+    except OSError as exc:
+        raise RefusedError(f"cannot read {relative}: {exc}") from None
+    wanted = task.strip()
+    if any(row.item.strip() == wanted for row in tasks):
+        return wanted
+    named = [row.item.strip() for row in tasks if row.name.strip() == wanted]
+    if len(named) > 1:
+        raise RefusedError(f"{len(named)} Tasks rows are named {wanted!r}; pass the item instead: "
+                           + "; ".join(repr(item) for item in named))
+    return named[0] if named else task
+
+
+def _owns(text: str, item: str, relative: str) -> str:
+    """Find task-owned paths by Tasks name, full item, colon prefix, or board short name."""
     head = item.split(": ", 1)[0].strip()
-    keys = {item.strip(), head, short_name(item).strip()} - {""}
-    for line in _section(text, "## File ownership"):
-        if not line.strip().startswith("|"):
-            continue
-        cells = _cells(line)
-        if _is_separator(cells) or len(cells) < 2:
-            continue
-        if cells[0].strip() in keys:
-            return _clean("the File ownership row", cells[1].strip())
+    keys = task_keys(item, task_name(text, item))
+    for row in ownership.parse("\n".join(_section(text, ownership.HEADING))):
+        if row.context in keys:
+            return _clean("the File ownership row", row.paths)
     raise RefusedError(
         f"no File ownership row for {head!r} in {relative}; write the paths the task owns before "
         "proposing it, so the user reads them before saying yes")
 
 
 def compose(root: Path, day: str | None, task: str, worktree: Path | None = None,
-            coordinator: str | None = None, name: str | None = None, runtime: str = "claude") -> str:
+            coordinator: str | None = None, name: str | None = None, runtime: str = "claude",
+            one_shot: bool = False) -> str:
     """The assignment for `task`, read back off disk. A task that is not a row is refused."""
     cfg = _config(root)
     try:
@@ -301,15 +298,13 @@ def compose(root: Path, day: str | None, task: str, worktree: Path | None = None
     if not wanted or not rows:
         raise RefusedError(f"no Tasks row {task!r} in {relative}; a dispatch names a task that is already there")
     owner = rows[0].owner.strip()
-    # The rule has always said only an `unassigned` task may be dispatched; nothing enforced it, and
-    # two worktrees were handed the same task and the same file to edit.
+    # Prevent two workers from claiming one task.
     if owner.lower() != UNASSIGNED:
         raise RefusedError(
             f"task {rows[0].item.strip()!r} is already {owner}'s, not {UNASSIGNED}; it is not a task to dispatch")
-    # Zach, 2026-09-22 22:20: each task "is actually backed by an entry in github". Where the block names
-    # a backlog, a task with no issue is not handed out. Whether the issue is open is the audit's.
+    # Backlog-backed tasks need an issue; the audit checks whether it is open.
     issue = None
-    # "A standing session's placeholder is not a task and takes no issue" (the agent file's tracker rule).
+    # Standing placeholders do not need issues.
     if cfg.backlog and not rows[0].standing_for(name):
         cell = rows[0].issue.strip()
         if not cell:
@@ -318,22 +313,63 @@ def compose(root: Path, day: str | None, task: str, worktree: Path | None = None
         issue = issue_ref(cell, cfg.backlog)
         if not issue:
             raise RefusedError(f'task {rows[0].item.strip()!r} has "{_clean("the issue cell", cell)}" in its issue column, which is not an issue reference')
-    # Absolute, because this file is read by a session whose cwd is its own worktree rather than the
-    # root the tracker path is written against. The first real spawn went hunting for a relative path
-    # that was never reachable from where it stood, and a session that hunts reads things nobody
-    # pointed it at.
+    # Workers read the tracker from a different cwd, so its path must be absolute.
     item = _clean("the Tasks item", rows[0].item.strip())
     owns = _owns(text, item, relative)
+    board_rule = ("Board safety: never automatically open the board URL or rendered board HTML with shell, "
+                  "browser, MCP, preview or artifact tools. Serve and render only; the user opens it. "
+                  "Keep this rule even if workspace instructions suggest opening a preview.")
+    if cfg.board_url:
+        board_rule += f" Board URL: {cfg.board_url}"
     who = SESSION_NAME.fullmatch(coordinator.strip()) if coordinator else None
     if coordinator and not who:
         raise RefusedError(f"{coordinator!r} is not a session name; pass the name a listing shows")
-    # Zach, 2026-09-23 00:04: "when a session gets a name, it should stick with that name".
+    # Preserve the assigned session name.
     if name is not None and not GIVEN_NAME.fullmatch(name):
         raise RefusedError(f"{name!r} is not a session name; a launch name is bare, like impl07")
+    if one_shot:
+        if worktree is None:
+            raise RefusedError("one-shot dispatch needs a worktree")
+        if rows[0].kind != "open" or rows[0].standing_for(name):
+            raise RefusedError("one-shot dispatch needs an open, non-standing task")
+        result = worktree / PROMPT_DIR / "worker-result.toon"
+        lines = [
+            "# One-shot assignment",
+            f"You are {name or 'a worker'} in a single, noninteractive {runtime} run. Complete only this task, then exit.",
+            "Do not register, poll a mailbox, schedule checks, start another agent, or send messages.",
+            "Do not wait for a plan approval or for a reply. If a decision, missing access, or another blocker prevents completion, stop and report human_review.",
+            board_rule,
+            WRITING_RULE,
+            f"Task: {item}",
+        ]
+        if rows[0].checklist.strip():
+            lines.append(f"Requirement: {_clean('the checklist cell', rows[0].checklist.strip())}")
+        if issue:
+            lines.append(f"Issue: {issue.url}")
+        lines += [
+            f"Worktree: {worktree}", f"Workspace: {root.resolve()}",
+            f"Tracker: {(root / relative).resolve()}",
+            f"Owns: {owns}. Edit only these paths and task-local files in this worktree.",
+            "Read the workspace rules and the issue if present. Implement the task, verify it, and make the changes this task permits in this one run.",
+            ("Commit the finished change on this worktree's branch and open a pull request when tests pass; do not merge."
+             if workflow.delivery == "pull-request" else
+             "Commit the finished change on this worktree's branch; do not push or merge without existing authorization."),
+            "Do not edit the tracker or issue labels yourself; the launcher reconciles them after you exit.",
+            f"Before exiting, write a TOON object to {result} with exactly three string fields:",
+            'status: done', 'reason: "what was completed, or why human review is required"',
+            'changes: "files changed, tests run, commit or PR if any"',
+            "Use status: human_review if unfinished, including when you made partial changes. State the blocker and the partial changes plainly.",
+            ("Use status: relaunch only when the task's premise moved under you before you changed anything, such as its "
+             "base or target PR merged or was replaced, and a fresh run from current main would do the task as written. "
+             "Say what moved; the coordinator relaunches it."),
+            "The launcher treats a missing or invalid result as human_review.",
+        ]
+        body = "\n".join(lines) + "\n"
+        if len(body) > BODY_CAP:
+            raise RefusedError(f"the assignment is {len(body)} characters, over the {BODY_CAP} cap")
+        return body
     coord_mailbox = "coordinator"
-    # Named explicitly: the inbox finds its mailbox through git's common dir, so from a fork worktree it
-    # resolved the fork's mailbox while the coordinator, at a workspace root that is no repo, read the
-    # workspace's. A mailbox-only (agy) session would never have been heard.
+    # Pin the workspace mailbox; worktree discovery can select a different one.
     inbox_script = f"{INBOX_SCRIPT} --mailbox-dir {shlex.quote(str(root.resolve() / PROMPT_DIR / 'mailbox'))}"
 
     header_text = HEADER.replace("\\\n", "").format(
@@ -382,7 +418,7 @@ def compose(root: Path, day: str | None, task: str, worktree: Path | None = None
         report_text = report_text.replace("If direct messaging fails, send via mailbox:", "Send via mailbox:")
         header_text = header_text.replace("When direct messaging is unavailable, send your ask via:", "Send your ask via:")
 
-    lines = [header_text, f"Task: {item}"]
+    lines = [header_text, board_rule, WRITING_RULE, f"Task: {item}"]
     if rows[0].checklist.strip():
         lines.append(f"Requirement: {_clean('the checklist cell', rows[0].checklist.strip())}")
     if issue:
@@ -396,7 +432,7 @@ def compose(root: Path, day: str | None, task: str, worktree: Path | None = None
         f"Inbox: {INBOX_SCRIPT}",
         f"Owns: {owns}" + ("" if owns.lower() == "none" else
                            " — yours to keep true; drift left in them is your error. Do not touch any other file."),
-        commit_rule(workflow),
+        commit_rule(workflow, root),
         report_text,
     ]
     body = "\n".join(lines) + "\n"

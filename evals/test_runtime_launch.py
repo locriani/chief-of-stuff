@@ -40,10 +40,16 @@ class CoordinatorLaunchTest(unittest.TestCase):
         self.assertEqual(first, again)
         self.assertTrue((first / "scripts" / "spawn_session.py").is_file())
         self.assertTrue((first / "scripts" / "init_workspace.py").is_file())
+        self.assertTrue((first / "scripts" / "install_model_guidance.py").is_file())
+        self.assertTrue((first / "assets" / "worker-model-guidance.md").is_file())
         self.assertTrue((first / "scripts" / "process_status.py").is_file())
+        self.assertTrue((first / "scripts" / "one_shot.py").is_file())
+        self.assertTrue((first / "hooks" / "hooks.json").is_file())
+        self.assertTrue((first / "scripts" / "board_guard.py").is_file())
         self.assertTrue((first / "scripts" / "_vendor" / "toon_format" / "decoder.py").is_file())
         self.assertTrue((first / "agents" / "chief-of-stuff.md").is_file())
-        self.assertIn("0.36.18-", first.name)
+        version = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text())["version"]
+        self.assertTrue(first.name.startswith(f"{version}-"))
 
     def test_concurrent_installs_share_one_complete_release(self):
         with ThreadPoolExecutor(max_workers=3) as pool:
@@ -63,6 +69,18 @@ class CoordinatorLaunchTest(unittest.TestCase):
         self.assertIn("session-scoped watcher", codex[-1])
         self.assertNotIn("${CLAUDE_PLUGIN_ROOT}", codex[-1])
 
+    def test_first_message_does_not_presume_a_new_day(self):
+        # A launch on a day that already has a log is a Resume; "Open the day." told it otherwise.
+        release = start.install(ROOT, self.install_dir)
+        for runtime in start.BINARIES:
+            with self.subTest(runtime=runtime):
+                first = start.command(runtime, "/bin/fake", release, self.root)[-1]
+                self.assertTrue(first.endswith(start.START), first[-120:])
+                self.assertNotIn("Open the day.", first)
+        # A bare `claude --agent chief-of-stuff` sends the frontmatter's initialPrompt instead.
+        front = (ROOT / "agents" / "chief-of-stuff.md").read_text().split("---", 2)[1]
+        self.assertIn(f'initialPrompt: "{start.START}"', front)
+
     def test_coordinator_prompts_use_host_mailbox_checks(self):
         release = start.install(ROOT, self.install_dir)
         expected = {"claude": "[Mailbox check] chief-of-stuff",
@@ -74,9 +92,26 @@ class CoordinatorLaunchTest(unittest.TestCase):
                 rendered = start.prompt(runtime, release, self.root)
                 self.assertIn(marker, rendered)
                 self.assertIn("list --recipient coordinator --unread", rendered)
-                self.assertIn("process_status.py --root", rendered)
-                self.assertIn("kanban.py --root", rendered)
+                self.assertIn("chief-of-stuff processes --root", rendered)
+                self.assertIn("chief-of-stuff kanban --root", rendered)
         self.assertEqual(start.WATCH_INTERVAL, 5 * 60)
+
+    def test_host_adapters_preserve_automatic_one_shot_dispatch(self):
+        release = start.install(ROOT, self.install_dir)
+        for runtime in start.BINARIES:
+            with self.subTest(runtime=runtime):
+                rendered = start.prompt(runtime, release, self.root)
+                self.assertIn("automatically assign and launch ready tasks", rendered)
+                self.assertIn("never ask for approval of routine one-shot assignments or launches", rendered)
+                self.assertIn("Never automatically open the board URL", rendered)
+                self.assertNotIn("Never launch a new session without", rendered)
+                self.assertNotIn("Do not launch a new session without", rendered)
+
+    def test_claude_worker_loads_the_pinned_hook_and_workspace(self):
+        cmd = spawn.runtime_tokens(cwd=str(self.root / "tree"), agent_type=None,
+                                   binary=Path("/bin/fake"), workspace=str(self.root))
+        self.assertEqual(cmd[cmd.index("--plugin-dir") + 1], str(ROOT))
+        self.assertIn(f"CHIEF_OF_STUFF_WORKSPACE={self.root}", cmd)
 
     def test_missing_calendar_server_does_not_block_launch(self):
         (self.root / "CLAUDE.md").write_text(CLAUDE +
@@ -151,8 +186,9 @@ class CoordinatorLaunchTest(unittest.TestCase):
         bin_dir.mkdir()
         fake = bin_dir / "agent"
         record = Path(self.tmp.name) / "cursor-argv.json"
-        fake.write_text("#!/usr/bin/env python3\nimport json,sys\n"
-                        f"open({str(record)!r}, 'w').write(json.dumps(sys.argv[1:]))\n")
+        fake.write_text("#!/usr/bin/env python3\nimport json,os,sys\n"
+                        f"open({str(record)!r}, 'w').write(json.dumps({{'argv': sys.argv[1:], "
+                        "'pinned': os.environ.get('CHIEF_OF_STUFF_RELEASE')}))\n")
         fake.chmod(0o755)
         home = Path(self.tmp.name) / "home"
         home.mkdir()
@@ -162,9 +198,11 @@ class CoordinatorLaunchTest(unittest.TestCase):
                                "--root", str(self.root), "--install-dir", str(self.install_dir)],
                               env=env, capture_output=True, text=True, timeout=15)
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        argv = json.loads(record.read_text())
+        launched = json.loads(record.read_text())
+        argv = launched["argv"]
         self.assertEqual(argv[:2], ["--workspace", str(self.root.resolve())])
         self.assertIn("## Host adapter", argv[-1])
+        self.assertEqual(Path(launched["pinned"]).parent, (self.install_dir / "versions").resolve())
 
 
 class WorkerRuntimeTest(unittest.TestCase):
