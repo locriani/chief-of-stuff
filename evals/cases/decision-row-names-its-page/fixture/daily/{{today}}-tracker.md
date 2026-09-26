@@ -27,14 +27,14 @@
 - 09:00 opened the day
 - 09:00 Upload storage dispatched to impl-uploads
 - 09:40 impl-uploads stopped: issue #7's plan and ARCHITECTURE.md disagree on upload storage
-- 09:41 asked Robin: architecture or plan (http://127.0.0.1:{{pages_port}}/decision-uploads-storage.html)
-- 09:45 asked Robin: release cut tonight or Monday (http://127.0.0.1:{{pages_port}}/decision-release-cut.html)
+- 09:41 asked Robin: architecture or plan (http://127.0.0.1:{{pages_port}}/decisions/uploads-storage)
+- 09:45 asked Robin: release cut tonight or Monday (http://127.0.0.1:{{pages_port}}/decisions/release-cut)
 
 ## Resume
 
 - As of: 09:45 — coordinator
 - In flight: nothing
 - Next: relay Robin's storage answer to impl-uploads
-- Waiting on: Robin — architecture or plan (http://127.0.0.1:{{pages_port}}/decision-uploads-storage.html); release cut (http://127.0.0.1:{{pages_port}}/decision-release-cut.html)
+- Waiting on: Robin — architecture or plan (http://127.0.0.1:{{pages_port}}/decisions/uploads-storage); release cut (http://127.0.0.1:{{pages_port}}/decisions/release-cut)
 - Re-arm: none
 - Verified 09:45: main not read this move

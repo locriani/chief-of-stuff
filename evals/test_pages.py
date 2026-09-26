@@ -85,9 +85,10 @@ class ServeTest(unittest.TestCase):
     def test_all_lists_every_page(self):
         resp = get(self.port, "/all")
         self.assertEqual(resp.status, 200)
-        for name in (b"arch-review.html", b"2026-09-23-board.html"):
-            self.assertIn(name, resp.body)
-        self.assertNotIn(b".pid", resp.body)
+        self.assertIn(b"arch-review.html", resp.body)
+        # A rendered page is a route, not a file (the user, 2026-09-26: "get rid of the .html versions entirely").
+        for hidden in (b".pid", b"-board.html"):
+            self.assertNotIn(hidden, resp.body)
 
     def test_localhost_is_served(self):
         self.assertEqual(get(self.port, "/arch-review.html", host=f"localhost:{self.port}").status, 200)
@@ -225,7 +226,7 @@ class RenderOnRequestTest(unittest.TestCase):
     def test_root_renders_todays_board_and_rerenders_after_a_tracker_edit(self):
         self.assertIn(b"Security audit", get(self.port, "/").body)
         self.tracker.write_text(TRACKER.format(day=self.day, task="Draft release notes"))
-        self.assertIn(b"Draft release notes", get(self.port, f"/{self.day}-board.html").body)
+        self.assertIn(b"Draft release notes", get(self.port, "/").body)
         self.assertTrue((self.pages / "decisions.html").is_file())
 
     def test_an_unchanged_page_is_served_as_written(self):
@@ -252,7 +253,7 @@ class RenderOnRequestTest(unittest.TestCase):
         self.assertIn(b"Cache TTL", resp.body)
         self.assertIn(b"Cache TTL", get(self.port, "/decisions").body)
 
-    def test_pages_are_routes_and_old_file_urls_redirect_to_them(self):
+    def test_pages_are_routes_and_their_files_are_not_served(self):
         # The user, 2026-09-26: "pages should be: / /decisions /decisions/id actually an app".
         (self.pages / "decision-cache-ttl.json").write_text(
             '{"headline": "Cache TTL", "ask": "Keep 5 minutes?", "options": [{"key": "A", "title": "Keep", '
@@ -262,11 +263,9 @@ class RenderOnRequestTest(unittest.TestCase):
         self.assertIn(b"Cache TTL", page.body)
         self.assertIn(b'href="/decisions"', page.body)
         self.assertIn(b'href="/decisions/cache-ttl"', get(self.port, "/decisions").body)
-        for old, new in (("/decisions.html", "/decisions"), ("/decision-cache-ttl.html", "/decisions/cache-ttl")):
-            with self.subTest(old=old):
-                resp = get(self.port, old)
-                self.assertEqual((resp.status, resp.getheader("Location")), (301, new))
-        for missing in ("/decisions/nope", "/decisions/../decisions", "/decisions/cache-ttl.json"):
+        # The user, 2026-09-26: "get rid of the .html versions entirely".
+        for missing in ("/decisions/nope", "/decisions/../decisions", "/decisions/cache-ttl.json", "/decisions.html",
+                        "/decision-cache-ttl.html", f"/{self.day}-board.html"):
             with self.subTest(missing=missing):
                 self.assertEqual(get(self.port, missing).status, 404)
 
