@@ -79,6 +79,7 @@ def settings_text(launcher: str, mode: str = "interactive") -> str:
              '# [models.implement]\n# rotation = ["claude:sonnet@medium", "codex:<model-id>@medium"]\n'
              '# [models.fast]\n# rotation = ["claude:haiku@low"]\n'
              '# [models.review]\n# rotation = ["codex:<model-id>@high", "claude:opus@high"]\n')
+    text += '\n# [pages]\n# workers = 4\n'
     tomllib.loads(text)
     return text
 

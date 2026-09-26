@@ -84,6 +84,12 @@ class Workers:
 
 
 @dataclass(frozen=True)
+class Pages:
+    # The user, 2026-09-26: "allow the board server to have up to 4 workers", then "well, N workers. 4 default".
+    workers: int = 4  # pages the pages server renders at once
+
+
+@dataclass(frozen=True)
 class Kanban:
     """One visible board stage per tracker stage, with an independent human hold."""
     stages: tuple[str, ...]
@@ -134,6 +140,7 @@ class Settings:
     kanban: Kanban | None = None
     workflow: Workflow = field(default_factory=Workflow)
     workers: Workers = field(default_factory=Workers)
+    pages: Pages = field(default_factory=Pages)
     # #111: task class -> rotation; the first entry is the suggested model, the rest the fallback order.
     models: dict[str, tuple[ModelEntry, ...]] = field(default_factory=dict)
     graph: Graph | None = None
@@ -197,6 +204,15 @@ def _workers(table) -> Workers:
     if cap is not None and (type(cap) is not int or cap < 1):
         raise SettingsError("[workers] max_concurrency must be a positive whole number")
     return Workers(launcher=launcher, mode=mode, max_concurrency=cap)
+
+
+def _pages(table) -> Pages:
+    if not isinstance(table, dict):
+        raise SettingsError("[pages] must be a table")
+    n = table.get("workers", Pages.workers)
+    if type(n) is not int or n < 1:
+        raise SettingsError("[pages] workers must be a positive whole number")
+    return Pages(n)
 
 
 def _graph(table) -> Graph:
@@ -339,14 +355,15 @@ def load(root: Path, settings_path: str | None) -> Settings:
     workers = _workers(data["workers"]) if "workers" in data else Workers()
     models = _models(data["models"]) if "models" in data else {}
     graph = _graph(data["graph"]) if "graph" in data else None
+    pages = _pages(data["pages"]) if "pages" in data else Pages()
     budgets = data.get("budgets", {})
     if not isinstance(budgets, dict) or not set(budgets) <= {"S", "M", "L", "XL"}:
         raise SettingsError(f"{settings_path}: [budgets] is a table of S, M, L, XL")
     budgets = {size: _offset(v, f"[budgets] {size}") for size, v in budgets.items()}
     table = data.get("notify")
     if table is None:
-        return Settings(lanes=lanes, budgets=budgets, kanban=kanban, workflow=workflow, workers=workers, models=models, graph=graph)
+        return Settings(lanes=lanes, budgets=budgets, kanban=kanban, workflow=workflow, workers=workers, pages=pages, models=models, graph=graph)
     if not isinstance(table, dict):
         raise SettingsError(f"{settings_path}: [notify] is not a table")
     return Settings(notify=_notify(table, Path(root)), lanes=lanes, budgets=budgets,
-                    kanban=kanban, workflow=workflow, workers=workers, models=models, graph=graph)
+                    kanban=kanban, workflow=workflow, workers=workers, pages=pages, models=models, graph=graph)

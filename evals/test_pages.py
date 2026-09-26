@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -208,6 +209,8 @@ class RenderOnRequestTest(unittest.TestCase):
         self.tracker.write_text(TRACKER.format(day=self.day, task="Security audit"))
         self.pages = self.root / "pages"
         self.pages.mkdir()
+        if getattr(self, "SETTINGS", ""):
+            (self.root / "cos.toml").write_text(self.SETTINGS)
         self.calls, self.refreshed = [], threading.Event()
         self.server = pg.make_server(self.pages, 0, root=self.root, refresh=self.fake_refresh, every=3600)
         self.port = self.server.server_address[1]
@@ -372,6 +375,145 @@ class AnswerTest(unittest.TestCase):
     def test_an_unreadable_decision_takes_no_answer(self):
         self.json.write_text("{")
         self.assertEqual(post(self.port, "/decisions/cache-ttl", b"key=B", origin=self.origin).status, 409)
+
+
+WAIT = 5.0   # the longest a test waits for something that must happen
+QUIET = 0.5  # how long a test watches for something that must not happen
+
+
+def decision(slug: str) -> str:
+    return json.dumps({"headline": slug, "ask": "Which?", "options": [{"key": "A", "title": "Keep", "text": "no change"},
+                       {"key": "B", "title": "Drop", "text": "slower"}], "recommended": "A", "why": "fine", "default": "A at 17:00"})
+
+
+class _Renders:
+    """Fake renderers in place of `render_board.write`, `decision_page.write` and `issue_page.write`: each records the page
+    it renders on entry and holds until the test releases it, so a test sees how many renders are inside at once.
+
+    The user, 2026-09-26: "allow the board server to have up to 4 workers", then "well, N workers. 4 default"."""
+
+    SETTINGS = ""
+    fake_refresh = RenderOnRequestTest.fake_refresh
+
+    def setUp(self):
+        RenderOnRequestTest.setUp(self)
+        import decision_page
+        import issue_page
+        import render_board
+        self.cond, self.gate = threading.Condition(), threading.Semaphore(0)
+        self.inside, self.entered, self.most = [], [], {}
+        for target, fake in ((render_board, lambda root, day=None: self.render(f"{day}-board.html")),
+                             (decision_page, lambda root, pages_dir, slug, day, source=None: self.render(f"decision-{slug}.html")),
+                             (issue_page, lambda root, pages_dir, n: self.render(f"issue-{n}.html"))):
+            patcher = mock.patch.object(target, "write", fake)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.threads = []
+        self.addCleanup(self.finish)
+
+    def render(self, name: str):
+        with self.cond:
+            self.inside.append(name)
+            self.entered.append(name)
+            self.most[name] = max(self.most.get(name, 0), self.inside.count(name))
+            self.most["*"] = max(self.most.get("*", 0), len(self.inside))
+            self.cond.notify_all()
+        try:
+            self.gate.acquire(timeout=30)
+            (self.pages / name).write_text(f"<!doctype html><body><p>{name}</p></body>")
+        finally:
+            with self.cond:
+                self.inside.remove(name)
+                self.cond.notify_all()
+
+    def until(self, predicate, timeout: float) -> bool:
+        with self.cond:
+            return self.cond.wait_for(predicate, timeout)
+
+    def fire(self, call, *args, **kwargs) -> dict:
+        box = {}
+
+        def run():
+            try:
+                box["resp"] = call(self.port, *args, **kwargs)
+            except Exception as e:  # a client timeout: the test's own assertions report it
+                box["error"] = e
+        box["thread"] = threading.Thread(target=run, daemon=True)
+        box["thread"].start()
+        self.threads.append(box["thread"])
+        return box
+
+    def finish(self):
+        self.gate.release(1000)
+        for t in self.threads:
+            t.join(WAIT)
+
+    def assert_up_to(self, n: int):
+        """Rule: "The server renders up to N pages at once." Rule: "The N+1th waits. It proceeds when one of the N finishes." """
+        first = [self.fire(get, f"/issues/{i}") for i in range(1, n + 1)]
+        self.assertTrue(self.until(lambda: len(self.inside) >= n, WAIT),
+                        f"{n} different pages were requested; {len(self.inside)} rendered at once")
+        last = self.fire(get, f"/issues/{n + 1}")
+        self.assertFalse(self.until(lambda: len(self.entered) > n, QUIET), f"page {n + 1} rendered beside {n} others")
+        self.gate.release()
+        self.assertTrue(self.until(lambda: len(self.entered) > n, WAIT), f"page {n + 1} did not render when one of the {n} finished")
+        self.gate.release(n)
+        for box in [*first, last]:
+            box["thread"].join(WAIT)
+            self.assertEqual(box.get("resp") and box["resp"].status, 200, box.get("error"))
+        self.assertEqual(self.most["*"], n)
+
+
+class ConcurrentRenderTest(_Renders, unittest.TestCase):
+    """A slow render (the module graph, the source & diff page) no longer holds up every other page."""
+
+    def test_up_to_four_pages_render_at_once_by_default(self):
+        # Rule: "N comes from the workspace settings TOML `[pages] workers` ... and defaults to 4." No [pages] here.
+        self.assert_up_to(4)
+
+    def test_one_page_renders_once_at_a_time_and_different_pages_overlap(self):
+        # Rule: "Two requests for the same page never render it concurrently ... Different pages do overlap."
+        a = self.fire(get, "/issues/1")
+        self.assertTrue(self.until(lambda: "issue-1.html" in self.inside, WAIT))
+        again, other = self.fire(get, "/issues/1"), self.fire(get, "/issues/2")
+        self.assertTrue(self.until(lambda: "issue-2.html" in self.inside, WAIT),
+                        "a render of another page waited for issue 1's render")
+        self.assertFalse(self.until(lambda: self.inside.count("issue-1.html") > 1, QUIET), "issue 1 rendered twice at once")
+        self.gate.release(10)
+        for box in (a, again, other):
+            box["thread"].join(WAIT)
+            self.assertEqual(box.get("resp") and box["resp"].status, 200, box.get("error"))
+        self.assertEqual(self.most["issue-1.html"], 1)
+
+    def test_an_answer_waits_only_for_a_render_of_its_own_decision(self):
+        # Rule: "a decision-answer save never overlaps a render of that same decision page. Different pages do overlap."
+        for slug in ("cache-ttl", "log-level"):
+            (self.pages / f"decision-{slug}.json").write_text(decision(slug))
+        origin = f"http://127.0.0.1:{self.port}"
+        page = self.fire(get, "/decisions/cache-ttl")
+        self.assertTrue(self.until(lambda: "decision-cache-ttl.html" in self.inside, WAIT))
+        same = self.fire(post, "/decisions/cache-ttl", b"key=B", origin=origin)
+        other = self.fire(post, "/decisions/log-level", b"key=A", origin=origin)
+        other["thread"].join(WAIT)
+        self.assertEqual(other.get("resp") and other["resp"].status, 303,
+                         f"the answer to another decision waited for this render: {other.get('error')}")
+        self.assertEqual(json.loads((self.pages / "decision-log-level.json").read_text())["answer"]["key"], "A")
+        same["thread"].join(QUIET)
+        self.assertTrue(same["thread"].is_alive(), "the answer was saved while its decision page was rendering")
+        self.assertNotIn("answer", json.loads((self.pages / "decision-cache-ttl.json").read_text()))
+        self.gate.release(10)
+        for box in (page, same):
+            box["thread"].join(WAIT)
+        self.assertEqual(same.get("resp") and same["resp"].status, 303, same.get("error"))
+        self.assertEqual(json.loads((self.pages / "decision-cache-ttl.json").read_text())["answer"]["key"], "B")
+
+
+class ConfiguredWorkersTest(_Renders, unittest.TestCase):
+    SETTINGS = "[pages]\nworkers = 2\n"
+
+    def test_pages_workers_sets_how_many_render_at_once(self):
+        # Rule: "N comes from the workspace settings TOML `[pages] workers`, a positive whole number".
+        self.assert_up_to(2)
 
 
 if __name__ == "__main__":
