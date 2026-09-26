@@ -379,6 +379,7 @@ def _at(hhmm: str, day: date, cfg: Config) -> datetime | None:
 
 
 def workers(root: Path, cfg: Config, tracker: Tracker, tracker_text: str, day: date) -> tuple[Worker, ...]:
+    import flow_chart
     import one_shot
     from audit_tasks import worktrees_dir
     from render_board import _bare_name, _section
@@ -398,7 +399,7 @@ def workers(root: Path, cfg: Config, tracker: Tracker, tracker_text: str, day: d
     for tree, task in one_shot.running_trees(trees).items():
         m = started.get(task)
         runtime, _, model = (m[3] if m else "").partition(" ")
-        found.append(Worker(m[2] if m else tree.name, "one-shot", runtime, model, task, tree.name,
+        found.append(Worker(m[2] if m else tree.name, "one-shot", runtime, model, flow_chart.launch_row(task, tracker.tasks)[1], tree.name,
                             _at(m[1], day, cfg) if m else None, None))
     return tuple(found)
 
