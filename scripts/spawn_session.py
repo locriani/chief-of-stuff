@@ -50,7 +50,7 @@ AS_ESCAPE = str.maketrans({'"': '\\"', "\\": "\\\\"})
 # Keep shell essentials and SSH auth, but exclude the coordinator's CLAUDE_* identity.
 KEEP = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "TERM_PROGRAM", "TMPDIR",
         "LANG", "LC_ALL", "LC_CTYPE", "COLORTERM", "TZ", "SSH_AUTH_SOCK", "XDG_CONFIG_HOME",
-        "CHIEF_OF_STUFF_RELEASE")
+        "CHIEF_OF_STUFF_RELEASE", "CHIEF_OF_STUFF_WORKSPACE")
 OSASCRIPT = "/usr/bin/osascript"
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "fish", "env", "eval", "exec", "xargs"}
 METACHARACTERS = re.compile(r"[;&|`$<>\n]")
@@ -150,8 +150,10 @@ def runtime_tokens(*, cwd: str, agent_type: str | None, binary: Path | None, tit
               "model": model, "effort": effort, "root": os.path.abspath(workspace)}
     template = _unset(TEMPLATES[runtime], values)
     rest = [PLACEHOLDER.sub(lambda m: values.get(m.group(1), m.group(0)), t) for t in template[1:]]
-    tokens = [ENV_BIN, "-C", root, f"PATH={os.environ.get('PATH', '')}"]
+    tokens = [ENV_BIN, "-C", root, f"PATH={os.environ.get('PATH', '')}",
+              f"CHIEF_OF_STUFF_WORKSPACE={os.path.abspath(workspace)}"]
     if runtime == "claude":
+        rest = ["--plugin-dir", str(Path(__file__).resolve().parent.parent), *rest]
         tokens += [sys.executable, str(Path(__file__).resolve().parent / "session_exec.py"),
                    "exec-login", "--"]
     else:

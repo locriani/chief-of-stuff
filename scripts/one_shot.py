@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run one approved task in one CLI turn, then reconcile its result."""
+"""Run one scoped task in one CLI turn, then reconcile its result."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ def command(runtime: str, binary: str, cwd: Path, dispatch: Path, *, agent_type:
     prompt = BOOTSTRAP.format(dispatch=dispatch, cwd=cwd)
     if runtime == "claude":
         argv = [binary, "--print", "--permission-mode", "auto", "--permission-prompts", "none",
-                "--no-session-persistence"]
+                "--no-session-persistence", "--plugin-dir", str(Path(__file__).resolve().parent.parent)]
         if agent_type:
             argv += ["--agent", agent_type]
         if model:
@@ -224,9 +224,11 @@ def run(*, root: Path, day: str | None, task: str, cwd: Path, name: str,
     write_dispatch(cwd, body)
     logs = cwd / dispatch_prompt.PROMPT_DIR
     before_head = git_head(cwd)
+    env = clean_env()
+    env["CHIEF_OF_STUFF_WORKSPACE"] = str(root.resolve())
     try:
         with (logs / "worker-stdout.log").open("w") as stdout, (logs / "worker-stderr.log").open("w") as stderr:
-            completed = subprocess.run(login_argv(argv), cwd=cwd, env=clean_env(), stdin=subprocess.DEVNULL,
+            completed = subprocess.run(login_argv(argv), cwd=cwd, env=env, stdin=subprocess.DEVNULL,
                                        stdout=stdout, stderr=stderr, timeout=timeout_minutes * 60,
                                        check=False)
         exit_code = completed.returncode

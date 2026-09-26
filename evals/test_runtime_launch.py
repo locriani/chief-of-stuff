@@ -44,6 +44,8 @@ class CoordinatorLaunchTest(unittest.TestCase):
         self.assertTrue((first / "assets" / "worker-model-guidance.md").is_file())
         self.assertTrue((first / "scripts" / "process_status.py").is_file())
         self.assertTrue((first / "scripts" / "one_shot.py").is_file())
+        self.assertTrue((first / "hooks" / "hooks.json").is_file())
+        self.assertTrue((first / "scripts" / "board_guard.py").is_file())
         self.assertTrue((first / "scripts" / "_vendor" / "toon_format" / "decoder.py").is_file())
         self.assertTrue((first / "agents" / "chief-of-stuff.md").is_file())
         version = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text())["version"]
@@ -81,6 +83,23 @@ class CoordinatorLaunchTest(unittest.TestCase):
                 self.assertIn("chief-of-stuff processes --root", rendered)
                 self.assertIn("chief-of-stuff kanban --root", rendered)
         self.assertEqual(start.WATCH_INTERVAL, 5 * 60)
+
+    def test_host_adapters_preserve_automatic_one_shot_dispatch(self):
+        release = start.install(ROOT, self.install_dir)
+        for runtime in start.BINARIES:
+            with self.subTest(runtime=runtime):
+                rendered = start.prompt(runtime, release, self.root)
+                self.assertIn("automatically assign and launch ready tasks", rendered)
+                self.assertIn("never ask for approval of routine one-shot assignments or launches", rendered)
+                self.assertIn("Never automatically open the board URL", rendered)
+                self.assertNotIn("Never launch a new session without", rendered)
+                self.assertNotIn("Do not launch a new session without", rendered)
+
+    def test_claude_worker_loads_the_pinned_hook_and_workspace(self):
+        cmd = spawn.runtime_tokens(cwd=str(self.root / "tree"), agent_type=None,
+                                   binary=Path("/bin/fake"), workspace=str(self.root))
+        self.assertEqual(cmd[cmd.index("--plugin-dir") + 1], str(ROOT))
+        self.assertIn(f"CHIEF_OF_STUFF_WORKSPACE={self.root}", cmd)
 
     def test_missing_calendar_server_does_not_block_launch(self):
         (self.root / "CLAUDE.md").write_text(CLAUDE +

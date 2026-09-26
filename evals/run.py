@@ -64,6 +64,8 @@ SPAWN_SESSION = PLUGIN_ROOT / "scripts" / "spawn_session.py"
 # from code, never from the agent. git and curl stay off the allowlist — the scripts call them.
 SCRIPTS = ("render_board.py", "pages.py", "probe_health.py", "audit_tasks.py", "make_worktree.py",
            "spawn_session.py", "notify.py", "inbox.py", "backlog.py", "kanban.py", "process_status.py")
+OPERATIONS = ("board", "pages", "health", "audit", "worktree", "worker", "notify", "inbox",
+              "backlog", "kanban", "processes")
 
 
 def allowed_tools(root: Path) -> list[str]:
@@ -72,6 +74,8 @@ def allowed_tools(root: Path) -> list[str]:
     verdicts wearing one name. Rooting them lets a run point at a snapshot of its own."""
     return (["Bash(date:*)", "Bash(TZ=*)", "Bash(mv:*)", "Bash(mkdir:*)"]
             + [f"Bash(python3 {root / 'scripts' / name}:*)" for name in SCRIPTS]
+            + [f"Bash(python3 {root / 'chief_of_stuff.py'} {op}:*)" for op in OPERATIONS]
+            + [f"Bash(chief-of-stuff {op}:*)" for op in OPERATIONS]
             + ["Read", "Glob", "Grep", "Write(./**)", "Edit(./**)"])
 
 
@@ -323,7 +327,9 @@ def _no_shell_edits(_g: dict[str, Any], rec: RunRecord) -> tuple[bool, str]:
                 break
             if re.fullmatch(r"python(?:3(?:\.\d+)?)?", name):
                 script = Path(tokens[i + 1]) if i + 1 < len(tokens) else Path("")
-                if script.parent.name != "scripts" or script.name not in SAFE_SCRIPTS:
+                router = (script.name == "chief_of_stuff.py" and i + 2 < len(tokens)
+                          and tokens[i + 2] in OPERATIONS)
+                if not router and (script.parent.name != "scripts" or script.name not in SAFE_SCRIPTS):
                     violations.append(command)
                     break
     return (not violations), ("no shell edits" if not violations else f"shell edit call(s): {violations[:3]}")
@@ -1427,12 +1433,19 @@ def write_shims(shim_dir: Path) -> None:
     gh.chmod(0o755)
 
 
-def eval_environment(out: Path, calls_log: Path, tz: str) -> dict[str, str]:
+def eval_environment(out: Path, calls_log: Path, tz: str, root: Path | None = None) -> dict[str, str]:
     """Pin external issue writes to the fake CLI even if a host resets its shell PATH."""
     shims = out / "shims"
+    shims.mkdir(parents=True, exist_ok=True)
+    release = root or PLUGIN_ROOT
+    entry = shims / "chief-of-stuff"
+    entry.write_text(f"#!{sys.executable}\nimport os, sys\n"
+                     f"os.execv(sys.executable, [sys.executable, {str(release / 'chief_of_stuff.py')!r}, *sys.argv[1:]])\n")
+    entry.chmod(0o755)
     return dict(os.environ,
                 PATH=f"{shims}{os.pathsep}{os.environ['PATH']}",
                 CHIEF_OF_STUFF_GH=str((shims / "gh").resolve()),
+                CHIEF_OF_STUFF_RELEASE=str(release),
                 CHIEF_OF_STUFF_LAUNCHER=json.dumps(write_recorder(shims, calls_log, tz)))
 
 
@@ -1461,7 +1474,8 @@ def run_one(case: Case, arm: str, model: str, out: Path, root: Path | None = Non
         write_shims(out / "shims")
         calls_log.parent.mkdir(parents=True, exist_ok=True)
         calls_log.touch()
-        env = eval_environment(out, calls_log, tz)
+        env = eval_environment(out, calls_log, tz, root=root)
+        env["CHIEF_OF_STUFF_WORKSPACE"] = str(work)
         mcp_config = None
         if "calendar" in spec:
             # Events live in the results dir, not the agent's cwd, so the calendar is reachable only through the mock.

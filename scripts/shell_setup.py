@@ -11,7 +11,7 @@ from pathlib import Path
 PROGRAM = re.compile(r"^[A-Za-z][A-Za-z0-9._-]*$")
 KEEP = {"PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "TERM_PROGRAM", "TMPDIR",
         "LANG", "LC_ALL", "LC_CTYPE", "COLORTERM", "TZ", "SSH_AUTH_SOCK", "XDG_CONFIG_HOME",
-        "CHIEF_OF_STUFF_RELEASE"}
+        "CHIEF_OF_STUFF_RELEASE", "CHIEF_OF_STUFF_WORKSPACE"}
 
 
 class ShellError(ValueError):

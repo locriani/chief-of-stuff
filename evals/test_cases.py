@@ -53,6 +53,14 @@ class CaseLintTest(unittest.TestCase):
     def test_there_are_cases(self) -> None:
         self.assertGreater(len(CASES), 40)
 
+    def test_one_shot_launch_grader_handles_quoted_task_arguments(self) -> None:
+        case = EVALS / "cases" / "one-shot-dispatch-autonomous"
+        pattern = spec(case)["graders"][0]["input_match"]
+        for entry in ("python3 /release/chief_of_stuff.py worker", "chief-of-stuff worker",
+                      "python3 /release/scripts/spawn_session.py"):
+            command = entry + ' --task "Security audit" --runtime claude --dry-run'
+            self.assertRegex(json.dumps({"command": command}), pattern)
+
     def test_every_grader_type_is_one_the_runner_dispatches(self) -> None:
         for case in CASES:
             for g in graders(spec(case)):
