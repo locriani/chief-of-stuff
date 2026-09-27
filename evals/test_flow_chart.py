@@ -224,6 +224,58 @@ class DoneNoClockTest(unittest.TestCase):
                 self.assertEqual(row.segments[-1].end, NOW)
 
 
+DONE_AFTER_MIDNIGHT = """# Tracker
+
+## Tasks
+
+| name | item | owner | state | since | due | size | lane | stage | issue | checklist |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Night owl | Ship night owl | impl-1 | done 22:21 | 2026-09-25 |  | S | build | pr | #120 | c |
+
+## Log
+
+- 21:00 stage: Night owl → implement
+"""
+
+DONE_SAME_DAY = """# Tracker
+
+## Tasks
+
+| name | item | owner | state | since | due | size | lane | stage | issue | checklist |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Night owl | Ship night owl | impl-1 | done 00:50 | 2026-09-26 |  | S | build | pr | #120 | c |
+
+## Log
+
+- 00:10 stage: Night owl → implement
+"""
+
+
+class DoneClockAfterMidnightTest(unittest.TestCase):
+    """(#213) A done task's `HH:MM` clock names its latest occurrence at or before now, not a same-date
+    occurrence that may not have happened yet."""
+
+    def test_a_done_clock_from_the_previous_evening_stops_the_bar_there_not_at_now(self):
+        # NOW is 02:10 the next day; "done 22:21" is later in the day than NOW's own time of day, so it
+        # names YESTERDAY 22:21 — the only occurrence of 22:21 that has actually happened — not a today
+        # 22:21 that is still 20 hours away.
+        tasks = rb.parse_tracker(DONE_AFTER_MIDNIGHT).tasks
+        built = fc.build(fc.moves(DONE_AFTER_MIDNIGHT, YESTERDAY, CT), tasks, LANES, set(), {}, NOW)
+        _, row = {r.name: (s, r) for s, r in built}["Night owl"]
+        self.assertTrue(row.segments)
+        self.assertEqual(row.segments[-1].end, at(YESTERDAY, "22:21"))
+        self.assertLessEqual(row.segments[-1].end, NOW)
+
+    def test_a_done_clock_earlier_today_still_resolves_to_today(self):
+        # Regression guard: just after midnight, a clock before now's own time of day still means today —
+        # the fix must not walk every done clock back a day regardless of which is earlier.
+        tasks = rb.parse_tracker(DONE_SAME_DAY).tasks
+        built = fc.build(fc.moves(DONE_SAME_DAY, TODAY, CT), tasks, LANES, set(), {}, NOW)
+        _, row = {r.name: (s, r) for s, r in built}["Night owl"]
+        self.assertTrue(row.segments)
+        self.assertEqual(row.segments[-1].end, at(TODAY, "00:50"))
+
+
 QUEUED = TODAY_TRACKER.replace("| Session timeout |", "| Export format | Export CSV | unassigned | open | 2026-09-26 |  | M | build | implement | #112 | c |\n| Session timeout |")
 
 

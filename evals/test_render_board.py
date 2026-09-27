@@ -272,6 +272,42 @@ class BarTest(unittest.TestCase):
         self.assertEqual(b.end, datetime(2026, 9, 16, 11, 15, tzinfo=CT))
 
 
+MIDNIGHT_TRACKER = """# Tracker 2026-09-17
+
+## Tasks
+
+| item | owner | state | since | due | checklist |
+|---|---|---|---|---|---|
+| Night owl | Robin | done 22:21 | 2026-09-16 |  | Checklist: Night owl |
+| Early bird | Robin | done 00:03 | 2026-09-17 |  | Checklist: Early bird |
+
+## Log
+
+- 21:00 opened the day
+"""
+
+
+class DoneClockAfterMidnightTest(unittest.TestCase):
+    """(#213) A done task's `HH:MM` clock names its latest occurrence at or before now, so the board's
+    done bar cannot run past a clock that hasn't happened yet today."""
+
+    def setUp(self) -> None:
+        self.now = datetime(2026, 9, 17, 0, 5, tzinfo=CT)
+        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=self.now.date())
+        self.by = {t.item: t for t in rb.parse_tracker(MIDNIGHT_TRACKER).tasks}
+
+    def test_a_clock_later_than_nows_time_of_day_names_yesterday(self) -> None:
+        b = rb.day_bar(self.by["Night owl"], self.cfg, self.now)
+        self.assertEqual(b.end_src, "state")
+        self.assertEqual(b.end, datetime(2026, 9, 16, 22, 21, tzinfo=CT))
+        self.assertLessEqual(b.end, self.now)
+
+    def test_a_clock_earlier_than_nows_time_of_day_still_names_today(self) -> None:
+        # Regression guard: just after midnight, a clock before now's own time of day is still today.
+        b = rb.day_bar(self.by["Early bird"], self.cfg, self.now)
+        self.assertEqual(b.end, datetime(2026, 9, 17, 0, 3, tzinfo=CT))
+
+
 class RenderTest(unittest.TestCase):
     def setUp(self) -> None:
         self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())

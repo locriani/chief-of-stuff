@@ -159,8 +159,13 @@ def build(log: list[Move], tasks, lanes: dict, held: set[str], ends: dict[str, d
         stop = now
         if task and task.kind == "done":
             # (#196) no clock: stop at its own last move, so it draws no bar past that move.
-            stop = (min(now, datetime.combine(now.date(), time.fromisoformat(t.zfill(5)), tzinfo=now.tzinfo))
-                    if (t := task.state_time) else last.at)
+            # (#213) a clock: its latest occurrence at or before now, not a same-date occurrence that
+            # may not have happened yet.
+            if t := task.state_time:
+                import render_board  # render_board imports this module, so not at the top
+                stop = render_board._done_clock(t, now, now.tzinfo)
+            else:
+                stop = last.at
         merge = task and (merged or {}).get(task.name.strip())
         segs = [gantt.Segment(m.at, e, m.stage, "done", owner(key, m.at, task))
                 for m, nxt in zip(mine, mine[1:] + [None])
