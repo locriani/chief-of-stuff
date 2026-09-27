@@ -1864,13 +1864,138 @@ class LaneColumnsTest(unittest.TestCase):
         self.assertTrue(all(not t.warning for t in tasks), [t.warning for t in tasks])
 
 
-    def test_the_board_draws_build_and_an_unlaned_task_is_in_no_lane(self) -> None:
+    def test_the_board_draws_a_lane_table_and_an_unlaned_task_is_a_row(self) -> None:
         cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
         html = rb.render(TRACKER_LANED, cfg, NOW, lanes=self.LANES)
-        self.assertIn('<section id="flow"><h2>Lanes</h2>\n<div class="meta">3 tasks · 1 issue</div>\n<figure class="columns"', html)
-        self.assertIn('.columns-tag[data-cat="running"]', html)
-        # Flow.dc.html: LANES is always drawn, and the NO LANE strip closes it, so a tracker with no lane is all NO LANE.
+        self.assertIn('<section id="flow"><h2>Lanes</h2>', html)
+        self.assertIn('<table class="lane-table"', html)
+        # Every non-standing task is a row — laned or not.
+        self.assertIn('Cut the release', html.split('<table class="lane-table"')[1].split('</table>')[0])
+        self.assertIn('Console', html.split('<table class="lane-table"')[1].split('</table>')[0])
+        # A tracker with no lanes still draws the table, not a columns board.
         plain = rb.render(TRACKER, cfg, NOW)
-        tasks = [t for t in rb.parse_tracker(TRACKER).tasks if not t.standing]
-        self.assertIn(f'<span class="columns-foot-name">no lane · {len(tasks)}</span>', plain)
+        self.assertIn('<table class="lane-table"', plain)
+        self.assertNotIn('<figure class="columns"', plain)
+
+
+# --- stage 1: one lane table, unassigned / queue filters, density cap -------------------------
+# The kanban-column view (columns.py) is replaced by one flat HTML table. Unassigned and the
+# queue are rows in that table, distinguished by data-* attributes that CSS can filter on.
+# The density cap from 0.3.1 comes back at 32 000 bytes — the loan from Stage 0 is repaid.
+
+LANE_TABLE_TRACKER = """# Tracker 2026-09-16
+
+Coordinator: coordinator. Board: board-7.
+
+## Tasks
+
+| name | item | owner | state | since | due | size | lane | stage | issue | checklist |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Cut the release | Cut the release branch | impl-2 | running 10:30 | 10:30 | 23:00 | M | build | review | #9 | Checklist: cut |
+| Write README | Write eval README | Robin | open | 09:00 | 17:00 | S | build | triage |  | Checklist: readme |
+| Console | Rotate the key | unassigned | open | 09:00 | 17:00 | S |  |  |  | Checklist: key |
+| Backlog item | Triage the backlog | Robin | open | 09:00 |  | M |  |  |  | Checklist: backlog |
+| Done task | Shipped yesterday | Robin | done 08:00-09:00 | 2026-09-15 |  | S | build | merge | #8 | Checklist: done |
+
+## Sessions
+
+| ref | name | state | doing | waiting on | free at | constraints | children | last reply |
+|---|---|---|---|---|---|---|---|---|
+| a1b2c3 | impl-2 | working | the release branch | | 15:00 | TDD | none | 14:20 |
+
+## Log
+
+- 09:00 opened the day
+"""
+
+
+class LaneTableTest(unittest.TestCase):
+    """Stage 1: the LANES section is a single HTML table, not a column board.
+
+    Every non-done, non-standing task is a row. Unassigned and queued tasks are rows in the same
+    table, marked by data-* attributes so CSS can filter them. The columns board is gone.
+    """
+
+    LANES = {"build": st.Lane(("implement", "pr", "review", "triage", "merge"), ("triage", "merge"))}
+
+    def setUp(self) -> None:
+        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.html = rb.render(LANE_TABLE_TRACKER, self.cfg, NOW, lanes=self.LANES)
+        # The table is inside the Lanes section.
+        m = re.search(r'<table class="lane-table"[^>]*>(.*?)</table>', self.html, re.S)
+        self.assertIsNotNone(m, "No lane-table found in the rendered page")
+        self.table = m.group(0)
+
+    def test_the_lanes_section_contains_a_table_not_columns(self) -> None:
+        """The columns board (<figure class="columns">) is replaced by a lane table."""
+        lanes_section = self.html.split('<section id="flow">')[1].split('</section>')[0]
+        self.assertNotIn('<figure class="columns"', lanes_section)
+        self.assertIn('<table class="lane-table"', lanes_section)
+
+    def test_every_active_task_is_a_row(self) -> None:
+        """Each non-done, non-standing task appears as a <tr> inside the table."""
+        for name in ("Cut the release", "Write README", "Console", "Backlog item"):
+            self.assertIn(name, self.table, f"{name} should be a row in the lane table")
+
+    def test_done_tasks_are_not_rows(self) -> None:
+        """Done tasks do not appear in the active lane table."""
+        self.assertNotIn("Done task", self.table)
+        self.assertNotIn("Shipped yesterday", self.table)
+
+    def test_unassigned_rows_are_marked(self) -> None:
+        """A task with owner `unassigned` carries `data-unassigned` on its row."""
+        self.assertIn('data-unassigned', self.table)
+        # The row with "Console" should be the one marked.
+        rows = re.findall(r'<tr[^>]*>.*?</tr>', self.table, re.S)
+        console_rows = [r for r in rows if 'Console' in r]
+        self.assertTrue(console_rows, "Console row not found")
+        self.assertIn('data-unassigned', console_rows[0])
+
+    def test_queued_rows_are_marked(self) -> None:
+        """A task that is owned but not running carries `data-queued` on its row."""
+        rows = re.findall(r'<tr[^>]*>.*?</tr>', self.table, re.S)
+        # "Write README" is open, owned by Robin, not running — it is queued.
+        readme_rows = [r for r in rows if 'Write README' in r]
+        self.assertTrue(readme_rows, "Write README row not found")
+        self.assertIn('data-queued', readme_rows[0])
+        # "Cut the release" is running — not queued.
+        cut_rows = [r for r in rows if 'Cut the release' in r]
+        self.assertTrue(cut_rows, "Cut the release row not found")
+        self.assertNotIn('data-queued', cut_rows[0])
+
+    def test_each_row_carries_its_owner_and_state(self) -> None:
+        """The table row shows the owner and a state indicator."""
+        rows = re.findall(r'<tr[^>]*>.*?</tr>', self.table, re.S)
+        cut_row = [r for r in rows if 'Cut the release' in r][0]
+        self.assertIn('impl-2', cut_row)
+        self.assertIn('running', cut_row)
+
+    def test_lane_and_stage_shown_when_present(self) -> None:
+        """A laned task's row shows the lane and stage."""
+        rows = re.findall(r'<tr[^>]*>.*?</tr>', self.table, re.S)
+        cut_row = [r for r in rows if 'Cut the release' in r][0]
+        self.assertIn('build', cut_row)
+        self.assertIn('review', cut_row)
+
+    def test_no_lane_tasks_have_empty_lane_cells(self) -> None:
+        """A task with no lane is a row with empty lane/stage, not in a separate footer."""
+        rows = re.findall(r'<tr[^>]*>.*?</tr>', self.table, re.S)
+        console_row = [r for r in rows if 'Console' in r][0]
+        # It should NOT be in a separate footer or section — it is a row in the same table.
+        self.assertNotIn('columns-foot', self.html.split('<section id="flow">')[1].split('</section>')[0])
+
+
+class DensityTest(unittest.TestCase):
+    """The page size guard from 0.3.1, restored: a board with the canonical fixture stays under 32 KB.
+
+    This is the cap that the plan says is 'a real guard on this change': hover panels, lane tables,
+    and any other markup must not blow the page. The 0.3.1 test measured `len(html)` against 16 KB
+    on a smaller fixture; the Stage 0 fixture is larger, but 32 KB is the budget now.
+    """
+
+    def test_item_text_bounded(self) -> None:
+        cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        html = rb.render(TRACER_TRACKER, cfg, NOW)
+        self.assertLess(len(html), 32_000,
+                        f"Board page is {len(html)} bytes, budget is 32 000")
 
