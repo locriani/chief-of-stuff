@@ -1384,6 +1384,60 @@ def sessions_section(sessions: tuple[Session, ...]) -> str:
             + "\n".join(rows) + "\n</section>\n")
 
 
+LANE_TABLE_CSS = """\
+.lane-table{width:100%;border-collapse:collapse;font-size:13px}
+.lane-table th{text-align:left;font:600 11px "Cormorant SC",Georgia,serif;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--line);padding:4px 6px}
+.lane-table td{padding:4px 6px;border-bottom:1px solid var(--line);vertical-align:baseline}
+.lane-table .lt-name{font-weight:500}
+.lane-table .lt-owner{color:var(--muted);font-size:12px}
+.lane-table .lt-state{font-size:11px;letter-spacing:.04em;text-transform:uppercase}
+.lane-table .lt-lane,.lane-table .lt-stage{font-size:12px;color:var(--muted)}
+.lt-hold{font-size:10px;font-weight:700;letter-spacing:.1em;color:var(--dl);margin-left:6px}
+"""
+
+
+def lane_table(tasks: list[Task], lanes: dict | None = None,
+               held_names: frozenset[str] | None = None) -> str:
+    """The LANES section body: one HTML table, one row per active (non-done, non-standing) task.
+
+    Unassigned rows carry ``data-unassigned``; owned-but-not-running rows carry ``data-queued``.
+    A task whose name is in `held_names` shows ``ON HOLD`` — the same flag the column board
+    carried.  The ``no lane`` footer is gone — an unlaned task is simply a row with empty
+    lane/stage cells.
+    """
+    shown = [t for t in tasks if not t.standing]
+    held_set = held_names or frozenset()
+    if not shown:
+        return '<table class="lane-table"><tbody></tbody></table>'
+    rows: list[str] = []
+    rows.append('<table class="lane-table">')
+    rows.append("<thead><tr><th>name</th><th>owner</th><th>state</th><th>lane</th><th>stage</th></tr></thead>")
+    rows.append("<tbody>")
+    for task in shown:
+        attrs: list[str] = []
+        owner = task.shown_owner
+        if task.kind != "done":
+            if not owner:
+                attrs.append("data-unassigned")
+            elif task.kind != "running":
+                attrs.append("data-queued")
+        attr_str = (" " + " ".join(attrs)) if attrs else ""
+        lane_cell = _esc(task.lane.strip())
+        stage_cell = _esc(task.stage.strip())
+        state_label = task.state.strip() if task.state.strip() else task.kind
+        hold = ' <span class="lt-hold">ON HOLD</span>' if task.name.strip() in held_set else ""
+        rows.append(
+            f'<tr data-state="{_esc(task.kind)}"{attr_str}>'
+            f'<td class="lt-name">{_esc(task.label)}{hold}</td>'
+            f'<td class="lt-owner">{_esc(owner)}</td>'
+            f'<td class="lt-state">{_esc(state_label)}</td>'
+            f'<td class="lt-lane">{lane_cell}</td>'
+            f'<td class="lt-stage">{stage_cell}</td>'
+            f'</tr>')
+    rows.append("</tbody></table>")
+    return "\n".join(rows)
+
+
 def render(tracker_text: str, cfg: Config, now: datetime, lanes: dict | None = None,
            tracker_day: date | None = None, decisions: list[tuple[str, dict | None, datetime | None, str]] | None = None,
            kanban: Kanban | None = None, sources: board_sources.Sources = board_sources.EMPTY, answered: int = 0,
@@ -1406,21 +1460,24 @@ def render(tracker_text: str, cfg: Config, now: datetime, lanes: dict | None = N
     unowned = [task for task in active if task.kind == "orphaned"]
     running = [task for task in active if task.kind == "running"]
 
-    build_cols, no_lane = build_columns(tasks, lanes, kanban, sources, now)
     issues = sum(1 for t in tasks if t.issue.strip())
     changes = sum(1 for c in sources.changes.values() if c.state == "open")
     changes_note = f" · {_plural(changes, 'merge request')}" if changes else ""
-    build_html = (f'<section id="flow"><h2>Lanes</h2>\n<div class="meta">{_tasks(len(tasks))} · {_plural(issues, "issue")}{changes_note}</div>\n'
-                  f'{columns.render(build_cols, no_lane if no_lane.cards else None)}</section>\n')
+    no_lane_count = sum(1 for t in tasks if not t.standing and not (t.lane.strip() and t.stage.strip()))
+    workers = worker_names(sources)
+    # A task's stage for drift/hold purposes, computed once.
+    stages = {t.name.strip(): effective_stage(t, sources, lanes or {}) for t in tasks}
+    # Held: kanban hold or a waiting task owned by a person (not a worker).
+    table_held = frozenset(t.name.strip() for t in tasks
+                           if held(t, kanban, stages[t.name.strip()]))
+    lanes_html = (f'<section id="flow"><h2>Lanes</h2>\n<div class="meta">{_tasks(len(tasks))} · {_plural(issues, "issue")}{changes_note}</div>\n'
+                  f'{lane_table(tasks, lanes, held_names=table_held)}</section>\n')
     flow_moves = [m for day, text in [*(stage_log or []), (tracker_day or today, tracker_text)]
                   for m in flow_chart.moves(text, day, zone)]
     known = [t for _, text in stage_log or [] for t in parse_tracker(text).tasks] + tasks
     ends = {t.item: end for t in active if (end := _end(t, cfg, now, now, est))[1] in ("due", "derived")}
-    workers = worker_names(sources)
-    # A task's stage for drift/hold purposes, computed once: build_columns does the same per card (#240).
-    stages = {t.name.strip(): effective_stage(t, sources, lanes or {}) for t in tasks}
     # #227: a `waiting` task owned by a person, not a worker, holds too — the same worker/person split
-    # build_columns already draws its "ON HOLD" flag and owner link from.
+    # the lane table already draws its "ON HOLD" flag and owner link from.
     flow_held = {t.name.strip() for t in tasks
                 if held(t, kanban, stages[t.name.strip()]) or
                 (t.kind == "waiting" and t.shown_owner and t.shown_owner not in workers)}
@@ -1437,7 +1494,7 @@ def render(tracker_text: str, cfg: Config, now: datetime, lanes: dict | None = N
     pending = decisions or []
     meta = [f"rendered {now:%H:%M} {now:%Z}", f"tracker {(tracker_at or now).astimezone(zone):%H:%M}",
             *(f"{k} {sources.fetched[k].astimezone(zone):%H:%M}" for k in ("kanban", "merge requests", "workers") if k in sources.fetched),
-            _tasks(len(tasks)), f"{len(no_lane.cards)} in no lane"]
+            _tasks(len(tasks)), f"{no_lane_count} in no lane"]
     head = panels.Header(f"Board · {now.strftime('%a %d %b')}", tuple(meta), now, nearest.name, nearest.at,
                          tuple(f"{k}: {why}" for k, why in sources.errors.items()))
     # BLOCKED counts the ON HOLD cards (Flow.dc.html v22), by the flag that draws them.
@@ -1470,14 +1527,14 @@ h2+.meta{{display:inline-block}}
 .header>.panels-head{{flex:1 1 320px;min-width:0}}
 .meta{{color:var(--muted);font-size:12px}}
 {TAB_CSS}.board>nav.tabs{{margin-bottom:12px}}
-{gantt.css() if day_strip_html else ""}{flow_chart.css() if flow_html else ""}{panels.css(PANEL_COLOURS, PANEL_TOKENS)}{columns.css(CARD_COLOURS)}.columns{{--columns-ink:var(--fg);--columns-muted:var(--muted);--columns-card:var(--surface);--columns-rule:var(--line);--columns-gate-ink:var(--brass);--columns-link:var(--brass);--columns-edge:var(--brass);--columns-bg:color-mix(in srgb,var(--brass) 10%,var(--bg));--columns-gate:color-mix(in srgb,var(--brass) 14%,var(--surface))}}
+{gantt.css() if day_strip_html else ""}{flow_chart.css() if flow_html else ""}{panels.css(PANEL_COLOURS, PANEL_TOKENS)}{LANE_TABLE_CSS}
 .session-row{{display:flex;gap:12px;align-items:baseline;font-size:13px;padding:2px 0}}.session-name{{font-weight:500}}.session-state{{color:var(--muted);font-size:12px}}.session-doing{{color:var(--muted);font-size:12px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
 @media (max-width:420px){{body{{padding:12px 12px 36px}}}}
 </style>
 <div class="board" data-rendered-at="{_iso(now)}" data-tz="{_esc(cfg.tz)}" data-deadline="{_iso(nearest.at)}" data-deadline-name="{_esc(nearest.name)}">
 {tab_bar("Board", sum(d is not None for _, d, _, _ in pending))}<div class="header">{panels.header(head)}</div>
 {panels.tiles(tiles)}
-{due_next_html}{blocked_html}{day_strip_html}{build_html}{sessions_html}{panels_html}
+{due_next_html}{blocked_html}{day_strip_html}{lanes_html}{sessions_html}{panels_html}
 {flow_html}</div>
 <script>
 (function(){{

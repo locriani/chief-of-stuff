@@ -393,13 +393,10 @@ class Page(unittest.TestCase):
         self.assertIn("second:'2-digit'", script)
         self.assertIn("+'s'", script)
 
-    def test_build_cards_link_to_their_items(self) -> None:
-        # A card's name opens its task page (#194); its issue and change refs open their pages too, in-tab
-        # rather than the forge's new tab — !48 names #9, so both land on the same task page (#209).
-        name = re.search(r'<[^<]*class="columns-card-name"[^>]*>Cut the release</', self.body)[0]
-        self.assertEqual(name, '<a class="columns-card-name" href="/issues/9">Cut the release</')
-        self.assertIn('<a href="/issues/9">!48</a>', self.body)
-        self.assertIn('<a href="/issues/9">#9</a>', self.body)
+    def test_lane_table_shows_task_names(self) -> None:
+        # The lane table shows each task's name; the columns board is gone.
+        self.assertIn('<table class="lane-table"', self.body)
+        self.assertIn("Cut the release", self.body)
         self.assertNotIn('href="#"', self.body)
 
     def test_the_page_fits_a_phone(self) -> None:
