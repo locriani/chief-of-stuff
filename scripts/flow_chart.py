@@ -11,6 +11,7 @@ HUMAN REVIEW NEEDED → review. A done task's last segment ends at its done time
 
 from __future__ import annotations
 
+import functools
 import heapq
 import re
 from dataclasses import dataclass, field, replace
@@ -23,6 +24,7 @@ from fragment import esc
 LINE = re.compile(r"^- (\d{1,2}):(\d{2}) stage: (.+) → (\S+)\s*$")
 STARTED = re.compile(r"^- (\d{1,2}):(\d{2}) one-shot (\S+) started: .*, task (.+?)\s*$")
 ENDED = re.compile(r"^- (\d{1,2}):(\d{2}) one-shot (\S+): (completed; awaiting integration|HUMAN REVIEW NEEDED)\b")
+REF = re.compile(r"(?<!\w)[#!]\d+")
 H = timedelta(hours=1)
 # (title, behind now, ahead of now), after the Flow artboard.
 WINDOWS = (("24 hours", 6 * H, 18 * H), ("7 days", 48 * H, 120 * H))
@@ -64,12 +66,34 @@ def launch_row(text: str, tasks):
     """(row, name) for a one-shot's launch-time task text: the row whose item the text begins with, else the row
     whose issue ref it carries (later rows win), and that row's name; with no row, None and the text's first line
     cut to 80 characters. The launch keeps its text; the row's item may change after it (#182)."""
-    text = text.strip()
-    for hit in (lambda t: t.item.strip() and text.startswith(t.item.strip()),
-                lambda t: t.issue.strip() and re.search(rf"(?<!\w){re.escape(t.issue.strip())}(?!\d)", text)):
-        if rows := [t for t in tasks if hit(t)]:
-            return rows[-1], rows[-1].name.strip() or text.split("\n", 1)[0][:80]
-    return None, text.split("\n", 1)[0][:80]
+    return launcher(tasks)(text)
+
+
+def launcher(tasks):
+    """launch_row over `tasks`, indexed once: items by length, `#N`/`!N` issues by ref, and each text looked up once
+    (#184). An issue cell of another shape (`group/app#118`, a URL) keeps its own search."""
+    items, refs, other = {}, {}, []
+    for i, t in enumerate(tasks):
+        if item := t.item.strip():
+            items[item] = (i, t)
+        if issue := t.issue.strip():
+            if REF.fullmatch(issue):
+                refs[issue] = (i, t)
+            else:
+                other.append(((i, t), re.compile(rf"(?<!\w){re.escape(issue)}(?!\d)")))
+    lengths = {len(k) for k in items}
+
+    @functools.cache
+    def row(text: str):
+        text = text.strip()
+        first = text.split("\n", 1)[0][:80]
+        for hits in ([items.get(text[:n]) for n in lengths],
+                     [refs.get(r) for r in REF.findall(text)] + [hit for hit, p in other if p.search(text)]):
+            if hits := [h for h in hits if h]:
+                t = max(hits, key=lambda h: h[0])[1]
+                return t, t.name.strip() or first
+        return None, first
+    return row
 
 
 def _clock(at: datetime, now: datetime) -> str:
@@ -93,9 +117,10 @@ def build(log: list[Move], tasks, lanes: dict, held: set[str], ends: dict[str, d
     by_name = {t.name.strip().casefold(): t for t in tasks if t.name.strip()}
     # A move names a task by its name or its item; the name wins.
     find = {**{t.item.strip().casefold(): t for t in tasks if t.item.strip()}, **by_name}
+    row_of = launcher(tasks)
 
     def key_of(m: Move) -> str:
-        t = find.get(m.name.strip().casefold()) or (launch_row(m.name, tasks)[0] if m.launch else None)
+        t = find.get(m.name.strip().casefold()) or (row_of(m.name)[0] if m.launch else None)
         return t.name.strip().casefold() if t and t.name.strip() else m.name.casefold()
 
     terminal = {lane.stages[-1] for lane in lanes.values()}
@@ -107,9 +132,10 @@ def build(log: list[Move], tasks, lanes: dict, held: set[str], ends: dict[str, d
         if not m.launch:
             first.setdefault(key_of(m), m.at)
     log = [m for m in log if not (m.launch and (f := first.get(key_of(m))) and m.at >= f)]
-    out = []
-    for key in dict.fromkeys(map(key_of, log)):
-        mine = [m for m in log if key_of(m) == key]
+    out, groups = [], {}
+    for m in log:
+        groups.setdefault(key_of(m), []).append(m)
+    for key, mine in groups.items():
         task, last = find.get(key) or find.get(mine[-1].name.strip().casefold()), mine[-1]
         stop = now
         if task and task.kind == "done" and (t := task.state_time):
@@ -136,7 +162,7 @@ def build(log: list[Move], tasks, lanes: dict, held: set[str], ends: dict[str, d
     slots = max(1, slots)
     busy += [now] * (slots - len(busy))
     heapq.heapify(busy)
-    moved = set(map(key_of, log))
+    moved = set(groups)
     for t in tasks:
         key, lane = t.name.strip().casefold(), lanes.get(t.lane.strip())
         if (not key or by_name[key] is not t or key in moved or t.kind != "open" or t.name.strip() in held
