@@ -23,6 +23,7 @@ from settings import Kanban, SettingsError, load as load_settings  # noqa: E402
 import board_sources  # noqa: E402
 import columns  # noqa: E402
 import decision_page  # noqa: E402
+from fragment import TAB_CSS, tab_bar  # noqa: E402
 import flow_chart  # noqa: E402
 import panels  # noqa: E402
 
@@ -1304,11 +1305,12 @@ h2+.meta{{display:inline-block}}
 .header{{display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap;margin-bottom:4px}}
 .header>.panels-head{{flex:1 1 320px;min-width:0}}
 .meta{{color:var(--muted);font-size:12px}}
+{TAB_CSS}.board>nav.tabs{{margin-bottom:12px}}
 {flow_chart.css() if flow_html else ""}{panels.css(PANEL_COLOURS, PANEL_TOKENS)}{columns.css(CARD_COLOURS)}.columns{{--columns-ink:var(--fg);--columns-muted:var(--muted);--columns-card:var(--surface);--columns-rule:var(--line);--columns-gate-ink:var(--brass);--columns-link:var(--brass);--columns-edge:var(--brass);--columns-bg:color-mix(in srgb,var(--brass) 10%,var(--bg));--columns-gate:color-mix(in srgb,var(--brass) 14%,var(--surface))}}
 @media (max-width:420px){{body{{padding:12px 12px 36px}}}}
 </style>
 <div class="board" data-rendered-at="{_iso(now)}" data-tz="{_esc(cfg.tz)}" data-deadline="{_iso(nearest.at)}" data-deadline-name="{_esc(nearest.name)}">
-<div class="header">{panels.header(head)}</div>
+{tab_bar("Board", sum(d is not None for _, d, _, _ in pending))}<div class="header">{panels.header(head)}</div>
 {panels.tiles(tiles)}
 {build_html}{panels_html}
 {flow_html}</div>
