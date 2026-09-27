@@ -1108,11 +1108,20 @@ def task_changes(task: Task, sources: board_sources.Sources) -> tuple[board_sour
     return tuple(c for c in named if c.state == "open") or tuple(named)
 
 
-def merged_map(tasks: list[Task], sources: board_sources.Sources, zone: ZoneInfo) -> dict[str, datetime]:
-    """Each task's name to its change's latest forge merge time, in `zone`. The board and the task page both end a
-    merged task's Flow row here (#200)."""
-    return {t.name.strip(): max(at).astimezone(zone) for t in tasks
-            if t.name.strip() and (at := [c.merged_at for c in task_changes(t, sources) if c.state == "merged" and c.merged_at])}
+def forge_ends(tasks: list[Task], sources: board_sources.Sources, zone: ZoneInfo) -> dict[str, tuple[datetime, str]]:
+    """Each task's name to what ends its Flow row, in `zone`: its change's latest forge merge time and "merged", or,
+    failing that, its closed issue's close time and "closed". A merge wins. The board and the task page both end a
+    row here (#200, #220)."""
+    out = {}
+    for t in tasks:
+        name = t.name.strip()
+        if not name:
+            continue
+        if merges := [c.merged_at for c in task_changes(t, sources) if c.state == "merged" and c.merged_at]:
+            out[name] = (max(merges).astimezone(zone), "merged")
+        elif (issue := sources.issues.get(issue_key(t.issue)) if t.issue.strip() else None) and issue.state == "closed" and issue.closed_at:
+            out[name] = (issue.closed_at.astimezone(zone), "closed")
+    return out
 
 
 def change_marks(changes: tuple[board_sources.Change, ...]) -> tuple[columns.Mark, ...]:
@@ -1307,7 +1316,7 @@ def render(tracker_text: str, cfg: Config, now: datetime, lanes: dict | None = N
                                  queue_durations(active, hist), slots,
                                  frozenset(t.name.strip() for t in tasks
                                            if any(c.state == "open" and c.approved for c in task_changes(t, sources))),
-                                 merged=merged_map(tasks, sources, zone))
+                                 ended=forge_ends(tasks, sources, zone))
     # An issue's row links to its page, pages.py's /issues/<n>.
     flow_html = flow_chart.section([(s, replace(r, href=f"/issues/{int(m[1])}") if (m := TRAILING_NUMBER.search(r.ref)) else r)
                                     for s, r in flow_rows], now)

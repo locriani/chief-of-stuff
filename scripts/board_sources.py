@@ -41,7 +41,7 @@ HHMM = re.compile(r"^\s*(\d{1,2}):(\d{2})\b")
 STARTED = re.compile(r"^-\s+(\d{1,2}:\d{2}) one-shot (\S+) started: (.*?), worktree `([^`]*)`, task (.+?)\s*$")
 GL_WAITING = {"pending", "created", "waiting_for_resource", "preparing", "scheduled", "manual"}
 
-GH_ISSUE = "number url title state body labels(first: 50) { nodes { name } }"
+GH_ISSUE = "number url title state body labels(first: 50) { nodes { name } } closedAt"
 # A review thread is its first comment, as review_threads.QUERY reads them; one comment keeps the node count low.
 GH_CHANGE = ("number url title state isDraft mergedAt baseRefName body headRefOid reviewDecision mergeable "
              "files(first: 100) { nodes { path additions deletions } } "
@@ -50,7 +50,7 @@ GH_CHANGE = ("number url title state isDraft mergedAt baseRefName body headRefOi
              "commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes { __typename "
              "... on CheckRun { name status conclusion startedAt completedAt } ... on StatusContext { state } } } } } } }")
 GL_PAGE = 100  # the most nodes GitLab answers for one connection
-GL_ISSUE = "iid webUrl title state description labels { nodes { title } }"
+GL_ISSUE = "iid webUrl title state description labels { nodes { title } } closedAt"
 GL_CHANGE = ("iid webUrl title state draft mergedAt targetBranch description approved conflicts "
              "approvedBy { nodes { username } } headPipeline { status } diffStats { path additions deletions } diffHeadSha")
 # Jobs and discussions only for open changes, in a second query: in GL_CHANGE they took it past GitLab's complexity cap of 250.
@@ -110,6 +110,7 @@ class Issue:
     state: str
     labels: tuple[str, ...]
     body: str = ""
+    closed_at: datetime | None = None  # (#220)
 
 
 @dataclass(frozen=True)
@@ -153,7 +154,8 @@ def load(pages_dir: Path) -> Sources:
     try:
         d = json.loads((pages_dir / CACHE).read_text())
         return Sources({k: datetime.fromisoformat(v) for k, v in d["fetched"].items()},
-                       {k: Issue(**{**v, "labels": tuple(v["labels"])}) for k, v in d["issues"].items()},
+                       {k: Issue(**{**v, "labels": tuple(v["labels"]), "closed_at": _when(v.get("closed_at"))})
+                        for k, v in d["issues"].items()},
                        {k: _change_of(v) for k, v in d["changes"].items()},
                        tuple(Worker(**{**w, "started": _when(w["started"]), "last": _when(w["last"])})
                              for w in d["workers"]),
@@ -235,7 +237,7 @@ def github(home: backlog.GitHubBacklog, wanted: dict[str, set[int]], since: date
             else:
                 issues[key] = Issue(key, node["url"], node["title"], node["state"].lower(),
                                     tuple(x["name"] for x in (node.get("labels") or {}).get("nodes") or []),
-                                    node.get("body") or "")
+                                    node.get("body") or "", _when(node.get("closedAt")))
     for node in ((data.get("merged") or {}).get("nodes") or []):
         if node and _when(node.get("mergedAt")) and _when(node["mergedAt"]) >= since:
             changes.setdefault(f"#{node['number']}", _gh_change(f"#{node['number']}", node, approver))
@@ -317,7 +319,7 @@ def gitlab(home: backlog.Backlog, wanted: dict[str, set[int]], mrs: set[int], si
                 key = backlog.IssueRef(project, int(node["iid"]), host).label(home)
                 issues[key] = Issue(key, node["webUrl"], node["title"], {"opened": "open"}.get(node["state"], node["state"]),
                                     tuple(x["title"] for x in (node.get("labels") or {}).get("nodes") or []),
-                                    node.get("description") or "")
+                                    node.get("description") or "", _when(node.get("closedAt")))
             for node in ((p.get("mergeRequests") or {}).get("nodes") or []) + ((p.get("merged") or {}).get("nodes") or []):
                 changes.setdefault(f"!{node['iid']}", _gl_change(node, approver))
             left[project] = left[project][GL_PAGE:]
