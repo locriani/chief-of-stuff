@@ -1083,6 +1083,10 @@ def held(task: Task, kanban: Kanban | None) -> bool:
     return kanban is not None and kanban.holds(task.stage.strip())
 
 
+def worker_names(sources: board_sources.Sources) -> set[str]:
+    return {w.name for w in sources.workers}
+
+
 def queue_durations(active: list[Task], hist: dict[str, tuple[timedelta, int]]) -> dict[str, timedelta]:
     """By item, the mean time closed tasks of each task's size took, as `estimates` reads it; empty with no history."""
     if not hist:
@@ -1166,7 +1170,7 @@ def build_columns(tasks: list[Task], lanes: dict | None, kanban: Kanban | None =
         none — pages.py serves no route for a change itself (#209)."""
         return page(c.issues[0] if c.issues else "", c.url)
 
-    worker_names = {w.name for w in sources.workers}
+    workers = worker_names(sources)
 
     def card(task: Task) -> columns.Card:
         changes = task_changes(task, sources)
@@ -1178,7 +1182,7 @@ def build_columns(tasks: list[Task], lanes: dict | None, kanban: Kanban | None =
         return columns.Card(task.label, task.kind, refs, owner, task.state, marks,
                             flag=columns.Mark("ON HOLD", "hold") if held(task, kanban) else None,
                             href=page(task.issue, next((c.url for c in changes if c.state == "open"), url)),
-                            owner_href="/workers" if owner in worker_names else "")
+                            owner_href="/workers" if owner in workers else "")
 
     laned = [t for t in tasks if t.lane.strip() and t.stage.strip()]
     order = list(dict.fromkeys(stage_order(lanes) + [t.stage.strip() for t in laned]))
@@ -1311,7 +1315,12 @@ def render(tracker_text: str, cfg: Config, now: datetime, lanes: dict | None = N
                   for m in flow_chart.moves(text, day, zone)]
     known = [t for _, text in stage_log or [] for t in parse_tracker(text).tasks] + tasks
     ends = {t.item: end for t in active if (end := _end(t, cfg, now, now, est))[1] in ("due", "derived")}
-    flow_rows = flow_chart.build(flow_moves, known, lanes or {}, {t.name.strip() for t in tasks if held(t, kanban)},
+    workers = worker_names(sources)
+    # #227: a `waiting` task owned by a person, not a worker, holds too — the same worker/person split
+    # build_columns already draws its "ON HOLD" flag and owner link from.
+    flow_held = {t.name.strip() for t in tasks
+                if held(t, kanban) or (t.kind == "waiting" and t.shown_owner and t.shown_owner not in workers)}
+    flow_rows = flow_chart.build(flow_moves, known, lanes or {}, flow_held,
                                  {item: end[0] for item, end in ends.items()}, now,
                                  queue_durations(active, hist), slots,
                                  frozenset(t.name.strip() for t in tasks

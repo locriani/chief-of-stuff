@@ -29,7 +29,20 @@ H = timedelta(hours=1)
 # (title, behind now, ahead of now), after the Flow artboard.
 WINDOWS = (("24 hours", 6 * H, 18 * H), ("7 days", 48 * H, 120 * H))
 COLOURS: dict[str, str | tuple[str, str]] = {stage: f"var(--stage-{stage})" for stage in gantt.PALETTE}
-COUNTS = (("merged", "merged"), ("running", "running"), ("held", "held"), ("open", "queued"))
+# #217/#226: the chart's own bucket order, earliest-first within a group. A finished row's word is
+# "merged" or "closed" (render_board.forge_ends); both read as merged. "open" is only the queued loop's
+# literal status; everything else moved (whatever its stage or tracker state word) counts as running.
+BUCKETS = ("merged", "approved", "running", "needs input", "queued")
+
+
+def _bucket(status: str) -> str:
+    if status in ("merged", "closed"):
+        return "merged"
+    if status in ("approved", "needs input"):
+        return status
+    if status == "open":
+        return "queued"
+    return "running"
 
 
 @dataclass(frozen=True)
@@ -168,28 +181,36 @@ def build(log: list[Move], tasks, lanes: dict, held: set[str], ends: dict[str, d
             else:
                 stop = last.at
         finish = task and (ended or {}).get(task.name.strip())
+        is_held = bool(task and task.name.strip() in held)
+        # #227: a held row's last stage bar ends at its own last move — no dangling bar reading as work
+        # in progress — and the hold bar alone carries it from now through the window.
         segs = [gantt.Segment(m.at, e, m.stage, "done", owner(key, m.at, task))
                 for m, nxt in zip(mine, mine[1:] + [None])
-                if m.stage not in terminal and (e := nxt.at if nxt else stop) > m.at]
+                if m.stage not in terminal and (nxt is not None or not is_held) and (e := nxt.at if nxt else stop) > m.at]
         if finish:
             at, word = finish
             segs = [replace(g, end=min(g.end, at)) for g in segs if g.start < at]
         lane = lanes.get(task.lane.strip()) if task else None
+        is_approved = bool(task and task.name.strip() in approved)
         if finish:
             status, note = word, f"{word} {at:%H:%M}"
         elif last.stage in terminal:
             status, note = "merged", f"merged {last.at:%H:%M}"
-        elif task and task.name.strip() in held:
+        elif is_held:
             segs.append(gantt.Segment(now, now + WINDOWS[-1][2], last.stage, "hold", owner(key, now, task)))
-            status, note = "held", f"hold · {last.stage}"
+            status, note = "needs input", f"needs input · {last.stage}"
         elif task and lane and last.stage in lane.stages and (end := ends.get(task.item)) and end > now:
             ahead = [last.stage] + [s for s in lane.stages[lane.stages.index(last.stage) + 1:] if s not in terminal]
             segs += _ahead(ahead, now, end, owner(key, now, task))
             busy.append(end)
-            ok = task.name.strip() in approved
-            status, note = task.kind, f"approved · merge {_clock(end, now)}" if ok else f"{last.stage} · {_clock(end, now)}"
+            # #217: a task not yet marked `running` but already moving through the lane still counts as
+            # running, never as queued (which is `open` with no move at all — the loop below).
+            status = "running" if task.kind == "open" else task.kind
+            note = f"approved · merge {_clock(end, now)}" if is_approved else f"{last.stage} · {_clock(end, now)}"
         else:
-            status, note = (task.kind if task else ""), "approved" if task and task.name.strip() in approved else last.stage
+            kind = task.kind if task else ""
+            status = "approved" if is_approved else ("running" if kind == "open" else kind)
+            note = "approved" if is_approved else last.stage
         out.append((status, gantt.Row(task.issue.strip() if task else "", task.name.strip() if task else launch_row(last.name, ())[1],
                                       note, tuple(segs))))
     # Each slot is free once the forecast holding it ends; more forecasts than slots wait for the (n-k+1)th end.
@@ -211,7 +232,10 @@ def build(log: list[Move], tasks, lanes: dict, held: set[str], ends: dict[str, d
         stages = [s for s in lane.stages if s not in terminal]
         out.append((t.kind, gantt.Row(t.issue.strip(), t.name.strip(), f"queued · {_clock(start + took, now)}",
                                       tuple(_ahead(stages, start, start + took, owner(key, now, t))))))
-    return _merge_issues(out)
+    # #226: rows group merged, approved, running, needs input, queued, earliest move first within a group.
+    far_future = now + WINDOWS[-1][2] * 1000  # a row with no segments at all sorts last in its bucket
+    return sorted(_merge_issues(out),
+                 key=lambda sr: (BUCKETS.index(_bucket(sr[0])), min((g.start for g in sr[1].segments), default=far_future)))
 
 
 def _merge_issues(rows: list[tuple[str, gantt.Row]]) -> list[tuple[str, gantt.Row]]:
@@ -261,7 +285,7 @@ def section(rows: list[tuple[str, gantt.Row]], now: datetime) -> str:
         shown = [(s, r) for s, r in rows if any(g.start < win.end and g.end > win.start for g in r.segments)]
         if not shown:
             continue
-        counts = " · ".join(f"{sum(s == k for s, _ in shown)} {word}" for k, word in COUNTS)
+        counts = " · ".join(f"{n} {word}" for word in BUCKETS if (n := sum(_bucket(s) == word for s, _ in shown)) > 0)
         out.append(f'<h2>Flow · {title}</h2>\n<div class="meta">{esc(counts)} · {_span(win)}</div>\n'
                    f"{gantt.render([r for _, r in shown], win)}")
     return "\n".join(out + [gantt.legend(COLOURS)]) + "\n" if out else ""
