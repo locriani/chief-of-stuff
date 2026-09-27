@@ -775,10 +775,42 @@ class WorkerModeTest(unittest.TestCase):
                 self.assertEqual(ss.main(args), 0)
                 self.assertEqual(one_shot.call_args.kwargs["task"], "Security audit")
                 self.assertTrue(one_shot.call_args.kwargs["dry_run"])
-            with contextlib.redirect_stderr(io.StringIO()):
-                with self.assertRaises(SystemExit) as refused:
-                    ss.main(args + ["--interactive"])
-            self.assertEqual(refused.exception.code, 2)
+
+    def one_shot_workspace(self) -> tuple[Path, list[str]]:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        (root / "CLAUDE.md").write_text(CLAUDE + "- Settings: `chief-of-stuff.toml`\n")
+        (root / "chief-of-stuff.toml").write_text('[workers]\nmode = "one-shot"\n')
+        (root / "daily").mkdir()
+        (root / "daily" / "2026-09-18-tracker.md").write_text(TRACKER)
+        tree = root / "trees" / "wt-x"
+        tree.mkdir(parents=True)
+        return tree, ["--cwd", str(tree), "--name", "worker01", "--task", "Security audit",
+                      "--root", str(root), "--date", "2026-09-18", "--dry-run"]
+
+    def test_interactive_overrides_a_one_shot_workspace(self):
+        """#188: a direct request for an interactive session launches one in a one-shot workspace."""
+        tree, args = self.one_shot_workspace()
+        env = {ss.ENV: json.dumps(["python3", "/tmp/rec.py", "{cwd}", "{title}"])}
+        with unittest.mock.patch("one_shot.run", return_value=0) as one_shot, \
+             unittest.mock.patch.dict(os.environ, env), contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(ss.main(args + ["--interactive"]), 0)
+        one_shot.assert_not_called()
+        self.assertIn("would run: python3 /tmp/rec.py", out.getvalue())
+        self.assertIn(f"would write: {Path(os.path.abspath(tree)) / ss.PROMPT_FILE}", out.getvalue())
+
+    def test_interactive_and_one_shot_together_are_refused(self):
+        """#188: one request per launch; asking for both is refused, not resolved."""
+        _, args = self.one_shot_workspace()
+        with unittest.mock.patch("one_shot.run", return_value=0) as one_shot, \
+             contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            try:
+                code = ss.main(args + ["--interactive", "--one-shot"])
+            except SystemExit as refused:
+                code = refused.code
+        self.assertNotEqual(code, 0)
+        one_shot.assert_not_called()
 
     def test_the_launch_is_handed_the_item_for_a_task_name(self):
         with tempfile.TemporaryDirectory() as d:

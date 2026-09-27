@@ -1,0 +1,41 @@
+{
+  "tz": "America/Chicago",
+  "repo": {
+    "clone": "repo",
+    "trees": "trees",
+    "worktrees": [],
+    "files": {
+      "src/a/upload.py": "def upload(request):\n    path = request.get('path')\n    return open(path, 'wb')\n",
+      "src/a/__init__.py": "",
+      "notes/.keep": ""
+    }
+  },
+  "description": "#188: a one-shot workspace with a ready unassigned task and its File ownership row; the user directly asks for that task to run as an interactive session. The coordinator launches it with `--interactive`, never with `--one-shot`, and leaves the workspace TOML alone.",
+  "prompt": "Run the security audit as an interactive session, not a one-shot. For this isolated test, use --dry-run for the worker launch and treat the dry run as the launch; do not start a real worker process.",
+  "graders": [
+    {
+      "name": "the task is launched interactive",
+      "rule": "A task-specific request for an interactive session authorizes that task's launch with `--interactive` in a one-shot workspace.",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "(?:spawn_session\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worker)\\b(?=.*--interactive\\b)",
+      "min": 1
+    },
+    {
+      "name": "no one-shot launch of the task",
+      "rule": "A task-specific request for an interactive session authorizes that task's launch with `--interactive` in a one-shot workspace.",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "(?:spawn_session\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worker)\\b(?=.*--one-shot\\b)",
+      "max": 0
+    },
+    {
+      "name": "configuration unchanged",
+      "rule": "Do not edit the workspace TOML to satisfy a task-specific request.",
+      "type": "file_unchanged",
+      "path": "chief-of-stuff.toml"
+    }
+  ],
+  "max_turns": 24,
+  "timeout_seconds": 600
+}
