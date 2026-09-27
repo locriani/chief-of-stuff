@@ -21,6 +21,7 @@ from dataclasses import replace
 from datetime import datetime, time
 from html import unescape
 from pathlib import Path
+from unittest import mock
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
@@ -31,7 +32,7 @@ import one_shot  # noqa: E402
 import pages as pg  # noqa: E402
 import render_board as rb  # noqa: E402
 import tracker_write as tw  # noqa: E402
-from test_flow_chart import CT, KANBAN, LANES, NOW, TODAY, TODAY_TRACKER, YESTERDAY  # noqa: E402
+from test_flow_chart import BoardTest, CT, KANBAN, LANES, NOW, TODAY, TODAY_TRACKER, YESTERDAY, at, merged  # noqa: E402
 from test_pages import get  # noqa: E402
 
 try:
@@ -705,6 +706,83 @@ class RouteTest(unittest.TestCase):
         for name in sorted(p.name for p in self.pages.glob("*.html")):
             with self.subTest(name=name):
                 self.assertEqual(get(self.port, f"/{name}").status, 404)
+
+
+class ForgeMergedTaskPageTest(unittest.TestCase):
+    """The task page reads merged when the forge does, in local time (#200)."""
+
+    # America/Chicago is UTC-5 during 2026's daylight time, so this merge's local hour (18) differs from the UTC
+    # hour `merged()` stamps it at (23): "...T23:40:49+00:00" is local 18:40.
+    MERGE_LOCAL = "18:40"
+    TODAY_RUNNING = TODAY_START.replace("| Robin | waiting |", "| Robin | running 01:00 |")
+    NOW2 = datetime.combine(TODAY, time(20, 0), CT)
+
+    def task_page(self, today: str, changes: tuple = (), now: datetime = NOW2) -> str:
+        return ip.render(109, [(YESTERDAY, YESTERDAY_TRACKER), (TODAY, today)], sources(*changes), now, LANES)
+
+    @staticmethod
+    def flow_rows(render_call) -> dict[str, tuple]:
+        """Every Flow row `render_call` draws, by name, as flow_chart.section receives them."""
+        seen, real = [], fc.section
+        with mock.patch.object(fc, "section", lambda rows, now: seen.append(rows) or real(rows, now)):
+            render_call()
+        return {row.name: (status, row) for status, row in seen[0]}
+
+    def test_a_merged_change_shows_merged_not_the_trackers_word(self):
+        # Acceptance 1: "shows a merged status, not the tracker's `waiting` or `running` word."
+        for state, tracker in (("waiting", TODAY_START), ("running HH:MM", self.TODAY_RUNNING)):
+            with self.subTest(state=state):
+                html = self.task_page(tracker, (merged("#109", self.MERGE_LOCAL, 48),))
+                header = re.search(r"<header\b.*?</header>", html, re.S)[0]
+                chip = re.search(r'<span class="chip[^"]*">([^<]+)</span>', header)[1]
+                self.assertRegex(chip, r"(?i)^merged\b", chip)
+                self.assertNotRegex(chip, r"(?i)waiting|running", chip)
+
+    def test_flow_rows_end_at_the_forge_merge_time_with_a_merged_note(self):
+        # Acceptance 2: "Its Flow rows end at the forge merge time with the note `merged HH:MM`", as the board draws
+        # the same task. No bar may end after the merge time.
+        merge_at = at(TODAY, self.MERGE_LOCAL)
+        rows = self.flow_rows(lambda: self.task_page(TODAY_START, (merged("#109", self.MERGE_LOCAL, 48),)))
+        status, row = rows["Upload size limit"]
+        self.assertEqual((status, row.note), ("merged", f"merged {self.MERGE_LOCAL}"))
+        self.assertTrue(row.segments)
+        for g in row.segments:
+            self.assertLessEqual(g.end, merge_at, g)
+
+    def test_elapsed_and_waiting_totals_stop_at_the_merge_time(self):
+        # Acceptance 3: "Its elapsed and waiting totals stop at the merge time" — not keep counting past it. In
+        # work_trackers() (#200's fixture from CompactWorkersTest), rev-w2 is still open at NOW (02:10); merged at
+        # 01:40 it caps to "Worked 4h25m of 5h35m elapsed · 1h10m waiting", not the uncapped "4h55m of 6h05m".
+        html = ip.render(109, work_trackers(), sources(merged("#109", "01:40", 48)), NOW, LANES)
+        start = re.search(r"<h2[^>]*>\s*Flow\b", html)
+        self.assertIsNotNone(start, "no Flow section")
+        after = next((m.start() for m in re.finditer(r"<h2[^>]*>\s*(?!Flow\b)", html[start.end():])), None)
+        flow = text(html[start.start():start.end() + after if after is not None else len(html)])
+        self.assertRegex(flow, r"(?i)\bWorked\s+4h25m\s+of\s+5h35m\s+elapsed\s*·\s*1h10m\s+waiting\b", flow)
+
+    def test_every_clock_is_in_the_workspace_zone(self):
+        # Acceptance 4: "Every clock on the page, the merge time included, is in the workspace's timezone" — the
+        # merge-request block's own chip too, not the UTC clock the forge cache stores merged_at in.
+        html = self.task_page(TODAY_START, (merged("#109", self.MERGE_LOCAL, 48),))
+        got = text(card(html))
+        self.assertIn(self.MERGE_LOCAL, got)
+        self.assertNotIn("23:40", got)
+
+    def test_the_board_and_the_task_page_share_one_merged_map(self):
+        # Acceptance 5: "The task page and the board get the merge time from one shared function." Through
+        # behaviour, not by naming a function: render both from the same fixture and check the board's row note
+        # equals the task page's note.
+        cfg = BoardTest().cfg()
+        src = sources(merged("#109", self.MERGE_LOCAL, 48))
+        board_rows = self.flow_rows(lambda: rb.render(TODAY_START, cfg, self.NOW2, lanes=LANES, tracker_day=TODAY,
+                                                       kanban=KANBAN, stage_log=[(YESTERDAY, YESTERDAY_TRACKER)],
+                                                       sources=src))
+        task_rows = self.flow_rows(lambda: ip.render(109, [(YESTERDAY, YESTERDAY_TRACKER), (TODAY, TODAY_START)],
+                                                     src, self.NOW2, LANES))
+        self.assertIn("Upload size limit", board_rows)
+        self.assertIn("Upload size limit", task_rows)
+        self.assertEqual(board_rows["Upload size limit"][1].note, task_rows["Upload size limit"][1].note)
+        self.assertEqual(board_rows["Upload size limit"][1].note, f"merged {self.MERGE_LOCAL}")
 
 
 if __name__ == "__main__":

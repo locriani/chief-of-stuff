@@ -18,8 +18,8 @@ import board_sources
 import flow_chart
 from decision_page import HEAD, _graph, _md, _section, context, pending_count, span
 from fragment import href, tab_bar
-from render_board import (Config, ConfigError, TRAILING_NUMBER, _dur, _resolve_due, daily_trackers, parse_coordinator,
-                          parse_tracker)
+from render_board import (Config, ConfigError, TRAILING_NUMBER, _dur, _resolve_due, daily_trackers, merged_map,
+                          parse_coordinator, parse_tracker)
 from settings import Graph, SettingsError, load as load_settings
 
 # A worker's outcome by its last launcher move's stage (flow_chart.moves: completed → pr, HUMAN REVIEW → review).
@@ -82,10 +82,10 @@ def _paths(c: board_sources.Change) -> tuple[str, ...]:
     return c.files or tuple(f.path for f in c.stats)
 
 
-def _change(c: board_sources.Change, changes) -> str:
+def _change(c: board_sources.Change, changes, now: datetime) -> str:
     kind, word = ("MR", "Merge request") if c.ref.startswith("!") else ("PR", "Pull request")
     state = "draft" if c.draft and c.state == "open" else c.state
-    merged = f" {c.merged_at:%H:%M}" if c.merged_at else ""
+    merged = f" {c.merged_at.astimezone(now.tzinfo):%H:%M}" if c.merged_at else ""  # (#200) the page's zone, not UTC
     rows = [("pipeline", c.pipeline or "none", c.pipeline or "", "")]
     rows += [("job", j.status, j.status, escape(j.name) + (f" · {span_s(j.seconds)}" if j.seconds is not None else ""))
              for j in c.jobs]
@@ -193,7 +193,8 @@ def render(number: int, trackers: list[tuple[date, str]], sources: board_sources
     cfg = cfg or Config("", "", "", getattr(now.tzinfo, "key", "UTC"), (), None, None)
     ends = {t.item: end for t in parse_tracker(trackers[-1][1]).tasks
             if t.kind != "done" and (end := _resolve_due(t.due, cfg, now.date()))}
-    rows = [(s, r) for s, r in flow_chart.build(log, known, lanes or {}, set(), ends, now)
+    merged = merged_map(known, sources, now.tzinfo)  # (#200) shared with the board, so both end a row at the same time
+    rows = [(s, r) for s, r in flow_chart.build(log, known, lanes or {}, set(), ends, now, merged=merged)
             if (m := TRAILING_NUMBER.search(r.ref)) and int(m[1]) == number]
     log = [m for m in log if m.name.strip().casefold() in keys]
     issue, latest = sources.issues.get(ref), {k: t for t in known for k in names(t)}  # later trackers win
@@ -203,7 +204,7 @@ def render(number: int, trackers: list[tuple[date, str]], sources: board_sources
     order = {"open": 0, "merged": 1}
     changes = sorted((c for c in sources.changes.values() if ref in c.issues), key=lambda c: order.get(c.state, 2))
     every = list(sources.changes.values())
-    cards = "".join(_change(c, every) for c in changes) or _section("Change", f'    <div class="card"><p>No change names {ref} yet.</p></div>')
+    cards = "".join(_change(c, every, now) for c in changes) or _section("Change", f'    <div class="card"><p>No change names {ref} yet.</p></div>')
     change = changes[0] if changes else None
     current = {t.name.strip().casefold(): t for t in mine}.values()
     why_not = ("the issue is closed" if issue and issue.state == "closed" else
@@ -233,7 +234,8 @@ def render(number: int, trackers: list[tuple[date, str]], sources: board_sources
         task = latest.get(runs[-1][0].name.strip().casefold())
         live = runs[-1][2] is None and task is not None and task.kind == "running" and task.owner.strip() == who
         state = "running" if live else ENDED.get(runs[-1][2].stage, "ended") if runs[-1][2] else "ended"
-        mine_spans = [(s.at, e.at if e else now) for s, _, e in runs if e or (live and s is runs[-1][0])]
+        stop = min(now, merged[task.name.strip()]) if task and task.name.strip() in merged else now  # (#200)
+        mine_spans = [(s.at, e.at if e else stop) for s, _, e in runs if e or (live and s is runs[-1][0])]
         spans += mine_spans
         stages = ", ".join(dict.fromkeys(s.stage for s, _, _ in runs))
         took = sum((e - s for s, e in mine_spans), timedelta())
