@@ -193,6 +193,29 @@ class Build(unittest.TestCase):
         self.assertEqual(rb.build_columns(tasks, LANES, KANBAN, bs.EMPTY, NOW), rb.build_columns(tasks, LANES, KANBAN))
         self.assertEqual([c.name for c in rb.build_columns(tasks, LANES)[0]], ["implement", "review", "triage", "merge"])
 
+    def test_a_merged_change_draws_the_card_at_its_lanes_last_stage(self) -> None:
+        # (#240) A stalled coordinator can leave the tracker cell at `merge` for hours after the change actually
+        # merged; the card draws at the lane's last stage instead, and carries neither drift nor ON HOLD for it —
+        # the forge already answered the only question that stage cell was tracking.
+        lanes = {"build": st.Lane(("implement", "pr", "review", "triage", "merge", "main"), ("triage", "merge"))}
+        kanban = replace(KANBAN, hold_stages=("merge",), terminal_stages=("main",))
+        sources = replace(SOURCES, issues={**SOURCES.issues, "#8": bs.Issue("#8", "https://forge/i/8", "Locale", "open", ())})
+        tracker = TRACKER.replace("## Decisions",
+                                  "| Ship the tool | Ship it | Robin | waiting | 09:00 |  | S | build | merge | #8 | Checklist: ship |\n"
+                                  "\n## Decisions")
+        tasks = rb.parse_tracker(tracker).tasks
+        cols, _ = rb.build_columns(tasks, lanes, kanban, sources, NOW)
+        card = card_named(cols, "Ship the tool")
+        self.assertEqual(next(col.name for col in cols if card in col.cards), "main")
+        self.assertNotIn(columns.Mark("drift", "drift"), card.marks)
+        self.assertIsNone(card.flag)
+
+    def test_an_open_or_undrafted_change_still_draws_at_its_own_stage(self) -> None:
+        # The Cut the release task's change (!48) is open, not merged: no forge answer yet, so it stays put.
+        cols, _ = self.cols()
+        card = card_named(cols, "Cut the release")
+        self.assertEqual(next(col.name for col in cols if card in col.cards), "review")
+
 
 def card_named(cols: list[columns.Column], name: str) -> columns.Card:
     return next(c for col in cols for c in col.cards if c.name == name)
@@ -330,6 +353,20 @@ class Page(unittest.TestCase):
         tiles = dict(re.findall(r'<span class="panels-label">([A-Z]+)</span><b class="panels-count">(\d+)</b>', html))
         self.assertEqual(tiles["BLOCKED"], "2")
         self.assertEqual(html.count(">ON HOLD<"), 2)
+
+    def test_blocked_and_drift_exclude_a_task_whose_change_already_merged(self) -> None:
+        # (#240) The same forge answer that moves a stuck card off the `merge` column keeps it out of the
+        # BLOCKED and DRIFT tiles too — both read `held`/`drifts` on every task, not just the laned ones build_columns sees.
+        lanes = {"build": st.Lane(("implement", "pr", "review", "triage", "merge", "main"), ("triage", "merge"))}
+        kanban = replace(KANBAN, hold_stages=("merge",), terminal_stages=("main",))
+        sources = replace(SOURCES, issues={**SOURCES.issues, "#8": bs.Issue("#8", "https://forge/i/8", "Locale", "open", ())})
+        tracker = TRACKER.replace("## Decisions",
+                                  "| Ship the tool | Ship it | Robin | waiting | 09:00 |  | S | build | merge | #8 | Checklist: ship |\n"
+                                  "\n## Decisions")
+        html = rb.render(tracker, self.cfg, NOW, lanes=lanes, kanban=kanban, sources=sources)
+        tiles = dict(re.findall(r'<span class="panels-label">([A-Z]+)</span><b class="panels-count">(\d+)</b>', html))
+        self.assertEqual(tiles["BLOCKED"], "0")
+        self.assertEqual(tiles["DRIFT"], "1")  # unrelated, pre-existing: README at triage has stage::implement
 
     def test_tiles_link_to_their_sections(self) -> None:
         for anchor in re.findall(r'class="panels-tile" data-kind="[a-z]+" href="#([a-z]+)"', self.body):
