@@ -90,7 +90,7 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
-def issue(iid: int, title: str, state: str = "opened", labels=()) -> dict:
+def issue(iid: int, title: str, state: str = "opened", labels=(), closed_at: str = "") -> dict:
     return {
         "iid": iid,
         "title": title,
@@ -98,6 +98,7 @@ def issue(iid: int, title: str, state: str = "opened", labels=()) -> dict:
         "labels": list(labels),
         "web_url": f"https://labs.gauntletai.com/zachgardner/openemr/-/issues/{iid}",
         "updated_at": "2026-09-20T05:11:02.000Z",
+        "closed_at": closed_at,
     }
 
 
@@ -213,6 +214,23 @@ class IssuesTest(unittest.TestCase):
         one = got.issues[0]
         self.assertEqual((one.iid, one.title, one.state), (3, "PHQ-9-teen wired dead", "opened"))
         self.assertEqual(one.labels, ("defect",))
+
+    def test_reads_closed_at(self):
+        """#221: the audit needs to know *when* an issue closed, mirrored the way `updated_at` already is."""
+        body = json.dumps([issue(3, "closed one", state="closed", closed_at="2026-09-17T19:05:00.000Z")])
+        server, base = serve({("GET", ISSUES, "opened", "1"): (200, body, {})})
+        self.addCleanup(stop, server)
+        got = bl.issues(cfg(base), token=TOKEN)
+        self.assertEqual(got.issues[0].closed_at, "2026-09-17T19:05:00.000Z")
+
+    def test_closed_at_defaults_to_empty(self):
+        """A GitLab issue with no `closed_at` (an open one) reports an empty string, never None."""
+        body = json.dumps([{"iid": 1, "title": "open", "state": "opened", "labels": [],
+                            "web_url": "https://labs.gauntletai.com/zachgardner/openemr/-/issues/1"}])
+        server, base = serve({("GET", ISSUES, "opened", "1"): (200, body, {})})
+        self.addCleanup(stop, server)
+        got = bl.issues(cfg(base), token=TOKEN)
+        self.assertEqual(got.issues[0].closed_at, "")
 
     def test_sends_the_token_as_a_private_token_header(self):
         server, base = serve({("GET", ISSUES, "opened", "1"): (200, "[]", {})})
@@ -481,9 +499,11 @@ REPO = "locriani/GauntletIssues"
 GH = bl.GitHubBacklog(repo=REPO)
 
 
-def gh_issue(number: int, title: str, state: str = "OPEN", labels=()) -> dict:
+def gh_issue(number: int, title: str, state: str = "OPEN", labels=(), closed: str | None = None) -> dict:
+    """`closed=None` is `gh`'s own answer for an open issue: a JSON null, never the string 'null'."""
     return {"number": number, "title": title, "state": state, "labels": [{"name": n} for n in labels],
-            "url": f"https://github.com/{REPO}/issues/{number}", "updatedAt": "2026-09-22T19:24:55Z"}
+            "url": f"https://github.com/{REPO}/issues/{number}", "updatedAt": "2026-09-22T19:24:55Z",
+            "closedAt": closed}
 
 
 class FakeGh:
@@ -539,14 +559,21 @@ class GitHubConfigTest(unittest.TestCase):
 
 class GitHubReadTest(unittest.TestCase):
     def test_list_argv_and_mapping(self):
-        gh = FakeGh(rows={"open": [gh_issue(3, "inbox.py", labels=("bug",))]})
+        gh = FakeGh(rows={"open": [gh_issue(3, "inbox.py", labels=("bug",), closed="2026-09-17T19:05:00Z")]})
         got = bl.issues(GH, gh=gh)
         self.assertTrue(got.ok, got.error)
         self.assertEqual(gh.calls, [["issue", "list", "-R", REPO, "--state", "open", "--json",
-                                     "number,title,state,labels,url,updatedAt", "--limit", "5000"]])
+                                     "number,title,state,labels,url,updatedAt,closedAt", "--limit", "5000"]])
         self.assertEqual(got.issues, (bl.Issue(iid=3, title="inbox.py", state=bl.OPEN, labels=("bug",),
                                                 web_url=f"https://github.com/{REPO}/issues/3",
-                                                updated_at="2026-09-22T19:24:55Z"),))
+                                                updated_at="2026-09-22T19:24:55Z",
+                                                closed_at="2026-09-17T19:05:00Z"),))
+
+    def test_closed_at_defaults_to_empty(self):
+        """An open GitHub issue's `closedAt` comes back null; that must never render as the string 'None'."""
+        gh = FakeGh(rows={"open": [gh_issue(3, "inbox.py")]})
+        got = bl.issues(GH, gh=gh)
+        self.assertEqual(got.issues[0].closed_at, "")
 
     def test_closed_and_all(self):
         gh = FakeGh(rows={"closed": [gh_issue(4, "p", "CLOSED")], "all": [gh_issue(1, "a"), gh_issue(4, "p", "CLOSED")]})

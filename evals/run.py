@@ -1414,7 +1414,8 @@ if args[:2] == ["issue", "create"]:
     repo = args[args.index("-R") + 1] if "-R" in args else "o/backlog"
     print(f"https://github.com/{repo}/issues/101")
 elif args[:2] == ["issue", "list"]:
-    print("[]")
+    issues = Path(__file__).parent / "issues.json"
+    print(issues.read_text() if issues.exists() else "[]")
 elif args[:2] in (["issue", "close"], ["issue", "comment"], ["pr", "merge"]):
     pass
 elif args[:2] == ["pr", "list"]:
@@ -1474,7 +1475,8 @@ def write_recorder(shim_dir: Path, calls_log: Path, tz: str) -> list[str]:
     return ["python3", str(recorder), "{type}", "{cwd}", "{title}"]
 
 
-def write_shims(shim_dir: Path, prs: list | None = None, graphql: dict | None = None) -> None:
+def write_shims(shim_dir: Path, prs: list | None = None, graphql: dict | None = None,
+                issues: list | None = None) -> None:
     shim_dir.mkdir(parents=True, exist_ok=True)
     railway = shim_dir / "railway"
     railway.write_text(RAILWAY_SHIM)
@@ -1485,6 +1487,9 @@ def write_shims(shim_dir: Path, prs: list | None = None, graphql: dict | None = 
     if prs is not None:
         # A case's open pull requests, as `gh pr list --json` returns them.
         (shim_dir / "prs.json").write_text(json.dumps(prs))
+    if issues is not None:
+        # A case's backlog, as `gh issue list --state all --json ...` returns it (#221).
+        (shim_dir / "issues.json").write_text(json.dumps(issues))
     if graphql is not None:
         # What `gh api graphql` answers for the case: its review threads.
         (shim_dir / "graphql.json").write_text(json.dumps(graphql))
@@ -1528,7 +1533,7 @@ def run_one(case: Case, arm: str, model: str, out: Path, root: Path | None = Non
             make_repo.build(work, spec["repo"])
         # After every piece of setup, so the baseline is what the agent was handed, not a part of it.
         before_snapshot(work, out / "fixture-before")
-        write_shims(out / "shims", spec.get("gh_prs"), spec.get("gh_graphql"))
+        write_shims(out / "shims", spec.get("gh_prs"), spec.get("gh_graphql"), spec.get("gh_issues"))
         calls_log.parent.mkdir(parents=True, exist_ok=True)
         calls_log.touch()
         env = eval_environment(out, calls_log, tz, root=root)

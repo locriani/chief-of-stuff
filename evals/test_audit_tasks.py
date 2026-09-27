@@ -1002,11 +1002,17 @@ ISSUE_TRACKER = """# Tracker 2026-09-17
 
 
 class FakeGh:
-    """`gh issue list --state all -R <repo>`, answered per repo. Records argv."""
+    """`gh issue list --state all -R <repo>`, answered per repo. Records argv.
 
-    def __init__(self, repos: dict | None = None, fail: tuple | None = None):
+    `closed_at`, keyed the same way as `repos` (repo -> {number: iso timestamp}), answers #221's
+    `closedAt`; a number with no entry there answers null, `gh`'s own word for an issue that never
+    closed.
+    """
+
+    def __init__(self, repos: dict | None = None, fail: tuple | None = None, closed_at: dict | None = None):
         self.repos = repos or {}
         self.fail = fail
+        self.closed_at = closed_at or {}
         self.calls: list[list[str]] = []
 
     def __call__(self, args: list[str]) -> tuple[int, str, str]:
@@ -1015,7 +1021,8 @@ class FakeGh:
         if self.fail:
             return self.fail
         repo = args[args.index("-R") + 1]
-        rows = [{"number": n, "title": "t", "state": st, "labels": [], "url": "", "updatedAt": ""}
+        rows = [{"number": n, "title": "t", "state": st, "labels": [], "url": "", "updatedAt": "",
+                 "closedAt": self.closed_at.get(repo, {}).get(n)}
                 for n, st in self.repos.get(repo, {}).items()]
         return 0, json.dumps(rows), ""
 
@@ -1054,7 +1061,7 @@ class GitLabIssueAuditTest(unittest.TestCase):
         self.assertEqual([str(f) for f in report.issues], [
             "issue: Bare — no issue; file it with chief-of-stuff backlog --create",
             'issue: Garbled — "TBD" is not an issue reference',
-            "issue: Closed under it — #5 is closed",
+            "issue: Closed under it — #5 is closed; write the task done",
             "issue: Missing — #6 not found in o/backlog",
             "issue: Done open — done but #7 is open; chief-of-stuff backlog --close 7 --commit",
         ])
@@ -1111,7 +1118,7 @@ class IssueAuditTest(unittest.TestCase):
         self.assertEqual(got, [
             "issue: Bare — no issue; file it with chief-of-stuff backlog --create",
             'issue: Garbled — "TBD" is not an issue reference',
-            "issue: Closed under it — #5 is closed",
+            "issue: Closed under it — #5 is closed; write the task done",
             "issue: Missing — #6 not found in o/backlog",
             "issue: Done open — done but #7 is open; chief-of-stuff backlog --close 7 --commit",
         ])
@@ -1172,6 +1179,83 @@ class IssueClosesAtLaneEndTest(unittest.TestCase):
         report = al.audit(root, "2026-09-17", gh=FakeGh(LIVE))
         self.assertEqual([str(f) for f in report.issues],
                          ["issue: Merged — done but #8 is open; chief-of-stuff backlog --close 8 --commit"])
+
+
+class ClosedIssueOnOpenTaskTest(unittest.TestCase):
+    """#221: an issue closed on the forge (by a person, or a change's closing keyword) while its tracker
+    task is still open/waiting/orphaned never moved the task before this — the audit only said
+    "#N is closed" and stopped. The fault now carries its own fix, the way a done-but-open row already
+    names `chief-of-stuff backlog --close N --commit`: write the task done when nothing is left to land,
+    or hand the call to the user when the tree still holds work `main` never got.
+    """
+
+    TRACKER = """# Tracker 2026-09-17
+
+## Tasks
+
+| name | item | owner | state | since | due | size | issue | checklist |
+|---|---|---|---|---|---|---|---|---|
+| No tree work | No tree work, backed by an issue with no worktree | sam | waiting | 09:00 |  | S | #5 | c |
+| Unlanded work | Unlanded work, its tree still ahead of main | robin | waiting | 09:00 |  | S | #6 | c |
+| Landed work | Landed work, its tree already merged | kim | waiting | 09:00 |  | S | #7 | c |
+
+## File ownership
+
+| context | paths |
+|---|---|
+| robin | worktree wt-unmerged (feat/open) |
+| kim | worktree wt-merged (landed) |
+
+## Log
+
+- 09:00 opened the day
+"""
+
+    def workspace(self) -> Path:
+        tmp = tempfile.TemporaryDirectory()
+        root = Path(tmp.name)
+        (root / "daily").mkdir()
+        (root / "CLAUDE.md").write_text(ISSUE_CLAUDE)
+        (root / "daily" / "2026-09-17-tracker.md").write_text(self.TRACKER)
+        build(root)
+        self.addCleanup(tmp.cleanup)
+        return root
+
+    def test_no_worktree_writes_the_task_done_at_the_close_time(self):
+        """Branch A, no tree at all: nothing can be unlanded, so the fix is to write the task done —
+        at the time the forge closed the issue, converted into the workspace's own zone."""
+        gh = FakeGh({"o/backlog": {5: "CLOSED", 6: "CLOSED", 7: "CLOSED"}},
+                    closed_at={"o/backlog": {5: "2026-09-17T19:05:00Z"}})
+        report = al.audit(self.workspace(), "2026-09-17", gh=gh)
+        self.assertIn("issue: No tree work — #5 is closed 14:05; write the task done at 14:05",
+                      [str(f) for f in report.issues])
+
+    def test_a_landed_worktree_also_writes_the_task_done(self):
+        """Branch A, a tree that IS there: `wt-merged`'s branch is already an ancestor of main, so it
+        holds no work `main` is missing either, and the fix is the same as having no tree at all."""
+        gh = FakeGh({"o/backlog": {5: "CLOSED", 6: "CLOSED", 7: "CLOSED"}},
+                    closed_at={"o/backlog": {7: "2026-09-17T19:05:00Z"}})
+        report = al.audit(self.workspace(), "2026-09-17", gh=gh)
+        self.assertIn("issue: Landed work — #7 is closed 14:05; write the task done at 14:05",
+                      [str(f) for f in report.issues])
+
+    def test_no_time_is_named_when_the_forge_gave_none(self):
+        """An empty `closed_at` omits the clock rather than printing a false one."""
+        gh = FakeGh({"o/backlog": {5: "CLOSED", 6: "CLOSED", 7: "CLOSED"}})
+        report = al.audit(self.workspace(), "2026-09-17", gh=gh)
+        self.assertIn("issue: No tree work — #5 is closed; write the task done",
+                      [str(f) for f in report.issues])
+
+    def test_an_unlanded_worktree_asks_the_user_instead(self):
+        """Branch B: `wt-unmerged` carries a commit `main` never got — the same signal `reopen` already
+        reads off a done task's tree — so the fault refuses to guess and hands the call to the user.
+        No issue is ever reopened over this: the fix names a choice, not an action taken."""
+        gh = FakeGh({"o/backlog": {5: "CLOSED", 6: "CLOSED", 7: "CLOSED"}})
+        report = al.audit(self.workspace(), "2026-09-17", gh=gh)
+        self.assertIn(
+            "issue: Unlanded work — #6 is closed but its tree has work not on main; "
+            "ask the user: reopen the issue or drop the work",
+            [str(f) for f in report.issues])
 
 
 LANE_CLAUDE = CLAUDE + "- Settings: `cos.toml`\n"
