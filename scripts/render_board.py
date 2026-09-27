@@ -1269,7 +1269,9 @@ def render(tracker_text: str, cfg: Config, now: datetime, lanes: dict | None = N
                                  {item: end[0] for item, end in ends.items()}, now,
                                  queue_durations(active, hist), slots,
                                  frozenset(t.name.strip() for t in tasks
-                                           if any(c.state == "open" and c.approved for c in task_changes(t, sources))))
+                                           if any(c.state == "open" and c.approved for c in task_changes(t, sources))),
+                                 merged={t.name.strip(): max(at).astimezone(zone) for t in tasks
+                                         if t.name.strip() and (at := [c.merged_at for c in task_changes(t, sources) if c.state == "merged" and c.merged_at])})
     # An issue's row links to its page, pages.py's /issues/<n>.
     flow_html = flow_chart.section([(s, replace(r, href=f"/issues/{int(m[1])}") if (m := TRAILING_NUMBER.search(r.ref)) else r)
                                     for s, r in flow_rows], now)

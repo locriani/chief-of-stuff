@@ -39,6 +39,7 @@ class Move:
     stage: str
     launch: bool = False
     line: str = field(default="", compare=False)  # the Log line it was read from
+    worker: str = field(default="", compare=False)  # a launcher move's worker
 
 
 def moves(text: str, day: date, zone: ZoneInfo) -> list[Move]:
@@ -56,9 +57,9 @@ def moves(text: str, day: date, zone: ZoneInfo) -> list[Move]:
             out.append(Move(at, m[3].strip(), m[4], line=line))
         elif m.re is STARTED:
             task_of[m[3]] = m[4]
-            out.append(Move(at, m[4], "implement", True, line))
+            out.append(Move(at, m[4], "implement", True, line, m[3]))
         elif m[3] in task_of:
-            out.append(Move(at, task_of[m[3]], "pr" if m[4].startswith("completed") else "review", True, line))
+            out.append(Move(at, task_of[m[3]], "pr" if m[4].startswith("completed") else "review", True, line, m[3]))
     return out
 
 
@@ -108,12 +109,14 @@ def _ahead(stages: list[str], start: datetime, end: datetime) -> list[gantt.Segm
 
 def build(log: list[Move], tasks, lanes: dict, held: set[str], ends: dict[str, datetime], now: datetime,
           durations: dict[str, timedelta] | None = None, slots: int = 1,
-          approved: frozenset[str] = frozenset()) -> list[tuple[str, gantt.Row]]:
+          approved: frozenset[str] = frozenset(), merged: dict[str, datetime] | None = None) -> list[tuple[str, gantt.Row]]:
     """(status, row) per task with a move, first moved first, then the queued tasks in tracker order. `tasks` are
     tracker rows, later ones winning; `held` names the held tasks; `ends` maps a task's item to its estimated end;
     `durations` maps a queued task's item to how long it will take, and `slots` is how many run at once;
-    `approved` names the tasks whose open change is approved, labelled `approved · merge ~HH:MM` by their end.
-    Status is `merged`, `held` or the task's state word."""
+    `approved` names the tasks whose open change is approved, labelled `approved · merge ~HH:MM` by their end;
+    `merged` maps a task's name to its change's forge merge time, which ends its row. Status is `merged`, `held` or
+    the task's state word. A done or running bar's title names the worker whose launch was running when it began,
+    else the task's owner cell."""
     by_name = {t.name.strip().casefold(): t for t in tasks if t.name.strip()}
     # A move names a task by its name or its item; the name wins.
     find = {**{t.item.strip().casefold(): t for t in tasks if t.item.strip()}, **by_name}
@@ -127,10 +130,20 @@ def build(log: list[Move], tasks, lanes: dict, held: set[str], ends: dict[str, d
     horizon = now + WINDOWS[-1][2]
     busy: list[datetime] = []
     log = sorted(log, key=lambda m: m.at)
-    first = {}
+    first, runs = {}, {}  # runs: key → [worker, start, end or None] per launch
     for m in log:
+        key = key_of(m)
         if not m.launch:
-            first.setdefault(key_of(m), m.at)
+            first.setdefault(key, m.at)
+        elif m.stage == "implement":
+            runs.setdefault(key, []).append([m.worker, m.at, None])
+        elif run := next((r for r in reversed(runs.get(key, ())) if r[0] == m.worker and r[2] is None), None):
+            run[2] = m.at
+
+    def owner(key: str, at: datetime, task) -> str:
+        running = [w for w, start, end in runs.get(key, ()) if start <= at and (end is None or at < end)]
+        return running[-1] if running else task.owner.strip() if task else ""
+
     log = [m for m in log if not (m.launch and (f := first.get(key_of(m))) and m.at >= f)]
     out, groups = [], {}
     for m in log:
@@ -140,10 +153,15 @@ def build(log: list[Move], tasks, lanes: dict, held: set[str], ends: dict[str, d
         stop = now
         if task and task.kind == "done" and (t := task.state_time):
             stop = min(now, datetime.combine(now.date(), time.fromisoformat(t.zfill(5)), tzinfo=now.tzinfo))
-        segs = [gantt.Segment(m.at, nxt.at if nxt else stop, m.stage, "done")
+        merge = task and (merged or {}).get(task.name.strip())
+        segs = [gantt.Segment(m.at, nxt.at if nxt else stop, m.stage, "done", owner(key, m.at, task))
                 for m, nxt in zip(mine, mine[1:] + [None]) if m.stage not in terminal]
+        if merge:
+            segs = [replace(g, end=min(g.end, merge)) for g in segs if g.start < merge]
         lane = lanes.get(task.lane.strip()) if task else None
-        if last.stage in terminal:
+        if merge:
+            status, note = "merged", f"merged {merge:%H:%M}"
+        elif last.stage in terminal:
             status, note = "merged", f"merged {last.at:%H:%M}"
         elif task and task.name.strip() in held:
             segs.append(gantt.Segment(now, now + WINDOWS[-1][2], last.stage, "hold"))
