@@ -40,6 +40,7 @@ class Card:
     marks: tuple[Mark, ...] = ()
     flag: Mark | None = None  # the card's whole condition: an outline and a bar across its foot, in its colour
     href: str = ""  # links the name
+    owner_href: str = ""  # a worker owner's `/workers` link; blank keeps a person or `unassigned` plain (#209)
 
 
 @dataclass(frozen=True)
@@ -66,7 +67,7 @@ def _card(c: Card) -> str:
     flag = f'<div class="columns-tag columns-flag" data-cat="{_esc(c.flag.category)}">{_esc(c.flag.text)}</div>' if c.flag else ""
     return (f'{head}{_link(c.name, c.href, "columns-card-name", "div")}'
             + (f'<div class="columns-refs">{"".join(_link(t, u) for t, u in c.refs)}</div>' if c.refs else "")
-            + f'<div class="columns-who"><span class="columns-owner">{_esc(c.owner)}</span>{chip}</div>{marks}{flag}</div>')
+            + f'<div class="columns-who">{_link(c.owner, c.owner_href, "columns-owner")}{chip}</div>{marks}{flag}</div>')
 
 
 def tally(cards: tuple[Card, ...]) -> str:
@@ -113,7 +114,7 @@ BASE_CSS = """\
 .columns-refs a{color:var(--columns-link);text-decoration:none;border-bottom:1px dotted var(--columns-edge)}
 .columns a:focus-visible{outline:2px solid var(--columns-ink);outline-offset:1px}
 .columns-who,.columns-marks{display:flex;align-items:center;gap:5px;flex-wrap:wrap}
-.columns-owner{font-size:11px;color:var(--columns-muted)}
+.columns-owner{font-size:11px;color:var(--columns-muted);text-decoration:none}
 .columns-tag{--c:var(--columns-card);--i:var(--columns-ink);--e:1px solid var(--columns-rule);background:var(--c);color:var(--i);border:var(--e)}
 .columns-chip{font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;padding:1px 6px;border-radius:9px}
 .columns-mark{font-size:10px;padding:0 5px;border-radius:3px}

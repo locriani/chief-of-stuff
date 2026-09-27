@@ -1152,15 +1152,24 @@ def build_columns(tasks: list[Task], lanes: dict | None, kanban: Kanban | None =
         m = TRAILING_NUMBER.search(cell)
         return f"/issues/{int(m[1])}" if m else other
 
+    def change_href(c: board_sources.Change) -> str:
+        """A change's own page: the task page of its own first named issue, or its forge link when it names
+        none — pages.py serves no route for a change itself (#209)."""
+        return page(c.issues[0] if c.issues else "", c.url)
+
+    worker_names = {w.name for w in sources.workers}
+
     def card(task: Task) -> columns.Card:
         changes = task_changes(task, sources)
         url = issue_url(issue_key(task.issue), task.issue)
         issue = issue_key(task.issue) if changes or url else task.issue.strip()
-        refs = ((issue, url),) * bool(issue) + tuple((c.ref, c.url) for c in changes)
+        refs = ((issue, page(issue, url)),) * bool(issue) + tuple((c.ref, change_href(c)) for c in changes)
         marks = change_marks(changes) + ((columns.Mark("drift", "drift"),) if drifts(task, kanban, sources) else ())
-        return columns.Card(task.label, task.kind, refs, task.shown_owner, task.state, marks,
+        owner = task.shown_owner
+        return columns.Card(task.label, task.kind, refs, owner, task.state, marks,
                             flag=columns.Mark("ON HOLD", "hold") if held(task, kanban) else None,
-                            href=page(task.issue, next((c.url for c in changes if c.state == "open"), url)))
+                            href=page(task.issue, next((c.url for c in changes if c.state == "open"), url)),
+                            owner_href="/workers" if owner in worker_names else "")
 
     laned = [t for t in tasks if t.lane.strip() and t.stage.strip()]
     order = list(dict.fromkeys(stage_order(lanes) + [t.stage.strip() for t in laned]))
@@ -1171,9 +1180,9 @@ def build_columns(tasks: list[Task], lanes: dict | None, kanban: Kanban | None =
                            *(("gate", "gate") if stage in gates else ())) for stage in order]
     merged = merged_today(sources, now) if now else []
     if merged:
-        cards = tuple(columns.Card(c.title, "merged today", tuple((i, issue_url(i)) for i in c.issues[:1]) + ((c.ref, c.url),),
+        cards = tuple(columns.Card(c.title, "merged today", tuple((i, page(i, issue_url(i))) for i in c.issues[:1]) + ((c.ref, change_href(c)),),
                                    f"merged {c.merged_at.astimezone(now.tzinfo):%H:%M}", "done",
-                                   href=page(c.issues[0] if c.issues else "", c.url)) for c in merged)
+                                   href=change_href(c)) for c in merged)
         at = next((i for i, c in enumerate(cols) if c.name == "main"), None)
         if at is None:
             cols.append(columns.Column("main", cards))
