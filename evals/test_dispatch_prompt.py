@@ -650,7 +650,9 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
     def test_one_shot_workspace_requires_one_shot_for_every_task(self):
         self.assertIn('every task dispatch runs one-shot; the launcher enforces this without a flag', self.content)
         self.assertIn('pass `--one-shot` for that launch', self.content)
-        self.assertNotIn('Pass `--interactive` to override', self.content)
+        # #188: a direct interactive request wins over `[workers] mode = "one-shot"`, mirroring the one-shot rule.
+        self.assertIn("A task-specific request for an interactive session authorizes that task's launch with "
+                      "`--interactive` in a one-shot workspace.", self.content)
 
     def test_one_shot_dispatch_is_authorized_by_configuration(self):
         authority = self._section("Dispatch authority")

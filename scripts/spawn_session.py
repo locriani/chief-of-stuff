@@ -242,8 +242,12 @@ def main(argv_in: list[str] | None = None) -> int:
     ap.add_argument("--effort", default="", choices=("", "low", "medium", "high", "xhigh", "max"),
                     help="claude only; agy's effort is in its model id")
     ap.add_argument("--dry-run", action="store_true", help="print the argv and start nothing")
-    ap.add_argument("--one-shot", action="store_true",
-                    help="run this task once; [workers] mode = one-shot already requires this for every task")
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--one-shot", action="store_true",
+                      help="run this task once; [workers] mode = one-shot already makes this the default")
+    # #188: the user's direct request for a standing session wins over [workers] mode = one-shot.
+    mode.add_argument("--interactive", action="store_true",
+                      help="start a standing session for this task even in a one-shot workspace")
     ap.add_argument("--timeout-minutes", type=int, default=60,
                     help="one-shot run limit before human review (default: 60)")
     args = ap.parse_args(argv_in)
@@ -273,7 +277,7 @@ def main(argv_in: list[str] | None = None) -> int:
     # Compose and launch must use the same absolute cwd.
     args.cwd = os.path.abspath(args.cwd)
 
-    one_shot = worker_settings.mode == "one-shot" or args.one_shot
+    one_shot = args.one_shot or (worker_settings.mode == "one-shot" and not args.interactive)
     try:
         args.task = dispatch_prompt.resolve_task(Path(args.root), args.date, args.task)
     except dispatch_prompt.RefusedError as exc:
