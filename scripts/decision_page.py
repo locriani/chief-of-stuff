@@ -48,7 +48,7 @@ from pathlib import Path
 
 import board_sources
 from backlog import Backlog, BacklogError, GitHubBacklog, backlog_from_config
-from fragment import href
+from fragment import TAB_CSS, href, tab_bar
 from pages import PagesError, from_config
 from settings import Graph
 
@@ -426,7 +426,7 @@ def _answer_form(slug: str, cls: str, opts: str, back: str = "") -> str:
 
 
 def render(d: dict, day: str, forge: Backlog | GitHubBacklog | None = None, root: Path | None = None,
-           ctx: Context | None = None, slug: str = "", mtime: float | None = None) -> str:
+           ctx: Context | None = None, slug: str = "", mtime: float | None = None, pending: int = 0) -> str:
     """The page. With a context, what the JSON leaves out is read from it: when it was asked, the answer and the
     chip, and each reference's status."""
     link = Linker(forge, root)
@@ -500,7 +500,7 @@ def render(d: dict, day: str, forge: Backlog | GitHubBacklog | None = None, root
     where += _graph(change, ctx and ctx.graph, ctx and ctx.pages, root)
     return (f"<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n"
             f"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
-            f"<title>{escape(d['headline'])}</title>\n{HEAD}</head>\n<body>\n<main class=\"decision\">\n"
+            f"<title>{escape(d['headline'])}</title>\n{HEAD}</head>\n<body>\n<main class=\"decision\">\n{tab_bar('Decisions', pending, True)}"
             f'  <header class="top">\n    <div>\n      <span class="eyebrow">{eyebrow}</span>\n'
             f"      <h1>{md(d['headline'])}</h1>\n    </div>\n"
             f'    <span class="chip{" answered" if answered else ""}">{chip}</span>\n  </header>\n\n'
@@ -559,7 +559,9 @@ def main(argv: list[str] | None = None) -> int:
 def write(root: Path, pages_dir: Path, name: str, day: str, source: Path | None = None) -> Path:
     """Render `decision-<name>.json` (or `source`) to `decision-<name>.html`; the page server calls this in process."""
     source = source or pages_dir / f"decision-{name}.json"
-    page = render(parse(json.loads(source.read_text())), day, forge(root), root, context(root, day), name, source.stat().st_mtime)
+    ctx = context(root, day)
+    page = render(parse(json.loads(source.read_text())), day, forge(root), root, ctx, name, source.stat().st_mtime,
+                  pending_count(pages_dir, ctx))
     pages_dir.mkdir(parents=True, exist_ok=True)
     out = pages_dir / f"decision-{name}.html"
     out.write_text(page)
@@ -715,9 +717,15 @@ def _plural(n: int, word: str) -> str:
     return f"{n} {word}{'' if n == 1 else 's'}"
 
 
-def index(pages_dir: Path, ctx: Context, day: str) -> tuple[str, list[tuple[str, dict | None, datetime | None, str]]]:
-    """`decisions.html` (Decisions.dc.html) and its pending entries, which the board's DECISIONS panel lists too."""
-    pending = entries(pages_dir, ctx)
+def pending_count(pages_dir: Path, ctx: Context | None) -> int:
+    """The readable decisions no row has answered, as decisions.html counts PENDING; 0 without a context."""
+    return sum(d is not None for _, d, _, _ in entries(pages_dir, ctx)) if ctx else 0
+
+
+def index(pages_dir: Path, ctx: Context, day: str, pending: list | None = None) -> tuple[str, list[tuple[str, dict | None, datetime | None, str]]]:
+    """`decisions.html` (Decisions.dc.html) and its pending entries (`entries`, read here unless given), which the
+    board's DECISIONS panel lists too."""
+    pending = entries(pages_dir, ctx) if pending is None else pending
     rows, held = [], []
     for slug, d, asked, why in pending:
         when = f'<span class="when">{ctx.when(asked)}</span>' if asked else ""
@@ -803,7 +811,7 @@ def index(pages_dir: Path, ctx: Context, day: str) -> tuple[str, list[tuple[str,
             + ("\n".join(done) or none) + "\n    </div>\n  </section>\n")
     return (f"<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n"
             f"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
-            f"<title>Decisions · {escape(_day(day))}</title>\n{HEAD}</head>\n<body>\n<main class=\"decisions\">\n"
+            f"<title>Decisions · {escape(_day(day))}</title>\n{HEAD}</head>\n<body>\n<main class=\"decisions\">\n{tab_bar('Decisions', len(ready))}"
             f'  <header class="top">\n    <div>\n      <h1>Decisions · {escape(_day(day))}</h1>\n'
             f'      <span class="eyebrow">{" · ".join(meta)}</span>\n    </div>\n  </header>\n'
             + body + "</main>\n" + ANSWER_JS + "</body>\n</html>\n"), pending
@@ -811,14 +819,16 @@ def index(pages_dir: Path, ctx: Context, day: str) -> tuple[str, list[tuple[str,
 
 def write_all(pages_dir: Path, ctx: Context, day: str, root: Path | None = None) -> list[tuple[str, dict | None, datetime | None, str]]:
     """Re-render every readable decision's page from its JSON and the context, and `decisions.html`; the pending entries."""
+    pending = entries(pages_dir, ctx)
+    count = sum(d is not None for _, d, _, _ in pending)
     for source in pages_dir.glob("decision-*.json"):
         try:
             page = render(parse(json.loads(source.read_text())), day, ctx.forge, root, ctx, source.stem.removeprefix("decision-"),
-                          source.stat().st_mtime)
+                          source.stat().st_mtime, count)
         except BAD:
             continue
         source.with_suffix(".html").write_text(page)
-    html, pending = index(pages_dir, ctx, day)
+    html, pending = index(pages_dir, ctx, day, pending)
     (pages_dir / "decisions.html").write_text(html)
     return pending
 
@@ -953,8 +963,7 @@ h2.pend{color:var(--link)}
 @media (max-width:760px){.row.pend,.row.done{grid-template-columns:minmax(0,1fr);gap:4px}.row.head{display:none}.row .stack:first-child{flex-direction:row;gap:8px}.unread .none{display:none}}
 @media (max-width:900px){.cols{grid-template-columns:minmax(0,1fr)}}
 @media (max-width:480px){header.top{flex-direction:column;align-items:flex-start;gap:6px}.refs{grid-template-columns:minmax(0,1fr)}}
-</style>
-"""
+""" + TAB_CSS + "</style>\n"
 
 # Picking an option saves it at once; the write-in saves on its button. Without JS the form posts and the server
 # redirects back to the page.

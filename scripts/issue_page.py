@@ -16,8 +16,8 @@ from pathlib import Path
 
 import board_sources
 import flow_chart
-from decision_page import HEAD, _graph, _md, _section, span
-from fragment import href
+from decision_page import HEAD, _graph, _md, _section, context, pending_count, span
+from fragment import href, tab_bar
 from render_board import (Config, ConfigError, TRAILING_NUMBER, _dur, _resolve_due, daily_trackers, parse_coordinator,
                           parse_tracker)
 from settings import Graph, SettingsError, load as load_settings
@@ -178,7 +178,7 @@ def _next(rows, change: board_sources.Change | None, changes, why_not: str, now:
 
 def render(number: int, trackers: list[tuple[date, str]], sources: board_sources.Sources, now: datetime,
            lanes: dict | None = None, cfg: Config | None = None, graph: Graph | None = None, pages: Path | None = None,
-           root: Path | None = None) -> str | None:
+           root: Path | None = None, pending: int = 0) -> str | None:
     """The page, or None when no task in `trackers` names issue `number`. `cfg` resolves a task's due (the board's
     deadlines); `graph`, `pages` and `root` draw Architecture as the decision page draws its module graph."""
     ref = f"#{number}"
@@ -267,7 +267,7 @@ def render(number: int, trackers: list[tuple[date, str]], sources: board_sources
     return (f"<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n"
             f"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
             f"<title>{ref} {escape(name)}</title>\n{HEAD}<style>\n{flow_chart.css() if flow else ''}</style>\n{CSS}</head>\n"
-            f'<body>\n<main class="issue">\n  <header class="top">\n    <div>\n      <span class="eyebrow">{eyebrow}</span>\n'
+            f'<body>\n<main class="issue">\n{tab_bar("Board", pending, True)}  <header class="top">\n    <div>\n      <span class="eyebrow">{eyebrow}</span>\n'
             f"      <h1>{escape(name)}</h1>\n    </div>\n"
             f'    <span class="chip {escape(status)}">{escape(status.upper())}</span>\n  </header>\n\n'
             + cards + (f"  <section>\n{flow}{worked_line}  </section>\n" if flow else "") + ahead
@@ -306,5 +306,6 @@ def write(root: Path, pages_dir: Path, number: int) -> Path | None:
     """Render `issue-<number>.html`; with no page, remove the file and return None. The page server calls this in
     process."""
     cfg, now, trackers, settings = inputs(root)
-    page = render(number, trackers, board_sources.load(pages_dir), now, settings.lanes, cfg, settings.graph, pages_dir, root)
+    page = render(number, trackers, board_sources.load(pages_dir), now, settings.lanes, cfg, settings.graph, pages_dir, root,
+                  pending_count(pages_dir, context(root, now.date().isoformat())))
     return put(pages_dir / f"issue-{number}.html", page)
