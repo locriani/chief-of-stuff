@@ -151,11 +151,14 @@ def build(log: list[Move], tasks, lanes: dict, held: set[str], ends: dict[str, d
     for key, mine in groups.items():
         task, last = find.get(key) or find.get(mine[-1].name.strip().casefold()), mine[-1]
         stop = now
-        if task and task.kind == "done" and (t := task.state_time):
-            stop = min(now, datetime.combine(now.date(), time.fromisoformat(t.zfill(5)), tzinfo=now.tzinfo))
+        if task and task.kind == "done":
+            # (#196) no clock: stop at its own last move, so it draws no bar past that move.
+            stop = (min(now, datetime.combine(now.date(), time.fromisoformat(t.zfill(5)), tzinfo=now.tzinfo))
+                    if (t := task.state_time) else last.at)
         merge = task and (merged or {}).get(task.name.strip())
-        segs = [gantt.Segment(m.at, nxt.at if nxt else stop, m.stage, "done", owner(key, m.at, task))
-                for m, nxt in zip(mine, mine[1:] + [None]) if m.stage not in terminal]
+        segs = [gantt.Segment(m.at, e, m.stage, "done", owner(key, m.at, task))
+                for m, nxt in zip(mine, mine[1:] + [None])
+                if m.stage not in terminal and (e := nxt.at if nxt else stop) > m.at]
         if merge:
             segs = [replace(g, end=min(g.end, merge)) for g in segs if g.start < merge]
         lane = lanes.get(task.lane.strip()) if task else None
