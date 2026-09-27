@@ -395,11 +395,11 @@ def workers(root: Path, cfg: Config, tracker: Tracker, tracker_text: str, day: d
                             record["worktree"], _when(record.get("started")), _at(s.last_reply, day, cfg) if s else None))
     found += [Worker(s.label, "session", "", "", s.doing, "", None, _at(s.last_reply, day, cfg)) for s in rows.values()]
     started = {m[5]: m for m in (STARTED.match(line) for line in _section(tracker_text, "## Log")) if m}
-    trees = root / worktrees_dir((root / "CLAUDE.md").read_text())
+    trees, row_of = root / worktrees_dir((root / "CLAUDE.md").read_text()), flow_chart.launcher(tracker.tasks)
     for tree, task in one_shot.running_trees(trees).items():
         m = started.get(task)
         runtime, _, model = (m[3] if m else "").partition(" ")
-        found.append(Worker(m[2] if m else tree.name, "one-shot", runtime, model, flow_chart.launch_row(task, tracker.tasks)[1], tree.name,
+        found.append(Worker(m[2] if m else tree.name, "one-shot", runtime, model, row_of(task)[1], tree.name,
                             _at(m[1], day, cfg) if m else None, None))
     return tuple(found)
 

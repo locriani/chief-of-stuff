@@ -3,6 +3,7 @@
 import re
 import sys
 import tempfile
+import time
 import unittest
 from dataclasses import replace
 from datetime import date, datetime, timedelta
@@ -337,6 +338,32 @@ def launched_tracker() -> str:
     return text
 
 
+def many_launched_tracker(n: int) -> tuple[str, dict[str, tuple[str, str, str]]]:
+    """n rows, each launched once by the launcher's real writer, and {row name: (its ref, its launch HH:MM, the
+    launch's task text)}. Even
+    rows' items shrink afterwards to the launch text's first words; odd rows' items are reworded, so only the issue
+    ref their launch text carries maps them (#184). Each launch is recorded on its own one-row tracker, then the
+    rows and lines are joined, so the fixture costs O(n)."""
+    head = LAUNCHED_TRACKER.split("| Upload size limit |", 1)[0]
+    parts, expected = {"## Tasks": [], "## File ownership": [], "## Log": []}, {}
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "tracker.md"
+        for i in range(n):
+            name, ref, hhmm = f"Chore {i:04d}", f"#{10000 + i}", f"{i % 120 // 60:02d}:{i % 60:02d}"
+            item, after = ((f"Tidy module {i:04d}. Keep its public names and add a test for each change.", f"Tidy module {i:04d}")
+                           if i % 2 == 0 else
+                           (f"Rename setting {i:04d} ({ref}). Update every reader in the same change.", f"Setting {i:04d} rename"))
+            path.write_text(f"{head}| {name} | {item} | unassigned | open | {TODAY} |  | S |  |  | {ref} | c |\n\n"
+                            f"## File ownership\n\n| context | paths |\n|---|---|\n| {name} | `src/m{i:04d}/` |\n\n## Log\n")
+            one_shot.record_launch(path, item, f"w{i}", f"worktree `trees/t{i}` (t{i})", "claude", "opus", hhmm)
+            text = path.read_text().replace(f"| {name} | {item} |", f"| {name} | {after} |")
+            for heading, lines in parts.items():
+                lines += [line for line in rb._section(text, heading) if line.startswith(("| C", "- "))]
+            expected[name] = (ref, hhmm, item)
+    return (head + "\n".join(parts["## Tasks"]) + "\n\n## File ownership\n\n| context | paths |\n|---|---|\n"
+            + "\n".join(parts["## File ownership"]) + "\n\n## Log\n\n" + "\n".join(parts["## Log"]) + "\n"), expected
+
+
 REVIEW_LOOP = """# Tracker
 
 ## Tasks
@@ -479,6 +506,28 @@ class LaunchRowTest(unittest.TestCase):
         self.assertTrue(name)
         self.assertLessEqual(len(name), 80)
         self.assertTrue(SWEEP_PROMPT.splitlines()[0].startswith(name), name)
+
+
+class ManyLaunchesTest(unittest.TestCase):
+    """A board over a tracker with hundreds of launches maps each to its row within seconds (#184)."""
+
+    N = 400
+
+    @classmethod
+    def setUpClass(cls):
+        text, cls.expected = many_launched_tracker(cls.N)
+        log, tasks = fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks
+        start = time.perf_counter()
+        cls.got = fc.build(log, tasks, LANES, set(), {}, NOW)
+        cls.took = time.perf_counter() - start
+
+    def test_the_chart_builds_within_seconds(self):
+        self.assertLess(self.took, 5, f"{self.N} launches took {self.took:.1f}s")
+
+    def test_every_launch_lands_on_its_own_row(self):
+        # Half map by item prefix, half only by issue ref; each draws on its own row with that row's ref and name.
+        got = {row.name: (row.ref, [g.start for g in row.segments]) for _, row in self.got}
+        self.assertEqual(got, {name: (ref, [at(TODAY, hhmm)]) for name, (ref, hhmm, _) in self.expected.items()})
 
 
 if __name__ == "__main__":

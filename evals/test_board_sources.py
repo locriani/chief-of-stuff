@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stdout
 from dataclasses import replace
@@ -500,6 +501,36 @@ class LaunchedWorkerNameTest(unittest.TestCase):
         self.assertTrue(task)
         self.assertLessEqual(len(task), 80)
         self.assertTrue(fc_test.SWEEP_PROMPT.splitlines()[0].startswith(task), task)
+
+
+class ManyLaunchedWorkersTest(unittest.TestCase):
+    """The Workers panel names thousands of live one-shots by their rows within seconds (#184)."""
+
+    N = 2000
+
+    @classmethod
+    def setUpClass(cls):
+        root = workspace("GitHub issues; repo o/app")
+        text, cls.expected = fc_test.many_launched_tracker(cls.N)
+        (root / "daily" / f"{DAY}-tracker.md").write_text(text)
+        cls.tree_of = {}
+        for i, (name, (_, _, task)) in enumerate(cls.expected.items()):
+            pid = root / "trees" / f"t{i}" / ".chief-of-stuff" / "one-shot.pid"
+            pid.parent.mkdir(parents=True)
+            pid.write_text(f"{os.getpid()} {task}\n")
+            cls.tree_of[name] = f"t{i}"
+        cfg = rb.parse_coordinator((root / "CLAUDE.md").read_text(), today=NOW.date())
+        tracker = rb.parse_tracker(text)
+        start = time.perf_counter()
+        cls.workers = bs.workers(root, cfg, tracker, text, NOW.date())
+        cls.took = time.perf_counter() - start
+
+    def test_the_workers_panel_builds_within_seconds(self):
+        self.assertLess(self.took, 5, f"{self.N} live one-shots took {self.took:.1f}s")
+
+    def test_every_live_one_shot_is_named_by_its_own_row(self):
+        got = {w.tree: w.task for w in self.workers if w.kind == "one-shot"}
+        self.assertEqual(got, {tree: name for name, tree in self.tree_of.items()})
 
 
 class LoadTest(unittest.TestCase):
