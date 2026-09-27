@@ -67,7 +67,8 @@ def moves() -> list[fc.Move]:
 def rows(ends: dict | None = None, durations: dict | None = None, slots: int = 1,
          tracker: str = TODAY_TRACKER, approved: frozenset = frozenset()) -> dict[str, tuple[str, gantt.Row]]:
     tasks = rb.parse_tracker(tracker).tasks
-    built = fc.build(moves(), tasks, LANES, {"Cache warmup"}, ends or {}, NOW, durations or {}, slots, approved)
+    log = fc.moves(YESTERDAY_TRACKER, YESTERDAY, CT) + fc.moves(tracker, TODAY, CT)
+    built = fc.build(log, tasks, LANES, {"Cache warmup"}, ends or {}, NOW, durations or {}, slots, approved)
     return {row.name: (status, row) for status, row in built}
 
 
@@ -575,12 +576,75 @@ class OwnerTest(unittest.TestCase):
         for title in pr:
             self.assertIn(" · Robin · ", title)
 
-    def test_forecast_bars_carry_no_owner(self):
-        # "forecast bars carry no owner."
-        got = rows({"Cap uploads": NOW + 4 * H}, {"Export CSV": 5 * H, "Pick a timeout": 30 * H}, 1, QUEUED)
-        ahead = [g for _, row in got.values() for g in row.segments if g.kind == "forecast"]
-        self.assertTrue(ahead)
-        self.assertEqual({g.title for g in ahead}, {""})
+
+def bar_titles(row: gantt.Row, kind: str) -> set[str]:
+    """The titles of `row`'s bars of `kind`; fails when it has none."""
+    got = {g.title for g in row.segments if g.kind == kind}
+    assert got, f"{row.name} has no {kind} bar"
+    return got
+
+
+UPLOAD_LAUNCH = "- 01:30 one-shot w7 started: claude, worktree `trees/up`, task Cap uploads"
+
+
+class ForecastOwnerTest(unittest.TestCase):
+    """Forecast and hold bars name who holds the task, as done bars do (#192)."""
+
+    def test_a_forecast_bar_names_the_worker_running_now(self):
+        # "A forecast bar's title names the worker whose launch is running now, else the task's owner cell"
+        tracker = tw.append_log(TODAY_TRACKER, UPLOAD_LAUNCH)  # Upload size limit's owner cell is impl-1
+        _, row = rows({"Cap uploads": NOW + 4 * H}, tracker=tracker)["Upload size limit"]
+        self.assertEqual(bar_titles(row, "forecast"), {"w7"})
+
+    def test_a_forecast_bar_with_no_launch_running_now_names_the_owner_cell(self):
+        ended = tw.append_log(tw.append_log(TODAY_TRACKER, UPLOAD_LAUNCH), "- 01:50 one-shot w7: completed; awaiting integration")
+        for label, tracker in (("no launch", TODAY_TRACKER), ("a launch that ended", ended)):
+            with self.subTest(label):
+                _, row = rows({"Cap uploads": NOW + 4 * H}, tracker=tracker)["Upload size limit"]
+                self.assertEqual(bar_titles(row, "forecast"), {"impl-1"})
+
+    def test_a_hold_bar_names_the_same_owner(self):
+        # "A hold bar's title names the same owner"
+        self.assertEqual(bar_titles(rows()["Cache warmup"][1], "hold"), {"Robin"})
+        tracker = tw.append_log(TODAY_TRACKER, "- 01:45 one-shot w8 started: claude, worktree `trees/warm`, task Warm the pool")
+        self.assertEqual(bar_titles(rows(tracker=tracker)["Cache warmup"][1], "hold"), {"w8"})
+
+    def test_a_queued_tasks_forecast_names_its_owner_cell(self):
+        tracker = QUEUED.replace("| Export format | Export CSV | unassigned |", "| Export format | Export CSV | Robin |")
+        got = rows({"Cap uploads": NOW + 4 * H}, {"Export CSV": 5 * H}, 1, tracker)
+        self.assertEqual(bar_titles(got["Export format"][1], "forecast"), {"Robin"})
+
+    def test_a_task_with_no_owner_has_no_owner_part(self):
+        # "A task with no owner keeps bar titles with no owner part." The same rows with an owner cell name it.
+        for owner in ("Robin", ""):
+            tracker = (QUEUED.replace("| Export format | Export CSV | unassigned |", f"| Export format | Export CSV | {owner} |")
+                       .replace("| Cap uploads | impl-1 |", f"| Cap uploads | {owner} |")
+                       .replace("| Warm the pool | Robin |", f"| Warm the pool | {owner} |"))
+            got = rows({"Cap uploads": NOW + 4 * H}, {"Export CSV": 5 * H}, 1, tracker)
+            for name, kind in (("Upload size limit", "forecast"), ("Cache warmup", "hold"), ("Export format", "forecast")):
+                with self.subTest(owner=owner, task=name):
+                    self.assertEqual(bar_titles(got[name][1], kind), {owner})
+
+
+class UnassignedOwnerTest(unittest.TestCase):
+    """An owner cell of `unassigned`, in any case, is the tracker's word for no owner (#193)."""
+
+    def built(self, owner: str) -> dict[str, tuple[str, gantt.Row]]:
+        """TODAY_TRACKER's rows with Cache warmup's owner cell set to `owner`, whitespace kept."""
+        tasks = [replace(t, owner=owner) if t.name == "Cache warmup" else t for t in rb.parse_tracker(TODAY_TRACKER).tasks]
+        return {row.name: (status, row) for status, row in fc.build(moves(), tasks, LANES, {"Cache warmup"}, {}, NOW)}
+
+    def test_an_unassigned_owner_cell_draws_no_owner_part(self):
+        # "A Flow bar of a task whose owner cell is `unassigned` (any case) has no owner part in its title."
+        # "Any other owner cell still shows as written."
+        for owner, want in (("unassigned", ""), ("Unassigned", ""), (" UNASSIGNED ", ""), ("unassigned-bot", "unassigned-bot")):
+            with self.subTest(owner=owner):
+                _, row = self.built(owner)["Cache warmup"]
+                self.assertEqual(bar_titles(row, "done"), {want})
+                self.assertEqual(bar_titles(row, "hold"), {want})
+                queued = QUEUED.replace("| Export format | Export CSV | unassigned |", f"| Export format | Export CSV | {owner.strip()} |")
+                got = rows({"Cap uploads": NOW + 4 * H}, {"Export CSV": 5 * H}, 1, queued)
+                self.assertEqual(bar_titles(got["Export format"][1], "forecast"), {want})
 
 
 def merged(issue: str, hhmm: str, n: int = 1) -> bs.Change:

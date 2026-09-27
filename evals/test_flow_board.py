@@ -152,7 +152,6 @@ class Build(unittest.TestCase):
     def test_a_card_gains_its_change_ref_and_marks(self) -> None:
         card = next(c for col in self.cols()[0] for c in col.cards if c.name == "Cut the release")
         self.assertEqual(card.refs, (("#9", "https://forge/i/9"), ("!48", "https://forge/48")))
-        self.assertEqual(card.href, "https://forge/48")
         self.assertEqual(card.marks, (columns.Mark("passed", "passed"),))
 
     def test_approval_and_a_failed_pipeline_are_marks(self) -> None:
@@ -162,18 +161,18 @@ class Build(unittest.TestCase):
 
     def test_an_issue_url_matches_its_number(self) -> None:
         card = next(c for col in self.cols()[0] for c in col.cards if c.name == "Write README")
-        self.assertEqual((card.refs, card.href), ((("#7", "https://forge/i/7"),), "https://forge/i/7"))
+        self.assertEqual(card.refs, (("#7", "https://forge/i/7"),))
 
     def test_a_tracker_issue_url_links_without_sources(self) -> None:
         card = next(c for col in rb.build_columns(rb.parse_tracker(TRACKER).tasks, LANES)[0] for c in col.cards if c.name == "Write README")
-        self.assertEqual((card.refs, card.href), ((("#7", "https://forge/i/7"),), "https://forge/i/7"))
+        self.assertEqual(card.refs, (("#7", "https://forge/i/7"),))
         bare = next(c for col in self.cols()[0] for c in col.cards if c.name == "Webhook check")
         self.assertEqual((bare.refs, bare.href), ((), ""))
 
     def test_main_holds_the_changes_merged_today(self) -> None:
         main = self.cols()[0][-1]
-        self.assertEqual((main.name, [(c.name, c.refs, c.href, c.owner, c.state, c.kind) for c in main.cards]),
-                         ("main", [("Locale fallback", (("#8", ""), ("!37", "https://forge/37")), "https://forge/37",
+        self.assertEqual((main.name, [(c.name, c.refs, c.owner, c.state, c.kind) for c in main.cards]),
+                         ("main", [("Locale fallback", (("#8", ""), ("!37", "https://forge/37")),
                                     "merged 12:30", "done", "merged today")]))
         html = columns.render([columns.Column("main", main.cards * 5)])
         self.assertIn("+ <span>2 merged today</span>", html)
@@ -188,6 +187,59 @@ class Build(unittest.TestCase):
         tasks = rb.parse_tracker(TRACKER).tasks
         self.assertEqual(rb.build_columns(tasks, LANES, KANBAN, bs.EMPTY, NOW), rb.build_columns(tasks, LANES, KANBAN))
         self.assertEqual([c.name for c in rb.build_columns(tasks, LANES)[0]], ["implement", "review", "triage", "merge"])
+
+
+def card_named(cols: list[columns.Column], name: str) -> columns.Card:
+    return next(c for col in cols for c in col.cards if c.name == name)
+
+
+class CardLinkTest(unittest.TestCase):
+    """A board card's name opens its task page; its refs still open the forge (#194)."""
+
+    def test_a_card_whose_issue_ends_in_a_number_links_its_name_to_the_task_page(self) -> None:
+        # "A card whose issue cell ends in a number links its name to `/issues/<number>`." "The card's issue and
+        # change refs keep their forge links." Cut the release has an open change; Write README's issue cell is a URL.
+        for sources in (SOURCES, bs.EMPTY):
+            cols = rb.build_columns(rb.parse_tracker(TRACKER).tasks, LANES, None, sources, NOW)[0]
+            with self.subTest(sources="some" if sources.changes else "none"):
+                self.assertEqual(card_named(cols, "Write README").href, "/issues/7")
+                self.assertEqual(card_named(cols, "Write README").refs, (("#7", "https://forge/i/7"),))
+                self.assertEqual(card_named(cols, "Cut the release").href, "/issues/9")
+        cut = card_named(rb.build_columns(rb.parse_tracker(TRACKER).tasks, LANES, None, SOURCES, NOW)[0], "Cut the release")
+        self.assertEqual(cut.refs, (("#9", "https://forge/i/9"), ("!48", "https://forge/48")))
+
+    def test_a_card_whose_issue_has_no_number_keeps_its_link(self) -> None:
+        # "A card whose issue cell has no number keeps its current link." Set beside a numbered card, which moves.
+        tasks = [rb.Task(f"Item {i}", "Robin", "open", "09:00", "", "c", name=f"Task {i}", issue=issue, lane="build", stage="implement")
+                 for i, issue in enumerate(("https://forge/i/readme", "", "TBD", "#12"))]
+        cols = rb.build_columns(tasks, LANES)[0]
+        self.assertEqual([card_named(cols, f"Task {i}").href for i in range(4)], ["https://forge/i/readme", "", "", "/issues/12"])
+
+    def test_merged_today_cards_link_through_their_issue(self) -> None:
+        # "The merged-today cards in the main column follow the same rule through their issue."
+        sources = replace(SOURCES, changes={**SOURCES.changes, "!38": change("!38", state="merged", merged_at=NOW - timedelta(hours=1),
+                                                                            title="Unfiled fix")})
+        main = rb.build_columns(rb.parse_tracker(TRACKER).tasks, LANES, None, sources, NOW)[0][-1]
+        self.assertEqual({c.name: (c.href, c.refs) for c in main.cards}, {
+            "Locale fallback": ("/issues/8", (("#8", ""), ("!37", "https://forge/37"))),
+            "Unfiled fix": ("https://forge/38", (("!38", "https://forge/38"),))})
+
+
+class UnassignedCardTest(unittest.TestCase):
+    """An owner cell of `unassigned`, in any case, is the tracker's word for no owner (#193)."""
+
+    def test_an_unassigned_card_shows_no_owner(self) -> None:
+        # "A board card of such a task shows no owner." "Any other owner cell still shows as written."
+        for owner, shown in (("unassigned", ""), ("Unassigned", ""), (" UNASSIGNED ", ""), ("Robin", "Robin"),
+                             ("unassigned-bot", "unassigned-bot")):
+            task = rb.Task("Check the webhook signature", owner, "open", "09:00", "", "c", name="Webhook check",
+                           lane="build", stage="implement")
+            html = columns.render(rb.build_columns([task], LANES)[0])
+            with self.subTest(owner=owner):
+                if shown:
+                    self.assertIn(f'<span class="columns-owner">{shown}</span>', html)
+                else:
+                    self.assertNotRegex(html, r"(?i)unassigned")
 
 
 class Page(unittest.TestCase):
@@ -250,7 +302,10 @@ class Page(unittest.TestCase):
         self.assertIn("+'s'", script)
 
     def test_build_cards_link_to_their_items(self) -> None:
-        self.assertIn('<a class="columns-card-name" href="https://forge/48" target="_blank" rel="noopener">Cut the release</a>', self.body)
+        # A card's name opens its task page; its refs open the forge (#194).
+        name = re.search(r'<[^<]*class="columns-card-name"[^>]*>Cut the release</', self.body)[0]
+        self.assertEqual(name, '<a class="columns-card-name" href="/issues/9">Cut the release</')
+        self.assertIn('<a href="https://forge/48" target="_blank" rel="noopener">!48</a>', self.body)
         self.assertIn('<a href="https://forge/i/9" target="_blank" rel="noopener">#9</a>', self.body)
         self.assertNotIn('href="#"', self.body)
 

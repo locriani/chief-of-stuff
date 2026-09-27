@@ -101,10 +101,10 @@ def _clock(at: datetime, now: datetime) -> str:
     return f"~{at:%H:%M}" if at.date() == now.date() else f"{at:%a}"
 
 
-def _ahead(stages: list[str], start: datetime, end: datetime) -> list[gantt.Segment]:
+def _ahead(stages: list[str], start: datetime, end: datetime, title: str = "") -> list[gantt.Segment]:
     # ponytail: the estimate split evenly over the stages left; per-stage durations once the Log has enough of them.
     step = (end - start) / len(stages)
-    return [gantt.Segment(start + step * i, start + step * (i + 1), s, "forecast") for i, s in enumerate(stages)]
+    return [gantt.Segment(start + step * i, start + step * (i + 1), s, "forecast", title) for i, s in enumerate(stages)]
 
 
 def build(log: list[Move], tasks, lanes: dict, held: set[str], ends: dict[str, datetime], now: datetime,
@@ -115,8 +115,8 @@ def build(log: list[Move], tasks, lanes: dict, held: set[str], ends: dict[str, d
     `durations` maps a queued task's item to how long it will take, and `slots` is how many run at once;
     `approved` names the tasks whose open change is approved, labelled `approved · merge ~HH:MM` by their end;
     `merged` maps a task's name to its change's forge merge time, which ends its row. Status is `merged`, `held` or
-    the task's state word. A done or running bar's title names the worker whose launch was running when it began,
-    else the task's owner cell."""
+    the task's state word. Every bar's title names the worker whose launch was running when it began (now, for a
+    forecast or hold bar), else the task's owner cell, shown as the board shows it (#192, #193)."""
     by_name = {t.name.strip().casefold(): t for t in tasks if t.name.strip()}
     # A move names a task by its name or its item; the name wins.
     find = {**{t.item.strip().casefold(): t for t in tasks if t.item.strip()}, **by_name}
@@ -142,7 +142,7 @@ def build(log: list[Move], tasks, lanes: dict, held: set[str], ends: dict[str, d
 
     def owner(key: str, at: datetime, task) -> str:
         running = [w for w, start, end in runs.get(key, ()) if start <= at and (end is None or at < end)]
-        return running[-1] if running else task.owner.strip() if task else ""
+        return running[-1] if running else task.shown_owner if task else ""
 
     log = [m for m in log if not (m.launch and (f := first.get(key_of(m))) and m.at >= f)]
     out, groups = [], {}
@@ -164,11 +164,11 @@ def build(log: list[Move], tasks, lanes: dict, held: set[str], ends: dict[str, d
         elif last.stage in terminal:
             status, note = "merged", f"merged {last.at:%H:%M}"
         elif task and task.name.strip() in held:
-            segs.append(gantt.Segment(now, now + WINDOWS[-1][2], last.stage, "hold"))
+            segs.append(gantt.Segment(now, now + WINDOWS[-1][2], last.stage, "hold", owner(key, now, task)))
             status, note = "held", f"hold · {last.stage}"
         elif task and lane and last.stage in lane.stages and (end := ends.get(task.item)) and end > now:
             ahead = [last.stage] + [s for s in lane.stages[lane.stages.index(last.stage) + 1:] if s not in terminal]
-            segs += _ahead(ahead, now, end)
+            segs += _ahead(ahead, now, end, owner(key, now, task))
             busy.append(end)
             ok = task.name.strip() in approved
             status, note = task.kind, f"approved · merge {_clock(end, now)}" if ok else f"{last.stage} · {_clock(end, now)}"
@@ -194,7 +194,7 @@ def build(log: list[Move], tasks, lanes: dict, held: set[str], ends: dict[str, d
         heapq.heappush(busy, start + took)
         stages = [s for s in lane.stages if s not in terminal]
         out.append((t.kind, gantt.Row(t.issue.strip(), t.name.strip(), f"queued · {_clock(start + took, now)}",
-                                      tuple(_ahead(stages, start, start + took)))))
+                                      tuple(_ahead(stages, start, start + took, owner(key, now, t))))))
     return _merge_issues(out)
 
 

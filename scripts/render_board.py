@@ -132,6 +132,12 @@ class Task:
         return self.name.strip() or short_name(_unmark(self.item))
 
     @property
+    def shown_owner(self) -> str:
+        """The owner cell as the board shows it: `unassigned`, the tracker's word for no owner, shows as none (#193)."""
+        owner = self.owner.strip()
+        return "" if UNASSIGNED.match(owner) else owner
+
+    @property
     def kind(self) -> str:
         return (self.state.split() or ["open"])[0].lower()
 
@@ -1127,15 +1133,20 @@ def build_columns(tasks: list[Task], lanes: dict | None, kanban: Kanban | None =
         known = sources.issues.get(ref)
         return known.url if known else cell.strip() if cell.strip().startswith(("https://", "http://")) else ""
 
+    def page(cell: str, other: str) -> str:
+        """A card name's link: its task page when the issue ends in a number, as Flow rows link, else `other` (#194)."""
+        m = TRAILING_NUMBER.search(cell)
+        return f"/issues/{int(m[1])}" if m else other
+
     def card(task: Task) -> columns.Card:
         changes = task_changes(task, sources)
         url = issue_url(issue_key(task.issue), task.issue)
         issue = issue_key(task.issue) if changes or url else task.issue.strip()
         refs = ((issue, url),) * bool(issue) + tuple((c.ref, c.url) for c in changes)
         marks = change_marks(changes) + ((columns.Mark("drift", "drift"),) if drifts(task, kanban, sources) else ())
-        return columns.Card(task.label, task.kind, refs, task.owner, task.state, marks,
+        return columns.Card(task.label, task.kind, refs, task.shown_owner, task.state, marks,
                             flag=columns.Mark("ON HOLD", "hold") if held(task, kanban) else None,
-                            href=next((c.url for c in changes if c.state == "open"), url))
+                            href=page(task.issue, next((c.url for c in changes if c.state == "open"), url)))
 
     laned = [t for t in tasks if t.lane.strip() and t.stage.strip()]
     order = list(dict.fromkeys(stage_order(lanes) + [t.stage.strip() for t in laned]))
@@ -1147,7 +1158,8 @@ def build_columns(tasks: list[Task], lanes: dict | None, kanban: Kanban | None =
     merged = merged_today(sources, now) if now else []
     if merged:
         cards = tuple(columns.Card(c.title, "merged today", tuple((i, issue_url(i)) for i in c.issues[:1]) + ((c.ref, c.url),),
-                                   f"merged {c.merged_at.astimezone(now.tzinfo):%H:%M}", "done", href=c.url) for c in merged)
+                                   f"merged {c.merged_at.astimezone(now.tzinfo):%H:%M}", "done",
+                                   href=page(c.issues[0] if c.issues else "", c.url)) for c in merged)
         at = next((i for i, c in enumerate(cols) if c.name == "main"), None)
         if at is None:
             cols.append(columns.Column("main", cards))
