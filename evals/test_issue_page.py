@@ -785,5 +785,59 @@ class ForgeMergedTaskPageTest(unittest.TestCase):
         self.assertEqual(board_rows["Upload size limit"][1].note, f"merged {self.MERGE_LOCAL}")
 
 
+DONE_MIDNIGHT_TRACKER = f"""# Tracker
+
+## Tasks
+
+{HEAD}| Upload size limit | Cap uploads | unassigned | open | {YESTERDAY} |  | M | build | implement | #109 | c |
+
+## File ownership
+
+| context | paths |
+|---|---|
+| Upload size limit | `src/upload/` |
+
+## Log
+
+- 20:00 stage: Upload size limit → implement
+"""
+
+
+def midnight_page(clock: str, now: datetime) -> str:
+    """Cap uploads: launched yesterday 20:05, the one-shot's own `done` note lands at 22:15, and the
+    coordinator closes the row `done <clock>` by hand that same evening (#213's repro shape)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "tracker.md"
+        path.write_text(DONE_MIDNIGHT_TRACKER)
+        one_shot.record_launch(path, "Cap uploads", "impl-1", "worktree `a` (a)", "claude", "opus", "20:05")
+        one_shot.update_tracker(path, "Cap uploads", "impl-1", "Robin", "done", "implemented the limit",
+                                 "src/upload/limits.py", "22:15")
+        closed = path.read_text().replace("| Robin | waiting |", f"| Robin | done {clock} |")
+    return ip.render(109, [(YESTERDAY, closed)], sources(), now, LANES)
+
+
+def flow_section(html: str) -> str:
+    start = re.search(r"<h2[^>]*>\s*Flow\b", html)
+    assert start, "no Flow section"
+    after = next((m.start() for m in re.finditer(r"<h2[^>]*>\s*(?!Flow\b)", html[start.end():])), None)
+    return text(html[start.start():start.end() + after if after is not None else len(html)])
+
+
+class DoneClockAfterMidnightTest(unittest.TestCase):
+    """(#213) The task page's elapsed and waiting totals stop at the done clock's own latest occurrence at
+    or before now, not at now itself once now's date has turned over past the clock's hour."""
+
+    def test_a_done_clock_the_previous_evening_stops_elapsed_there_not_at_now(self):
+        html = midnight_page("22:21", at(TODAY, "00:05"))
+        flow = flow_section(html)
+        self.assertRegex(flow, r"(?i)\bWorked\s+2h10m\s+of\s+2h16m\s+elapsed\s*·\s*6m\s+waiting\b", flow)
+
+    def test_a_done_clock_earlier_today_still_resolves_to_today(self):
+        # Regression guard: just after midnight, a clock before now's own time of day is still today.
+        html = midnight_page("00:03", at(TODAY, "00:05"))
+        flow = flow_section(html)
+        self.assertRegex(flow, r"(?i)\bWorked\s+2h10m\s+of\s+3h58m\s+elapsed\s*·\s*1h48m\s+waiting\b", flow)
+
+
 if __name__ == "__main__":
     unittest.main()
