@@ -117,7 +117,35 @@ class IssueFault:
         return f"issue: {self.task} — {self.why}"
 
 
-def issue_faults(tasks, home: Backlog | GitHubBacklog, gh=None, lanes: dict | None = None) -> list[IssueFault]:
+def _closed_hhmm(closed_at: str, zone) -> str:
+    """`closed_at`, an ISO timestamp (`gh`/GitLab's UTC, "Z" and all), read as HH:MM in the workspace
+    zone. Empty when the forge gave no time — never a false clock."""
+    if not closed_at or zone is None:
+        return ""
+    try:
+        return datetime.fromisoformat(closed_at).astimezone(zone).strftime("%H:%M")
+    except ValueError:
+        return ""
+
+
+def _tree_unlanded(root: Path | None, trees: str, owners: list, task) -> bool:
+    """Does this task's File-ownership worktree carry a commit `main` never got? Reuses `_state`'s own
+    merge-base check — the same signal `reopen` already reads off a done task's tree (#221). No
+    resolvable tree (none owns the task, or it is missing) answers False: nothing is there to unland."""
+    if root is None:
+        return False
+    rows, _ = rows_for(task.item, task.owner, owners or [])
+    for row in rows:
+        for name in row.worktrees:
+            path, _, _ = _resolve(root, trees, name)
+            if path is not None and "not on main" in _state(path)[1]:
+                return True
+    return False
+
+
+def issue_faults(tasks, home: Backlog | GitHubBacklog, gh=None, lanes: dict | None = None,
+                 root: Path | None = None, trees: str = "", owners: list | None = None,
+                 zone=None) -> list[IssueFault]:
     """Compare task issues with one issue-list request per repository."""
     refs = {}
     faults: list[IssueFault] = []
@@ -148,7 +176,14 @@ def issue_faults(tasks, home: Backlog | GitHubBacklog, gh=None, lanes: dict | No
         if task.needs_issue and found is None:
             faults.append(IssueFault(name, f"{tag} not found in {ref.repo}"))
         elif task.needs_issue and found.state == CLOSED:
-            faults.append(IssueFault(name, f"{tag} is closed"))
+            if _tree_unlanded(root, trees, owners, task):
+                faults.append(IssueFault(
+                    name, f"{tag} is closed but its tree has work not on main; ask the user: "
+                    "reopen the issue or drop the work"))
+            else:
+                when = _closed_hhmm(found.closed_at, zone)
+                at = f" {when}" if when else ""
+                faults.append(IssueFault(name, f"{tag} is closed{at}; write the task done{f' at {when}' if when else ''}"))
         elif task.kind == "done" and found is not None and found.state != CLOSED and _ends_issue(task, lanes or {}):
             faults.append(IssueFault(name, f"done but {tag} is open; chief-of-stuff backlog --close {ref.number} --commit"))
     return faults
@@ -720,7 +755,8 @@ def audit(root: Path, day: str, gh=None, check_issues: bool = True, now: datetim
     settings = load_settings(root, cfg.settings_path)
     if cfg.backlog:
         if check_issues:
-            report.issues.extend(issue_faults(tasks, cfg.backlog, gh, settings.lanes))
+            report.issues.extend(issue_faults(tasks, cfg.backlog, gh, settings.lanes,
+                                              root, trees, owners, cfg.zone))
             report.lines.extend(str(f) for f in report.issues)
             issues = f" issues={len(report.issues)}"
         else:

@@ -61,7 +61,7 @@ class GitHubBacklog:
 
 # A full result may be truncated; reject it rather than treating it as complete.
 GH_LIMIT = PER_PAGE * MAX_PAGES
-GH_FIELDS = "number,title,state,labels,url,updatedAt"
+GH_FIELDS = "number,title,state,labels,url,updatedAt,closedAt"
 GH_STATE = {OPEN: "open", CLOSED: "closed", "all": "all"}
 GH_REPO = re.compile(r"^[\w.-]+/[\w.-]+$")
 
@@ -86,6 +86,7 @@ class Issue:
     labels: tuple[str, ...] = ()
     web_url: str = ""
     updated_at: str = ""
+    closed_at: str = ""
 
 
 @dataclass(frozen=True)
@@ -259,6 +260,7 @@ def _issue(row: dict) -> Issue:
         labels=tuple(str(x) for x in row.get("labels", ())),
         web_url=str(row.get("web_url", "")),
         updated_at=str(row.get("updated_at", "")),
+        closed_at=str(row.get("closed_at", "")),
     )
 
 
@@ -288,6 +290,7 @@ def _gh_issue(row: dict) -> Issue:
         labels=tuple(str(x.get("name", "")) for x in row.get("labels", ()) if isinstance(x, dict)),
         web_url=str(row.get("url", "")),
         updated_at=str(row.get("updatedAt", "")),
+        closed_at=str(row.get("closedAt") or ""),
     )
 
 

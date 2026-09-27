@@ -1,0 +1,59 @@
+{
+  "tz": "America/Chicago",
+  "peers": "sessions.json",
+  "gh_issues": [
+    {
+      "number": 5,
+      "title": "Backlog note",
+      "state": "CLOSED",
+      "labels": [],
+      "url": "https://github.com/o/backlog/issues/5",
+      "updatedAt": "{{now-2h}}",
+      "closedAt": "{{now-2h}}"
+    }
+  ],
+  "description": "Issue #5 closed on the forge earlier today while its tracker task still reads waiting, and the task carries no worktree. The audit's fault names its own fix; resume writes the task done rather than leaving it to wait forever or reopening the issue.",
+  "prompt": "resume",
+  "graders": [
+    {
+      "name": "audit runs",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "audit_tasks\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+audit",
+      "min": 1
+    },
+    {
+      "name": "the task is written done",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^\\| Backlog note review \\|[^\\n]*\\|\\s*done\\b"
+    },
+    {
+      "name": "the task never stays waiting",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^\\| Backlog note review \\|[^\\n]*\\|\\s*waiting\\b",
+      "match": "absent"
+    },
+    {
+      "name": "no issue is reopened",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "issue\\s+reopen|--reopen",
+      "max": 0
+    },
+    {
+      "name": "Log times are this move's clock reads",
+      "type": "timestamp_tolerance",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Log"
+    },
+    {
+      "type": "board_matches_tracker",
+      "name": "the board is re-rendered from the final tracker",
+      "tracker": "daily/{{today}}-tracker.md"
+    }
+  ],
+  "max_turns": 20,
+  "timeout_seconds": 420
+}
