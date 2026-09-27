@@ -244,6 +244,52 @@ class UnassignedCardTest(unittest.TestCase):
                     self.assertNotRegex(html, r"(?i)unassigned")
 
 
+class CardRefAndOwnerLinkTest(unittest.TestCase):
+    """Card refs and worker owners link to their pages (#209): a card's `#N` ref links to `/issues/N`; its `!N`
+    ref links to the change's own page, and pages.py serves no route for a change (only `/issues/<n>[/source]`,
+    `/workers` and `/decisions[/<slug>]`), so it takes the task page of the issue the change names instead — the
+    change's own first issue (the merged-today cards' `c.issues[:1]` rule), not necessarily the card's own issue.
+    A live worker owner links to `/workers`; a person or `unassigned` owner stays plain text."""
+
+    def test_an_issue_ref_links_to_its_issues_page(self) -> None:
+        html = columns.render(rb.build_columns(rb.parse_tracker(TRACKER).tasks, LANES, None, SOURCES, NOW)[0])
+        self.assertIn('<a href="/issues/9">#9</a>', html)
+
+    def test_a_change_ref_links_to_its_issues_task_page_not_the_forge(self) -> None:
+        # !48 belongs to #9 (SOURCES). Today it opens https://forge/48; no change route exists to replace that
+        # with, so it should take #9's task page instead.
+        html = columns.render(rb.build_columns(rb.parse_tracker(TRACKER).tasks, LANES, None, SOURCES, NOW)[0])
+        self.assertIn('<a href="/issues/9">!48</a>', html)
+        self.assertNotIn('href="https://forge/48"', html)
+
+    def test_a_change_ref_takes_the_changes_own_first_issue(self) -> None:
+        # A change naming two issues links through its own first issue, even when that differs from the card
+        # it is shown on (which is keyed by #9, drawn here second in !99's issues).
+        multi = change("!99", issues=("#3", "#9"), title="Cross-filed fix")
+        sources = replace(SOURCES, changes={**SOURCES.changes, "!99": multi})
+        html = columns.render(rb.build_columns(rb.parse_tracker(TRACKER).tasks, LANES, None, sources, NOW)[0])
+        self.assertIn('<a href="/issues/3">!99</a>', html)
+
+    def test_only_a_worker_owner_becomes_a_link(self) -> None:
+        # "A worker owner links to that worker on /workers; a person or unassigned owner stays plain text."
+        # impl-07 is a live worker in SOURCES; Robin and unassigned are not.
+        tasks = [rb.Task("Cut the release branch", "impl-07", "running 10:30", "10:30", "23:00", "c",
+                         name="Cut the release", issue="#9", lane="build", stage="review"),
+                 rb.Task("Write the eval README", "Robin", "open", "09:00", "17:00", "c",
+                         name="Write README", lane="build", stage="triage"),
+                 rb.Task("Check the webhook signature", "unassigned", "open", "09:00", "", "c",
+                         name="Webhook check", lane="build", stage="implement")]
+        html = columns.render(rb.build_columns(tasks, LANES, None, SOURCES, NOW)[0])
+        with self.subTest(owner="impl-07, a running worker"):
+            m = re.search(r'<a[^>]*href="/workers"[^>]*>impl-07</a>', html)
+            self.assertIsNotNone(m, html)
+            self.assertNotIn("style=", m[0])  # muted look reused, not a new inline colour
+        with self.subTest(owner="Robin, a person"):
+            self.assertIn('<span class="columns-owner">Robin</span>', html)
+        with self.subTest(owner="unassigned"):
+            self.assertNotRegex(html, r"(?i)unassigned")
+
+
 class Page(unittest.TestCase):
     def setUp(self) -> None:
         self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
