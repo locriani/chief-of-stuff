@@ -148,21 +148,13 @@ def build(log: list[Move], tasks, lanes: dict, held: set[str], ends: dict[str, d
     out, groups = [], {}
     for m in log:
         groups.setdefault(key_of(m), []).append(m)
-    # (#196) a done task with no clock stops at the latest move among rows sharing its issue, not its own alone,
-    # so a sibling row that _merge_issues will fold it into doesn't get its bar cut short.
-    last_by_issue: dict[str, datetime] = {}
-    for key, mine in groups.items():
-        t = find.get(key) or find.get(mine[-1].name.strip().casefold())
-        if t and t.issue.strip():
-            last_by_issue[t.issue.strip()] = max(last_by_issue.get(t.issue.strip(), mine[-1].at), mine[-1].at)
     for key, mine in groups.items():
         task, last = find.get(key) or find.get(mine[-1].name.strip().casefold()), mine[-1]
         stop = now
         if task and task.kind == "done":
-            if (t := task.state_time):
-                stop = min(now, datetime.combine(now.date(), time.fromisoformat(t.zfill(5)), tzinfo=now.tzinfo))
-            else:
-                stop = last_by_issue.get(task.issue.strip(), last.at) if task.issue.strip() else last.at
+            # (#196) no clock: stop at its own last move, so it draws no bar past that move.
+            stop = (min(now, datetime.combine(now.date(), time.fromisoformat(t.zfill(5)), tzinfo=now.tzinfo))
+                    if (t := task.state_time) else last.at)
         merge = task and (merged or {}).get(task.name.strip())
         segs = [gantt.Segment(m.at, e, m.stage, "done", owner(key, m.at, task))
                 for m, nxt in zip(mine, mine[1:] + [None])
