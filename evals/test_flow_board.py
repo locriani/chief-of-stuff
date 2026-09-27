@@ -152,8 +152,9 @@ class Build(unittest.TestCase):
         return rb.build_columns(rb.parse_tracker(TRACKER).tasks, LANES, kanban, sources, NOW)
 
     def test_a_card_gains_its_change_ref_and_marks(self) -> None:
+        # Both refs open the task page (#209): !48 names #9, so it lands there too.
         card = next(c for col in self.cols()[0] for c in col.cards if c.name == "Cut the release")
-        self.assertEqual(card.refs, (("#9", "https://forge/i/9"), ("!48", "https://forge/48")))
+        self.assertEqual(card.refs, (("#9", "/issues/9"), ("!48", "/issues/9")))
         self.assertEqual(card.marks, (columns.Mark("passed", "passed"),))
 
     def test_approval_and_a_failed_pipeline_are_marks(self) -> None:
@@ -162,19 +163,21 @@ class Build(unittest.TestCase):
         self.assertEqual(rb.change_marks((change("!1", pipeline="running"),)), (columns.Mark("running", "pending"),))
 
     def test_an_issue_url_matches_its_number(self) -> None:
+        # A ref's number, not a matching sources.issues URL, decides its link: it still opens /issues/7,
+        # sources.issues["#7"] notwithstanding (#209).
         card = next(c for col in self.cols()[0] for c in col.cards if c.name == "Write README")
-        self.assertEqual(card.refs, (("#7", "https://forge/i/7"),))
+        self.assertEqual(card.refs, (("#7", "/issues/7"),))
 
     def test_a_tracker_issue_url_links_without_sources(self) -> None:
         card = next(c for col in rb.build_columns(rb.parse_tracker(TRACKER).tasks, LANES)[0] for c in col.cards if c.name == "Write README")
-        self.assertEqual(card.refs, (("#7", "https://forge/i/7"),))
+        self.assertEqual(card.refs, (("#7", "/issues/7"),))
         bare = next(c for col in self.cols()[0] for c in col.cards if c.name == "Webhook check")
         self.assertEqual((bare.refs, bare.href), ((), ""))
 
     def test_main_holds_the_changes_merged_today(self) -> None:
         main = self.cols()[0][-1]
         self.assertEqual((main.name, [(c.name, c.refs, c.owner, c.state, c.kind) for c in main.cards]),
-                         ("main", [("Locale fallback", (("#8", ""), ("!37", "https://forge/37")),
+                         ("main", [("Locale fallback", (("#8", "/issues/8"), ("!37", "/issues/8")),
                                     "merged 12:30", "done", "merged today")]))
         html = columns.render([columns.Column("main", main.cards * 5)])
         self.assertIn("+ <span>2 merged today</span>", html)
@@ -196,19 +199,21 @@ def card_named(cols: list[columns.Column], name: str) -> columns.Card:
 
 
 class CardLinkTest(unittest.TestCase):
-    """A board card's name opens its task page; its refs still open the forge (#194)."""
+    """A board card's name opens its task page (#194); its issue and change refs open their pages too, through
+    the change's own first issue when it differs from the card's (#209)."""
 
     def test_a_card_whose_issue_ends_in_a_number_links_its_name_to_the_task_page(self) -> None:
-        # "A card whose issue cell ends in a number links its name to `/issues/<number>`." "The card's issue and
-        # change refs keep their forge links." Cut the release has an open change; Write README's issue cell is a URL.
+        # "A card whose issue cell ends in a number links its name to `/issues/<number>`." "A card's `#N` ref
+        # links to `/issues/N`, and its `!N` ref links to the change's page" — !48 names #9, so both land there.
+        # Cut the release has an open change; Write README's issue cell is a URL.
         for sources in (SOURCES, bs.EMPTY):
             cols = rb.build_columns(rb.parse_tracker(TRACKER).tasks, LANES, None, sources, NOW)[0]
             with self.subTest(sources="some" if sources.changes else "none"):
                 self.assertEqual(card_named(cols, "Write README").href, "/issues/7")
-                self.assertEqual(card_named(cols, "Write README").refs, (("#7", "https://forge/i/7"),))
+                self.assertEqual(card_named(cols, "Write README").refs, (("#7", "/issues/7"),))
                 self.assertEqual(card_named(cols, "Cut the release").href, "/issues/9")
         cut = card_named(rb.build_columns(rb.parse_tracker(TRACKER).tasks, LANES, None, SOURCES, NOW)[0], "Cut the release")
-        self.assertEqual(cut.refs, (("#9", "https://forge/i/9"), ("!48", "https://forge/48")))
+        self.assertEqual(cut.refs, (("#9", "/issues/9"), ("!48", "/issues/9")))
 
     def test_a_card_whose_issue_has_no_number_keeps_its_link(self) -> None:
         # "A card whose issue cell has no number keeps its current link." Set beside a numbered card, which moves.
@@ -218,12 +223,14 @@ class CardLinkTest(unittest.TestCase):
         self.assertEqual([card_named(cols, f"Task {i}").href for i in range(4)], ["https://forge/i/readme", "", "", "/issues/12"])
 
     def test_merged_today_cards_link_through_their_issue(self) -> None:
-        # "The merged-today cards in the main column follow the same rule through their issue."
+        # "The merged-today cards in the main column follow the same rule through their issue." !37 names #8, so
+        # both its refs land on /issues/8, whether or not #8 is a known issue. !38 names no issue at all — with
+        # no number to route through, its own ref keeps the forge link (#209 gives no other page for it).
         sources = replace(SOURCES, changes={**SOURCES.changes, "!38": change("!38", state="merged", merged_at=NOW - timedelta(hours=1),
                                                                             title="Unfiled fix")})
         main = rb.build_columns(rb.parse_tracker(TRACKER).tasks, LANES, None, sources, NOW)[0][-1]
         self.assertEqual({c.name: (c.href, c.refs) for c in main.cards}, {
-            "Locale fallback": ("/issues/8", (("#8", ""), ("!37", "https://forge/37"))),
+            "Locale fallback": ("/issues/8", (("#8", "/issues/8"), ("!37", "/issues/8"))),
             "Unfiled fix": ("https://forge/38", (("!38", "https://forge/38"),))})
 
 
@@ -242,6 +249,52 @@ class UnassignedCardTest(unittest.TestCase):
                     self.assertIn(f'<span class="columns-owner">{shown}</span>', html)
                 else:
                     self.assertNotRegex(html, r"(?i)unassigned")
+
+
+class CardRefAndOwnerLinkTest(unittest.TestCase):
+    """Card refs and worker owners link to their pages (#209): a card's `#N` ref links to `/issues/N`; its `!N`
+    ref links to the change's own page, and pages.py serves no route for a change (only `/issues/<n>[/source]`,
+    `/workers` and `/decisions[/<slug>]`), so it takes the task page of the issue the change names instead — the
+    change's own first issue (the merged-today cards' `c.issues[:1]` rule), not necessarily the card's own issue.
+    A live worker owner links to `/workers`; a person or `unassigned` owner stays plain text."""
+
+    def test_an_issue_ref_links_to_its_issues_page(self) -> None:
+        html = columns.render(rb.build_columns(rb.parse_tracker(TRACKER).tasks, LANES, None, SOURCES, NOW)[0])
+        self.assertIn('<a href="/issues/9">#9</a>', html)
+
+    def test_a_change_ref_links_to_its_issues_task_page_not_the_forge(self) -> None:
+        # !48 belongs to #9 (SOURCES). Today it opens https://forge/48; no change route exists to replace that
+        # with, so it should take #9's task page instead.
+        html = columns.render(rb.build_columns(rb.parse_tracker(TRACKER).tasks, LANES, None, SOURCES, NOW)[0])
+        self.assertIn('<a href="/issues/9">!48</a>', html)
+        self.assertNotIn('href="https://forge/48"', html)
+
+    def test_a_change_ref_takes_the_changes_own_first_issue(self) -> None:
+        # A change naming two issues links through its own first issue, even when that differs from the card
+        # it is shown on (which is keyed by #9, drawn here second in !99's issues).
+        multi = change("!99", issues=("#3", "#9"), title="Cross-filed fix")
+        sources = replace(SOURCES, changes={**SOURCES.changes, "!99": multi})
+        html = columns.render(rb.build_columns(rb.parse_tracker(TRACKER).tasks, LANES, None, sources, NOW)[0])
+        self.assertIn('<a href="/issues/3">!99</a>', html)
+
+    def test_only_a_worker_owner_becomes_a_link(self) -> None:
+        # "A worker owner links to that worker on /workers; a person or unassigned owner stays plain text."
+        # impl-07 is a live worker in SOURCES; Robin and unassigned are not.
+        tasks = [rb.Task("Cut the release branch", "impl-07", "running 10:30", "10:30", "23:00", "c",
+                         name="Cut the release", issue="#9", lane="build", stage="review"),
+                 rb.Task("Write the eval README", "Robin", "open", "09:00", "17:00", "c",
+                         name="Write README", lane="build", stage="triage"),
+                 rb.Task("Check the webhook signature", "unassigned", "open", "09:00", "", "c",
+                         name="Webhook check", lane="build", stage="implement")]
+        html = columns.render(rb.build_columns(tasks, LANES, None, SOURCES, NOW)[0])
+        with self.subTest(owner="impl-07, a running worker"):
+            m = re.search(r'<a[^>]*href="/workers"[^>]*>impl-07</a>', html)
+            self.assertIsNotNone(m, html)
+            self.assertNotIn("style=", m[0])  # muted look reused, not a new inline colour
+        with self.subTest(owner="Robin, a person"):
+            self.assertIn('<span class="columns-owner">Robin</span>', html)
+        with self.subTest(owner="unassigned"):
+            self.assertNotRegex(html, r"(?i)unassigned")
 
 
 class Page(unittest.TestCase):
@@ -304,11 +357,12 @@ class Page(unittest.TestCase):
         self.assertIn("+'s'", script)
 
     def test_build_cards_link_to_their_items(self) -> None:
-        # A card's name opens its task page; its refs open the forge (#194).
+        # A card's name opens its task page (#194); its issue and change refs open their pages too, in-tab
+        # rather than the forge's new tab — !48 names #9, so both land on the same task page (#209).
         name = re.search(r'<[^<]*class="columns-card-name"[^>]*>Cut the release</', self.body)[0]
         self.assertEqual(name, '<a class="columns-card-name" href="/issues/9">Cut the release</')
-        self.assertIn('<a href="https://forge/48" target="_blank" rel="noopener">!48</a>', self.body)
-        self.assertIn('<a href="https://forge/i/9" target="_blank" rel="noopener">#9</a>', self.body)
+        self.assertIn('<a href="/issues/9">!48</a>', self.body)
+        self.assertIn('<a href="/issues/9">#9</a>', self.body)
         self.assertNotIn('href="#"', self.body)
 
     def test_the_page_fits_a_phone(self) -> None:

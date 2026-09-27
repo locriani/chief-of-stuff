@@ -135,9 +135,10 @@ class Adapter(unittest.TestCase):
         self.assertEqual([c.name for c in next(c for c in cols if c.name == "review").cards], ["Open the PR"])
 
     def test_a_card_is_the_task_in_tracker_words(self) -> None:
+        # The issue ref opens its task page by number alone (#209), with no sources to know it by.
         card = self.build()[0][0].cards[0]
         self.assertEqual((card.name, card.kind, card.refs, card.owner, card.state),
-                         ("Rate limit headers", "running", (("#118", ""),), "worker-07", "running 01:28"))
+                         ("Rate limit headers", "running", (("#118", "/issues/118"),), "worker-07", "running 01:28"))
 
     def test_gates_come_from_the_lanes(self) -> None:
         cols, _ = self.build()
