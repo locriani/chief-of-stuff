@@ -196,19 +196,21 @@ def card_named(cols: list[columns.Column], name: str) -> columns.Card:
 
 
 class CardLinkTest(unittest.TestCase):
-    """A board card's name opens its task page; its refs still open the forge (#194)."""
+    """A board card's name opens its task page (#194); its issue and change refs open their pages too, through
+    the change's own first issue when it differs from the card's (#209)."""
 
     def test_a_card_whose_issue_ends_in_a_number_links_its_name_to_the_task_page(self) -> None:
-        # "A card whose issue cell ends in a number links its name to `/issues/<number>`." "The card's issue and
-        # change refs keep their forge links." Cut the release has an open change; Write README's issue cell is a URL.
+        # "A card whose issue cell ends in a number links its name to `/issues/<number>`." "A card's `#N` ref
+        # links to `/issues/N`, and its `!N` ref links to the change's page" — !48 names #9, so both land there.
+        # Cut the release has an open change; Write README's issue cell is a URL.
         for sources in (SOURCES, bs.EMPTY):
             cols = rb.build_columns(rb.parse_tracker(TRACKER).tasks, LANES, None, sources, NOW)[0]
             with self.subTest(sources="some" if sources.changes else "none"):
                 self.assertEqual(card_named(cols, "Write README").href, "/issues/7")
-                self.assertEqual(card_named(cols, "Write README").refs, (("#7", "https://forge/i/7"),))
+                self.assertEqual(card_named(cols, "Write README").refs, (("#7", "/issues/7"),))
                 self.assertEqual(card_named(cols, "Cut the release").href, "/issues/9")
         cut = card_named(rb.build_columns(rb.parse_tracker(TRACKER).tasks, LANES, None, SOURCES, NOW)[0], "Cut the release")
-        self.assertEqual(cut.refs, (("#9", "https://forge/i/9"), ("!48", "https://forge/48")))
+        self.assertEqual(cut.refs, (("#9", "/issues/9"), ("!48", "/issues/9")))
 
     def test_a_card_whose_issue_has_no_number_keeps_its_link(self) -> None:
         # "A card whose issue cell has no number keeps its current link." Set beside a numbered card, which moves.
@@ -218,12 +220,14 @@ class CardLinkTest(unittest.TestCase):
         self.assertEqual([card_named(cols, f"Task {i}").href for i in range(4)], ["https://forge/i/readme", "", "", "/issues/12"])
 
     def test_merged_today_cards_link_through_their_issue(self) -> None:
-        # "The merged-today cards in the main column follow the same rule through their issue."
+        # "The merged-today cards in the main column follow the same rule through their issue." !37 names #8, so
+        # both its refs land on /issues/8, whether or not #8 is a known issue. !38 names no issue at all — with
+        # no number to route through, its own ref keeps the forge link (#209 gives no other page for it).
         sources = replace(SOURCES, changes={**SOURCES.changes, "!38": change("!38", state="merged", merged_at=NOW - timedelta(hours=1),
                                                                             title="Unfiled fix")})
         main = rb.build_columns(rb.parse_tracker(TRACKER).tasks, LANES, None, sources, NOW)[0][-1]
         self.assertEqual({c.name: (c.href, c.refs) for c in main.cards}, {
-            "Locale fallback": ("/issues/8", (("#8", ""), ("!37", "https://forge/37"))),
+            "Locale fallback": ("/issues/8", (("#8", "/issues/8"), ("!37", "/issues/8"))),
             "Unfiled fix": ("https://forge/38", (("!38", "https://forge/38"),))})
 
 
@@ -350,11 +354,12 @@ class Page(unittest.TestCase):
         self.assertIn("+'s'", script)
 
     def test_build_cards_link_to_their_items(self) -> None:
-        # A card's name opens its task page; its refs open the forge (#194).
+        # A card's name opens its task page (#194); its issue and change refs open their pages too, in-tab
+        # rather than the forge's new tab — !48 names #9, so both land on the same task page (#209).
         name = re.search(r'<[^<]*class="columns-card-name"[^>]*>Cut the release</', self.body)[0]
         self.assertEqual(name, '<a class="columns-card-name" href="/issues/9">Cut the release</')
-        self.assertIn('<a href="https://forge/48" target="_blank" rel="noopener">!48</a>', self.body)
-        self.assertIn('<a href="https://forge/i/9" target="_blank" rel="noopener">#9</a>', self.body)
+        self.assertIn('<a href="/issues/9">!48</a>', self.body)
+        self.assertIn('<a href="/issues/9">#9</a>', self.body)
         self.assertNotIn('href="#"', self.body)
 
     def test_the_page_fits_a_phone(self) -> None:
