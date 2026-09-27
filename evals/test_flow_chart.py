@@ -602,6 +602,48 @@ class LaunchRowTest(unittest.TestCase):
         self.assertTrue(SWEEP_PROMPT.splitlines()[0].startswith(name), name)
 
 
+# #204: a launch names its task by the text before ":"; that name outranks a later row that merely shares,
+# or also carries, the same issue ref.
+RENAMED_ROW_TRACKER = """# Tracker
+
+## Tasks
+
+| name | item | owner | state | since | due | size | lane | stage | issue | checklist |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Fix !182 review findings | Patch the null check flagged in review | w1 | running 00:20 | 2026-09-26 |  | S | build | triage | !182 | c |
+| Verify !182 third pass | Verify !182 third pass | w2 | running 00:40 | 2026-09-26 |  | S | build | triage | !182 | c |
+"""
+THIRD_ROW_SHARES_REF_TRACKER = """# Tracker
+
+## Tasks
+
+| name | item | owner | state | since | due | size | lane | stage | issue | checklist |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Review !182 first pass | Review 182 | w1 | running 00:10 | 2026-09-26 |  | S | build | triage | !182 | c |
+| Verify !182 third pass | Confirm the deploy is clean | w2 | running 00:40 | 2026-09-26 |  | S | build | triage | !182 | c |
+| Ship !182 release notes | Ship !182 release notes | w3 | running 01:00 | 2026-09-26 |  | S | build | triage | !182 | c |
+"""
+
+
+class LaunchNamesItsRowTest(unittest.TestCase):
+    """A launch lands on the row its text names, even once that row's item cell has changed and a later row
+    shares, or mentions, the same issue ref (#204)."""
+
+    def test_a_launch_lands_on_its_renamed_row_not_a_later_row_sharing_the_ref(self):
+        tasks = rb.parse_tracker(RENAMED_ROW_TRACKER).tasks
+        text = "Fix !182 review findings: patch the null check the second reviewer flagged"
+        task, name = fc.launch_row(text, tasks)
+        self.assertEqual(name, "Fix !182 review findings")
+        self.assertEqual(task.item, "Patch the null check flagged in review")
+
+    def test_a_launch_lands_on_its_named_row_not_a_third_row_that_mentions_the_ref(self):
+        tasks = rb.parse_tracker(THIRD_ROW_SHARES_REF_TRACKER).tasks
+        text = "Verify !182 third pass: confirm the rollback plan is documented"
+        task, name = fc.launch_row(text, tasks)
+        self.assertEqual(name, "Verify !182 third pass")
+        self.assertEqual(task.item, "Confirm the deploy is clean")
+
+
 class ManyLaunchesTest(unittest.TestCase):
     """A board over a tracker with hundreds of launches maps each to its row within seconds (#184)."""
 
