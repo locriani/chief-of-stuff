@@ -1079,8 +1079,8 @@ def stage_order(lanes: dict) -> list[str]:
     return order
 
 
-def held(task: Task, kanban: Kanban | None) -> bool:
-    return kanban is not None and kanban.holds(task.stage.strip())
+def held(task: Task, kanban: Kanban | None, stage: str | None = None) -> bool:
+    return kanban is not None and kanban.holds(task.stage.strip() if stage is None else stage)
 
 
 def worker_names(sources: board_sources.Sources) -> set[str]:
@@ -1112,6 +1112,18 @@ def task_changes(task: Task, sources: board_sources.Sources) -> tuple[board_sour
     return tuple(c for c in named if c.state == "open") or tuple(named)
 
 
+def effective_stage(task: Task, sources: board_sources.Sources, lanes: dict) -> str:
+    """A task's real stage for drawing, drift and hold: the tracker's own cell, unless its change already
+    merged and the tracker hasn't caught up — then the lane's last stage. The forge already answered the only
+    question a stale `merge` cell was tracking; a stalled coordinator can otherwise leave it stuck for hours (#240)."""
+    stage = task.stage.strip()
+    changes = task_changes(task, sources)
+    lane = lanes.get(task.lane.strip())
+    if changes and changes[0].state == "merged" and lane and lane.stages:
+        return lane.stages[-1]
+    return stage
+
+
 def forge_ends(tasks: list[Task], sources: board_sources.Sources, zone: ZoneInfo) -> dict[str, tuple[datetime, str]]:
     """Each task's name to what ends its Flow row, in `zone`: its change's latest forge merge time and "merged", or,
     failing that, its closed issue's close time and "closed". A merge wins. The board and the task page both end a
@@ -1134,14 +1146,17 @@ def change_marks(changes: tuple[board_sources.Change, ...]) -> tuple[columns.Mar
         *((columns.Mark("approved", "approved"),) if c.approved else ())))
 
 
-def drifts(task: Task, kanban: Kanban | None, sources: board_sources.Sources) -> bool:
-    """The forge's labels disagree with the tracker's stage, by the same check the audit runs (kanban.drift)."""
+def drifts(task: Task, kanban: Kanban | None, sources: board_sources.Sources, stage: str | None = None) -> bool:
+    """The forge's labels disagree with the task's stage, by the same check the audit runs (kanban.drift).
+    `stage` overrides the tracker's own cell — pass `effective_stage()` so a merged change's card is judged at
+    the stage it now draws in, not the one it's stuck reading (#240)."""
     import kanban as kanban_tool  # kanban imports this module
     issue = sources.issues.get(issue_key(task.issue)) if task.issue.strip() else None
+    stage = task.stage.strip() if stage is None else stage
     # ponytail: labels only; a GitHub Project's Status is not in the sources, so a project board never drifts here.
-    if kanban is None or kanban.github_project or issue is None or not task.stage.strip() or task.kind == "done":
+    if kanban is None or kanban.github_project or issue is None or not stage or task.kind == "done":
         return False
-    return bool(kanban_tool.drift(kanban, issue.labels, task.stage.strip(), allow_extra_hold=task.kind == "waiting"))
+    return bool(kanban_tool.drift(kanban, issue.labels, stage, allow_extra_hold=task.kind == "waiting"))
 
 
 def merged_today(sources: board_sources.Sources, now: datetime) -> list[board_sources.Change]:
@@ -1172,24 +1187,25 @@ def build_columns(tasks: list[Task], lanes: dict | None, kanban: Kanban | None =
 
     workers = worker_names(sources)
 
-    def card(task: Task) -> columns.Card:
+    def card(task: Task, stage: str | None = None) -> columns.Card:
         changes = task_changes(task, sources)
         url = issue_url(issue_key(task.issue), task.issue)
         issue = issue_key(task.issue) if changes or url else task.issue.strip()
         refs = ((issue, page(issue, url)),) * bool(issue) + tuple((c.ref, change_href(c)) for c in changes)
-        marks = change_marks(changes) + ((columns.Mark("drift", "drift"),) if drifts(task, kanban, sources) else ())
+        marks = change_marks(changes) + ((columns.Mark("drift", "drift"),) if drifts(task, kanban, sources, stage) else ())
         owner = task.shown_owner
         return columns.Card(task.label, task.kind, refs, owner, task.state, marks,
-                            flag=columns.Mark("ON HOLD", "hold") if held(task, kanban) else None,
+                            flag=columns.Mark("ON HOLD", "hold") if held(task, kanban, stage) else None,
                             href=page(task.issue, next((c.url for c in changes if c.state == "open"), url)),
                             owner_href="/workers" if owner in workers else "")
 
     laned = [t for t in tasks if t.lane.strip() and t.stage.strip()]
-    order = list(dict.fromkeys(stage_order(lanes) + [t.stage.strip() for t in laned]))
+    at = {t.name.strip(): effective_stage(t, sources, lanes) for t in laned}
+    order = list(dict.fromkeys(stage_order(lanes) + list(at.values())))
     # No PR column: a card at `pr` draws in the stage after it, normally review.
     into = {"pr": order[order.index("pr") + 1]} if "pr" in order[:-1] else {}
     order = [s for s in order if s not in into]
-    cols = [columns.Column(stage, tuple(card(t) for t in laned if into.get(t.stage.strip(), t.stage.strip()) == stage),
+    cols = [columns.Column(stage, tuple(card(t, at[t.name.strip()]) for t in laned if into.get(at[t.name.strip()], at[t.name.strip()]) == stage),
                            *(("gate", "gate") if stage in gates else ())) for stage in order]
     merged = merged_today(sources, now) if now else []
     if merged:
@@ -1316,10 +1332,13 @@ def render(tracker_text: str, cfg: Config, now: datetime, lanes: dict | None = N
     known = [t for _, text in stage_log or [] for t in parse_tracker(text).tasks] + tasks
     ends = {t.item: end for t in active if (end := _end(t, cfg, now, now, est))[1] in ("due", "derived")}
     workers = worker_names(sources)
+    # A task's stage for drift/hold purposes, computed once: build_columns does the same per card (#240).
+    stages = {t.name.strip(): effective_stage(t, sources, lanes or {}) for t in tasks}
     # #227: a `waiting` task owned by a person, not a worker, holds too — the same worker/person split
     # build_columns already draws its "ON HOLD" flag and owner link from.
     flow_held = {t.name.strip() for t in tasks
-                if held(t, kanban) or (t.kind == "waiting" and t.shown_owner and t.shown_owner not in workers)}
+                if held(t, kanban, stages[t.name.strip()]) or
+                (t.kind == "waiting" and t.shown_owner and t.shown_owner not in workers)}
     flow_rows = flow_chart.build(flow_moves, known, lanes or {}, flow_held,
                                  {item: end[0] for item, end in ends.items()}, now,
                                  queue_durations(active, hist), slots,
@@ -1337,8 +1356,8 @@ def render(tracker_text: str, cfg: Config, now: datetime, lanes: dict | None = N
     head = panels.Header(f"Board · {now.strftime('%a %d %b')}", tuple(meta), now, nearest.name, nearest.at,
                          tuple(f"{k}: {why}" for k, why in sources.errors.items()))
     # BLOCKED counts the ON HOLD cards (Flow.dc.html v22), by the flag that draws them.
-    tiles = flow_tiles(sum(held(t, kanban) for t in tasks), sum(d is not None for _, d, _, _ in pending), sources, len(running),
-                       sum(drifts(t, kanban, sources) for t in tasks), len(unowned))
+    tiles = flow_tiles(sum(held(t, kanban, stages[t.name.strip()]) for t in tasks), sum(d is not None for _, d, _, _ in pending),
+                       sources, len(running), sum(drifts(t, kanban, sources, stages[t.name.strip()]) for t in tasks), len(unowned))
     panels_html = panels.panels([merge_order(sources), decision_panel(pending, answered, now), worker_panel(sources, now)])
 
     return f"""<meta charset="utf-8">
