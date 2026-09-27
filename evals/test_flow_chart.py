@@ -192,8 +192,8 @@ class DoneNoClockTest(unittest.TestCase):
                 self.assertEqual(row.segments[-1].end, at(TODAY, "01:30"))
 
     def test_several_done_no_clock_tasks_sharing_an_issue_merge_ending_at_the_latest_move(self):
-        built = fc.build(fc.moves(DONE_MERGE_TRACKER, TODAY, CT), rb.parse_tracker(DONE_MERGE_TRACKER).tasks,
-                         LANES, set(), {}, NOW)
+        tasks = rb.parse_tracker(DONE_MERGE_TRACKER).tasks
+        built = fc.build(fc.moves(DONE_MERGE_TRACKER, TODAY, CT), tasks, LANES, set(), {}, NOW)
         mine = [(s, r) for s, r in built if r.ref == "#400"]
         self.assertEqual(len(mine), 1)
         _, row = mine[0]
@@ -201,7 +201,17 @@ class DoneNoClockTest(unittest.TestCase):
         for g in row.segments:
             with self.subTest(segment=g):
                 self.assertLessEqual(g.end, latest_move)
-        self.assertEqual(row.segments[-1].end, latest_move)
+        # (#196) line 1: no bar past ITS OWN task's last move, even once the group merges the two tasks'
+        # segments into one row. A bar's title is its owner (no launcher lines in this fixture), so map
+        # owner back to the task that owns it and its own last `stage:` move, both read from the fixture,
+        # not hardcoded.
+        own_last_move = {}
+        for m in fc.moves(DONE_MERGE_TRACKER, TODAY, CT):
+            own_last_move[m.name] = max(own_last_move.get(m.name, m.at), m.at)
+        owner_task = {t.owner.strip(): t.name.strip() for t in tasks}
+        for g in row.segments:
+            with self.subTest(segment=g):
+                self.assertLessEqual(g.end, own_last_move[owner_task[g.title]])
 
     def test_an_open_running_or_waiting_task_still_runs_its_last_bar_to_now(self):
         built = {row.name: (status, row) for status, row in
