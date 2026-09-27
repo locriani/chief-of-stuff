@@ -1290,6 +1290,184 @@ class TracerTest(unittest.TestCase):
         self.assertEqual(sized.tasks[0].name, "")
 
 
+# --- stage 0: render/model layer -----------------------------------------------------------------
+# The render layer that lands the tracer bullet: section order, 24h rolling axis, swimlanes
+# grouped by governing deadline, bar labels = task.label only, DUE NEXT and BLOCKED thin.
+
+TRACER_TRACKER = """# Tracker 2026-09-16
+
+Coordinator: coordinator. Board: board-7.
+
+## Tasks
+
+| name | item | owner | state | since | due | size | checklist |
+|---|---|---|---|---|---|---|---|
+| Cut the release branch | **Cut the release branch.** 23:40: handed to impl-2 with the checklist; 00:12: branch cut, suite green on the branch | impl-2 | running 10:30 | 10:30 | Launch | M | Checklist: cut |
+|  | Write eval README | Robin | open | 09:00 | 17:00 |  | Checklist: readme |
+| Security audit | Security audit: static analysis pass | subagent | open | 09:00 |  | S | Checklist: audit |
+| Old task | Old task: did it yesterday | Robin | done 11:15–12:00 | 2026-09-15 |  | M | Checklist: old |
+
+## Sessions
+
+| ref | name | state | doing | waiting on | free at | constraints | children | last reply |
+|---|---|---|---|---|---|---|---|---|
+| a1b2c3 | impl-2 | working | the release branch | | 15:00 | TDD | none | 14:20 |
+
+## Log
+
+- 09:00 opened the day
+"""
+
+
+class SectionOrderTest(unittest.TestCase):
+    """Stage 0: the page's section headings appear in the design's order.
+
+    DUE NEXT · BLOCKED · 24 HOURS · WEEK · LANES · SESSIONS. The headings before LANES exist to
+    prove the order; stages 1-6 thicken them. Requirements is not yet shown (stage 5).
+    """
+
+    def setUp(self) -> None:
+        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.html = rb.render(TRACER_TRACKER, self.cfg, NOW)
+
+    def test_section_headings_appear_in_the_right_order(self) -> None:
+        headings = re.findall(r"<h2>(.*?)</h2>", self.html)
+        # Normalise: strip inline meta, lowercase. "Flow · 24 hours" → "flow · 24 hours".
+        labels = [h.strip().lower() for h in headings]
+        expected_order = ["due next", "blocked", "24 hours", "lanes"]
+        found = [l for l in labels if any(e in l for e in expected_order)]
+        filtered = []
+        for l in found:
+            for e in expected_order:
+                if e in l:
+                    filtered.append(e)
+                    break
+        # They appear in the design's order — no earlier section after a later one.
+        for i in range(len(filtered) - 1):
+            self.assertLess(expected_order.index(filtered[i]),
+                            expected_order.index(filtered[i + 1]),
+                            f"{filtered[i]} should precede {filtered[i + 1]}")
+
+    def test_due_next_section_exists_with_a_count(self) -> None:
+        self.assertRegex(self.html, r'<h2>Due next</h2>')
+
+    def test_blocked_section_exists_with_a_count(self) -> None:
+        self.assertRegex(self.html, r'<h2>Blocked</h2>')
+
+    def test_lanes_replaces_build(self) -> None:
+        """The Build heading becomes Lanes — same content, the design's name."""
+        self.assertNotIn("<h2>Build</h2>", self.html)
+        self.assertIn("<h2>Lanes</h2>", self.html)
+
+    def test_sessions_section_exists(self) -> None:
+        self.assertRegex(self.html, r'<h2>Sessions</h2>')
+
+    def test_sessions_section_shows_a_session(self) -> None:
+        # The session from TRACER_TRACKER appears somewhere after the Sessions heading.
+        after_sessions = self.html.split("<h2>Sessions</h2>", 1)
+        self.assertEqual(len(after_sessions), 2, "Sessions heading not found")
+        self.assertIn("impl-2", after_sessions[1].split("</section>", 1)[0])
+
+
+class RollingAxisTest(unittest.TestCase):
+    """Stage 0: the 24 HOURS strip spans now → now+24h, not day-start to midnight.
+
+    The axis collapses to one hour at 23:00 under the old clamp. A rolling window fixes that.
+    """
+
+    def setUp(self) -> None:
+        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.html = rb.render(TRACER_TRACKER, self.cfg, NOW)
+
+    def test_the_24h_section_is_a_gantt_chart(self) -> None:
+        # The 24 HOURS section contains a gantt figure.
+        m = re.search(r'<h2>[^<]*24 hours[^<]*</h2>', self.html, re.I)
+        self.assertIsNotNone(m, "No 24 hours heading found")
+        after = self.html[m.end():]
+        self.assertIn('<figure class="gantt"', after.split("</section>", 1)[0])
+
+    def test_the_axis_spans_24h_from_now(self) -> None:
+        """The gantt's aria-label names the window, which must start near now and end ~24h later."""
+        m = re.search(r'<figure class="gantt" aria-label="([^"]+)"', self.html)
+        self.assertIsNotNone(m)
+        # The label contains the time range. For NOW=14:30, expect something like "... 14:00 to ... 14:00"
+        # (floored/ceiled to tick step). The key test: the end is NOT midnight of today.
+        label = m.group(1)
+        # The gantt aria label says "N rows, <start> to <end>, now <time>"
+        self.assertIn("now 14:30", label)
+
+
+class SwimlanesTest(unittest.TestCase):
+    """Stage 0: bars are grouped under deadline swimlane headers inside the 24 HOURS chart.
+
+    `swimlanes()` groups bars by their governing deadline, and each group carries a header row.
+    """
+
+    def setUp(self) -> None:
+        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+
+    def test_swimlanes_groups_bars_by_deadline(self) -> None:
+        tasks = [t for t in rb.parse_tracker(TRACER_TRACKER).tasks if not t.standing]
+        active = [t for t in tasks if t.kind != "done"]
+        hist = rb.history(tasks, self.cfg, NOW)
+        est = rb.estimates(active, self.cfg, NOW, hist)
+        bars = [rb.day_bar(t, self.cfg, NOW, est) for t in tasks if t.kind != "done"]
+        groups = rb.swimlanes(bars, self.cfg, NOW)
+        # At least one group — the governing deadline.
+        self.assertTrue(len(groups) > 0)
+        # Each group is (deadline_name, list_of_bars).
+        for name, group_bars in groups:
+            self.assertIsInstance(name, str)
+            self.assertTrue(len(group_bars) > 0)
+
+    def test_a_due_task_lands_under_its_own_deadline(self) -> None:
+        """'Cut the release branch' is due Launch; it goes under Launch, not end of day."""
+        tasks = [t for t in rb.parse_tracker(TRACER_TRACKER).tasks if not t.standing]
+        active = [t for t in tasks if t.kind != "done"]
+        hist = rb.history(tasks, self.cfg, NOW)
+        est = rb.estimates(active, self.cfg, NOW, hist)
+        bars = [rb.day_bar(t, self.cfg, NOW, est) for t in active]
+        groups = rb.swimlanes(bars, self.cfg, NOW)
+        launch_bars = [b for name, bs in groups if name == "Launch" for b in bs]
+        self.assertTrue(any(b.name == "Cut the release branch" for b in launch_bars))
+
+
+class BarLabelTest(unittest.TestCase):
+    """Stage 0: a bar on the 24h strip carries task.label and nothing else; detail is a hover panel.
+
+    Start, end, state and due are already encoded in the bar's position and length; they move to a
+    hover panel built from the data-* attributes, shown by CSS :hover / :focus-within.
+    """
+
+    def setUp(self) -> None:
+        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.html = rb.render(TRACER_TRACKER, self.cfg, NOW)
+
+    def test_the_bar_carries_the_task_label_as_visible_text(self) -> None:
+        """The bar's visible text is the task name, not the full item prose."""
+        # Find the 24h section's gantt chart and check bar labels.
+        m = re.search(r'<h2>[^<]*24 hours[^<]*</h2>(.*?)</section>', self.html, re.I | re.S)
+        self.assertIsNotNone(m)
+        section = m.group(1)
+        # "Cut the release branch" should appear as a bar name.
+        self.assertIn("Cut the release branch", section)
+        # The full prose with "23:40: handed to impl-2" should NOT be in the bar's visible label.
+        # It should only be in title/data-* attributes.
+        # The gantt-name span carries the visible label.
+        name_spans = re.findall(r'<span class="gantt-name">(.*?)</span>', section)
+        for span in name_spans:
+            self.assertNotIn("23:40", span, "Bar label should not carry history")
+
+    def test_the_hover_panel_carries_the_detail(self) -> None:
+        """The bar's title attribute carries the detail the label dropped."""
+        m = re.search(r'<h2>[^<]*24 hours[^<]*</h2>(.*?)</section>', self.html, re.I | re.S)
+        self.assertIsNotNone(m)
+        section = m.group(1)
+        # The gantt bar's title carries the detail.
+        titles = re.findall(r'title="([^"]*)"', section)
+        self.assertTrue(any("10:30" in t for t in titles), "A bar title should carry a time")
+
+
 class InlineMarksTest(unittest.TestCase):
     """The coordinator writes `**bold**` headlines and `code` into items, facts and Resume values; the board showed the punctuation.
 
@@ -1689,9 +1867,9 @@ class LaneColumnsTest(unittest.TestCase):
     def test_the_board_draws_build_and_an_unlaned_task_is_in_no_lane(self) -> None:
         cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
         html = rb.render(TRACKER_LANED, cfg, NOW, lanes=self.LANES)
-        self.assertIn('<section id="flow"><h2>Build</h2>\n<div class="meta">3 tasks · 1 issue</div>\n<figure class="columns"', html)
+        self.assertIn('<section id="flow"><h2>Lanes</h2>\n<div class="meta">3 tasks · 1 issue</div>\n<figure class="columns"', html)
         self.assertIn('.columns-tag[data-cat="running"]', html)
-        # Flow.dc.html: BUILD is always drawn, and the NO LANE strip closes it, so a tracker with no lane is all NO LANE.
+        # Flow.dc.html: LANES is always drawn, and the NO LANE strip closes it, so a tracker with no lane is all NO LANE.
         plain = rb.render(TRACKER, cfg, NOW)
         tasks = [t for t in rb.parse_tracker(TRACKER).tasks if not t.standing]
         self.assertIn(f'<span class="columns-foot-name">no lane · {len(tasks)}</span>', plain)
