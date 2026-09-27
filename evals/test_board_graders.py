@@ -171,7 +171,7 @@ class CaseMatchesTheRendererTest(unittest.TestCase):
         subprocess.run([sys.executable, str(run.PLUGIN_ROOT / "scripts" / "render_board.py"), "--root", str(work)], check=True, capture_output=True)
         html = next((work / "pages").glob("*-board.html")).read_text()
         self.assertRegex(html, pattern)
-        self.assertNotRegex(html.replace('data-cat="done">done', 'data-cat="open">open'), pattern)
+        self.assertNotRegex(html.replace('class="lt-state">done', 'class="lt-state">open'), pattern)
 
 
 if __name__ == "__main__":
