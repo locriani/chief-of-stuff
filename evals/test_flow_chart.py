@@ -97,12 +97,22 @@ class BuildTest(unittest.TestCase):
             ("pr", at(TODAY, "01:00"), NOW, "done")])
 
     def test_a_held_task_is_hatched_red_from_now_through_the_window(self):
-        status, row = rows()["Cache warmup"]
-        self.assertEqual((status, row.note), ("held", "hold · triage"))
-        self.assertEqual([(g.category, g.kind) for g in row.segments], [("review", "done"), ("triage", "done"), ("triage", "hold")])
+        # #227 Acceptance: "A `waiting` task owned by a person: its last stage bar ends at its last move;
+        # a hold bar runs now to the end." Cache warmup is `waiting`, owned by Robin (a person), and is
+        # named in `held` the same way a kanban gate hold is (rendering-board wiring for a person-owned
+        # `waiting` task, not caught by any `hold_stages` gate, is WaitingOnPersonTest below). This
+        # replaces the old expectation that the last stage's bar ran solid to now before the hold began —
+        # that read as work in progress when nobody was working on it (#227's own "Why").
+        _, row = rows()["Cache warmup"]
+        self.assertEqual([(g.category, g.kind) for g in row.segments], [("review", "done"), ("triage", "hold")])
+        self.assertEqual(row.segments[0].end, at(TODAY, "01:40"))  # its own last move, not now
         hold = row.segments[-1]
         self.assertEqual(hold.start, NOW)
         self.assertGreaterEqual(hold.end, NOW + max(after for _, _, after in fc.WINDOWS))
+        # #227 Acceptance: "The row's note reads `needs input · <cause>`, the cause as the task page
+        # names it." Nothing on Task or Kanban names a cause yet (no such column or field exists) — this
+        # asserts only the `needs input` prefix the acceptance falls back to, and the gap is in my report.
+        self.assertTrue(row.note.startswith("needs input"), row.note)
 
     def test_the_last_stage_of_the_lane_ends_the_row(self):
         status, row = rows()["Locale fallback"]
@@ -313,8 +323,10 @@ class QueueTest(unittest.TestCase):
         self.assertNotIn("Session timeout", got)
 
     def test_queued_rows_count_as_queued(self):
+        # #217 Acceptance: "The summary counts the chart's own rows: merged, approved, running, needs
+        # input, queued, in that order" — `held` is renamed `needs input`.
         html = fc.section(list(self.queued().values()), NOW)
-        self.assertIn("1 merged · 1 running · 1 held · 2 queued · Thu 24 02:10 → Thu 1 02:10", html)
+        self.assertIn("1 merged · 1 running · 1 needs input · 2 queued · Thu 24 02:10 → Thu 1 02:10", html)
 
 
 class SectionTest(unittest.TestCase):
@@ -322,9 +334,10 @@ class SectionTest(unittest.TestCase):
         self.assertEqual(fc.section([], NOW), "")
 
     def test_two_charts_with_counts_and_one_legend(self):
+        # #217 Acceptance: "held" is renamed "needs input", and "a zero count is left out" — no "0 queued".
         html = fc.section(list(rows().values()), NOW)
-        self.assertIn("<h2>Flow · 24 hours</h2>\n<div class=\"meta\">1 merged · 1 running · 1 held · 0 queued · Fri 20:10 → Sat 20:10</div>", html)
-        self.assertIn("<h2>Flow · 7 days</h2>\n<div class=\"meta\">1 merged · 1 running · 1 held · 0 queued · Thu 24 02:10 → Thu 1 02:10</div>", html)
+        self.assertIn("<h2>Flow · 24 hours</h2>\n<div class=\"meta\">1 merged · 1 running · 1 needs input · Fri 20:10 → Sat 20:10</div>", html)
+        self.assertIn("<h2>Flow · 7 days</h2>\n<div class=\"meta\">1 merged · 1 running · 1 needs input · Thu 24 02:10 → Thu 1 02:10</div>", html)
         self.assertEqual(html.count('<figure class="gantt"'), 2)
         self.assertEqual(html.count('<div class="gantt-legend">'), 1)
         self.assertLess(html.index("7 days"), html.index("gantt-legend"))
@@ -345,6 +358,54 @@ class SectionTest(unittest.TestCase):
         css = fc.css()
         for stage in gantt.PALETTE:
             self.assertIn(f'.gantt-bar[data-cat="{stage}"]{{--c:var(--stage-{stage});', css)
+
+
+GROUPED_TRACKER = """# Tracker
+
+## Tasks
+
+| name | item | owner | state | since | due | size | lane | stage | issue | checklist |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Delta merged | Delta work | Robin | done 01:55 | 2026-09-26 |  | S | build | main | #501 | c |
+| Echo approved | Echo work | Robin | open | 2026-09-26 |  | S | build | implement | #502 | c |
+| Foxtrot running | Foxtrot work | impl-1 | running 00:45 | 2026-09-26 |  | S | build | implement | #503 | c |
+| Golf running | Golf work | impl-2 | running 01:20 | 2026-09-26 |  | S | build | review | #504 | c |
+| Charlie needs input | Charlie work | Robin | waiting | 2026-09-26 |  | S | build | triage | #505 | c |
+| Hotel queued | Hotel work | unassigned | open | 2026-09-26 |  | S | build | implement | #506 | c |
+| India queued | India work | unassigned | open | 2026-09-26 |  | S | build | implement | #507 | c |
+
+## Log
+
+- 01:50 stage: Delta merged → merge
+- 01:55 stage: Delta merged → main
+- 00:30 stage: Echo approved → implement
+- 00:45 stage: Foxtrot running → implement
+- 01:20 stage: Golf running → review
+- 00:01 stage: Charlie needs input → triage
+"""
+
+
+class GroupedFlowTest(unittest.TestCase):
+    """#226 Acceptance: "Rows group in the order merged, approved, running, needs input, queued; within a
+    group, earliest first." #217 Acceptance: "The summary counts the chart's own rows: merged, approved,
+    running, needs input, queued, in that order," "a row in implement, review or fix counts as running,"
+    and "a zero count is left out." Charlie needs input moves earliest of anyone (00:01) yet must group
+    second-to-last, not first — proof grouping outranks move order; Delta merged moves latest (01:55)
+    yet must group first — proof merged still wins over move order too."""
+
+    def built(self) -> list[tuple[str, gantt.Row]]:
+        tasks = rb.parse_tracker(GROUPED_TRACKER).tasks
+        return fc.build(fc.moves(GROUPED_TRACKER, TODAY, CT), tasks, LANES, {"Charlie needs input"}, {}, NOW,
+                        {"Hotel work": 2 * H, "India work": 2 * H}, 1, frozenset({"Echo approved"}))
+
+    def test_rows_group_merged_approved_running_needs_input_queued_earliest_first(self):
+        names = [row.name for _, row in self.built()]
+        self.assertEqual(names, ["Delta merged", "Echo approved", "Foxtrot running", "Golf running",
+                                 "Charlie needs input", "Hotel queued", "India queued"])
+
+    def test_summary_counts_merged_approved_running_needs_input_queued_in_order(self):
+        html = fc.section(self.built(), NOW)
+        self.assertIn("1 merged · 1 approved · 2 running · 1 needs input · 2 queued · Fri 20:10 → Sat 20:10", html)
 
 
 class BoardTest(unittest.TestCase):
@@ -406,6 +467,52 @@ class BoardTest(unittest.TestCase):
         html = rb.main(["--root", str(root)]).read_text()
         self.assertIn('title="implement ', html)
         self.assertNotIn("Too old", html)
+
+
+WAITING_TRACKER = """# Tracker
+
+## Tasks
+
+| name | item | owner | state | since | due | size | lane | stage | issue | checklist |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Dark mode tokens | Token pass | Robin | waiting | 2026-09-26 |  | S | build | review | #119 | c |
+| Worker retry | Retry work | impl-9 | waiting | 2026-09-26 |  | S | build | review | #130 | c |
+
+## Log
+
+- 01:00 stage: Dark mode tokens → review
+- 01:05 stage: Worker retry → review
+"""
+
+
+def gantt_row(html: str, name: str) -> str:
+    """The rendered `<div class="gantt-row">` for the Flow row named `name`, first match across both charts."""
+    return next(r for r in re.findall(r'<div class="gantt-row">.*?</div>', html)
+                if f'<span class="gantt-name">{name}</span>' in r)
+
+
+class WaitingOnPersonTest(unittest.TestCase):
+    """#227 Acceptance: "A `waiting` task owned by a person: its last stage bar ends at its last move; a
+    hold bar runs now to the end" and "counts as needs input in the chart summary" — a `waiting` task
+    owned by a worker does not. render_board.py already tells a worker owner from a person by checking
+    `sources.workers` (build_columns's `worker_names`, reused by evals/test_flow_board.py's
+    `test_only_a_worker_owner_becomes_a_link`); the Flow chart is asked to reuse that same check, not a
+    kanban `hold_stages` gate — KANBAN here only holds "triage", never "review", so neither row is a
+    kanban-style hold."""
+
+    def html(self) -> str:
+        sources = bs.Sources({}, {}, {}, (bs.Worker("impl-9", "session", "", "", "", "", None, None),), {})
+        return rb.render(WAITING_TRACKER, BoardTest().cfg(), NOW, lanes=LANES, tracker_day=TODAY, kanban=KANBAN,
+                         sources=sources)
+
+    def test_a_person_owned_waiting_row_holds_a_worker_owned_one_does_not(self):
+        html = self.html()
+        self.assertIn("gantt-hold", gantt_row(html, "Dark mode tokens"))
+        self.assertNotIn("gantt-hold", gantt_row(html, "Worker retry"))
+
+    def test_a_person_owned_waiting_row_counts_as_needs_input(self):
+        html = self.html()
+        self.assertIn("1 needs input", html[html.index("Flow · 24 hours"):])
 
 
 ONE_SHOT_TRACKER = """# Tracker
