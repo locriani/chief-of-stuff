@@ -40,7 +40,7 @@ def colour(value: str) -> str:
 
 
 # The Board sections nav (Flow.dc.html) atop every page: (name, route); a tab with no page yet has no route.
-TABS = (("Board", "/"), ("Workers", ""), ("Dispatch", ""), ("Since you last looked", ""), ("Epics", ""),
+TABS = (("Board", "/"), ("Workers", "/workers"), ("Dispatch", ""), ("Since you last looked", ""), ("Epics", ""),
         ("Decisions", "/decisions"), ("Limits", ""))
 # On the pages' tokens (--fg, --muted, --line, --link); wraps at phone width rather than widening the page.
 TAB_CSS = """nav.tabs{display:flex;flex-wrap:wrap;align-items:flex-end;column-gap:28px;margin:-8px 0 0;border-bottom:1px solid var(--line)}

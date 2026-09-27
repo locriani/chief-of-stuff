@@ -1234,7 +1234,7 @@ def worker_panel(sources: board_sources.Sources, now: datetime) -> panels.Panel:
     rows = tuple(panels.Row(w.name, facts(w), side=panels.hm(w.started, now) if w.started else "") for w in sources.workers)
     kinds = [w.kind for w in sources.workers]
     note = " · ".join(f"{kinds.count(k)} {k}" for k in dict.fromkeys(kinds))
-    return panels.Panel("workers", "WORKERS", "workers", len(rows), rows, note)
+    return panels.Panel("workers", "WORKERS", "workers", len(rows), rows, note, href="/workers")  # (#195)
 
 
 def flow_tiles(blocked: int, decisions: int, sources: board_sources.Sources, running: int, drift: int, orphaned: int) -> list[panels.Tile]:

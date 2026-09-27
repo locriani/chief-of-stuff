@@ -61,6 +61,7 @@ class Panel:
     note: str = ""
     link: tuple[str, str] | None = None  # (text, href)
     foot: str = ""
+    href: str = ""  # links the title
 
 
 def hm(start: datetime, end: datetime) -> str:
@@ -110,7 +111,7 @@ def _panel(p: Panel) -> str:
     foot = f'<div class="panels-foot">{_esc(p.foot)}</div>' if p.foot else ""
     rows = "".join(map(_row, p.rows)) or '<div class="panels-row panels-empty">none</div>'
     return (f'<section class="panels-panel" id="{_kind(p.id)}" data-kind="{_kind(p.kind)}">'
-            f'<div class="panels-panel-head"><h3 class="panels-title">{_esc(p.title)}</h3>{note}{link}'
+            f'<div class="panels-panel-head"><h3 class="panels-title">{f'<a {_href(p.href)}>{_esc(p.title)}</a>' if p.href else _esc(p.title)}</h3>{note}{link}'
             f'<b class="panels-count">{p.count}</b></div>{rows}{foot}</section>')
 
 

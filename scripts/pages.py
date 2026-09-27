@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Serve the workspace's pages locally: the board and any page a session writes beside it.
 
-The pages are routes: `/` the board, `/decisions` the list, `/decisions/<slug>` a decision page, `/issues/<n>` a
-tracker issue's page, `/issues/<n>/source` its change's source and diff. Each is rendered into its file
-(`<day>-board.html`, `decisions.html`, `decision-<slug>.html`, `issue-<n>.html`, `issue-<n>-source.html`), which only the routes serve:
-a request for the file's own name is a 404. A GET re-renders a page when
-one of its sources (the trackers, CLAUDE.md, the settings TOML, the decision JSON, `.sources.json`) is
-newer than the file, and a thread refreshes `.sources.json` from the forge every minute. An open tab
+The pages are routes: `/` the board, `/workers` the running workers and today's ends, `/decisions` the list,
+`/decisions/<slug>` a decision page, `/issues/<n>` a tracker issue's page, `/issues/<n>/source` its change's source
+and diff. Each is rendered into its file (`<day>-board.html`, `workers.html`, `decisions.html`, `decision-<slug>.html`,
+`issue-<n>.html`, `issue-<n>-source.html`), which only the routes serve: a request for the file's own name is a 404.
+A GET re-renders a page when one of its sources (the trackers, CLAUDE.md, the settings TOML, the decision JSON,
+`.sources.json`) is newer than the file, and `/workers` on every GET (it reads the session logs too), and a thread refreshes `.sources.json` from the forge every minute. An open tab
 reloads itself when the file changes.
 
     python3 pages.py --ensure [--root R]              # start it unless it is already serving; print status only
@@ -49,7 +49,7 @@ SERVER = "chief-of-stuff-pages"
 PID = ".pid"
 CACHE = ".sources.json"
 REFRESH = 60  # seconds between forge reads
-RENDERED = re.compile(r"\d{4}-\d{2}-\d{2}-board\.html|decisions\.html|decision-[a-z0-9]+(?:-[a-z0-9]+)*\.html|issue-\d+(?:-source)?\.html")
+RENDERED = re.compile(r"\d{4}-\d{2}-\d{2}-board\.html|workers\.html|decisions\.html|decision-[a-z0-9]+(?:-[a-z0-9]+)*\.html|issue-\d+(?:-source)?\.html")
 ROUTE = re.compile(r"/decisions/([a-z0-9]+(?:-[a-z0-9]+)*)")
 ISSUE = re.compile(r"/issues/(\d+)(/source)?")
 MAX_BODY = 16 * 1024  # a write-in is a sentence or a paragraph
@@ -108,6 +108,7 @@ def fresh(root: Path, pages_dir: Path, name: str, slots=contextlib.nullcontext()
     import issue_page
     import render_board
     import source_page
+    import workers_page
     try:
         cfg = render_board.parse_coordinator((root / "CLAUDE.md").read_text(), today=date.today())
         today = datetime.now(cfg.zone).date().isoformat()
@@ -115,7 +116,7 @@ def fresh(root: Path, pages_dir: Path, name: str, slots=contextlib.nullcontext()
             if not (pages_dir / f"{name[:-5]}.json").is_file():
                 return ""
             day = today
-        elif name.startswith("issue-"):
+        elif name.startswith("issue-") or name == "workers.html":
             day = today
         elif name == "decisions.html":
             days = [d.isoformat() for d, _ in render_board.daily_trackers(root, cfg)]
@@ -127,10 +128,12 @@ def fresh(root: Path, pages_dir: Path, name: str, slots=contextlib.nullcontext()
         target = pages_dir / name
         with page_lock(target):  # checked under the lock: a request that waited finds the page already rendered
             newest = max(RENDERER_MTIME_NS, max((p.stat().st_mtime_ns for p in _sources(root, cfg, pages_dir, day) if p.is_file()), default=0))
-            if target.is_file() and target.stat().st_mtime_ns >= newest:
+            if target.is_file() and target.stat().st_mtime_ns >= newest and name != "workers.html":
                 return ""
             with slots:
-                if name.startswith("decision-"):
+                if name == "workers.html":
+                    workers_page.write(root, pages_dir)
+                elif name.startswith("decision-"):
                     decision_page.write(root, pages_dir, name[len("decision-"):-5], day)
                 elif name.endswith("-source.html"):
                     source_page.write(root, pages_dir, int(name[len("issue-"):-len("-source.html")]))
@@ -166,7 +169,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def _allowed(self) -> bool:
         """Refuse a foreign Host or a dotfile; map `/` to today's (else the newest) board, `/all` to the listing and
-        `/decisions[/<slug>]` and `/issues/<n>` to its file; refuse a rendered page's file name; re-render a page its sources outdate."""
+        `/workers`, `/decisions[/<slug>]` and `/issues/<n>` to its file; refuse a rendered page's file name; re-render a page its sources outdate."""
         port = self.server.server_address[1]
         if self.headers.get("Host", "") not in (f"127.0.0.1:{port}", f"localhost:{port}"):
             self.send_error(403, "Host is not this machine")
@@ -192,8 +195,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.path = "/" + (name or boards[-1].name)
         elif path == "/all":
             self.path = "/"
-        elif path == "/decisions":
-            self.path = "/decisions.html"
+        elif path in ("/workers", "/decisions"):
+            self.path = f"{path}.html"
         elif path.startswith("/decisions/"):
             m = ROUTE.fullmatch(path)
             if not m or not (Path(self.directory) / f"decision-{m[1]}.json").is_file():
