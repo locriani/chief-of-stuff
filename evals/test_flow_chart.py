@@ -132,6 +132,88 @@ class BuildTest(unittest.TestCase):
         self.assertNotIn("forecast", [g.kind for g in row.segments])
 
 
+DONE_NO_CLOCK = TODAY_TRACKER.replace("| Upload size limit | Cap uploads | impl-1 | running 01:00 |",
+                                      "| Upload size limit | Cap uploads | impl-1 | done |")
+DONE_HHMM = TODAY_TRACKER.replace("| Upload size limit | Cap uploads | impl-1 | running 01:00 |",
+                                  "| Upload size limit | Cap uploads | impl-1 | done 01:30 |")
+DONE_RANGE = TODAY_TRACKER.replace("| Upload size limit | Cap uploads | impl-1 | running 01:00 |",
+                                   "| Upload size limit | Cap uploads | impl-1 | done 00:50–01:30 |")
+
+DONE_MERGE_TRACKER = """# Tracker
+
+## Tasks
+
+| name | item | owner | state | since | due | size | lane | stage | issue | checklist |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Part one | Part one work | w1 | done | 2026-09-26 |  | S | build | pr | #400 | c |
+| Part two | Part two work | w2 | done | 2026-09-26 |  | S | build | review | #400 | c |
+
+## Log
+
+- 00:10 stage: Part one → implement
+- 00:40 stage: Part one → pr
+- 00:50 stage: Part two → review
+"""
+
+STILL_RUNS_TO_NOW = """# Tracker
+
+## Tasks
+
+| name | item | owner | state | since | due | size | lane | stage | issue | checklist |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Open task | Open work | w1 | open | 2026-09-26 |  | S | build | implement | #401 | c |
+| Running task | Running work | w2 | running 00:20 | 2026-09-26 |  | S | build | pr | #402 | c |
+| Waiting task | Waiting work | w3 | waiting | 2026-09-26 |  | S | build | review | #403 | c |
+
+## Log
+
+- 00:10 stage: Open task → implement
+- 00:20 stage: Running task → pr
+- 00:30 stage: Waiting task → review
+"""
+
+
+class DoneNoClockTest(unittest.TestCase):
+    """A `done` task's last bar ends at its last move, not now (#196)."""
+
+    def test_a_done_task_with_no_clock_draws_no_bar_past_its_last_move(self):
+        last_move = at(TODAY, "01:00")  # Upload size limit's last `stage:` move in TODAY_TRACKER's Log
+        _, row = rows(tracker=DONE_NO_CLOCK)["Upload size limit"]
+        self.assertTrue(row.segments)
+        for g in row.segments:
+            with self.subTest(segment=g):
+                self.assertLessEqual(g.end, last_move)
+        self.assertEqual(row.segments[-1].end, last_move)
+
+    def test_a_done_time_or_range_still_ends_the_last_bar_there(self):
+        for label, tracker in (("done HH:MM", DONE_HHMM), ("done HH:MM–HH:MM", DONE_RANGE)):
+            with self.subTest(state=label):
+                _, row = rows(tracker=tracker)["Upload size limit"]
+                self.assertEqual(row.segments[-1].end, at(TODAY, "01:30"))
+
+    def test_several_done_no_clock_tasks_sharing_an_issue_merge_ending_at_the_latest_move(self):
+        built = fc.build(fc.moves(DONE_MERGE_TRACKER, TODAY, CT), rb.parse_tracker(DONE_MERGE_TRACKER).tasks,
+                         LANES, set(), {}, NOW)
+        mine = [(s, r) for s, r in built if r.ref == "#400"]
+        self.assertEqual(len(mine), 1)
+        _, row = mine[0]
+        latest_move = at(TODAY, "00:50")  # Part two's `stage:` move, the last move in the whole group
+        for g in row.segments:
+            with self.subTest(segment=g):
+                self.assertLessEqual(g.end, latest_move)
+        self.assertEqual(row.segments[-1].end, latest_move)
+
+    def test_an_open_running_or_waiting_task_still_runs_its_last_bar_to_now(self):
+        built = {row.name: (status, row) for status, row in
+                 fc.build(fc.moves(STILL_RUNS_TO_NOW, TODAY, CT), rb.parse_tracker(STILL_RUNS_TO_NOW).tasks,
+                          LANES, set(), {}, NOW)}
+        for name in ("Open task", "Running task", "Waiting task"):
+            with self.subTest(task=name):
+                _, row = built[name]
+                self.assertTrue(row.segments)
+                self.assertEqual(row.segments[-1].end, NOW)
+
+
 QUEUED = TODAY_TRACKER.replace("| Session timeout |", "| Export format | Export CSV | unassigned | open | 2026-09-26 |  | M | build | implement | #112 | c |\n| Session timeout |")
 
 
