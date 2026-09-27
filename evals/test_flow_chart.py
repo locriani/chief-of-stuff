@@ -6,8 +6,9 @@ import tempfile
 import time
 import unittest
 from dataclasses import replace
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
@@ -528,6 +529,130 @@ class ManyLaunchesTest(unittest.TestCase):
         # Half map by item prefix, half only by issue ref; each draws on its own row with that row's ref and name.
         got = {row.name: (row.ref, [g.start for g in row.segments]) for _, row in self.got}
         self.assertEqual(got, {name: (ref, [at(TODAY, hhmm)]) for name, (ref, hhmm, _) in self.expected.items()})
+
+
+def titles(built: list[tuple[str, gantt.Row]], name: str) -> list[str]:
+    """The rendered bar titles on the Flow rows named `name`, across both charts."""
+    html = fc.section(built, NOW)
+    return [t for row in re.findall(r'<div class="gantt-row">.*?</div>', html) if f'<span class="gantt-name">{name}</span>' in row
+            for t in re.findall(r' title="([^"]*)"', row)]
+
+
+class OwnerTest(unittest.TestCase):
+    """Each bar names who held its stage (#186)."""
+
+    def test_a_bar_after_a_started_line_names_its_worker(self):
+        # "A bar that follows a one-shot started line carries that worker in its title, e.g.
+        # `implement 20:05–21:35 · W · done`."
+        text = OneShotTest().tracker()  # w1 launched Audit headers at 00:20; its owner cell is now Robin
+        built = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(), {}, NOW)
+        implement = [t for t in titles(built, "Audit headers") if t.startswith("implement ")]
+        self.assertTrue(implement)
+        for title in implement:
+            self.assertIn(" · w1 · ", title)
+        # A launch that maps to no tracker row has no owner cell; its worker still names the bar.
+        text = launched_tracker()
+        built = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(), {}, NOW)
+        sweep = next(r for _, r in built if any(g.start == at(TODAY, "01:00") for g in r.segments))
+        got = titles(built, sweep.name)
+        self.assertTrue(got)
+        for title in got:
+            self.assertIn(" · impl-3 · ", title)
+
+    def test_a_bar_with_no_running_launch_names_the_owner_cell(self):
+        # "A bar with no running launch carries the task's tracker owner cell in its title"
+        for name, owner in (("Upload size limit", "impl-1"), ("Cache warmup", "Robin")):
+            with self.subTest(task=name):
+                done = [t for t in titles(list(rows().values()), name) if t.endswith(" · done")]
+                self.assertTrue(done)
+                for title in done:
+                    self.assertIn(f" · {owner} · ", title)
+        # w1 completed Audit headers at 01:30; the pr bar after it has no running launch.
+        text = OneShotTest().tracker()
+        built = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(), {}, NOW)
+        pr = [t for t in titles(built, "Audit headers") if t.startswith("pr ")]
+        self.assertTrue(pr)
+        for title in pr:
+            self.assertIn(" · Robin · ", title)
+
+    def test_forecast_bars_carry_no_owner(self):
+        # "forecast bars carry no owner."
+        got = rows({"Cap uploads": NOW + 4 * H}, {"Export CSV": 5 * H, "Pick a timeout": 30 * H}, 1, QUEUED)
+        ahead = [g for _, row in got.values() for g in row.segments if g.kind == "forecast"]
+        self.assertTrue(ahead)
+        self.assertEqual({g.title for g in ahead}, {""})
+
+
+def merged(issue: str, hhmm: str, n: int = 1) -> bs.Change:
+    """A change the forge reports merged at `hhmm` today, closing `issue`, stamped in UTC as the forge cache holds it."""
+    return bs.Change(f"!{n}", "u", "t", "merged", False, "passed", True, 1, at(TODAY, hhmm).astimezone(timezone.utc),
+                     "main", (), (issue,))
+
+
+def board(tracker: str, changes: list[bs.Change], stage_log: tuple = ((YESTERDAY, YESTERDAY_TRACKER),)) -> tuple[str, dict[str, tuple[str, gantt.Row]]]:
+    """The rendered board, and the Flow rows it drew by name (as render handed them to flow_chart.section)."""
+    seen, real = [], fc.section
+    with mock.patch.object(rb.flow_chart, "section", lambda rows, now: seen.append(rows) or real(rows, now)):
+        html = rb.render(tracker, BoardTest().cfg(), NOW, lanes=LANES, tracker_day=TODAY, kanban=KANBAN,
+                         stage_log=list(stage_log), sources=bs.Sources({}, {}, {c.ref: c for c in changes}, (), {}))
+    return html, {row.name: (status, row) for status, row in seen[0]}
+
+
+class ForgeMergeTest(unittest.TestCase):
+    """A row ends at the forge's merge time for its task's change (#186)."""
+
+    def test_a_forge_merge_ends_the_row_with_no_stage_line_to_main(self):
+        # "A task whose change the forge reports merged notes `merged HH:MM` at that time, with no bar past it and no
+        # forecast or hold."
+        html, got = board(TODAY_TRACKER, [merged("#109", "01:15")])
+        status, row = got["Upload size limit"]
+        self.assertEqual((status, row.note), ("merged", "merged 01:15"))
+        self.assertIn('<span class="gantt-name">Upload size limit</span>', html)
+        self.assertIn('<span class="gantt-note">merged 01:15</span>', html)
+        self.assertTrue(row.segments)
+        for g in row.segments:
+            self.assertLessEqual(g.end, at(TODAY, "01:15"), g)
+            self.assertNotIn(g.kind, ("forecast", "hold"), g)
+
+    def test_a_held_task_whose_change_merged_is_merged(self):
+        # "A held task whose change merged shows as merged, not held."
+        html, got = board(TODAY_TRACKER, [merged("#111", "01:50")])
+        status, row = got["Cache warmup"]
+        self.assertEqual((status, row.note), ("merged", "merged 01:50"))
+        self.assertNotIn("hold", [g.kind for g in row.segments])
+        self.assertIn('<span class="gantt-note">merged 01:50</span>', html)
+
+    def test_the_forge_merge_time_beats_the_stage_line(self):
+        # "When a stage line to main and the forge disagree on the merge time, the forge time wins."
+        tracker = tw.append_log(TODAY_TRACKER, "- 01:30 stage: Upload size limit → main")
+        for forge in ("01:15", "01:45"):
+            with self.subTest(forge=forge):
+                html, got = board(tracker, [merged("#109", forge)])
+                self.assertEqual(got["Upload size limit"][1].note, f"merged {forge}")
+                self.assertNotIn('<span class="gantt-note">merged 01:30</span>', html)
+
+
+class ManyMergedTest(unittest.TestCase):
+    """A board over hundreds of launched tasks, each with a merged change, renders within seconds (#186)."""
+
+    N = 400
+
+    @classmethod
+    def setUpClass(cls):
+        text, cls.expected = many_launched_tracker(cls.N)
+        changes = [merged(ref, "02:05", i) for i, (ref, _, _) in enumerate(cls.expected.values())]
+        start = time.perf_counter()
+        cls.html, cls.got = board(text, changes, ())
+        cls.took = time.perf_counter() - start
+
+    def test_the_board_renders_within_seconds(self):
+        # "A build over 400 tasks, each with launches and a merged change, finishes within 5 seconds."
+        self.assertLess(self.took, 5, f"{self.N} merged launches took {self.took:.1f}s")
+
+    def test_every_row_ends_at_its_merge(self):
+        # The timing covers the merge join: "A task whose change the forge reports merged notes `merged HH:MM`".
+        self.assertEqual({name: row.note for name, (_, row) in self.got.items()},
+                         {name: "merged 02:05" for name in self.expected})
 
 
 if __name__ == "__main__":
