@@ -112,9 +112,11 @@ class Workers(unittest.TestCase):
     def test_one_row_per_worker_with_age_and_facts(self) -> None:
         p = rb.worker_panel(SOURCES, NOW)
         self.assertEqual((p.id, p.count, p.note), ("workers", 2, "1 one-shot · 1 session"))
+        # (#199) facts are `<kind> · <runtime model> · <task> · <tree>`, empty parts skipped: impl-04 has
+        # no tree, so nothing stands in for it — not the old "last reply" fallback.
         self.assertEqual([(r.name, r.side, r.facts) for r in p.rows], [
             ("impl-07", "0h42m", "one-shot · claude opus · Cut the release · trees/cut"),
-            ("impl-04", "1h23m", "session · codex · Audit · last reply 14:19"),
+            ("impl-04", "1h23m", "session · codex · Audit"),
         ])
 
     def test_empty(self) -> None:

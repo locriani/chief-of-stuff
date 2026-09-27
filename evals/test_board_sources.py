@@ -450,14 +450,24 @@ class WorkersTest(unittest.TestCase):
         tree = root / "trees" / "rate-limit" / ".chief-of-stuff"
         tree.mkdir(parents=True)
         (tree / "one-shot.pid").write_text(f"{os.getpid()} Rate limit headers, PR #58\n")
+        # (#199) reviewer-2 owns an open task row: its task is that row's ref and name, never the
+        # Sessions row's `doing` prose ("review of #58").
+        text = TRACKER.replace(
+            "| Search | Search pagination | Robin | waiting | 01:00 |  | S | {issue} | {mr} |\n",
+            "| Search | Search pagination | Robin | waiting | 01:00 |  | S | {issue} | {mr} |\n"
+            "| Review round | Review PR #58 | reviewer-2 | open | 01:00 |  | S | #119 |  |\n",
+        ).replace("{issue}", "#115").replace("{mr}", "")
+        (root / "daily" / f"{DAY}-tracker.md").write_text(text)
         got = bs.refresh(root, NOW, gh=FakeGh())
         one = next(w for w in got.workers if w.kind == "one-shot")
         # The task is named by its row's name, not the item the launch recorded (#182).
         self.assertEqual((one.name, one.runtime, one.model, one.task, one.tree, one.started.strftime("%H:%M")),
                          ("impl-1", "claude", "opus", "Rate limit", "rate-limit", "01:28"))
         session = next(w for w in got.workers if w.kind == "session")
-        self.assertEqual((session.name, session.task, session.last.strftime("%H:%M")),
-                         ("reviewer-2", "review of #58", "01:58"))
+        self.assertEqual(session.name, "reviewer-2")
+        self.assertIn("Review round", session.task)
+        self.assertNotIn("review of #58", session.task)
+        self.assertEqual(session.last.strftime("%H:%M"), "01:58")
 
 
 class LaunchedWorkerNameTest(unittest.TestCase):
