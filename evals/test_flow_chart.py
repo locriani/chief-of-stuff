@@ -67,7 +67,8 @@ def moves() -> list[fc.Move]:
 def rows(ends: dict | None = None, durations: dict | None = None, slots: int = 1,
          tracker: str = TODAY_TRACKER, approved: frozenset = frozenset()) -> dict[str, tuple[str, gantt.Row]]:
     tasks = rb.parse_tracker(tracker).tasks
-    built = fc.build(moves(), tasks, LANES, {"Cache warmup"}, ends or {}, NOW, durations or {}, slots, approved)
+    log = fc.moves(YESTERDAY_TRACKER, YESTERDAY, CT) + fc.moves(tracker, TODAY, CT)
+    built = fc.build(log, tasks, LANES, {"Cache warmup"}, ends or {}, NOW, durations or {}, slots, approved)
     return {row.name: (status, row) for status, row in built}
 
 
