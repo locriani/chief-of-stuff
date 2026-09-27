@@ -115,14 +115,15 @@ def _ahead(stages: list[str], start: datetime, end: datetime, title: str = "") -
 
 def build(log: list[Move], tasks, lanes: dict, held: set[str], ends: dict[str, datetime], now: datetime,
           durations: dict[str, timedelta] | None = None, slots: int = 1,
-          approved: frozenset[str] = frozenset(), merged: dict[str, datetime] | None = None) -> list[tuple[str, gantt.Row]]:
+          approved: frozenset[str] = frozenset(), ended: dict[str, tuple[datetime, str]] | None = None) -> list[tuple[str, gantt.Row]]:
     """(status, row) per task with a move, first moved first, then the queued tasks in tracker order. `tasks` are
     tracker rows, later ones winning; `held` names the held tasks; `ends` maps a task's item to its estimated end;
     `durations` maps a queued task's item to how long it will take, and `slots` is how many run at once;
     `approved` names the tasks whose open change is approved, labelled `approved · merge ~HH:MM` by their end;
-    `merged` maps a task's name to its change's forge merge time, which ends its row. Status is `merged`, `held` or
-    the task's state word. Every bar's title names the worker whose launch was running when it began (now, for a
-    forecast or hold bar), else the task's owner cell, shown as the board shows it (#192, #193)."""
+    `ended` maps a task's name to (time, word) — its change's forge merge or its closed issue's close time — which
+    ends its row (#220). Status is that word, `held` or the task's state word. Every bar's title names the worker
+    whose launch was running when it began (now, for a forecast or hold bar), else the task's owner cell, shown as
+    the board shows it (#192, #193)."""
     by_name = {t.name.strip().casefold(): t for t in tasks if t.name.strip()}
     # A move names a task by its name or its item; the name wins.
     find = {**{t.item.strip().casefold(): t for t in tasks if t.item.strip()}, **by_name}
@@ -166,15 +167,16 @@ def build(log: list[Move], tasks, lanes: dict, held: set[str], ends: dict[str, d
                 stop = render_board._done_clock(t, now, now.tzinfo)
             else:
                 stop = last.at
-        merge = task and (merged or {}).get(task.name.strip())
+        finish = task and (ended or {}).get(task.name.strip())
         segs = [gantt.Segment(m.at, e, m.stage, "done", owner(key, m.at, task))
                 for m, nxt in zip(mine, mine[1:] + [None])
                 if m.stage not in terminal and (e := nxt.at if nxt else stop) > m.at]
-        if merge:
-            segs = [replace(g, end=min(g.end, merge)) for g in segs if g.start < merge]
+        if finish:
+            at, word = finish
+            segs = [replace(g, end=min(g.end, at)) for g in segs if g.start < at]
         lane = lanes.get(task.lane.strip()) if task else None
-        if merge:
-            status, note = "merged", f"merged {merge:%H:%M}"
+        if finish:
+            status, note = word, f"{word} {at:%H:%M}"
         elif last.stage in terminal:
             status, note = "merged", f"merged {last.at:%H:%M}"
         elif task and task.name.strip() in held:
@@ -217,7 +219,9 @@ def _merge_issues(rows: list[tuple[str, gantt.Row]]) -> list[tuple[str, gantt.Ro
     name of whichever row started earliest; the status and note of whichever moved last (highest segment start,
     ties keeping the later row); placed where the first of its rows was. A row with no segments (its only move
     was its lane's last stage) still counts toward the group, but only a row with segments can supply the name
-    or the status/note, falling back to the first or last row by position when none of the group has any."""
+    or the status/note, falling back to the first or last row by position when none of the group has any. When
+    the winning row is finished (merged, closed or done), every segment in the group ends no later than that
+    row's own last segment end, and a segment starting after that end is dropped (#220)."""
     groups: dict[str, list[int]] = {}
     for i, (_, row) in enumerate(rows):
         if row.ref:
@@ -233,7 +237,11 @@ def _merge_issues(rows: list[tuple[str, gantt.Row]]) -> list[tuple[str, gantt.Ro
             status, last_row = max(enumerate(timed), key=lambda p: (p[1][1].segments[-1].start, p[0]))[1]
         else:
             status, last_row = entries[-1]
-        segs = tuple(sorted((g for _, r in entries for g in r.segments), key=lambda g: g.start))
+        segs = [g for _, r in entries for g in r.segments]
+        if status in ("merged", "closed", "done"):
+            finish = last_row.segments[-1].end
+            segs = [replace(g, end=min(g.end, finish)) for g in segs if g.start <= finish]
+        segs = tuple(sorted(segs, key=lambda g: g.start))
         out[idxs[0]] = (status, replace(last_row, name=name, segments=segs))
         drop.update(idxs[1:])
     return [item for i, item in enumerate(out) if i not in drop]
