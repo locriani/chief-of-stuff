@@ -1912,8 +1912,9 @@ Coordinator: coordinator. Board: board-7.
 class LaneTableTest(unittest.TestCase):
     """Stage 1: the LANES section is a single HTML table, not a column board.
 
-    Every non-done, non-standing task is a row. Unassigned and queued tasks are rows in the same
-    table, marked by data-* attributes so CSS can filter them. The columns board is gone.
+    Every non-standing task is a row — including done tasks (marked with data-state='done').
+    Unassigned and queued tasks are rows in the same table, marked by data-* attributes so CSS
+    can filter them. The columns board is gone.
     """
 
     LANES = {"build": st.Lane(("implement", "pr", "review", "triage", "merge"), ("triage", "merge"))}
@@ -1932,15 +1933,17 @@ class LaneTableTest(unittest.TestCase):
         self.assertNotIn('<figure class="columns"', lanes_section)
         self.assertIn('<table class="lane-table"', lanes_section)
 
-    def test_every_active_task_is_a_row(self) -> None:
-        """Each non-done, non-standing task appears as a <tr> inside the table."""
-        for name in ("Cut the release", "Write README", "Console", "Backlog item"):
+    def test_every_task_is_a_row(self) -> None:
+        """Each non-standing task appears as a <tr> inside the table, including done tasks."""
+        for name in ("Cut the release", "Write README", "Console", "Backlog item", "Done task"):
             self.assertIn(name, self.table, f"{name} should be a row in the lane table")
 
-    def test_done_tasks_are_not_rows(self) -> None:
-        """Done tasks do not appear in the active lane table."""
-        self.assertNotIn("Done task", self.table)
-        self.assertNotIn("Shipped yesterday", self.table)
+    def test_done_tasks_carry_data_state_done(self) -> None:
+        """Done tasks are rows, marked with data-state='done' — they were cards in the columns board."""
+        rows = re.findall(r'<tr[^>]*>.*?</tr>', self.table, re.S)
+        done_rows = [r for r in rows if 'Done task' in r]
+        self.assertTrue(done_rows, "Done task should be a row in the lane table")
+        self.assertIn('data-state="done"', done_rows[0])
 
     def test_unassigned_rows_are_marked(self) -> None:
         """A task with owner `unassigned` carries `data-unassigned` on its row."""
