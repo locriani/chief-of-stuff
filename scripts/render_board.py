@@ -814,6 +814,13 @@ def _hhmm(value: str, day: date, zone: ZoneInfo) -> datetime | None:
     return datetime.combine(day, time(int(m[1]), int(m[2])), tzinfo=zone) if m else None
 
 
+def _done_clock(value: str, now: datetime, zone: ZoneInfo) -> datetime | None:
+    """(#213) A done task's bare `HH:MM` is its latest occurrence at or before `now`: today's, unless
+    that is still later than `now`, in which case it hasn't happened yet and means yesterday's."""
+    t = _hhmm(value, now.date(), zone)
+    return t if t is None or t <= now else t - timedelta(days=1)
+
+
 # --- bars ----------------------------------------------------------------------------------------
 
 
@@ -1005,7 +1012,7 @@ def _end(task: Task, cfg: Config, now: datetime, start: datetime, est: dict[str,
         return due, "due", None
     if task.kind == "done":
         if t := task.state_time:
-            return _hhmm(t, today, cfg.zone), "state", None
+            return _done_clock(t, now, cfg.zone), "state", None
         return start, "state", "done, no time"
     if est and (e := est.get(task.item)):
         return max(e.end, start), "derived", e.label
