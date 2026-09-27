@@ -152,8 +152,9 @@ class Build(unittest.TestCase):
         return rb.build_columns(rb.parse_tracker(TRACKER).tasks, LANES, kanban, sources, NOW)
 
     def test_a_card_gains_its_change_ref_and_marks(self) -> None:
+        # Both refs open the task page (#209): !48 names #9, so it lands there too.
         card = next(c for col in self.cols()[0] for c in col.cards if c.name == "Cut the release")
-        self.assertEqual(card.refs, (("#9", "https://forge/i/9"), ("!48", "https://forge/48")))
+        self.assertEqual(card.refs, (("#9", "/issues/9"), ("!48", "/issues/9")))
         self.assertEqual(card.marks, (columns.Mark("passed", "passed"),))
 
     def test_approval_and_a_failed_pipeline_are_marks(self) -> None:
@@ -162,19 +163,21 @@ class Build(unittest.TestCase):
         self.assertEqual(rb.change_marks((change("!1", pipeline="running"),)), (columns.Mark("running", "pending"),))
 
     def test_an_issue_url_matches_its_number(self) -> None:
+        # A ref's number, not a matching sources.issues URL, decides its link: it still opens /issues/7,
+        # sources.issues["#7"] notwithstanding (#209).
         card = next(c for col in self.cols()[0] for c in col.cards if c.name == "Write README")
-        self.assertEqual(card.refs, (("#7", "https://forge/i/7"),))
+        self.assertEqual(card.refs, (("#7", "/issues/7"),))
 
     def test_a_tracker_issue_url_links_without_sources(self) -> None:
         card = next(c for col in rb.build_columns(rb.parse_tracker(TRACKER).tasks, LANES)[0] for c in col.cards if c.name == "Write README")
-        self.assertEqual(card.refs, (("#7", "https://forge/i/7"),))
+        self.assertEqual(card.refs, (("#7", "/issues/7"),))
         bare = next(c for col in self.cols()[0] for c in col.cards if c.name == "Webhook check")
         self.assertEqual((bare.refs, bare.href), ((), ""))
 
     def test_main_holds_the_changes_merged_today(self) -> None:
         main = self.cols()[0][-1]
         self.assertEqual((main.name, [(c.name, c.refs, c.owner, c.state, c.kind) for c in main.cards]),
-                         ("main", [("Locale fallback", (("#8", ""), ("!37", "https://forge/37")),
+                         ("main", [("Locale fallback", (("#8", "/issues/8"), ("!37", "/issues/8")),
                                     "merged 12:30", "done", "merged today")]))
         html = columns.render([columns.Column("main", main.cards * 5)])
         self.assertIn("+ <span>2 merged today</span>", html)
