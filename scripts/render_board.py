@@ -1228,12 +1228,13 @@ def decision_panel(pending: list[tuple[str, dict | None, datetime | None, str]],
 
 def worker_panel(sources: board_sources.Sources, now: datetime) -> panels.Panel:
     def facts(w: board_sources.Worker) -> str:
-        where = w.tree if w.kind == "one-shot" else (f"last reply {w.last.astimezone(now.tzinfo):%H:%M}" if w.last else "")
-        return " · ".join(x for x in (w.kind, " ".join(x for x in (w.runtime, w.model) if x), w.task, where) if x)
+        # (#199) kind · runtime model · task · tree, skipping empty parts; no last-reply fallback.
+        return " · ".join(x for x in (w.kind, " ".join(x for x in (w.runtime, w.model) if x), w.task, w.tree) if x)
 
-    rows = tuple(panels.Row(w.name, facts(w), side=panels.hm(w.started, now) if w.started else "") for w in sources.workers)
+    rows = tuple(panels.Row(w.name, facts(w), side=panels.hm(w.started, now) if w.started else "", href="/workers")
+                for w in sources.workers)
     kinds = [w.kind for w in sources.workers]
-    note = " · ".join(f"{kinds.count(k)} {k}" for k in dict.fromkeys(kinds))
+    note = " · ".join(f"{kinds.count(k)} {k}" for k in ("one-shot", "session") if k in kinds)  # (#199) one-shots first
     return panels.Panel("workers", "WORKERS", "workers", len(rows), rows, note, href="/workers")  # (#195)
 
 

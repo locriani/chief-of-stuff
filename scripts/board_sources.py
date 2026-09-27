@@ -378,6 +378,16 @@ def _at(hhmm: str, day: date, cfg: Config) -> datetime | None:
     return datetime.combine(day, time(int(m[1]), int(m[2])), cfg.zone) if m and int(m[1]) < 24 else None
 
 
+def _owned_task(name: str, tasks: tuple) -> str:
+    """(#199) The open task row `name`'s session owns: an open (not `done`) row whose owner cell is `name`'s
+    bare name (`_bare_name`, as `Task.standing_for` matches owners). Several open rows owned: the last one,
+    since later rows win elsewhere (`flow_chart.launcher`'s own tie-break). None owned: empty."""
+    from render_board import _bare_name
+    bare = _bare_name(name)
+    owned = [t for t in tasks if bare and t.kind != "done" and _bare_name(t.owner) == bare]
+    return owned[-1].label if owned else ""
+
+
 def workers(root: Path, cfg: Config, tracker: Tracker, tracker_text: str, day: date) -> tuple[Worker, ...]:
     import flow_chart
     import one_shot
@@ -391,9 +401,10 @@ def workers(root: Path, cfg: Config, tracker: Tracker, tracker_text: str, day: d
             continue
         record = records[row["pid"]]
         s = rows.pop(_bare_name(record["name"]), None)
-        found.append(Worker(record["name"], "session", record["runtime"], "", s.doing if s else "",
+        found.append(Worker(record["name"], "session", record["runtime"], "", _owned_task(record["name"], tracker.tasks),
                             record["worktree"], _when(record.get("started")), _at(s.last_reply, day, cfg) if s else None))
-    found += [Worker(s.label, "session", "", "", s.doing, "", None, _at(s.last_reply, day, cfg)) for s in rows.values()]
+    found += [Worker(s.label, "session", "", "", _owned_task(s.label, tracker.tasks), "", None,
+                     _at(s.last_reply, day, cfg)) for s in rows.values()]
     started = {m[5]: m for m in (STARTED.match(line) for line in _section(tracker_text, "## Log")) if m}
     trees, row_of = root / worktrees_dir((root / "CLAUDE.md").read_text()), flow_chart.launcher(tracker.tasks)
     for tree, task in one_shot.running_trees(trees).items():
