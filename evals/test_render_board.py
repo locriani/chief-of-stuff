@@ -2002,3 +2002,98 @@ class DensityTest(unittest.TestCase):
         self.assertLess(len(html), 32_000,
                         f"Board page is {len(html)} bytes, budget is 32 000")
 
+
+# Body lane log: the Calendar section with body events (gym, eat, recreation, sleep)
+# and a non-body event (Standup) that stays as a regular calendar event.
+BODY_LOG = """# 2026-09-16
+
+## Goal
+
+## Calendar
+
+- 09:00–09:15 CDT Standup (work)
+- 16:30-17:30 Gym
+- 18:00–18:40 Eat (dinner)
+- 20:00–21:30 Recreation
+| 23:10 | 23:59 | Sleep |
+
+## Checklist
+
+- [ ] Write eval README
+"""
+
+
+class BodyLaneTest(unittest.TestCase):
+    """Stage 2: the BODY lane — sleep, eat, gym, recreation — drawn on the 24h strip.
+
+    The 24 hours the board draws are a day of a person, not of a queue: the hours already spent
+    asleep, eating, at the gym or off are not available for work, and until they are on the strip
+    every deadline above them reads as if they were. They come from the calendar the daily log
+    already carries, so this needs no new grammar — an event whose title names one of the four
+    kinds is a body segment, and every other event stays what it was.
+
+    The four fills are: sleep #332288, eat #D55E00, gym #117733, recreation #F0E442.
+    """
+
+    def setUp(self) -> None:
+        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.html = rb.render(TRACKER, self.cfg, NOW, log_text=BODY_LOG)
+        # The day-strip section
+        self.day = self.html.split('id="day-strip"')[1].split('</section>')[0] if 'id="day-strip"' in self.html else ""
+
+    def test_the_four_kinds_are_classified_off_the_calendar(self) -> None:
+        """body_kind recognises sleep, eat, gym, recreation as whole words and rejects substrings."""
+        self.assertEqual(
+            [rb.body_kind(t) for t in ("Sleep", "Eat (dinner)", "Gym", "Recreation",
+                                       "Standup (work)", "Table meeting", "sleepy hollow review")],
+            ["sleep", "eat", "gym", "recreation", "", "", ""],
+        )
+
+    def test_parse_calendar_extracts_timed_events(self) -> None:
+        """parse_calendar reads both bullet and table entries from the daily log's Calendar section."""
+        events = rb.parse_calendar(BODY_LOG, NOW.date(), CT)
+        titles = [e.title for e in events]
+        self.assertIn("Standup", titles)
+        self.assertIn("Gym", titles)
+        self.assertIn("Sleep", titles)
+        self.assertEqual(len(events), 5)
+
+    def test_the_body_row_is_the_first_row_of_the_strip(self) -> None:
+        """The body lane row comes before any task row in the 24h gantt chart."""
+        self.assertIn("body", self.day)
+        rows = re.findall(r'<div class="gantt-row">(.*?)</div>\s*</div>', self.day, re.S)
+        # The first gantt-row should contain the body lane name
+        first_name = re.search(r'class="gantt-name">(.*?)</span>', rows[0])
+        self.assertIsNotNone(first_name)
+        self.assertEqual(first_name.group(1), "body")
+
+    def test_body_segments_carry_their_kind_as_category(self) -> None:
+        """Each body event is a gantt segment with data-cat set to its body kind."""
+        cats = re.findall(r'data-cat="(sleep|eat|gym|recreation)"', self.day)
+        self.assertIn("gym", cats)
+        self.assertIn("eat", cats)
+        self.assertIn("recreation", cats)
+        self.assertIn("sleep", cats)
+
+    def test_body_css_fills(self) -> None:
+        """The body kinds get their own colour rules in the page CSS."""
+        css = self.html.split("<style>")[1].split("</style>")[0]
+        for kind, fill in (("sleep", "#332288"), ("eat", "#D55E00"),
+                           ("gym", "#117733"), ("recreation", "#F0E442")):
+            self.assertIn(f'data-cat="{kind}"', css, f"missing CSS rule for {kind}")
+
+    def test_no_body_events_when_no_log(self) -> None:
+        """Without log_text, the day strip has no body row."""
+        html_no_log = rb.render(TRACKER, self.cfg, NOW)
+        if 'id="day-strip"' in html_no_log:
+            day = html_no_log.split('id="day-strip"')[1].split('</section>')[0]
+            # There should be no body row
+            body_rows = re.findall(r'class="gantt-name">body</span>', day)
+            self.assertEqual(len(body_rows), 0)
+
+    def test_density_with_body_stays_bounded(self) -> None:
+        """The body lane does not blow the page past the 32 KB budget."""
+        html = rb.render(TRACER_TRACKER, self.cfg, NOW, log_text=BODY_LOG)
+        self.assertLess(len(html), 32_000,
+                        f"Board page is {len(html)} bytes, budget is 32 000")
+

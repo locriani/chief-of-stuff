@@ -317,6 +317,64 @@ class Tracker:
     sessions: tuple[Session, ...] = ()
 
 
+# --- body lane -----------------------------------------------------------------------------------
+
+# The four kinds of the body lane. A body kind is recognised by its own name as a whole word in the
+# event's title and by nothing else: the design names these four, and a wider vocabulary (workout,
+# breakfast, lunch, dinner on their own) is a decision rather than an implementation of it.
+BODY_KINDS = ("sleep", "eat", "gym", "recreation")
+BODY_WORD = {k: re.compile(rf"(?i)\b{k}\b") for k in BODY_KINDS}
+# The fills are the ones already recorded against the body lane (commit 850bda0) and are not
+# re-solved here. They are separate from the main palette, which is parked.
+BODY_FILLS: dict[str, str] = {"sleep": "#332288", "eat": "#D55E00", "gym": "#117733", "recreation": "#F0E442"}
+# Calendar lines: bullet `- HH:MM–HH:MM [TZ] Title (calendar)` and table `| HH:MM | HH:MM | Title |`.
+CAL_BULLET = re.compile(r"^-\s+(\d{1,2}:\d{2})\s*[–-]\s*(\d{1,2}:\d{2})(?:\s+[A-Z]{2,5})?\s+(.+?)\s*$")
+CAL_TABLE = re.compile(r"^\|\s*(\d{1,2}:\d{2})\s*\|\s*(\d{1,2}:\d{2})\s*\|\s*(.+?)\s*\|\s*$")
+
+
+def body_kind(title: str) -> str:
+    """The body kind an event's title names, or \"\" when it names none."""
+    for kind in BODY_KINDS:
+        if BODY_WORD[kind].search(title):
+            return kind
+    return ""
+
+
+@dataclass(frozen=True)
+class BodyEvent:
+    start: datetime
+    end: datetime
+    title: str
+    kind: str   # "" for non-body events
+
+
+def parse_calendar(log_text: str, today: date, zone: ZoneInfo) -> list[BodyEvent]:
+    """Parse the daily log's ``## Calendar`` section into timed events.
+
+    Reads both bullet lines (`- HH:MM–HH:MM Title`) and table lines (`| HH:MM | HH:MM | Title |`).
+    Deadline lines and lines with no time range are skipped. Each event's ``kind`` is its body_kind.
+    """
+    lines = _section(log_text, "## Calendar")
+    events: list[BodyEvent] = []
+    for line in lines:
+        stripped = line.strip()
+        m = CAL_BULLET.match(stripped) or CAL_TABLE.match(stripped)
+        if not m:
+            continue
+        start_s, end_s, raw_title = m.group(1), m.group(2), m.group(3)
+        # Strip trailing `(calendar-name)` from the title.
+        title = re.sub(r"\s*\([^)]*\)\s*$", "", raw_title).strip()
+        if title.lower().startswith("deadline"):
+            continue
+        start_t = _hhmm(start_s, today, zone)
+        end_t = _hhmm(end_s, today, zone)
+        if start_t is None or end_t is None:
+            continue
+        events.append(BodyEvent(start_t, end_t, title, body_kind(title)))
+    return events
+
+
+
 @dataclass(frozen=True)
 class Bar:
     item: str
@@ -1317,19 +1375,35 @@ def flow_tiles(blocked: int, decisions: int, sources: board_sources.Sources, run
             panels.Tile("DRIFT", drift, "flow", "drift"), panels.Tile("ORPHANED", orphaned, "flow", "orphaned")]
 
 
-def day_strip(tasks: list[Task], cfg: Config, now: datetime, est: dict[str, Estimate] | None = None) -> str:
+def day_strip(tasks: list[Task], cfg: Config, now: datetime, est: dict[str, Estimate] | None = None,
+              body_events: list[BodyEvent] | None = None) -> str:
     """The 24 HOURS section: a gantt chart of active tasks on a now → now+24h window, grouped by swimlane.
 
     Each bar carries `task.label` as its visible name (the gantt-name span); the full detail is
     in the bar's title attribute, shown by CSS :hover / :focus-within. This is what the design
     means by 'hover panel built from the data-* attributes'.
+
+    When `body_events` are given, body events (sleep, eat, gym, recreation) that overlap the 24h
+    window are drawn as the strip's first row, above the task swimlanes.
     """
     import gantt
     active = [t for t in tasks if t.kind != "done"]
-    if not active:
+    if not active and not body_events:
         return ""
     bars = [day_bar(t, cfg, now, est) for t in active]
     win = gantt.window(now, timedelta(0), timedelta(hours=24))
+    # Body lane: the first row, above the deadline swimlanes.
+    body_rows: list[gantt.Row] = []
+    if body_events:
+        on_axis = sorted((e for e in body_events if e.end > win.start and e.start < win.end),
+                         key=lambda e: e.start)
+        if on_axis:
+            segs = tuple(
+                gantt.Segment(e.start, e.end, e.kind, "done",
+                              f"{e.kind} {e.start:%H:%M}–{e.end:%H:%M}")
+                for e in on_axis
+            )
+            body_rows.append(gantt.Row("", "body", "", segs))
     groups = swimlanes(bars, cfg, now)
     rows: list[gantt.Row] = []
     for dl_name, group_bars in groups:
@@ -1339,10 +1413,11 @@ def day_strip(tasks: list[Task], cfg: Config, now: datetime, est: dict[str, Esti
             est_label = f" · {bar.label}" if bar.label and bar.label != NO_ESTIMATE else ""
             note = f"{bar.kind}{est_label}"
             rows.append(gantt.Row(bar.owner, bar.name, note, (seg,)))
-    if not rows:
+    all_rows = body_rows + rows
+    if not all_rows:
         return ""
     meta = _tasks(len(active))
-    chart = gantt.render(rows, win)
+    chart = gantt.render(all_rows, win)
     return (f'<section id="day-strip"><h2>24 hours</h2>\n<div class="meta">{meta}</div>\n'
             f'{chart}</section>\n')
 
@@ -1396,6 +1471,13 @@ LANE_TABLE_CSS = """\
 """
 
 
+def _body_css() -> str:
+    """CSS rules for the body lane's four kinds, keyed by ``data-cat`` on the gantt bars."""
+    from fragment import colour as _colour, css_str as _css_str
+    rules = [f'.gantt-bar[data-cat="{_css_str(k)}"]{{--c:{_colour(v)};--e:{_colour(v)}}}' for k, v in BODY_FILLS.items()]
+    return "\n".join(rules) + "\n"
+
+
 def lane_table(tasks: list[Task], lanes: dict | None = None,
                held_names: frozenset[str] | None = None) -> str:
     """The LANES section body: one HTML table, one row per active (non-done, non-standing) task.
@@ -1441,11 +1523,13 @@ def lane_table(tasks: list[Task], lanes: dict | None = None,
 def render(tracker_text: str, cfg: Config, now: datetime, lanes: dict | None = None,
            tracker_day: date | None = None, decisions: list[tuple[str, dict | None, datetime | None, str]] | None = None,
            kanban: Kanban | None = None, sources: board_sources.Sources = board_sources.EMPTY, answered: int = 0,
-           tracker_at: datetime | None = None, stage_log: list[tuple[date, str]] | None = None, slots: int = 1) -> str:
+           tracker_at: datetime | None = None, stage_log: list[tuple[date, str]] | None = None, slots: int = 1,
+           log_text: str | None = None) -> str:
     """The board page: header, tiles, DUE NEXT, BLOCKED, 24 HOURS, LANES, SESSIONS, the MERGE ORDER,
     DECISIONS and WORKERS panels, and the Flow charts. `stage_log` is (day, tracker text) for the
     earlier days the Flow charts reach back over; `slots` is how many queued tasks run at once,
-    `[workers] max_concurrency`."""
+    `[workers] max_concurrency`. `log_text` is the daily log text whose `## Calendar` section
+    provides body events for the 24h strip."""
     cfg = with_decision_deadlines(cfg, tracker_text, tracker_day or now.date())
     sha = hashlib.sha256(tracker_text.encode()).hexdigest()
     tracker = parse_tracker(tracker_text)
@@ -1506,7 +1590,13 @@ def render(tracker_text: str, cfg: Config, now: datetime, lanes: dict | None = N
     import gantt
     due_next_html = due_next_section(tasks, cfg, now)
     blocked_html = blocked_section(tasks, kanban, sources)
-    day_strip_html = day_strip(tasks, cfg, now, est)
+    # Body lane (Stage 2): calendar events classified as body (sleep, eat, gym, recreation)
+    # become the first row of the 24h strip. Only body events are drawn; non-body events stay out.
+    body_events: list[BodyEvent] = []
+    if log_text:
+        all_cal = parse_calendar(log_text, today, zone)
+        body_events = [e for e in all_cal if e.kind]
+    day_strip_html = day_strip(tasks, cfg, now, est, body_events=body_events or None)
     sessions_html = sessions_section(tracker.sessions)
 
     return f"""<meta charset="utf-8">
@@ -1527,7 +1617,7 @@ h2+.meta{{display:inline-block}}
 .header>.panels-head{{flex:1 1 320px;min-width:0}}
 .meta{{color:var(--muted);font-size:12px}}
 {TAB_CSS}.board>nav.tabs{{margin-bottom:12px}}
-{gantt.css() if day_strip_html else ""}{flow_chart.css() if flow_html else ""}{panels.css(PANEL_COLOURS, PANEL_TOKENS)}{LANE_TABLE_CSS}
+{gantt.css() if day_strip_html else ""}{_body_css() if body_events else ""}{flow_chart.css() if flow_html else ""}{panels.css(PANEL_COLOURS, PANEL_TOKENS)}{LANE_TABLE_CSS}
 .session-row{{display:flex;gap:12px;align-items:baseline;font-size:13px;padding:2px 0}}.session-name{{font-weight:500}}.session-state{{color:var(--muted);font-size:12px}}.session-doing{{color:var(--muted);font-size:12px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
 @media (max-width:420px){{body{{padding:12px 12px 36px}}}}
 </style>
@@ -1590,11 +1680,14 @@ def write(root: Path, day: str | None = None) -> tuple[Path, Config, datetime, s
     pending = decision_page.write_all(out.parent, decision_context(root, tracker_day, now), day, root)
     reach = (now - flow_chart.WINDOWS[-1][1]).date()
     stage_log = [(d, path.read_text()) for d, path in daily_trackers(root, cfg) if reach <= d < tracker_day]
+    # Body lane (Stage 2): read the daily log for its Calendar section.
+    log_file = root / cfg.log_path(day)
+    log_text = log_file.read_text() if log_file.is_file() else None
     page = render(tracker_text, cfg, now, lanes=settings.lanes,
                   tracker_day=tracker_day, decisions=pending, kanban=settings.kanban,
                   sources=board_sources.load(out.parent), answered=len(decision_rows(tracker_text)),
                   tracker_at=datetime.fromtimestamp(tracker.stat().st_mtime, cfg.zone), stage_log=stage_log,
-                  slots=settings.workers.max_concurrency or 1)
+                  slots=settings.workers.max_concurrency or 1, log_text=log_text)
     out.write_text(page)
     return out, cfg, now, tracker_text, req_texts
 
