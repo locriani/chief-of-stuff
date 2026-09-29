@@ -353,14 +353,18 @@ def make_server(pages_dir: Path, port: int, root: Path | None = None, refresh=No
 
 
 def _who(port: int) -> str | None:
-    """The Server header on the port, "" for a server that sends none, None when nothing answers."""
+    """The Server header on the port, "" for a server that sends none, None when nothing answers.
+    Raises PagesError when the connect is denied: a sandbox says nothing about what runs on the port."""
     req = urllib.request.Request(f"http://127.0.0.1:{port}/all", method="HEAD")
     try:
         with urllib.request.urlopen(req, timeout=1) as resp:
             return resp.headers.get("Server", "")
     except urllib.error.HTTPError as e:
         return e.headers.get("Server", "")
-    except OSError:
+    except OSError as e:
+        if isinstance(e, PermissionError) or isinstance(getattr(e, "reason", None), PermissionError):
+            raise PagesError(f"cannot reach port {port}: the connection was denied (a sandboxed session?); "
+                             "check it outside the sandbox") from e
         return None
 
 
