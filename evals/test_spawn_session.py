@@ -242,6 +242,9 @@ class NoShellTest(unittest.TestCase):
         apart fails on a word rather than on a behaviour.
         """
         source = Path(ss.__file__).read_text()
+        # The dispatch this run wrote, taken back when its launch failed, is not a session, tree or branch
+        # (Zach, 2026-09-29: narrow the guard to exactly this line).
+        source = source.replace("written.unlink(missing_ok=True)", "")
         for forbidden in (r"\bos\.kill\b", r"\.kill\(", r"\.terminate\(", r"\brmtree\b",
                           r"worktree\s+remove", r"branch\s+-[dD]\b", r"\.unlink\(", r"os\.remove\b"):
             self.assertIsNone(re.search(forbidden, source), forbidden)
