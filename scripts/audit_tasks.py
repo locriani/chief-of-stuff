@@ -16,7 +16,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from render_board import BULLET, HHMM, RAN, ConfigError, _dur, _cells, _is_separator, _section, _unmark, _unquote, clip_name, parse_coordinator, parse_tracker  # noqa: E402
+from render_board import BULLET, HHMM, RAN, ConfigError, _dur, _cells, _hhmm, _is_separator, _section, _unmark, _unquote, clip_name, parse_coordinator, parse_tracker  # noqa: E402
 from dispatch_prompt import PROMPT_DIR, STOP_FILE  # noqa: E402
 from backlog import CLOSED, GITHUB, Backlog, BacklogError, GitHubBacklog, file_with, home_of, issue_ref, issue_states  # noqa: E402
 from settings import Kanban, SettingsError, load as load_settings  # noqa: E402
@@ -291,10 +291,10 @@ class OverBudget:
 def over_budget(tasks, budgets: dict, day: str, now: datetime) -> list[OverBudget]:
     over: list[OverBudget] = []
     for task in tasks:
-        budget, start = budgets.get(task.size.strip()), task.state_time
-        if task.kind != "running" or budget is None or not start:
+        budget, start = budgets.get(task.size.strip()), _hhmm(task.state_time or "", date.fromisoformat(day), now.tzinfo)
+        if task.kind != "running" or budget is None or start is None:
             continue
-        ran = now - datetime.combine(date.fromisoformat(day), datetime.strptime(start, "%H:%M").time(), tzinfo=now.tzinfo)
+        ran = now - start
         if ran > budget:
             over.append(OverBudget(clip_name(task.label), ran, task.size.strip(), budget))
     return over

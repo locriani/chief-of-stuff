@@ -377,7 +377,7 @@ def forge(root: Path, cfg: Config, tracker: Tracker, since: datetime, gh, call):
 
 def _at(hhmm: str, day: date, cfg: Config) -> datetime | None:
     m = HHMM.match(hhmm or "")
-    return datetime.combine(day, time(int(m[1]), int(m[2])), cfg.zone) if m and int(m[1]) < 24 else None
+    return datetime.combine(day, time(int(m[1]), int(m[2])), cfg.zone) if m and int(m[1]) < 24 and int(m[2]) < 60 else None
 
 
 def _owned_task(name: str, tasks: tuple) -> str:

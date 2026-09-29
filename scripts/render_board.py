@@ -869,7 +869,10 @@ def parse_tracker(text: str) -> Tracker:
 
 def _hhmm(value: str, day: date, zone: ZoneInfo) -> datetime | None:
     m = HHMM.match(value.strip())
-    return datetime.combine(day, time(int(m[1]), int(m[2])), tzinfo=zone) if m else None
+    try:
+        return datetime.combine(day, time(int(m[1]), int(m[2])), tzinfo=zone) if m else None
+    except ValueError:  # 24:00, 9:75: not a clock, so no clock
+        return None
 
 
 def _done_clock(value: str, now: datetime, zone: ZoneInfo) -> datetime | None:
@@ -917,7 +920,10 @@ def _resolve_due(due: str, cfg: Config, today: date) -> datetime | None:
         return t
     m = DATE.match(value)
     if m:
-        return datetime(int(m[1]), int(m[2]), int(m[3]), int(m[4] or 23), int(m[5] or 59), tzinfo=cfg.zone)
+        try:
+            return datetime(int(m[1]), int(m[2]), int(m[3]), int(m[4] or 23), int(m[5] or 59), tzinfo=cfg.zone)
+        except ValueError:  # 2026-02-30, 25:00: not a date, so no due
+            return None
     for d in cfg.deadlines:
         if d.name.lower() == value.lower():
             return d.at
@@ -1018,7 +1024,10 @@ def estimates(active: list[Task], cfg: Config, now: datetime, hist: dict[str, tu
         if due is not None and due > h:
             continue
         m = DATE.match(task.since.strip())
-        since = date(int(m[1]), int(m[2]), int(m[3])) if m else now.date()
+        try:
+            since = date(int(m[1]), int(m[2]), int(m[3])) if m else now.date()
+        except ValueError:  # 2026-02-30
+            since = now.date()
         queues.setdefault(key, []).append(((task.kind != "running", since, idx), task))
     out: dict[str, Estimate] = {}
     for entries in queues.values():
