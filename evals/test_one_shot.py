@@ -187,8 +187,9 @@ class RunTest(unittest.TestCase):
     def test_a_refused_launch_takes_its_dispatch_back_so_a_retry_can_use_the_tree(self):
         # A dispatch left behind makes the retry refuse the tree, and the coordinator makes a second one.
         fake = self._fake('status: done\nreason: done\nchanges: checked\n', write_partial=False)
-        self.tracker.write_text(TRACKER.replace("| Security audit | `src/a/` |\n", ""))
-        with self.assertRaisesRegex(ValueError, "no File ownership row"):
+        # Dispatch accepts a row with a third cell; recording the launch refuses it.
+        self.tracker.write_text(TRACKER.replace("| Security audit | `src/a/` |", "| Security audit | `src/a/` | note |"))
+        with self.assertRaisesRegex(ValueError, "two-cell"):
             self._run(fake)
         self.assertFalse((self.tree / ".chief-of-stuff/dispatch.md").exists())
         self.tracker.write_text(TRACKER)
