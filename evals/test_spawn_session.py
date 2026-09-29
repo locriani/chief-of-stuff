@@ -758,6 +758,31 @@ class TmuxLauncherTest(unittest.TestCase):
                                           "--root", str(root), "--date", "2026-09-18", "--launcher", "tmux"]), 1)
             self.assertFalse((tree / ss.PROMPT_FILE).exists())
 
+    def test_a_failed_launch_takes_its_dispatch_back_so_a_retry_can_use_the_tree(self):
+        # A Ghostty tab that never opened left its dispatch behind, and the retry was refused the tree.
+        failures = {"exit 1": subprocess.CompletedProcess([], 1, "", "no tab"),
+                    "no binary": FileNotFoundError("osascript")}
+        for launcher in ("ghostty", "tmux"):
+            for why, failure in failures.items():
+                with self.subTest(launcher=launcher, why=why), tempfile.TemporaryDirectory() as d:
+                    root = Path(d)
+                    (root / "CLAUDE.md").write_text(CLAUDE)
+                    (root / "daily").mkdir()
+                    (root / "daily" / "2026-09-18-tracker.md").write_text(TRACKER)
+                    tree = root / "trees" / "wt-x"
+                    tree.mkdir(parents=True)
+                    args = ["--cwd", str(tree), "--name", "codex-01", "--task", "Security audit",
+                            "--root", str(root), "--date", "2026-09-18", "--launcher", launcher]
+                    with unittest.mock.patch.object(ss, "resolve", return_value="/bin/fake"), \
+                            contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+                        with unittest.mock.patch.object(ss.subprocess, "run", side_effect=[failure]):
+                            self.assertEqual(ss.main(args), 1)
+                        self.assertFalse((tree / ss.PROMPT_FILE).exists())
+                        with unittest.mock.patch.object(ss.subprocess, "run",
+                                                        return_value=subprocess.CompletedProcess([], 0, "", "")):
+                            self.assertEqual(ss.main(args), 0)
+                    self.assertIn("Task: Security audit", (tree / ss.PROMPT_FILE).read_text())
+
 
 class WorkerModeTest(unittest.TestCase):
     def test_toml_requires_one_shot_for_every_dispatch(self):

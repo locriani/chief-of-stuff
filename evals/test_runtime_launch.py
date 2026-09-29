@@ -69,6 +69,15 @@ class CoordinatorLaunchTest(unittest.TestCase):
         self.assertIn("session-scoped watcher", codex[-1])
         self.assertNotIn("${CLAUDE_PLUGIN_ROOT}", codex[-1])
 
+    def test_codex_coordinator_has_network_and_names_its_edit_tool(self):
+        # Without network the health probe could not resolve DNS and the pages check could not reach loopback;
+        # without a named edit tool, the coordinator generated its patches with a script.
+        release = start.install(ROOT, self.install_dir)
+        cmd = start.command("codex", "/bin/fake", release, self.root)
+        self.assertEqual(cmd[1:7], ["-C", str(self.root), "--sandbox", "workspace-write",
+                                    "-c", "sandbox_workspace_write.network_access=true"])
+        self.assertIn("apply_patch", cmd[-1])
+
     def test_first_message_does_not_presume_a_new_day(self):
         # A launch on a day that already has a log is a Resume; "Open the day." told it otherwise.
         release = start.install(ROOT, self.install_dir)
