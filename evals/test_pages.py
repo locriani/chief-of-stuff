@@ -134,6 +134,14 @@ class EnsureTest(unittest.TestCase):
                 pg.ensure(self.dir, self.port, self.log)
         popen.assert_not_called()
 
+    def test_a_server_that_never_came_up_leaves_no_pid(self):
+        # A dead child's pid in .pid made the next ensure refuse to stop the real server (#248).
+        dead = mock.Mock(pid=4242, **{"poll.return_value": 1})
+        with mock.patch.object(pg.subprocess, "Popen", return_value=dead):
+            with self.assertRaisesRegex(pg.PagesError, "did not come up"):
+                pg.ensure(self.dir, self.port, self.log)
+        self.assertFalse((self.dir / ".pid").exists())
+
     def test_a_foreign_server_on_the_port_is_an_error(self):
         other = http.server.ThreadingHTTPServer(("127.0.0.1", self.port), http.server.SimpleHTTPRequestHandler)
         threading.Thread(target=other.serve_forever, daemon=True).start()
