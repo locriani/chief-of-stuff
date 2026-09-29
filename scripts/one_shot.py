@@ -363,16 +363,22 @@ def _launch(root: Path, cfg, chosen_day: str, task: str, cwd: Path, name: str, r
             body: str, argv: list[str], timeout_minutes: int) -> int:
     # Same clean login-shell path as interactive sessions; auth and user PATH come from shell setup.
     from spawn_session import write_dispatch
-    write_dispatch(cwd, body)
+    # Everything that can refuse runs before anything is written; a refused row takes its dispatch back.
+    launch_argv, tree = login_argv(argv), _tree_note(root, cwd)
+    written = write_dispatch(cwd, body)
     logs = cwd / dispatch_prompt.PROMPT_DIR
     before_head = git_head(cwd)
-    record_launch(root / cfg.tracker_path(chosen_day), task, name, _tree_note(root, cwd), runtime, model,
-                  tracker_write.stamp(cfg.zone))
+    try:
+        record_launch(root / cfg.tracker_path(chosen_day), task, name, tree, runtime, model,
+                      tracker_write.stamp(cfg.zone))
+    except Exception:
+        written.unlink(missing_ok=True)
+        raise
     env = clean_env()
     env["CHIEF_OF_STUFF_WORKSPACE"] = str(root.resolve())
     try:
         with (logs / "worker-stdout.log").open("w") as stdout, (logs / "worker-stderr.log").open("w") as stderr:
-            completed = subprocess.run(login_argv(argv), cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+            completed = subprocess.run(launch_argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
                                        stdout=stdout, stderr=stderr, timeout=timeout_minutes * 60,
                                        check=False)
         exit_code = completed.returncode
