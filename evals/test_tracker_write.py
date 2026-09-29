@@ -64,6 +64,12 @@ class LogTest(unittest.TestCase):
         tw.edit(self.tracker, lambda text: text + "late\n")
         self.assertEqual(sorted(p.name for p in self.tracker.parent.iterdir()), before)
 
+    def test_an_edit_keeps_the_trackers_mode(self):
+        # The temporary sibling is created 0600, and replacing the tracker with it made the tracker 0600.
+        self.tracker.chmod(0o644)
+        tw.edit(self.tracker, lambda text: text + "\n")
+        self.assertEqual(self.tracker.stat().st_mode & 0o777, 0o644)
+
     def test_an_edit_waits_for_the_lock(self):
         held = os.open(tw.lock_path(self.tracker), os.O_RDONLY)
         try:
