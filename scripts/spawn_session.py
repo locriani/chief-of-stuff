@@ -351,6 +351,7 @@ def main(argv_in: list[str] | None = None) -> int:
             out = subprocess.run(command, text=True, capture_output=True, timeout=30, env=launch_env())
             if out.returncode != 0:
                 print(f"refused: tmux would not open a window: {out.stderr.strip()}", file=sys.stderr)
+                written.unlink(missing_ok=True)
                 return 1
             where = "a new tmux window"
         else:
@@ -359,10 +360,16 @@ def main(argv_in: list[str] | None = None) -> int:
                                  timeout=30, env=launch_env())
             if out.returncode != 0:
                 print(f"refused: Ghostty would not open a tab: {out.stderr.strip()}", file=sys.stderr)
+                written.unlink(missing_ok=True)
                 return 1
             where = "a new Ghostty tab"
-    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+    except subprocess.TimeoutExpired as exc:
+        # Keep the dispatch: a tab may have opened and be reading it.
         print(f"refused: could not start {command[0]}: {exc}", file=sys.stderr)
+        return 1
+    except (OSError, ValueError) as exc:
+        print(f"refused: could not start {command[0]}: {exc}", file=sys.stderr)
+        written.unlink(missing_ok=True)
         return 1
     print(f"started {args.agent_type or 'the default agent'}{f' on agy {args.model}' if args.runtime == 'agy' else ''} in {args.cwd} as {args.title} "
           f"({where}), assignment in {written}")

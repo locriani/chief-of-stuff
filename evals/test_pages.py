@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.error
 from unittest import mock
 from datetime import datetime
 from pathlib import Path
@@ -123,6 +124,15 @@ class EnsureTest(unittest.TestCase):
         self.assertEqual(get(self.port, "/").status, 200)
         self.assertEqual(pg.ensure(self.dir, self.port, self.log), "pages: serving")
         self.assertEqual((self.dir / ".pid").read_text(), pid)
+
+    def test_a_denied_connection_is_not_a_free_port(self):
+        # A sandbox without network refuses the loopback connect; the server on the port may be running fine.
+        denied = urllib.error.URLError(PermissionError(1, "Operation not permitted"))
+        with mock.patch.object(pg.urllib.request, "urlopen", side_effect=denied), \
+                mock.patch.object(pg.subprocess, "Popen") as popen:
+            with self.assertRaisesRegex(pg.PagesError, f"{self.port}.*denied"):
+                pg.ensure(self.dir, self.port, self.log)
+        popen.assert_not_called()
 
     def test_a_foreign_server_on_the_port_is_an_error(self):
         other = http.server.ThreadingHTTPServer(("127.0.0.1", self.port), http.server.SimpleHTTPRequestHandler)

@@ -109,6 +109,9 @@ def prompt(runtime: str, release: Path, root: Path) -> str:
                     "Preserve the tracker `## Sessions` states: planning, working, waiting, idle.\n\n")
         rules = re.sub(r"## Sessions\n.*?(?=## Relay\n)", sessions, rules, flags=re.S)
         rules += ("\n\n## Host adapter\n\nYou run in " + runtime + ". Use your host's own tools to read, edit and run the pinned scripts above. "
+                  "When these rules say Write or Edit, use your host's own file-edit tool directly (in Codex, "
+                  "`apply_patch` with a patch you write yourself); never generate file content or a patch with a "
+                  "script, and never pipe command output into the edit tool. "
                   "The `Sessions:` line in CLAUDE.md describes Claude's peer tools; you do not have those tools. "
                   "Check non-Claude workers with the `chief-of-stuff processes --root <workspace>` "
                   "batch helper; use the shared `chief-of-stuff inbox` "
@@ -131,7 +134,9 @@ def command(runtime: str, binary: str, release: Path, root: Path) -> list[str]:
         return [binary, "--plugin-dir", str(release), "--agent", "chief-of-stuff", START]
     initial = prompt(runtime, release, root)
     if runtime == "codex":
-        return [binary, "-C", str(root), initial]
+        # Network for the health probe's DNS and the pages check's loopback; file writes stay confined.
+        return [binary, "-C", str(root), "--sandbox", "workspace-write",
+                "-c", "sandbox_workspace_write.network_access=true", initial]
     if runtime == "cursor":
         return [binary, "--workspace", str(root), initial]
     return [binary, "-i", initial]
