@@ -131,7 +131,9 @@ def command(runtime: str, binary: str, release: Path, root: Path) -> list[str]:
         return [binary, "--plugin-dir", str(release), "--agent", "chief-of-stuff", START]
     initial = prompt(runtime, release, root)
     if runtime == "codex":
-        return [binary, "-C", str(root), initial]
+        # Network for the health probe's DNS and the pages check's loopback; file writes stay confined.
+        return [binary, "-C", str(root), "--sandbox", "workspace-write",
+                "-c", "sandbox_workspace_write.network_access=true", initial]
     if runtime == "cursor":
         return [binary, "--workspace", str(root), initial]
     return [binary, "-i", initial]
