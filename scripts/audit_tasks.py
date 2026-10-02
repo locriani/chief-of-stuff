@@ -17,9 +17,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from clock import HHMM, RAN, dur as _dur  # noqa: E402
-from md import BULLET, cells as _cells, is_separator as _is_separator, section as _section, unmark as _unmark, unquote as _unquote  # noqa: E402
+from md import cells as _cells, is_separator as _is_separator, section as _section, unmark as _unmark  # noqa: E402
 from tracker import clip_name, parse_tracker  # noqa: E402
-from workspace import ConfigError, parse_coordinator  # noqa: E402
+from workspace import ConfigError, parse_coordinator, worktrees_dir  # noqa: E402
 from dispatch_prompt import PROMPT_DIR, STOP_FILE  # noqa: E402
 from backlog import CLOSED, GITHUB, Backlog, BacklogError, GitHubBacklog, file_with, home_of, issue_ref, issue_states  # noqa: E402
 from settings import Kanban, SettingsError, load as load_settings  # noqa: E402
@@ -314,15 +314,6 @@ class Report:
     lanes: list[LaneFault] = field(default_factory=list)
     kanban: list[KanbanFault] = field(default_factory=list)
     over: list[OverBudget] = field(default_factory=list)
-
-
-def worktrees_dir(claude_md: str) -> str:
-    """The `Worktrees:` line of the `## Coordinator` block, or "" when there is none (trees sit at the root)."""
-    for line in _section(claude_md, "## Coordinator"):
-        m = BULLET.match(line)
-        if m and _unquote(m.group(2)).lower() == "worktrees":
-            return _unquote(m.group(3))
-    return ""
 
 
 def _worktrees(cell: str) -> tuple[list[str], dict[str, str]]:

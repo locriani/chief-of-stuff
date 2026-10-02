@@ -18,10 +18,10 @@ import dispatch_prompt
 import kanban
 import ownership
 import tracker_write
-from audit_tasks import worktrees_dir
 from _vendor.toon_format import ToonDecodeError, decode as toon_decode, encode as toon_encode
 from md import cells as _cells, is_separator as _is_separator
 from tracker import parse_tracker
+from workspace import worktrees_dir
 from settings import load as load_settings
 from shell_setup import clean_env, login_argv, resolve
 

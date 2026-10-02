@@ -24,11 +24,12 @@ from pathlib import Path
 
 import backlog
 import process_status
+from forge_review import GITLAB_PIPELINE, github_approval as _github_approval, github_pipeline as _github_pipeline
 from _vendor.toon_format import encode as toon_encode
 from md import section as _section
 from settings import SettingsError, load as load_settings
-from tracker import Tracker, bare_name as _bare_name, parse_tracker
-from workspace import Config, ConfigError, parse_coordinator
+from tracker import Tracker, bare_name as _bare_name, launcher, parse_tracker
+from workspace import Config, ConfigError, parse_coordinator, worktrees_dir
 
 CACHE = ".sources.json"
 CLOSES = re.compile(r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+(#\d+)")
@@ -182,7 +183,6 @@ def _stats(files: list[dict]) -> tuple[FileStat, ...]:
 # --- GitHub ----------------------------------------------------------------------------------------
 
 def _gh_change(key: str, p: dict, approver: str) -> Change:
-    from merge_approved import _github_approval, _github_pipeline
     reviews = (p.get("latestReviews") or {}).get("nodes") or []
     commit = (((p.get("commits") or {}).get("nodes") or [{}])[0] or {}).get("commit") or {}
     checks = ((commit.get("statusCheckRollup") or {}).get("contexts") or {}).get("nodes") or []
@@ -244,7 +244,6 @@ def github(home: backlog.GitHubBacklog, wanted: dict[str, set[int]], since: date
 # --- GitLab ----------------------------------------------------------------------------------------
 
 def _gl_pipeline(status: str | None) -> str | None:
-    from merge_approved import GITLAB_PIPELINE
     if not status:
         return None
     s = status.lower()
@@ -380,16 +379,14 @@ def _at(hhmm: str, day: date, cfg: Config) -> datetime | None:
 def _owned_task(name: str, tasks: tuple) -> str:
     """(#199) The open task row `name`'s session owns: an open (not `done`) row whose owner cell is `name`'s
     bare name (`_bare_name`, as `Task.standing_for` matches owners). Several open rows owned: the last one,
-    since later rows win elsewhere (`flow_chart.launcher`'s own tie-break). None owned: empty."""
+    since later rows win elsewhere (`tracker.launcher`'s own tie-break). None owned: empty."""
     bare = _bare_name(name)
     owned = [t for t in tasks if bare and t.kind != "done" and _bare_name(t.owner) == bare]
     return owned[-1].label if owned else ""
 
 
 def workers(root: Path, cfg: Config, tracker: Tracker, tracker_text: str, day: date) -> tuple[Worker, ...]:
-    import flow_chart
     import one_shot
-    from audit_tasks import worktrees_dir
     rows = {_bare_name(s.name): s for s in tracker.sessions}
     found = []
     records = process_status.registrations(root)
@@ -403,7 +400,7 @@ def workers(root: Path, cfg: Config, tracker: Tracker, tracker_text: str, day: d
     found += [Worker(s.label, "session", "", "", _owned_task(s.label, tracker.tasks), "", None,
                      _at(s.last_reply, day, cfg)) for s in rows.values()]
     started = {m[5]: m for m in (STARTED.match(line) for line in _section(tracker_text, "## Log")) if m}
-    trees, row_of = root / worktrees_dir((root / "CLAUDE.md").read_text()), flow_chart.launcher(tracker.tasks)
+    trees, row_of = root / worktrees_dir((root / "CLAUDE.md").read_text()), launcher(tracker.tasks)
     for tree, task in one_shot.running_trees(trees).items():
         m = started.get(task)
         runtime, _, model = (m[3] if m else "").partition(" ")

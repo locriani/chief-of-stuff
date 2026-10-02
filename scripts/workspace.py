@@ -137,6 +137,16 @@ def parse_coordinator(text: str, today: date) -> Config:
     )
 
 
+def worktrees_dir(claude_md: str) -> str:
+    """The `Worktrees:` line of the `## Coordinator` block, or "" when there is none (trees sit at the root)."""
+    for line in _section(claude_md, "## Coordinator"):
+        m = BULLET.match(line)
+        if m and _unquote(m.group(2)).lower() == "worktrees":
+            return _unquote(m.group(3))
+    return ""
+
+
+
 def with_decision_deadlines(cfg: Config, tracker_text: str, tracker_day: date,
                             *, min_day: date | None = None) -> Config:
     """Project precise Decisions-row deadlines into the board's configured deadline list.

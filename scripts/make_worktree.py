@@ -14,7 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from md import BULLET, section as _section, unquote as _unquote  # noqa: E402
+from md import section as _section  # noqa: E402
+from workspace import worktrees_dir  # noqa: E402
 
 AGENT = re.compile(r"^\s*(?:[-*]\s*)?Agent:\s*(\S+)\s+(\S+)\s*$", re.MULTILINE)
 LIFETIMES = ("task", "standing")
@@ -47,14 +48,6 @@ def git(args: list[str], cwd: Path) -> tuple[int, str]:
     except (OSError, subprocess.SubprocessError) as exc:
         return 1, f"{type(exc).__name__}: {exc}"
     return out.returncode, (out.stdout or out.stderr).strip()
-
-
-def worktrees_dir(claude_md: str) -> str:
-    for line in _section(claude_md, "## Coordinator"):
-        m = BULLET.match(line)
-        if m and _unquote(m.group(2)).lower() == "worktrees":
-            return _unquote(m.group(3))
-    return ""
 
 
 def agent_types(claude_md: str) -> dict[str, str]:

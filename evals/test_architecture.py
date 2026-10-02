@@ -20,7 +20,7 @@ PAGES = frozenset({"render_board", "decision_page", "issue_page", "source_page",
 
 # Every script module that draws nothing. A new one belongs here unless it renders a page.
 DRAWS_NOTHING = (
-    "md", "clock", "workspace", "tracker", "settings", "backlog", "ownership",
+    "md", "clock", "workspace", "tracker", "settings", "backlog", "ownership", "forge_review",
     "board_guard", "board_sources", "tracker_write", "make_worktree", "dispatch_prompt", "kanban", "audit_tasks",
     "one_shot", "spawn_session", "session_exec", "shell_setup", "process_status", "merge_approved",
     "review_threads", "notify", "init_workspace", "install_model_guidance", "migrate_backlog", "inbox",

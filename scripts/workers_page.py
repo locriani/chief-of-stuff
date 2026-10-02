@@ -15,12 +15,11 @@ from pathlib import Path
 import board_sources
 import flow_chart
 import panels
-from audit_tasks import worktrees_dir
 from decision_page import HEAD, context, pending_count
 from fragment import tab_bar
 from md import section as _section
-from tracker import TRAILING_NUMBER, parse_tracker
-from workspace import parse_coordinator
+from tracker import TRAILING_NUMBER, launcher, parse_tracker
+from workspace import parse_coordinator, worktrees_dir
 from settings import load as load_settings
 
 # one_shot.RELAUNCHED's Log line, grouped as flow_chart.ENDED is.
@@ -82,7 +81,7 @@ def render(tracker_text: str, sources: board_sources.Sources, now: datetime, tre
         running.append([escape(w.name), escape(" ".join(x for x in (w.runtime, w.model) if x)), escape(w.kind),
                         _task(t, w.task), escape(t.stage.strip() if t else ""), panels.hm(w.started, now) if w.started else "",
                         f"{last.astimezone(now.tzinfo):%H:%M}" if last else "", f"{tokens:,}" if last else ""])
-    row_of, task_of, ended = flow_chart.launcher(tasks), {}, []
+    row_of, task_of, ended = launcher(tasks), {}, []
     for line in map(str.strip, _section(tracker_text, "## Log")):
         if m := flow_chart.STARTED.match(line):
             task_of[m[3]] = m[4]

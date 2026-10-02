@@ -47,9 +47,13 @@ class Backlog:
         """Keychain service for this host."""
         return f"gitlab-{urlsplit(self.host).hostname or ''}"
 
+    def api(self, project: str | None = None) -> str:
+        """The REST base for `project` on this host; this backlog's own project when none is named."""
+        return f"{self.host.rstrip('/')}/api/v4/projects/{quote(self.project if project is None else project, safe='')}"
+
     @property
     def issues_url(self) -> str:
-        return f"{self.host.rstrip('/')}/api/v4/projects/{quote(self.project, safe='')}/issues"
+        return f"{self.api()}/issues"
 
 
 @dataclass(frozen=True)
@@ -483,7 +487,7 @@ def existing_labels(cfg: Backlog, token: str | None = None, timeout: float = TIM
     names: set[str] = set()
     page = "1"
     for _ in range(MAX_PAGES):
-        url = f"{cfg.host.rstrip('/')}/api/v4/projects/{quote(cfg.project, safe='')}/labels"
+        url = f"{cfg.api()}/labels"
         body, headers, error = _get(f"{url}?{urlencode({'per_page': PER_PAGE, 'page': page})}", secret, timeout)
         if error:
             return set(), error
@@ -511,7 +515,7 @@ def ensure_labels(cfg: Backlog, names: tuple[str, ...], token: str | None = None
     if error:
         return (Written(LABEL, ", ".join(wanted), error=error),)
     out: list[Written] = []
-    url = f"{cfg.host.rstrip('/')}/api/v4/projects/{quote(cfg.project, safe='')}/labels"
+    url = f"{cfg.api()}/labels"
     for name in wanted:
         if name in have:
             continue
