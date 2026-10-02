@@ -19,7 +19,7 @@ import flow_chart
 from decision_page import HEAD, _graph, _md, _section, context, pending_count, span
 from fragment import href, tab_bar
 from clock import dur as _dur
-from render_board import forge_ends
+from task_forge import forge_ends
 from tracker import TRAILING_NUMBER, parse_tracker, resolve_due as _resolve_due
 from workspace import Config, ConfigError, daily_trackers, read_config
 from settings import Graph, SettingsError, load as load_settings
@@ -194,7 +194,7 @@ def render(number: int, trackers: list[tuple[date, str]], sources: board_sources
         return None
     keys = set().union(*map(names, mine))
     log = sorted((m for day, text in trackers for m in flow_chart.moves(text, day, now.tzinfo)), key=lambda m: m.at)
-    # A forecast runs to the task's due, as the board's Flow chart feeds render_board._end's due.
+    # A forecast runs to the task's due, as the board's Flow chart feeds estimate.task_end's due.
     cfg = cfg or Config("", "", "", getattr(now.tzinfo, "key", "UTC"), (), None, None)
     ends = {t.item: end for t in parse_tracker(trackers[-1][1]).tasks
             if t.kind != "done" and (end := _resolve_due(t.due, cfg, now.date()))}

@@ -30,7 +30,7 @@ H = timedelta(hours=1)
 WINDOWS = (("24 hours", 6 * H, 18 * H), ("7 days", 48 * H, 120 * H))
 COLOURS: dict[str, str | tuple[str, str]] = {stage: f"var(--stage-{stage})" for stage in gantt.PALETTE}
 # #217/#226: the chart's own bucket order, earliest-first within a group. A finished row's word is
-# "merged" or "closed" (render_board.forge_ends); both read as merged. "open" is only the queued loop's
+# "merged" or "closed" (task_forge.forge_ends); both read as merged. "open" is only the queued loop's
 # literal status; everything else moved (whatever its stage or tracker state word) counts as running.
 BUCKETS = ("merged", "approved", "running", "needs input", "queued")
 

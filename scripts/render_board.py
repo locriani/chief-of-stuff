@@ -13,29 +13,28 @@ import html
 import re
 import sys
 from dataclasses import dataclass, replace
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from clock import DATE, done_clock as _done_clock, dur as _dur, hhmm as _hhmm  # noqa: E402
+from clock import hhmm as _hhmm  # noqa: E402
+from estimate import (ALL_SIZES, NO_ESTIMATE, SIZES, Estimate, day_bar, estimates, history, horizon,  # noqa: E402
+                      nearest_deadline, queue_durations, swimlanes, task_end as _end)
 from md import BULLET, section as _section, unquote as _unquote  # noqa: E402
 from settings import Kanban, SettingsError, load as load_settings  # noqa: E402
-from tracker import (NOBODY, TRAILING_NUMBER, UNASSIGNED, Session, Task, bare_name as _bare_name,  # noqa: E402
-                     decision_rows, issue_key, parse_tracker, resolve_due as _resolve_due)
-from workspace import (Config, ConfigError, Deadline, daily_trackers, read_config,  # noqa: E402
+from task_forge import drifts, effective_stage, forge_ends, held, task_changes, worker_names  # noqa: E402
+from tracker import (TRAILING_NUMBER, Session, Task, decision_rows, issue_key, parse_tracker,  # noqa: E402
+                     resolve_due as _resolve_due)
+from workspace import (Config, ConfigError, daily_trackers, read_config,  # noqa: E402
                        with_decision_deadlines, with_workspace_decision_deadlines)
 import board_sources  # noqa: E402
 import columns  # noqa: E402
 import decision_page  # noqa: E402
 from fragment import FONTS, TAB_CSS, tab_bar  # noqa: E402
 import flow_chart  # noqa: E402
-import kanban as kanban_tool  # noqa: E402
 import panels  # noqa: E402
 
-SIZES = ("S", "M", "L", "XL")
-ALL_SIZES = "all"
-NO_ESTIMATE = "no estimate"
 LONG_ITEM = 80
 RESUME_CAP = 300    # writer limit from agent rules
 REQ_LINE = re.compile(r"^(\s*)- \[([ xX])\]\s+(.*?)\s*$")
@@ -107,22 +106,6 @@ def parse_calendar(log_text: str, today: date, zone: ZoneInfo) -> list[BodyEvent
     return events
 
 
-@dataclass(frozen=True)
-class Bar:
-    item: str
-    owner: str
-    name: str
-    kind: str
-    start: datetime
-    end: datetime
-    start_src: str
-    end_src: str
-    label: str | None
-    est: "Estimate | None" = None
-    size: str = ""
-    deadline: str = ""
-
-
 # --- parsing -------------------------------------------------------------------------------------
 
 
@@ -188,215 +171,6 @@ def resume_fields(block: dict[str, str]) -> list[str]:
     return [k for k in RESUME_STRIP if block.get(k)] + [k for k in block if k not in RESUME_STRIP and block[k]]
 
 
-# --- bars ----------------------------------------------------------------------------------------
-
-
-def nearest_deadline(cfg: Config, now: datetime) -> Deadline:
-    """The nearest deadline of all, whatever it governs: the Clock line, `data-deadline` and the axes use it."""
-    for d in cfg.deadlines:
-        if d.at >= now:
-            return d
-    if cfg.deadlines:
-        return cfg.deadlines[-1]
-    return _end_of_day(cfg, now)
-
-
-def _end_of_day(cfg: Config, now: datetime) -> Deadline:
-    return Deadline("end of day", datetime.combine(now.date(), time(23, 59), tzinfo=cfg.zone))
-
-
-def governing_deadline(cfg: Config, now: datetime) -> Deadline:
-    """The nearest deadline ahead that unnamed tasks fall to, else end of day.
-
-    A task that names no deadline is drawn or estimated toward this one. A deadline marked `named tasks
-    only` is skipped: after Final the nearest deadline is an exam (finding 73), and nothing on the Tasks
-    table is due to it unless its `due` cell says so.
-    """
-    for d in cfg.deadlines:
-        if d.at >= now and d.scope == "all":
-            return d
-    return _end_of_day(cfg, now)
-
-
-def _ordinal(n: int) -> str:
-    return f"{n}{'th' if 10 <= n % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')}"
-
-
-@dataclass(frozen=True)
-class Estimate:
-    """Where task i of an owner's N lands.
-
-    Two bases. `history`: the queue drains at the mean elapsed time of closed tasks of each size (Zach,
-    2026-09-18: "generate an average amount of time spent per t-shirt sized puzzle ... use that"). `queue`:
-    no task has closed with a range yet, so the queue drains evenly by the horizon — the 0.10.0 model,
-    which claims nothing about effort. The label says which, so a reader can tell a measurement from a share.
-    """
-
-    end: datetime
-    i: int
-    n: int
-    of: str
-    slot: timedelta
-    size: str = ""
-    basis: str = "queue"
-    count: int = 0
-    borrowed: bool = False
-
-    @property
-    def label(self) -> str:
-        if self.basis == "history":
-            return f"est. {self.size or '?'} ~{_dur(self.slot)}"
-        return f"est. {self.i}/{self.n} → {self.of}"
-
-    def title(self, owner: str) -> str:
-        if self.basis == "history":
-            if not self.size:
-                rests = f"unsized: the mean of all {self.count} tasks closed with a range, {_dur(self.slot)}"
-            elif self.borrowed:
-                rests = f"size {self.size}: no {self.size} task has closed with a range, so the mean of all {self.count} closed tasks stands in, {_dur(self.slot)}"
-            else:
-                rests = f"size {self.size}: mean of {self.count} {self.size} tasks closed with a range, {_dur(self.slot)} each"
-            return (f"{self.label}: {rests}; {_ordinal(self.i)} of {self.n} in {owner}'s queue, running first, then oldest first. "
-                    "Set a due to override.")
-        return (f"{self.label}: where this task lands if {owner}'s queue of {self.n} drains evenly by {self.of}, "
-                "running first, then oldest first. Not a claim about effort; set a due to override.")
-
-
-def _owner_key(owner: str) -> str:
-    """The queue an owner cell names, or "" when it names nobody: blank, `unassigned`, `—`, `nobody`."""
-    key = _bare_name(owner)
-    if not key or NOBODY.match(owner.strip()) or UNASSIGNED.match(key):
-        return ""
-    return key
-
-
-def horizon(cfg: Config, now: datetime) -> tuple[datetime, str]:
-    """The nearest governing deadline still ahead, or midnight once none is (the day strip's own rule)."""
-    d = governing_deadline(cfg, now)
-    if d.at > now and d.name != "end of day":
-        return d.at, d.name
-    return datetime.combine(now.date(), time(0, 0), tzinfo=cfg.zone) + timedelta(days=1), "end of day"
-
-
-def estimates(active: list[Task], cfg: Config, now: datetime, hist: dict[str, tuple[timedelta, int]] | None = None) -> dict[str, Estimate]:
-    """A derived end for every owned task with no `due`, keyed by item. Nothing here is written to the tracker.
-
-    Per owner, the active tasks that are blank or due by the horizon form a queue of N, running first, then
-    oldest first. With `hist` (see `history()`), a cursor starts at now and each task takes the mean elapsed
-    time of closed tasks of its size — a running task from its own start, never ending before now; a task
-    with a `due` takes its time from the queue and keeps its due. Without history no task has a duration to
-    learn from, and this reads none — not the item text (its length tracks age, not work left), not the
-    Log: task i ends at `H - (N-i)/N x (H - now)`, so task N is the horizon instant, and the label says so.
-    Unowned tasks get nothing: there is no queue to place them in, and the deadline they already draw to
-    is the honest end. A gone owner — one an `orphaned` task names — is unowned for all its tasks.
-    """
-    h, of = horizon(cfg, now)
-    r = h - now
-    left = {_bare_name(task.owner) for task in active if task.kind == ORPHANED} - {""}
-    queues: dict[str, list[tuple[tuple, Task]]] = {}
-    for idx, task in enumerate(active):
-        if task.kind in ("done", ORPHANED):
-            continue
-        key = _owner_key(task.owner)
-        if not key or key in left:
-            continue
-        due = _resolve_due(task.due, cfg, now.date())
-        if due is not None and due > h:
-            continue
-        m = DATE.match(task.since.strip())
-        try:
-            since = date(int(m[1]), int(m[2]), int(m[3])) if m else now.date()
-        except ValueError:  # 2026-02-30
-            since = now.date()
-        queues.setdefault(key, []).append(((task.kind != "running", since, idx), task))
-    out: dict[str, Estimate] = {}
-    for entries in queues.values():
-        entries.sort(key=lambda e: e[0])
-        n = len(entries)
-        cursor = now
-        for i, (_, task) in enumerate(entries, 1):
-            if hist:
-                size = task.size.strip().upper()
-                borrowed = bool(size) and size not in hist
-                mean, count = hist[size] if size and size in hist else hist[ALL_SIZES]
-                start = _hhmm(task.state_time, now.date(), cfg.zone) if task.kind == "running" and task.state_time else None
-                end = max(now, start + mean) if start else cursor + mean
-                cursor = max(cursor, end)
-                if not task.due.strip():
-                    out[task.item] = Estimate(end, i, n, of, mean, size, "history", count, borrowed)
-            elif not task.due.strip():
-                out[task.item] = Estimate(h - r * ((n - i) / n), i, n, of, r / n)
-    return out
-
-
-def history(tasks: list[Task], cfg: Config, now: datetime) -> dict[str, tuple[timedelta, int]]:
-    """Mean elapsed time per size over done tasks that kept their running start, plus an `all` row.
-
-    Only `done HH:MM–HH:MM` counts: `since` is a date and `done HH:MM` alone has no start (finding 70), so
-    a task closed without the range records nothing and is left out rather than guessed at. A range that
-    runs backwards crossed midnight and is dropped too. Empty when no task has a range, and the estimator
-    then falls back to the queue-drain of 0.10.0, labelled as such.
-    """
-    today, zone = now.date(), cfg.zone
-    spans: dict[str, list[timedelta]] = {}
-    for task in tasks:
-        if not (r := task.ran):
-            continue
-        a, b = _hhmm(r[0], today, zone), _hhmm(r[1], today, zone)
-        if a is None or b is None or b <= a:
-            continue
-        spans.setdefault(task.size.strip().upper(), []).append(b - a)
-    out = {size: (sum(v, timedelta()) / len(v), len(v)) for size, v in spans.items()}
-    if out:
-        every = [d for v in spans.values() for d in v]
-        out[ALL_SIZES] = (sum(every, timedelta()) / len(every), len(every))
-    return out
-
-
-def _end(task: Task, cfg: Config, now: datetime, start: datetime, est: dict[str, Estimate] | None = None) -> tuple[datetime, str, str | None]:
-    today = now.date()
-    if (due := _resolve_due(task.due, cfg, today)) is not None:
-        return due, "due", None
-    if task.kind == "done":
-        if t := task.state_time:
-            return _done_clock(t, now, cfg.zone), "state", None
-        return start, "state", "done, no time"
-    if est and (e := est.get(task.item)):
-        return max(e.end, start), "derived", e.label
-    return governing_deadline(cfg, now).at, "deadline", NO_ESTIMATE
-
-
-def day_bar(task: Task, cfg: Config, now: datetime, est: dict[str, Estimate] | None = None) -> Bar:
-    today, zone = now.date(), cfg.zone
-    day_start = datetime.combine(today, time(0, 0), tzinfo=zone)
-    if task.kind == "running" and (t := task.state_time):
-        start, start_src = _hhmm(t, today, zone), "state"
-    elif t := _hhmm(task.since, today, zone):
-        start, start_src = t, "since"
-    else:
-        start, start_src = day_start, "carried"
-    end, end_src, label = _end(task, cfg, now, start, est)
-    bar = Bar(task.item, task.owner, task.label, task.kind, start, end, start_src, end_src, label, est.get(task.item) if est and end_src == "derived" else None, task.size.strip().upper())
-    return replace(bar, deadline=_deadline_for(task, bar, cfg, now).name)
-
-
-def swimlanes(bars: list[Bar], cfg: Config, now: datetime) -> list[tuple[str, list[Bar]]]:
-    """Group bars by their governing deadline, each group headed by the deadline name.
-
-    A bar's `deadline` field names its group; reuse `_deadline_for()` via the `deadline` already
-    written onto the Bar by `day_bar()`. Groups are ordered by deadline time (nearest first),
-    and bars within each group by owner then start time.
-    """
-    groups: dict[str, list[Bar]] = {}
-    for bar in bars:
-        groups.setdefault(bar.deadline, []).append(bar)
-    # Order groups by deadline time, nearest first; end of day last.
-    dl_times = {d.name: d.at for d in cfg.deadlines}
-    eod = governing_deadline(cfg, now).at
-    order = sorted(groups, key=lambda name: dl_times.get(name, eod))
-    return [(name, sorted(groups[name], key=lambda b: (b.owner, b.start))) for name in order]
-
-
 # --- rendering -----------------------------------------------------------------------------------
 
 
@@ -410,16 +184,6 @@ def _esc(text: str) -> str:
 
 def _tasks(n: int) -> str:
     return f"{n} {'task' if n == 1 else 'tasks'}"
-
-
-ORPHANED = "orphaned"
-
-
-def _deadline_for(task: Task, bar: Bar, cfg: Config, now: datetime) -> Deadline:
-    for d in cfg.deadlines:
-        if d.name.lower() == task.due.strip().lower() or (bar.end_src != "due" and d.at == bar.end):
-            return d
-    return governing_deadline(cfg, now)
 
 
 def stage_order(lanes: dict) -> list[str]:
@@ -443,76 +207,13 @@ def stage_order(lanes: dict) -> list[str]:
     return order
 
 
-def held(task: Task, kanban: Kanban | None, stage: str | None = None) -> bool:
-    return kanban is not None and kanban.holds(task.stage.strip() if stage is None else stage)
-
-
-def worker_names(sources: board_sources.Sources) -> set[str]:
-    return {w.name for w in sources.workers}
-
-
-def queue_durations(active: list[Task], hist: dict[str, tuple[timedelta, int]]) -> dict[str, timedelta]:
-    """By item, the mean time closed tasks of each task's size took, as `estimates` reads it; empty with no history."""
-    if not hist:
-        return {}
-    return {t.item: (hist[size] if (size := t.size.strip().upper()) and size in hist else hist[ALL_SIZES])[0] for t in active}
-
-
 PIPELINE_MARK = {"passed": "passed", "failed": "failed", "running": "pending", "pending": "pending"}
-
-
-def task_changes(task: Task, sources: board_sources.Sources) -> tuple[board_sources.Change, ...]:
-    """The changes naming the task's issue: the open ones, or else the merged ones."""
-    # ponytail: keyed by `#N` alone, so two projects' #N collide; key by host and project when a board spans them.
-    key = issue_key(task.issue) if task.issue.strip() else None
-    named = [c for c in sources.changes.values() if key and key in c.issues and c.state != "closed"]
-    return tuple(c for c in named if c.state == "open") or tuple(named)
-
-
-def effective_stage(task: Task, sources: board_sources.Sources, lanes: dict) -> str:
-    """A task's real stage for drawing, drift and hold: the tracker's own cell, unless its change already
-    merged and the tracker hasn't caught up — then the lane's last stage. The forge already answered the only
-    question a stale `merge` cell was tracking; a stalled coordinator can otherwise leave it stuck for hours (#240)."""
-    stage = task.stage.strip()
-    changes = task_changes(task, sources)
-    lane = lanes.get(task.lane.strip())
-    if changes and changes[0].state == "merged" and lane and lane.stages:
-        return lane.stages[-1]
-    return stage
-
-
-def forge_ends(tasks: list[Task], sources: board_sources.Sources, zone: ZoneInfo) -> dict[str, tuple[datetime, str]]:
-    """Each task's name to what ends its Flow row, in `zone`: its change's latest forge merge time and "merged", or,
-    failing that, its closed issue's close time and "closed". A merge wins. The board and the task page both end a
-    row here (#200, #220)."""
-    out = {}
-    for t in tasks:
-        name = t.name.strip()
-        if not name:
-            continue
-        if merges := [c.merged_at for c in task_changes(t, sources) if c.state == "merged" and c.merged_at]:
-            out[name] = (max(merges).astimezone(zone), "merged")
-        elif (issue := sources.issues.get(issue_key(t.issue)) if t.issue.strip() else None) and issue.state == "closed" and issue.closed_at:
-            out[name] = (issue.closed_at.astimezone(zone), "closed")
-    return out
 
 
 def change_marks(changes: tuple[board_sources.Change, ...]) -> tuple[columns.Mark, ...]:
     return tuple(m for c in changes for m in (
         *((columns.Mark(c.pipeline, PIPELINE_MARK[c.pipeline]),) if c.pipeline in PIPELINE_MARK else ()),
         *((columns.Mark("approved", "approved"),) if c.approved else ())))
-
-
-def drifts(task: Task, kanban: Kanban | None, sources: board_sources.Sources, stage: str | None = None) -> bool:
-    """The forge's labels disagree with the task's stage, by the same check the audit runs (kanban.drift).
-    `stage` overrides the tracker's own cell — pass `effective_stage()` so a merged change's card is judged at
-    the stage it now draws in, not the one it's stuck reading (#240)."""
-    issue = sources.issues.get(issue_key(task.issue)) if task.issue.strip() else None
-    stage = task.stage.strip() if stage is None else stage
-    # ponytail: labels only; a GitHub Project's Status is not in the sources, so a project board never drifts here.
-    if kanban is None or kanban.github_project or issue is None or not stage or task.kind == "done":
-        return False
-    return bool(kanban_tool.drift(kanban, issue.labels, stage, allow_extra_hold=task.kind == "waiting"))
 
 
 def merged_today(sources: board_sources.Sources, now: datetime) -> list[board_sources.Change]:
