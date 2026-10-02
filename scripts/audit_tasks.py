@@ -676,6 +676,8 @@ def audit(root: Path, day: str, gh=None, check_issues: bool = True, now: datetim
     if roster:
         # The workspace user may own a task without a session.
         roster.add(_bare(cfg.user))
+    from one_shot import running_trees  # here, not at the top: one_shot imports this module
+    running = running_trees((root / trees).resolve()) if roster else {}
 
     report = Report()
     handled: set[str] = set()
@@ -721,6 +723,9 @@ def audit(root: Path, day: str, gh=None, check_issues: bool = True, now: datetim
                                        f"{name} ({branch})", task.state.strip()))
         owner = row.context.strip() or (task.owner.strip() if task is not None else "")
         here, missing = listed(owner, roster, refs, cfg.user) if roster else (True, "")
+        # A one-shot's row is keyed on its task, never a session: a live launcher holds the tree, and so does the task's owner.
+        keyed = task if task is not None else next((t for t in tasks if owns(row, t.item)), None)
+        here = here or path in running or (keyed is not None and listed(keyed.owner, roster, refs, cfg.user)[0])
         if roster and "uncommitted" in why and not here and name not in orphaned:
             orphaned.add(name)
             report.orphans.append(Orphan(f"{name} ({branch})", _bare(owner), why, missing))

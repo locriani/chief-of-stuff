@@ -8,6 +8,7 @@ script is that its answer is git's answer.
 import contextlib
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -466,6 +467,37 @@ class OrphanJoinTest(unittest.TestCase):
             "| sam | worktree wt-unmerged (feat/open) |", sessions=session_row("robin"))
         self.addCleanup(tmp.cleanup)
         self.assertEqual(al.audit(root, "2026-09-17").orphans, [])
+
+    # A one-shot's File ownership row is keyed on its task, which is never a session.
+    ONE_SHOT = "| Unsaved work | impl-01 | running 09:10 | 09:00 |  | Checklist: Unsaved work |"
+    TASK_KEYED = "| Unsaved work | worktree wt-dirty (feat/dirty) |"
+
+    def launcher(self, root: Path, pid: int) -> None:
+        d = root / "trees/wt-dirty/.chief-of-stuff"
+        d.mkdir(exist_ok=True)
+        (d / ".gitignore").write_text("*\n")
+        (d / "one-shot.pid").write_text(f"{pid} Unsaved work\n")
+
+    def test_a_running_one_shots_tree_is_not_an_orphan(self) -> None:
+        tmp, root = workspace(self.ONE_SHOT, self.TASK_KEYED, sessions=session_row("robin"))
+        self.addCleanup(tmp.cleanup)
+        self.launcher(root, os.getpid())
+        self.assertEqual(al.audit(root, "2026-09-17").orphans, [])
+
+    def test_a_one_shot_handed_to_the_user_is_not_an_orphan(self) -> None:
+        # After a review hold the task is the user's, and its tree waits for them.
+        tmp, root = workspace(self.ONE_SHOT.replace("impl-01 | running 09:10", "Robin | waiting"), self.TASK_KEYED,
+                              sessions=session_row("sam"))
+        self.addCleanup(tmp.cleanup)
+        self.assertEqual(al.audit(root, "2026-09-17").orphans, [])
+
+    def test_a_one_shot_whose_launcher_died_is_still_an_orphan(self) -> None:
+        tmp, root = workspace(self.ONE_SHOT, self.TASK_KEYED, sessions=session_row("robin"))
+        self.addCleanup(tmp.cleanup)
+        gone = subprocess.Popen([sys.executable, "-c", ""])
+        gone.wait()
+        self.launcher(root, gone.pid)
+        self.assertEqual(len(al.audit(root, "2026-09-17").orphans), 1)
 
     def test_the_count_reaches_the_summary_line(self) -> None:
         tmp, root = workspace(self.DIRTY, self.OWNS, sessions=session_row("robin"))
