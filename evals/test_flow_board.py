@@ -18,6 +18,7 @@ import columns  # noqa: E402
 import decision_page  # noqa: E402
 import panels  # noqa: E402
 import render_board as rb  # noqa: E402
+from workspace import parse_coordinator  # noqa: E402
 import settings as st  # noqa: E402
 from test_render_board import CLAUDE_MD, NOW  # noqa: E402
 
@@ -322,7 +323,7 @@ class CardRefAndOwnerLinkTest(unittest.TestCase):
 
 class Page(unittest.TestCase):
     def setUp(self) -> None:
-        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
         self.html = rb.render(TRACKER, self.cfg, NOW, lanes=LANES, kanban=KANBAN, sources=SOURCES,
                               decisions=[("x", {"headline": "Pick", "recommended": "B", "default": "d"}, NOW.replace(hour=10, minute=0), "")],
                               answered=1, tracker_at=NOW - timedelta(minutes=5))

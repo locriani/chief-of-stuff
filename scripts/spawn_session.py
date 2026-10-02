@@ -19,6 +19,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import dispatch_prompt  # noqa: E402
+import runtimes  # noqa: E402
 from settings import SettingsError, load as load_settings  # noqa: E402
 from shell_setup import ShellError, resolve  # noqa: E402
 
@@ -41,7 +42,6 @@ AGY_ARGV = ["agy", "--model", "{model}", "--mode", "plan", "-i", AGY_BOOTSTRAP]
 CODEX_ARGV = ["codex", "-C", "{cwd}", "--sandbox", "read-only", "--model", "{model}", AGY_BOOTSTRAP]
 CURSOR_ARGV = ["agent", "--workspace", "{cwd}", "--mode", "plan", "--model", "{model}", AGY_BOOTSTRAP]
 TEMPLATES = {"claude": CLAUDE_ARGV, "agy": AGY_ARGV, "codex": CODEX_ARGV, "cursor": CURSOR_ARGV}
-BINARY = {"claude": "claude", "agy": "agy", "codex": "codex", "cursor": "agent"}
 MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 # The eval harness may override this template; normal launches use Ghostty tabs.
 DEFAULT_LAUNCHER = ["ghostty", "--working-directory={cwd}", "--title={title}", "-e", *CLAUDE_ARGV]
@@ -232,7 +232,7 @@ def main(argv_in: list[str] | None = None) -> int:
     ap.add_argument("--root", default=".", help="workspace root holding CLAUDE.md")
     ap.add_argument("--coordinator", help="your own session name as a listing shows it, so the session knows who to register with")
     ap.add_argument("--date", help="YYYY-MM-DD; default: today in the workspace timezone")
-    ap.add_argument("--runtime", choices=sorted(TEMPLATES),
+    ap.add_argument("--runtime", choices=sorted(runtimes.NAMES),
                     help="claude (default), agy, codex, or cursor")
     ap.add_argument("--class", dest="model_class",
                     help="a [models] task class; with no --model or --runtime, launch its suggested entry")
@@ -252,7 +252,7 @@ def main(argv_in: list[str] | None = None) -> int:
                     help="one-shot run limit before human review (default: 60)")
     args = ap.parse_args(argv_in)
     try:
-        config = dispatch_prompt._config(Path(args.root))
+        config = dispatch_prompt.config(Path(args.root))
         settings = load_settings(Path(args.root), config.settings_path)
         if args.model_class and not (args.model or args.runtime):
             # #111: explicit flags always win; otherwise the class's first entry, effort included.
@@ -260,18 +260,19 @@ def main(argv_in: list[str] | None = None) -> int:
                 raise SettingsError(f"no [models.{args.model_class}] in the Settings TOML")
             entry = settings.models[args.model_class][0]
             args.runtime, args.model = entry.runtime, entry.model
-            # ponytail: only claude takes --effort here; other runtimes' effort needs their own flag.
-            if entry.runtime == "claude":
+            # ponytail: only a runtime that takes --effort gets the entry's effort here; the others need their own flag.
+            if runtimes.get(entry.runtime).takes_effort:
                 args.effort = args.effort or entry.effort or ""
     except (dispatch_prompt.RefusedError, SettingsError, OSError) as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 1
     worker_settings = settings.workers
     args.runtime = args.runtime or "claude"
-    if (args.model or args.runtime == "agy") and not MODEL.fullmatch(args.model):
+    runtime = runtimes.get(args.runtime)
+    if (args.model or runtime.needs_model) and not MODEL.fullmatch(args.model):
         print(f"refused: --model needs a model id (agy: one from `agy models`, and it is required), not {args.model!r}", file=sys.stderr)
         return 1
-    if args.runtime != "claude" and args.effort:
+    if args.effort and not runtime.takes_effort:
         print("refused: --effort is claude only", file=sys.stderr)
         return 1
     # Compose and launch must use the same absolute cwd.
@@ -316,12 +317,12 @@ def main(argv_in: list[str] | None = None) -> int:
             script = None
         elif selected == "tmux":
             command = tmux_command(tmux=Path(p) if (p := resolve("tmux")) else None,
-                                   binary=Path(p) if (p := resolve(BINARY[args.runtime])) else None,
+                                   binary=Path(p) if (p := resolve(runtime.binary)) else None,
                                    **worker)
             script = None
         else:
             command = [OSASCRIPT, "-"]
-            script = ghostty_script(claude=Path(p) if (p := resolve(BINARY[args.runtime])) else None,
+            script = ghostty_script(claude=Path(p) if (p := resolve(runtime.binary)) else None,
                                    **worker)
     except (RefusedError, dispatch_prompt.RefusedError, SettingsError, ShellError) as exc:
         print(f"refused: {exc}", file=sys.stderr)

@@ -21,6 +21,7 @@ sys.path[:0] = [str(Path(__file__).resolve().parents[1] / "scripts"), str(Path(_
 
 import board_sources as bs  # noqa: E402
 import render_board as rb  # noqa: E402
+from workspace import parse_coordinator  # noqa: E402
 import test_flow_chart as fc_test  # noqa: E402
 
 ZONE = ZoneInfo("America/Chicago")
@@ -481,7 +482,7 @@ class LaunchedWorkerNameTest(unittest.TestCase):
             pid = root / "trees" / tree / ".chief-of-stuff" / "one-shot.pid"
             pid.parent.mkdir(parents=True)
             pid.write_text(f"{os.getpid()} {prompt}\n")
-        cfg = rb.parse_coordinator((root / "CLAUDE.md").read_text(), today=NOW.date())
+        cfg = parse_coordinator((root / "CLAUDE.md").read_text(), today=NOW.date())
         self.workers = bs.workers(root, cfg, rb.parse_tracker(text), text, NOW.date())
         self.by_tree = {w.tree: w for w in self.workers if w.kind == "one-shot"}
         self.facts = {r.name: r.facts for r in rb.worker_panel(replace(bs.EMPTY, workers=self.workers), NOW).rows}
@@ -529,7 +530,7 @@ class ManyLaunchedWorkersTest(unittest.TestCase):
             pid.parent.mkdir(parents=True)
             pid.write_text(f"{os.getpid()} {task}\n")
             cls.tree_of[name] = f"t{i}"
-        cfg = rb.parse_coordinator((root / "CLAUDE.md").read_text(), today=NOW.date())
+        cfg = parse_coordinator((root / "CLAUDE.md").read_text(), today=NOW.date())
         tracker = rb.parse_tracker(text)
         start = time.perf_counter()
         cls.workers = bs.workers(root, cfg, tracker, text, NOW.date())

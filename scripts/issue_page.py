@@ -18,8 +18,10 @@ import board_sources
 import flow_chart
 from decision_page import HEAD, _graph, _md, _section, context, pending_count, span
 from fragment import href, tab_bar
-from render_board import (Config, ConfigError, TRAILING_NUMBER, _dur, _resolve_due, daily_trackers, forge_ends,
-                          parse_coordinator, parse_tracker)
+from clock import dur as _dur
+from render_board import forge_ends
+from tracker import TRAILING_NUMBER, parse_tracker, resolve_due as _resolve_due
+from workspace import Config, ConfigError, daily_trackers, read_config
 from settings import Graph, SettingsError, load as load_settings
 
 # A worker's outcome by its last launcher move's stage (flow_chart.moves: completed → pr, HUMAN REVIEW → review).
@@ -289,7 +291,7 @@ def render(number: int, trackers: list[tuple[date, str]], sources: board_sources
 
 def inputs(root: Path):
     """(cfg, now, trackers the Flow chart reaches back over, settings) for a page of one issue."""
-    cfg = parse_coordinator((root / "CLAUDE.md").read_text(), today=date.today())
+    cfg = read_config(root)
     now = datetime.now(cfg.zone).replace(microsecond=0)
     reach = (now - flow_chart.WINDOWS[-1][1]).date()
     trackers = [(d, path.read_text()) for d, path in daily_trackers(root, cfg) if reach <= d <= now.date()]

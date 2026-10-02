@@ -17,16 +17,14 @@ import argparse
 import json
 import sys
 from dataclasses import dataclass
-from datetime import date
 from pathlib import Path
-from urllib.parse import quote, urlencode
+from urllib.parse import urlencode
 
 import backlog
-from render_board import ConfigError, parse_coordinator
-from settings import SettingsError, Workflow, load as load_settings
-
-FAILED = {"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"}
-GITLAB_PIPELINE = {"success": "passed", "failed": "failed", "canceled": "failed"}
+from forge_review import (GITLAB_PIPELINE, forge, github_approval as _github_approval,
+                          github_pipeline as _github_pipeline)
+from workspace import ConfigError
+from settings import SettingsError
 
 
 @dataclass(frozen=True)
@@ -51,26 +49,6 @@ class Request:
         return out
 
 
-def _github_approval(reviews: list[dict], approver: str, head: str) -> str:
-    # A comment neither grants nor withdraws; the approver's latest approve or request-changes decides.
-    mine = sorted((r for r in reviews if (r.get("author") or {}).get("login") == approver
-                   and r.get("state") in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED")),
-                  key=lambda r: r.get("submittedAt") or "")
-    if not mine or mine[-1]["state"] != "APPROVED":
-        return "none"
-    return "approved" if (mine[-1].get("commit") or {}).get("oid") == head else "stale"
-
-
-def _github_pipeline(checks: list[dict]) -> str:
-    if not checks:
-        return "none"
-    if any((c.get("conclusion") or c.get("state") or "").upper() in FAILED for c in checks):
-        return "failed"
-    running = [c for c in checks if (c.get("__typename") == "CheckRun" and c.get("status") != "COMPLETED")
-               or (c.get("__typename") != "CheckRun" and c.get("state") in ("PENDING", "EXPECTED"))]
-    return "running" if running else "passed"
-
-
 def github_requests(repo: str, approver: str, gh=backlog.run_gh) -> list[Request]:
     code, out, err = gh(["pr", "list", "-R", repo, "--state", "open", "--limit", "100", "--json",
                          "number,title,url,headRefOid,reviews,statusCheckRollup,mergeable"])
@@ -83,14 +61,10 @@ def github_requests(repo: str, approver: str, gh=backlog.run_gh) -> list[Request
             for p in json.loads(out)]
 
 
-def _gitlab_base(home: backlog.Backlog, project: str) -> str:
-    return f"{home.host.rstrip('/')}/api/v4/projects/{quote(project, safe='')}"
-
-
 def gitlab_requests(home: backlog.Backlog, project: str, approver: str, token: str, call=backlog._call) -> list[Request]:
     # ponytail: GitLab's approvals API names no commit, so an approval counts for the head only when the
     # project resets approvals on push. Check that project setting once; a per-note sha check if it is off.
-    base = _gitlab_base(home, project)
+    base = home.api(project)
     listed, _, err = call("GET", f"{base}/merge_requests?" + urlencode({"state": "opened", "per_page": 100}), token, backlog.TIMEOUT)
     if err:
         raise RuntimeError(f"merge requests: {err}")
@@ -110,17 +84,6 @@ def gitlab_requests(home: backlog.Backlog, project: str, approver: str, token: s
                            "conflict" if mr.get("has_conflicts") else ("yes" if status == "mergeable" else status),
                            approver))
     return out
-
-
-def forge(root: Path, repo: str | None) -> tuple[Workflow, backlog.Backlog, bool, str]:
-    """The workspace's workflow settings, its forge, whether that is GitHub, and the repo to act on."""
-    cfg = parse_coordinator((root / "CLAUDE.md").read_text(), today=date.today())
-    workflow = load_settings(root, cfg.settings_path).workflow
-    home = cfg.backlog
-    if home is None:
-        raise ConfigError("no Backlog: line names the forge")
-    github = isinstance(home, backlog.GitHubBacklog)
-    return workflow, home, github, repo or (home.repo if github else home.project)
 
 
 def main(argv: list[str] | None = None, gh=backlog.run_gh, call=backlog._call) -> int:
@@ -164,7 +127,7 @@ def main(argv: list[str] | None = None, gh=backlog.run_gh, call=backlog._call) -
         code, _, err = gh(["pr", "merge", str(one.number), "-R", repo, "--squash", "--match-head-commit", one.head])
         err = err.strip() if code else ""
     else:
-        _, _, err = call("PUT", f"{_gitlab_base(home, repo)}/merge_requests/{one.number}/merge", secret,
+        _, _, err = call("PUT", f"{home.api(repo)}/merge_requests/{one.number}/merge", secret,
                          backlog.TIMEOUT, {"sha": one.head})
     if err:
         print(f"merge-approved: {mark}{one.number} not merged: {err}", file=sys.stderr)

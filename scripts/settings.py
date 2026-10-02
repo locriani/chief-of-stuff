@@ -17,12 +17,13 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
 
+from runtimes import NAMES as RUNTIMES
+
 ADAPTERS = ("md-notify", "off")
 HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 OFFSET = re.compile(r"^(\d+)([hm])$")
 WORKER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 DEFAULT_WARNINGS = ("24h", "3h", "1h")
-RUNTIMES = ("claude", "agy", "codex", "cursor")
 EFFORTS = ("high", "medium", "low")
 
 

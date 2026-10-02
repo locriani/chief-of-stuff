@@ -10,23 +10,27 @@ import argparse
 import re
 import shlex
 import sys
-from datetime import date, datetime
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from backlog import file_with, issue_ref  # noqa: E402
-from render_board import ConfigError, _cells, _is_separator, _section, parse_coordinator, parse_tracker, short_name  # noqa: E402
+from md import section as _section  # noqa: E402
+from tracker import parse_tracker, short_name  # noqa: E402
+from workspace import ConfigError, read_config  # noqa: E402
 from settings import SettingsError, Workflow, load as load_settings  # noqa: E402
 import ownership  # noqa: E402
+import runtimes  # noqa: E402
 
 
 class RefusedError(ValueError):
     """Invalid tracker data; no assignment composed."""
 
 
-def _config(root: Path):
+def config(root: Path):
+    """The workspace's `## Coordinator` block, or a refusal that says why it does not read."""
     try:
-        return parse_coordinator((root / "CLAUDE.md").read_text(), today=date.today())
+        return read_config(root)
     except (OSError, ConfigError) as exc:
         raise RefusedError(f"cannot read the ## Coordinator block: {exc}") from None
 
@@ -74,7 +78,13 @@ def mailbox_check(runtime: str, name: str, inbox_script: str) -> str:
               f'For a bounded idle check, run `{wait}`; it returns unread TOON or `[]` after five '
               "minutes and does not acknowledge messages. Use these shared inbox commands; do not "
               "create polling scripts or background jobs in the workspace. ")
-    if runtime == "claude":
+    host = runtimes.get(runtime)
+    if not host.schedules:
+        mechanism = (f"{host.display} has no in-session scheduling interface. Check at the start of every "
+                     "turn, before each new step, and after each commit. While this turn is open, "
+                     "use the bounded wait above when idle. A finished conversation cannot wake "
+                     "itself; handle later messages on the next turn.")
+    elif runtime == "claude":
         mechanism = (f'Use `CronList`, then create one in-session `CronCreate` job at `*/5 * * * *` '
                      f'only if no job starts `[Mailbox check] {name}`. Its prompt is '
                      f'`[Mailbox check] {name}: {command}; process unread messages`. If cron tools '
@@ -90,11 +100,6 @@ def mailbox_check(runtime: str, name: str, inbox_script: str) -> str:
         mechanism = (f'Start one Cursor in-session `/loop 5m` with instruction '
                      f'`{command}; process unread messages`. Stop the loop when this session ends. '
                      "If `/loop` is unavailable, check at the start of every turn and after each commit.")
-    else:
-        mechanism = ("Codex CLI has no in-session scheduling interface. Check at the start of every "
-                     "turn, before each new step, and after each commit. While this turn is open, "
-                     "use the bounded wait above when idle. A finished conversation cannot wake "
-                     "itself; handle later messages on the next turn.")
     return "**Keep this mailbox live.** After registration, " + common + mechanism
 
 
@@ -251,7 +256,7 @@ def task_name(text: str, item: str) -> str:
 
 def resolve_task(root: Path, day: str | None, task: str) -> str:
     """The item `task` names: an item as written, or else the one Tasks row whose `name` it is."""
-    cfg = _config(root)
+    cfg = config(root)
     relative = cfg.tracker_path(day or datetime.now(cfg.zone).date().isoformat())
     try:
         tasks = parse_tracker((root / relative).read_text()).tasks
@@ -283,7 +288,7 @@ def compose(root: Path, day: str | None, task: str, worktree: Path | None = None
             coordinator: str | None = None, name: str | None = None, runtime: str = "claude",
             one_shot: bool = False) -> str:
     """The assignment for `task`, read back off disk. A task that is not a row is refused."""
-    cfg = _config(root)
+    cfg = config(root)
     try:
         workflow = load_settings(root, cfg.settings_path).workflow
     except (OSError, SettingsError) as exc:
@@ -387,7 +392,7 @@ def compose(root: Path, day: str | None, task: str, worktree: Path | None = None
                         "branches and generated files. Do not infer another name for the user from a file. "
                         "If you spawn a subagent, carry this rule into its prompt.\n")
     if runtime != "claude":
-        host = {"agy": "Antigravity", "codex": "Codex CLI", "cursor": "Cursor CLI"}[runtime]
+        host = runtimes.get(runtime).display
         registration = NON_CLAUDE_REGISTER.format(host=host, name=name or UNNAMED,
             inbox_script=inbox_script, worktree=worktree or "this worktree", task=item)
         if runtime == "agy":

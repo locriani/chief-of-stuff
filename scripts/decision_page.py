@@ -15,7 +15,7 @@ server thing"). The JSON holds:
     architecture {summary, not_drawn, nodes [{id, name, state, detail, hot}], edges [{from, to, label, state, hot}]}
                                                                                      optional
 
-What the JSON leaves out the page reads from the workspace (render_board.decision_context): `asked` from the first
+What the JSON leaves out the page reads from the workspace (decision_context): `asked` from the first
 Log line naming `decision-<slug>`, else the file's mtime; the answer and its chip from the latest Decisions row naming
 it, the key being the option its words name; a reference's status from the tracker's stage and board_sources. Rendering
 the board re-renders every page, and `decisions.html` lists them (Decisions.dc.html). MODULE GRAPH is drawn by the
@@ -48,12 +48,13 @@ from pathlib import Path
 
 import board_sources
 from backlog import Backlog, BacklogError, GitHubBacklog, backlog_from_config
-from fragment import TAB_CSS, href, tab_bar
+from fragment import FONTS, TAB_CSS, href, tab_bar
+from md import section as md_section
 from pages import PagesError, from_config
-from settings import Graph
+from settings import Graph, SettingsError, load as load_settings
+from tracker import decision_rows, parse_tracker
+from workspace import ConfigError, daily_trackers, read_config
 
-# The board's fonts (render_board.FONTS; render_board imports this module, so it cannot import that one).
-FONTS = "https://fonts.googleapis.com/css2?family=Alegreya+Sans:wght@400;500;600&family=Cormorant+SC:wght@600&display=swap"
 NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 REQUIRED = ("headline", "ask", "options", "recommended", "why", "default")
 NODE = {"deployed": "n", "inflight": "n-inflight", "designed": "n-designed", "external": "ext"}
@@ -522,13 +523,43 @@ def forge(root: Path) -> Backlog | GitHubBacklog | None:
         return None
 
 
+def decision_context(root: Path, day: date, now: datetime | None = None) -> Context:
+    """What the decisions pages read from the workspace: every tracker's Decisions rows and Log lines, `day`'s
+    tasks, the cached forge sources and the [kanban] label that holds an issue."""
+    cfg = read_config(root)
+    now = now or datetime.now(cfg.zone).replace(second=0, microsecond=0)
+
+    def at(d: date, hhmm: str) -> datetime | None:
+        m = re.match(r"(\d{1,2}):(\d{2})\b", hhmm.strip())
+        try:
+            return datetime.combine(d, time(int(m[1]), int(m[2])), cfg.zone) if m else None
+        except ValueError:
+            return None
+
+    rows, log = [], []
+    for d, path in daily_trackers(root, cfg):
+        text = path.read_text()
+        rows += [Row(d, at(d, t), item, words) for t, item, words in decision_rows(text)]
+        log += [(when, line.strip()[2:]) for line in md_section(text, "## Log")
+                if line.strip().startswith("- ") and (when := at(d, line.strip()[2:]))]
+    tracker = root / cfg.tracker_path(day.isoformat())
+    tasks = parse_tracker(tracker.read_text()).tasks if tracker.is_file() else ()
+    try:
+        settings = load_settings(root, cfg.settings_path)
+    except SettingsError:
+        settings = None
+    kanban = settings and settings.kanban
+    pages = root / cfg.pages_dir if cfg.pages_dir else tracker.parent
+    return Context(now, tuple(rows), tuple(sorted(log, key=lambda x: x[0])), tasks, board_sources.load(pages),
+                   kanban.human_review_label if kanban else "", cfg.user, cfg.backlog,
+                   settings and settings.graph, pages)
+
+
 def context(root: Path, day: str) -> Context | None:
     """The workspace's context for `day`, or None when its block does not parse (the page then shows its JSON alone)."""
-    import render_board  # render_board imports this module, so not at the top
-
     try:
-        return render_board.decision_context(root, date.fromisoformat(day))
-    except (ValueError, OSError, render_board.ConfigError):
+        return decision_context(root, date.fromisoformat(day))
+    except (ValueError, OSError, ConfigError):
         return None
 
 

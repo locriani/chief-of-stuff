@@ -12,7 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import init_workspace as init  # noqa: E402
 import install_model_guidance as guidance  # noqa: E402
-from render_board import parse_coordinator  # noqa: E402
+from workspace import parse_coordinator  # noqa: E402
 from settings import _models, load as load_settings  # noqa: E402
 
 

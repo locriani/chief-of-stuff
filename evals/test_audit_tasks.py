@@ -20,7 +20,7 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import audit_tasks as al  # noqa: E402
-from render_board import short_name  # noqa: E402
+from tracker import short_name  # noqa: E402
 
 CLAUDE = """# Workspace
 

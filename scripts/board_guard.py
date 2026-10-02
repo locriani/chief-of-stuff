@@ -12,7 +12,7 @@ from datetime import date
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-from render_board import ConfigError, parse_coordinator
+from workspace import ConfigError, read_config
 
 REASON = "Serve and render the board only. Never open it automatically; the user decides when to view it."
 URL = re.compile(r"(?:https?://|file://)[^\s\"'<>`]+", re.I)
@@ -46,7 +46,7 @@ def board(cwd: Path):
     roots = ([Path(configured)] if configured else []) + [cwd, *cwd.parents]
     for root in dict.fromkeys(roots):
         try:
-            cfg = parse_coordinator((root / "CLAUDE.md").read_text(), today=date.today())
+            cfg = read_config(root)
         except (OSError, ValueError, ConfigError, KeyError):
             continue
         if cfg.board_url:

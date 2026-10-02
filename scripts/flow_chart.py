@@ -11,7 +11,6 @@ HUMAN REVIEW NEEDED → review. A done task's last segment ends at its done time
 
 from __future__ import annotations
 
-import functools
 import heapq
 import re
 from dataclasses import dataclass, field, replace
@@ -19,12 +18,13 @@ from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 import gantt
+from clock import done_clock
 from fragment import esc
+from tracker import launch_row, launcher
 
 LINE = re.compile(r"^- (\d{1,2}):(\d{2}) stage: (.+) → (\S+)\s*$")
 STARTED = re.compile(r"^- (\d{1,2}):(\d{2}) one-shot (\S+) started: .*, task (.+?)\s*$")
 ENDED = re.compile(r"^- (\d{1,2}):(\d{2}) one-shot (\S+): (completed; awaiting integration|HUMAN REVIEW NEEDED)\b")
-REF = re.compile(r"(?<!\w)[#!]\d+")
 H = timedelta(hours=1)
 # (title, behind now, ahead of now), after the Flow artboard.
 WINDOWS = (("24 hours", 6 * H, 18 * H), ("7 days", 48 * H, 120 * H))
@@ -74,46 +74,6 @@ def moves(text: str, day: date, zone: ZoneInfo) -> list[Move]:
         elif m[3] in task_of:
             out.append(Move(at, task_of[m[3]], "pr" if m[4].startswith("completed") else "review", True, line, m[3]))
     return out
-
-
-def launch_row(text: str, tasks):
-    """(row, name) for a one-shot's launch-time task text: the row whose item the text begins with, else the row
-    named by a leading "name:", else the row whose issue ref it carries (later rows win), and that row's name;
-    with no row, None and the text's first line cut to 80 characters. The launch keeps its text; the row's item
-    may change after it (#182)."""
-    return launcher(tasks)(text)
-
-
-def launcher(tasks):
-    """launch_row over `tasks`, indexed once: items by length, task names (with a trailing ":") by length,
-    `#N`/`!N` issues by ref, and each text looked up once (#184). An issue cell of another shape
-    (`group/app#118`, a URL) keeps its own search."""
-    items, names, refs, other = {}, {}, {}, []
-    for i, t in enumerate(tasks):
-        if item := t.item.strip():
-            items[item] = (i, t)
-        if name := t.name.strip():
-            names[name + ":"] = (i, t)  # a launch text naming its task before ":" (#204)
-        if issue := t.issue.strip():
-            if REF.fullmatch(issue):
-                refs[issue] = (i, t)
-            else:
-                other.append(((i, t), re.compile(rf"(?<!\w){re.escape(issue)}(?!\d)")))
-    lengths = {len(k) for k in items}
-    name_lengths = {len(k) for k in names}
-
-    @functools.cache
-    def row(text: str):
-        text = text.strip()
-        first = text.split("\n", 1)[0][:80]
-        for hits in ([items.get(text[:n]) for n in lengths],
-                     [names.get(text[:n]) for n in name_lengths],
-                     [refs.get(r) for r in REF.findall(text)] + [hit for hit, p in other if p.search(text)]):
-            if hits := [h for h in hits if h]:
-                t = max(hits, key=lambda h: h[0])[1]
-                return t, t.name.strip() or first
-        return None, first
-    return row
 
 
 def _clock(at: datetime, now: datetime) -> str:
@@ -176,8 +136,7 @@ def build(log: list[Move], tasks, lanes: dict, held: set[str], ends: dict[str, d
             # (#213) a clock: its latest occurrence at or before now, not a same-date occurrence that
             # may not have happened yet.
             if t := task.state_time:
-                import render_board  # render_board imports this module, so not at the top
-                stop = render_board._done_clock(t, now, now.tzinfo)
+                stop = done_clock(t, now, now.tzinfo)
             else:
                 stop = last.at
         finish = task and (ended or {}).get(task.name.strip())

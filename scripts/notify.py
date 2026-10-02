@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Protocol
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from render_board import ConfigError, parse_coordinator, with_workspace_decision_deadlines  # noqa: E402
+from workspace import ConfigError, read_config, with_workspace_decision_deadlines  # noqa: E402
 from settings import Settings, SettingsError, load  # noqa: E402
 
 WHEN = "%Y-%m-%d %H:%M"
@@ -298,7 +298,7 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
     args = ap.parse_args(argv)
     root = Path(args.root)
     try:
-        cfg = parse_coordinator((root / "CLAUDE.md").read_text(), today=datetime.now().date())
+        cfg = read_config(root)
         settings = load(root, cfg.settings_path)
     except (OSError, ConfigError, SettingsError) as e:
         print(f"notify: {e}", file=sys.stderr)

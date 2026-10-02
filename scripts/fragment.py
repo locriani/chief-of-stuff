@@ -43,6 +43,8 @@ def colour(value: str) -> str:
 TABS = (("Board", "/"), ("Workers", "/workers"), ("Dispatch", ""), ("Since you last looked", ""), ("Epics", ""),
         ("Decisions", "/decisions"), ("Limits", ""))
 # On the pages' tokens (--fg, --muted, --line, --link); wraps at phone width rather than widening the page.
+# The pages' type: Alegreya Sans for text, Cormorant SC for heads.
+FONTS = "https://fonts.googleapis.com/css2?family=Alegreya+Sans:wght@400;500;600&family=Cormorant+SC:wght@600&display=swap"
 TAB_CSS = """nav.tabs{display:flex;flex-wrap:wrap;align-items:flex-end;column-gap:28px;margin:-8px 0 0;border-bottom:1px solid var(--line)}
 nav.tabs>*{display:inline-flex;align-items:baseline;gap:7px;min-height:34px;box-sizing:border-box;padding:8px 0 7px;margin-bottom:-1px;font:600 15.5px "Cormorant SC",Georgia,serif;letter-spacing:.08em;text-decoration:none;color:var(--muted)}
 nav.tabs>[aria-current=page]{color:var(--fg);box-shadow:inset 0 -3px 0 var(--fg)}

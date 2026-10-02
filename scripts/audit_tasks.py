@@ -16,12 +16,16 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from render_board import BULLET, HHMM, RAN, ConfigError, _dur, _cells, _hhmm, _is_separator, _section, _unmark, _unquote, clip_name, parse_coordinator, parse_tracker  # noqa: E402
+from clock import HHMM, RAN, dur as _dur, hhmm as _hhmm  # noqa: E402
+from md import cells as _cells, is_separator as _is_separator, section as _section, unmark as _unmark  # noqa: E402
+from tracker import clip_name, parse_tracker  # noqa: E402
+from workspace import ConfigError, parse_coordinator, read_config, worktrees_dir  # noqa: E402
 from dispatch_prompt import PROMPT_DIR, STOP_FILE  # noqa: E402
 from backlog import CLOSED, GITHUB, Backlog, BacklogError, GitHubBacklog, file_with, home_of, issue_ref, issue_states  # noqa: E402
 from settings import Kanban, SettingsError, load as load_settings  # noqa: E402
 import kanban as kanban_tool  # noqa: E402
 import ownership  # noqa: E402
+from one_shot import running_trees  # noqa: E402
 
 # Preserve branch names from ownership rows when worktrees disappear.
 WORKTREE = re.compile(r"\bworktrees?\s+(?P<tick>`)?(?P<name>[A-Za-z0-9._\-/]+)`?(?:\s*\((?P<branch>[^)]*)\))?")
@@ -311,15 +315,6 @@ class Report:
     lanes: list[LaneFault] = field(default_factory=list)
     kanban: list[KanbanFault] = field(default_factory=list)
     over: list[OverBudget] = field(default_factory=list)
-
-
-def worktrees_dir(claude_md: str) -> str:
-    """The `Worktrees:` line of the `## Coordinator` block, or "" when there is none (trees sit at the root)."""
-    for line in _section(claude_md, "## Coordinator"):
-        m = BULLET.match(line)
-        if m and _unquote(m.group(2)).lower() == "worktrees":
-            return _unquote(m.group(3))
-    return ""
 
 
 def _worktrees(cell: str) -> tuple[list[str], dict[str, str]]:
@@ -676,7 +671,6 @@ def audit(root: Path, day: str, gh=None, check_issues: bool = True, now: datetim
     if roster:
         # The workspace user may own a task without a session.
         roster.add(_bare(cfg.user))
-    from one_shot import running_trees  # here, not at the top: one_shot imports this module
     running = running_trees((root / trees).resolve()) if roster else {}
 
     report = Report()
@@ -795,7 +789,7 @@ def main(argv: list[str] | None = None, gh=None) -> int:
         print(f"audit_tasks: no CLAUDE.md at {root}", file=sys.stderr)
         return 2
     try:
-        cfg = parse_coordinator((root / "CLAUDE.md").read_text(), today=date.today())
+        cfg = read_config(root)
     except ConfigError as e:
         print(f"audit_tasks: {e}", file=sys.stderr)
         return 2

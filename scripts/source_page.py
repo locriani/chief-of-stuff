@@ -22,7 +22,7 @@ import decision_page
 from decision_page import HEAD
 from fragment import href, tab_bar
 from issue_page import _paths, _shared, anchor, inputs, put
-from render_board import TRAILING_NUMBER, parse_tracker
+from tracker import TRAILING_NUMBER, parse_tracker
 from settings import Graph
 
 HUNK = re.compile(r"@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")

@@ -13,6 +13,7 @@ from pathlib import Path
 import subprocess
 import sys
 
+import runtimes
 from _vendor.toon_format import encode as toon_encode
 
 
@@ -78,7 +79,7 @@ def check(root: Path, pids: list[int]) -> list[dict[str, str | int]]:
             elif record is None:
                 status = "running"
             else:
-                binary = {"cursor": "agent"}.get(record["runtime"], record["runtime"])
+                binary = runtimes.binary(record["runtime"])
                 status = ("running" if binary in command and record["worktree"] in command
                           else "pid_reused")
         rows.append({"pid": pid, "name": record["name"] if record else "",

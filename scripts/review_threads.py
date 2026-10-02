@@ -21,8 +21,8 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 import backlog
-from merge_approved import _gitlab_base, forge
-from render_board import ConfigError
+from forge_review import forge
+from workspace import ConfigError
 from settings import SettingsError
 
 # ponytail: first 100 open requests, threads and comments each; paginate when a request outgrows that.
@@ -70,7 +70,7 @@ def github_threads(repo: str, approver: str, gh=backlog.run_gh) -> list[Thread]:
 
 
 def gitlab_threads(home: backlog.Backlog, project: str, approver: str, token: str, call=backlog._call) -> list[Thread]:
-    base = _gitlab_base(home, project)
+    base = home.api(project)
     listed, _, err = call("GET", f"{base}/merge_requests?" + urlencode({"state": "opened", "per_page": 100}), token, backlog.TIMEOUT)
     if err:
         raise RuntimeError(f"merge requests: {err}")
@@ -120,7 +120,7 @@ def main(argv: list[str] | None = None, gh=backlog.run_gh, call=backlog._call) -
                                    "-f", f"body={args.body}"])
                 err = err.strip() if code else ""
             else:
-                _, _, err = call("POST", f"{_gitlab_base(home, repo)}/merge_requests/{int(number)}/discussions/{tid}/notes",
+                _, _, err = call("POST", f"{home.api(repo)}/merge_requests/{int(number)}/discussions/{tid}/notes",
                                  secret, backlog.TIMEOUT, {"body": args.body})
             if err:
                 raise RuntimeError(f"{args.reply} not answered: {err}")
