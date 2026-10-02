@@ -19,6 +19,7 @@ from pathlib import Path
 import backlog
 import board_sources
 import decision_page
+import module_graph
 from decision_page import HEAD
 from fragment import href, tab_bar
 from issue_page import _paths, _shared, anchor, inputs, put
@@ -175,10 +176,10 @@ def diff(change: board_sources.Change, clone: Path, pages: Path) -> tuple[str, s
     """(merge base, `git diff` of the change's head against it), read once per head commit."""
     out = pages / CACHE / f"{change.head}.diff"
     if not out.is_file():
-        base = decision_page.fetch(change, clone)
+        base = module_graph.fetch(change, clone)
         # ponytail: the whole diff, however big; cap it per file if a change's page gets slow.
-        text = decision_page._run(["git", "-C", str(clone), "diff", "--no-color", "--no-renames", "--no-ext-diff",
-                                   "--end-of-options", base, change.head])
+        text = module_graph.run(["git", "-C", str(clone), "diff", "--no-color", "--no-renames", "--no-ext-diff",
+                                 "--end-of-options", base, change.head])
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(f"{base}\n{text}")
     base, _, text = out.read_text().partition("\n")

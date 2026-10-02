@@ -16,7 +16,7 @@ from pathlib import Path
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 
 PAGES = frozenset({"render_board", "decision_page", "issue_page", "source_page", "workers_page", "pages",
-                   "flow_chart", "gantt", "panels", "columns", "fragment"})
+                   "flow_chart", "gantt", "panels", "columns", "fragment", "module_graph"})
 
 # Every script module that draws nothing. A new one belongs here unless it renders a page.
 DRAWS_NOTHING = (

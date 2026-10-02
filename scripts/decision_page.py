@@ -18,9 +18,8 @@ server thing"). The JSON holds:
 What the JSON leaves out the page reads from the workspace (decision_context): `asked` from the first
 Log line naming `decision-<slug>`, else the file's mtime; the answer and its chip from the latest Decisions row naming
 it, the key being the option its words name; a reference's status from the tracker's stage and board_sources. Rendering
-the board re-renders every page, and `decisions.html` lists them (Decisions.dc.html). MODULE GRAPH is drawn by the
-branch-graph CLI, into `<pages dir>/.graphs/<sha>-<settings hash>/`, for the first change the references name that
-board_sources knows, from the clone the settings' `[graph]` table names.
+the board re-renders every page, and `decisions.html` lists them (Decisions.dc.html). MODULE GRAPH (module_graph.py)
+is drawn for the first change the references name that board_sources knows.
 
 A timeline `kind` colours its dot: a lane stage (implement, pr, review, triage, fix, verify, merge), `hot` or
 `designed`. A node's `state` is deployed (the default), inflight, designed or external; an edge's is deployed,
@@ -35,11 +34,8 @@ copy under `--root` when there is one. With no forge, or a reference it cannot p
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
-import os
 import re
-import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
@@ -50,10 +46,10 @@ import board_sources
 from backlog_ref import Backlog, BacklogError, GitHubBacklog, backlog_from_config
 from fragment import FONTS, TAB_CSS, href, tab_bar
 from md import section as md_section
-from pages import PagesError, from_config
+from module_graph import section as _graph
 from settings import Graph, SettingsError, load as load_settings
 from tracker import decision_rows, parse_tracker
-from workspace import ConfigError, daily_trackers, read_config
+from workspace import ConfigError, daily_trackers, pages_address, read_config
 
 NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 REQUIRED = ("headline", "ask", "options", "recommended", "why", "default")
@@ -305,101 +301,6 @@ def _figure(arch: dict, linker: Linker) -> str:
             + f"\n      </svg></div>\n      <figcaption>{chips}{not_drawn}</figcaption>\n    </figure>")
 
 
-# Mermaid draws in the page's own tokens: nodes on surface, lines and text in fg, borders in line.
-# ponytail: read once at load, so a theme switch after load keeps the old colours until a reload.
-MERMAID = ('<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>'
-           "<script>{const v=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();"
-           "mermaid.initialize({startOnLoad:true,theme:'base',themeVariables:{primaryColor:v('--surface'),"
-           "background:v('--surface'),primaryTextColor:v('--fg'),textColor:v('--fg'),lineColor:v('--fg'),"
-           "primaryBorderColor:v('--line')}})}</script>")
-# branch-graph styles drift edges by width only (older ones in its own orange); they take the legend's DRIFT colour.
-DRIFT = (re.compile(r"^(\s*linkStyle [\d,]+ )(?:stroke:#\w+,)?", re.M), r"\1stroke:#E69F00,")
-LEGEND = (("new", "NEW"), ("changed", "CHANGED"), ("removed", "REMOVED"), ("drift", "DRIFT"))
-
-
-def _run(cmd: list[str], timeout: int = 120) -> str:
-    """stdout, or ValueError with the last line of stderr."""
-    try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL,
-                             env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
-    except subprocess.TimeoutExpired:
-        raise ValueError(f"{cmd[0]} timed out after {timeout}s") from None
-    if out.returncode:
-        raise ValueError((out.stderr.strip().splitlines() or [f"{cmd[0]} exited {out.returncode}"])[-1])
-    return out.stdout
-
-
-def fetch(change: board_sources.Change, clone: Path) -> str:
-    """Fetch the change's head into the clone; return its merge base with `origin/<base>`."""
-    if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", change.head):
-        raise ValueError("the forge gave no head commit")
-    n = change.ref[1:]
-    ref = f"refs/merge-requests/{n}/head" if change.ref.startswith("!") else f"pull/{n}/head"
-    # ponytail: the fetch runs synchronously on the GET that renders the page (up to minutes on a big clone); a
-    # background job if that bites.
-    _run(["git", "-C", str(clone), "fetch", "-q", "--end-of-options", "origin", ref, *([change.base] if change.base else [])])
-    return _run(["git", "-C", str(clone), "merge-base", "--end-of-options", f"origin/{change.base}", change.head]).strip()
-
-
-def _draw(change: board_sources.Change, g: Graph, clone: Path, pages: Path) -> tuple[list[str], str]:
-    """(mermaid views, summary) from branch-graph for the change's head against its merge base, drawn once per commit
-    and settings."""
-    key = hashlib.sha256(json.dumps([g.exclude, g.max_nodes]).encode()).hexdigest()[:8]
-    out = pages / ".graphs" / f"{change.head}-{key}"
-    summary = out / "summary.txt"
-    if not summary.is_file():
-        base = fetch(change, clone)
-        out.mkdir(parents=True, exist_ok=True)
-        said = _run(["branch-graph", "--repo", str(clone), "--base", base, "--head", change.head, "--root", g.root,
-                     "--depth", str(g.depth), *(["--rules", str(clone / g.rules)] if g.rules else []),
-                     *(a for x in g.exclude for a in ("--exclude", x)), "--max-nodes", str(g.max_nodes),
-                     "--out", str(out / "page.html")])
-        summary.write_text((said.splitlines() or [""])[0])  # written last: it marks the drawing done
-    said = summary.read_text()
-    if re.search(r"\bviews=0\b", said):  # every changed module is excluded: nothing to draw
-        return [], said
-    # An older branch-graph ignores --max-nodes, writes one page.mmd, and says no views=.
-    views = sorted(out.glob("page-*.mmd"), key=lambda f: int(f.stem[5:])) or [out / "page.mmd"]
-    return [DRIFT[0].sub(DRIFT[1], f.read_text()) for f in views], said
-
-
-def _graph(change: board_sources.Change | None, graph: Graph | None, pages: Path | None, root: Path | None,
-           head: str = "MODULE GRAPH", none: str = "This decision names no change to graph.") -> str:
-    """The module graph section: branch-graph's drawing of `change`, or one line saying why there is none. The
-    decision and issue pages share it."""
-    if change:
-        kind = "MR" if change.ref.startswith("!") else "PR"
-        head += f' · <a class="ref" data-k="{kind}" {href(change.url)}>{escape(change.ref)}</a>'
-
-    def section(body: str) -> str:
-        return f"  <section>\n    <h2>{head}</h2>\n{body}\n  </section>\n"
-
-    if not change:
-        return section(f'    <p class="card">{escape(none)}</p>')
-    if not (graph and pages and root):
-        return section('    <p class="card">The module graph is not configured: the settings have no <code>[graph]</code> table.</p>')
-    try:
-        views, summary = _draw(change, graph, root / graph.clone, pages)
-    except (OSError, ValueError) as e:
-        return section(f'    <p class="card">The module graph is unavailable: {escape(str(e))}</p>')
-    if not views:
-        return section('    <p class="card">No module outside the excluded set changed.</p>')
-    head += (f' <span class="cap">{len(views)} view{"s" * (len(views) != 1)} · '
-             f"at most {graph.max_nodes} modules each</span>")
-    figures = []
-    for n, mmd in enumerate(views, 1):
-        title = re.match(r"%% view: (.*)", mmd)
-        figures.append(f'      <figure class="card fig view"><div class="cap">{n}{" · " + escape(title[1]) if title else ""}</div>'
-                       f'<div class="scroll"><pre class="mermaid">{escape(mmd)}</pre></div></figure>')
-    chips = "".join(f'<span class="chip {k}">{label}</span>' for k, label in LEGEND)
-    rest = sum(int(x) for x in re.findall(r"(\d+) more modules untouched", "".join(views)))
-    rest = f"<span>Not drawn: {rest} modules.</span>" if rest else ""
-    # Decision.dc.html's caption: "nodes +1 −1 ~1 · edges +2 −1 · drift 1".
-    caption = re.sub(r" (?:excluded|views)=\S*", "", summary).replace(" edges", " · edges").replace(" drift=", " · drift ")
-    return section('    <figure class="graph"><div class="views">\n' + "\n".join(figures) + "\n    </div>\n"
-                   f'    <figcaption>{chips}<span class="sum">{escape(caption)}</span>{rest}</figcaption></figure>\n    {MERMAID}')
-
-
 def saved(d: dict) -> dict | None:
     """The answer the user saved on the page (pages.py), until a Decisions row takes it up."""
     return d["answer"] if isinstance(d.get("answer"), dict) else None
@@ -574,8 +475,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"decision: name {args.name!r} is not lowercase letters, digits and dashes", file=sys.stderr)
         return 2
     try:
-        pages_dir, port = from_config(Path(args.root))
-    except PagesError as e:
+        pages_dir, port = pages_address(Path(args.root))
+    except (OSError, ConfigError) as e:
         print(f"decision: no page — {e}", file=sys.stderr)
         return 1
     try:

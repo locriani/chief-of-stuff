@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """One tracker issue's page, `/issues/<n>` (Task.dc.html, "Task page — laptop"), from the trackers and the cached
 forge sources: the header; its merge request (merge order, overlap, pipeline jobs, conflicts, threads); the issue's
-one Flow row; What happens next; Files changed; Architecture (the decision page's module graph); How it got here
+one Flow row; What happens next; Files changed; Architecture (module_graph.py, as on the decision page); How it got here
 (its Log lines); Review; Acceptance (the bullets under the issue body's "Acceptance" heading); its workers; and
 References. pages.py renders it on request into `issue-<n>.html`.
 """
@@ -16,8 +16,9 @@ from pathlib import Path
 
 import board_sources
 import flow_chart
-from decision_page import HEAD, _graph, _md, _section, context, pending_count, span
+from decision_page import HEAD, _md, _section, context, pending_count, span
 from fragment import href, tab_bar
+from module_graph import section as _graph
 from clock import dur as _dur
 from task_forge import forge_ends
 from tracker import TRAILING_NUMBER, parse_tracker, resolve_due as _resolve_due
