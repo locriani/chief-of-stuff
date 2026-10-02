@@ -11,6 +11,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import runtimes
 from shell_setup import clean_env, exec_login, resolve
 
 
@@ -34,7 +35,7 @@ def alive(path: Path) -> bool:
         # A reused PID in a different tree must not resurrect an old worker.
         out = subprocess.run(["ps", "-ww", "-p", str(pid), "-o", "command="], capture_output=True,
                              text=True, timeout=3)
-        binary = {"cursor": "agent"}.get(data["runtime"], data["runtime"])
+        binary = runtimes.binary(data["runtime"])
         return out.returncode == 0 and binary in out.stdout and data["worktree"] in out.stdout
     except (OSError, ValueError, KeyError, TypeError):
         return False
@@ -53,7 +54,7 @@ def main(argv: list[str] | None = None) -> int:
         resume.add_argument("--worktree", type=Path, required=True)
         resume.add_argument("--session-id", required=True)
         options = resume.parse_args(argv[1:])
-        binary = resolve("codex")
+        binary = resolve(runtimes.get("codex").binary)
         if not binary:
             resume.error("codex is unavailable on PATH")
         path = options.root / ".chief-of-stuff" / "sessions" / f"{options.name}.json"

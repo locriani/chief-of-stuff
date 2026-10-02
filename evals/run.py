@@ -38,6 +38,9 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import make_repo  # noqa: E402
+# Package-style, as start_coordinator imports it, so `host_prompt` and this module share one copy.
+sys.path.insert(1, str(Path(__file__).resolve().parent.parent))
+from scripts import runtimes  # noqa: E402
 
 EVALS = Path(__file__).resolve().parent
 PLUGIN_ROOT = EVALS.parent
@@ -48,7 +51,6 @@ AGENT = "chief-of-stuff"
 # `--model` flag beats the frontmatter, so `check_arm` sees sonnet and passes rather than failing
 # the family check. Supersedes the 2026-09-16 "we don't use Sonnet for this" for the runner.
 DEFAULT_MODEL = "sonnet"
-RUNTIMES = ("claude", "codex", "cursor", "agy")
 
 # Isolation: `--setting-sources project` drops user settings (and with them user plugins and
 # permission rules) but still loads the fixture CLAUDE.md. `--restricted` was probed and skips
@@ -1103,7 +1105,7 @@ def host_command(runtime: str, model: str, prompt: str, work: Path, root: Path,
                  persistent: bool = False, effort: str | None = None,
                  extra_write: Path | None = None) -> list[str]:
     """Build an isolated, one-turn headless command for a non-Claude CLI."""
-    binary = shutil.which({"codex": "codex", "cursor": "agent", "agy": "agy"}[runtime])
+    binary = shutil.which(runtimes.get(runtime).binary)
     if not binary:
         raise RuntimeError(f"{runtime} CLI is unavailable on PATH")
     servers = (mcp_config or {}).get("mcpServers", {})
@@ -1708,7 +1710,7 @@ def run_turns(spec: dict[str, Any], arm: str, model: str, out: Path, work: Path,
 
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--runtime", choices=RUNTIMES, default="claude", help="CLI backend; default claude")
+    ap.add_argument("--runtime", choices=runtimes.NAMES, default="claude", help="CLI backend; default claude")
     ap.add_argument("--arm", choices=["baseline", "agent"], required=True)
     ap.add_argument("--model", default=None)
     ap.add_argument("--effort", choices=("low", "medium", "high", "xhigh", "max"),

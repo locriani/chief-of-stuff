@@ -16,11 +16,11 @@ import threading
 from datetime import date
 from pathlib import Path
 
+from scripts import runtimes
 from scripts._vendor.toon_format import ToonDecodeError, decode as toon_decode
 from scripts.shell_setup import ShellError, login_argv, resolve
 
 SOURCE = Path(__file__).resolve().parent
-BINARIES = {"claude": "claude", "codex": "codex", "cursor": "agent", "agy": "agy"}
 WATCH_INTERVAL = 5 * 60
 
 
@@ -74,21 +74,24 @@ def prompt(runtime: str, release: Path, root: Path) -> str:
         mailbox_check = (f'python3 "{release / "scripts" / "inbox.py"}" '
                          f'--mailbox-dir "{root / ".chief-of-stuff" / "mailbox"}" '
                          'list --recipient coordinator --unread')
-        host_schedule = {
-            "agy": ("After opening the day, create one Antigravity `Schedule` at `*/5 * * * *` "
-                    f"to run `{mailbox_check}` and process unread worker messages as a normal "
-                    "coordinator turn. The CLI `/schedule \"*/5 * * * *\" ...` is the equivalent "
-                    "when the Schedule tool is unavailable. Avoid duplicates and cancel a "
-                    "persistent schedule when this session ends."),
-            "cursor": ("After opening the day, start one Cursor in-session `/loop 5m` to run "
-                       f"`{mailbox_check}` and process unread worker messages as a normal "
-                       "coordinator turn. Stop the loop when this session ends. If `/loop` is "
-                       "unavailable, rely on the watcher and check at the start of each turn."),
-            "codex": ("Codex CLI has no in-session schedule. The session-scoped watcher checks "
-                      "every five minutes and notifies on new messages. At the start of every "
-                      "turn, read the inbox and reconcile the tracker and board; do not claim "
-                      "that a notification woke this conversation."),
-        }[runtime]
+        host = runtimes.get(runtime)
+        if not host.schedules:
+            host_schedule = (f"{host.display} has no in-session schedule. The session-scoped watcher checks "
+                             "every five minutes and notifies on new messages. At the start of every "
+                             "turn, read the inbox and reconcile the tracker and board; do not claim "
+                             "that a notification woke this conversation.")
+        else:
+            host_schedule = {
+                "agy": ("After opening the day, create one Antigravity `Schedule` at `*/5 * * * *` "
+                        f"to run `{mailbox_check}` and process unread worker messages as a normal "
+                        "coordinator turn. The CLI `/schedule \"*/5 * * * *\" ...` is the equivalent "
+                        "when the Schedule tool is unavailable. Avoid duplicates and cancel a "
+                        "persistent schedule when this session ends."),
+                "cursor": ("After opening the day, start one Cursor in-session `/loop 5m` to run "
+                           f"`{mailbox_check}` and process unread worker messages as a normal "
+                           "coordinator turn. Stop the loop when this session ends. If `/loop` is "
+                           "unavailable, rely on the watcher and check at the start of each turn."),
+            }[runtime]
         rules = rules.replace("`CronList`, then `CronCreate` only when no job's prompt starts `[Scheduled check]` (see Check)",
                               "confirm the session-scoped watcher (see Check)")
         rules = rules.replace("list sessions;", "inspect registered workers;")
@@ -195,16 +198,17 @@ def watcher(root: Path, release: Path, stop: threading.Event, interval: float = 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--runtime", choices=BINARIES, required=True)
+    ap.add_argument("--runtime", choices=runtimes.NAMES, required=True)
     ap.add_argument("--root", type=Path, required=True)
     ap.add_argument("--install-dir", type=Path, default=Path.home() / ".local" / "share" / "chief-of-stuff")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
     root = args.root.resolve()
     try:
-        binary = resolve(BINARIES[args.runtime])
+        executable = runtimes.get(args.runtime).binary
+        binary = resolve(executable)
         if not binary:
-            raise Refused(f"{BINARIES[args.runtime]} is unavailable in the configured login shell")
+            raise Refused(f"{executable} is unavailable in the configured login shell")
         if not root.is_dir():
             raise Refused(f"workspace {root} does not exist")
         release = install(SOURCE, args.install_dir.expanduser().resolve())

@@ -21,6 +21,7 @@ import start_coordinator as start  # noqa: E402
 import dispatch_prompt as dispatch  # noqa: E402
 import session_exec  # noqa: E402
 import process_status  # noqa: E402
+import runtimes  # noqa: E402
 import spawn_session as spawn  # noqa: E402
 from evals.test_spawn_session import CLAUDE, TRACKER  # noqa: E402
 
@@ -81,7 +82,7 @@ class CoordinatorLaunchTest(unittest.TestCase):
     def test_first_message_does_not_presume_a_new_day(self):
         # A launch on a day that already has a log is a Resume; "Open the day." told it otherwise.
         release = start.install(ROOT, self.install_dir)
-        for runtime in start.BINARIES:
+        for runtime in runtimes.NAMES:
             with self.subTest(runtime=runtime):
                 first = start.command(runtime, "/bin/fake", release, self.root)[-1]
                 self.assertTrue(first.endswith(start.START), first[-120:])
@@ -107,7 +108,7 @@ class CoordinatorLaunchTest(unittest.TestCase):
 
     def test_host_adapters_preserve_automatic_one_shot_dispatch(self):
         release = start.install(ROOT, self.install_dir)
-        for runtime in start.BINARIES:
+        for runtime in runtimes.NAMES:
             with self.subTest(runtime=runtime):
                 rendered = start.prompt(runtime, release, self.root)
                 self.assertIn("automatically assign and launch ready tasks", rendered)
@@ -248,7 +249,7 @@ class WorkerRuntimeTest(unittest.TestCase):
             self.assertIn("--login-shell", text)
 
     def test_assignment_names_real_host_tools_and_mailbox(self):
-        for runtime in ("claude", "agy", "codex", "cursor"):
+        for runtime in runtimes.NAMES:
             body = dispatch.compose(self.root, "2026-09-18", "Security audit",
                                     worktree=Path("/tmp/wt"), name="impl01", runtime=runtime)
             self.assertIn('wait --recipient "impl01" --timeout 300', body)

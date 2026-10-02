@@ -24,7 +24,7 @@ DRAWS_NOTHING = (
     "board_guard", "board_sources", "tracker_write", "make_worktree", "dispatch_prompt", "kanban", "audit_tasks",
     "one_shot", "spawn_session", "session_exec", "shell_setup", "process_status", "merge_approved",
     "review_threads", "notify", "init_workspace", "install_model_guidance", "migrate_backlog", "inbox",
-    "probe_health",
+    "probe_health", "runtimes",
 )
 
 PROBE = "import sys; sys.path.insert(0, sys.argv[1]); import {name}; print(' '.join(sorted(set(sys.modules) & set(sys.argv[2:]))))"

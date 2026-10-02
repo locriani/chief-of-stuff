@@ -17,6 +17,7 @@ import backlog
 import dispatch_prompt
 import kanban
 import ownership
+import runtimes
 import tracker_write
 from _vendor.toon_format import ToonDecodeError, decode as toon_decode, encode as toon_encode
 from md import cells as _cells, is_separator as _is_separator
@@ -344,7 +345,7 @@ def run(*, root: Path, day: str | None, task: str, cwd: Path, name: str,
     chosen_day = day or datetime.now(cfg.zone).date().isoformat()
     body = dispatch_prompt.compose(root, chosen_day, task, worktree=cwd, name=name,
                                    runtime=runtime, one_shot=True)
-    binary = resolve({"cursor": "agent"}.get(runtime, runtime))
+    binary = resolve(runtimes.binary(runtime))
     if not binary:
         raise ValueError(f"{runtime} is unavailable in the configured interactive login shell")
     dispatch = cwd / dispatch_prompt.PROMPT_DIR / "dispatch.md"

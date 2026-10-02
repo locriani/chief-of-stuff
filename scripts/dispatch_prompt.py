@@ -20,6 +20,7 @@ from tracker import parse_tracker, short_name  # noqa: E402
 from workspace import ConfigError, read_config  # noqa: E402
 from settings import SettingsError, Workflow, load as load_settings  # noqa: E402
 import ownership  # noqa: E402
+import runtimes  # noqa: E402
 
 
 class RefusedError(ValueError):
@@ -77,7 +78,13 @@ def mailbox_check(runtime: str, name: str, inbox_script: str) -> str:
               f'For a bounded idle check, run `{wait}`; it returns unread TOON or `[]` after five '
               "minutes and does not acknowledge messages. Use these shared inbox commands; do not "
               "create polling scripts or background jobs in the workspace. ")
-    if runtime == "claude":
+    host = runtimes.get(runtime)
+    if not host.schedules:
+        mechanism = (f"{host.display} has no in-session scheduling interface. Check at the start of every "
+                     "turn, before each new step, and after each commit. While this turn is open, "
+                     "use the bounded wait above when idle. A finished conversation cannot wake "
+                     "itself; handle later messages on the next turn.")
+    elif runtime == "claude":
         mechanism = (f'Use `CronList`, then create one in-session `CronCreate` job at `*/5 * * * *` '
                      f'only if no job starts `[Mailbox check] {name}`. Its prompt is '
                      f'`[Mailbox check] {name}: {command}; process unread messages`. If cron tools '
@@ -93,11 +100,6 @@ def mailbox_check(runtime: str, name: str, inbox_script: str) -> str:
         mechanism = (f'Start one Cursor in-session `/loop 5m` with instruction '
                      f'`{command}; process unread messages`. Stop the loop when this session ends. '
                      "If `/loop` is unavailable, check at the start of every turn and after each commit.")
-    else:
-        mechanism = ("Codex CLI has no in-session scheduling interface. Check at the start of every "
-                     "turn, before each new step, and after each commit. While this turn is open, "
-                     "use the bounded wait above when idle. A finished conversation cannot wake "
-                     "itself; handle later messages on the next turn.")
     return "**Keep this mailbox live.** After registration, " + common + mechanism
 
 
@@ -390,7 +392,7 @@ def compose(root: Path, day: str | None, task: str, worktree: Path | None = None
                         "branches and generated files. Do not infer another name for the user from a file. "
                         "If you spawn a subagent, carry this rule into its prompt.\n")
     if runtime != "claude":
-        host = {"agy": "Antigravity", "codex": "Codex CLI", "cursor": "Cursor CLI"}[runtime]
+        host = runtimes.get(runtime).display
         registration = NON_CLAUDE_REGISTER.format(host=host, name=name or UNNAMED,
             inbox_script=inbox_script, worktree=worktree or "this worktree", task=item)
         if runtime == "agy":
