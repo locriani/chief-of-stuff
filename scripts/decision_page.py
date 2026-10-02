@@ -53,7 +53,7 @@ from md import section as md_section
 from pages import PagesError, from_config
 from settings import Graph, SettingsError, load as load_settings
 from tracker import decision_rows, parse_tracker
-from workspace import ConfigError, daily_trackers, parse_coordinator
+from workspace import ConfigError, daily_trackers, read_config
 
 NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 REQUIRED = ("headline", "ask", "options", "recommended", "why", "default")
@@ -526,7 +526,7 @@ def forge(root: Path) -> Backlog | GitHubBacklog | None:
 def decision_context(root: Path, day: date, now: datetime | None = None) -> Context:
     """What the decisions pages read from the workspace: every tracker's Decisions rows and Log lines, `day`'s
     tasks, the cached forge sources and the [kanban] label that holds an issue."""
-    cfg = parse_coordinator((root / "CLAUDE.md").read_text(), today=date.today())
+    cfg = read_config(root)
     now = now or datetime.now(cfg.zone).replace(second=0, microsecond=0)
 
     def at(d: date, hhmm: str) -> datetime | None:

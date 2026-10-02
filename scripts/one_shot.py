@@ -231,7 +231,7 @@ def update_tracker(path: Path, task: str, name: str, owner: str, status: str, re
 
 def reconcile(root: Path, day: str, task: str, name: str, cwd: Path, exit_code: int,
               before_head: str | None = None) -> dict:
-    cfg = dispatch_prompt._config(root)
+    cfg = dispatch_prompt.config(root)
     settings = load_settings(root, cfg.settings_path)
     status, reason, changes = worker_result(cwd / RESULT, exit_code)
     actual = changed_files(cwd)
@@ -340,7 +340,7 @@ def slot(trees: Path, cwd: Path, task: str, cap: int | None):
 def run(*, root: Path, day: str | None, task: str, cwd: Path, name: str,
         runtime: str, agent_type: str | None, model: str, effort: str, dry_run: bool,
         timeout_minutes: int = 60) -> int:
-    cfg = dispatch_prompt._config(root)
+    cfg = dispatch_prompt.config(root)
     chosen_day = day or datetime.now(cfg.zone).date().isoformat()
     body = dispatch_prompt.compose(root, chosen_day, task, worktree=cwd, name=name,
                                    runtime=runtime, one_shot=True)

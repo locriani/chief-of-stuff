@@ -23,7 +23,7 @@ from md import BULLET, section as _section, unquote as _unquote  # noqa: E402
 from settings import Kanban, SettingsError, load as load_settings  # noqa: E402
 from tracker import (NOBODY, TRAILING_NUMBER, UNASSIGNED, Session, Task, bare_name as _bare_name,  # noqa: E402
                      decision_rows, issue_key, parse_tracker, resolve_due as _resolve_due)
-from workspace import (Config, ConfigError, Deadline, daily_trackers, parse_coordinator,  # noqa: E402
+from workspace import (Config, ConfigError, Deadline, daily_trackers, read_config,  # noqa: E402
                        with_decision_deadlines, with_workspace_decision_deadlines)
 import board_sources  # noqa: E402
 import columns  # noqa: E402
@@ -933,10 +933,9 @@ h2+.meta{{display:inline-block}}
 def write(root: Path, day: str | None = None) -> tuple[Path, Config, datetime, str, dict]:
     """Write `<day>-board.html` and `decisions.html` into the pages dir. The page server calls this in
     process; a missing CLAUDE.md, tracker or setting raises ConfigError."""
-    claude_md = root / "CLAUDE.md"
-    if not claude_md.is_file():
+    if not (root / "CLAUDE.md").is_file():
         raise ConfigError(f"no CLAUDE.md at {root}")
-    cfg = parse_coordinator(claude_md.read_text(), today=date.today())
+    cfg = read_config(root)
     now = datetime.now(cfg.zone).replace(microsecond=0)
     day = day or now.date().isoformat()
     try:

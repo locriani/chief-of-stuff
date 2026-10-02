@@ -137,6 +137,11 @@ def parse_coordinator(text: str, today: date) -> Config:
     )
 
 
+def read_config(root: Path) -> Config:
+    """`root`'s `## Coordinator` block, read from its CLAUDE.md. Raises OSError or ConfigError."""
+    return parse_coordinator((root / "CLAUDE.md").read_text(), today=date.today())
+
+
 def worktrees_dir(claude_md: str) -> str:
     """The `Worktrees:` line of the `## Coordinator` block, or "" when there is none (trees sit at the root)."""
     for line in _section(claude_md, "## Coordinator"):

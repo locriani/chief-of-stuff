@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import md  # noqa: E402
 import render_board as rb  # noqa: E402
+from workspace import parse_coordinator  # noqa: E402
 import tracker as tr  # noqa: E402
 from backlog import Backlog, GitHubBacklog  # noqa: E402
 import settings as st  # noqa: E402
@@ -115,7 +116,7 @@ LOG = """# 2026-09-16
 
 class ConfigTest(unittest.TestCase):
     def test_parses_coordinator_block(self) -> None:
-        cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
         self.assertEqual(cfg.user, "Robin")
         self.assertEqual(cfg.log_dir, "daily/")
         self.assertEqual(cfg.tracker_path("2026-09-16"), "daily/2026-09-16-tracker.md")
@@ -128,10 +129,10 @@ class ConfigTest(unittest.TestCase):
 
     def test_missing_block_raises(self) -> None:
         with self.assertRaises(rb.ConfigError):
-            rb.parse_coordinator("# Workspace\n\nnothing here\n", today=NOW.date())
+            parse_coordinator("# Workspace\n\nnothing here\n", today=NOW.date())
 
     def test_board_line_without_url(self) -> None:
-        cfg = rb.parse_coordinator(CLAUDE_MD.replace("- Board: `mcp__board__publish`; URL board-7", "- Board: Artifact"), today=NOW.date())
+        cfg = parse_coordinator(CLAUDE_MD.replace("- Board: `mcp__board__publish`; URL board-7", "- Board: Artifact"), today=NOW.date())
         self.assertEqual(cfg.board_tool, "Artifact")
         self.assertIsNone(cfg.board_url)
 
@@ -242,7 +243,7 @@ class SessionParseTest(unittest.TestCase):
 
 class BarTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
         self.tasks = {task.item: task for task in rb.parse_tracker(TRACKER).tasks}
 
     def bar(self, item: str) -> rb.Bar:
@@ -295,7 +296,7 @@ class DoneClockAfterMidnightTest(unittest.TestCase):
 
     def setUp(self) -> None:
         self.now = datetime(2026, 9, 17, 0, 5, tzinfo=CT)
-        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=self.now.date())
+        self.cfg = parse_coordinator(CLAUDE_MD, today=self.now.date())
         self.by = {t.item: t for t in rb.parse_tracker(MIDNIGHT_TRACKER).tasks}
 
     def test_a_clock_later_than_nows_time_of_day_names_yesterday(self) -> None:
@@ -312,7 +313,7 @@ class DoneClockAfterMidnightTest(unittest.TestCase):
 
 class RenderTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
         self.html = rb.render(TRACKER, self.cfg, NOW)
 
     def test_the_page_declares_its_charset_first(self) -> None:
@@ -406,7 +407,7 @@ Distilled from the brief. This line is a note, not an item.
 
 class RequirementsTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.cfg = rb.parse_coordinator(CLAUDE_MD_REQ, today=NOW.date())
+        self.cfg = parse_coordinator(CLAUDE_MD_REQ, today=NOW.date())
 
     def render(self, now: datetime = NOW, final: str | None = REQS, launch: str | None = None) -> str:
         return rb.render(TRACKER, self.cfg, now, requirements={"Final": final, "Launch": launch})
@@ -416,7 +417,7 @@ class RequirementsTest(unittest.TestCase):
         self.assertEqual(final.at, datetime(2026, 9, 20, 12, 0, tzinfo=CT))
         self.assertEqual(final.requirements, "daily/final-reqs.md")
         self.assertEqual(launch.requirements, "daily/launch-reqs.md")
-        plain = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        plain = parse_coordinator(CLAUDE_MD, today=NOW.date())
         self.assertEqual([d.requirements for d in plain.deadlines], [None, None])
 
     def test_parse_requirements(self) -> None:
@@ -459,7 +460,7 @@ DARK = {"--bg": "#1C1813", "--surface": "#262019", "--fg": "#EFE6D2", "--muted":
 
 class BrandTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
         self.html = rb.render(TRACKER, self.cfg, NOW)
         self.css = self.html.split("<style>", 1)[1].split("</style>", 1)[0]
 
@@ -496,7 +497,7 @@ class OrphanAndUnassignedTest(unittest.TestCase):
     )
 
     def setUp(self) -> None:
-        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
         self.html = rb.render(self.TRACKER, self.cfg, NOW)
 
     def test_orphaned_is_an_active_kind(self) -> None:
@@ -517,7 +518,7 @@ class PhoneTest(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
         self.html = rb.render(TRACKER, self.cfg, NOW)
         self.css = self.html.split("<style>")[1].split("</style>")[0]
         at = self.css.index("@media (max-width:420px)")
@@ -663,7 +664,7 @@ TRACKER_RESUME = TRACKER.replace("## Tasks", "## Resume\n\n" + RESUME + "\n## Ta
 
 class ResumeBlockTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
 
     def test_parses_the_block_into_fields(self) -> None:
         block = rb.parse_resume(TRACKER_RESUME)
@@ -739,7 +740,7 @@ class ResumeLegibilityTest(unittest.TestCase):
 """
 
     def setUp(self) -> None:
-        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
         self.tracker = TRACKER.replace("## Tasks", "## Resume\n\n" + self.LIVE + "\n## Tasks", 1)
         self.block = rb.parse_resume(self.tracker)
 
@@ -847,7 +848,7 @@ class EstimateTest(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
         self.tasks = [task for task in rb.parse_tracker(QUEUE_TRACKER).tasks if task.kind != "done"]
         self.by = {task.item: task for task in self.tasks}
         self.est = rb.estimates(self.tasks, self.cfg, NOW)
@@ -969,12 +970,12 @@ class SizeGrammarTest(unittest.TestCase):
         self.assertIsNone(self.by["B running"].ran)
 
     def test_a_done_range_draws_the_bar_as_before(self) -> None:
-        cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
         b = rb.day_bar(self.by["K1 done"], cfg, NOW)
         self.assertEqual((b.end, b.end_src), (datetime(2026, 9, 16, 10, 0, tzinfo=CT), "state"))
 
     def test_history_means_per_size_with_an_all_sizes_row(self) -> None:
-        cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
         h = rb.history(self.t.tasks, cfg, NOW)
         self.assertEqual(h["M"], (timedelta(hours=1, minutes=30), 2))
         self.assertEqual(h["S"], (timedelta(minutes=30), 1))
@@ -984,7 +985,7 @@ class SizeGrammarTest(unittest.TestCase):
         self.assertNotIn("L", h)
 
     def test_no_range_anywhere_means_no_history(self) -> None:
-        cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
         self.assertEqual(rb.history(rb.parse_tracker(QUEUE_TRACKER).tasks, cfg, NOW), {})
 
 
@@ -998,7 +999,7 @@ class SizedEstimateTest(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
         self.tasks = list(rb.parse_tracker(SIZED_TRACKER).tasks)
         self.active = [task for task in self.tasks if task.kind != "done"]
         self.by = {task.item: task for task in self.tasks}
@@ -1079,8 +1080,8 @@ class DeadlineScopeTest(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        self.cfg = rb.parse_coordinator(CLAUDE_MD_EXAM, today=SUNDAY.date())
-        self.governs = rb.parse_coordinator(CLAUDE_MD_EXAM_GOVERNS, today=SUNDAY.date())
+        self.cfg = parse_coordinator(CLAUDE_MD_EXAM, today=SUNDAY.date())
+        self.governs = parse_coordinator(CLAUDE_MD_EXAM_GOVERNS, today=SUNDAY.date())
         self.tasks = list(rb.parse_tracker(SUNDAY_TRACKER).tasks)
         self.by = {task.item: task for task in self.tasks}
 
@@ -1089,7 +1090,7 @@ class DeadlineScopeTest(unittest.TestCase):
         self.assertEqual(exam.scope, "named")
         self.assertEqual({d.scope for d in self.cfg.deadlines if d.name != exam.name}, {"all"})
         self.assertEqual({d.scope for d in self.governs.deadlines}, {"all"})
-        both = rb.parse_coordinator(CLAUDE_MD.replace("  - Final: 2026-09-20 12:00", "  - Final: 2026-09-20 12:00; named tasks only; requirements `reqs.md`"), today=SUNDAY.date())
+        both = parse_coordinator(CLAUDE_MD.replace("  - Final: 2026-09-20 12:00", "  - Final: 2026-09-20 12:00; named tasks only; requirements `reqs.md`"), today=SUNDAY.date())
         final = next(d for d in both.deadlines if d.name == "Final")
         self.assertEqual((final.scope, final.requirements), ("named", "reqs.md"))
 
@@ -1140,7 +1141,7 @@ class DecisionDeadlineTest(unittest.TestCase):
     """A recorded deadline reaches the clock, markers and task horizon on the board."""
 
     def setUp(self) -> None:
-        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
 
     @staticmethod
     def tracker(*items: str | tuple[str, str]) -> str:
@@ -1168,7 +1169,7 @@ class DecisionDeadlineTest(unittest.TestCase):
                       rb.render(tracker, self.cfg, NOW))
 
     def test_changed_time_keeps_the_configured_requirements_file(self) -> None:
-        cfg = rb.parse_coordinator(CLAUDE_MD_REQ, today=NOW.date())
+        cfg = parse_coordinator(CLAUDE_MD_REQ, today=NOW.date())
         updated = rb.with_decision_deadlines(cfg, self.tracker("deadline: Final 2026-09-16 17:00"),
                                              NOW.date())
         final = next(d for d in updated.deadlines if d.name == "Final")
@@ -1267,7 +1268,7 @@ class TracerTest(unittest.TestCase):
     """The one task, end to end. Every assertion here is a layer of the design."""
 
     def setUp(self) -> None:
-        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
         self.tracker = rb.parse_tracker(TRACKER_NAMED)
 
     def test_the_name_column_parses_and_an_unnamed_row_falls_back(self) -> None:
@@ -1329,7 +1330,7 @@ class SectionOrderTest(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
         self.html = rb.render(TRACER_TRACKER, self.cfg, NOW)
 
     def test_section_headings_appear_in_the_right_order(self) -> None:
@@ -1378,7 +1379,7 @@ class RollingAxisTest(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
         self.html = rb.render(TRACER_TRACKER, self.cfg, NOW)
 
     def test_the_24h_section_is_a_gantt_chart(self) -> None:
@@ -1406,7 +1407,7 @@ class SwimlanesTest(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
 
     def test_swimlanes_groups_bars_by_deadline(self) -> None:
         tasks = [t for t in rb.parse_tracker(TRACER_TRACKER).tasks if not t.standing]
@@ -1442,7 +1443,7 @@ class BarLabelTest(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
         self.html = rb.render(TRACER_TRACKER, self.cfg, NOW)
 
     def test_the_bar_carries_the_task_label_as_visible_text(self) -> None:
@@ -1479,7 +1480,7 @@ class InlineMarksTest(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
 
     def test_unmark_drops_pairs_and_keeps_a_lone_marker(self) -> None:
         self.assertEqual(md.unmark("**Deploy main.** x"), "Deploy main. x")
@@ -1636,7 +1637,7 @@ class TaskStateCarriesAShaTest(unittest.TestCase):
         read the code and said the sha would show; it also said its own read was a hypothesis."""
         text = SIZED_TRACKER.replace("| A oldest | worker | open | 2026-09-15 |  | M | c |",
                                      f"| A oldest | worker | done 09:00–10:00 {self.SHA} | 2026-09-15 |  | M | c |")
-        cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
         html = rb.render(text, cfg, NOW)
         self.assertIn(self.SHA, html)
 
@@ -1726,7 +1727,7 @@ class StandingRowsAreNotTasksTest(unittest.TestCase):
 """
 
     def setUp(self) -> None:
-        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
         self.html = rb.render(self.TRACKER, self.cfg, NOW)
 
     @staticmethod
@@ -1783,7 +1784,7 @@ class IssueColumnTest(unittest.TestCase):
     """The tracker's `issue` column, and the board's reading of it: a link, or a warning where a task has none."""
 
     def setUp(self) -> None:
-        self.cfg = rb.parse_coordinator(CLAUDE_MD_ISSUES, today=NOW.date())
+        self.cfg = parse_coordinator(CLAUDE_MD_ISSUES, today=NOW.date())
 
     def test_nine_columns_parse(self) -> None:
         tasks = rb.parse_tracker(TRACKER_ISSUED).tasks
@@ -1798,17 +1799,17 @@ class IssueColumnTest(unittest.TestCase):
 
     def test_backlog_is_read_from_the_block(self) -> None:
         self.assertEqual(self.cfg.backlog, GitHubBacklog("o/backlog"))
-        self.assertIsNone(rb.parse_coordinator(CLAUDE_MD, today=NOW.date()).backlog)
+        self.assertIsNone(parse_coordinator(CLAUDE_MD, today=NOW.date()).backlog)
 
 
     def test_a_gitlab_backlog_is_read_from_the_block(self) -> None:
         """Zach, 2026-09-23 22:40: "make everything use gitlab now that we have that going"."""
         text = CLAUDE_MD.replace("- Human-only", "- Backlog: GitLab; host https://gl.example; project o/backlog\n- Human-only")
-        self.assertEqual(rb.parse_coordinator(text, today=NOW.date()).backlog, Backlog(host="https://gl.example", project="o/backlog"))
+        self.assertEqual(parse_coordinator(text, today=NOW.date()).backlog, Backlog(host="https://gl.example", project="o/backlog"))
 
     def test_an_unreadable_backlog_line_is_a_config_error(self) -> None:
         with self.assertRaises(rb.ConfigError):
-            rb.parse_coordinator(CLAUDE_MD.replace("- Human-only", "- Backlog: GitHub issues\n- Human-only"), today=NOW.date())
+            parse_coordinator(CLAUDE_MD.replace("- Human-only", "- Backlog: GitHub issues\n- Human-only"), today=NOW.date())
 
 
 class SettingsLineTest(unittest.TestCase):
@@ -1816,14 +1817,14 @@ class SettingsLineTest(unittest.TestCase):
 
     def test_read(self) -> None:
         text = CLAUDE_MD.replace("- Human-only", "- Settings: `chief-of-stuff.toml`\n- Human-only")
-        self.assertEqual(rb.parse_coordinator(text, today=NOW.date()).settings_path, "chief-of-stuff.toml")
+        self.assertEqual(parse_coordinator(text, today=NOW.date()).settings_path, "chief-of-stuff.toml")
 
     def test_absent(self) -> None:
-        self.assertIsNone(rb.parse_coordinator(CLAUDE_MD, today=NOW.date()).settings_path)
+        self.assertIsNone(parse_coordinator(CLAUDE_MD, today=NOW.date()).settings_path)
 
     def test_prose_after_the_path_is_ignored(self) -> None:
         text = CLAUDE_MD.replace("- Human-only", "- Settings: chief-of-stuff.toml (notify, day times)\n- Human-only")
-        self.assertEqual(rb.parse_coordinator(text, today=NOW.date()).settings_path, "chief-of-stuff.toml")
+        self.assertEqual(parse_coordinator(text, today=NOW.date()).settings_path, "chief-of-stuff.toml")
 
 
 class TasksHeadingTest(unittest.TestCase):
@@ -1867,7 +1868,7 @@ class LaneColumnsTest(unittest.TestCase):
 
 
     def test_the_board_draws_a_lane_table_and_an_unlaned_task_is_a_row(self) -> None:
-        cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
         html = rb.render(TRACKER_LANED, cfg, NOW, lanes=self.LANES)
         self.assertIn('<section id="flow"><h2>Lanes</h2>', html)
         self.assertIn('<table class="lane-table"', html)
@@ -1922,7 +1923,7 @@ class LaneTableTest(unittest.TestCase):
     LANES = {"build": st.Lane(("implement", "pr", "review", "triage", "merge"), ("triage", "merge"))}
 
     def setUp(self) -> None:
-        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
         self.html = rb.render(LANE_TABLE_TRACKER, self.cfg, NOW, lanes=self.LANES)
         # The table is inside the Lanes section.
         m = re.search(r'<table class="lane-table"[^>]*>(.*?)</table>', self.html, re.S)
@@ -1999,7 +2000,7 @@ class DensityTest(unittest.TestCase):
     """
 
     def test_item_text_bounded(self) -> None:
-        cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
         html = rb.render(TRACER_TRACKER, cfg, NOW)
         self.assertLess(len(html), 32_000,
                         f"Board page is {len(html)} bytes, budget is 32 000")
@@ -2038,7 +2039,7 @@ class BodyLaneTest(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
         self.html = rb.render(TRACKER, self.cfg, NOW, log_text=BODY_LOG)
         # The day-strip section
         self.day = self.html.split('id="day-strip"')[1].split('</section>')[0] if 'id="day-strip"' in self.html else ""

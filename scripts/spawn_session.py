@@ -252,7 +252,7 @@ def main(argv_in: list[str] | None = None) -> int:
                     help="one-shot run limit before human review (default: 60)")
     args = ap.parse_args(argv_in)
     try:
-        config = dispatch_prompt._config(Path(args.root))
+        config = dispatch_prompt.config(Path(args.root))
         settings = load_settings(Path(args.root), config.settings_path)
         if args.model_class and not (args.model or args.runtime):
             # #111: explicit flags always win; otherwise the class's first entry, effort included.

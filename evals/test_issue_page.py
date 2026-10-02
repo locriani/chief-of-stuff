@@ -31,6 +31,7 @@ import flow_chart as fc  # noqa: E402
 import one_shot  # noqa: E402
 import pages as pg  # noqa: E402
 import render_board as rb  # noqa: E402
+from workspace import parse_coordinator  # noqa: E402
 import tracker_write as tw  # noqa: E402
 from test_flow_chart import BoardTest, CT, KANBAN, LANES, NOW, TODAY, TODAY_TRACKER, YESTERDAY, at, merged  # noqa: E402
 from test_pages import get  # noqa: E402
@@ -481,7 +482,7 @@ class WhatHappensNextTest(unittest.TestCase):
 class BoardLinkTest(unittest.TestCase):
     def test_a_flow_row_for_an_issue_links_to_its_page(self):
         # Flow row → Task page: the board's row for #109 opens /issues/109.
-        cfg = rb.parse_coordinator("## Coordinator\n\n- User: Robin\n- Daily log dir: `daily/`\n"
+        cfg = parse_coordinator("## Coordinator\n\n- User: Robin\n- Daily log dir: `daily/`\n"
                                    "- Tracker: `daily/<date>-tracker.md`\n- Timezone: America/Chicago\n", today=TODAY)
         html = rb.render(TODAY_TRACKER, cfg, NOW, lanes=LANES, tracker_day=TODAY, kanban=KANBAN)
         flow = html[html.index("<h2>Flow ·"):]

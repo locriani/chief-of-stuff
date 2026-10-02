@@ -26,6 +26,7 @@ sys.path[:0] = [str(HERE.parent / "scripts"), str(HERE)]
 import board_sources as bs  # noqa: E402
 import panels  # noqa: E402
 import render_board as rb  # noqa: E402
+from workspace import parse_coordinator  # noqa: E402
 import workers_page  # noqa: E402
 
 ZONE = ZoneInfo("America/Chicago")
@@ -44,7 +45,7 @@ def make_workers(tracker_body: str) -> tuple[bs.Worker, ...]:
     trees, so only the tracker's own Sessions and Tasks rows can produce a worker."""
     root = Path(tempfile.mkdtemp())
     (root / "CLAUDE.md").write_text(CLAUDE_MD)
-    cfg = rb.parse_coordinator(CLAUDE_MD, today=DAY)
+    cfg = parse_coordinator(CLAUDE_MD, today=DAY)
     tracker = rb.parse_tracker(tracker_body)
     return bs.workers(root, cfg, tracker, tracker_body, DAY)
 

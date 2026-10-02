@@ -40,12 +40,12 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from datetime import date, datetime
+from datetime import datetime
 from pathlib import Path
 from html import escape
 from urllib.parse import parse_qs, quote, urlsplit
 
-from workspace import ConfigError, daily_trackers, parse_coordinator
+from workspace import ConfigError, daily_trackers, read_config
 
 SERVER = "chief-of-stuff-pages"
 PID = ".pid"
@@ -96,7 +96,7 @@ def _sources(root: Path, cfg, pages_dir: Path, day: str) -> list[Path]:
 
 def today_board(root: Path) -> str | None:
     """Today's board name once today's tracker exists, else None."""
-    cfg = parse_coordinator((root / "CLAUDE.md").read_text(), today=date.today())
+    cfg = read_config(root)
     day = datetime.now(cfg.zone).date().isoformat()
     return f"{day}-board.html" if (root / cfg.tracker_path(day)).is_file() else None
 
@@ -110,7 +110,7 @@ def fresh(root: Path, pages_dir: Path, name: str, slots=contextlib.nullcontext()
     import source_page
     import workers_page
     try:
-        cfg = parse_coordinator((root / "CLAUDE.md").read_text(), today=date.today())
+        cfg = read_config(root)
         today = datetime.now(cfg.zone).date().isoformat()
         if name.startswith("decision-"):
             if not (pages_dir / f"{name[:-5]}.json").is_file():
@@ -331,7 +331,7 @@ def _workers(root: Path | None) -> int:
     """`[pages] workers` from the workspace settings; the default when they cannot be read (a render shows why)."""
     from settings import Pages, load
     try:
-        cfg = parse_coordinator((root / "CLAUDE.md").read_text(), today=date.today())
+        cfg = read_config(root)
         return load(root, cfg.settings_path).pages.workers
     except Exception:  # no root, no CLAUDE.md, or a settings file that does not read
         return Pages.workers
@@ -416,7 +416,7 @@ def ensure(pages_dir: Path, port: int, log: Path, root: Path | None = None) -> s
 def from_config(root: Path) -> tuple[Path, int]:
     """(pages dir, port) from the block's Board line."""
     try:
-        cfg = parse_coordinator((root / "CLAUDE.md").read_text(), today=date.today())
+        cfg = read_config(root)
     except (OSError, ConfigError) as e:
         raise PagesError(str(e)) from None
     port = urlsplit(cfg.board_url or "").port

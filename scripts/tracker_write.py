@@ -23,7 +23,7 @@ from zoneinfo import ZoneInfo
 
 from md import cells as _cells, is_separator as _is_separator
 from tracker import TASK_COLS_LANED
-from workspace import ConfigError, parse_coordinator
+from workspace import ConfigError, read_config
 
 LOG = "## Log"
 
@@ -115,7 +115,7 @@ def main(argv: list[str] | None = None) -> int:
     from settings import SettingsError, load as load_settings
     root = Path(args.root)
     try:
-        cfg = parse_coordinator((root / "CLAUDE.md").read_text(), today=datetime.now().date())
+        cfg = read_config(root)
         path = root / cfg.tracker_path(args.date or datetime.now(cfg.zone).date().isoformat())
         lanes = load_settings(root, cfg.settings_path).lanes if args.stage is not None else {}
         at = stamp(cfg.zone)

@@ -5,12 +5,11 @@ for the pages.
 
 from __future__ import annotations
 
-from datetime import date
 from pathlib import Path
 
 import backlog
 from settings import Workflow, load as load_settings
-from workspace import ConfigError, parse_coordinator
+from workspace import ConfigError, read_config
 
 FAILED = {"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"}
 GITLAB_PIPELINE = {"success": "passed", "failed": "failed", "canceled": "failed"}
@@ -38,7 +37,7 @@ def github_pipeline(checks: list[dict]) -> str:
 
 def forge(root: Path, repo: str | None) -> tuple[Workflow, backlog.Backlog, bool, str]:
     """The workspace's workflow settings, its forge, whether that is GitHub, and the repo to act on."""
-    cfg = parse_coordinator((root / "CLAUDE.md").read_text(), today=date.today())
+    cfg = read_config(root)
     workflow = load_settings(root, cfg.settings_path).workflow
     home = cfg.backlog
     if home is None:

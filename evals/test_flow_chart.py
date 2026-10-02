@@ -17,6 +17,7 @@ import flow_chart as fc  # noqa: E402
 import gantt  # noqa: E402
 import one_shot  # noqa: E402
 import render_board as rb  # noqa: E402
+from workspace import parse_coordinator  # noqa: E402
 import settings as st  # noqa: E402
 import tracker_write as tw  # noqa: E402
 
@@ -412,7 +413,7 @@ class BoardTest(unittest.TestCase):
     CLAUDE = "# W\n\n## Coordinator\n\n- User: Robin\n- Daily log dir: `daily/`\n- Tracker: `daily/<date>-tracker.md`\n- Timezone: America/Chicago\n- Settings: `cos.toml`\n"
 
     def cfg(self):
-        return rb.parse_coordinator(self.CLAUDE, today=TODAY)
+        return parse_coordinator(self.CLAUDE, today=TODAY)
 
     def test_flow_sits_after_build_and_the_panels(self):
         html = rb.render(TODAY_TRACKER, self.cfg(), NOW, lanes=LANES, tracker_day=TODAY, kanban=KANBAN,

@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from clock import HHMM, RAN, dur as _dur  # noqa: E402
 from md import cells as _cells, is_separator as _is_separator, section as _section, unmark as _unmark  # noqa: E402
 from tracker import clip_name, parse_tracker  # noqa: E402
-from workspace import ConfigError, parse_coordinator, worktrees_dir  # noqa: E402
+from workspace import ConfigError, parse_coordinator, read_config, worktrees_dir  # noqa: E402
 from dispatch_prompt import PROMPT_DIR, STOP_FILE  # noqa: E402
 from backlog import CLOSED, GITHUB, Backlog, BacklogError, GitHubBacklog, file_with, home_of, issue_ref, issue_states  # noqa: E402
 from settings import Kanban, SettingsError, load as load_settings  # noqa: E402
@@ -784,7 +784,7 @@ def main(argv: list[str] | None = None, gh=None) -> int:
         print(f"audit_tasks: no CLAUDE.md at {root}", file=sys.stderr)
         return 2
     try:
-        cfg = parse_coordinator((root / "CLAUDE.md").read_text(), today=date.today())
+        cfg = read_config(root)
     except ConfigError as e:
         print(f"audit_tasks: {e}", file=sys.stderr)
         return 2

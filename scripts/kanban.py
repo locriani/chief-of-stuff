@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import date, datetime
+from datetime import datetime
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,7 +13,7 @@ import sys
 import backlog
 from _vendor.toon_format import encode as toon_encode
 from tracker import parse_tracker
-from workspace import ConfigError, parse_coordinator
+from workspace import ConfigError, read_config
 from settings import Kanban, SettingsError, load as load_settings
 
 
@@ -421,7 +421,7 @@ def main(argv: list[str] | None = None) -> int:
         print("kanban: choose --from-stage or --initialize", file=sys.stderr)
         return 2
     try:
-        cfg = parse_coordinator((args.root / "CLAUDE.md").read_text(), today=date.today())
+        cfg = read_config(args.root)
         settings = load_settings(args.root, cfg.settings_path)
         if settings.kanban is None:
             print("kanban: no [kanban] section in the workspace settings", file=sys.stderr)

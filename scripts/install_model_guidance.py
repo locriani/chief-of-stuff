@@ -34,9 +34,13 @@ def install(root: Path, *, dry_run: bool = False) -> tuple[Path, bool]:
 
 
 def chosen(root: Path, name: str, after: str | None, not_family: str | None) -> str:
-    import dispatch_prompt
     from settings import load, pick
-    models = load(root, dispatch_prompt._config(root).settings_path).models
+    from workspace import ConfigError, read_config
+    try:
+        cfg = read_config(root)
+    except (OSError, ConfigError) as exc:
+        raise ValueError(f"cannot read the ## Coordinator block: {exc}") from None
+    models = load(root, cfg.settings_path).models
     if not models:
         raise ValueError(f"the Settings TOML has no [models]; choose from {NAME}")
     if name not in models:

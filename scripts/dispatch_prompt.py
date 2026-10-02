@@ -10,14 +10,14 @@ import argparse
 import re
 import shlex
 import sys
-from datetime import date, datetime
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from backlog import file_with, issue_ref  # noqa: E402
 from md import section as _section  # noqa: E402
 from tracker import parse_tracker, short_name  # noqa: E402
-from workspace import ConfigError, parse_coordinator  # noqa: E402
+from workspace import ConfigError, read_config  # noqa: E402
 from settings import SettingsError, Workflow, load as load_settings  # noqa: E402
 import ownership  # noqa: E402
 
@@ -26,9 +26,10 @@ class RefusedError(ValueError):
     """Invalid tracker data; no assignment composed."""
 
 
-def _config(root: Path):
+def config(root: Path):
+    """The workspace's `## Coordinator` block, or a refusal that says why it does not read."""
     try:
-        return parse_coordinator((root / "CLAUDE.md").read_text(), today=date.today())
+        return read_config(root)
     except (OSError, ConfigError) as exc:
         raise RefusedError(f"cannot read the ## Coordinator block: {exc}") from None
 
@@ -253,7 +254,7 @@ def task_name(text: str, item: str) -> str:
 
 def resolve_task(root: Path, day: str | None, task: str) -> str:
     """The item `task` names: an item as written, or else the one Tasks row whose `name` it is."""
-    cfg = _config(root)
+    cfg = config(root)
     relative = cfg.tracker_path(day or datetime.now(cfg.zone).date().isoformat())
     try:
         tasks = parse_tracker((root / relative).read_text()).tasks
@@ -285,7 +286,7 @@ def compose(root: Path, day: str | None, task: str, worktree: Path | None = None
             coordinator: str | None = None, name: str | None = None, runtime: str = "claude",
             one_shot: bool = False) -> str:
     """The assignment for `task`, read back off disk. A task that is not a row is refused."""
-    cfg = _config(root)
+    cfg = config(root)
     try:
         workflow = load_settings(root, cfg.settings_path).workflow
     except (OSError, SettingsError) as exc:

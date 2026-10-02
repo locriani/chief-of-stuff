@@ -24,12 +24,12 @@ from pathlib import Path
 
 import backlog
 import process_status
-from forge_review import GITLAB_PIPELINE, github_approval as _github_approval, github_pipeline as _github_pipeline
 from _vendor.toon_format import encode as toon_encode
+from forge_review import GITLAB_PIPELINE, github_approval as _github_approval, github_pipeline as _github_pipeline
 from md import section as _section
 from settings import SettingsError, load as load_settings
 from tracker import Tracker, bare_name as _bare_name, launcher, parse_tracker
-from workspace import Config, ConfigError, parse_coordinator, worktrees_dir
+from workspace import Config, ConfigError, read_config, worktrees_dir
 
 CACHE = ".sources.json"
 CLOSES = re.compile(r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+(#\d+)")
@@ -422,7 +422,7 @@ def _write(path: Path, sources: Sources) -> None:
 def refresh(root: Path, now: datetime, gh=backlog.run_gh, call=backlog._call) -> Sources:
     """Fetch everything, write the cache, return it. Never raises: a failed source is in `errors`."""
     try:
-        cfg = parse_coordinator((root / "CLAUDE.md").read_text(), today=now.date())
+        cfg = read_config(root)
     except (OSError, ConfigError) as e:
         return replace(EMPTY, errors={"config": str(e)})
     local = now.astimezone(cfg.zone)
@@ -465,7 +465,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     now = datetime.now().astimezone()
     try:
-        cfg = parse_coordinator((args.root / "CLAUDE.md").read_text(), today=date.today())
+        cfg = read_config(args.root)
     except (OSError, ConfigError) as e:
         print(f"sources: {e}", file=sys.stderr)
         return 2

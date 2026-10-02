@@ -9,6 +9,7 @@ from pathlib import Path
 sys.path[:0] = [str(Path(__file__).resolve().parent.parent / "scripts"), str(Path(__file__).resolve().parent)]
 import decision_page as dp  # noqa: E402
 import render_board as rb  # noqa: E402
+from workspace import parse_coordinator  # noqa: E402
 import test_decision_page as tdp  # noqa: E402
 import test_flow_board as tfb  # noqa: E402
 import test_issue_page as tip  # noqa: E402
@@ -45,7 +46,7 @@ def check_links(case: unittest.TestCase, html: str) -> None:
 
 class ExternalLinksTest(tsp.SourcePage):
     def test_the_board(self):
-        html = rb.render(tfb.TRACKER, rb.parse_coordinator(CLAUDE_MD, today=NOW.date()), NOW, lanes=tfb.LANES,
+        html = rb.render(tfb.TRACKER, parse_coordinator(CLAUDE_MD, today=NOW.date()), NOW, lanes=tfb.LANES,
                          kanban=tfb.KANBAN, sources=tfb.SOURCES,
                          decisions=[("x", {"headline": "Pick", "recommended": "B", "default": "d"},
                                      NOW.replace(hour=10, minute=0), "")],
