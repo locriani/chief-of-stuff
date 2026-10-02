@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import backlog
+import backlog_ref
 from settings import Workflow, load as load_settings
 from workspace import ConfigError, read_config
 
@@ -35,12 +35,12 @@ def github_pipeline(checks: list[dict]) -> str:
     return "running" if running else "passed"
 
 
-def forge(root: Path, repo: str | None) -> tuple[Workflow, backlog.Backlog, bool, str]:
+def forge(root: Path, repo: str | None) -> tuple[Workflow, backlog_ref.Backlog, bool, str]:
     """The workspace's workflow settings, its forge, whether that is GitHub, and the repo to act on."""
     cfg = read_config(root)
     workflow = load_settings(root, cfg.settings_path).workflow
     home = cfg.backlog
     if home is None:
         raise ConfigError("no Backlog: line names the forge")
-    github = isinstance(home, backlog.GitHubBacklog)
+    github = isinstance(home, backlog_ref.GitHubBacklog)
     return workflow, home, github, repo or (home.repo if github else home.project)

@@ -20,7 +20,7 @@ PAGES = frozenset({"render_board", "decision_page", "issue_page", "source_page",
 
 # Every script module that draws nothing. A new one belongs here unless it renders a page.
 DRAWS_NOTHING = (
-    "md", "clock", "workspace", "tracker", "settings", "backlog", "ownership", "forge_review",
+    "md", "clock", "workspace", "tracker", "settings", "backlog_ref", "backlog", "ownership", "forge_review",
     "board_guard", "board_sources", "tracker_write", "make_worktree", "dispatch_prompt", "kanban", "audit_tasks",
     "one_shot", "spawn_session", "session_exec", "shell_setup", "process_status", "merge_approved",
     "review_threads", "notify", "init_workspace", "install_model_guidance", "migrate_backlog", "inbox",
@@ -28,6 +28,9 @@ DRAWS_NOTHING = (
 )
 
 PROBE = "import sys; sys.path.insert(0, sys.argv[1]); import {name}; print(' '.join(sorted(set(sys.modules) & set(sys.argv[2:]))))"
+
+# The forge client's HTTP stack. Reading a `Backlog:` line needs none of it, and the hook runs before every tool call.
+HTTP = ("urllib.request", "http.client", "ssl")
 
 
 class DependencyRuleTest(unittest.TestCase):
@@ -42,6 +45,12 @@ class DependencyRuleTest(unittest.TestCase):
                                       capture_output=True, text=True, timeout=60)
                 self.assertEqual(proc.returncode, 0, proc.stderr)
                 self.assertEqual(proc.stdout.split(), [], f"{name} loads page modules")
+
+    def test_the_hook_loads_no_http_client(self) -> None:
+        proc = subprocess.run([sys.executable, "-c", PROBE.format(name="board_guard"), str(SCRIPTS), *HTTP],
+                              capture_output=True, text=True, timeout=60)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.split(), [], "board_guard loads the forge client")
 
 
 if __name__ == "__main__":

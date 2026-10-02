@@ -47,7 +47,7 @@ from html import escape, unescape
 from pathlib import Path
 
 import board_sources
-from backlog import Backlog, BacklogError, GitHubBacklog, backlog_from_config
+from backlog_ref import Backlog, BacklogError, GitHubBacklog, backlog_from_config
 from fragment import FONTS, TAB_CSS, href, tab_bar
 from md import section as md_section
 from pages import PagesError, from_config

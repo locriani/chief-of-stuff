@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from backlog import file_with, issue_ref  # noqa: E402
+from backlog_ref import file_with, issue_ref  # noqa: E402
 from md import section as _section  # noqa: E402
 from tracker import parse_tracker, short_name  # noqa: E402
 from workspace import ConfigError, read_config  # noqa: E402

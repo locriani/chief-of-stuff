@@ -12,7 +12,7 @@ from datetime import date, datetime, time
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from backlog import Backlog, BacklogError, GitHubBacklog, parse_backlog
+from backlog_ref import Backlog, BacklogError, GitHubBacklog, parse_backlog
 from clock import DATE, HHMM
 from md import BULLET, cells as _cells, is_separator as _is_separator, section as _section, unmark as _unmark, unquote as _unquote
 

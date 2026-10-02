@@ -12,7 +12,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from backlog import BacklogError, parse_backlog
+from backlog_ref import BacklogError, parse_backlog
 from install_model_guidance import destination as guidance_destination, install as install_guidance
 from workspace import ConfigError, parse_coordinator
 from settings import SettingsError, load as load_settings
