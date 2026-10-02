@@ -404,9 +404,9 @@ def ensure(pages_dir: Path, port: int, log: Path, root: Path | None = None) -> s
     with log.open("a") as out:
         proc = subprocess.Popen(argv + (["--root", str(root.resolve())] if root is not None else []),
                                 stdout=out, stderr=out, stdin=subprocess.DEVNULL, start_new_session=True)
-    (pages_dir / PID).write_text(str(proc.pid))
     for _ in range(30):
         if (_who(port) or "").startswith(SERVER):
+            (pages_dir / PID).write_text(str(proc.pid))  # .pid names only a server that answered (#248)
             return "pages: restarted" if restart else "pages: started"
         if proc.poll() is not None:
             break
