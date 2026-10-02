@@ -355,6 +355,13 @@ class Page(unittest.TestCase):
         self.assertEqual(tiles["BLOCKED"], "2")
         self.assertEqual(html.count(">ON HOLD<"), 2)
 
+    def test_tasks_with_no_name_are_held_each_by_its_own_stage(self) -> None:
+        # Keyed by name, every blank-named task shared one stage: one hold held them all, or none of them.
+        tracker = TRACKER.replace("| Write README |", "|  |").replace("| Webhook check |", "|  |")
+        held = replace(KANBAN, hold_stages=("triage",))
+        html = rb.render(tracker, self.cfg, NOW, lanes=LANES, kanban=held, sources=SOURCES)
+        self.assertEqual(html.count(">ON HOLD<"), 1)
+
     def test_blocked_and_drift_exclude_a_task_whose_change_already_merged(self) -> None:
         # (#240) The same forge answer that moves a stuck card off the `merge` column keeps it out of the
         # BLOCKED and DRIFT tiles too — both read `held`/`drifts` on every task, not just the laned ones build_columns sees.

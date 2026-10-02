@@ -15,6 +15,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import one_shot  # noqa: E402
+import shell_setup  # noqa: E402
 from _vendor.toon_format import decode as toon_decode  # noqa: E402
 
 
@@ -182,6 +183,28 @@ class RunTest(unittest.TestCase):
         self.assertRegex(during, r"(?m)^- \d\d:\d\d one-shot worker01 started: codex, worktree `worker`, "
                                  r"task Security audit$")
         self.assertIn(f"worktree `worker` ({branch})", self.tracker.read_text())
+
+    def test_a_refused_launch_takes_its_dispatch_back_so_a_retry_can_use_the_tree(self):
+        # A dispatch left behind makes the retry refuse the tree, and the coordinator makes a second one.
+        fake = self._fake('status: done\nreason: done\nchanges: checked\n', write_partial=False)
+        # Dispatch accepts a row with a third cell; recording the launch refuses it.
+        self.tracker.write_text(TRACKER.replace("| Security audit | `src/a/` |", "| Security audit | `src/a/` | note |"))
+        with self.assertRaisesRegex(ValueError, "two-cell"):
+            self._run(fake)
+        self.assertFalse((self.tree / ".chief-of-stuff/dispatch.md").exists())
+        self.tracker.write_text(TRACKER)
+        self.assertEqual(self._run(fake), 0)
+
+    def test_an_unusable_login_shell_refuses_before_the_row_is_running(self):
+        # The row went to `running` first, and nothing ran to bring it back.
+        fake = self._fake('status: done\nreason: done\nchanges: checked\n', write_partial=False)
+        with mock.patch.object(one_shot, "resolve", return_value=str(fake)), \
+             mock.patch.object(one_shot, "login_argv", side_effect=shell_setup.ShellError("unsupported shell")):
+            with self.assertRaises(shell_setup.ShellError):
+                one_shot.run(root=self.root, day="2026-09-18", task="Security audit", cwd=self.tree,
+                             name="worker01", runtime="codex", agent_type=None, model="", effort="", dry_run=False)
+        self.assertIn("| Security audit | unassigned | open |", self.tracker.read_text())
+        self.assertFalse((self.tree / ".chief-of-stuff/dispatch.md").exists())
 
     def test_launcher_stamps_in_the_workspace_zone(self):
         # The workspace is Chicago; a machine on UTC stamped UTC.

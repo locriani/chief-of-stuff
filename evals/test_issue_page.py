@@ -465,6 +465,12 @@ class WhatHappensNextTest(unittest.TestCase):
         self.assertRegex(got, r"\b3 of 4\b")
         self.assertRegex(got, r"(?i)\bafter\W+!9\W+!41\b")
 
+    def test_a_change_in_another_repo_is_not_in_this_repos_merge_line(self):
+        # Another repo's change is labelled `owner/repo#N`; reading its number as `ref[1:]` broke the page.
+        elsewhere = replace(change(7, "open", "main", ("src/other.py",), "#140"), ref="grp/other#7")
+        got = text(section(page(src=sources(MINE, *QUEUE, elsewhere)), "What happens next"))
+        self.assertRegex(got, r"\b3 of 4\b")
+
     def test_an_open_task_with_no_forecast_has_no_estimate(self):
         got = text(section(page(), "What happens next"))
         self.assertRegex(got, r"(?i)\bno estimate\b")

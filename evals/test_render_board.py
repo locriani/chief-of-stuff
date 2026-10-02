@@ -336,6 +336,13 @@ class RenderTest(unittest.TestCase):
     def test_deterministic(self) -> None:
         self.assertEqual(self.html, rb.render(TRACKER, self.cfg, NOW))
 
+    def test_an_impossible_clock_or_date_in_a_cell_does_not_stop_the_board(self) -> None:
+        # `24:00`, `9:75` or `2026-02-30` in since or due raised ValueError, and the board never re-rendered.
+        for bad in ("24:00", "9:75", "2026-02-30", "2026-09-16 25:00"):
+            with self.subTest(cell=bad):
+                html = rb.render(TRACKER.replace("| 09:00 | 17:00 |", f"| {bad} | {bad} |", 1), self.cfg, NOW)
+                self.assertIn("Write eval README", html)
+
 
 class ShortNameTest(unittest.TestCase):
     def test_short_name(self) -> None:

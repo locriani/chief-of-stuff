@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import os
+import stat
 import sys
 import tempfile
 from collections.abc import Callable
@@ -44,6 +45,8 @@ def edit(path: Path, change: Callable[[str], str]) -> None:
         with tempfile.NamedTemporaryFile("w", dir=path.parent, prefix=f".{path.name}.", delete=False) as temp:
             temp.write(text)
         try:
+            # The temporary file is created 0600; the tracker keeps the mode it had.
+            os.chmod(temp.name, stat.S_IMODE(path.stat().st_mode))
             os.replace(temp.name, path)
         finally:
             Path(temp.name).unlink(missing_ok=True)

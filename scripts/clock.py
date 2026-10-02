@@ -14,7 +14,10 @@ DATE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{1,2}):(\d{2}))?$")
 
 def hhmm(value: str, day: date, zone: ZoneInfo) -> datetime | None:
     m = HHMM.match(value.strip())
-    return datetime.combine(day, time(int(m[1]), int(m[2])), tzinfo=zone) if m else None
+    try:
+        return datetime.combine(day, time(int(m[1]), int(m[2])), tzinfo=zone) if m else None
+    except ValueError:  # 24:00, 9:75: not a clock, so no clock
+        return None
 
 
 def done_clock(value: str, now: datetime, zone: ZoneInfo) -> datetime | None:

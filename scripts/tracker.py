@@ -403,7 +403,10 @@ def resolve_due(due: str, cfg: Config, today: date) -> datetime | None:
         return t
     m = DATE.match(value)
     if m:
-        return datetime(int(m[1]), int(m[2]), int(m[3]), int(m[4] or 23), int(m[5] or 59), tzinfo=cfg.zone)
+        try:
+            return datetime(int(m[1]), int(m[2]), int(m[3]), int(m[4] or 23), int(m[5] or 59), tzinfo=cfg.zone)
+        except ValueError:  # 2026-02-30, 25:00: not a date, so no due
+            return None
     for d in cfg.deadlines:
         if d.name.lower() == value.lower():
             return d.at

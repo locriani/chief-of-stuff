@@ -16,7 +16,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from clock import HHMM, RAN, dur as _dur  # noqa: E402
+from clock import HHMM, RAN, dur as _dur, hhmm as _hhmm  # noqa: E402
 from md import cells as _cells, is_separator as _is_separator, section as _section, unmark as _unmark  # noqa: E402
 from tracker import clip_name, parse_tracker  # noqa: E402
 from workspace import ConfigError, parse_coordinator, read_config, worktrees_dir  # noqa: E402
@@ -25,6 +25,7 @@ from backlog import CLOSED, GITHUB, Backlog, BacklogError, GitHubBacklog, file_w
 from settings import Kanban, SettingsError, load as load_settings  # noqa: E402
 import kanban as kanban_tool  # noqa: E402
 import ownership  # noqa: E402
+from one_shot import running_trees  # noqa: E402
 
 # Preserve branch names from ownership rows when worktrees disappear.
 WORKTREE = re.compile(r"\bworktrees?\s+(?P<tick>`)?(?P<name>[A-Za-z0-9._\-/]+)`?(?:\s*\((?P<branch>[^)]*)\))?")
@@ -294,10 +295,10 @@ class OverBudget:
 def over_budget(tasks, budgets: dict, day: str, now: datetime) -> list[OverBudget]:
     over: list[OverBudget] = []
     for task in tasks:
-        budget, start = budgets.get(task.size.strip()), task.state_time
-        if task.kind != "running" or budget is None or not start:
+        budget, start = budgets.get(task.size.strip()), _hhmm(task.state_time or "", date.fromisoformat(day), now.tzinfo)
+        if task.kind != "running" or budget is None or start is None:
             continue
-        ran = now - datetime.combine(date.fromisoformat(day), datetime.strptime(start, "%H:%M").time(), tzinfo=now.tzinfo)
+        ran = now - start
         if ran > budget:
             over.append(OverBudget(clip_name(task.label), ran, task.size.strip(), budget))
     return over
@@ -670,6 +671,7 @@ def audit(root: Path, day: str, gh=None, check_issues: bool = True, now: datetim
     if roster:
         # The workspace user may own a task without a session.
         roster.add(_bare(cfg.user))
+    running = running_trees((root / trees).resolve()) if roster else {}
 
     report = Report()
     handled: set[str] = set()
@@ -715,6 +717,9 @@ def audit(root: Path, day: str, gh=None, check_issues: bool = True, now: datetim
                                        f"{name} ({branch})", task.state.strip()))
         owner = row.context.strip() or (task.owner.strip() if task is not None else "")
         here, missing = listed(owner, roster, refs, cfg.user) if roster else (True, "")
+        # A one-shot's row is keyed on its task, never a session: a live launcher holds the tree, and so does the task's owner.
+        keyed = task if task is not None else next((t for t in tasks if owns(row, t.item)), None)
+        here = here or path in running or (keyed is not None and listed(keyed.owner, roster, refs, cfg.user)[0])
         if roster and "uncommitted" in why and not here and name not in orphaned:
             orphaned.add(name)
             report.orphans.append(Orphan(f"{name} ({branch})", _bare(owner), why, missing))
