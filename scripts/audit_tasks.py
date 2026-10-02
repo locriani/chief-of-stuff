@@ -25,7 +25,7 @@ from backlog import CLOSED, GITHUB, Backlog, BacklogError, GitHubBacklog, file_w
 from settings import Kanban, SettingsError, load as load_settings  # noqa: E402
 import kanban as kanban_tool  # noqa: E402
 import ownership  # noqa: E402
-from one_shot import running_trees  # noqa: E402
+from process_status import running_trees  # noqa: E402
 
 # Preserve branch names from ownership rows when worktrees disappear.
 WORKTREE = re.compile(r"\bworktrees?\s+(?P<tick>`)?(?P<name>[A-Za-z0-9._\-/]+)`?(?:\s*\((?P<branch>[^)]*)\))?")

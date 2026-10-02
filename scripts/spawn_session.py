@@ -26,7 +26,7 @@ from shell_setup import ShellError, resolve  # noqa: E402
 ENV = "CHIEF_OF_STUFF_LAUNCHER"
 # Keep assignments and stop files in the worktree's ignored metadata directory.
 PROMPT_DIR = dispatch_prompt.PROMPT_DIR
-PROMPT_FILE = f"{PROMPT_DIR}/dispatch.md"
+PROMPT_FILE = dispatch_prompt.DISPATCH_FILE
 # Use absolute paths: Ghostty can ignore its configured working directory.
 BOOTSTRAP = ("Read the file {dispatch} — that is your assignment, in full, and read it before you do "
              "anything else. Your working directory is {cwd}. Start there and stay there: every path "
@@ -207,21 +207,6 @@ def launch_env(parent: dict[str, str] | None = None) -> dict[str, str]:
     return {k: v for k, v in source.items() if k in KEEP and not k.upper().startswith("CLAUDE")}
 
 
-def write_dispatch(cwd: Path, body: str) -> Path:
-    """Create the ignored assignment file without overwriting an earlier dispatch."""
-    path = cwd / PROMPT_FILE
-    path.parent.mkdir(parents=True, exist_ok=True)
-    (path.parent / ".gitignore").write_text("*\n")
-    try:
-        with path.open("x") as fh:
-            fh.write(body if body.endswith("\n") else body + "\n")
-    except FileExistsError:
-        raise RefusedError(f"{path} already holds a dispatch; a dispatch gets a tree of its own") from None
-    except OSError as exc:
-        raise RefusedError(f"could not write {path}: {exc}") from None
-    return path
-
-
 def main(argv_in: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--type", dest="agent_type", help="an agent type from the Coordinator block; omitted runs the default agent")
@@ -293,6 +278,8 @@ def main(argv_in: list[str] | None = None) -> int:
             print("refused: --launcher applies to interactive sessions, not --one-shot", file=sys.stderr)
             return 1
         try:
+            # Local on purpose: it rebinds the `one_shot` flag above to the module, and an interactive
+            # launch never loads the runner.
             import one_shot
             return one_shot.run(root=Path(args.root).resolve(), day=args.date, task=args.task,
                                 cwd=Path(args.cwd), name=args.title, runtime=args.runtime,
@@ -340,8 +327,8 @@ def main(argv_in: list[str] | None = None) -> int:
         print(f"refused: no directory at {args.cwd}; make the worktree first", file=sys.stderr)
         return 1
     try:
-        written = write_dispatch(Path(args.cwd), body)
-    except RefusedError as exc:
+        written = dispatch_prompt.write_dispatch(Path(args.cwd), body)
+    except dispatch_prompt.RefusedError as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 1
     try:

@@ -386,7 +386,6 @@ def _owned_task(name: str, tasks: tuple) -> str:
 
 
 def workers(root: Path, cfg: Config, tracker: Tracker, tracker_text: str, day: date) -> tuple[Worker, ...]:
-    import one_shot
     rows = {_bare_name(s.name): s for s in tracker.sessions}
     found = []
     records = process_status.registrations(root)
@@ -401,7 +400,7 @@ def workers(root: Path, cfg: Config, tracker: Tracker, tracker_text: str, day: d
                      _at(s.last_reply, day, cfg)) for s in rows.values()]
     started = {m[5]: m for m in (STARTED.match(line) for line in _section(tracker_text, "## Log")) if m}
     trees, row_of = root / worktrees_dir((root / "CLAUDE.md").read_text()), launcher(tracker.tasks)
-    for tree, task in one_shot.running_trees(trees).items():
+    for tree, task in process_status.running_trees(trees).items():
         m = started.get(task)
         runtime, _, model = (m[3] if m else "").partition(" ")
         found.append(Worker(m[2] if m else tree.name, "one-shot", runtime, model, row_of(task)[1], tree.name,
