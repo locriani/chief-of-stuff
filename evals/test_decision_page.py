@@ -874,7 +874,7 @@ class ModuleGraphTest(unittest.TestCase):
 
     def test_the_board_rerendering_every_page_keeps_the_graph(self):
         self.workspace()
-        dp.write_all(self.pages, rb.decision_context(self.root, date(2026, 9, 26)), "2026-09-26", self.root)
+        dp.write_all(self.pages, dp.decision_context(self.root, date(2026, 9, 26)), "2026-09-26", self.root)
         self.assert_drawn(self.section((self.pages / "decision-warm-pool.html").read_text()), "#58")
 
     def test_a_decision_naming_no_known_change_says_so_in_one_line(self):

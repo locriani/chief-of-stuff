@@ -21,6 +21,10 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from md import cells as _cells, is_separator as _is_separator
+from tracker import TASK_COLS_LANED
+from workspace import ConfigError, parse_coordinator
+
 LOG = "## Log"
 
 
@@ -71,7 +75,6 @@ def append_log(text: str, line: str, create: bool = False) -> str:
 
 def set_stage(text: str, name: str, stage: str, lanes: dict) -> tuple[str, str]:
     """`text` with the task named `name` at `stage`, and the row's own name. Raises when nothing may be written."""
-    from render_board import TASK_COLS_LANED, _cells, _is_separator
     lines = text.splitlines(keepends=True)
     start = next((i for i, row in enumerate(lines) if row.rstrip() == "## Tasks"), None)
     if start is None:
@@ -109,7 +112,6 @@ def main(argv: list[str] | None = None) -> int:
     if not text or "\n" in text or "\r" in text or (args.stage is not None and len(args.text) != 1):
         print("log: one non-empty line of text is required, or with --stage one stage name", file=sys.stderr)
         return 2
-    from render_board import ConfigError, parse_coordinator
     from settings import SettingsError, load as load_settings
     root = Path(args.root)
     try:

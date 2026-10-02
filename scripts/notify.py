@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Protocol
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from render_board import ConfigError, parse_coordinator, with_workspace_decision_deadlines  # noqa: E402
+from workspace import ConfigError, parse_coordinator, with_workspace_decision_deadlines  # noqa: E402
 from settings import Settings, SettingsError, load  # noqa: E402
 
 WHEN = "%Y-%m-%d %H:%M"

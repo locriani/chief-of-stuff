@@ -18,7 +18,9 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+import md  # noqa: E402
 import render_board as rb  # noqa: E402
+import tracker as tr  # noqa: E402
 from backlog import Backlog, GitHubBacklog  # noqa: E402
 import settings as st  # noqa: E402
 
@@ -346,14 +348,14 @@ class ShortNameTest(unittest.TestCase):
             "": "",
         }
         for item, want in cases.items():
-            self.assertEqual(rb.short_name(item), want, item)
+            self.assertEqual(tr.short_name(item), want, item)
         # The width belongs to the medium that has one. `short_name` returns the name; `clip_name`
         # is what a caller one terminal line wide calls, and the cut lives there now.
         long_item = "a" * 30 + " " + "b" * 30 + " " + "c" * 30
-        self.assertEqual(long_item, rb.short_name(long_item))
-        self.assertEqual("a" * 30 + "…", rb.clip_name(long_item))
+        self.assertEqual(long_item, tr.short_name(long_item))
+        self.assertEqual("a" * 30 + "…", tr.clip_name(long_item))
         for item in cases:
-            self.assertLessEqual(len(rb.clip_name(item)), 49)
+            self.assertLessEqual(len(tr.clip_name(item)), 49)
 
     def test_a_long_bolded_item_keeps_its_name(self) -> None:
         """A cut inside a lone `**` span must not eat the whole name.
@@ -364,19 +366,19 @@ class ShortNameTest(unittest.TestCase):
         short_name(item)`) puts that straight on the board as a task called `…`.
         """
         item = "**ARCHITECTURE.md section 12.5 rewritten so the deploy story matches the code**"
-        got = rb.clip_name(item)
+        got = tr.clip_name(item)
         self.assertNotEqual("…", got)
         self.assertIn("ARCHITECTURE.md", got)
         self.assertLessEqual(len(got), 49)
-        self.assertTrue(rb._whole(got.rstrip("…")), got)
+        self.assertTrue(tr._whole(got.rstrip("…")), got)
 
     def test_every_cut_still_leaves_no_orphan_mark(self) -> None:
         for item in ("**" + "a" * 30 + " " + "b" * 30 + "**",
                      "lead in **" + "c" * 60 + "** trailing",
                      "**short**",
                      "**a** and **" + "d" * 60 + "**"):
-            self.assertTrue(rb._whole(rb.clip_name(item).rstrip("…")), item)
-            self.assertNotEqual("…", rb.clip_name(item), item)
+            self.assertTrue(tr._whole(tr.clip_name(item).rstrip("…")), item)
+            self.assertNotEqual("…", tr.clip_name(item), item)
 
 
 CLAUDE_MD_REQ = CLAUDE_MD.replace("  - Launch: 2026-09-16 23:59", "  - Launch: 2026-09-16 23:59; requirements `daily/launch-reqs.md`").replace(
@@ -1277,7 +1279,7 @@ class TracerTest(unittest.TestCase):
         self.assertEqual(named.warning, "")
         # No name written: the label is what short_name() has always produced.
         self.assertEqual(unnamed.name, "")
-        self.assertEqual(unnamed.label, rb.short_name(unnamed.item))
+        self.assertEqual(unnamed.label, tr.short_name(unnamed.item))
 
     def test_the_six_and_seven_column_trackers_still_parse(self) -> None:
         """100 live rows are not rewritten in one go: all three header widths keep working."""
@@ -1480,9 +1482,9 @@ class InlineMarksTest(unittest.TestCase):
         self.cfg = rb.parse_coordinator(CLAUDE_MD, today=NOW.date())
 
     def test_unmark_drops_pairs_and_keeps_a_lone_marker(self) -> None:
-        self.assertEqual(rb._unmark("**Deploy main.** x"), "Deploy main. x")
-        self.assertEqual(rb._unmark("a ** b"), "a ** b")
-        self.assertEqual(rb._unmark("**a** and **b**"), "a and b")
+        self.assertEqual(md.unmark("**Deploy main.** x"), "Deploy main. x")
+        self.assertEqual(md.unmark("a ** b"), "a ** b")
+        self.assertEqual(md.unmark("**a** and **b**"), "a and b")
 
 
 class MarkSpansTest(unittest.TestCase):
@@ -1496,17 +1498,17 @@ class MarkSpansTest(unittest.TestCase):
     def test_a_split_never_falls_inside_a_bold_span(self) -> None:
         text = "Head. **22:19: copied into bruno/ (source untouched). Zach wants this:** launch.php reads it. Tail"
         self.assertEqual(
-            rb._depth0_split(text),
+            tr._depth0_split(text),
             ["Head", "**22:19: copied into bruno/ (source untouched). Zach wants this:** launch.php reads it", "Tail"],
         )
 
     def test_an_unbalanced_item_splits_as_it_always_did(self) -> None:
-        self.assertEqual(rb._depth0_split("**half open. and then"), ["**half open", "and then"])
+        self.assertEqual(tr._depth0_split("**half open. and then"), ["**half open", "and then"])
 
 
     def test_a_name_drops_backticks_and_keeps_a_lone_star(self) -> None:
-        self.assertEqual(rb._unmark("D8 `AGENT_FRAME_ANCESTORS` defaults to `*`"), "D8 AGENT_FRAME_ANCESTORS defaults to *")
-        self.assertEqual(rb._unmark("agent `39e516f`, 30 behind"), "agent 39e516f, 30 behind")
+        self.assertEqual(md.unmark("D8 `AGENT_FRAME_ANCESTORS` defaults to `*`"), "D8 AGENT_FRAME_ANCESTORS defaults to *")
+        self.assertEqual(md.unmark("agent `39e516f`, 30 behind"), "agent 39e516f, 30 behind")
 
 
 PIPED_TRACKER = SIZED_TRACKER.replace(
@@ -1521,25 +1523,25 @@ class CellSpanTest(unittest.TestCase):
     """A cell is a span too: the delimiter is a pipe nobody spoke for."""
 
     def test_a_pipe_inside_a_backtick_span_is_not_a_delimiter(self) -> None:
-        self.assertEqual(rb._cells('| a | `x|y` | b |'), ["a", "`x|y`", "b"])
+        self.assertEqual(md.cells('| a | `x|y` | b |'), ["a", "`x|y`", "b"])
 
     def test_an_escaped_pipe_is_a_pipe_and_loses_its_backslash(self) -> None:
-        self.assertEqual(rb._cells(r"| a | x \| y | b |"), ["a", "x | y", "b"])
+        self.assertEqual(md.cells(r"| a | x \| y | b |"), ["a", "x | y", "b"])
 
     def test_a_cell_holding_both_comes_back_once(self) -> None:
-        self.assertEqual(rb._cells(r"| a | `a|b` \| c | d |"), ["a", "`a|b` | c", "d"])
+        self.assertEqual(md.cells(r"| a | `a|b` \| c | d |"), ["a", "`a|b` | c", "d"])
 
     def test_an_odd_backtick_splits_as_it_always_did(self) -> None:
         """A typo degrades to the old behaviour instead of swallowing the rest of the row."""
-        self.assertEqual(rb._cells("| a | `x|y | b |"), ["a", "`x", "y", "b"])
+        self.assertEqual(md.cells("| a | `x|y | b |"), ["a", "`x", "y", "b"])
 
     def test_the_ordinary_rows_parse_exactly_as_before(self) -> None:
-        self.assertEqual(rb._cells("| Write eval README | Robin | open | 09:00 | 17:00 | c |"),
+        self.assertEqual(md.cells("| Write eval README | Robin | open | 09:00 | 17:00 | c |"),
                          ["Write eval README", "Robin", "open", "09:00", "17:00", "c"])
-        self.assertEqual(rb._cells("|---|---|---|"), ["---", "---", "---"])
+        self.assertEqual(md.cells("|---|---|---|"), ["---", "---", "---"])
 
     def test_a_session_row_keeps_its_columns_when_a_cell_carries_a_pipe(self) -> None:
-        cells = rb._cells('| ab12cd | impl-2 | working | reads `"ok"|"degraded"` | | | | | 09:00 |')
+        cells = md.cells('| ab12cd | impl-2 | working | reads `"ok"|"degraded"` | | | | | 09:00 |')
         self.assertEqual(len(cells), 9)
         self.assertEqual(cells[3], 'reads `"ok"|"degraded"`')
 
@@ -1607,19 +1609,19 @@ class TaskStateCarriesAShaTest(unittest.TestCase):
 
     def test_the_vocabulary_admits_a_trailing_sha(self) -> None:
         for cell in (f"done 21:16–22:05 {self.SHA}", f"done 21:16 {self.SHA}", f"done {self.SHA}"):
-            self.assertTrue(rb.TASK_STATE.match(cell), cell)
+            self.assertTrue(tr.TASK_STATE.match(cell), cell)
 
     def test_it_still_admits_every_state_without_one(self) -> None:
         for cell in ("open", "waiting", "orphaned", "done", "running 09:00",
                      "done 21:16", "done 21:16–22:05"):
-            self.assertTrue(rb.TASK_STATE.match(cell), cell)
+            self.assertTrue(tr.TASK_STATE.match(cell), cell)
 
     def test_it_does_not_admit_prose_after_the_state(self) -> None:
         """The cell is recognisable on sight or it is not an anchor. `done, merged by impl-2` is
         prose, and admitting it would let an item cell claim the anchor."""
         for cell in ("done, merged by impl-2", "done 21:16 by hand", "running 09:00 slowly",
                      "done zzzz", "done 21:16–22:05 not-a-sha!"):
-            self.assertIsNone(rb.TASK_STATE.match(cell), cell)
+            self.assertIsNone(tr.TASK_STATE.match(cell), cell)
 
     def test_a_sha_bearing_row_with_a_stray_pipe_still_recovers(self) -> None:
         text = SIZED_TRACKER.replace("| A oldest | worker | open | 2026-09-15 |  | M | c |",
@@ -1699,7 +1701,7 @@ class StateDisputesProseTest(unittest.TestCase):
     def test_the_vocabulary_does_not_drift_from_the_migration_report(self) -> None:
         """Two lists of done-words would diverge silently; this is the only thing watching."""
         import migrate_backlog as mb
-        self.assertEqual(rb.DONE_WORDS.pattern, mb.DONE_WORDS.pattern)
+        self.assertEqual(tr.DONE_WORDS.pattern, mb.DONE_WORDS.pattern)
 
 
 class StandingRowsAreNotTasksTest(unittest.TestCase):

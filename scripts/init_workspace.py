@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from backlog import BacklogError, parse_backlog
 from install_model_guidance import destination as guidance_destination, install as install_guidance
-from render_board import ConfigError, parse_coordinator
+from workspace import ConfigError, parse_coordinator
 from settings import SettingsError, load as load_settings
 
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")

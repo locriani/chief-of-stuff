@@ -12,7 +12,8 @@ import sys
 
 import backlog
 from _vendor.toon_format import encode as toon_encode
-from render_board import ConfigError, parse_coordinator, parse_tracker
+from tracker import parse_tracker
+from workspace import ConfigError, parse_coordinator
 from settings import Kanban, SettingsError, load as load_settings
 
 

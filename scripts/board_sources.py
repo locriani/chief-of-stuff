@@ -22,16 +22,13 @@ from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime, time
 from pathlib import Path
 
-from typing import TYPE_CHECKING
-
 import backlog
 import process_status
 from _vendor.toon_format import encode as toon_encode
+from md import section as _section
 from settings import SettingsError, load as load_settings
-
-if TYPE_CHECKING:
-    from render_board import Config, Tracker
-# render_board imports this module for the dataclasses, so render_board and what imports it load inside the functions.
+from tracker import Tracker, bare_name as _bare_name, parse_tracker
+from workspace import Config, ConfigError, parse_coordinator
 
 CACHE = ".sources.json"
 CLOSES = re.compile(r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+(#\d+)")
@@ -384,7 +381,6 @@ def _owned_task(name: str, tasks: tuple) -> str:
     """(#199) The open task row `name`'s session owns: an open (not `done`) row whose owner cell is `name`'s
     bare name (`_bare_name`, as `Task.standing_for` matches owners). Several open rows owned: the last one,
     since later rows win elsewhere (`flow_chart.launcher`'s own tie-break). None owned: empty."""
-    from render_board import _bare_name
     bare = _bare_name(name)
     owned = [t for t in tasks if bare and t.kind != "done" and _bare_name(t.owner) == bare]
     return owned[-1].label if owned else ""
@@ -394,7 +390,6 @@ def workers(root: Path, cfg: Config, tracker: Tracker, tracker_text: str, day: d
     import flow_chart
     import one_shot
     from audit_tasks import worktrees_dir
-    from render_board import _bare_name, _section
     rows = {_bare_name(s.name): s for s in tracker.sessions}
     found = []
     records = process_status.registrations(root)
@@ -429,7 +424,6 @@ def _write(path: Path, sources: Sources) -> None:
 
 def refresh(root: Path, now: datetime, gh=backlog.run_gh, call=backlog._call) -> Sources:
     """Fetch everything, write the cache, return it. Never raises: a failed source is in `errors`."""
-    from render_board import ConfigError, parse_coordinator, parse_tracker
     try:
         cfg = parse_coordinator((root / "CLAUDE.md").read_text(), today=now.date())
     except (OSError, ConfigError) as e:
@@ -472,7 +466,6 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--root", type=Path, default=Path("."), help="workspace root holding CLAUDE.md")
     ap.add_argument("--refresh", action="store_true", help="read every source now and rewrite the cache")
     args = ap.parse_args(argv)
-    from render_board import ConfigError, parse_coordinator
     now = datetime.now().astimezone()
     try:
         cfg = parse_coordinator((args.root / "CLAUDE.md").read_text(), today=date.today())

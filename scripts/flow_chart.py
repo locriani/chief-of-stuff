@@ -19,6 +19,7 @@ from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 import gantt
+from clock import done_clock
 from fragment import esc
 
 LINE = re.compile(r"^- (\d{1,2}):(\d{2}) stage: (.+) → (\S+)\s*$")
@@ -176,8 +177,7 @@ def build(log: list[Move], tasks, lanes: dict, held: set[str], ends: dict[str, d
             # (#213) a clock: its latest occurrence at or before now, not a same-date occurrence that
             # may not have happened yet.
             if t := task.state_time:
-                import render_board  # render_board imports this module, so not at the top
-                stop = render_board._done_clock(t, now, now.tzinfo)
+                stop = done_clock(t, now, now.tzinfo)
             else:
                 stop = last.at
         finish = task and (ended or {}).get(task.name.strip())

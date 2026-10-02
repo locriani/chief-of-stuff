@@ -18,8 +18,10 @@ import board_sources
 import flow_chart
 from decision_page import HEAD, _graph, _md, _section, context, pending_count, span
 from fragment import href, tab_bar
-from render_board import (Config, ConfigError, TRAILING_NUMBER, _dur, _resolve_due, daily_trackers, forge_ends,
-                          parse_coordinator, parse_tracker)
+from clock import dur as _dur
+from render_board import forge_ends
+from tracker import TRAILING_NUMBER, parse_tracker, resolve_due as _resolve_due
+from workspace import Config, ConfigError, daily_trackers, parse_coordinator
 from settings import Graph, SettingsError, load as load_settings
 
 # A worker's outcome by its last launcher move's stage (flow_chart.moves: completed → pr, HUMAN REVIEW → review).

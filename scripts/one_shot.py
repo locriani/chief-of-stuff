@@ -20,7 +20,8 @@ import ownership
 import tracker_write
 from audit_tasks import worktrees_dir
 from _vendor.toon_format import ToonDecodeError, decode as toon_decode, encode as toon_encode
-from render_board import _cells, _is_separator, parse_tracker
+from md import cells as _cells, is_separator as _is_separator
+from tracker import parse_tracker
 from settings import load as load_settings
 from shell_setup import clean_env, login_argv, resolve
 

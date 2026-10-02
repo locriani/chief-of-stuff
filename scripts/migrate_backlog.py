@@ -28,8 +28,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import backlog as bl
-from render_board import (TASK_COLS, TASK_HEADERS, _anchor, _cells, _is_separator, _section,
-                          _split_row, _unmark, clip_name, short_name)
+from md import (cells as _cells, is_separator as _is_separator, section as _section, split_row as _split_row,
+                unmark as _unmark)
+from tracker import TASK_COLS, TASK_HEADERS, anchor as _anchor, clip_name, short_name
 
 MOVE, KEEP, CLOSED, CHECK = "move", "keep", "closed", "check"
 DISPOSITIONS = (MOVE, KEEP, CLOSED, CHECK)

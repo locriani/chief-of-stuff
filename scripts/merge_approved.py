@@ -22,7 +22,7 @@ from pathlib import Path
 from urllib.parse import quote, urlencode
 
 import backlog
-from render_board import ConfigError, parse_coordinator
+from workspace import ConfigError, parse_coordinator
 from settings import SettingsError, Workflow, load as load_settings
 
 FAILED = {"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"}

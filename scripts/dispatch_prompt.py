@@ -15,7 +15,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from backlog import file_with, issue_ref  # noqa: E402
-from render_board import ConfigError, _cells, _is_separator, _section, parse_coordinator, parse_tracker, short_name  # noqa: E402
+from md import section as _section  # noqa: E402
+from tracker import parse_tracker, short_name  # noqa: E402
+from workspace import ConfigError, parse_coordinator  # noqa: E402
 from settings import SettingsError, Workflow, load as load_settings  # noqa: E402
 import ownership  # noqa: E402
 

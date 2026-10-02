@@ -18,7 +18,9 @@ import panels
 from audit_tasks import worktrees_dir
 from decision_page import HEAD, context, pending_count
 from fragment import tab_bar
-from render_board import TRAILING_NUMBER, _section, parse_coordinator, parse_tracker
+from md import section as _section
+from tracker import TRAILING_NUMBER, parse_tracker
+from workspace import parse_coordinator
 from settings import load as load_settings
 
 # one_shot.RELAUNCHED's Log line, grouped as flow_chart.ENDED is.

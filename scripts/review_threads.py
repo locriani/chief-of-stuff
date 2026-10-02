@@ -22,7 +22,7 @@ from urllib.parse import urlencode
 
 import backlog
 from merge_approved import _gitlab_base, forge
-from render_board import ConfigError
+from workspace import ConfigError
 from settings import SettingsError
 
 # ponytail: first 100 open requests, threads and comments each; paginate when a request outgrows that.

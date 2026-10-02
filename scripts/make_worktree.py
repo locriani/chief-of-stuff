@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from render_board import BULLET, _section, _unquote  # noqa: E402
+from md import BULLET, section as _section, unquote as _unquote  # noqa: E402
 
 AGENT = re.compile(r"^\s*(?:[-*]\s*)?Agent:\s*(\S+)\s+(\S+)\s*$", re.MULTILINE)
 LIFETIMES = ("task", "standing")

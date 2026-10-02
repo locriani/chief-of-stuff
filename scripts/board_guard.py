@@ -12,7 +12,7 @@ from datetime import date
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-from render_board import ConfigError, parse_coordinator
+from workspace import ConfigError, parse_coordinator
 
 REASON = "Serve and render the board only. Never open it automatically; the user decides when to view it."
 URL = re.compile(r"(?:https?://|file://)[^\s\"'<>`]+", re.I)

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from render_board import _cells, _is_separator
+from md import cells as _cells, is_separator as _is_separator
 
 HEADING = "## File ownership"
 
