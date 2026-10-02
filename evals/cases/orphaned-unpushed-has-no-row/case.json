@@ -1,0 +1,62 @@
+{
+  "tz": "America/Chicago",
+  "golden": true,
+  "golden_why": "#43: a gone worker's tree held one committed, unpushed commit and no File ownership row named it; the audit printed trees=0 and the coordinator found the work only by hand.",
+  "description": "A new session picks up a day that already has files. One worker, impl-7, is registered against `wt-retry` and its process is gone. Its tree holds a commit that exists only there: no upstream, not on origin/main, and no File ownership row names the tree. The audit walks the trees on disk, so it reports the orphan with what is at risk; the reply names the tree and that the commit is unpushed, and `Verified` is where the checked fact goes.",
+  "repo": {
+    "trees": "trees",
+    "files": {
+      "src/a/export.py": "RETRIES = 3\n"
+    },
+    "worktrees": [
+      {
+        "name": "wt-retry",
+        "branch": "fix/retry-backoff",
+        "merged": false
+      },
+      {
+        "name": "wt-audit",
+        "branch": "feat/audit",
+        "merged": true
+      }
+    ]
+  },
+  "turns": [
+    {
+      "prompt": "Pick up where the last session left off.",
+      "graders": [
+        {
+          "name": "it asks the audit rather than guessing",
+          "type": "tool_used",
+          "tool": "Bash",
+          "text_match": "audit",
+          "min": 1
+        },
+        {
+          "name": "the reply names the tree whose writer is gone",
+          "type": "regex",
+          "pattern": "wt-retry"
+        },
+        {
+          "name": "and says its commit exists only there",
+          "type": "regex",
+          "pattern": "(?i)unpushed|not pushed|no upstream|never pushed|not on origin/main|only (exists )?(locally|local|in (that|the) (tree|worktree))"
+        },
+        {
+          "name": "the orphaned tree reaches Verified, where a checked fact goes",
+          "type": "file_matches",
+          "path": "daily/{{today}}-tracker.md",
+          "pattern": "(?mi)^- Verified[^\\n]*wt-retry"
+        },
+        {
+          "name": "Log times are this move's clock reads",
+          "type": "timestamp_tolerance",
+          "path": "daily/{{today}}-tracker.md",
+          "section": "## Log"
+        }
+      ]
+    }
+  ],
+  "max_turns": 20,
+  "timeout_seconds": 600
+}

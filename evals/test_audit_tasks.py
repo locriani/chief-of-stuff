@@ -460,13 +460,37 @@ class OrphanJoinTest(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.assertEqual(al.audit(root, "2026-09-17").orphans, [])
 
-    def test_committed_work_is_not_an_orphan_however_gone_its_owner(self) -> None:
-        """An unmerged branch is recoverable by name. A dirty tree nobody is writing in is not."""
-        tmp, root = workspace(
-            "| Open branch work | sam | waiting | 09:00 |  | Checklist: Open branch work |",
-            "| sam | worktree wt-unmerged (feat/open) |", sessions=session_row("robin"))
+    OPEN = "| Open branch work | sam | waiting | 09:00 |  | Checklist: Open branch work |"
+    OPEN_OWNS = "| sam | worktree wt-unmerged (feat/open) |"
+
+    def test_pushed_work_is_not_an_orphan_however_gone_its_owner(self) -> None:
+        """An unmerged branch a remote holds is recoverable by name. One only this tree holds is not (#43)."""
+        tmp, root = workspace(self.OPEN, self.OPEN_OWNS, sessions=session_row("robin"))
         self.addCleanup(tmp.cleanup)
+        git("push", "-u", "origin", "feat/open", cwd=root / "trees" / "wt-unmerged")
         self.assertEqual(al.audit(root, "2026-09-17").orphans, [])
+
+    def test_unpushed_work_is_an_orphan_when_its_owner_is_gone(self) -> None:
+        """#43: a commit that existed only locally, with no upstream, and the audit said nothing."""
+        tmp, root = workspace(self.OPEN, self.OPEN_OWNS, sessions=session_row("robin"))
+        self.addCleanup(tmp.cleanup)
+        report = al.audit(root, "2026-09-17")
+        self.assertEqual(len(report.orphans), 1, report.lines)
+        line = str(report.orphans[0])
+        self.assertIn("wt-unmerged", line)
+        self.assertIn("1 not on origin/main", line)
+        self.assertIn("no upstream", line)
+
+    def test_a_commit_ahead_of_its_upstream_is_counted(self) -> None:
+        tmp, root = workspace(self.OPEN, self.OPEN_OWNS, sessions=session_row("robin"))
+        self.addCleanup(tmp.cleanup)
+        tree = root / "trees" / "wt-unmerged"
+        git("push", "-u", "origin", "feat/open", cwd=tree)
+        (tree / "more.txt").write_text("more\n")
+        git("add", "more.txt", cwd=tree)
+        git("commit", "-m", "more", cwd=tree)
+        [orphan] = al.audit(root, "2026-09-17").orphans
+        self.assertIn("1 unpushed", str(orphan))
 
     # A one-shot's File ownership row is keyed on its task, which is never a session.
     ONE_SHOT = "| Unsaved work | impl-01 | running 09:10 | 09:00 |  | Checklist: Unsaved work |"
@@ -503,6 +527,77 @@ class OrphanJoinTest(unittest.TestCase):
         tmp, root = workspace(self.DIRTY, self.OWNS, sessions=session_row("robin"))
         self.addCleanup(tmp.cleanup)
         self.assertIn("orphaned=1", al.audit(root, "2026-09-17").lines[-1])
+
+
+class TreesOnDiskTest(unittest.TestCase):
+    """#43. `visit()` reached only trees a File ownership row named, so a gone session's tree that no
+    row named was never looked at, and the audit printed `trees=0` over two trees with work at risk.
+    The trees on disk are the entry point now; rows, registrations and launchers only say whose they are.
+    """
+
+    TASK = "| Landed work | robin | done 10:00 | 09:00 |  | Checklist: Landed work |"
+
+    def register(self, root: Path, name: str, pid: int, tree: str) -> None:
+        folder = root / ".chief-of-stuff" / "sessions"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / f"{name}.json").write_text(json.dumps(
+            {"pid": pid, "name": name, "runtime": "codex", "worktree": str(root / "trees" / tree)}))
+
+    def dead_pid(self) -> int:
+        proc = subprocess.Popen([sys.executable, "-c", ""])
+        proc.wait()
+        return proc.pid
+
+    def test_a_gone_workers_unpushed_tree_no_row_names_is_orphaned(self) -> None:
+        """The acceptance case: one committed, unpushed commit; no File ownership row; its worker's PID gone."""
+        tmp, root = workspace(self.TASK, "", sessions=session_row("robin"))
+        self.addCleanup(tmp.cleanup)
+        self.register(root, "impl-7", self.dead_pid(), "wt-unmerged")
+        report = al.audit(root, "2026-09-17")
+        [orphan] = [o for o in report.orphans if "wt-unmerged" in str(o)]
+        self.assertIn("1 not on origin/main", str(orphan))
+        self.assertIn("impl-7", str(orphan))
+        self.assertIn("no upstream", str(orphan))
+
+    def test_a_live_workers_tree_is_not_orphaned(self) -> None:
+        tmp, root = workspace(self.TASK, "", sessions=session_row("robin"))
+        self.addCleanup(tmp.cleanup)
+        self.register(root, "impl-7", os.getpid(), "wt-unmerged")
+        report = al.audit(root, "2026-09-17")
+        self.assertFalse(any("wt-unmerged" in str(o) for o in report.orphans + report.unclaimed), report.lines)
+
+    def test_at_risk_work_nothing_claims_is_unclaimed(self) -> None:
+        tmp, root = workspace(self.TASK, "", sessions=session_row("robin"))
+        self.addCleanup(tmp.cleanup)
+        report = al.audit(root, "2026-09-17")
+        self.assertEqual(report.orphans, [], report.lines)
+        self.assertEqual(sorted(str(u).split(" — ")[0] for u in report.unclaimed),
+                         ["unclaimed work: wt-dirty (feat/dirty)", "unclaimed work: wt-unmerged (feat/open)"])
+        self.assertIn(" unclaimed=2", report.lines[-1])
+
+    def test_unclaimed_needs_no_sessions_table(self) -> None:
+        """No roster means no claim that an owner is gone; a tree nobody names needs no owner to be at risk."""
+        tmp, root = workspace(self.TASK, "")
+        self.addCleanup(tmp.cleanup)
+        self.assertEqual(len(al.audit(root, "2026-09-17").unclaimed), 2)
+
+    def test_every_tree_on_disk_is_counted(self) -> None:
+        tmp, root = workspace(self.TASK, "", sessions=session_row("robin"))
+        self.addCleanup(tmp.cleanup)
+        report = al.audit(root, "2026-09-17")
+        self.assertIn(" trees=3 ", report.lines[-1])
+        self.assertTrue(any(ln.startswith("wt-merged (landed): ") for ln in report.lines), report.lines)
+
+    def test_safe_trees_raise_nothing(self) -> None:
+        tmp, root = workspace(self.TASK, "", sessions=session_row("robin"))
+        self.addCleanup(tmp.cleanup)
+        report = al.audit(root, "2026-09-17")
+        self.assertFalse(any("wt-merged" in str(f) for f in report.orphans + report.unclaimed), report.lines)
+
+    def test_no_unclaimed_count_when_there_is_none(self) -> None:
+        tmp, root = workspace(self.TASK, "| robin | worktree wt-dirty · worktree wt-unmerged |", sessions=session_row("robin"))
+        self.addCleanup(tmp.cleanup)
+        self.assertNotIn("unclaimed=", al.audit(root, "2026-09-17").lines[-1])
 
 
 class MissingTreeTest(unittest.TestCase):
@@ -622,6 +717,9 @@ class MainShaTest(unittest.TestCase):
             "| Planned work | sam | waiting | 09:00 |  | Checklist: Planned work |",
             "| sam | worktree wt-never-made (feat/planned) |")
         self.addCleanup(tmp.cleanup)
+        # The audit walks the trees on disk (#43), so none may be left there.
+        for name in ("wt-merged", "wt-unmerged", "wt-dirty"):
+            git("worktree", "remove", "--force", str(root / "trees" / name), cwd=root / "repo")
         self.assertFalse([ln for ln in al.audit(root, "2026-09-17").lines if "origin/main" in ln])
 
 
