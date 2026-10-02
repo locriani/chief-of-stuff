@@ -17,6 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from clock import HHMM, RAN, dur as _dur, hhmm as _hhmm  # noqa: E402
+from findings import ISSUE, KANBAN, LANE, NEXT, ORPHANED, OVER, QUEUE, REOPEN, STOPPED  # noqa: E402
 from md import cells as _cells, is_separator as _is_separator, section as _section, unmark as _unmark  # noqa: E402
 from tracker import clip_name, parse_tracker  # noqa: E402
 from workspace import ConfigError, parse_coordinator, read_config, worktrees_dir  # noqa: E402
@@ -63,7 +64,7 @@ class Reopen:
     why: str
 
     def __str__(self) -> str:
-        return f"reopen: {clip_name(self.task)} — {self.worktree}: {self.why}"
+        return f"{REOPEN} {clip_name(self.task)} — {self.worktree}: {self.why}"
 
 
 @dataclass(frozen=True)
@@ -78,7 +79,7 @@ class Orphan:
     def __str__(self) -> str:
         who = f"{self.owner!r} [{self.ref}]" if self.ref else f"{self.owner!r}"
         how = "names a ref no ## Sessions row carries" if self.ref else "is not in ## Sessions"
-        return f"orphaned work: {self.worktree} — {self.why}, and its owner {who} {how}"
+        return f"{ORPHANED} {self.worktree} — {self.why}, and its owner {who} {how}"
 
 
 @dataclass(frozen=True)
@@ -96,7 +97,7 @@ class Stop:
         kind = self.kind or "kind unstated"
         if kind == UNREADABLE:
             kind = "a stop file that is unreadable"
-        return f"stopped: {clip_name(self.task)} — {self.worktree}: {kind}{who}, and the task still reads {self.state!r}"
+        return f"{STOPPED} {clip_name(self.task)} — {self.worktree}: {kind}{who}, and the task still reads {self.state!r}"
 
 
 @dataclass(frozen=True)
@@ -107,7 +108,7 @@ class QueueFault:
     why: str
 
     def __str__(self) -> str:
-        return f"decision queue: {self.row} — {self.why}"
+        return f"{QUEUE} {self.row} — {self.why}"
 
 
 @dataclass(frozen=True)
@@ -118,7 +119,7 @@ class IssueFault:
     why: str
 
     def __str__(self) -> str:
-        return f"issue: {self.task} — {self.why}"
+        return f"{ISSUE} {self.task} — {self.why}"
 
 
 def _closed_hhmm(closed_at: str, zone) -> str:
@@ -214,7 +215,7 @@ class LaneFault:
     why: str
 
     def __str__(self) -> str:
-        return f"lane: {self.task} — {self.why}"
+        return f"{LANE} {self.task} — {self.why}"
 
 
 def lane_faults(tasks, lanes: dict, settings_path: str | None) -> list[LaneFault]:
@@ -238,7 +239,7 @@ class KanbanFault:
     why: str
 
     def __str__(self) -> str:
-        return f"kanban: {self.task} — {self.why}"
+        return f"{KANBAN} {self.task} — {self.why}"
 
 
 def kanban_faults(tasks, home: Backlog | GitHubBacklog, config: Kanban, gh=None) -> list[KanbanFault]:
@@ -295,7 +296,7 @@ class OverBudget:
     budget: timedelta
 
     def __str__(self) -> str:
-        return f"over budget: {self.task} running {_dur(self.ran)} ({self.size} {_dur(self.budget)})"
+        return f"{OVER} {self.task} running {_dur(self.ran)} ({self.size} {_dur(self.budget)})"
 
 
 def over_budget(tasks, budgets: dict, day: str, now: datetime) -> list[OverBudget]:
@@ -529,7 +530,7 @@ def group_reopens(reopens: list[Reopen]) -> list[str]:
     out = []
     for worktree, why in order:
         names = tasks[(worktree, why)]
-        head = f"reopen: {worktree}: {why} — {len(names)} done task{'' if len(names) == 1 else 's'}"
+        head = f"{REOPEN} {worktree}: {why} — {len(names)} done task{'' if len(names) == 1 else 's'}"
         out.append(f"{head}: {', '.join(names)}")
     return out
 
@@ -658,7 +659,7 @@ def queue_faults(tracker_text: str) -> tuple[list[QueueFault], list[str], int]:
     if open_rows:
         num, decision = open_rows[0]
         # Strip Markdown before printing the decision name.
-        lines.append(f"next decision: {num} — {clip_name(_unmark(decision))}")
+        lines.append(f"{NEXT} {num} — {clip_name(_unmark(decision))}")
     return faults, lines, len(open_rows)
 
 
