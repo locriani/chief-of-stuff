@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import re
-import subprocess
 import sys
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
@@ -17,7 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from clock import HHMM, RAN, dur as _dur, hhmm as _hhmm  # noqa: E402
-from findings import ISSUE, KANBAN, LANE, NEXT, ORPHANED, OVER, QUEUE, REOPEN, STOPPED  # noqa: E402
+from findings import ISSUE, KANBAN, LANE, NEXT, OVER, QUEUE, REOPEN, STOPPED  # noqa: E402
 from md import cells as _cells, is_separator as _is_separator, section as _section, unmark as _unmark  # noqa: E402
 from tracker import clip_name, parse_tracker  # noqa: E402
 from workspace import ConfigError, parse_coordinator, read_config, worktrees_dir  # noqa: E402
@@ -26,7 +25,9 @@ from backlog import CLOSED, GITHUB, Backlog, BacklogError, GitHubBacklog, file_w
 from settings import Kanban, SettingsError, load as load_settings  # noqa: E402
 import kanban as kanban_tool  # noqa: E402
 import ownership  # noqa: E402
-from process_status import running_trees  # noqa: E402
+from git_trees import discover, git, read_state  # noqa: E402
+from orphans import Claim, Orphan, Unclaimed, judge  # noqa: E402
+from tree_claims import Claims, one_shot_claims, registry_claims  # noqa: E402
 
 # Preserve branch names from ownership rows when worktrees disappear.
 WORKTREE = re.compile(r"\bworktrees?\s+(?P<tick>`)?(?P<name>[A-Za-z0-9._\-/]+)`?(?:\s*\((?P<branch>[^)]*)\))?")
@@ -44,8 +45,6 @@ LANDED, NOT_LANDED, UNKNOWN_SHA = "landed", "not-landed", "unknown"
 PAREN = re.compile(r"\((.*?)\)")
 TOKEN = re.compile(r"[A-Za-z0-9]+")
 STOP = NOT_A_NAME | {"done", "from", "to", "on", "by", "worktree", "worktrees", "off", "main", "new"}
-GIT_ENV = {"GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0"}
-GIT_TIMEOUT = 15
 DONE = "done"
 
 
@@ -65,21 +64,6 @@ class Reopen:
 
     def __str__(self) -> str:
         return f"{REOPEN} {clip_name(self.task)} — {self.worktree}: {self.why}"
-
-
-@dataclass(frozen=True)
-class Orphan:
-    """Uncommitted work whose owner is absent from Sessions."""
-
-    worktree: str
-    owner: str
-    why: str
-    ref: str = ""
-
-    def __str__(self) -> str:
-        who = f"{self.owner!r} [{self.ref}]" if self.ref else f"{self.owner!r}"
-        how = "names a ref no ## Sessions row carries" if self.ref else "is not in ## Sessions"
-        return f"{ORPHANED} {self.worktree} — {self.why}, and its owner {who} {how}"
 
 
 @dataclass(frozen=True)
@@ -316,6 +300,7 @@ class Report:
     lines: list[str] = field(default_factory=list)
     reopen: list[Reopen] = field(default_factory=list)
     orphans: list[Orphan] = field(default_factory=list)
+    unclaimed: list[Unclaimed] = field(default_factory=list)
     stopped: list[Stop] = field(default_factory=list)
     queue: list[QueueFault] = field(default_factory=list)
     issues: list[IssueFault] = field(default_factory=list)
@@ -435,19 +420,18 @@ def rows_for(item: str, owner: str, owners: list[OwnerRow]) -> tuple[list[OwnerR
     return top, ""
 
 
-def git(args: list[str], cwd: Path) -> tuple[int, str]:
-    """One read-only git call. Never a shell, always a list, always bounded."""
-    try:
-        out = subprocess.run(
-            ["git", "-C", str(cwd), *args],
-            capture_output=True,
-            text=True,
-            timeout=GIT_TIMEOUT,
-            env={**GIT_ENV, "PATH": "/usr/bin:/bin:/usr/local/bin", "HOME": str(cwd)},
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        return 1, f"{type(exc).__name__}: {exc}"
-    return out.returncode, (out.stdout or out.stderr).strip()
+def row_claim(row: OwnerRow, tasks, roster: set[str], refs: set[str], user: str) -> Claim:
+    """A File ownership row's claim on its trees. Live when its context is in `## Sessions`, or when the
+    task it is keyed on — a one-shot's row is keyed on its task, never a session — has a listed owner.
+    An empty Sessions table cannot prove that workers are absent, so with no roster every row is live."""
+    owner = _bare(row.context)
+    if not roster:
+        return Claim(owner, True)
+    here, missing = listed(row.context, roster, refs, user)
+    keyed = next((t for t in tasks if owns(row, t.item)), None)
+    here = here or (keyed is not None and listed(keyed.owner, roster, refs, user)[0])
+    how = "names a ref no ## Sessions row carries" if missing else "is not in ## Sessions"
+    return Claim(owner, here, how, missing)
 
 
 def _resolve(root: Path, trees: str, name: str) -> tuple[Path | None, str, str]:
@@ -503,6 +487,10 @@ def _state(worktree: Path) -> tuple[str, str]:
     if merged != 0:
         reasons.append("not on main")
     return branch, "; ".join(reasons)
+
+
+def _tree_line(name: str, branch: str, why: str) -> str:
+    return f"{name} ({branch}): {why or 'on main, committed'}"
 
 
 def group_reopens(reopens: list[Reopen]) -> list[str]:
@@ -678,7 +666,6 @@ def audit(root: Path, day: str, gh=None, check_issues: bool = True, now: datetim
     if roster:
         # The workspace user may own a task without a session.
         roster.add(_bare(cfg.user))
-    running = running_trees((root / trees).resolve()) if roster else {}
 
     report = Report()
     handled: set[str] = set()
@@ -687,11 +674,11 @@ def audit(root: Path, day: str, gh=None, check_issues: bool = True, now: datetim
     refused: set[str] = set()
     noted: set[str] = set()
     sha_said: set[str] = set()
-    orphaned: set[str] = set()
+    names: dict[Path, str] = {}
     stopped_at: set[str] = set()
     gone: dict[str, str] = {}
     def visit(row: OwnerRow, name: str, task) -> None:
-        """One tree, once: its git state, any task it reopens, and whether its writer is still here."""
+        """One tree, once: its git state, and any task it reopens or stop it carries."""
         path, kind, message = _resolve(root, trees, name)
         if path is None:
             if kind == "missing":
@@ -705,7 +692,8 @@ def audit(root: Path, day: str, gh=None, check_issues: bool = True, now: datetim
             handled.add(name)
             seen.add(path)
             order.append(path)
-            report.lines.append(f"{name} ({branch}): {why or 'on main, committed'}")
+            names.setdefault(path, name)
+            report.lines.append(_tree_line(name, branch, why))
         if task is not None and task.kind == DONE:
             sha = task_sha(task.state)
             verdict, complaint = landed(sha, path)
@@ -716,20 +704,11 @@ def audit(root: Path, day: str, gh=None, check_issues: bool = True, now: datetim
                 report.reopen.append(Reopen(task.item, task.owner, f"{name} ({branch})", f"its sha {sha} is not on main"))
             elif verdict == UNKNOWN_SHA and why:
                 report.reopen.append(Reopen(task.item, task.owner, f"{name} ({branch})", why))
-        # Only dirty worktrees with absent owners count as orphans.
         stop = read_stop(path)
         if stop is not None and task is not None and task.kind not in SETTLED and name not in stopped_at:
             stopped_at.add(name)
             report.stopped.append(Stop(task.item, stop.get("stop", ""), stop.get("lands on", ""),
                                        f"{name} ({branch})", task.state.strip()))
-        owner = row.context.strip() or (task.owner.strip() if task is not None else "")
-        here, missing = listed(owner, roster, refs, cfg.user) if roster else (True, "")
-        # A one-shot's row is keyed on its task, never a session: a live launcher holds the tree, and so does the task's owner.
-        keyed = task if task is not None else next((t for t in tasks if owns(row, t.item)), None)
-        here = here or path in running or (keyed is not None and listed(keyed.owner, roster, refs, cfg.user)[0])
-        if roster and "uncommitted" in why and not here and name not in orphaned:
-            orphaned.add(name)
-            report.orphans.append(Orphan(f"{name} ({branch})", _bare(owner), why, missing))
 
     for task in tasks:
         rows, note = rows_for(task.item, task.owner, owners)
@@ -744,6 +723,30 @@ def audit(root: Path, day: str, gh=None, check_issues: bool = True, now: datetim
     for row in owners:
         for name in row.worktrees:
             visit(row, name, None)
+
+    # The trees on disk, not the rows that name them, are what the orphan check walks (#43).
+    for path in discover(root, trees):
+        if path not in seen:
+            branch, why = _state(path)
+            seen.add(path)
+            order.append(path)
+            names[path] = path.name
+            report.lines.append(_tree_line(path.name, branch, why))
+    claims: Claims = {}
+    for row in owners:
+        for name in row.worktrees:
+            path = _resolve(root, trees, name)[0]
+            if path is not None:
+                claims.setdefault(path, []).append(row_claim(row, tasks, roster, refs, cfg.user))
+    for source in (registry_claims(root), one_shot_claims((root / trees).resolve())):
+        for path, found in source.items():
+            claims.setdefault(path, []).extend(found)
+    for path in order:
+        finding = judge(names[path], read_state(path), claims.get(path, []))
+        if isinstance(finding, Orphan):
+            report.orphans.append(finding)
+        elif isinstance(finding, Unclaimed):
+            report.unclaimed.append(finding)
     handle = _handle(root, trees, order)
     for name, detail in gone.items():
         report.lines.append(missing_tree(handle, name, detail))
@@ -752,6 +755,7 @@ def audit(root: Path, day: str, gh=None, check_issues: bool = True, now: datetim
         report.lines.append(_push_gap(order[0]))
     report.lines.extend(group_reopens(report.reopen))
     report.lines.extend(str(o) for o in report.orphans)
+    report.lines.extend(str(u) for u in report.unclaimed)
     report.lines.extend(str(s) for s in report.stopped)
     faults, queue_lines, queued = queue_faults(tracker_text)
     report.queue.extend(faults)
@@ -781,7 +785,7 @@ def audit(root: Path, day: str, gh=None, check_issues: bool = True, now: datetim
     reopen = f"{facts} tree{'' if facts == 1 else 's'}/{len(report.reopen)} task{'' if len(report.reopen) == 1 else 's'}" if report.reopen else "0"
     report.lines.append(
         f"tasks={len(tasks)} trees={len(seen)} reopen={reopen} orphaned={len(report.orphans)} "
-        f"stopped={len(report.stopped)}" + (f" queued={queued}" if queue_lines or faults or queued else "") + issues + laned + kanban + budgeted)
+        + (f"unclaimed={len(report.unclaimed)} " if report.unclaimed else "") + f"stopped={len(report.stopped)}" + (f" queued={queued}" if queue_lines or faults or queued else "") + issues + laned + kanban + budgeted)
     return report
 
 

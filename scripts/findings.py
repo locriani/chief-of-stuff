@@ -10,6 +10,7 @@ from __future__ import annotations
 
 REOPEN = "reopen:"
 ORPHANED = "orphaned work:"
+UNCLAIMED = "unclaimed work:"
 STOPPED = "stopped:"
 QUEUE = "decision queue:"
 NEXT = "next decision:"
@@ -21,6 +22,6 @@ OVER = "over budget:"
 # What the watcher forwards, in the order its pattern tries them. No script prints `overdue:` or `waiting:`;
 # dropping them is its own change.
 WATCHED = (ORPHANED, STOPPED, REOPEN, ISSUE, LANE, KANBAN, QUEUE, NEXT, "overdue:", "waiting:")
-# Printed and not forwarded. The agent file asks the coordinator to act on `over budget:`; forwarding it is a
-# behaviour change and starts as a failing case.
-UNWATCHED = (OVER,)
+# Printed and not forwarded. The agent file asks the coordinator to act on `over budget:`; forwarding it, or
+# `unclaimed work:`, is a behaviour change and starts as a failing case.
+UNWATCHED = (OVER, UNCLAIMED)

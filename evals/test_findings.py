@@ -38,7 +38,8 @@ def reopen() -> al.Reopen:
 # One finding of every kind the audit's report carries, and the word its line starts with.
 FINDINGS = {
     al.Reopen: (findings.REOPEN, reopen()),
-    al.Orphan: (findings.ORPHANED, al.Orphan("tree (feat)", "impl", "1 uncommitted file(s)")),
+    al.Orphan: (findings.ORPHANED, al.Orphan("tree (feat)", "impl", "1 uncommitted file(s)", "is not in ## Sessions")),
+    al.Unclaimed: (findings.UNCLAIMED, al.Unclaimed("tree (feat)", "1 uncommitted file(s)")),
     al.Stop: (findings.STOPPED, al.Stop("Build it", "blocked", "coordinator", "tree (feat)", "running 10:00")),
     al.QueueFault: (findings.QUEUE, al.QueueFault("row 1", "carries the number 1 twice, so there is no next one")),
     al.IssueFault: (findings.ISSUE, al.IssueFault("Build it", "no issue")),
@@ -78,10 +79,10 @@ class VocabularyTest(unittest.TestCase):
                 self.assertIn(word, findings.WATCHED + findings.UNWATCHED)
 
     def test_the_gaps_are_pinned(self):
-        # `over budget:` is printed and not forwarded; `overdue:` and `waiting:` are forwarded and never printed.
-        # Closing either gap is a behaviour change, and changes this test with it.
+        # `over budget:` and `unclaimed work:` are printed and not forwarded; `overdue:` and `waiting:` are
+        # forwarded and never printed. Closing either gap is a behaviour change, and changes this test with it.
         words = {word for word, _ in printed()}
-        self.assertEqual(findings.UNWATCHED, (findings.OVER,))
+        self.assertEqual(findings.UNWATCHED, (findings.OVER, findings.UNCLAIMED))
         self.assertEqual(set(findings.WATCHED) - words, {"overdue:", "waiting:"})
 
 
