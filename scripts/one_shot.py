@@ -270,7 +270,7 @@ def reconcile(root: Path, day: str, task: str, name: str, cwd: Path, exit_code: 
         else:
             errors.append("review hold: workspace has no [kanban] configuration")
         home = (backlog.GitHubBacklog(ref.repo) if ref.host == backlog.GITHUB else
-                backlog.Backlog(cfg.backlog.host, ref.repo, cfg.backlog.env, cfg.backlog.account)
+                cfg.backlog.sibling(ref.repo)
                 if isinstance(cfg.backlog, backlog.Backlog) else None)
         if home is not None:
             body = f"One-shot worker {name} needs human review.\n\nWhy: {reason}\n\nChanges made:\n{summary}"

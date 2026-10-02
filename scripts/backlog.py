@@ -199,7 +199,7 @@ def issues(cfg: Backlog | GitHubBacklog, token: str | None = None, state: str = 
         return Fetch(error=error) if error else Fetch(issues=tuple(_gh_issue(r) for r in rows if isinstance(r, dict)))
     secret = token if token is not None else globals()["token"](cfg)
     if not secret:
-        return Fetch(error=f"no token: set ${cfg.env} or add it to the Keychain as {cfg.service}")
+        return Fetch(error=cfg.missing_token)
     out: list[Issue] = []
     page = "1"
     for _ in range(MAX_PAGES):
@@ -252,7 +252,7 @@ def counts(cfg: Backlog | GitHubBacklog, token: str | None = None, timeout: floa
         return Counts(open=got[OPEN], closed=got[CLOSED])
     secret = token if token is not None else globals()["token"](cfg)
     if not secret:
-        return Counts(error=f"no token: set ${cfg.env} or add it to the Keychain as {cfg.service}")
+        return Counts(error=cfg.missing_token)
     opened, error = _total(cfg, secret, OPEN, timeout)
     if error:
         return Counts(error=error)
@@ -310,7 +310,7 @@ def existing_labels(cfg: Backlog, token: str | None = None, timeout: float = TIM
     """Every label the project has, or the reason we do not know. Empty-and-unknown are different."""
     secret = _secret(cfg, token)
     if not secret:
-        return set(), f"no token: set ${cfg.env} or add it to the Keychain as {cfg.service}"
+        return set(), cfg.missing_token
     names: set[str] = set()
     page = "1"
     for _ in range(MAX_PAGES):
@@ -379,7 +379,7 @@ def create(cfg: Backlog | GitHubBacklog, title: str, body: str = "", labels: tup
         return Written(CREATE, title, error="native issue relationships require a GitHub backlog")
     secret = _secret(cfg, token)
     if not secret:
-        return Written(CREATE, title, error=f"no token: set ${cfg.env} or add it to the Keychain as {cfg.service}")
+        return Written(CREATE, title, error=cfg.missing_token)
     if labels:
         for made in ensure_labels(cfg, labels, token=secret, commit=commit, timeout=timeout):
             if made.error:
@@ -408,7 +408,7 @@ def close(cfg: Backlog | GitHubBacklog, iid: int, token: str | None = None, comm
         return Written(CLOSE, what, done=rc == 0, iid=iid, error="" if rc == 0 else f"gh: {err.strip()}")
     secret = _secret(cfg, token)
     if not secret:
-        return Written(CLOSE, what, error=f"no token: set ${cfg.env} or add it to the Keychain as {cfg.service}")
+        return Written(CLOSE, what, error=cfg.missing_token)
     if not commit:
         return Written(CLOSE, what)
     _got, _headers, error = _call("PUT", f"{cfg.issues_url}/{iid}", secret, timeout, {"state_event": "close"})
@@ -425,7 +425,7 @@ def comment(cfg: Backlog | GitHubBacklog, iid: int, body: str, token: str | None
         return Written(COMMENT, what, done=rc == 0, iid=iid, error="" if rc == 0 else f"gh: {err.strip() or 'exit ' + str(rc)}")
     secret = _secret(cfg, token)
     if not secret:
-        return Written(COMMENT, what, error=f"no token: set ${cfg.env} or add it to the Keychain as {cfg.service}")
+        return Written(COMMENT, what, error=cfg.missing_token)
     if not commit:
         return Written(COMMENT, what)
     _got, _headers, error = _call("POST", f"{cfg.issues_url}/{iid}/notes", secret, timeout, {"body": body})

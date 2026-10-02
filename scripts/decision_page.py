@@ -44,6 +44,7 @@ from pathlib import Path
 
 import board_sources
 from backlog_ref import Backlog, BacklogError, GitHubBacklog, backlog_from_config
+from clock import leading
 from fragment import FONTS, TAB_CSS, href, tab_bar
 from md import section as md_section
 from module_graph import section as _graph
@@ -429,20 +430,13 @@ def decision_context(root: Path, day: date, now: datetime | None = None) -> Cont
     tasks, the cached forge sources and the [kanban] label that holds an issue."""
     cfg = read_config(root)
     now = now or datetime.now(cfg.zone).replace(second=0, microsecond=0)
-
-    def at(d: date, hhmm: str) -> datetime | None:
-        m = re.match(r"(\d{1,2}):(\d{2})\b", hhmm.strip())
-        try:
-            return datetime.combine(d, time(int(m[1]), int(m[2])), cfg.zone) if m else None
-        except ValueError:
-            return None
-
+    zone = cfg.zone
     rows, log = [], []
     for d, path in daily_trackers(root, cfg):
         text = path.read_text()
-        rows += [Row(d, at(d, t), item, words) for t, item, words in decision_rows(text)]
+        rows += [Row(d, leading(t, d, zone), item, words) for t, item, words in decision_rows(text)]
         log += [(when, line.strip()[2:]) for line in md_section(text, "## Log")
-                if line.strip().startswith("- ") and (when := at(d, line.strip()[2:]))]
+                if line.strip().startswith("- ") and (when := leading(line.strip()[2:], d, zone))]
     tracker = root / cfg.tracker_path(day.isoformat())
     tasks = parse_tracker(tracker.read_text()).tasks if tracker.is_file() else ()
     try:

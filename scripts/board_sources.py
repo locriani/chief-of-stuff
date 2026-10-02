@@ -25,6 +25,7 @@ from pathlib import Path
 import backlog
 import process_status
 from _vendor.toon_format import encode as toon_encode
+from clock import leading
 from forge_review import GITLAB_PIPELINE, github_approval as _github_approval, github_pipeline as _github_pipeline
 from md import section as _section
 from settings import SettingsError, load as load_settings
@@ -35,7 +36,6 @@ CACHE = ".sources.json"
 CLOSES = re.compile(r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+(#\d+)")
 GH_PR = re.compile(r"(?i)\bPR\s*#(\d+)\b")
 GL_MR = re.compile(r"(?<![\w&])!(\d+)\b")
-HHMM = re.compile(r"^\s*(\d{1,2}):(\d{2})\b")
 STARTED = re.compile(r"^-\s+(\d{1,2}:\d{2}) one-shot (\S+) started: (.*?), worktree `([^`]*)`, task (.+?)\s*$")
 GL_WAITING = {"pending", "created", "waiting_for_resource", "preparing", "scheduled", "manual"}
 
@@ -278,7 +278,7 @@ def gitlab(home: backlog.Backlog, wanted: dict[str, set[int]], mrs: set[int], si
     A connection answers at most GL_PAGE nodes, so past that the same query goes again for the next GL_PAGE iids and the next merged page."""
     secret = backlog.token(home)
     if not secret:
-        return None, None, f"no token: set ${home.env} or add it to the Keychain as {home.service}"
+        return None, None, home.missing_token
     projects = sorted(set(wanted) | {home.project})
     left = {project: sorted(wanted.get(project) or ()) for project in projects}
     mrs, cursor = sorted(mrs), ""  # cursor: the merged page to ask for next, None once the last one is in
@@ -371,11 +371,6 @@ def forge(root: Path, cfg: Config, tracker: Tracker, since: datetime, gh, call):
 
 # --- workers ---------------------------------------------------------------------------------------
 
-def _at(hhmm: str, day: date, cfg: Config) -> datetime | None:
-    m = HHMM.match(hhmm or "")
-    return datetime.combine(day, time(int(m[1]), int(m[2])), cfg.zone) if m and int(m[1]) < 24 and int(m[2]) < 60 else None
-
-
 def _owned_task(name: str, tasks: tuple) -> str:
     """(#199) The open task row `name`'s session owns: an open (not `done`) row whose owner cell is `name`'s
     bare name (`_bare_name`, as `Task.standing_for` matches owners). Several open rows owned: the last one,
@@ -395,16 +390,16 @@ def workers(root: Path, cfg: Config, tracker: Tracker, tracker_text: str, day: d
         record = records[row["pid"]]
         s = rows.pop(_bare_name(record["name"]), None)
         found.append(Worker(record["name"], "session", record["runtime"], "", _owned_task(record["name"], tracker.tasks),
-                            record["worktree"], _when(record.get("started")), _at(s.last_reply, day, cfg) if s else None))
+                            record["worktree"], _when(record.get("started")), leading(s.last_reply, day, cfg.zone) if s else None))
     found += [Worker(s.label, "session", "", "", _owned_task(s.label, tracker.tasks), "", None,
-                     _at(s.last_reply, day, cfg)) for s in rows.values()]
+                     leading(s.last_reply, day, cfg.zone)) for s in rows.values()]
     started = {m[5]: m for m in (STARTED.match(line) for line in _section(tracker_text, "## Log")) if m}
     trees, row_of = root / worktrees_dir((root / "CLAUDE.md").read_text()), launcher(tracker.tasks)
     for tree, task in process_status.running_trees(trees).items():
         m = started.get(task)
         runtime, _, model = (m[3] if m else "").partition(" ")
         found.append(Worker(m[2] if m else tree.name, "one-shot", runtime, model, row_of(task)[1], tree.name,
-                            _at(m[1], day, cfg) if m else None, None))
+                            leading(m[1], day, cfg.zone) if m else None, None))
     return tuple(found)
 
 

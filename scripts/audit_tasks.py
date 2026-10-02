@@ -147,6 +147,15 @@ def _tree_unlanded(root: Path | None, trees: str, owners: list, task) -> bool:
     return False
 
 
+def _config_for(home: Backlog | GitHubBacklog, host: str, repo: str) -> Backlog | GitHubBacklog:
+    """The config that reads `repo` on `host`: the home itself, a GitHub repo, or another project on the home's
+    GitLab host. The home is checked first. one_shot checks GitHub first; the two orders part only for a GitLab
+    `Backlog:` line whose host is github.com."""
+    # issue_ref admits a GitLab URL only on the Backlog's own host, so its token never leaves that host.
+    return (home if (host, repo) == home_of(home) else GitHubBacklog(repo)
+            if host == GITHUB else replace(home, project=repo))
+
+
 def issue_faults(tasks, home: Backlog | GitHubBacklog, gh=None, lanes: dict | None = None,
                  root: Path | None = None, trees: str = "", owners: list | None = None,
                  zone=None) -> list[IssueFault]:
@@ -168,9 +177,7 @@ def issue_faults(tasks, home: Backlog | GitHubBacklog, gh=None, lanes: dict | No
             refs[task] = ref
     states: dict[tuple[str, str], dict] = {}
     for want in sorted({(r.host, r.repo) for r in refs.values()}):
-        # issue_ref admits a GitLab URL only on the Backlog's own host, so its token never leaves that host.
-        cfg = (home if want == home_of(home) else GitHubBacklog(repo=want[1]) if want[0] == GITHUB
-               else replace(home, project=want[1]))
+        cfg = _config_for(home, *want)
         try:
             states[want] = issue_states(cfg, gh=gh)
         except BacklogError as e:
@@ -245,8 +252,7 @@ def kanban_faults(tasks, home: Backlog | GitHubBacklog, config: Kanban, gh=None)
             selected.append((task, ref))
     states = {}
     for host, repo in sorted({(ref.host, ref.repo) for _, ref in selected}):
-        cfg = (home if (host, repo) == home_of(home) else GitHubBacklog(repo)
-               if host == GITHUB else replace(home, project=repo))
+        cfg = _config_for(home, host, repo)
         try:
             states[(host, repo)] = issue_states(cfg, gh=gh)
         except BacklogError as exc:

@@ -166,6 +166,14 @@ class ConfigTest(unittest.TestCase):
     def test_keychain_service_is_derived_from_the_host(self):
         self.assertEqual(cfg("https://labs.gauntletai.com").service, "gitlab-labs.gauntletai.com")
 
+    def test_a_missing_token_names_the_variable_and_the_keychain_service(self):
+        self.assertEqual(bl.Backlog("https://h.test", "g/p", "TEAM_TOKEN").missing_token,
+                         "no token: set $TEAM_TOKEN or add it to the Keychain as gitlab-h.test")
+
+    def test_a_sibling_is_another_project_read_with_the_same_credential(self):
+        home = bl.Backlog("https://h.test", "g/p", "TEAM_TOKEN", "acct")
+        self.assertEqual(home.sibling("g/other"), bl.Backlog("https://h.test", "g/other", "TEAM_TOKEN", "acct"))
+
 
 class TokenTest(unittest.TestCase):
     def test_environment_wins_over_the_keychain(self):

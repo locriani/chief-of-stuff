@@ -420,6 +420,40 @@ class RunTest(unittest.TestCase):
         self.assertIn("partial.txt", body)
         self.assertIn("| Security audit | Security audit | Robin | waiting |", self.tracker.read_text())
 
+    def _commented_with(self, backlog_line: str, issue: str):
+        """The backlog config a human_review outcome posts its issue comment through."""
+        (self.root / "CLAUDE.md").write_text(CLAUDE + "- Settings: `chief-of-stuff.toml`\n" + f"- Backlog: {backlog_line}\n")
+        (self.root / "chief-of-stuff.toml").write_text(
+            '[kanban]\nstages = ["00 - PLAN", "03 - BUILD"]\n'
+            'human_review_label = "!! - HUMAN REVIEW REQUIRED"\n'
+            '[kanban.map]\nimplement = 1\n')
+        self.tracker.write_text(
+            "## Tasks\n"
+            "| name | item | owner | state | since | due | size | lane | stage | issue | checklist |\n"
+            "|---|---|---|---|---|---|---|---|---|---|---|\n"
+            f"| Security audit | Security audit | unassigned | open | 09:00 | | M | build | implement | {issue} | Inspect |\n"
+            "\n## File ownership\n| context | paths |\n|---|---|\n| Security audit | `src/a/` |\n")
+        fake = self._fake('status: human_review\nreason: unclear policy\nchanges: changed parser\n')
+        with mock.patch.object(one_shot, "resolve", return_value=str(fake)), \
+             mock.patch.object(one_shot, "login_argv", side_effect=lambda argv: argv), \
+             mock.patch.object(one_shot.kanban, "add_human_hold", return_value=""), \
+             mock.patch.object(one_shot.backlog, "comment", return_value=SimpleNamespace(done=True, error="")) as comment:
+            one_shot.run(root=self.root, day="2026-09-18", task="Security audit", cwd=self.tree, name="worker01",
+                         runtime="codex", agent_type=None, model="", effort="", dry_run=False)
+        comment.assert_called_once()
+        return comment.call_args.args[0]
+
+    def test_a_gitlab_review_comments_in_the_issues_own_project_with_the_backlogs_credential(self):
+        got = self._commented_with("GitLab; host https://labs.example.test; project team/app; token env TEAM_TOKEN",
+                                   "https://labs.example.test/team/other/-/issues/7")
+        self.assertEqual(got, one_shot.backlog.Backlog("https://labs.example.test", "team/other", "TEAM_TOKEN"))
+
+    def test_a_github_com_issue_is_commented_through_gh_even_under_a_gitlab_line(self):
+        # GitHub is checked before the Backlog's own host, so a GitLab line whose host is github.com still
+        # comments through gh. audit_tasks checks the home first; the two orders part only here.
+        got = self._commented_with("GitLab; host https://github.com; project team/app", "#7")
+        self.assertEqual(got, one_shot.backlog.GitHubBacklog("team/app"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,7 +8,7 @@ module imports no HTTP client and nothing from the plugin, so the config layer a
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
@@ -43,6 +43,15 @@ class Backlog:
     @property
     def issues_url(self) -> str:
         return f"{self.api()}/issues"
+
+    @property
+    def missing_token(self) -> str:
+        """Why a GitLab call cannot be made: no credential for this host."""
+        return f"no token: set ${self.env} or add it to the Keychain as {self.service}"
+
+    def sibling(self, project: str) -> Backlog:
+        """Another project on this host, read with this backlog's credential."""
+        return replace(self, project=project)
 
 
 @dataclass(frozen=True)

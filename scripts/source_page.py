@@ -106,7 +106,7 @@ def notes(change: board_sources.Change, home, gh=backlog.run_gh, call=backlog._c
                     for t in nodes for c in ((t.get("comments") or {}).get("nodes") or [])[:1]], ""
         secret = backlog.token(home)
         if not secret:
-            return [], f"no token: set ${home.env} or add it to the Keychain as {home.service}"
+            return [], home.missing_token
         q = (f"query {{ project(fullPath: {json.dumps(home.project)}) {{ mergeRequest(iid: {json.dumps(str(n))}) "
              f"{{ {GL_NOTES} }} }} }}")
         body, _, err = call("POST", f"{home.host.rstrip('/')}/api/graphql", secret, backlog.TIMEOUT, {"query": q})
