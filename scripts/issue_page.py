@@ -53,17 +53,20 @@ def _clock(at: datetime, now: datetime) -> str:
     return f"{at:%H:%M}" if at.date() == now.date() else f"{at:%a %H:%M}"
 
 
-def _number(c: board_sources.Change) -> int:
-    return int(c.ref[1:])
+def _number(c: board_sources.Change) -> tuple[str, int]:
+    """(repo, N): `!N`/`#N` is this repo's, `owner/repo#N` another's."""
+    m = TRAILING_NUMBER.search(c.ref)
+    return c.ref[:m.start()], int(m[1])
 
 
 def _queue(c: board_sources.Change, changes) -> tuple[int, int, list[str]] | None:
-    """(K, M, the refs merging before it) among the open changes into c's base, by number; None unless c is open.
+    """(K, M, the refs merging before it) among its repo's open changes into c's base, by number; None unless c is open.
     ponytail: only the changes the sources cache knows (those the trackers name); list the base's open changes if
     M must count the whole forge."""
     if c.state != "open":
         return None
-    line = sorted((o for o in changes if o.state == "open" and o.base == c.base and o.ref != c.ref), key=_number)
+    line = sorted((o for o in changes if o.state == "open" and o.base == c.base and o.ref != c.ref
+                   and _number(o)[0] == _number(c)[0]), key=_number)
     before = [o.ref for o in line if _number(o) < _number(c)]
     return len(before) + 1, len(line) + 1, before
 

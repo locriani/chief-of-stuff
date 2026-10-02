@@ -180,6 +180,18 @@ class CoordinatorLaunchTest(unittest.TestCase):
         with mock.patch.object(start.subprocess, "run", side_effect=outputs):
             self.assertIn("kanban: Build it", start.check_once(self.root, release))
 
+    def test_watcher_audits_the_workspace_day_not_the_hosts(self):
+        # Between the host's midnight and the workspace's, the host's date names the wrong tracker.
+        release = start.install(ROOT, self.install_dir)
+        clean = [mock.Mock(returncode=0, stdout="[]"),
+                 mock.Mock(returncode=0, stdout="tasks=1 trees=0 orphaned=0 stopped=0\n"),
+                 mock.Mock(returncode=0, stdout="[]")]
+        host = mock.Mock(wraps=start.date, **{"today.return_value": start.date(2000, 1, 1)})
+        with mock.patch.object(start.subprocess, "run", side_effect=clean) as run, \
+                mock.patch.object(start, "date", host):
+            start.check_once(self.root, release)
+        self.assertNotIn("2000-01-01", run.call_args_list[1].args[0])
+
     def test_watcher_uses_batch_process_helper_and_reports_reused_pid(self):
         release = start.install(ROOT, self.install_dir)
         rows = [{"pid": 123, "name": "impl01", "runtime": "cursor", "status": "pid_reused"}]

@@ -148,7 +148,7 @@ def check_once(root: Path, release: Path) -> str:
     inbox = subprocess.run([sys.executable, str(scripts / "inbox.py"), "--mailbox-dir", str(mailbox),
                             "list", "--recipient", "coordinator", "--unread"], capture_output=True,
                            text=True, timeout=30)
-    audit = subprocess.run([sys.executable, str(scripts / "audit_tasks.py"), "--date", date.today().isoformat()],
+    audit = subprocess.run([sys.executable, str(scripts / "audit_tasks.py")],  # its default day is the workspace zone's, not the host's
                            cwd=root, capture_output=True, text=True, timeout=60)
     workers = subprocess.run([sys.executable, str(scripts / "process_status.py"), "--root", str(root)],
                              capture_output=True, text=True, timeout=10)

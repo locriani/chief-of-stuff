@@ -869,7 +869,10 @@ def parse_tracker(text: str) -> Tracker:
 
 def _hhmm(value: str, day: date, zone: ZoneInfo) -> datetime | None:
     m = HHMM.match(value.strip())
-    return datetime.combine(day, time(int(m[1]), int(m[2])), tzinfo=zone) if m else None
+    try:
+        return datetime.combine(day, time(int(m[1]), int(m[2])), tzinfo=zone) if m else None
+    except ValueError:  # 24:00, 9:75: not a clock, so no clock
+        return None
 
 
 def _done_clock(value: str, now: datetime, zone: ZoneInfo) -> datetime | None:
@@ -917,7 +920,10 @@ def _resolve_due(due: str, cfg: Config, today: date) -> datetime | None:
         return t
     m = DATE.match(value)
     if m:
-        return datetime(int(m[1]), int(m[2]), int(m[3]), int(m[4] or 23), int(m[5] or 59), tzinfo=cfg.zone)
+        try:
+            return datetime(int(m[1]), int(m[2]), int(m[3]), int(m[4] or 23), int(m[5] or 59), tzinfo=cfg.zone)
+        except ValueError:  # 2026-02-30, 25:00: not a date, so no due
+            return None
     for d in cfg.deadlines:
         if d.name.lower() == value.lower():
             return d.at
@@ -1018,7 +1024,10 @@ def estimates(active: list[Task], cfg: Config, now: datetime, hist: dict[str, tu
         if due is not None and due > h:
             continue
         m = DATE.match(task.since.strip())
-        since = date(int(m[1]), int(m[2]), int(m[3])) if m else now.date()
+        try:
+            since = date(int(m[1]), int(m[2]), int(m[3])) if m else now.date()
+        except ValueError:  # 2026-02-30
+            since = now.date()
         queues.setdefault(key, []).append(((task.kind != "running", since, idx), task))
     out: dict[str, Estimate] = {}
     for entries in queues.values():
@@ -1479,16 +1488,16 @@ def _body_css() -> str:
 
 
 def lane_table(tasks: list[Task], lanes: dict | None = None,
-               held_names: frozenset[str] | None = None) -> str:
+               held_tasks: frozenset[Task] | None = None) -> str:
     """The LANES section body: one HTML table, one row per active (non-done, non-standing) task.
 
     Unassigned rows carry ``data-unassigned``; owned-but-not-running rows carry ``data-queued``.
-    A task whose name is in `held_names` shows ``ON HOLD`` — the same flag the column board
+    A task in `held_tasks` shows ``ON HOLD`` — the same flag the column board
     carried.  The ``no lane`` footer is gone — an unlaned task is simply a row with empty
     lane/stage cells.
     """
     shown = [t for t in tasks if not t.standing]
-    held_set = held_names or frozenset()
+    held_set = held_tasks or frozenset()
     if not shown:
         return '<table class="lane-table"><tbody></tbody></table>'
     rows: list[str] = []
@@ -1507,7 +1516,7 @@ def lane_table(tasks: list[Task], lanes: dict | None = None,
         lane_cell = _esc(task.lane.strip())
         stage_cell = _esc(task.stage.strip())
         state_label = task.state.strip() if task.state.strip() else task.kind
-        hold = ' <span class="lt-hold">ON HOLD</span>' if task.name.strip() in held_set else ""
+        hold = ' <span class="lt-hold">ON HOLD</span>' if task in held_set else ""
         rows.append(
             f'<tr data-state="{_esc(task.kind)}"{attr_str}>'
             f'<td class="lt-name">{_esc(task.label)}{hold}</td>'
@@ -1549,27 +1558,27 @@ def render(tracker_text: str, cfg: Config, now: datetime, lanes: dict | None = N
     changes_note = f" · {_plural(changes, 'merge request')}" if changes else ""
     no_lane_count = sum(1 for t in tasks if not t.standing and not (t.lane.strip() and t.stage.strip()))
     workers = worker_names(sources)
-    # A task's stage for drift/hold purposes, computed once.
-    stages = {t.name.strip(): effective_stage(t, sources, lanes or {}) for t in tasks}
+    # A task's stage for drift/hold purposes, computed once, keyed by the task: every nameless task shares the blank name.
+    stages = {t: effective_stage(t, sources, lanes or {}) for t in tasks}
     # Held: kanban hold or a waiting task owned by a person (not a worker).
-    table_held = frozenset(t.name.strip() for t in tasks
-                           if held(t, kanban, stages[t.name.strip()]))
+    table_held = frozenset(t for t in tasks if held(t, kanban, stages[t]))
     lanes_html = (f'<section id="flow"><h2>Lanes</h2>\n<div class="meta">{_tasks(len(tasks))} · {_plural(issues, "issue")}{changes_note}</div>\n'
-                  f'{lane_table(tasks, lanes, held_names=table_held)}</section>\n')
+                  f'{lane_table(tasks, lanes, held_tasks=table_held)}</section>\n')
     flow_moves = [m for day, text in [*(stage_log or []), (tracker_day or today, tracker_text)]
                   for m in flow_chart.moves(text, day, zone)]
     known = [t for _, text in stage_log or [] for t in parse_tracker(text).tasks] + tasks
     ends = {t.item: end for t in active if (end := _end(t, cfg, now, now, est))[1] in ("due", "derived")}
     # #227: a `waiting` task owned by a person, not a worker, holds too — the same worker/person split
     # the lane table already draws its "ON HOLD" flag and owner link from.
-    flow_held = {t.name.strip() for t in tasks
-                if held(t, kanban, stages[t.name.strip()]) or
-                (t.kind == "waiting" and t.shown_owner and t.shown_owner not in workers)}
+    # flow_chart names its rows' tasks, and a nameless task has no name to hold it by (as forge_ends).
+    flow_held = {t.name.strip() for t in tasks if t.name.strip() and
+                (held(t, kanban, stages[t]) or
+                 (t.kind == "waiting" and t.shown_owner and t.shown_owner not in workers))}
     flow_rows = flow_chart.build(flow_moves, known, lanes or {}, flow_held,
                                  {item: end[0] for item, end in ends.items()}, now,
                                  queue_durations(active, hist), slots,
                                  frozenset(t.name.strip() for t in tasks
-                                           if any(c.state == "open" and c.approved for c in task_changes(t, sources))),
+                                           if t.name.strip() and any(c.state == "open" and c.approved for c in task_changes(t, sources))),
                                  ended=forge_ends(tasks, sources, zone))
     # An issue's row links to its page, pages.py's /issues/<n>.
     flow_html = flow_chart.section([(s, replace(r, href=f"/issues/{int(m[1])}") if (m := TRAILING_NUMBER.search(r.ref)) else r)
@@ -1582,8 +1591,8 @@ def render(tracker_text: str, cfg: Config, now: datetime, lanes: dict | None = N
     head = panels.Header(f"Board · {now.strftime('%a %d %b')}", tuple(meta), now, nearest.name, nearest.at,
                          tuple(f"{k}: {why}" for k, why in sources.errors.items()))
     # BLOCKED counts the ON HOLD cards (Flow.dc.html v22), by the flag that draws them.
-    tiles = flow_tiles(sum(held(t, kanban, stages[t.name.strip()]) for t in tasks), sum(d is not None for _, d, _, _ in pending),
-                       sources, len(running), sum(drifts(t, kanban, sources, stages[t.name.strip()]) for t in tasks), len(unowned))
+    tiles = flow_tiles(sum(held(t, kanban, stages[t]) for t in tasks), sum(d is not None for _, d, _, _ in pending),
+                       sources, len(running), sum(drifts(t, kanban, sources, stages[t]) for t in tasks), len(unowned))
     panels_html = panels.panels([merge_order(sources), decision_panel(pending, answered, now), worker_panel(sources, now)])
 
     # --- new sections (Stage 0: thin, proving the order) ---
