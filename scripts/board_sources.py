@@ -30,13 +30,13 @@ from forge_review import GITLAB_PIPELINE, github_approval as _github_approval, g
 from md import section as _section
 from settings import SettingsError, load as load_settings
 from tracker import Tracker, bare_name as _bare_name, launcher, parse_tracker
+from tracker_log import STARTED_DETAIL
 from workspace import Config, ConfigError, read_config, worktrees_dir
 
 CACHE = ".sources.json"
 CLOSES = re.compile(r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+(#\d+)")
 GH_PR = re.compile(r"(?i)\bPR\s*#(\d+)\b")
 GL_MR = re.compile(r"(?<![\w&])!(\d+)\b")
-STARTED = re.compile(r"^-\s+(\d{1,2}:\d{2}) one-shot (\S+) started: (.*?), worktree `([^`]*)`, task (.+?)\s*$")
 GL_WAITING = {"pending", "created", "waiting_for_resource", "preparing", "scheduled", "manual"}
 
 GH_ISSUE = "number url title state body labels(first: 50) { nodes { name } } closedAt"
@@ -393,7 +393,7 @@ def workers(root: Path, cfg: Config, tracker: Tracker, tracker_text: str, day: d
                             record["worktree"], _when(record.get("started")), leading(s.last_reply, day, cfg.zone) if s else None))
     found += [Worker(s.label, "session", "", "", _owned_task(s.label, tracker.tasks), "", None,
                      leading(s.last_reply, day, cfg.zone)) for s in rows.values()]
-    started = {m[5]: m for m in (STARTED.match(line) for line in _section(tracker_text, "## Log")) if m}
+    started = {m[5]: m for m in (STARTED_DETAIL.match(line) for line in _section(tracker_text, "## Log")) if m}
     trees, row_of = root / worktrees_dir((root / "CLAUDE.md").read_text()), launcher(tracker.tasks)
     for tree, task in process_status.running_trees(trees).items():
         m = started.get(task)

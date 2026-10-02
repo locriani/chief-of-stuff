@@ -12,19 +12,17 @@ HUMAN REVIEW NEEDED → review. A done task's last segment ends at its done time
 from __future__ import annotations
 
 import heapq
-import re
-from dataclasses import dataclass, field, replace
-from datetime import date, datetime, time, timedelta
-from zoneinfo import ZoneInfo
+from dataclasses import replace
+from datetime import datetime, timedelta
 
 import gantt
 from clock import done_clock
 from fragment import esc
 from tracker import launch_row, launcher
+# The Log line grammar and the moves read with it live in tracker_log.py, which draws nothing. `moves` is imported
+# here as well, so `flow_chart.moves` still names it.
+from tracker_log import Move, moves  # noqa: F401
 
-LINE = re.compile(r"^- (\d{1,2}):(\d{2}) stage: (.+) → (\S+)\s*$")
-STARTED = re.compile(r"^- (\d{1,2}):(\d{2}) one-shot (\S+) started: .*, task (.+?)\s*$")
-ENDED = re.compile(r"^- (\d{1,2}):(\d{2}) one-shot (\S+): (completed; awaiting integration|HUMAN REVIEW NEEDED)\b")
 H = timedelta(hours=1)
 # (title, behind now, ahead of now), after the Flow artboard.
 WINDOWS = (("24 hours", 6 * H, 18 * H), ("7 days", 48 * H, 120 * H))
@@ -43,37 +41,6 @@ def _bucket(status: str) -> str:
     if status == "open":
         return "queued"
     return "running"
-
-
-@dataclass(frozen=True)
-class Move:
-    at: datetime
-    name: str
-    stage: str
-    launch: bool = False
-    line: str = field(default="", compare=False)  # the Log line it was read from
-    worker: str = field(default="", compare=False)  # a launcher move's worker
-
-
-def moves(text: str, day: date, zone: ZoneInfo) -> list[Move]:
-    """The `stage:` and one-shot launcher lines of the tracker's `## Log`, stamped on `day`. A launcher move names
-    the task key of its worker's latest started line."""
-    log = next((part for part in re.split(r"(?m)^## ", text) if part.split("\n", 1)[0].strip() == "Log"), "")
-    out, task_of = [], {}
-    for line in log.splitlines():
-        line = line.strip()
-        m = LINE.match(line) or STARTED.match(line) or ENDED.match(line)
-        if not m or int(m[1]) >= 24 or int(m[2]) >= 60:
-            continue
-        at = datetime.combine(day, time(int(m[1]), int(m[2])), tzinfo=zone)
-        if m.re is LINE:
-            out.append(Move(at, m[3].strip(), m[4], line=line))
-        elif m.re is STARTED:
-            task_of[m[3]] = m[4]
-            out.append(Move(at, m[4], "implement", True, line, m[3]))
-        elif m[3] in task_of:
-            out.append(Move(at, task_of[m[3]], "pr" if m[4].startswith("completed") else "review", True, line, m[3]))
-    return out
 
 
 def _clock(at: datetime, now: datetime) -> str:

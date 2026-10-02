@@ -34,6 +34,7 @@ import decision_page  # noqa: E402
 from fragment import FONTS, TAB_CSS, tab_bar  # noqa: E402
 import flow_chart  # noqa: E402
 import panels  # noqa: E402
+import tracker_log  # noqa: E402
 
 LONG_ITEM = 80
 RESUME_CAP = 300    # writer limit from agent rules
@@ -538,7 +539,7 @@ def render(tracker_text: str, cfg: Config, now: datetime, lanes: dict | None = N
     lanes_html = (f'<section id="flow"><h2>Lanes</h2>\n<div class="meta">{_tasks(len(tasks))} · {_plural(issues, "issue")}{changes_note}</div>\n'
                   f'{lane_table(tasks, lanes, held_tasks=table_held)}</section>\n')
     flow_moves = [m for day, text in [*(stage_log or []), (tracker_day or today, tracker_text)]
-                  for m in flow_chart.moves(text, day, zone)]
+                  for m in tracker_log.moves(text, day, zone)]
     known = [t for _, text in stage_log or [] for t in parse_tracker(text).tasks] + tasks
     ends = {t.item: end for t in active if (end := _end(t, cfg, now, now, est))[1] in ("due", "derived")}
     # #227: a `waiting` task owned by a person, not a worker, holds too — the same worker/person split

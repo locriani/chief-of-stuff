@@ -24,6 +24,7 @@ from zoneinfo import ZoneInfo
 
 from md import cells as _cells, is_separator as _is_separator
 from tracker import TASK_COLS_LANED
+from tracker_log import stage_line
 from workspace import ConfigError, read_config
 
 LOG = "## Log"
@@ -127,7 +128,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.stage is None:
                 return append_log(body, f"- {at} {text}")
             body, name = set_stage(body, args.stage, text, lanes)
-            return append_log(body, f"- {at} stage: {name} → {text}")
+            return append_log(body, stage_line(at, name, text))
         edit(path, change)
     except (OSError, ConfigError, SettingsError, ValueError) as e:
         print(f"log: nothing written — {e}", file=sys.stderr)

@@ -13,18 +13,17 @@ from html import escape
 from pathlib import Path
 
 import board_sources
-import flow_chart
 import panels
 from decision_page import HEAD, context, pending_count
 from fragment import tab_bar
 from md import section as _section
 from tracker import TRAILING_NUMBER, launcher, parse_tracker
+from tracker_log import COMPLETED, ENDED, HUMAN_REVIEW, RELAUNCH, STARTED
 from workspace import parse_coordinator, worktrees_dir
 from settings import load as load_settings
 
-# one_shot.RELAUNCHED's Log line, grouped as flow_chart.ENDED is.
-RELAUNCH = re.compile(r"^- (\d{1,2}):(\d{2}) one-shot (\S+): (relaunch) requested for ")
-HOW = {"completed; awaiting integration": "completed", "HUMAN REVIEW NEEDED": "human review", "relaunch": "relaunch"}
+# The Ended today table's word for an ENDED or RELAUNCH line's outcome.
+HOW = {COMPLETED: "completed", HUMAN_REVIEW: "human review", "relaunch": "relaunch"}
 USAGE = ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
 CSS = """<style>
 .boxes{display:flex;flex-wrap:wrap;gap:8px}
@@ -83,9 +82,9 @@ def render(tracker_text: str, sources: board_sources.Sources, now: datetime, tre
                         f"{last.astimezone(now.tzinfo):%H:%M}" if last else "", f"{tokens:,}" if last else ""])
     row_of, task_of, ended = launcher(tasks), {}, []
     for line in map(str.strip, _section(tracker_text, "## Log")):
-        if m := flow_chart.STARTED.match(line):
+        if m := STARTED.match(line):
             task_of[m[3]] = m[4]
-        elif m := flow_chart.ENDED.match(line) or RELAUNCH.match(line):
+        elif m := ENDED.match(line) or RELAUNCH.match(line):
             t, name = row_of(task_of.get(m[3], ""))
             ended.append([f"{int(m[1]):02d}:{m[2]}", HOW[m[4]], escape(m[3]), _task(t, name)])
     ended.reverse()  # newest first

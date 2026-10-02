@@ -23,6 +23,7 @@ from _vendor.toon_format import ToonDecodeError, decode as toon_decode, encode a
 from md import cells as _cells, is_separator as _is_separator
 from process_status import PIDFILE, running_workers
 from tracker import parse_tracker
+from tracker_log import RELAUNCHED, ended_line, relaunch_line, started_line
 from workspace import worktrees_dir
 from settings import load as load_settings
 from shell_setup import clean_env, login_argv, resolve
@@ -30,7 +31,6 @@ from shell_setup import clean_env, login_argv, resolve
 RESULT = Path(dispatch_prompt.RESULT_FILE)
 REPORT = Path(dispatch_prompt.PROMPT_DIR) / "one-shot-report.toon"
 NO_COMMITS = "No new commits detected"
-RELAUNCHED = ": relaunch requested for {task} — "
 BOOTSTRAP = ("Read {dispatch} first. It is your entire one-shot assignment. Work in {cwd}. "
              "Finish in this invocation and write the requested TOON result before exiting.")
 
@@ -201,7 +201,7 @@ def record_launch(path: Path, task: str, name: str, tree: str, runtime: str, mod
             lines[owned] = f"{cut}; {tree} |\n"
         else:
             lines[owned] = f"{body.rstrip()}; {tree}\n"
-        return tracker_write.append_log("".join(lines), f"- {at} one-shot {name} started: {' '.join(filter(None, (runtime, model)))}, {tree.split(' (')[0]}, task {task}", create=True)
+        return tracker_write.append_log("".join(lines), started_line(at, name, runtime, model, tree, task), create=True)
 
     tracker_write.edit(path, change)
 
@@ -219,11 +219,10 @@ def update_tracker(path: Path, task: str, name: str, owner: str, status: str, re
         if status == "relaunch":
             # Back to unassigned and open: ready, so the coordinator dispatches it again.
             lines[i] = _set_owner_state(lines[i], running, "| unassigned | open |", why)
-            note = f"- {at} one-shot {name}{RELAUNCHED.format(task=task)}{_brief(reason)}."
+            note = relaunch_line(at, name, task, _brief(reason))
         else:
             lines[i] = _set_owner_state(lines[i], running, f"| {owner} | waiting |", why)
-            note = (f"- {at} one-shot {name}: {'completed; awaiting integration' if status == 'done' else 'HUMAN REVIEW NEEDED'}"
-                    f" — {_brief(reason)}. Changes: {_brief(changes)}.")
+            note = ended_line(at, name, status, _brief(reason), _brief(changes))
         return tracker_write.append_log("".join(lines), note, create=True)
 
     tracker_write.edit(path, change)
