@@ -212,17 +212,21 @@ class SettingsCheckTest(unittest.TestCase):
         """Exit code, stdout lines and stderr of one `health` run over a workspace holding `block`.
 
         `text` replaces the whole CLAUDE.md; `setup(root)` runs once the files are written, before health does.
+        What `setup` returns, if anything, is called once health is done, so the temp dir can be removed.
         """
         with tempfile.TemporaryDirectory() as d:
             config = Path(d) / "CLAUDE.md"
             config.write_text("## Coordinator\n\n" + block if text is None else text)
             if toml is not None:
                 (Path(d) / TOML).write_bytes(toml.encode() if isinstance(toml, str) else toml)
-            if setup:
-                setup(Path(d))
+            undo = setup(Path(d)) if setup else None
             out, err = io.StringIO(), io.StringIO()
-            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-                code = ph.main(["--config", str(config), "--timeout", "1"])
+            try:
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    code = ph.main(["--config", str(config), "--timeout", "1"])
+            finally:
+                if undo:
+                    undo()
         return code, out.getvalue().splitlines(), err.getvalue()
 
     def targets(self) -> str:
@@ -352,6 +356,31 @@ class SettingsCheckTest(unittest.TestCase):
         self.assertEqual(found.count(TOML), 1, found)
         for root in roots:
             self.assertNotIn(root, found)
+        self.assertEqual(code, 1)
+
+    def test_a_settings_file_in_an_unsearchable_directory_is_a_settings_fault_not_absent(self):
+        """Whether the file is there cannot be told: that is a fault, not `absent` and not `ok`.
+
+        `Path.is_file()` answers this with False on some Pythons and PermissionError on others; neither
+        is "the file is absent", and neither may reach the user as a traceback."""
+        name, roots = f"locked/{TOML}", []
+
+        def setup(root: Path):
+            (root / "locked").mkdir()
+            (root / name).write_text(GOOD)
+            (root / "locked").chmod(0)
+            roots.extend({str(root), str(root.resolve())})
+            return lambda: (root / "locked").chmod(0o700)
+
+        _, alone, _ = self.run_health("- Board: none\n")
+        code, lines, _ = self.run_health(f"- Settings: `{name}`\n- Board: none\n", setup=setup)
+        found = self.settings_line(lines)
+        self.assertIn(f"settings {name} invalid", found)
+        self.assertNotIn("absent", found)
+        self.assertNotRegex(found, r"\bok\b")
+        for root in roots:
+            self.assertNotIn(root, found)
+        self.assertEqual(lines[1:], alone, "the no-targets line still prints")
         self.assertEqual(code, 1)
 
     def test_the_no_targets_line_still_prints_after_a_settings_line(self):
