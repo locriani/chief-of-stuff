@@ -391,6 +391,18 @@ class SettingsCheckTest(unittest.TestCase):
         self.settings_line(lines)
         self.assertEqual(code, 1)
 
+    def test_a_wrong_typed_value_the_loader_trips_on_is_a_settings_fault_line_not_a_traceback(self):
+        # Codex on PR #283: valid TOML whose `gates` holds a list made the loader raise TypeError, and
+        # health printed a traceback where its one `settings <file> invalid: ...` line goes.
+        _, alone, _ = self.run_health("- Board: none\n")
+        code, lines, _ = self.run_health(f"- Settings: `{TOML}`\n- Board: none\n",
+                                         '[lanes.x]\nstages = ["a"]\ngates = [["a"]]\n')
+        found = self.settings_line(lines)
+        self.assertIn("invalid", found)
+        self.assertIn("[lanes]", found)
+        self.assertEqual(lines[1:], alone)
+        self.assertEqual(code, 1)
+
     def test_a_malformed_health_target_still_exits_2_on_stderr(self):
         code, _, err = self.run_health("- Health: secrets file:///etc/passwd 200\n")
         self.assertEqual(code, 2)
