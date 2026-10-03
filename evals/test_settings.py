@@ -125,6 +125,27 @@ class SettingsTest(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(st.SettingsError):
                 st.load(self.root, self.write(f'[workers]\nmode = {value}\n'))
 
+    def test_a_wrong_value_in_a_file_that_parses_is_a_settings_error_naming_its_table_and_key(self):
+        # #47, Codex on PR #283: `gates = [["a"]]` raised TypeError from `set()` and `health` printed a traceback.
+        # Rule: "the loader answers every wrong-typed value in a settings file with SettingsError naming the
+        # table and key; it never raises another exception type for parseable TOML".
+        # A fuzz of twelve wrong types over every table, key and list entry found these, all in two functions.
+        lane = '[lanes.x]\nstages = ["a"]\ngates = {}\n'
+        found = {
+            # settings._lane: a gate that cannot go in a set
+            "gates, a nested list": (lane.format('[["a"]]'), r"\[lanes\] x: gates"),
+            "gates, a list holding an empty list": (lane.format("[[]]"), r"\[lanes\] x: gates"),
+            "gates, a list holding a list of numbers": (lane.format("[[1, 2]]"), r"\[lanes\] x: gates"),
+            "gates, a list holding a table": (lane.format("[{ a = 1 }]"), r"\[lanes\] x: gates"),
+            "gates, a list holding an empty table": (lane.format("[{}]"), r"\[lanes\] x: gates"),
+            "gates, a stage and then a list": (lane.format('["a", ["a"]]'), r"\[lanes\] x: gates"),
+            # settings._notify: a string, and still not a path the OS takes (ValueError from Path.resolve)
+            "queue, a NUL in the path": ('[notify]\nqueue = "a\\u0000b"\n', r"\[notify\] queue"),
+        }
+        for what, (text, names) in found.items():
+            with self.subTest(what), self.assertRaisesRegex(st.SettingsError, names):
+                st.load(self.root, self.write(text))
+
 
 if __name__ == "__main__":
     unittest.main()

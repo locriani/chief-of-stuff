@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""Probe the `Health:` targets in a workspace `## Coordinator` block and print one line each.
+"""Probe the `Health:` targets in a workspace `## Coordinator` block and print one line each, after
+one line for the file its `Settings:` line names, loaded through the settings loader.
 
 The coordinator runs this on open and on resume instead of remembering what was up an hour ago.
 One invocation covers every target, so a restart costs one call rather than one per service.
 
     python3 probe_health.py --config /path/to/CLAUDE.md
 
-Exit code is the number of targets that did not answer as expected, so a caller can branch on it
-without parsing. Every target gets a line even when it fails: a missing line would read as a
-healthy service.
+Exit code is the number of failed checks: the targets that did not answer as expected, plus one when
+the settings file cannot be loaded. A caller can branch on it without parsing. Every target gets a
+line even when it fails: a missing line would read as a healthy service. No `Settings:` line is no
+settings line, and a settings file that is not there is `absent, defaults`: not a fault, and not ok.
+A usage fault (no config at the path, a `Health:` line that is not a target) is stderr and exit 2.
 """
 
 from __future__ import annotations
@@ -21,6 +24,11 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from md import section
+from settings import SettingsError, load as load_settings
+from workspace import settings_path
 
 HEALTH = re.compile(r"^\s*(?:[-*]\s*)?Health:\s*(.+?)\s*$", re.MULTILINE)
 SCHEMES = ("http", "https")
@@ -49,21 +57,6 @@ class Result:
         return self.status == self.target.expect
 
 
-def _section(text: str, heading: str) -> list[str]:
-    """The lines under `heading`, up to the next `## `. Empty when the heading is absent."""
-    out: list[str] = []
-    seen = False
-    for line in text.splitlines():
-        if line.strip() == heading:
-            seen = True
-            continue
-        if seen and line.startswith("## "):
-            break
-        if seen:
-            out.append(line)
-    return out
-
-
 def parse_target(spec: str) -> Target:
     """`<name> <url> [expected status]`. The url must be http or https: nothing else is a probe."""
     parts = spec.split()
@@ -81,10 +74,25 @@ def parse_target(spec: str) -> Target:
     return Target(name, url, expect)
 
 
-def targets_from_config(path: Path) -> list[Target]:
+def _targets(text: str) -> list[Target]:
     """Every `Health:` line inside the `## Coordinator` block. No block, no targets, no error."""
-    body = "\n".join(_section(path.read_text(), "## Coordinator"))
-    return [parse_target(m.group(1)) for m in HEALTH.finditer(body)]
+    return [parse_target(m.group(1)) for m in HEALTH.finditer("\n".join(section(text, "## Coordinator")))]
+
+
+def check_settings(root: Path, name: str) -> tuple[str, int]:
+    """The line and fault count for the settings file `name`, loaded from `root`."""
+    absent = f"settings {name} absent, defaults", 0
+    try:
+        (root / name).stat()  # is_file() answers False for a path it cannot reach; stat says which it is
+        if not (root / name).is_file():
+            return absent
+        load_settings(root, name)
+    except (FileNotFoundError, NotADirectoryError):
+        return absent
+    except (SettingsError, ValueError, OSError) as exc:  # schema or TOML; not UTF-8 or a NUL in the name; unreadable
+        why = getattr(exc, "strerror", None) or str(exc)  # an OSError's own text carries the absolute path
+        return f"settings {name} invalid: {' '.join(why.split()).removeprefix(f'{name}: ')}", 1
+    return f"settings {name} ok", 0
 
 
 def _safe(url: str) -> str:
@@ -123,7 +131,7 @@ def report(targets: list[Target], timeout: float = TIMEOUT) -> tuple[list[str], 
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Probe the Health: targets in a ## Coordinator block.")
+    parser = argparse.ArgumentParser(description="Check the Settings: file and probe the Health: targets in a ## Coordinator block.")
     parser.add_argument("--config", default="CLAUDE.md", help="workspace CLAUDE.md holding the block")
     parser.add_argument("--timeout", type=float, default=TIMEOUT, help="seconds per target")
     args = parser.parse_args(argv)
@@ -132,18 +140,22 @@ def main(argv: list[str] | None = None) -> int:
     if not config.is_file():
         print(f"no config at {config}", file=sys.stderr)
         return 2
+    text = config.read_text()
+    bad = 0
+    if name := settings_path(text):
+        said, bad = check_settings(config.parent, name)
+        print(said)
     try:
-        targets = targets_from_config(config)
+        targets = _targets(text)
     except TargetError as exc:
         print(str(exc), file=sys.stderr)
         return 2
     if not targets:
         print("no Health: targets in the ## Coordinator block")
-        return 0
-    lines, bad = report(targets, args.timeout)
-    for text in lines:
-        print(text)
-    return bad
+        return bad
+    lines, failed = report(targets, args.timeout)
+    print("\n".join(lines))
+    return bad + failed
 
 
 if __name__ == "__main__":

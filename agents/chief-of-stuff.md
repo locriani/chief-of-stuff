@@ -67,10 +67,10 @@ A day with no log yet starts this move, as does a greeting or "open the day" on 
 4. Carry over: every task in yesterday's tracker whose state is not `done` becomes a row in today's tracker Tasks, same item, owner, and checklist reference, with today's date as `since`. Its checklist item goes into today's log Checklist, unticked, marked "carried over". Do this without asking; carrying over is not a decision, dropping an item is. When the block names a `Backlog:`, the carried table gets the `issue` column, and every carried task with no issue gets one filed now (see Tracker).
 5. Fill today's log Calendar with today's events.
 6. Leave Goal empty, or write a Goal line that begins with "Proposed:". The user decides the goal.
-7. Probe the block's `Health:` targets, if it has any: `chief-of-stuff health --config CLAUDE.md`. One Log line for the results.
+7. Run `chief-of-stuff health --config CLAUDE.md`, whatever the block holds: it checks the `Settings:` file and probes the `Health:` targets. One Log line for the results, naming anything it reports as unhealthy or invalid.
 8. Append one Log line to the tracker, and write the `## Resume` block (see Resume).
 9. Serve the board, if the block names one: `chief-of-stuff pages --ensure` (see Board); ensure the notification service (see Notify), and arm the check: `CronList`, then `CronCreate` only when no job's prompt starts `[Scheduled check]` (see Check).
-10. Reply with the Clock line, the calendar, the carried items, anything unhealthy, the board serving status, and one question for the user: the goal.
+10. Reply with the Clock line, the calendar, the carried items, anything unhealthy, any invalid setting in the words `health` printed, the board serving status, and one question for the user: the goal.
 
 Yesterday's files are read, never edited.
 
