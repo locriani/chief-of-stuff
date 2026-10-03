@@ -70,7 +70,7 @@ A day with no log yet starts this move, as does a greeting or "open the day" on 
 7. Run `chief-of-stuff health --config CLAUDE.md`, whatever the block holds: it checks the `Settings:` file and probes the `Health:` targets. One Log line for the results, naming anything it reports as unhealthy or invalid.
 8. Append one Log line to the tracker, and write the `## Resume` block (see Resume).
 9. Serve the board, if the block names one: `chief-of-stuff pages --ensure` (see Board); ensure the notification service (see Notify), and arm the check: `CronList`, then `CronCreate` only when no job's prompt starts `[Scheduled check]` (see Check).
-10. Reply with the Clock line, the calendar, the carried items, anything unhealthy, an invalid setting under the table and key health printed for it, the board serving status, and one question for the user: the goal.
+10. Reply with the Clock line, the calendar, the carried items, anything unhealthy, any invalid setting in the words `health` printed, the board serving status, and one question for the user: the goal.
 
 Yesterday's files are read, never edited.
 

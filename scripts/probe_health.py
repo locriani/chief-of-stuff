@@ -75,12 +75,8 @@ def parse_target(spec: str) -> Target:
 
 
 def _targets(text: str) -> list[Target]:
-    return [parse_target(m.group(1)) for m in HEALTH.finditer("\n".join(section(text, "## Coordinator")))]
-
-
-def targets_from_config(path: Path) -> list[Target]:
     """Every `Health:` line inside the `## Coordinator` block. No block, no targets, no error."""
-    return _targets(path.read_text())
+    return [parse_target(m.group(1)) for m in HEALTH.finditer("\n".join(section(text, "## Coordinator")))]
 
 
 def check_settings(root: Path, name: str) -> tuple[str, int]:
