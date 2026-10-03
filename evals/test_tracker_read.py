@@ -1,5 +1,6 @@
 """tracker_read.py (#46): `chief-of-stuff tracker` reads the tracker through the shared parser and writes nothing.
 
+    chief-of-stuff tracker --root R [--date YYYY-MM-DD] header
     chief-of-stuff tracker --root R [--date YYYY-MM-DD] sections
     chief-of-stuff tracker --root R [--date YYYY-MM-DD] section <name>
     chief-of-stuff tracker --root R [--date YYYY-MM-DD] tasks [--not <state>]... [--state <state>]... [--issue <ref>]
@@ -128,6 +129,19 @@ class TrackerReadTest(unittest.TestCase):
                 self.assertEqual(code, 0, err)
                 self.assertEqual(out.strip("\n"), "\n".join(section(TRACKER, f"## {name}")).strip("\n"))
 
+    # Eval finding on #46: the coordinator ran `head -8 <tracker>` for the lines above the first heading, which are no section.
+    def test_header_prints_the_lines_above_the_first_heading_as_written(self):
+        code, out, err = self.run_cli("header")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out.strip("\n"), TRACKER.split("\n## ", 1)[0].strip("\n"))
+        self.assertIn("Coordinator: relay-12. Board: none.", out)
+        self.assertNotIn("## ", out)
+
+    def test_header_of_a_tracker_that_starts_with_a_heading_is_empty(self):
+        self.tracker.write_text(TRACKER[TRACKER.index("## Resume"):])
+        code, out, err = self.run_cli("header")
+        self.assertEqual((code, out.strip()), (0, ""), err)
+
     def test_a_section_that_does_not_exist_is_an_error_naming_it(self):
         code, out, err = self.run_cli("section", "Requirements")
         self.assertNotIn(code, (0, None))
@@ -225,7 +239,7 @@ class TrackerReadTest(unittest.TestCase):
     def test_the_command_writes_nothing(self):
         before = (self.tracker.read_bytes(), self.tracker.stat().st_mtime_ns)
         files = sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*"))
-        for args in (("sections",), ("section", "Resume"), ("section", "Nope"), ("tasks",),
+        for args in (("header",), ("sections",), ("section", "Resume"), ("section", "Nope"), ("tasks",),
                      ("tasks", "--not", "done"), ("tasks", "--state", "open"), ("tasks", "--issue", "#7")):
             self.run_cli(*args)
         self.assertEqual((self.tracker.read_bytes(), self.tracker.stat().st_mtime_ns), before)
