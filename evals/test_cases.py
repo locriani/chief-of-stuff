@@ -118,6 +118,8 @@ class CaseLintTest(unittest.TestCase):
         it is punctuated, and a reply that names only the file and the value is not one that names the key."""
         used, named = (g for g in spec(EVALS / "cases" / "open-day-names-a-bad-setting")["graders"])
         self.assertEqual((used["type"], used["tool"], used["min"]), ("tool_used", "Bash", 1))
+        # run._regex searches the reply (`rec.stream.last_text`) and passes on a hit unless `match` says otherwise.
+        self.assertEqual((named["type"], named.get("match", "contains")), ("regex", "contains"))
 
         def hit(command: str) -> bool:
             # The description is the model's prose about the call. It names the health call here, and decides nothing.

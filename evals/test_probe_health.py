@@ -1,14 +1,13 @@
 """Unit tests for scripts/probe_health.py: health facts come from a probe, never from the agent's memory of one.
 
-Every test drives a real loopback server on port 0. No network, no mocked urllib: the script's
-interesting code is the timeout, the status comparison and the unreachable host, and a fake would
-skip all three.
+A test that probes a target drives a real loopback server on port 0. No network, no mocked urllib:
+the script's interesting code is the timeout, the status comparison and the unreachable host, and a
+fake would skip all three. The parsing tests and the settings tests with no `Health:` line open no server.
 """
 
 import contextlib
 import io
 import json
-import os
 import re
 import socket
 import sys
@@ -194,6 +193,10 @@ FORMS = {
     "a space before the colon": ("- Settings : a.toml\n", "a.toml"),
     # the key is `Settings` exactly, as main's parse_coordinator reads it (`top.get("Settings", "")`)
     "a lower-case label": ("- settings: a.toml\n", None),
+    "a longer key": ("- Settings file: `a.toml`\n", None),
+    # workspace._first_path: "its first backtick span, else its first word"
+    "prose before the span": ("- Settings: see `a.toml`\n", "a.toml"),
+    "two spans": ("- Settings: `a.toml` (not `b.toml`)\n", "a.toml"),
     # a line that names no path names no file
     "an empty value, then a Health: line": ("- Settings:\n- Health: agent http://127.0.0.1:{port}/ready 200\n", None),
 }
@@ -291,6 +294,14 @@ class SettingsCheckTest(unittest.TestCase):
                 self.assertEqual(code, 0)
                 self.assertEqual(err, "")
 
+    def test_an_empty_settings_file_is_ok_not_absent(self):
+        # probe_health: "a settings file that is not there is `absent, defaults`". A zero-byte file is there.
+        code, lines, _ = self.run_health(f"- Settings: `{TOML}`\n", "")
+        found = self.settings_line(lines)
+        self.assertRegex(found, r"\bok\b")
+        self.assertNotIn("absent", found)
+        self.assertEqual(code, 0)
+
     def test_health_reports_on_the_file_every_other_command_loads(self):
         """Every other command takes the path from `workspace.read_config(root).settings_path`: health names
         that file and no other, and prints no settings line when there is none. `FORMS` says which file."""
@@ -326,6 +337,23 @@ class SettingsCheckTest(unittest.TestCase):
         self.assertNotRegex(self.settings_line(lines), r"\bok\b")
         self.assertEqual(code, 1)
 
+    def test_an_unreadable_settings_file_is_named_once_with_no_absolute_path(self):
+        """The coordinator quotes the line into a log: it names the file as the block does, once, says why,
+        and carries no path of the machine it ran on."""
+        roots = []
+
+        def setup(root: Path) -> None:
+            (root / TOML).chmod(0)
+            roots.extend({str(root), str(root.resolve())})
+
+        code, lines, _ = self.run_health(f"- Settings: `{TOML}`\n", GOOD, setup=setup)
+        found = self.settings_line(lines)
+        self.assertRegex(found, r"(?i)permission denied")
+        self.assertEqual(found.count(TOML), 1, found)
+        for root in roots:
+            self.assertNotIn(root, found)
+        self.assertEqual(code, 1)
+
     def test_the_no_targets_line_still_prints_after_a_settings_line(self):
         _, alone, _ = self.run_health("- Board: none\n")
         self.assertTrue(alone, "a block with no targets says so")
@@ -357,11 +385,6 @@ class SettingsCheckTest(unittest.TestCase):
                 code, lines, _ = self.run_health(f"- Settings: `{TOML}`\n", toml)
                 self.assertEqual(self.settings_line(lines).count(TOML), 1)
                 self.assertEqual(code, 1)
-
-    def test_invalid_toml_is_a_settings_fault_line_not_a_traceback(self):
-        code, lines, _ = self.run_health(f"- Settings: `{TOML}`\n", "[workers\nmode = \n")
-        self.settings_line(lines)
-        self.assertEqual(code, 1)
 
     def test_an_undecodable_settings_file_is_a_settings_fault_line_not_a_traceback(self):
         code, lines, _ = self.run_health(f"- Settings: `{TOML}`\n", b"[workers]\nmode = \"\xff\xfe\"\n")
