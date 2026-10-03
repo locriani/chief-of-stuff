@@ -44,5 +44,8 @@
     }
   ],
   "max_turns": 24,
-  "timeout_seconds": 600
+  "timeout_seconds": 600,
+  "runtimes_present": [
+    "claude"
+  ]
 }

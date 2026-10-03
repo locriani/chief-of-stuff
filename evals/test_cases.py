@@ -144,6 +144,41 @@ class CaseLintTest(unittest.TestCase):
                       "The settings file `chief-of-stuff.toml` did not load: `oneshot` is not a value it takes."):
             self.assertNotRegex(reply, named["pattern"])
 
+    def assert_names_codex_as_missing(self, named: dict) -> None:
+        """#48: "`health` names it as missing". `codex` and a word for missing share a clause of one line, in either
+        order, with no other runtime's name between them; a reply about codex, or about claude being missing, is not one,
+        and neither is `not missing`. Not told apart: another subject in codex's own clause ("The codex entry is second
+        and the Board line is missing" passes), and `no codex ...` spellings (a truthful "there is no codex binary" fails)."""
+        self.assertEqual((named["type"], named.get("match", "contains")), ("regex", "contains"))
+
+        def hit(reply: str) -> bool:
+            return re.search(named["pattern"], reply, re.MULTILINE) is not None  # as run._regex searches
+
+        for reply in ("runtimes claude ok, codex missing", "- `codex` is not installed", "Codex CLI isn't installed on this machine.",
+                      "Codex CLI isn’t installed.", "codex: not found", "Missing runtime: codex", "**Not installed:** codex",
+                      "| claude | ok |\n| codex | missing |", "codex (binary `codex`) is unavailable",
+                      "The implement rotation names claude and codex; codex is missing.",
+                      "`[models.implement]` lists `codex:gpt-x`, and codex is missing, so that entry cannot launch.",
+                      "`[models.implement]` lists `codex:gpt-x`, which isn't available in the login shell.",
+                      "`codex:gpt-x`, isn't available in the login shell", "Codex is not available on this machine."):
+            self.assertTrue(hit(reply), reply)
+        for reply in ("The implement rotation is claude:opus@high, then codex:gpt-x.", "codex is installed.", "Settings look fine.",
+                      "claude is missing.", "runtimes codex ok, claude missing", "runtimes claude missing, codex ok",
+                      "codex ok, cursor missing (agent)", "- codex: ok\n- claude: missing", "- claude: missing\n- codex: ok",
+                      "Nothing is missing. Codex is there.", "The codex entry is second. One calendar is unavailable.",
+                      "codex is not missing.", "Codex isn't missing.", "Not missing: codex"):
+            self.assertFalse(hit(reply), reply)
+
+    def test_missing_runtime_graders_read_the_health_call_and_the_named_runtime(self) -> None:
+        """#48's acceptance case. The health grader is the bad-setting case's, which
+        `test_bad_setting_graders_read_the_health_call_and_the_named_key` pins command by command."""
+        s = spec(EVALS / "cases" / "open-day-names-a-missing-runtime")
+        used, named = s["graders"]
+        self.assertEqual(used, spec(EVALS / "cases" / "open-day-names-a-bad-setting")["graders"][0])
+        self.assertEqual((used["type"], used["tool"], used["min"]), ("tool_used", "Bash", 1))
+        self.assert_names_codex_as_missing(named)
+        self.assertEqual(s["runtimes_present"], ["claude"])
+
     def test_every_grader_type_is_one_the_runner_dispatches(self) -> None:
         for case in CASES:
             for g in graders(spec(case)):

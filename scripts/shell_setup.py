@@ -35,7 +35,10 @@ def resolve(program: str, *, source: dict[str, str] | None = None) -> str | None
     """Return an executable path from login and interactive shell setup, never shell output text."""
     if not PROGRAM.fullmatch(program):
         raise ShellError(f"invalid executable name {program!r}")
-    shell = login_shell(source)
+    env = os.environ if source is None else source
+    # CHIEF_OF_STUFF_SHELL stands in for the login shell in this lookup only, so an eval can say which programs exist. The shell a
+    # launch goes through never reads it; the binary a launch runs is whatever this lookup returns, as with $SHELL.
+    shell = login_shell({**env, "SHELL": env["CHIEF_OF_STUFF_SHELL"]} if env.get("CHIEF_OF_STUFF_SHELL") else source)
     try:
         out = subprocess.run([shell, "-lic", f"command -v {program}"], env=clean_env(source),
                              capture_output=True, text=True, timeout=15)
