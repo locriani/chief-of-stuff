@@ -858,7 +858,7 @@ def main(argv: list[str] | None = None, gh=None) -> int:
     ap.add_argument("--date", help="YYYY-MM-DD; default: today in the workspace timezone")
     ap.add_argument("--root", default=".", help="workspace root holding CLAUDE.md")
     ap.add_argument("--no-issues", action="store_true", help="skip the issue check (offline); the summary says issues=off")
-    ap.add_argument("--sha", help="only fetch origin main and say whether this commit is on origin/main; exit 0 on, 1 not on, 2 unknown or usage")
+    ap.add_argument("--sha", help="only fetch origin main and say whether the commit with this id is on origin/main (a ref of that name is not a commit); exit 0 only when fetched and on, 1 not on, 2 unknown (fetch failed, ambiguous prefix) or usage")
     args = ap.parse_args(argv)
     root = Path(args.root)
     if not (root / "CLAUDE.md").is_file():
