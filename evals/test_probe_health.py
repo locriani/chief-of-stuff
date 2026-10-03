@@ -15,11 +15,15 @@ import tempfile
 import threading
 import time
 import unittest
+from collections import Counter
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import probe_health as ph  # noqa: E402
+import runtimes  # noqa: E402
+from shell_setup import ShellError  # noqa: E402
 import workspace  # noqa: E402
 
 
@@ -469,6 +473,158 @@ class SettingsCheckTest(unittest.TestCase):
         self.assertIn("[workers] mode", self.settings_line(lines))
         self.assertEqual(code, 2)
         self.assertTrue(err.strip())
+
+
+# Three classes, three runtimes, claude named three times; agy is a runtime no rotation names.
+MODELS = (GOOD + '\n[models.deep]\nrotation = ["claude:opus@high", "claude:sonnet@high"]\n'
+          '\n[models.implement]\nrotation = ["claude:haiku@high", "codex:gpt-x"]\n'
+          '\n[models.review]\nrotation = ["cursor:some-model"]\n')
+NAMED = ("claude", "codex", "cursor")
+SETTINGS = f"- Settings: `{TOML}`\n"
+# Where the stand-in `resolve` says a present binary lives: a home path, which carries a username.
+HOME = "/Users/somebody"
+
+
+class RuntimeCheckTest(unittest.TestCase):
+    """#48: `health` says which of the runtimes the `[models]` rotations name are installed.
+
+    `probe_health.resolve` is patched in every test, as test_runtime_launch.py and test_one_shot.py patch
+    theirs: no test asks a real login shell for a real binary. The stand-in is keyed by binary name, the
+    thing `shell_setup.resolve` is asked for (`agent` for cursor), and answers a path under `HOME` or None.
+    """
+
+    run_health, targets, settings_line = (SettingsCheckTest.run_health, SettingsCheckTest.targets,
+                                          SettingsCheckTest.settings_line)
+
+    def health(self, block: str, toml: str | None, present=(), raises: Exception | None = None):
+        """Exit code, stdout lines, stderr, and the binaries `resolve` was asked for, in order."""
+        def found(program=None, **_kw):
+            if raises:
+                raise raises
+            return f"{HOME}/.local/bin/{program}" if program in present else None
+
+        with mock.patch.object(ph, "resolve", side_effect=found) as resolve:
+            code, lines, err = self.run_health(block, toml)
+        return code, lines, err, [c.args[0] if c.args else c.kwargs["program"] for c in resolve.call_args_list]
+
+    def runtimes_line(self, lines: list[str]) -> str:
+        found = [x for x in lines if x.startswith("runtimes")]
+        self.assertEqual(len(found), 1, f"one runtimes line on stdout, got {lines!r}")
+        return found[0]
+
+    def said(self, line: str, name: str) -> str:
+        """What the line says about runtime `name`: the text from its name up to the next runtime's name.
+
+        No separator is pinned. The status word comes after the name it belongs to, with no other runtime's
+        name between the two, so `claude ok, codex missing` cannot be read as claude missing."""
+        m = re.search(rf"\b{name}\b(.*?)(?=\b(?:{'|'.join(runtimes.NAMES)})\b|$)", line)
+        self.assertIsNotNone(m, f"{name} is named on {line!r}")
+        return m.group(1)
+
+    def assert_status(self, line: str, name: str, word: str) -> None:
+        other = {"ok": "missing", "missing": "ok"}[word]
+        about = self.said(line, name)
+        self.assertRegex(about, rf"\b{word}\b", f"{name} is {word} on {line!r}")
+        self.assertNotRegex(about, rf"\b{other}\b", f"{name} is not also {other} on {line!r}")
+
+    def test_one_runtimes_line_names_each_runtime_the_rotations_name(self):
+        # Rules 1 and 8 of the contract: one line, each distinct runtime, each said present.
+        code, lines, err, _ = self.health(SETTINGS, MODELS, present={"claude", "codex", "agent"})
+        line = self.runtimes_line(lines)
+        for name in NAMED:
+            self.assert_status(line, name, "ok")
+        self.assertNotRegex(line, r"\bagy\b", "no rotation names agy")
+        self.assertRegex(self.settings_line(lines), r"\bok\b")
+        self.assertEqual((code, err), (0, ""))
+
+    def test_each_runtime_is_looked_up_once_by_its_binary(self):
+        _, _, _, asked = self.health(SETTINGS, MODELS, present={"claude", "codex", "agent"})
+        self.assertEqual(Counter(asked), Counter(runtimes.binary(name) for name in NAMED))
+
+    def test_the_runtimes_line_comes_after_the_settings_line_and_before_the_targets(self):
+        targets = self.targets()
+        alone_code, alone, _ = self.run_health(targets)
+        # The Settings: line is last in the block: the order is the output's, not the file's.
+        code, lines, _, _ = self.health(targets + SETTINGS, MODELS, present={"claude", "codex", "agent"})
+        self.assertEqual(lines.index(self.settings_line(lines)), 0)
+        self.assertEqual(lines.index(self.runtimes_line(lines)), 1)
+        self.assertEqual(lines[2:], alone)
+        self.assertEqual(code, alone_code, "present runtimes add nothing to the exit code")
+
+    def test_each_missing_runtime_is_said_missing_and_adds_one_to_the_exit_code(self):
+        # The launcher refuses a missing runtime rather than skipping it: a rotation naming one is a dispatch that fails.
+        targets = self.targets()
+        alone_code, alone, _ = self.run_health(targets)
+        for present, missing in (({"claude", "agent"}, ("codex",)), ({"claude"}, ("codex", "cursor")), (set(), NAMED)):
+            with self.subTest(missing=missing):
+                code, lines, err, _ = self.health(SETTINGS + targets, MODELS, present=present)
+                line = self.runtimes_line(lines)
+                for name in NAMED:
+                    self.assert_status(line, name, "missing" if name in missing else "ok")
+                self.assertEqual(code, alone_code + len(missing))
+                self.assertEqual(lines[2:], alone, "the targets are still probed and said as before")
+                self.assertEqual(err, "")
+
+    def test_a_missing_runtime_with_another_binary_name_says_the_binary(self):
+        # cursor installs `agent`: "cursor missing" alone does not say what to install.
+        self.assertEqual(runtimes.binary("cursor"), "agent")
+        _, lines, _, _ = self.health(SETTINGS, MODELS, present={"claude", "codex"})
+        line = self.runtimes_line(lines)
+        self.assert_status(line, "cursor", "missing")
+        self.assertRegex(self.said(line, "cursor"), r"\bagent\b")
+
+    def test_the_runtimes_line_carries_no_absolute_path(self):
+        # A home path carries the username, and the coordinator quotes this line into the tracker.
+        for present in ({"claude", "codex", "agent"}, {"claude"}, set()):
+            with self.subTest(present=present):
+                _, lines, _, _ = self.health(SETTINGS, MODELS, present=present)
+                line = self.runtimes_line(lines)
+                self.assertNotIn("somebody", line)
+                self.assertNotRegex(line, r"(?:^|[\s(\[:='\"`])[/~][\w.]", "no token on the line starts a path")
+
+    def test_settings_that_name_no_runtime_print_no_runtimes_line_and_ask_no_shell(self):
+        cases = {"no [models] table": (SETTINGS, GOOD), "an empty settings file": (SETTINGS, ""),
+                 "an absent settings file": (SETTINGS, None), "no Settings: line": ("- Board: none\n", MODELS)}
+        for what, (block, toml) in cases.items():
+            with self.subTest(what):
+                code, lines, err, asked = self.health(block, toml, present={"claude"})
+                self.assertEqual([x for x in lines if x.startswith("runtimes")], [])
+                self.assertEqual(asked, [])
+                self.assertEqual((code, err), (0, ""))
+
+    def test_invalid_settings_print_no_runtimes_line_and_ask_no_shell(self):
+        # The file did not load, so nothing says which runtimes it names; its fault line and count are #47's.
+        faults = {"a bad key beside valid rotations": MODELS.replace("one-shot", "sometimes"),
+                  "a rotation naming no runtime": GOOD + '\n[models.implement]\nrotation = ["nope:gpt-x"]\n'}
+        for what, toml in faults.items():
+            with self.subTest(what):
+                code, lines, _, asked = self.health(SETTINGS, toml)
+                self.assertIn("invalid", self.settings_line(lines))
+                self.assertEqual([x for x in lines if x.startswith("runtimes")], [])
+                self.assertEqual(asked, [])
+                self.assertEqual(code, 1)
+
+    def test_a_login_shell_that_cannot_be_asked_is_one_failed_check_not_a_traceback(self):
+        targets = self.targets()
+        alone_code, alone, _ = self.run_health(targets)
+        why = ShellError("could not inspect login shell for claude: timed out after 15 seconds")
+        code, lines, err, _ = self.health(SETTINGS + targets, MODELS, raises=why)
+        line = self.runtimes_line(lines)
+        self.assertIn("timed out", line, "the line says why")
+        self.assertNotRegex(line, r"\b(?:ok|missing)\b", "a check that was not made says nothing is present or missing")
+        self.assertEqual(lines.index(line), 1)
+        self.assertEqual(lines[2:], alone, "the targets are still probed")
+        self.assertEqual(code, alone_code + 1, "one failed check, however many runtimes were named")
+        self.assertEqual(err, "")
+
+    def test_a_login_shell_fault_line_carries_no_absolute_path(self):
+        # shell_setup.login_shell's own message quotes the shell's path, which can sit under a home directory.
+        why = ShellError(f"configured login shell '{HOME}/bin/fish' is not executable")
+        code, lines, _, _ = self.health(SETTINGS, MODELS, raises=why)
+        line = self.runtimes_line(lines)
+        self.assertIn("not executable", line, "the line says why")
+        self.assertNotIn("somebody", line)
+        self.assertEqual(code, 1)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,25 @@
+{
+  "tz": "America/Chicago",
+  "description": "open-the-day in a workspace as `chief-of-stuff init` leaves it: a `Settings:` line and no `Health:` line. The settings file is valid and its `[models.implement]` rotation names claude and codex; `runtimes_present` makes claude the only runtime the login shell finds. #48's acceptance: \"A red eval case where settings enable a runtime that isn't on PATH: `health` names it as missing.\" So opening the day runs `health`, and the reply says codex is missing. The reply grader wants `codex` and a word for missing in one clause of one line, with no other runtime's name between them: `codex ok, claude missing` is not a reply that names codex. Not covered: which line of health's output the reply quotes, and health's exit code.",
+  "prompt": "Good morning.",
+  "graders": [
+    {
+      "name": "health was run",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:chief[-_]of[-_]stuff(?:\\.py)?\\s+health\\b|probe_health\\.py)",
+      "min": 1
+    },
+    {
+      "name": "reply names codex as missing",
+      "type": "regex",
+      "pattern": "(?im)codex(?:(?!claude|cursor|agy|[.;]\\s)[^\\n]){0,60}?(?:missing|not installed|unavailable|not found|isn['’]t installed)|^(?:(?!claude|cursor|agy|[.;]\\s)[^\\n])*?(?:missing|not installed|unavailable|not found|isn['’]t installed)(?:(?!claude|cursor|agy|[.;]\\s)[^\\n]){0,40}?codex"
+    }
+  ],
+  "max_turns": 20,
+  "timeout_seconds": 300,
+  "calendar": "calendar.json",
+  "runtimes_present": [
+    "claude"
+  ]
+}

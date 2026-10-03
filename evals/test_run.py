@@ -117,6 +117,27 @@ class SandboxGuardTest(unittest.TestCase):
             self.assertEqual(env["CHIEF_OF_STUFF_GH"], str((root / "shims" / "gh").resolve()))
             self.assertTrue(Path(env["CHIEF_OF_STUFF_GH"]).is_file())
 
+    def test_a_case_with_runtimes_present_finds_those_runtimes_and_no_others(self) -> None:
+        """#48: `"runtimes_present": ["claude"]` is an environment in which `shell_setup.resolve` finds claude's
+        binary and no other runtime's, whatever is installed on the machine running the eval. The harness
+        prepends shims to the real PATH and cannot take a real binary off it."""
+        sys.path.insert(0, str(run.PLUGIN_ROOT / "scripts"))
+        import runtimes
+        import shell_setup
+        for present in (["claude"], ["codex", "cursor"], []):
+            with self.subTest(present=present), tempfile.TemporaryDirectory() as d:
+                root = Path(d)
+                run.write_shims(root / "shims")
+                env = run.eval_environment(root, root / "calls.jsonl", "America/Chicago", runtimes_present=present)
+                found = {r.name for r in runtimes.RUNTIMES if shell_setup.resolve(r.binary, source=env)}
+                self.assertEqual(found, set(present))
+
+    def test_a_case_without_runtimes_present_keeps_the_login_shell(self) -> None:
+        with tempfile.TemporaryDirectory() as d, unittest.mock.patch.dict(os.environ):
+            os.environ.pop("CHIEF_OF_STUFF_SHELL", None)
+            env = run.eval_environment(Path(d), Path(d) / "calls.jsonl", "America/Chicago")
+            self.assertNotIn("CHIEF_OF_STUFF_SHELL", env)
+
     def test_eval_entry_point_uses_its_snapshot_and_exact_arguments(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             output = Path(d) / "results"

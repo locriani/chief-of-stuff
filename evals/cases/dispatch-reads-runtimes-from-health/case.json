@@ -1,0 +1,57 @@
+{
+  "tz": "America/Chicago",
+  "repo": {
+    "clone": "repo",
+    "trees": "trees",
+    "worktrees": [],
+    "files": {
+      "src/export.py": "def to_csv(rows):\n    return '\\n'.join(','.join(str(c) for c in row) for row in rows)\n",
+      "src/__init__.py": "",
+      "tests/test_export.py": "from src.export import to_csv\n\n\ndef test_plain():\n    assert to_csv([[1, 2]]) == '1,2'\n"
+    }
+  },
+  "description": "#48, the field report: before proposing a dispatch the coordinator ran `codex --version`, `cursor-agent --version` and `claude --version` by hand. The implement rotation's first entry is codex, and `runtimes_present` makes claude the only runtime the login shell finds. Which runtimes are installed is read from `health`, never from a runtime's own `--version` or a `command -v`/`which` on its binary. Every grader reads the call's `command`, not its description. Not covered: what it dispatches once it knows codex is missing.",
+  "prompt": "Dispatch the CSV export fix. For this isolated test, use --dry-run for the worker launch and treat the dry run as the launch; do not start a real worker process.",
+  "graders": [
+    {
+      "name": "no runtime is asked for its version",
+      "description": "No Bash call runs a runtime binary (codex, cursor-agent, agent, agy, claude) followed by `--version` or `-v`. A `--runtime claude` argument to `chief-of-stuff worker` is not a run of the binary.",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:(?<![\\w.-])|(?<=\\\\[nt]))(?<!--runtime[ =])(?:codex|cursor-agent|agent|agy|claude)\\s+(?:--version|-[vV])(?![\\w-])",
+      "max": 0
+    },
+    {
+      "name": "no runtime binary is looked up by hand",
+      "description": "No Bash call runs `command -v` or `which` with a runtime binary (codex, cursor-agent, agent, agy, claude) among its arguments.",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:(?<![\\w.-])|(?<=\\\\[nt]))(?:command\\s+-[vV]|which)(?:\\s+[^\\s;&|<>()\\\"\\\\]+)*?\\s+(?:codex|cursor-agent|agent|agy|claude)(?![\\w.-])",
+      "max": 0
+    },
+    {
+      "name": "health was run",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:chief[-_]of[-_]stuff(?:\\.py)?\\s+health\\b|probe_health\\.py)",
+      "min": 1,
+      "description": "`chief-of-stuff health` (or probe_health.py) is run at least once: it is where runtime presence comes from."
+    },
+    {
+      "name": "reply names codex as missing",
+      "description": "The reply says codex is missing (or not installed, unavailable, not found), with no other runtime's name between `codex` and that word.",
+      "type": "regex",
+      "pattern": "(?im)codex(?:(?!claude|cursor|agy|[.;]\\s)[^\\n]){0,60}?(?:missing|not installed|unavailable|not found|isn['’]t installed)|^(?:(?!claude|cursor|agy|[.;]\\s)[^\\n])*?(?:missing|not installed|unavailable|not found|isn['’]t installed)(?:(?!claude|cursor|agy|[.;]\\s)[^\\n]){0,40}?codex"
+    },
+    {
+      "name": "configuration unchanged",
+      "type": "file_unchanged",
+      "path": "chief-of-stuff.toml"
+    }
+  ],
+  "max_turns": 24,
+  "timeout_seconds": 600,
+  "runtimes_present": [
+    "claude"
+  ]
+}
