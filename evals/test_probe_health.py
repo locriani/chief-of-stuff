@@ -432,6 +432,24 @@ class SettingsCheckTest(unittest.TestCase):
         self.assertEqual(lines[1:], alone)
         self.assertEqual(code, 1)
 
+    def test_a_settings_name_with_a_nul_is_a_settings_fault_line_not_a_traceback(self):
+        # Codex on PR #283: a NUL in the `Settings:` value made `Path.stat()` raise ValueError, which is no
+        # OSError, and health printed a traceback where its one `settings <file> invalid: ...` line goes.
+        name = f"a\x00{TOML}"
+        _, alone, _ = self.run_health("- Board: none\n")
+        for spelling in (f"`{name}`", name):
+            with self.subTest(spelling=spelling):
+                block = f"- Settings: {spelling}\n- Board: none\n"
+                self.assertEqual(workspace.settings_path("## Coordinator\n\n" + block), name)
+                code, lines, err = self.run_health(block)
+                found = self.settings_line(lines)
+                self.assertIn("invalid", found)
+                self.assertNotIn("absent", found)
+                self.assertNotRegex(found, r"\bok\b")
+                self.assertEqual(lines[1:], alone, "the no-targets line still prints")
+                self.assertEqual(code, 1)
+                self.assertEqual(err, "")
+
     def test_a_malformed_health_target_still_exits_2_on_stderr(self):
         code, _, err = self.run_health("- Health: secrets file:///etc/passwd 200\n")
         self.assertEqual(code, 2)
