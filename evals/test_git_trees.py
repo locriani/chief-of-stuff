@@ -140,6 +140,15 @@ class ShaVerdictTest(unittest.TestCase):
             with self.subTest(what):
                 self.assertEqual(git_trees.sha_verdict(self.S, fetch_error, exists, ancestor, self.T), (code, line))
 
+    def test_a_fetch_failure_still_says_local_main_holds_it(self) -> None:
+        """#49 round 7, 5: the sixth argument, `local`, is True when local main holds the commit. The answer stays
+        unknown (exit 2), and the fact is said instead of dropped; False reads as the table above."""
+        err = "fatal: unable to access the remote"
+        self.assertEqual(git_trees.sha_verdict(self.S, err, True, False, self.T, True),
+                         (2, f"sha 54b7eb3: unknown \u2014 fetch failed: {err}; origin/main 9c790f3 as last fetched does not hold it; local main holds it"))
+        self.assertEqual(git_trees.sha_verdict(self.S, err, True, False, self.T, False),
+                         git_trees.sha_verdict(self.S, err, True, False, self.T))
+
     def test_the_sha_is_printed_as_it_was_given(self) -> None:
         full = "54b7eb3" + "0" * 33
         self.assertEqual(git_trees.sha_verdict(full, "", True, True, self.T),
@@ -228,7 +237,8 @@ class FetchBaseTest(Repo):
             seen["env"] = kw["env"]
             return subprocess.CompletedProcess(argv, 0, "", "")
 
-        for var in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_NAMESPACE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY"):
+        for var in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_NAMESPACE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY",
+                    "GIT_ALTERNATE_OBJECT_DIRECTORIES"):
             with self.subTest(var), patch.dict(os.environ, {var: "/elsewhere"}), patch.object(git_trees.subprocess, "run", fake):
                 git_trees.fetch_base(self.clone)
                 self.assertNotIn(var, list(seen["env"]), f"{var} reached the fetch")
@@ -263,18 +273,29 @@ class FetchBaseTest(Repo):
         self.assertNotIn(str(self.clone.resolve()), err)
 
 
+class GitReaderTest(unittest.TestCase):
+    def test_git_that_cannot_run_or_times_out_is_128_not_1(self) -> None:
+        """`merge-base --is-ancestor` answers a no with exit 1, so a failed run must not look like one: 128 is git's own
+        failure code. The text is what went wrong, for a caller that prints it."""
+        for exc in (OSError("no git"), subprocess.TimeoutExpired(["git"], 15)):
+            with self.subTest(type(exc).__name__), patch.object(git_trees.subprocess, "run", side_effect=exc):
+                code, text = git_trees.git(["rev-parse", "HEAD"], Path("."))
+                self.assertEqual(code, 128)
+                self.assertTrue(text.strip())
+
+
 class CheckShaTest(Repo):
     def test_a_pushed_commit_is_on_origin_main(self) -> None:
         sha = git("rev-parse", "HEAD", cwd=self.clone)
         tip = git("rev-parse", "--short", "origin/main", cwd=self.clone)
-        self.assertEqual(git_trees.check_sha(sha, self.clone), (0, f"sha {sha}: on origin/main {tip} (fetched)"))
+        self.assertEqual(git_trees.check_sha(sha, self.clone), (0, f"sha {sha}: on origin/main {tip} (fetched)", True))
 
     def test_a_commit_only_on_a_branch_is_not(self) -> None:
         tree = self.tree("wt-a", "feat/a")
         commit(tree, "a.txt")
         sha = git("rev-parse", "HEAD", cwd=tree)
         tip = git("rev-parse", "--short", "origin/main", cwd=self.clone)
-        self.assertEqual(git_trees.check_sha(sha, tree), (1, f"sha {sha}: not on origin/main {tip} (fetched)"))
+        self.assertEqual(git_trees.check_sha(sha, tree), (1, f"sha {sha}: not on origin/main {tip} (fetched)", True))
 
     def test_a_prefix_two_commits_share_is_unknown_not_a_pick(self) -> None:
         """Two commit ids start with it: no answer, whichever of them is on origin/main. `git` is patched, because two
@@ -285,11 +306,13 @@ class CheckShaTest(Repo):
             calls.append(args)
             if args[0] == "rev-parse" and args[1].startswith("--disambiguate="):
                 return 0, "9f3c1e7aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n9f3c1e7bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            if args[:2] == ["cat-file", "-t"]:
+                return 0, "commit"
             return 0, "abc1234" if args[:2] == ["rev-parse", "--short"] else ""
 
         with patch.object(git_trees, "fetch_base", return_value=""), patch.object(git_trees, "git", fake):
             self.assertEqual(git_trees.check_sha("9f3c1e7", self.clone),
-                             (2, "sha 9f3c1e7: unknown \u2014 more than one commit starts with it"))
+                             (2, "sha 9f3c1e7: unknown \u2014 more than one commit starts with it", True))
         self.assertFalse([c for c in calls if c[:1] == ["merge-base"]], calls)
 
     def tip(self) -> str:
@@ -305,17 +328,17 @@ class CheckShaTest(Repo):
         git("clone", "-q", "--depth", "1", f"file://{self.root / 'origin.git'}", str(shallow), cwd=self.root)
         self.assertEqual(git("rev-parse", "--is-shallow-repository", cwd=shallow), "true")
         self.assertEqual(git_trees.check_sha(older, shallow),
-                         (2, f"sha {older}: unknown \u2014 shallow clone, so history is cut off"))
+                         (2, f"sha {older}: unknown \u2014 shallow clone, so history is cut off", False))
         # a yes is still a yes: the commit is reachable from the tip whatever was cut off
         tip = git("rev-parse", "--short", "origin/main", cwd=shallow)
-        self.assertEqual(git_trees.check_sha(head, shallow), (0, f"sha {head}: on origin/main {tip} (fetched)"))
+        self.assertEqual(git_trees.check_sha(head, shallow), (0, f"sha {head}: on origin/main {tip} (fetched)", True))
 
     def test_a_commit_on_local_main_not_pushed_is_said_so(self) -> None:
         """#49 G: distinct from a commit on no main at all (`not on origin/main`), since the row audit reports an
         unpushed local main as a fact."""
         commit(self.clone, "local.txt")
         sha = git("rev-parse", "HEAD", cwd=self.clone)
-        want = (1, f"sha {sha}: on local main only, not pushed to origin/main {self.tip()} (fetched)")
+        want = (1, f"sha {sha}: on local main only, not pushed to origin/main {self.tip()} (fetched)", True)
         self.assertEqual(git_trees.check_sha(sha, self.clone), want)
         self.assertEqual(git_trees.check_sha(sha, self.tree("wt-a", "feat/a")), want)
 
@@ -333,7 +356,7 @@ class CheckShaTest(Repo):
         for what, sha in (("on origin/main", on), ("not on it", off)):
             with self.subTest(what), patch.object(git_trees, "git", fake):
                 self.assertEqual(git_trees.check_sha(sha, tree),
-                                 (2, f"sha {sha}: unknown \u2014 git could not compare it with origin/main"))
+                                 (2, f"sha {sha}: unknown \u2014 git could not compare it with origin/main", True))
 
     def test_an_annotated_tags_object_id_is_not_a_commit(self) -> None:
         """#49 H: `cat-file -e <id>^{commit}` peels a tag, so the tag's id passes for the commit it points at."""
@@ -344,13 +367,94 @@ class CheckShaTest(Repo):
         for given in (tag, tag[:7]):
             with self.subTest(given):
                 self.assertEqual(git_trees.check_sha(given, self.clone),
-                                 (1, f"sha {given}: no such commit after fetch, so not on origin/main {self.tip()}"))
+                                 (1, f"sha {given}: no such commit after fetch, so not on origin/main {self.tip()}", False))
+
+    def test_a_read_that_fails_is_unknown_never_no_such_commit(self) -> None:
+        """#49 round 7, 2: exit 128 from the read that lists the commits (`rev-parse --disambiguate`) or from `cat-file -t`
+        on an id it listed means git could not read the repository, which says nothing about whether the commit exists.
+        `held` is False: nothing was read. Not `cat-file -e <id>^{commit}`: that exits 128 for a blob or a missing
+        object too (see the next test), so its 128 is an answer, not a fault."""
+        sha = git("rev-parse", "HEAD", cwd=self.clone)
+        real = git_trees.git
+        for what, broken in (("disambiguate", lambda a: a[0] == "rev-parse" and a[1].startswith("--disambiguate=")),
+                             ("cat-file -t", lambda a: a[:2] == ["cat-file", "-t"])):
+            def fake(args, cwd, broken=broken):
+                return (128, "fatal: boom") if broken(args) else real(args, cwd)
+
+            with self.subTest(what), patch.object(git_trees, "git", fake):
+                self.assertEqual(git_trees.check_sha(sha, self.clone),
+                                 (2, f"sha {sha}: unknown \u2014 git could not read this repository", False))
+
+    def test_a_prefix_that_names_a_blob_is_no_such_commit_not_a_read_fault(self) -> None:
+        """`rev-parse --disambiguate` lists objects of every type, and `cat-file -e <blob>^{commit}` exits 128. That is
+        git saying it is not a commit: no such commit (exit 1), not `could not read this repository`."""
+        blob = git("rev-parse", "HEAD:README.md", cwd=self.clone)
+        self.assertEqual(git("cat-file", "-t", blob[:7], cwd=self.clone), "blob")
+        self.assertEqual(git_trees.check_sha(blob[:7], self.clone),
+                         (1, f"sha {blob[:7]}: no such commit after fetch, so not on origin/main {self.tip()}", False))
+
+    def test_a_tag_named_main_is_not_local_main(self) -> None:
+        """#49 round 7, 4: `main` alone names the tag before the branch. The commit is on a feature branch, so the answer
+        is the plain `not on origin/main`, never `on local main only`. Green when written: the code reads `refs/heads/main`."""
+        tree = self.tree("wt-a", "feat/a")
+        commit(tree, "a.txt")
+        sha = git("rev-parse", "HEAD", cwd=tree)
+        git("tag", "main", sha, cwd=self.clone)
+        self.assertEqual(git_trees.check_sha(sha, tree), (1, f"sha {sha}: not on origin/main {self.tip()} (fetched)", True))
+
+    def test_the_fetch_failure_line_still_says_local_main_holds_it(self) -> None:
+        """#49 round 7, 5: unknown stays unknown, and the fact the old line dropped is said. A commit on a branch only
+        keeps the line as it was."""
+        commit(self.clone, "local.txt")
+        sha = git("rev-parse", "HEAD", cwd=self.clone)
+        branch = self.tree("wt-a", "feat/a")
+        commit(branch, "a.txt")
+        on_branch = git("rev-parse", "HEAD", cwd=branch)
+        git("remote", "set-url", "origin", str(self.root / "gone.git"), cwd=self.clone)
+        err = git_trees.fetch_base(self.clone)
+        self.assertTrue(err)
+        head = f"unknown \u2014 fetch failed: {err}; origin/main {self.tip()} as last fetched does not hold it"
+        self.assertEqual(git_trees.check_sha(sha, self.clone), (2, f"sha {sha}: {head}; local main holds it", True))
+        self.assertEqual(git_trees.check_sha(on_branch, self.clone), (2, f"sha {on_branch}: {head}", True))
+
+    def test_a_shallow_clone_still_says_local_main_holds_it(self) -> None:
+        commit(self.clone, "second.txt")
+        git("push", "-q", "origin", "main", cwd=self.clone)
+        shallow = self.root / "shallow"
+        git("clone", "-q", "--depth", "1", f"file://{self.root / 'origin.git'}", str(shallow), cwd=self.root)
+        commit(shallow, "local.txt")
+        sha = git("rev-parse", "HEAD", cwd=shallow)
+        self.assertEqual(git_trees.check_sha(sha, shallow),
+                         (2, f"sha {sha}: unknown \u2014 shallow clone, so history is cut off; local main holds it", True))
+
+    def test_a_grafts_file_written_by_the_fetch_is_seen(self) -> None:
+        """#49 round 7, 6: the grafts check ran before the fetch, so a file the fetch left was not seen. `fetch_base` is
+        patched to write one and report success."""
+        sha = git("rev-parse", "HEAD", cwd=self.clone)
+        common = Path(git("rev-parse", "--path-format=absolute", "--git-common-dir", cwd=self.clone))
+
+        def fetch_leaves_grafts(tree, timeout=30):
+            (common / "info").mkdir(exist_ok=True)
+            (common / "info" / "grafts").write_text(f"{sha} {sha}\n")
+            return ""
+
+        with patch.object(git_trees, "fetch_base", fetch_leaves_grafts):
+            self.assertEqual(git_trees.check_sha(sha, self.clone),
+                             (2, f"sha {sha}: unknown \u2014 this repository has grafts, so ancestry cannot be trusted", True))
+
+    def test_a_repository_git_cannot_read_does_not_hold_it(self) -> None:
+        sha = git("rev-parse", "HEAD", cwd=self.clone)
+        broken = self.trees / "broken"
+        broken.mkdir()
+        (broken / ".git").write_text(f"gitdir: {self.root / 'no-such-gitdir'}\n")
+        code, _, held = git_trees.check_sha(sha, broken)
+        self.assertEqual((code, held), (2, False))
 
     def test_origin_main_missing_though_the_fetch_succeeded_is_unknown(self) -> None:
         sha = git("rev-parse", "HEAD", cwd=self.clone)
         git("update-ref", "-d", "refs/remotes/origin/main", cwd=self.clone)
         with patch.object(git_trees, "fetch_base", return_value=""):
-            self.assertEqual(git_trees.check_sha(sha, self.clone), (2, f"sha {sha}: unknown \u2014 no origin/main to check against"))
+            self.assertEqual(git_trees.check_sha(sha, self.clone), (2, f"sha {sha}: unknown \u2014 no origin/main to check against", True))
 
 
 if __name__ == "__main__":

@@ -1893,6 +1893,18 @@ class ShaFlagTest(unittest.TestCase):
         code, out, _ = self.run_main("--sha", sha)
         self.assertEqual((code, out), (1, f"sha {sha}: on local main only, not pushed to origin/main {self.tip()} (fetched){self.TREE}\n"))
 
+    def test_fetch_failed_still_says_local_main_holds_it(self) -> None:
+        """#49 round 7, 5: unknown stays unknown (exit 2), and the fact that local main holds the commit is said."""
+        (self.clone / "local.txt").write_text("local\n")
+        git("add", "local.txt", cwd=self.clone)
+        git("commit", "-m", "local only", cwd=self.clone)
+        sha = git("rev-parse", "main", cwd=self.clone)
+        git("remote", "set-url", "origin", str(self.root / "gone.git"), cwd=self.clone)
+        code, out, _ = self.run_main("--sha", sha)
+        self.assertEqual(code, 2)
+        self.assertEqual(out.count("\n"), 1)
+        self.assertTrue(out.endswith(f"; origin/main {self.tip()} as last fetched does not hold it; local main holds it{self.TREE}\n"), out)
+
     def test_a_commit_nobody_has_is_no_such_commit_after_fetch(self) -> None:
         sha = "0123456789abcdef0123456789abcdef01234567"
         code, out, _ = self.run_main("--sha", sha)
@@ -2144,7 +2156,8 @@ class ShaTreesTest(unittest.TestCase):
 
     The trees are what `git_trees.discover` returns, deduplicated by repository (trees sharing one `.git` are one
     repository; the first by name is asked and named); with none, the root itself if it is a git tree (` [.]`).
-    Exit: 0 if any line is a yes, else 2 if any is unknown, else 1. Line order is not pinned. The workspace's
+    Exit: 1 if any repository that holds the commit says it is not on origin/main (round 7), else 0 if any line is a
+    yes, else 2 if any is unknown, else 1. Line order is not pinned. The workspace's
     own repository has three worktrees, so it is one line named `wt-dirty`, the first by name.
     """
 
@@ -2217,7 +2230,7 @@ class ShaTreesTest(unittest.TestCase):
         self.assertNotIn("Traceback", err)
         self.assertTrue(all(line.endswith("]") for line in out.splitlines()), out)
 
-    def test_the_exit_is_yes_if_any_then_unknown_if_any_then_no(self) -> None:
+    def test_the_exit_is_no_if_a_holder_says_no_then_yes_then_unknown_then_no(self) -> None:
         docs = self.docs_clone(self.trees / "aaa-docs")
         docs_tip = git("rev-parse", "--short", "origin/main", cwd=docs)
         unmerged = git("rev-parse", "feat/open", cwd=self.clone)
@@ -2226,7 +2239,11 @@ class ShaTreesTest(unittest.TestCase):
             f"sha {unmerged}: not on origin/main {self.tip} (fetched) [wt-dirty]",
             f"sha {unmerged}: no such commit after fetch, so not on origin/main {docs_tip} [aaa-docs]"])))
         git("remote", "set-url", "origin", str(self.root / "gone.git"), cwd=docs)
-        for what, sha, want in (("no and unknown", unmerged, 2), ("yes and unknown", self.sha, 0)):
+        nobody = "0123456789abcdef0123456789abcdef01234567"
+        # a repository that holds the commit and says no outranks an unknown elsewhere; one that never had it does not
+        for what, sha, want in (("a holder says no, another is unknown", unmerged, 1),
+                                ("no such commit, another is unknown", nobody, 2),
+                                ("yes and unknown", self.sha, 0)):
             with self.subTest(what):
                 code, out, _ = self.run_main("--sha", sha)
                 lines = out.splitlines()
@@ -2234,6 +2251,104 @@ class ShaTreesTest(unittest.TestCase):
                 unknown = [l for l in lines if l.startswith(f"sha {sha}: unknown \u2014 fetch failed: ")]
                 self.assertEqual(len(unknown), 1, out)
                 self.assertTrue(unknown[0].endswith(" [aaa-docs]"), unknown[0])
+
+    def test_the_exit_over_every_mix_of_answers(self) -> None:
+        """#49 round 7, 1: over the per-repository `(code, line, held)`: any repository that HOLDS the commit and says
+        no (code 1, held) is 1; else any yes is 0; else any unknown is 2; else 1. Every line still prints."""
+        yes, unknown = (0, "yes", True), (2, "unknown", False)
+        no_held, no_absent, local_only = (1, "no, held", True), (1, "no, absent", False), (1, "local main only", True)
+        table = [
+            ("a holder says no, another says yes", [no_held, yes], 1),
+            ("local main only, another says yes", [local_only, yes], 1),
+            ("a holder says no, another is unknown", [no_held, unknown], 1),
+            ("a holder says no, yes and unknown", [yes, no_held, unknown], 1),
+            ("yes alone", [yes], 0),
+            ("yes and unknown", [yes, unknown], 0),
+            ("yes and a no that never had it", [yes, no_absent], 0),
+            ("unknown alone", [unknown], 2),
+            ("unknown and a no that never had it", [no_absent, unknown], 2),
+            ("no alone, never had it", [no_absent], 1),
+            ("no alone, held", [no_held], 1),
+            ("two nos", [no_absent, no_held], 1),
+        ]
+        for what, answers, want in table:
+            with self.subTest(what):
+                trees = [(f"t{i}", self.trees) for i in range(len(answers))]
+                seen = iter([(code, f"{line} {i}", held) for i, (code, line, held) in enumerate(answers)])
+                with patch.object(git_trees, "sha_trees", return_value=trees), \
+                        patch.object(git_trees, "check_sha", lambda sha, tree: next(seen)):
+                    code, out, _ = self.run_main("--sha", self.sha)
+                self.assertEqual(code, want, out)
+                self.assertEqual(out.splitlines(), [f"{line} {i} [t{i}]" for i, (_, line, _) in enumerate(answers)])
+
+    def test_a_clone_of_the_project_that_has_the_unpushed_commit_cannot_outvote_the_project(self) -> None:
+        """#49 round 7, 1a: the commit is only on the project's local main. A clone of the project (its origin is the
+        project) fetches it into its origin/main and says yes; the project says `on local main only`. Exit 1."""
+        (self.clone / "local.txt").write_text("local\n")
+        git("add", "local.txt", cwd=self.clone)
+        git("commit", "-m", "local only", cwd=self.clone)
+        sha = git("rev-parse", "main", cwd=self.clone)
+        git("clone", "-q", str(self.clone), str(self.trees / "proj2"), cwd=self.root)
+        code, out, _ = self.run_main("--sha", sha)
+        self.assertEqual(self.lines(out), sorted([
+            f"sha {sha}: on local main only, not pushed to origin/main {self.tip} (fetched) [wt-dirty]",
+            f"sha {sha}: on origin/main {git('rev-parse', '--short', 'origin/main', cwd=self.trees / 'proj2')} (fetched) [proj2]"]))
+        self.assertEqual(code, 1)
+
+    def test_a_tree_whose_origin_holds_the_unmerged_commit_cannot_outvote_the_project(self) -> None:
+        """#49 round 7, 1b: `trees/evil` is a fresh `git init` whose origin is a bare repository with the project's
+        unmerged commit on its main. It says yes; the project holds the commit on a branch and says no. Exit 1."""
+        unmerged = git("rev-parse", "feat/open", cwd=self.clone)
+        bare = self.root / "evil-origin.git"
+        bare.mkdir()
+        git("init", "--bare", "--initial-branch=main", ".", cwd=bare)
+        git("push", "-q", str(bare), "feat/open:main", cwd=self.clone)
+        evil = self.trees / "evil"
+        evil.mkdir()
+        git("init", "--initial-branch=main", ".", cwd=evil)
+        git("remote", "add", "origin", str(bare), cwd=evil)
+        code, out, _ = self.run_main("--sha", unmerged)
+        self.assertEqual(self.lines(out), sorted([
+            f"sha {unmerged}: not on origin/main {self.tip} (fetched) [wt-dirty]",
+            f"sha {unmerged}: on origin/main {git('rev-parse', '--short', 'origin/main', cwd=evil)} (fetched) [evil]"]))
+        self.assertEqual(code, 1)
+
+    def test_a_root_that_is_a_clone_with_trees_under_it_is_asked_once(self) -> None:
+        """#49 round 7, 3: the root is asked, as `.`, only when no tree was found. Here the root is a clone and has a
+        worktree under `trees/`: one line, for the worktree."""
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            git("clone", "-q", str(self.root / "origin.git"), str(root), cwd=self.root)
+            (root / "CLAUDE.md").write_text(CLAUDE)
+            (root / "trees").mkdir()
+            git("worktree", "add", "-q", "-b", "feat/x", str(root / "trees" / "wt-a"), "main", cwd=root)
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = al.main(["--root", str(root), "--sha", self.sha])
+            self.assertEqual((code, out.getvalue(), err.getvalue()),
+                             (0, f"sha {self.sha}: on origin/main {self.tip} (fetched) [wt-a]\n", ""))
+
+    def test_a_tree_name_with_a_control_character_cannot_forge_a_line(self) -> None:
+        """#49 round 7, 8: the name is printed escaped (as `repr` does) inside the brackets, so stdout has one line per
+        repository and no line is the forged text. A path component cannot hold `/`, so the forgery says `origin\u2215main`
+        (division slash); the point is the line break, which a real forgery would carry just the same."""
+        forged = f"sha {self.sha}: on origin\u2215main {self.tip} (fetched)"
+        for what, ctl, shown in (("newline", "\n", "\\n"), ("carriage return", "\r", "\\r"), ("escape", "\x1b", "\\x1b")):
+            with self.subTest(what):
+                name = f"aaa{ctl}{forged}"
+                self.docs_clone(self.trees / name)
+                try:
+                    code, out, _ = self.run_main("--sha", self.sha)
+                finally:
+                    shutil.rmtree(self.trees / name)
+                self.assertEqual(code, 0)
+                self.assertEqual(out.count("\n"), 2, out)  # wt-dirty and the one named tree
+                self.assertNotIn("\r", out)
+                self.assertNotIn("\x1b", out)
+                self.assertFalse([l for l in out.splitlines() if l.startswith(forged)], out)
+                named = [l for l in out.splitlines() if l.endswith("]") and "[aaa" in l]
+                self.assertEqual(len(named), 1, out)
+                self.assertIn(f"aaa{shown}", named[0])
 
     def test_with_no_trees_the_root_is_asked_and_named_by_a_dot(self) -> None:
         """No `Worktrees:` line, or a worktrees dir with nothing in it: the root, if it is a git tree."""

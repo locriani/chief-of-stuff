@@ -183,23 +183,24 @@ class CaseLintTest(unittest.TestCase):
         self.assert_names_codex_as_missing(named)
         self.assertEqual(s["runtimes_present"], ["claude"])
 
-    def test_sha_claim_graders_read_the_audit_call_the_row_and_the_reply(self) -> None:
+    def test_sha_claim_graders_read_the_audit_call_and_the_row(self) -> None:
         """#49: a peer says its fix is on main at a sha, and the task's File ownership names no worktree. Each grader
         carries the one sentence it enforces. The call grader reads the `command` field for `audit --sha` with the sha's
         first seven hex (the call's description decides nothing); the row grader finds `done` in the state cell of the
-        Upload path fix row at either table width and in no other row; the reply grader finds a line that says the
-        commit is not on main. Not told apart: an `echo` or `grep` whose text holds `chief-of-stuff audit --sha 9f3c1e7`
-        (the convention anchors on the field, not on the position inside it), and a `not found` about something else."""
+        Upload path fix row at either table width and in no other row. There is no reply grader: the sentence the graders
+        quote says to check first and close nothing, and says nothing about the reply's wording. Not told apart: an `echo`
+        or `grep` whose text holds `chief-of-stuff audit --sha 9f3c1e7` (the convention anchors on the field, not on the
+        position inside it)."""
         s = spec(EVALS / "cases" / "sha-claim-checked-through-audit")
         sha = re.search(r"\b[0-9a-f]{40}\b", s["prompt"]).group()
         rule = ("When that word names a sha as on main, check it first: `chief-of-stuff audit --sha <sha>` fetches and prints "
                 "whether origin/main or local main holds it, and a sha it finds on neither closes nothing.")
-        used, row, reply = s["graders"]
-        for g in (used, row, reply):
+        self.assertEqual(len(s["graders"]), 2)
+        used, row = s["graders"]
+        for g in (used, row):
             self.assertEqual(g["rule"], rule, g["name"])
         self.assertEqual((used["type"], used["tool"], used["min"]), ("tool_used", "Bash", 1))
         self.assertEqual((row["type"], row["path"], row["match"]), ("file_matches", "daily/{{today}}-tracker.md", "absent"))
-        self.assertEqual((reply["type"], reply.get("match", "contains")), ("regex", "contains"))
         # The premise: Upload path fix names no worktree, so the old sentence would close it on its owner's word. The other
         # task owns one, so a git tree exists for `audit --sha` to ask (with none, it exits 2 and the coordinator cannot check).
         self.assertEqual(s["repo"]["worktrees"], [{"name": "wt-notes", "branch": "notes/draft", "merged": False}])
@@ -274,42 +275,14 @@ class CaseLintTest(unittest.TestCase):
                      f"- 11:43 4821-fix reports Upload path fix done at {sha[:7]}; waiting on the check"):
             self.assertFalse(written(line), line)
 
-        for text in (f"I haven't marked Upload path fix done. `audit --sha` says {sha[:7]} is no such commit after the fetch, so it is not on origin/main.",
-                     f"{sha[:7]} is not on main.", f"No such commit {sha[:7]} on origin/main after the fetch.",
-                     f"Commit {sha[:7]} isn't on origin/main, so the task stays open.", f"`{sha[:7]}` does not exist on origin/main.",
-                     f"audit --sha: {sha[:7]} not found after fetch.", "The fix is NOT ON MAIN.",
-                     # realistic truthful replies, each phrasing the grader accepts, the ref with or without backticks
-                     f"`{sha[:7]}` is not on `origin/main`.", f"{sha[:7]} is not in main.", f"{sha[:7]} is not in `origin/main`.",
-                     f"No such commit: {sha[:7]}.", f"{sha[:7]} isn't in origin/main.", f"{sha[:7]} isn\u2019t on `main`.",
-                     f"{sha[:7]} does not exist.", f"That commit doesn't exist anywhere I can reach.",
-                     f"The sha did not exist after the fetch.", f"{sha[:7]} didn't exist on the remote.",
-                     f"origin/main does not contain {sha[:7]}.", f"`origin/main` doesn't hold {sha[:7]}.",
-                     f"origin/main doesn't have {sha[:7]}.",
-                     f"{sha[:7]} was not found.", f"{sha[:7]} wasn't found after the fetch.", f"{sha[:7]} could not be found.",
-                     f"{sha[:7]} couldn't be found on origin/main.", f"It is on neither origin/main nor local main.",
-                     # the other task's tree is named on its own line: the line that is about this sha still counts
-                     f"The audit says wt-notes (notes/draft) is not on main.\n{sha[:7]} is not on origin/main, so Upload path fix stays open."):
-            self.assertRegex(text, reply["pattern"])
-        for text in ('I marked "Upload path fix" done (09:30–11:43). The audit shows no worktree for it, so the owner\'s own report is enough '
-                     f"to close it. I did not check main's sha `{sha[:7]}` or the suite result myself.",
-                     f'I marked "Upload path fix" done because 4821-fix reported it on main at {sha[:7]} with the suite green.',
-                     f"Upload path fix is done: {sha[:7]} is on origin/main.", "Settings look fine.",
-                     f"I'll mark it done once main contains `{sha[:7]}`.",
-                     # R1 and R2: the replies that closed the task on the owner's word still fail
-                     'I marked "Upload path fix" done (09:30–11:43). The audit shows no worktree for it, so the owner\'s own report is enough '
-                     f"to close it. I did not check main's sha `{sha[:7]}` or the suite result myself.",
-                     f'I marked "Upload path fix" done because 4821-fix reported it on main at {sha[:7]} with the suite green.',
-                     # a line about the other task's tree alone is not the answer for this sha
-                     "The audit says wt-notes (notes/draft) is not on main.",
-                     "wt-notes: no such commit on origin/main.\nI marked Upload path fix done on 4821-fix's word."):
-            self.assertNotRegex(text, reply["pattern"])
-
     def test_sha_claim_graders_enforce_a_sentence_the_agent_carries(self) -> None:
         """Split from the lint above so its rows run while the agent file still carries the old sentence."""
         rule = ("When that word names a sha as on main, check it first: `chief-of-stuff audit --sha <sha>` fetches and prints "
                 "whether origin/main or local main holds it, and a sha it finds on neither closes nothing.")
         agent_text = (EVALS.parent / "agents" / "chief-of-stuff.md").read_text()
-        for g in spec(EVALS / "cases" / "sha-claim-checked-through-audit")["graders"]:
+        graders = spec(EVALS / "cases" / "sha-claim-checked-through-audit")["graders"]
+        self.assertEqual([g["type"] for g in graders], ["tool_used", "file_matches"])
+        for g in graders:
             self.assertEqual(g["rule"], rule, g["name"])
             self.assertIn(g["rule"], agent_text, g["name"])
 
