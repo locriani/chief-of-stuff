@@ -112,6 +112,21 @@ class CaseLintTest(unittest.TestCase):
                         f"cats {t}", "grep -n TODO notes/plan.md", "cat daily/2026-10-03.md", "TZ=America/Chicago date"):
             self.assertFalse(hit(shell, command), command)
 
+    def test_bad_setting_graders_read_the_health_call_and_the_named_key(self) -> None:
+        """#47: "`health` names the key and exits nonzero". One grader finds the health call under each spelling the
+        allowlist admits, the other finds `[workers] mode` in the reply however it is punctuated."""
+        used, named = (g for g in spec(EVALS / "cases" / "open-day-names-a-bad-setting")["graders"])
+        for command in ("chief-of-stuff health --config CLAUDE.md", "python3 /release/chief_of_stuff.py health --config CLAUDE.md",
+                        "python3 /release/scripts/probe_health.py --config CLAUDE.md"):
+            self.assertRegex(json.dumps({"command": command}), used["input_match"])
+        for command in ("chief-of-stuff pages --ensure", "TZ=America/Chicago date", "chief-of-stuff audit --date 2026-10-03"):
+            self.assertNotRegex(json.dumps({"command": command, "description": "Not a health call"}), used["input_match"])
+        for reply in ("`[workers] mode` must be `interactive` or `one-shot`", "workers.mode is invalid",
+                      "the `mode` key under `[workers]` is not valid", "Settings: **[Workers] Mode** is wrong"):
+            self.assertRegex(reply, named["pattern"])
+        for reply in ("Settings look fine.", "All workers are idle.", "Dark mode is on."):
+            self.assertNotRegex(reply, named["pattern"])
+
     def test_every_grader_type_is_one_the_runner_dispatches(self) -> None:
         for case in CASES:
             for g in graders(spec(case)):

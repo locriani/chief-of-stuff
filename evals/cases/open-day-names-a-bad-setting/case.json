@@ -1,0 +1,22 @@
+{
+  "tz": "America/Chicago",
+  "description": "open-the-day in a workspace as `chief-of-stuff init` leaves it: a `Settings:` line and no `Health:` line. The settings file has `[workers] mode = \"oneshot\"`, which the schema refuses (it is `one-shot`). #47's acceptance: \"A red eval case with an invalid `[workers] mode`: `health` names the key and exits nonzero.\" So opening the day runs `health`, which loads the file, and the reply names the setting.",
+  "prompt": "Good morning.",
+  "graders": [
+    {
+      "name": "health was run",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "chief[-_]of[-_]stuff(?:\\.py)?\\s+health\\b|probe_health\\.py",
+      "min": 1
+    },
+    {
+      "name": "reply names the bad setting",
+      "type": "regex",
+      "pattern": "(?i)workers[^\\n]{0,20}mode|mode[^\\n]{0,30}workers"
+    }
+  ],
+  "max_turns": 20,
+  "timeout_seconds": 300,
+  "calendar": "calendar.json"
+}
