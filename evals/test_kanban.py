@@ -322,6 +322,19 @@ class CliTest(unittest.TestCase):
         self.assertFalse(sync.call_args.kwargs["commit"])
         self.assertIn("would update", output.getvalue())
 
+    def test_issue_takes_a_bare_number_or_a_hash_number(self):
+        """#44: `--issue 7` and `--issue '#7'` select the same task."""
+        result = kanban.Sync(backlog.IssueRef("team/app", 7, "labs.example.test"), "plan review",
+                             kanban.Delta(("01 - PLAN REVIEW",), ("00 - PLAN",)))
+        seen = []
+        for arg in ("7", "#7"):
+            with mock.patch.object(kanban, "sync_gitlab", return_value=result) as sync, \
+                    redirect_stdout(io.StringIO()):
+                self.assertEqual(kanban.main(["--root", str(self.root), "--date", "2026-09-25", "--issue", arg]), 0)
+            sync.assert_called_once()
+            seen.append(sync.call_args)
+        self.assertEqual(seen[0], seen[1])
+
     def test_commit_requires_one_issue_and_prior_stage(self):
         output = io.StringIO()
         with redirect_stdout(output):
