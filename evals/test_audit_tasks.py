@@ -1939,8 +1939,7 @@ class ShaFlagTest(unittest.TestCase):
         for bad in (main.upper(), main[:7].upper(), "-" + main[:7], "--" + main[:7]):
             with self.subTest(bad), patch.object(git_trees, "fetch_base", side_effect=AssertionError("fetched"), create=True):
                 code, out, err = self.run_main(f"--sha={bad}")
-                self.assertEqual((code, out), (2, ""))
-                self.assertIn("audit_tasks:", err)
+                self.assertEqual((code, out, err), (2, "", "audit_tasks: --sha takes 7-40 lowercase hex digits\n"))
 
     def test_the_fetch_moves_origin_main_whatever_the_fetch_config_is(self) -> None:
         """`git fetch origin main` only updates `refs/remotes/origin/main` when `remote.origin.fetch` maps it."""
@@ -1988,8 +1987,7 @@ class ShaFlagTest(unittest.TestCase):
         for bad in ("zzz", "abc123", "0123456789abcdef0123456789abcdef012345678", "--help-me", "main", "54b7eb3;ls"):
             with self.subTest(bad), patch.object(git_trees, "fetch_base", side_effect=AssertionError("fetched"), create=True):
                 code, out, err = self.run_main(f"--sha={bad}")
-                self.assertEqual((code, out), (2, ""))
-                self.assertIn("audit_tasks:", err)
+                self.assertEqual((code, out, err), (2, "", "audit_tasks: --sha takes 7-40 lowercase hex digits\n"))
 
     def test_it_needs_no_tracker_for_the_day(self) -> None:
         (self.root / "daily" / "2026-09-17-tracker.md").unlink()
@@ -2008,13 +2006,19 @@ class ShaFlagTest(unittest.TestCase):
             self.assertIn("no CLAUDE.md", err.getvalue())
 
     def test_with_no_git_tree_there_is_nowhere_to_ask(self) -> None:
-        with tempfile.TemporaryDirectory() as d:
-            (Path(d) / "CLAUDE.md").write_text(CLAUDE)
-            out, err = io.StringIO(), io.StringIO()
-            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-                code = al.main(["--root", d, "--sha", "0123456789abcdef"])
-            self.assertEqual((code, out.getvalue()), (2, ""))
-            self.assertIn("audit_tasks:", err.getvalue())
+        """A different fault from a malformed sha, so a different line: it names where it looked as the config writes it
+        (never an absolute path), or the workspace root when there is no `Worktrees:` line. Nothing is fetched."""
+        for what, claude, where in (("a worktrees dir", CLAUDE, "trees/"),
+                                    ("no worktrees line", CLAUDE.replace("- Worktrees: `trees/`\n", ""), "the workspace root")):
+            with self.subTest(what), tempfile.TemporaryDirectory() as d, \
+                    patch.object(git_trees, "fetch_base", side_effect=AssertionError("fetched"), create=True):
+                (Path(d) / "CLAUDE.md").write_text(claude)
+                out, err = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    code = al.main(["--root", d, "--sha", "0123456789abcdef"])
+                self.assertEqual((code, out.getvalue()), (2, ""))
+                self.assertEqual(err.getvalue(), f"audit_tasks: --sha found no git tree under {where}, so nothing was checked\n")
+                self.assertNotIn(d, err.getvalue())
 
     def test_a_plain_audit_never_fetches_and_reads_as_before(self) -> None:
         """Guard: the fetch belongs to `--sha`. The row audit stays offline and its lines and exit do not move."""

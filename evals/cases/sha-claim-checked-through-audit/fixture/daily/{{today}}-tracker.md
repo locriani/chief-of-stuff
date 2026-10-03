@@ -33,6 +33,7 @@ Coordinator: gauntlet-85. Board: board-known.
 ## File ownership
 
 - Upload path fix: src/a/
+- Draft release notes: worktree `wt-notes` · notes/
 
 ## Log
 

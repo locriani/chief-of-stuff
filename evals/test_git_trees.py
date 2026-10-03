@@ -200,7 +200,7 @@ class FetchBaseTest(Repo):
 
         with patch.dict(os.environ, {"COS_FETCH_ENV_PROBE": "kept"}), patch.object(git_trees.subprocess, "run", fake):
             self.assertEqual(git_trees.fetch_base(self.clone, timeout=7), "")
-        self.assertEqual(seen["argv"], ["git", "-C", str(self.clone), "fetch", "-q", "origin", "main"])
+        self.assertEqual(seen["argv"], ["git", "-C", str(self.clone), "fetch", "-q", "origin", "+refs/heads/main:refs/remotes/origin/main"])
         self.assertEqual(seen["kw"]["env"]["GIT_TERMINAL_PROMPT"], "0")
         self.assertEqual(seen["kw"]["env"]["COS_FETCH_ENV_PROBE"], "kept")
         self.assertEqual(seen["kw"]["timeout"], 7)
@@ -219,6 +219,22 @@ class CheckShaTest(Repo):
         sha = git("rev-parse", "HEAD", cwd=tree)
         tip = git("rev-parse", "--short", "origin/main", cwd=self.clone)
         self.assertEqual(git_trees.check_sha(sha, tree), (1, f"sha {sha}: not on origin/main {tip} (fetched)"))
+
+    def test_a_prefix_two_commits_share_is_unknown_not_a_pick(self) -> None:
+        """Two commit ids start with it: no answer, whichever of them is on origin/main. `git` is patched, because two
+        commits sharing a 7-hex prefix cannot be made cheaply."""
+        calls = []
+
+        def fake(args, cwd):
+            calls.append(args)
+            if args[0] == "rev-parse" and args[1].startswith("--disambiguate="):
+                return 0, "9f3c1e7aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n9f3c1e7bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            return 0, "abc1234" if args[:2] == ["rev-parse", "--short"] else ""
+
+        with patch.object(git_trees, "fetch_base", return_value=""), patch.object(git_trees, "git", fake):
+            self.assertEqual(git_trees.check_sha("9f3c1e7", self.clone),
+                             (2, "sha 9f3c1e7: unknown \u2014 more than one commit starts with it"))
+        self.assertFalse([c for c in calls if c[:1] == ["merge-base"]], calls)
 
 
 if __name__ == "__main__":

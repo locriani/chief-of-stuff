@@ -5,9 +5,12 @@ Sessions table the ruleset had stopped writing, a `- Verified:` line with no clo
 every unit test, because no test read the cases. This one does, and it runs under CIMP on main.
 """
 
+import contextlib
+import io
 import json
 import re
 import sys
+import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -16,6 +19,7 @@ from zoneinfo import ZoneInfo
 EVALS = Path(__file__).resolve().parent
 sys.path.insert(0, str(EVALS))
 sys.path.insert(0, str(EVALS.parent / "scripts"))
+import audit_tasks  # noqa: E402
 import run  # noqa: E402
 import render_board as rb  # noqa: E402
 
@@ -197,12 +201,27 @@ class CaseLintTest(unittest.TestCase):
         self.assertEqual((used["type"], used["tool"], used["min"]), ("tool_used", "Bash", 1))
         self.assertEqual((row["type"], row["path"], row["match"]), ("file_matches", "daily/{{today}}-tracker.md", "absent"))
         self.assertEqual((reply["type"], reply.get("match", "contains")), ("regex", "contains"))
-        # The premise: no worktree to audit, so the old sentence would close the task on its owner's word.
-        self.assertEqual(s["repo"]["worktrees"], [])
+        self.assertIn(rule, (EVALS.parent / "agents" / "chief-of-stuff.md").read_text())
+        # The premise: Upload path fix names no worktree, so the old sentence would close it on its owner's word. The other
+        # task owns one, so a git tree exists for `audit --sha` to ask (with none, it exits 2 and the coordinator cannot check).
+        self.assertEqual(s["repo"]["worktrees"], [{"name": "wt-notes", "branch": "notes/draft", "merged": False}])
         self.assertNotIn("golden", s)
-        tracker = (EVALS / "cases" / "sha-claim-checked-through-audit" / "fixture" / "daily" / "{{today}}-tracker.md").read_text()
-        self.assertIn("- Upload path fix: src/a/", tracker)
-        self.assertNotIn("worktree", tracker.split("## File ownership")[1].split("## Log")[0])
+        case = EVALS / "cases" / "sha-claim-checked-through-audit"
+        tracker = (case / "fixture" / "daily" / "{{today}}-tracker.md").read_text()
+        owned = tracker.split("## File ownership")[1].split("## Log")[0]
+        self.assertIn("- Upload path fix: src/a/\n", owned)
+        self.assertIn("- Draft release notes: worktree `wt-notes`", owned)
+        self.assertEqual([l for l in owned.splitlines() if "worktree" in l and "Upload" in l], [])
+        # Built the way the harness builds it, the check runs and answers for a commit nobody has.
+        with tempfile.TemporaryDirectory() as d:
+            work = Path(d)
+            run.render_tree(case / "fixture", work, ctx(s))
+            run.make_repo.build(work, run.render_value(s, ctx(s))["repo"])
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = audit_tasks.main(["--root", str(work), "--sha", sha])
+            self.assertEqual((code, err.getvalue()), (1, ""))
+            self.assertIn(f"sha {sha}: no such commit after fetch", out.getvalue())
 
         def called(command: str) -> bool:
             # The description is the model's prose about the call. It names the audit call here, and decides nothing.
