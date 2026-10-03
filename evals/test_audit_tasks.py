@@ -9,6 +9,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -1510,6 +1511,11 @@ def home(claude: str):
     return al.parse_coordinator(claude, today=datetime.now().date()).backlog
 
 
+def printed(ref: str) -> str:
+    """A change's ref as a row spells it: `!12` on GitLab, `PR #12` on GitHub, where a bare `#12` is an issue."""
+    return f"PR {ref}" if ref.startswith("#") else ref
+
+
 def change(ref: str, state: str = "merged", base: str = "release", sha: str = MERGE_SHA):
     """A change as `board_sources.change_states` answers it; only a merged one carries a merge sha."""
     return bs.ChangeState(ref, state, base, sha if state == "merged" else "")
@@ -1519,11 +1525,13 @@ class MergedChangeRuleTest(unittest.TestCase):
     """`merged_faults(tasks, changes, home, answered=True)`: one fault per live task (not standing, not done, its
     issue not in another repo) for the changes its row names and does not record as merged, unless one is open."""
 
-    def faults(self, claude: str, row: str, changes: dict, **kw) -> list:
-        return al.merged_faults(al.parse_tracker(change_tracker(row)).tasks, changes, home(claude), **kw)
+    def faults(self, claude: str, *rows: str, changes: dict, **kw) -> list:
+        return al.merged_faults(al.parse_tracker(change_tracker(*rows)).tasks, changes, home(claude), **kw)
 
     def test_an_unacknowledged_merged_change_on_a_live_task_is_one_fault(self):
-        """The fault lists "each merged one as `<ref> merged into <base> <sha7>`", joined by `, `."""
+        """The fault lists "each merged one as `<ref> merged into <base> <sha7>`", joined by `, `. On GitHub
+        "the fault prints the ref the way a row spells it, `PR #277 merged into main 294cb30`"; the `changes`
+        keys stay `#N` / `!N`."""
         gitlab, github = {"!12": change("!12")}, {"#12": change("#12")}
         both = {**gitlab, "!10": change("!10", sha=OTHER_SHA)}
         cases = (
@@ -1533,10 +1541,16 @@ class MergedChangeRuleTest(unittest.TestCase):
             ("GitHub change URL", ISSUE_CLAUDE, change_row(GH_URL, state="orphaned"), github, ["#12"]),
             ("every merged ref", GITLAB_CLAUDE, change_row("!10 then !12"), both, ["!10", "!12"]),
             ("one acknowledged, one not", GITLAB_CLAUDE, change_row("!10 merged, then !12"), both, ["!12"]),
+            # The issue cell is part of the row scan.
+            ("a change URL in the issue cell", GITLAB_CLAUDE, change_row("c", issue=GL_URL), gitlab, ["!12"]),
             # Acknowledged is "the ref, then only non-word characters, then the word `merged`". These are not.
             ("waiting for the merge", GITLAB_CLAUDE, change_row("waiting for !12 to be merged"), gitlab, ["!12"]),
             ("a bare mention", ISSUE_CLAUDE, change_row("Fix the regression PR #12 introduced"), github, ["#12"]),
             ("a longer word", GITLAB_CLAUDE, change_row("!12 mergedx"), gitlab, ["!12"]),
+            # "only `PR #277 merged` or the URL form acknowledges"
+            ("the bare number says merged", ISSUE_CLAUDE, change_row("#12 merged, held", item="Search pagination, PR #12"), github, ["#12"]),
+            # "The second form still names #9001 (we do not parse prose after the ref)."
+            ("another repo named after the ref", ISSUE_CLAUDE, change_row("upstream PR #12 in cli/cli"), github, ["#12"]),
             # "a ref and a following `merged` in the NEXT cell never combine"
             ("merged starts the next cell", GITLAB_CLAUDE,
              change_row("c", name="Search for !12", item="merged docs follow"), gitlab, ["!12"]),
@@ -1549,40 +1563,49 @@ class MergedChangeRuleTest(unittest.TestCase):
         )
         for what, claude, row, changes, refs in cases:
             with self.subTest(what):
-                faults = self.faults(claude, row, changes)
+                faults = self.faults(claude, row, changes=changes)
                 self.assertEqual(len(faults), 1, faults)
                 line = str(faults[0])
                 self.assertTrue(line.startswith("merged: Search"), line)
                 said = line.split(" — ", 1)[1]
                 for ref, c in changes.items():
                     if ref in refs:
-                        for part in (ref, f"into {c.base}", c.merge_sha[:7]):
-                            self.assertIn(part, said)
+                        # Seven characters of the sha, and no more, end what is said of each change.
+                        self.assertRegex(said, rf"{re.escape(printed(ref))} merged into {c.base} {c.merge_sha[:7]}(?=[,;]|$)")
                     else:
                         self.assertNotIn(ref, said)
 
     def test_a_merge_with_no_sha_leaves_no_gap_in_the_line(self):
         """A merged ref reads `<ref> merged into <base> <sha7>`, with "no gap when the sha is empty"."""
-        line = str(self.faults(GITLAB_CLAUDE, change_row("!12"), {"!12": change("!12", sha="")})[0])
+        line = str(self.faults(GITLAB_CLAUDE, change_row("!12"), changes={"!12": change("!12", sha="")})[0])
         self.assertIn("!12 merged into release", line)
         for gap in ("  ", " ;"):
             self.assertNotIn(gap, line)
 
     def test_a_named_change_the_forge_does_not_have_is_not_found(self):
         """The fault lists, "only when `answered`, each missing one as `<ref> not found`", beside the merged
-        ones; "a line with only not-found refs has no instruction clause"."""
+        ones; "a line with only not-found refs has no instruction clause". On GitHub "not-found reads
+        `PR #999 not found`"."""
         merged = {"!12": change("!12")}
-        self.assertEqual([str(f) for f in self.faults(GITLAB_CLAUDE, change_row("!12"), {})], ["merged: Search — !12 not found"])
-        self.assertEqual([str(f) for f in self.faults(ISSUE_CLAUDE, change_row("PR #999"), {})], ["merged: Search — #999 not found"])
+        self.assertEqual([str(f) for f in self.faults(GITLAB_CLAUDE, change_row("!12"), changes={})],
+                         ["merged: Search — !12 not found"])
+        self.assertEqual([str(f) for f in self.faults(ISSUE_CLAUDE, change_row("PR #999"), changes={})],
+                         ["merged: Search — PR #999 not found"])
         for answered, found in ((True, True), (False, False)):
             with self.subTest("beside a merged one", answered=answered):
-                faults = self.faults(GITLAB_CLAUDE, change_row("!12 then !99"), merged, answered=answered)
+                faults = self.faults(GITLAB_CLAUDE, change_row("!12 then !99"), changes=merged, answered=answered)
                 self.assertEqual(len(faults), 1, faults)
                 for part in ("!12 merged into release", MERGE_SHA[:7]):
                     self.assertIn(part, str(faults[0]))
                 self.assertEqual("!99 not found" in str(faults[0]), found, faults)
         # A forge that answered with an error may only have left the change out.
-        self.assertEqual(self.faults(GITLAB_CLAUDE, change_row("!12"), {}, answered=False), [])
+        self.assertEqual(self.faults(GITLAB_CLAUDE, change_row("!12"), changes={}, answered=False), [])
+
+    def test_an_open_change_clears_only_the_task_that_names_it(self):
+        """"Unless one is open" is per task: another task's merged change is still its own finding."""
+        faults = self.faults(GITLAB_CLAUDE, change_row("!12"), change_row("!13", name="Export"),
+                             changes={"!12": change("!12", "open"), "!13": change("!13")})
+        self.assertEqual([f.task for f in faults], ["Export"])
 
     def test_no_fault(self):
         gitlab, github = {"!12": change("!12")}, {"#12": change("#12")}
@@ -1599,6 +1622,8 @@ class MergedChangeRuleTest(unittest.TestCase):
             ("its issue is in another repo", ISSUE_CLAUDE, change_row("PR #12", issue="x/y#2"), github),
             ("its issue is in another project on the host", GITLAB_CLAUDE,
              change_row("!12", issue="https://gl.example/g/other/-/issues/2"), gitlab),
+            # "`owner/repo PR #N`, the repo name directly before `PR`" is that repo's pull request, not the home repo's.
+            ("another repo named before the ref", ISSUE_CLAUDE, change_row("blocked on upstream cli/cli PR #12"), github),
             # "Acknowledged = the ref, then only non-word characters, then the word `merged` ... case-insensitive"
             ("!12 merged", GITLAB_CLAUDE, change_row("!12 merged, held for the release note"), gitlab),
             ("!12, merged", GITLAB_CLAUDE, change_row("!12, merged"), gitlab),
@@ -1614,7 +1639,7 @@ class MergedChangeRuleTest(unittest.TestCase):
         )
         for what, claude, row, changes in cases:
             with self.subTest(what):
-                self.assertEqual(self.faults(claude, row, changes), [])
+                self.assertEqual(self.faults(claude, row, changes=changes), [])
 
 
 def gl_change(iid: int, state: str = "merged") -> dict:
@@ -1651,7 +1676,7 @@ class MergedChangeAuditTest(unittest.TestCase):
         """#45's acceptance: "a mocked GitLab: an in-progress task names `!12`, and `!12` has merged. `audit`
         flags it with the merge sha." The adapter is "configured from the existing Backlog host, project and
         token", and asks once."""
-        call = tbs.FakeGitLab(mrs=[gl_change(12)])
+        call = tbs.StrictGitLab(mrs=[gl_change(12)])
         report = self.audit(GITLAB_CLAUDE, change_row("!12"), call=call)
         self.assertEqual(call.posts, [("POST", "https://gl.example/api/graphql", "tok")])
         self.assertIn('"o/backlog"', call.queries[0])
@@ -1660,7 +1685,7 @@ class MergedChangeAuditTest(unittest.TestCase):
 
     def test_a_merge_request_the_forge_does_not_have_is_a_finding(self):
         """GitLab: "a missing iid is simply absent from nodes (no error)", so the row's `!12` is not found."""
-        report = self.audit(GITLAB_CLAUDE, change_row("!12"), call=tbs.FakeGitLab())
+        report = self.audit(GITLAB_CLAUDE, change_row("!12"), call=tbs.StrictGitLab())
         self.assert_merged(report, ["Search"])
 
     def test_a_merged_pull_request_and_a_closed_issue_are_both_findings(self):
@@ -1677,10 +1702,10 @@ class MergedChangeAuditTest(unittest.TestCase):
         on the task's line, beside any merged change, and never `merged: unknown`."""
         report = self.audit(ISSUE_CLAUDE, change_row("PR #999"), gh=ForgeGh(LIVE))
         self.assert_merged(report, ["Search"])
-        self.assertEqual(str(report.merged[0]), "merged: Search — #999 not found")
+        self.assertEqual(str(report.merged[0]), "merged: Search — PR #999 not found")
         report = self.audit(ISSUE_CLAUDE, change_row("PR #12, PR #999"), gh=ForgeGh(LIVE, tbs.gh_pull(12)))
         self.assert_merged(report, ["Search"])
-        for part in ("#12 merged into main", "#999 not found"):
+        for part in ("PR #12 merged into main", "PR #999 not found"):
             self.assertIn(part, str(report.merged[0]))
 
     def test_the_forge_is_asked_only_for_the_changes_live_rows_leave_unacknowledged(self):
@@ -1711,9 +1736,10 @@ class MergedChangeAuditTest(unittest.TestCase):
                 ("the only one named is recorded as merged", change_row("!12 merged, PR #12 merged; held for the release")))
         cases = [(what, claude, row) for claude in (ISSUE_CLAUDE, GITLAB_CLAUDE) for what, row in rows]
         cases.append(("only a row whose issue is in another repo names one", ISSUE_CLAUDE, change_row("PR #12", issue="x/y#2")))
+        cases.append(("the only one named is another repo's", ISSUE_CLAUDE, change_row("blocked on upstream cli/cli PR #12")))
         for what, claude, row in cases:
             with self.subTest(what, claude=claude.splitlines()[-1]):
-                gh, call = ForgeGh(LIVE, tbs.gh_pull(12)), tbs.FakeGitLab(mrs=[gl_change(12)])
+                gh, call = ForgeGh(LIVE, tbs.gh_pull(12)), tbs.StrictGitLab(mrs=[gl_change(12)])
                 report = self.audit(claude, row, gh=gh, call=call)
                 self.assertEqual((gh.pulls.calls, call.posts, report.merged), ([], [], []))
                 self.assertNotIn("merged", report.lines[-1])
@@ -1722,7 +1748,7 @@ class MergedChangeAuditTest(unittest.TestCase):
         """The forge is read only when `cfg.backlog and check_issues`: `--no-issues` is the offline audit."""
         for claude, names in ((ISSUE_CLAUDE, "PR #12"), (GITLAB_CLAUDE, "!12")):
             with self.subTest(claude=claude.splitlines()[-1]):
-                gh, call = ForgeGh(LIVE, tbs.gh_pull(12)), tbs.FakeGitLab(mrs=[gl_change(12)])
+                gh, call = ForgeGh(LIVE, tbs.gh_pull(12)), tbs.StrictGitLab(mrs=[gl_change(12)])
                 report = self.audit(claude, change_row(names), gh=gh, call=call, check_issues=False)
                 self.assertEqual((gh.calls, gh.pulls.calls, call.posts, report.merged), ([], [], [], []))
                 self.assertNotIn("merged", report.lines[-1])
@@ -1734,7 +1760,9 @@ class MergedChangeAuditTest(unittest.TestCase):
         cases = (("the forge answers an error", "PR #12", {"fail": (1, "", "gh: not logged in")}, "not logged in", []),
                  ("the forge raises", "PR #12", {"fail": RuntimeError("the wire fell out")}, "the wire fell out", []),
                  ("part of the answer and an error", "PR #12", forbidden, "Resource not accessible", ["Search"]),
-                 ("a missing number and an error", "PR #999", forbidden, "Resource not accessible", []))
+                 ("a missing number and an error", "PR #999", forbidden, "Resource not accessible", []),
+                 # NOT_FOUND on the repository itself is not `PR #12 not found`.
+                 ("the repository is not there", "PR #12", {"missing_repo": True}, "Could not resolve to a Repository", []))
         for what, names, answer, err, tasks in cases:
             with self.subTest(what):
                 report = self.audit(ISSUE_CLAUDE, change_row(names), gh=ForgeGh(LIVE, tbs.gh_pull(12), **answer))
@@ -1742,6 +1770,15 @@ class MergedChangeAuditTest(unittest.TestCase):
                 self.assertEqual(len(unknown), 1, report.lines)
                 self.assertIn(err, unknown[0])
                 self.assert_merged(report, tasks + ["unknown"])
+
+    def test_a_merge_request_missing_from_an_answer_with_an_error_is_not_not_found(self):
+        """GitLab errors beside data: the states it gave still fault, and "a missing iid in such an answer is
+        not `not found`"."""
+        call = tbs.StrictGitLab(mrs=[gl_change(12)], errors=[{"message": "Internal server error"}])
+        report = self.audit(GITLAB_CLAUDE, change_row("!12 then !99"), call=call)
+        self.assert_merged(report, ["Search", "unknown"])
+        self.assertIn("!12 merged into main", str(report.merged[0]))
+        self.assertNotIn("not found", "\n".join(report.lines))
 
     def test_exit_code_counts_merged_findings(self):
         """`main()`'s exit code adds `len(report.merged)`: the open issue is no finding, the merged change is one."""

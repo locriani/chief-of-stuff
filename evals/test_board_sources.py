@@ -313,12 +313,10 @@ class GitLabStageTwoTest(unittest.TestCase):
         self.assertNotIn("merged:", detail[0])
         self.assertIn('mergeRequests(iids: ["54"])', detail[0])
 
-    def test_the_board_asks_for_no_merge_commit(self):
-        # #45: GitLab's MergeRequest has no `squashCommitSha`, so a query naming it fails outright, and the
-        # board's query has no room under the complexity cap for the audit's `mergeCommitSha`.
+    def test_the_board_asks_for_no_squash_commit(self):
+        # #45: GitLab's MergeRequest has no `squashCommitSha`, so a query naming it fails outright.
         self.refresh()
-        for field in ("squashCommitSha", "mergeCommitSha"):
-            self.assertNotIn(field, self.query)
+        self.assertNotIn("squashCommitSha", self.query)
 
     def test_no_open_merge_request_asks_for_no_jobs_or_threads(self):
         got = self.refresh({**self.MR, "state": "merged", "mergedAt": "2026-09-26T06:00:00Z"})
@@ -364,16 +362,16 @@ class FakeGitLab:
     """GitLab's /api/graphql as far as paging goes: a connection answers at most 100 nodes, from `after:` (a
     cursor it gave in pageInfo) for `first:` nodes, and pageInfo only when the query asks for it. Aliases,
     literal arguments and $variables; every project holds the same issues and merge requests, and one the
-    token cannot see (`hidden`) answers null."""
+    token cannot see (`hidden`) answers null. `errors` ride beside the data."""
 
     PAGE = 100
     PROJECT = re.compile(r'(?:(\w+)\s*:\s*)?project\s*\(\s*fullPath\s*:\s*("[^"]*"|\$\w+)\s*\)')
     CONNECTION = re.compile(r"(?:(\w+)\s*:\s*)?\b(issues|mergeRequests)\s*\(([^)]*)\)")
     ARG = re.compile(r'(\w+)\s*:\s*(\[[^\]]*\]|"[^"]*"|\$\w+|[\w.-]+)')
 
-    def __init__(self, issues=(), mrs=(), hidden=()):
+    def __init__(self, issues=(), mrs=(), hidden=(), errors=()):
         self.nodes = {"issues": list(issues), "mergeRequests": list(mrs)}
-        self.queries, self.posts, self.hidden = [], [], set(hidden)
+        self.queries, self.posts, self.hidden, self.errors = [], [], set(hidden), list(errors)
 
     def __call__(self, method, url, token, timeout, payload=None):
         query, variables = payload["query"], payload.get("variables") or {}
@@ -388,7 +386,7 @@ class FakeGitLab:
             project = data.setdefault(m[1] or "project", {})
             for c in self.CONNECTION.finditer(query, m.end(), nxt.start() if nxt else len(query)):
                 project[c[1] or c[2]] = self.page(c[2], self.args(c[3], variables), "pageInfo" in query)
-        return {"data": data}, {}, ""
+        return {"data": data, **({"errors": self.errors} if self.errors else {})}, {}, ""
 
     def args(self, text, variables):
         return {name: (variables.get(value[1:]) if value.startswith("$")
@@ -460,17 +458,21 @@ class GitLabPastOnePageTest(unittest.TestCase):
 
 class FakePulls:
     """`gh api graphql` asked for pull requests by number, as GitHub answers it: a number that is not a pull
-    request is a null node, a NOT_FOUND error at its alias, and exit 1 with the message on stderr.
+    request is a null node, a NOT_FOUND error at its alias, and exit 1 with the message on stderr. A field
+    outside FIELDS, what GitHub answered the audit's read, is an `undefinedField` error and no data, as a
+    field GitHub does not have is.
 
     `fail`, a `(code, out, err)` or an exception, is the answer instead; `errors` are errors of any other
-    kind, beside the data."""
+    kind, beside the data; `missing_repo` answers as a repository that is not there."""
 
+    FIELDS = {"number", "state", "baseRefName", "mergeCommit", "oid"}
     REPOSITORY = re.compile(r"(?:(\w+)\s*:\s*)?repository\s*\(")
     ALIAS = re.compile(r"(\w+)\s*:\s*(?:issueOrPullRequest|pullRequest)\s*\(\s*number\s*:\s*(\d+)\s*\)")
+    SELECTION = re.compile(r"(\w+)\s*:\s*pullRequest\s*\([^)]*\)\s*\{((?:[^{}]|\{[^{}]*\})*)\}")
 
-    def __init__(self, *pulls, fail=None, errors=()):
+    def __init__(self, *pulls, fail=None, errors=(), missing_repo=False):
         self.pulls, self.fail, self.errors = {p["number"]: p for p in pulls}, fail, list(errors)
-        self.calls, self.queries = [], []
+        self.missing_repo, self.calls, self.queries = missing_repo, [], []
 
     def __call__(self, args, input_text=None):
         self.calls.append(list(args))
@@ -482,17 +484,46 @@ class FakePulls:
         self.queries.append(query)
         numbers = dict(self.ALIAS.findall(query))
         repository = self.REPOSITORY.search(query)[1] or "repository"
+        undefined = [{"path": ["query", repository, alias, field], "message": f"Field '{field}' doesn't exist on type 'PullRequest'",
+                      "extensions": {"code": "undefinedField", "typeName": "PullRequest", "fieldName": field}}
+                     for alias, selection in self.SELECTION.findall(query)
+                     for field in sorted(set(re.findall(r"\w+", selection)) - self.FIELDS)]
+        if undefined:
+            return self.answer({"errors": undefined})
+        if self.missing_repo:
+            return self.answer({"data": {repository: None}, "errors": [
+                {"type": "NOT_FOUND", "path": [repository], "message": "Could not resolve to a Repository with the name 'o/gone'."}]})
         errors = self.errors + [{"type": "NOT_FOUND", "path": [repository, alias],
                                  "message": f"Could not resolve to a PullRequest with the number of {n}."}
                                 for alias, n in numbers.items() if int(n) not in self.pulls]
         body = {"data": {repository: {alias: self.pulls.get(int(n)) for alias, n in numbers.items()}}}
-        if errors:
-            body["errors"] = errors
+        return self.answer({**body, "errors": errors} if errors else body)
+
+    @staticmethod
+    def answer(body: dict) -> tuple[int, str, str]:
+        errors = body.get("errors") or []
         return (1 if errors else 0), json.dumps(body), "".join(f"gh: {e['message']}\n" for e in errors)
 
     @property
     def asked(self) -> set[int]:
         return {int(n) for query in self.queries for _, n in self.ALIAS.findall(query)}
+
+
+class StrictGitLab(FakeGitLab):
+    """FakeGitLab for the audit's read: a MergeRequest field outside FIELDS, what gitlab.com answered that read,
+    is an error and no data, as a field GitLab does not have is."""
+
+    FIELDS = {"iid", "state", "targetBranch", "mergeCommitSha"}
+    SELECTION = re.compile(r"mergeRequests\s*\([^)]*\)\s*\{\s*nodes\s*\{((?:[^{}]|\{[^{}]*\})*)\}")
+
+    def __call__(self, method, url, token, timeout, payload=None):
+        undefined = sorted({field for selection in self.SELECTION.findall(payload["query"])
+                            for field in re.findall(r"\w+", selection)} - self.FIELDS)
+        if undefined:
+            self.queries.append(payload["query"])
+            self.posts.append((method, url, token))
+            return {"errors": [{"message": f"Field '{field}' doesn't exist on type 'MergeRequest'"} for field in undefined]}, {}, ""
+        return super().__call__(method, url, token, timeout, payload)
 
 
 def gh_pull(number, state="MERGED", base="main"):
@@ -533,7 +564,9 @@ class ChangeStatesTest(unittest.TestCase):
         cases = (("gh fails", {"fail": (1, "", "gh: not logged in")}, "not logged in"),
                  ("no data", {"fail": (0, json.dumps({"message": "Bad credentials"}), "")}, ""),
                  ("another error beside the data", {"errors": [{"type": "FORBIDDEN", "message": "Resource not accessible"}]},
-                  "Resource not accessible"))
+                  "Resource not accessible"),
+                 # NOT_FOUND on the repository itself is no clean, empty answer.
+                 ("the repository is not there", {"missing_repo": True}, "Could not resolve to a Repository"))
         for what, answer, said in cases:
             with self.subTest(what):
                 _, error = bs.change_states(home("GitHub issues; repo o/app"), {12, 999}, FakePulls(gh_pull(12), **answer), None)
@@ -541,10 +574,11 @@ class ChangeStatesTest(unittest.TestCase):
                 self.assertIn(said, error)
 
     def test_gitlab_answers_each_merge_request_named_in_one_post(self):
-        # "GitLab `opened`→open, `locked`→closed". The merge sha is "`mergeCommitSha or diffHeadSha` when merged".
+        # "GitLab `opened`→open, `locked`→closed". "GitLab merge sha is `mergeCommitSha` only": a fast-forward
+        # merge answers null, and `diffHeadSha` "is a commit that never reached the base branch".
         # "A missing iid is simply absent from nodes (no error) and so absent from the dict."
         merged_at = f"{DAY}T06:00:00+00:00"
-        call = FakeGitLab(mrs=[{**gl_mr(12, merged_at), "mergeCommitSha": MERGE, "targetBranch": "release"},
+        call = StrictGitLab(mrs=[{**gl_mr(12, merged_at), "mergeCommitSha": MERGE, "targetBranch": "release"},
                                {**gl_mr(13), "mergeCommitSha": None},
                                {**gl_mr(14), "state": "locked", "mergeCommitSha": None},
                                {**gl_mr(15, merged_at), "mergeCommitSha": None},
@@ -553,20 +587,37 @@ class ChangeStatesTest(unittest.TestCase):
         self.assertEqual((got, error), ({"!12": bs.ChangeState("!12", "merged", "release", MERGE),
                                          "!13": bs.ChangeState("!13", "open", "main", ""),
                                          "!14": bs.ChangeState("!14", "closed", "main", ""),
-                                         "!15": bs.ChangeState("!15", "merged", "main", HEAD),
+                                         "!15": bs.ChangeState("!15", "merged", "main", ""),
                                          "!16": bs.ChangeState("!16", "closed", "main", "")}, ""))
         self.assertEqual(call.posts, [("POST", "https://labs.example.test/api/graphql", "tok")])
-        for asked in ('"team/app"', "mergeRequests(iids:", "targetBranch", "mergeCommitSha", "diffHeadSha"):
+        for asked in ('"team/app"', "mergeRequests(iids:", "targetBranch", "mergeCommitSha"):
             self.assertIn(asked, call.queries[0])
         # GitLab's MergeRequest has no `squashCommitSha`, and the query stays under its complexity cap.
-        for unasked in ("squashCommitSha", "issues", "mergedAfter", "jobs", "discussions", "diffStats"):
+        for unasked in ("squashCommitSha", "diffHeadSha", "issues", "mergedAfter", "jobs", "discussions", "diffStats"):
             self.assertNotIn(unasked, call.queries[0])
 
     def test_gitlab_a_project_the_token_cannot_see_is_an_error(self):
         # "A null project (token cannot see it) is an error, not an empty answer."
-        got, error = self.gitlab({12}, FakeGitLab(mrs=[gl_mr(12)], hidden={"team/app"}))
+        got, error = self.gitlab({12}, StrictGitLab(mrs=[gl_mr(12)], hidden={"team/app"}))
         self.assertTrue(error)
         self.assertFalse(got)
+
+    def test_gitlab_errors_beside_the_data_come_back_with_the_states(self):
+        # "GitLab errors beside data: `change_states` returns the states AND the error."
+        call = StrictGitLab(mrs=[gl_mr(12)], errors=[{"message": "Internal server error"}])
+        got, error = self.gitlab({12, 99}, call)
+        self.assertEqual((sorted(got), error), (["!12"], "Internal server error"))
+
+    def test_a_field_the_forge_does_not_have_is_an_error_from_either_fake(self):
+        # The fakes answer a field outside what the real forges answered as those forges do: an error, no data.
+        code, out, err = FakePulls(gh_pull(12))(["api", "graphql", "-f", "query=query { repository(owner: \"o\", name: \"app\") "
+                                                 "{ n12: pullRequest(number: 12) { number state mergeSha } } }"])
+        self.assertEqual((code, "data" in json.loads(out)), (1, False))
+        self.assertIn("mergeSha", err)
+        body, _, _ = StrictGitLab(mrs=[gl_mr(12)])("POST", "", "tok", 1, {
+            "query": 'query { project(fullPath: "team/app") { mergeRequests(iids: ["12"]) { nodes { iid squashCommitSha } } } }'})
+        self.assertNotIn("data", body)
+        self.assertIn("squashCommitSha", body["errors"][0]["message"])
 
     def test_gitlab_a_post_that_fails_is_an_error(self):
         _, error = self.gitlab({12}, lambda *a, **k: (None, {}, "timed out"))
