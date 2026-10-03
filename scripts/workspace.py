@@ -72,10 +72,8 @@ def _first_path(value: str) -> str | None:
     return m.group(1).strip() if m else (words[0] if words else None)
 
 
-def parse_coordinator(text: str, today: date) -> Config:
-    body = _section(text, "## Coordinator")
-    if not body:
-        raise ConfigError("no `## Coordinator` block in CLAUDE.md")
+def _bullets(body: list[str]) -> tuple[dict[str, str], dict[str, list[tuple[str, str]]]]:
+    """The block's top-level `- key: value` bullets, a repeated key's last line winning, and the bullets nested under each."""
     top: dict[str, str] = {}
     nested: dict[str, list[tuple[str, str]]] = {}
     current = ""
@@ -89,6 +87,19 @@ def parse_coordinator(text: str, today: date) -> Config:
             top[key] = value
         else:
             nested.setdefault(current, []).append((key, value))
+    return top, nested
+
+
+def settings_path(text: str) -> str | None:
+    """The path the block's `Settings:` line names, or None. Asks the block for no other line, so `health` can run on a block `parse_coordinator` refuses."""
+    return _first_path(_bullets(_section(text, "## Coordinator"))[0].get("Settings", ""))
+
+
+def parse_coordinator(text: str, today: date) -> Config:
+    body = _section(text, "## Coordinator")
+    if not body:
+        raise ConfigError("no `## Coordinator` block in CLAUDE.md")
+    top, nested = _bullets(body)
     for needed in ("User", "Daily log dir", "Tracker", "Timezone"):
         if needed not in top:
             raise ConfigError(f"`## Coordinator` block has no `{needed}:` line")
@@ -133,7 +144,7 @@ def parse_coordinator(text: str, today: date) -> Config:
         board_url=board_url,
         pages_dir=pages_dir,
         backlog=backlog,
-        settings_path=_first_path(top.get("Settings", "")),
+        settings_path=settings_path(text),
         identity_policy=identity_policy,
     )
 

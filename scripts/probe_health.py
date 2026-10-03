@@ -10,7 +10,8 @@ One invocation covers every target, so a restart costs one call rather than one 
 Exit code is the number of failed checks: the targets that did not answer as expected, plus one when
 the settings file cannot be loaded. A caller can branch on it without parsing. Every target gets a
 line even when it fails: a missing line would read as a healthy service. No `Settings:` line is no
-settings line, and a settings file that is not there is the defaults, not a fault.
+settings line, and a settings file that is not there is `absent, defaults`: not a fault, and not ok.
+A usage fault (no config at the path, a `Health:` line that is not a target) is stderr and exit 2.
 """
 
 from __future__ import annotations
@@ -25,11 +26,11 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from md import section
 from settings import SettingsError, load as load_settings
-from workspace import _first_path
+from workspace import settings_path
 
 HEALTH = re.compile(r"^\s*(?:[-*]\s*)?Health:\s*(.+?)\s*$", re.MULTILINE)
-SETTINGS = re.compile(HEALTH.pattern.replace("Health", "Settings"), re.MULTILINE)
 SCHEMES = ("http", "https")
 TIMEOUT = 3.0
 
@@ -56,21 +57,6 @@ class Result:
         return self.status == self.target.expect
 
 
-def _section(text: str, heading: str) -> list[str]:
-    """The lines under `heading`, up to the next `## `. Empty when the heading is absent."""
-    out: list[str] = []
-    seen = False
-    for line in text.splitlines():
-        if line.strip() == heading:
-            seen = True
-            continue
-        if seen and line.startswith("## "):
-            break
-        if seen:
-            out.append(line)
-    return out
-
-
 def parse_target(spec: str) -> Target:
     """`<name> <url> [expected status]`. The url must be http or https: nothing else is a probe."""
     parts = spec.split()
@@ -88,25 +74,23 @@ def parse_target(spec: str) -> Target:
     return Target(name, url, expect)
 
 
-def _block(path: Path) -> str:
-    return "\n".join(_section(path.read_text(), "## Coordinator"))
+def _targets(text: str) -> list[Target]:
+    return [parse_target(m.group(1)) for m in HEALTH.finditer("\n".join(section(text, "## Coordinator")))]
 
 
 def targets_from_config(path: Path) -> list[Target]:
     """Every `Health:` line inside the `## Coordinator` block. No block, no targets, no error."""
-    return [parse_target(m.group(1)) for m in HEALTH.finditer(_block(path))]
+    return _targets(path.read_text())
 
 
-def check_settings(config: Path) -> tuple[str, int] | None:
-    """The line and fault count for the block's `Settings:` file, loaded from the config's directory. None without the line."""
-    m = SETTINGS.search(_block(config))
-    name = _first_path(m.group(1)) if m else None
-    if not name:
-        return None
+def check_settings(root: Path, name: str) -> tuple[str, int]:
+    """The line and fault count for the settings file `name`, loaded from `root`."""
+    if not (root / name).is_file():
+        return f"settings {name} absent, defaults", 0
     try:
-        load_settings(config.parent, name)
+        load_settings(root, name)
     except (SettingsError, UnicodeDecodeError, OSError) as exc:  # schema or TOML, not UTF-8, unreadable
-        return f"settings {name} invalid: {exc}", 1
+        return f"settings {name} invalid: {' '.join(str(exc).split()).removeprefix(f'{name}: ')}", 1
     return f"settings {name} ok", 0
 
 
@@ -155,11 +139,13 @@ def main(argv: list[str] | None = None) -> int:
     if not config.is_file():
         print(f"no config at {config}", file=sys.stderr)
         return 2
-    text, bad = check_settings(config) or ("", 0)
-    if text:
-        print(text)
+    text = config.read_text()
+    bad = 0
+    if name := settings_path(text):
+        said, bad = check_settings(config.parent, name)
+        print(said)
     try:
-        targets = targets_from_config(config)
+        targets = _targets(text)
     except TargetError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -167,8 +153,7 @@ def main(argv: list[str] | None = None) -> int:
         print("no Health: targets in the ## Coordinator block")
         return bad
     lines, failed = report(targets, args.timeout)
-    for text in lines:
-        print(text)
+    print("\n".join(lines))
     return bad + failed
 
 
