@@ -27,6 +27,7 @@ from settings import Kanban, SettingsError, load as load_settings  # noqa: E402
 import board_sources  # noqa: E402
 import kanban as kanban_tool  # noqa: E402
 import ownership  # noqa: E402
+import git_trees  # noqa: E402
 from git_trees import discover, git, read_state  # noqa: E402
 from orphans import Claim, Orphan, Unclaimed, judge  # noqa: E402
 from tree_claims import Claims, one_shot_claims, registry_claims  # noqa: E402
@@ -857,6 +858,7 @@ def main(argv: list[str] | None = None, gh=None) -> int:
     ap.add_argument("--date", help="YYYY-MM-DD; default: today in the workspace timezone")
     ap.add_argument("--root", default=".", help="workspace root holding CLAUDE.md")
     ap.add_argument("--no-issues", action="store_true", help="skip the issue check (offline); the summary says issues=off")
+    ap.add_argument("--sha", help="only fetch origin main and say whether this commit is on origin/main; exit 0 on, 1 not on, 2 unknown or usage")
     args = ap.parse_args(argv)
     root = Path(args.root)
     if not (root / "CLAUDE.md").is_file():
@@ -867,6 +869,14 @@ def main(argv: list[str] | None = None, gh=None) -> int:
     except ConfigError as e:
         print(f"audit_tasks: {e}", file=sys.stderr)
         return 2
+    if args.sha is not None:
+        tree = _handle(root, worktrees_dir((root / "CLAUDE.md").read_text()), [])
+        if not SHA.fullmatch(args.sha) or tree is None:
+            print(f"audit_tasks: --sha needs 7-40 hex digits and a git tree under {root}", file=sys.stderr)
+            return 2
+        code, line = git_trees.check_sha(args.sha, tree)
+        print(line)
+        return code
     day = args.date or datetime.now(cfg.zone).date().isoformat()
     tracker = root / cfg.tracker_path(day)
     if not tracker.is_file():
