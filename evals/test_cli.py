@@ -125,5 +125,22 @@ class ModelsCommandTest(unittest.TestCase):
         self.assertFalse((self.root / "chief-of-stuff-models.md").exists())
 
 
+class TrackerCommandTest(unittest.TestCase):
+    """#46: `chief-of-stuff tracker` routes to the read-only tracker presenter."""
+
+    def test_tracker_routes_to_the_tracker_read(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "CLAUDE.md").write_text(
+                "# Workspace\n\n## Coordinator\n\n- User: Robin\n- Daily log dir: `daily/`\n"
+                "- Tracker: `daily/<date>-tracker.md`\n- Timezone: America/Chicago\n")
+            (root / "daily").mkdir()
+            (root / "daily" / "2026-09-25-tracker.md").write_text("# Tracker\n\n## Resume\n\n- Next: read the reply\n\n## Log\n")
+            done = subprocess.run([sys.executable, str(ROOT / "chief_of_stuff.py"), "tracker", "--root", str(root),
+                                   "--date", "2026-09-25", "section", "Resume"], capture_output=True, text=True)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn("- Next: read the reply", done.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,41 @@
+{
+  "tz": "America/Chicago",
+  "peers": "sessions.json",
+  "description": "A new session on a day whose tracker holds sixty tasks with paragraph-long items. Resume reads it through `chief-of-stuff tracker`, never with grep, sed, awk, tail, head or cut on the tracker file, and still reports what the `## Resume` block says (#46).",
+  "prompt": "resume",
+  "graders": [
+    {
+      "name": "tracker read through the tracker command",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "(?:chief[-_]of[-_]stuff(?:\\.py)?\\s+tracker\\b|tracker_read\\.py)",
+      "min": 1
+    },
+    {
+      "name": "no shell text tool on the tracker file",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "\\b(?:grep|sed|awk|tail|head|cut)\\b[^|;&]*tracker\\.md|tracker\\.md[^;&]*\\|\\s*(?:grep|sed|awk|tail|head|cut)\\b",
+      "max": 0
+    },
+    {
+      "name": "no Grep on the tracker file",
+      "type": "tool_used",
+      "tool": "Grep",
+      "input_match": "tracker\\.md",
+      "max": 0
+    },
+    {
+      "name": "reply names what was in flight",
+      "type": "regex",
+      "pattern": "(?i)(audit poll|poll[^\\n]{0,30}(out|outstanding|pending)|4821-audit)"
+    },
+    {
+      "name": "reply names what Robin owes",
+      "type": "regex",
+      "pattern": "(?i)release notes"
+    }
+  ],
+  "max_turns": 25,
+  "timeout_seconds": 600
+}

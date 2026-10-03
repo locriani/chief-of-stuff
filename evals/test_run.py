@@ -488,7 +488,9 @@ class NoShellEditsTest(unittest.TestCase):
     def test_pinned_helpers_are_allowed(self) -> None:
         for command in ("python3 /installed/scripts/inbox.py list --recipient coordinator",
                         "python3 /installed/chief_of_stuff.py board --root .",
-                        "python3 /installed/scripts/render_board.py --root .", "mkdir -p Resources && mv receipt.txt Resources/"):
+                        "python3 /installed/scripts/render_board.py --root .", "mkdir -p Resources && mv receipt.txt Resources/",
+                        "python3 /installed/chief_of_stuff.py tracker --root . tasks --not done",
+                        "python3 /installed/scripts/tracker_read.py --root . section Resume"):
             with self.subTest(command=command):
                 self.assertTrue(self.check(command))
 
@@ -955,6 +957,12 @@ class AllowedToolsTest(unittest.TestCase):
             self.assertIn(script, allowed)
         self.assertNotIn("Bash(git", allowed)
         self.assertNotIn("Bash(curl", allowed)
+
+    def test_the_tracker_read_is_runnable_by_every_spelling(self) -> None:
+        """#46: a read the harness denies is a read the coordinator does with grep."""
+        self.assertIn("Bash(chief-of-stuff tracker:*)", run.ALLOWED)
+        self.assertIn(f"Bash(python3 {run.PLUGIN_ROOT / 'chief_of_stuff.py'} tracker:*)", run.ALLOWED)
+        self.assertIn(f"Bash(python3 {run.PLUGIN_ROOT / 'scripts' / 'tracker_read.py'}:*)", run.ALLOWED)
 
 
 class HealthServerTest(unittest.TestCase):
