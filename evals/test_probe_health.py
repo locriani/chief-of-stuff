@@ -5,6 +5,8 @@ interesting code is the timeout, the status comparison and the unreachable host,
 skip all three.
 """
 
+import contextlib
+import io
 import json
 import socket
 import sys
@@ -173,6 +175,124 @@ class OutputTest(unittest.TestCase):
             p.write_text("## Coordinator\n\n- Board: none\n")
             code = ph.main(["--config", str(p)])
         self.assertEqual(code, 0)
+
+
+TOML = "chief-of-stuff.toml"
+BAD_MODE = '[workers]\nmode = "sometimes"\n'
+GOOD = '[workers]\nmode = "one-shot"\n'
+
+
+class SettingsCheckTest(unittest.TestCase):
+    """#47: `health` loads the file the `Settings:` line names through the settings loader.
+
+    The blocks stay as small as the ones above: health reads `Settings:` and `Health:` and asks the
+    block for nothing else.
+    """
+
+    def run_health(self, block: str, toml: str | bytes | None = None) -> tuple[int, list[str], str]:
+        """Exit code, stdout lines and stderr of one `health` run over a workspace holding `block`."""
+        with tempfile.TemporaryDirectory() as d:
+            config = Path(d) / "CLAUDE.md"
+            config.write_text("## Coordinator\n\n" + block)
+            if toml is not None:
+                (Path(d) / TOML).write_bytes(toml.encode() if isinstance(toml, str) else toml)
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = ph.main(["--config", str(config), "--timeout", "1"])
+        return code, out.getvalue().splitlines(), err.getvalue()
+
+    def targets(self) -> str:
+        """Two `Health:` lines, one target up and one answering 500."""
+        server, base = serve({"/ready": (200, 0.0), "/login": (500, 0.0)})
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return f"- Health: agent {base}/ready 200\n- Health: login {base}/login 200\n"
+
+    def settings_line(self, lines: list[str]) -> str:
+        found = [x for x in lines if x.startswith("settings")]
+        self.assertEqual(len(found), 1, f"one settings line on stdout, got {lines!r}")
+        self.assertIn(TOML, found[0])
+        return found[0]
+
+    def test_invalid_workers_mode_is_named_on_the_settings_line_and_exits_1(self):
+        for spelling in (f"`{TOML}`", TOML, f"`{TOML}` (lanes and workers)"):
+            with self.subTest(spelling=spelling):
+                code, lines, _ = self.run_health(f"- Settings: {spelling}\n", BAD_MODE)
+                self.assertIn("[workers] mode", self.settings_line(lines))
+                self.assertEqual(code, 1)
+
+    def test_valid_settings_print_a_settings_ok_line_and_exit_0(self):
+        code, lines, _ = self.run_health(f"- Settings: `{TOML}`\n", GOOD)
+        self.assertRegex(self.settings_line(lines), r"\bok\b")
+        self.assertEqual(code, 0)
+
+    def test_a_settings_fault_counts_as_one_more_failed_check(self):
+        code, _, _ = self.run_health(f"- Settings: `{TOML}`\n" + self.targets(), BAD_MODE)
+        self.assertEqual(code, 2, "one failing target plus the settings fault")
+
+    def test_a_settings_fault_does_not_hide_or_change_the_target_lines(self):
+        targets = self.targets()
+        _, alone, _ = self.run_health(targets)
+        _, lines, _ = self.run_health(f"- Settings: `{TOML}`\n" + targets, BAD_MODE)
+        self.settings_line(lines)
+        self.assertEqual([x for x in lines if not x.startswith("settings")], alone)
+
+    def test_valid_settings_leave_target_lines_and_exit_code_unchanged(self):
+        targets = self.targets()
+        alone_code, alone, _ = self.run_health(targets)
+        code, lines, _ = self.run_health(f"- Settings: `{TOML}`\n" + targets, GOOD)
+        self.settings_line(lines)
+        self.assertEqual([x for x in lines if not x.startswith("settings")], alone)
+        self.assertEqual(code, alone_code)
+
+    def test_the_settings_line_comes_before_the_target_lines(self):
+        for toml in (GOOD, BAD_MODE):
+            with self.subTest(toml=toml):
+                # The Settings: line is last in the block: the order is the output's, not the file's.
+                _, lines, _ = self.run_health(self.targets() + f"- Settings: `{TOML}`\n", toml)
+                self.assertEqual(lines.index(self.settings_line(lines)), 0)
+
+    def test_no_settings_line_prints_no_settings_line(self):
+        # The file is there and broken: without a `Settings:` line nothing names it, so nothing reads it.
+        code, lines, _ = self.run_health(self.targets(), BAD_MODE)
+        self.assertEqual([x for x in lines if x.startswith("settings")], [])
+        self.assertEqual(code, 1)
+
+    def test_a_missing_settings_file_is_not_a_fault(self):
+        # settings.load: a `Settings:` line whose file is absent is the defaults.
+        code, _, err = self.run_health(f"- Settings: `{TOML}`\n")
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "")
+
+    def test_invalid_toml_is_a_settings_fault_line_not_a_traceback(self):
+        code, lines, _ = self.run_health(f"- Settings: `{TOML}`\n", "[workers\nmode = \n")
+        self.settings_line(lines)
+        self.assertEqual(code, 1)
+
+    def test_an_undecodable_settings_file_is_a_settings_fault_line_not_a_traceback(self):
+        code, lines, _ = self.run_health(f"- Settings: `{TOML}`\n", b"[workers]\nmode = \"\xff\xfe\"\n")
+        self.settings_line(lines)
+        self.assertEqual(code, 1)
+
+    def test_a_malformed_health_target_still_exits_2_on_stderr(self):
+        code, _, err = self.run_health("- Health: secrets file:///etc/passwd 200\n")
+        self.assertEqual(code, 2)
+        self.assertTrue(err.strip())
+
+    def test_a_missing_config_still_exits_2_on_stderr(self):
+        with tempfile.TemporaryDirectory() as d:
+            err = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                code = ph.main(["--config", str(Path(d) / "CLAUDE.md")])
+        self.assertEqual(code, 2)
+        self.assertTrue(err.getvalue().strip())
+
+    def test_a_malformed_health_target_does_not_hide_the_settings_fault(self):
+        block = f"- Settings: `{TOML}`\n- Health: secrets file:///etc/passwd 200\n"
+        code, lines, err = self.run_health(block, BAD_MODE)
+        self.assertIn("[workers] mode", self.settings_line(lines))
+        self.assertEqual(code, 2)
+        self.assertTrue(err.strip())
 
 
 if __name__ == "__main__":
