@@ -1488,7 +1488,8 @@ class BudgetAuditTest(unittest.TestCase):
 
 
 # #45: "When a task's item names a merge request or pull request that has merged, the task still reads as
-# stalled." The rule: "merged but the task isn't done means `merged; mark done or say why not`". The forge is
+# stalled." The rule: a merged change on a task that isn't done is a `merged:` finding that says how to clear
+# it: write the task done once the change is on main and green there, or write "merged" after the ref. The forge is
 # injected (`gh` for GitHub, `call` for GitLab), so nothing here touches the network.
 MERGE_SHA, OTHER_SHA = "c0ffee1" + "d" * 33, "b01dfac" + "e" * 33
 FORBIDDEN_13 = {"type": "FORBIDDEN", "path": ["repository", "n13"], "message": "Resource not accessible"}
@@ -1582,6 +1583,12 @@ class MergedChangeRuleTest(unittest.TestCase):
                         self.assertRegex(said, rf"{re.escape(printed(ref))} merged into {c.base} {c.merge_sha[:7]}(?=[,;]|$)")
                     else:
                         self.assertNotIn(ref, said)
+                # "a merged line tells the reader both ways to clear it": the task is done only once the change
+                # is on main and green there, or the row records the merge by writing "merged" after the ref.
+                _, cut, how = said.partition("; ")
+                self.assertTrue(cut, line)
+                for word in (r"\bdone\b", r"\bmain\b", '"merged"', r"\bafter\b"):
+                    self.assertRegex(how, word)
 
     def test_the_refs_in_a_line_are_in_ascending_number_order(self):
         """"Refs in a line are in ascending number order", however the row orders them."""
