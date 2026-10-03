@@ -32,7 +32,7 @@ Coordinator: gauntlet-85. Board: board-known.
 
 ## File ownership
 
-- Upload path fix: worktree `wt-fix` · src/a/
+- Upload path fix: src/a/
 
 ## Log
 

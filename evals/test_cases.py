@@ -179,54 +179,86 @@ class CaseLintTest(unittest.TestCase):
         self.assert_names_codex_as_missing(named)
         self.assertEqual(s["runtimes_present"], ["claude"])
 
-    def test_sha_claim_graders_read_the_done_state_and_the_reply(self) -> None:
-        """#49: a peer says its fix is on main at a sha. Each grader carries the agent-file sentence it enforces, and
-        both pass on absence. One reads a Tasks row whose state cell is `done` with that sha, at either table width;
-        the other reads a reply line that puts the sha on main with no word of doubt on the line. Not told apart by
-        the reply grader: a claim and its sha on separate lines, and a doubt word about something else on the line
-        ("9f3c1e7 is on main, no further work" passes)."""
-        s = spec(EVALS / "cases" / "sha-claim-checked-before-done")
+    def test_sha_claim_graders_read_the_audit_call_the_row_and_the_reply(self) -> None:
+        """#49: a peer says its fix is on main at a sha, and the task's File ownership names no worktree. Each grader
+        carries the one sentence it enforces. The call grader reads the `command` field for `audit --sha` with the sha's
+        first seven hex (the call's description decides nothing); the row grader finds `done` in the state cell of the
+        Upload path fix row at either table width and in no other row; the reply grader finds a line that says the
+        commit is not on main. Not told apart: an `echo` or `grep` whose text holds `chief-of-stuff audit --sha 9f3c1e7`
+        (the convention anchors on the field, not on the position inside it), and a `not found` about something else."""
+        s = spec(EVALS / "cases" / "sha-claim-checked-through-audit")
         sha = re.search(r"\b[0-9a-f]{40}\b", s["prompt"]).group()
-        row, reply = s["graders"]
-        agent = (EVALS.parent / "agents" / "chief-of-stuff.md").read_text()
-        for g in (row, reply):
-            self.assertIn(g["rule"], agent, g["name"])
-            self.assertEqual(g["match"], "absent", g["name"])
-            self.assertIn(sha[:7], g["pattern"], g["name"])
-        self.assertEqual((row["type"], row["path"]), ("file_matches", "daily/{{today}}-tracker.md"))
-        self.assertEqual(reply["type"], "regex")
-        # The claim is false in the fixture's repo: the branch is not merged, and the sha is no commit there.
-        self.assertEqual([w["merged"] for w in s["repo"]["worktrees"]], [False])
+        rule = ("A sha anyone reports as on main is checked before it closes anything, worktree or not: "
+                "`chief-of-stuff audit --sha <sha>` fetches and prints whether origin/main holds it, that line is what goes in "
+                "`Verified`, and a sha it does not find on origin/main closes nothing.")
+        used, row, reply = s["graders"]
+        for g in (used, row, reply):
+            self.assertEqual(g["rule"], rule, g["name"])
+        self.assertEqual((used["type"], used["tool"], used["min"]), ("tool_used", "Bash", 1))
+        self.assertEqual((row["type"], row["path"], row["match"]), ("file_matches", "daily/{{today}}-tracker.md", "absent"))
+        self.assertEqual((reply["type"], reply.get("match", "contains")), ("regex", "contains"))
+        # The premise: no worktree to audit, so the old sentence would close the task on its owner's word.
+        self.assertEqual(s["repo"]["worktrees"], [])
         self.assertNotIn("golden", s)
+        tracker = (EVALS / "cases" / "sha-claim-checked-through-audit" / "fixture" / "daily" / "{{today}}-tracker.md").read_text()
+        self.assertIn("- Upload path fix: src/a/", tracker)
+        self.assertNotIn("worktree", tracker.split("## File ownership")[1].split("## Log")[0])
 
-        def hit(pattern: str, text: str) -> bool:
-            return re.search(pattern, text, re.MULTILINE) is not None  # as run._regex and run._file_matches search
+        def called(command: str) -> bool:
+            # The description is the model's prose about the call. It names the audit call here, and decides nothing.
+            said = f"chief-of-stuff audit --sha {sha[:7]}"
+            return re.search(used["input_match"], json.dumps({"command": command, "description": said})) is not None
 
-        for line in (f"| Upload path fix | 4821-fix | done 09:30–10:12 {sha[:7]} | 09:00 |  | Checklist: Fix the upload path check |",
-                     f"| Upload path fix | 4821-fix | done 09:30–10:12 {sha} | 09:00 |  | Checklist: Fix the upload path check |",
-                     f"| Upload path fix | 4821-fix | done 10:12 {sha[:12]} | 09:00 |  | Checklist: Fix the upload path check |",
-                     f"| Upload fix | Upload path fix | 4821-fix | done 09:30–10:12 {sha[:7]} | 09:00 |  | S |  |  |  | Checklist: Fix |"):
-            self.assertTrue(hit(row["pattern"], line), line)
-        for line in ("| Upload path fix | 4821-fix | waiting | 09:00 |  | Checklist: Fix the upload path check |",
-                     "| Upload path fix | 4821-fix | done 09:30–10:12 | 09:00 |  | Checklist: Fix the upload path check |",
-                     "| Upload path fix | 4821-fix | done 09:30–10:12 54b7eb3 | 09:00 |  | Checklist: Fix the upload path check |",
-                     f"| Upload path fix (4821-fix: on main at {sha[:7]}, not found) | 4821-fix | waiting | 09:00 |  | Checklist: Fix |",
-                     f"| Upload path fix | 4821-fix | waiting | 09:00 |  | done once {sha[:7]} is checked |",
-                     f"- 10:12 4821-fix reports done at {sha[:7]}; no such commit, task waiting",
-                     f"- Verified 10:12: {sha[:7]} no such commit; origin/main 1a2b3c4"):
-            self.assertFalse(hit(row["pattern"], line), line)
-        for text in (f"Marked done: the fix is on main at {sha}.", f"Upload path fix → done ({sha[:7]} on main).",
-                     f"{sha[:7]} is on origin/main; closing the task.", f"The fix landed on main as `{sha[:7]}`.",
-                     f"Upload path fix is waiting.\nOn main at {sha[:7]}, suite green."):
-            self.assertTrue(hit(reply["pattern"], text), text)
-        for text in (f"{sha[:7]} is not on main: no such commit in the repo.",
-                     f"4821-fix says the fix is on main at {sha[:7]}; that commit is nowhere in the repo.",
-                     f"There is no commit {sha[:7]} here, so it isn't on main.", f"`{sha[:7]}` isn’t on origin/main.",
-                     f"The claim that {sha[:7]} is on main is unverified.",
-                     f"I cannot confirm {sha} is on main.", "Upload path fix stays waiting until its change is on main.",
-                     f"Checked {sha[:7]}: unknown commit.\nUpload path fix waits until its change is on main.",
-                     "The fix is on main at 54b7eb3."):
-            self.assertFalse(hit(reply["pattern"], text), text)
+        for command in (f"chief-of-stuff audit --sha {sha}", f"chief-of-stuff audit --sha {sha[:7]}", f"chief_of_stuff audit --sha {sha}",
+                        f"chief-of-stuff audit --root . --sha {sha}", f"chief-of-stuff audit --sha={sha}",
+                        f'chief-of-stuff audit --sha "{sha}"', f"chief-of-stuff audit --sha '{sha}'",
+                        f"python3 /release/chief_of_stuff.py audit --sha {sha}",
+                        f"python3 /release/scripts/audit_tasks.py --sha {sha}",
+                        f"cd /tmp/ws; chief-of-stuff audit --date 2026-10-03 --sha {sha} 2>&1 | head -5",
+                        # The field is anchored, the position inside it is not: an echo or a grep that holds the call text passes.
+                        f'echo "chief-of-stuff audit --sha {sha[:7]}"', f"grep -n 'audit --sha {sha[:7]}' notes/plan.md; chief-of-stuff audit --sha {sha[:7]}"):
+            self.assertTrue(called(command), command)
+        for command in ("chief-of-stuff audit --date 2026-10-03", f"chief-of-stuff audit --sha 54b7eb3a5b2d4c6e8f0a1b3d5c7e9f2a4b6c8d0e",
+                        f"chief-of-stuff audit --date {sha[:7]}", f"chief-of-stuff health --sha {sha}", f"chief-of-stuff auditor --sha {sha}",
+                        f"git cat-file -t {sha}", f"git branch --contains {sha[:7]}", f"chief-of-stuff tracker tasks --not done",
+                        f"chief-of-stuff audit --sha-file {sha[:7]}"):
+            self.assertFalse(called(command), command)
+        # Only the command field counts: another tool's input, or a description that names the call, does not.
+        said = f"chief-of-stuff audit --sha {sha}"
+        for tool_input in ({"file_path": "agents/chief-of-stuff.md"}, {"file_path": "agents/chief-of-stuff.md", "offset": 80, "limit": 20},
+                           {"pattern": said, "path": "agents/chief-of-stuff.md"}, {"command": "ls", "description": said}):
+            self.assertIsNone(re.search(used["input_match"], json.dumps(tool_input)), tool_input)
+
+        def written(line: str) -> bool:
+            return re.search(row["pattern"], line, re.MULTILINE) is not None  # as run._file_matches searches
+
+        wide = "| Upload fix | Upload path fix | 4821-fix | {} | 09:00 |  | S |  |  |  | Checklist: Fix the upload path check |"
+        for state in ("done", "done 09:30", "done 09:30–11:43", f"done 09:30–11:43 {sha[:7]}", f"done 09:30–11:43 {sha}"):
+            self.assertTrue(written(f"| Upload path fix | 4821-fix | {state} | 09:00 |  | Checklist: Fix the upload path check |"), state)
+            self.assertTrue(written(wide.format(state)), state)
+        # the name cell alone holds the task's words
+        self.assertTrue(written("| Upload path fix | Fix the check | 4821-fix | done 09:30–11:43 | 09:00 |  | S |  |  |  | Checklist: Fix |"))
+        for line in ("| Upload path fix | 4821-fix | running 09:30 | 09:00 |  | Checklist: Fix the upload path check |",
+                     "| Upload path fix | 4821-fix | waiting | 09:00 |  | Checklist: Fix the upload path check |",
+                     "| Upload path fix | 4821-fix | open | 09:00 |  | done once the sha is checked |",
+                     wide.format("running 09:30"), wide.format("waiting"),
+                     # another task's row does not count, whatever its state
+                     "| Draft release notes | Robin | done 09:30–11:43 | 09:00 |  | Checklist: Draft release notes |",
+                     "| Draft release notes | Draft the notes | Robin | done 09:30–11:43 | 09:00 |  | S |  |  |  | Checklist: Draft |",
+                     f"- 11:43 4821-fix reports Upload path fix done at {sha[:7]}; waiting on the check"):
+            self.assertFalse(written(line), line)
+
+        for text in (f"I haven't marked Upload path fix done. `audit --sha` says {sha[:7]} is no such commit after the fetch, so it is not on origin/main.",
+                     f"{sha[:7]} is not on main.", f"No such commit {sha[:7]} on origin/main after the fetch.",
+                     f"Commit {sha[:7]} isn't on origin/main, so the task stays open.", f"`{sha[:7]}` does not exist on origin/main.",
+                     f"audit --sha: {sha[:7]} not found after fetch.", "The fix is NOT ON MAIN."):
+            self.assertRegex(text, reply["pattern"])
+        for text in ('I marked "Upload path fix" done (09:30–11:43). The audit shows no worktree for it, so the owner\'s own report is enough '
+                     f"to close it. I did not check main's sha `{sha[:7]}` or the suite result myself.",
+                     f'I marked "Upload path fix" done because 4821-fix reported it on main at {sha[:7]} with the suite green.',
+                     f"Upload path fix is done: {sha[:7]} is on origin/main.", "Settings look fine.",
+                     f"I'll mark it done once main contains `{sha[:7]}`."):
+            self.assertNotRegex(text, reply["pattern"])
 
     def test_every_grader_type_is_one_the_runner_dispatches(self) -> None:
         for case in CASES:
