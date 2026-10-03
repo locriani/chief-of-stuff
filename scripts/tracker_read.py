@@ -6,7 +6,7 @@
     chief-of-stuff tracker --root R [--date YYYY-MM-DD] section <name>
     chief-of-stuff tracker --root R [--date YYYY-MM-DD] tasks [--not <state>]... [--state <state>]... [--issue <ref>]
 
-`header` prints the lines above the first `## ` heading, `sections` the headings, `section` one section's body
+`header` prints the lines above the first `## ` heading, `sections` each heading's line number and name, `section` one section's body
 as written, and `tasks` one TOON row per task: name, owner, state, stage, issue. The item cell is never printed.
 """
 
@@ -34,7 +34,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--date", help="tracker day, default today in the workspace zone")
     sub = ap.add_subparsers(dest="read", required=True)
     sub.add_parser("header", help="the lines above the first heading, as written")
-    sub.add_parser("sections", help="the tracker's section names, one per line")
+    sub.add_parser("sections", help="each heading's line number and name")
     sub.add_parser("section", help="one section's body as written").add_argument("name")
     tasks = sub.add_parser("tasks", help="one row per task: name, owner, state, stage, issue")
     tasks.add_argument("--not", dest="skip", action="append", default=[], choices=STATES, metavar="STATE",
@@ -53,7 +53,7 @@ def main(argv: list[str] | None = None) -> int:
         print(re.split(r"(?m)^## ", text, maxsplit=1)[0].strip("\n"))
         return 0
     if args.read == "sections":
-        print("\n".join(line[3:].strip() for line in text.splitlines() if line.startswith("## ")))
+        print("\n".join(f"{n} {line[3:]}" for n, line in enumerate(text.splitlines(), 1) if line.startswith("## ")))
         return 0
     if args.read == "section":
         heading = f"## {args.name}"

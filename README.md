@@ -93,7 +93,7 @@ The optional [Kanban walk](docs/kanban.md) maps tracker stages to configurable b
 
 `chief-of-stuff log --root /path/to/workspace "<text>"` appends `- HH:MM <text>` to today's tracker Log, stamped in the workspace zone. Every script-side tracker write, the one-shot launcher's included, holds the same lock on the tracker's directory, so no lock file appears in the workspace. `chief-of-stuff log --root /path/to/workspace --stage "<task name>" <stage>` sets that task's `stage` cell and appends `- HH:MM stage: <name> → <stage>` under the same lock; it refuses a name that matches no row or two, and a stage outside the task's lane. The board's Flow charts draw each task's stages from these lines, over the trackers of the last two days.
 
-`chief-of-stuff tracker --root /path/to/workspace header` prints the lines above today's tracker's first heading, `sections` prints its section names, `section <name>` prints one section as written, and `tasks [--not <state>] [--state <state>] [--issue <ref>]` prints one TOON row per task: name, owner, state, stage and issue. It writes nothing.
+`chief-of-stuff tracker --root /path/to/workspace header` prints the lines above today's tracker's first heading, `sections` prints each heading's line number and name, `section <name>` prints one section as written, and `tasks [--not <state>] [--state <state>] [--issue <ref>]` prints one TOON row per task: name, owner, state, stage and issue. It writes nothing.
 
 A decision's page is `<pages dir>/decision-<slug>.json`, served as `http://127.0.0.1:<port>/decisions/<slug>` and rendered on request; `chief-of-stuff decision --root /path/to/workspace --name <slug>` renders it by hand. The JSON fields are listed in `scripts/decision_page.py`.
 
