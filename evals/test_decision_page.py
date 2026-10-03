@@ -1049,9 +1049,10 @@ class ModuleGraphTest(unittest.TestCase):
         change = replace(sources.changes["#58"], issues=("#109",))
         bs._write(cache, bs.Sources({}, {}, {"#58": change}, (), {}))
         (self.root / "daily").mkdir()
-        (self.root / "daily" / f"{date.today()}-tracker.md").write_text(
+        today = datetime.now(ZoneInfo("America/Chicago")).date()  # the workspace's day, not the host's
+        (self.root / "daily" / f"{today}-tracker.md").write_text(
             "# Tracker\n\n## Tasks\n\n| name | item | owner | state | since | due | size | lane | stage | issue | checklist |\n"
-            + "|---" * 11 + f"|\n| Warm pool | Warm the pool | Robin | waiting | {date.today()} |  | S |  |  | #109 | c |\n"
+            + "|---" * 11 + f"|\n| Warm pool | Warm the pool | Robin | waiting | {today} |  | S |  |  | #109 | c |\n"
             "\n## Log\n")
         out = ip.write(self.root, self.pages, 109)
         self.assertIsNotNone(out, "no task page for #109")

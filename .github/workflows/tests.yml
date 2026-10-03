@@ -1,0 +1,19 @@
+name: tests
+
+# Push only. A fork cannot push a branch here, so this workflow never runs a fork's code.
+# A fork PR can still add its own workflow file. The only gate on that is the repo setting that
+# every outside contributor's workflow run needs a maintainer's approval, so never approve a run
+# on a fork PR that changes .github/.
+on:
+  push:
+
+jobs:
+  unittest:
+    runs-on: [self-hosted, chief-of-stuff]
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t chief-of-stuff-ci .github/ci
+      # The checkout is mounted read-only and copied, so the tests touch nothing on the host and need no network.
+      - run: >
+          docker run --rm --network none -v "$PWD":/repo:ro chief-of-stuff-ci
+          sh -c 'cp -R /repo/. . && python3 -m unittest discover -s evals -p "test_*.py"'

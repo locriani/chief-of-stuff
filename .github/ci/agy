@@ -1,0 +1,9 @@
+#!/usr/bin/env python3
+"""A stand-in for the Antigravity CLI on the CI image.
+
+The suite only needs `agy` to be found on PATH: the dry-run launch resolves the binary and prints the
+command it would run. Nothing in the suite executes it, so running this is an error.
+"""
+import sys
+
+sys.exit("agy: this is the CI stand-in, not the Antigravity CLI")
