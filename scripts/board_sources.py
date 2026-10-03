@@ -37,6 +37,7 @@ CACHE = ".sources.json"
 CLOSES = re.compile(r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+(#\d+)")
 GH_PR = re.compile(r"(?i)\bPR\s*#(\d+)\b")
 GL_MR = re.compile(r"(?<![\w&])!(\d+)\b")
+ACKNOWLEDGED = r"(?i:\s+merged\b)"  # after a change's ref, the row records its merge: `!58 merged`
 GL_WAITING = {"pending", "created", "waiting_for_resource", "preparing", "scheduled", "manual"}
 
 GH_ISSUE = "number url title state body labels(first: 50) { nodes { name } } closedAt"
@@ -99,7 +100,7 @@ class Change:          # a PR or MR
     jobs: tuple[Job, ...] = ()
     conflicts: bool = False
     threads: tuple[ReviewThread, ...] = ()
-    merge_sha: str = ""       # the commit that put it on its base; the audit cites it (#45)
+    merge_sha: str = ""       # the merge commit's sha; empty unless the change merged (#45)
 
 
 @dataclass(frozen=True)
@@ -274,11 +275,13 @@ def _gl_change(m: dict, approver: str) -> Change:
                   m.get("targetBranch") or "", tuple(d["path"] for d in m.get("diffStats") or []),
                   _closes(m.get("description")), m.get("diffHeadSha") or "", _stats(m.get("diffStats") or []), (),
                   bool(m.get("conflicts")),
-                  merge_sha=m.get("mergeCommitSha") or m.get("squashCommitSha") or m.get("diffHeadSha") or "")
+                  merge_sha=(m.get("mergeCommitSha") or m.get("squashCommitSha") or m.get("diffHeadSha") or "")
+                  if state == "merged" else "")
 
 
-def gitlab(home: backlog.Backlog, wanted: dict[str, set[int]], mrs: set[int], since: datetime, approver: str, call):
-    """(issues, changes, error) from the host's /api/graphql, with the Backlog's token: one POST, and one more for open changes' jobs and threads.
+def gitlab(home: backlog.Backlog, wanted: dict[str, set[int]], mrs: set[int], since: datetime, approver: str, call,
+           detail: bool = True):
+    """(issues, changes, error) from the host's /api/graphql, with the Backlog's token: one POST, and with `detail` one more for open changes' jobs and threads.
     A connection answers at most GL_PAGE nodes, so past that the same query goes again for the next GL_PAGE iids and the next merged page."""
     secret = backlog.token(home)
     if not secret:
@@ -327,7 +330,7 @@ def gitlab(home: backlog.Backlog, wanted: dict[str, set[int]], mrs: set[int], si
         cursor = info.get("endCursor") if info.get("hasNextPage") else None
         mrs = mrs[GL_PAGE:]
         error = error or _graphql_errors(body)
-    opened = sorted(int(k[1:]) for k, c in changes.items() if c.state == "open")
+    opened = sorted(int(k[1:]) for k, c in changes.items() if c.state == "open") if detail else []
     for start in range(0, len(opened), GL_PAGE):
         query = (f"query {{ p0: project(fullPath: {json.dumps(home.project)}) {{ "
                  f"mergeRequests(iids: {json.dumps([str(n) for n in opened[start:start + GL_PAGE]])}) {{ nodes {{ {GL_DETAIL} }} }} }} }}")
@@ -344,17 +347,24 @@ def gitlab(home: backlog.Backlog, wanted: dict[str, set[int]], mrs: set[int], si
     return issues, changes, error
 
 
-def change_numbers(task, home) -> set[int]:
-    """The pull or merge requests a task's row names: `!N` on GitLab, `PR #N` on GitHub, or the request's URL."""
+def change_numbers(task, home, then: str = "") -> set[int]:
+    """The pull or merge requests a task's row names: `!N` on GitLab, `PR #N` on GitHub, or the request's URL.
+    With `then`, only those the row follows with it."""
     github_home = isinstance(home, backlog.GitHubBacklog)
     url = (rf"github\.com/{re.escape(home.repo)}/pull/(\d+)" if github_home
            else rf"{re.escape(backlog.home_of(home)[0])}/{re.escape(home.project)}/-/merge_requests/(\d+)")
     row = " ".join((task.name, task.item, task.issue, task.checklist))
-    return {int(n) for n in (GH_PR if github_home else GL_MR).findall(row) + re.findall(url, row)}
+    return {int(n) for named in ((GH_PR if github_home else GL_MR).pattern, url) for n in re.findall(named + then, row)}
 
 
-def forge(root: Path, cfg: Config, tracker: Tracker, since: datetime, gh, call):
-    """What the tracker's tasks name, from the Backlog's forge: (issues, changes, error)."""
+def unacknowledged(task, home) -> list[str]:
+    """The changes a task's row names and does not record as merged, by the refs `forge` keys them with."""
+    mark = "#" if isinstance(home, backlog.GitHubBacklog) else "!"
+    return [f"{mark}{n}" for n in sorted(change_numbers(task, home) - change_numbers(task, home, ACKNOWLEDGED))]
+
+
+def forge(root: Path, cfg: Config, tracker: Tracker, since: datetime, gh, call, detail: bool = True):
+    """What the tracker's tasks name, from the Backlog's forge: (issues, changes, error). `detail` is `gitlab`'s."""
     home = cfg.backlog
     if home is None:
         return {}, {}, ""
@@ -376,7 +386,7 @@ def forge(root: Path, cfg: Config, tracker: Tracker, since: datetime, gh, call):
         if changes:
             wanted.setdefault(home.repo, set()).update(changes)
         return github(home, wanted, since, approver, gh)
-    return gitlab(home, wanted, changes, since, approver, call)
+    return gitlab(home, wanted, changes, since, approver, call, detail)
 
 
 # --- workers ---------------------------------------------------------------------------------------
