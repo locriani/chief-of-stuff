@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 """Read the tracker through the shared parser; writes nothing.
 
+    chief-of-stuff tracker --root R [--date YYYY-MM-DD] header
     chief-of-stuff tracker --root R [--date YYYY-MM-DD] sections
     chief-of-stuff tracker --root R [--date YYYY-MM-DD] section <name>
     chief-of-stuff tracker --root R [--date YYYY-MM-DD] tasks [--not <state>]... [--state <state>]... [--issue <ref>]
 
-`sections` prints the `## ` headings, `section` one section's body as written, and `tasks` one TOON row per
-task: name, owner, state, stage, issue. The item cell is never printed.
+`header` prints the lines above the first `## ` heading, `sections` the headings, `section` one section's body
+as written, and `tasks` one TOON row per task: name, owner, state, stage, issue. The item cell is never printed.
 """
 
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -31,6 +33,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--root", type=Path, default=Path("."), help="workspace root holding CLAUDE.md")
     ap.add_argument("--date", help="tracker day, default today in the workspace zone")
     sub = ap.add_subparsers(dest="read", required=True)
+    sub.add_parser("header", help="the lines above the first heading, as written")
     sub.add_parser("sections", help="the tracker's section names, one per line")
     sub.add_parser("section", help="one section's body as written").add_argument("name")
     tasks = sub.add_parser("tasks", help="one row per task: name, owner, state, stage, issue")
@@ -46,6 +49,9 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ConfigError) as exc:
         print(f"tracker: {exc}", file=sys.stderr)
         return 2
+    if args.read == "header":
+        print(re.split(r"(?m)^## ", text, maxsplit=1)[0].strip("\n"))
+        return 0
     if args.read == "sections":
         print("\n".join(line[3:].strip() for line in text.splitlines() if line.startswith("## ")))
         return 0
