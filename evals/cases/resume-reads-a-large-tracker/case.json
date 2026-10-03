@@ -1,7 +1,7 @@
 {
   "tz": "America/Chicago",
   "peers": "sessions.json",
-  "description": "A new session on a day whose tracker holds sixty tasks with paragraph-long items. Resume reads it through a `chief-of-stuff tracker` subcommand, never with grep, sed, awk, cat, head, tail or cut on the tracker file, and still reports what the `## Resume` block says (#46). The shell grader models what a coordinator writes and is not a shell parser: it fails a Bash call that names the tracker file (`tracker.md`, or a glob such as `*-tracker*`, `*tracker*`, `<date>-tracker*`) and runs one of those tools as a command word: first in the call; after `;`, `&`, `|`, `(`, a backtick, `{`, `!`, a newline or a tab; after do, then, else, if, while, until, command, env, time, eval, exec (and so `-exec`) or xargs with its flags; with or without `VAR=value` prefixes or a path to the tool. So a call that names the tracker file and pipes anything into one of the tools fails too. Not covered: `bash -c '…'`, a directory-wide `cat daily/*`, and a file name assembled from shell variables.",
+  "description": "A new session on a day whose tracker holds sixty tasks with paragraph-long items. Resume reads it through a `chief-of-stuff tracker` subcommand, never with grep, sed, awk, cat, head, tail or cut on the tracker file, and still reports what the `## Resume` block says (#46). The shell grader models what a coordinator writes and is not a shell parser: it fails a Bash call whose command names the tracker file (`tracker.md`, or a glob such as `*-tracker*`, `*tracker*`, `<date>-tracker*`) and runs one of those tools as a command word: first in the call; after `;`, `&`, `|`, `(`, a backtick, `{`, `!`, a newline or a tab; after do, then, else, if, while, until, command, env, time, eval, exec (and so `-exec`) or xargs with its flags; with or without `VAR=value` prefixes or a path to the tool. So a call that names the tracker file and pipes anything into one of the tools fails too. Not covered: `bash -c '…'`, a directory-wide `cat daily/*`, and a file name assembled from shell variables.",
   "prompt": "resume",
   "graders": [
     {
@@ -15,7 +15,7 @@
       "name": "no shell text tool on the tracker file",
       "type": "tool_used",
       "tool": "Bash",
-      "input_match": "^(?=.*(?:tracker\\.md|-tracker|\\*tracker)).*(?:\"command\": \"|[;&|(`{!]|\\\\n|\\b(?:do|then|else|if|while|until|command|env|time|eval|exec)\\s|\\bxargs(?:\\s+-\\S+)*\\s)(?:\\s|\\\\t)*(?:\\w+=(?:\\\\\"[^\"]*\"|'[^']*'|\\S*)\\s+)*(?:[\\w./-]*/)?(?:grep|sed|awk|cat|head|tail|cut)\\b",
+      "input_match": "^(?=.*\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:tracker\\.md|-tracker|\\*tracker)).*\"command\": \"(?:(?:[^\"\\\\]|\\\\.)*?(?:[;&|(`{!]|\\\\n|\\b(?:do|then|else|if|while|until|command|env|time|eval|exec)\\s|\\bxargs(?:\\s+-\\S+)*\\s))?(?:\\s|\\\\t)*(?:\\w+=(?:\\\\\"[^\"]*\"|'[^']*'|\\S*)\\s+)*(?:[\\w./-]*/)?(?:grep|sed|awk|cat|head|tail|cut)\\b",
       "max": 0
     },
     {

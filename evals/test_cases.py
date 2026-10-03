@@ -70,7 +70,9 @@ class CaseLintTest(unittest.TestCase):
         n = Path(t).name
 
         def hit(pattern: str, command: str) -> bool:
-            return re.search(pattern, json.dumps({"command": command, "description": "Read the head of the tracker"})) is not None
+            # The description is the model's prose about the call. It names the file and a tool here, and decides nothing.
+            said = f"Show {t}; cat is not used (head of the file)"
+            return re.search(pattern, json.dumps({"command": command, "description": said})) is not None
 
         for command in ("chief-of-stuff tracker section Resume", "chief-of-stuff tracker sections", "chief-of-stuff tracker tasks",
                         "chief-of-stuff tracker --root . --date 2026-10-03 tasks --not done", "chief-of-stuff tracker --root=. header",
