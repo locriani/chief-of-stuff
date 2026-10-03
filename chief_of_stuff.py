@@ -38,6 +38,7 @@ COMMANDS = {
     "pages": "scripts/pages.py",
     "decision": "scripts/decision_page.py",
     "log": "scripts/tracker_write.py",
+    "tracker": "scripts/tracker_read.py",
     "merge-approved": "scripts/merge_approved.py",
     "review-threads": "scripts/review_threads.py",
     "sources": "scripts/board_sources.py",

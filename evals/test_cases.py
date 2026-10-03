@@ -61,6 +61,57 @@ class CaseLintTest(unittest.TestCase):
             command = entry + ' --task "Security audit" --runtime claude --dry-run'
             self.assertRegex(json.dumps({"command": command}), pattern)
 
+    def test_large_tracker_graders_enforce_the_read_rule(self) -> None:
+        """#46: Resume "reads it through `chief-of-stuff tracker` and never runs grep, sed, or tail on the tracker file".
+        Two stored runs broke the rule and passed: a `cat` of the whole file, and a grep whose pattern held a `|`.
+        Each command pins one branch of a pattern: with the branch removed, the command lands on the other side."""
+        used, shell = (g["input_match"] for g in spec(EVALS / "cases" / "resume-reads-a-large-tracker")["graders"][:2])
+        t = "daily/2026-10-03-tracker.md"
+        n = Path(t).name
+
+        def hit(pattern: str, command: str) -> bool:
+            # The description is the model's prose about the call. It names the file and a tool here, and decides nothing.
+            said = f"Show {t}; cat is not used (head of the file)"
+            return re.search(pattern, json.dumps({"command": command, "description": said})) is not None
+
+        for command in ("chief-of-stuff tracker section Resume", "chief-of-stuff tracker sections", "chief-of-stuff tracker tasks",
+                        "chief-of-stuff tracker --root . --date 2026-10-03 tasks --not done", "chief-of-stuff tracker --root=. header",
+                        "chief-of-stuff tracker --verbose header", "python3 /release/chief_of_stuff.py tracker header",
+                        "python3 /release/scripts/tracker_read.py --root . sections"):
+            self.assertTrue(hit(used, command), command)
+        for command in ("chief-of-stuff tracker --help", f"chief-of-stuff tracker {t} sections", "chief-of-stuff tracker",
+                        "chief-of-stuff tracker headers", "chief-of-stuff tracker --root . tasksfile",
+                        "chief-of-stuff audit --date 2026-10-03; ls daily/"):
+            self.assertFalse(hit(used, command), command)
+        for command in (
+                # each tool, first in the call
+                f"cat {t}", f"grep -n '^## ' {t}", f"sed -n '10,40p' {t}", f"tail -50 {t}", f"head -8 {t}", f"cut -c1-160 {t}",
+                f"awk -F'|' '{{print $2}}' {t}",
+                # a `|` inside the pattern hides nothing
+                f'grep -n "Coordinator:\\|^## Resume" {t}', f"grep -nE '^## |^- As of' {t}",
+                # the file by name, or by a glob that can only be the tracker
+                f"cd daily; grep -n '^## ' *-tracker*", "cd daily; grep -n '^## ' *tracker*", "cd daily && grep -n '^## ' 2026-10-03-tracker*",
+                "cat daily/2026-10-03-tracker.m*", "cd daily; cat tracker.md",
+                # command positions: after a separator, a group, a substitution, a negation, a line break
+                f"cd daily && tail -5 {n}", f"wc -l {t} | cut -d' ' -f1", f"echo $(head -3 {t})", f"echo `head -3 {t}`",
+                f"{{ head -3 {t}; echo; }}", f"! grep -q x {t}", f"date\nhead -3 {t}", f"date\n\thead -3 {t}",
+                # after a shell word
+                'for f in daily/*-tracker.md; do head -3 "$f"; done', f"if test -f {t}; then cat {t}; fi",
+                f"if test -f notes.md; then true; else cat {t}; fi", f"if grep -q '^## Resume' {t}; then echo yes; fi",
+                f"while grep -q waiting {t}; do sleep 1; done", f"until grep -q done {t}; do sleep 1; done",
+                f"command cat {t}", f"env cat {t}", f"env LC_ALL=C cat {t}", f"time cat {t}", f"eval cat {t}", f"exec cat {t}",
+                "find daily -name '*-tracker.md' -exec head -5 {} \\;",
+                # through xargs, with and without flags
+                "ls daily/*-tracker.md | xargs cat", f"echo {t} | xargs -n1 head -3",
+                # an environment prefix, a quoted one, a path to the tool
+                f"LC_ALL=C grep -c x {t}", f'FOO="a b" grep -c x {t}', f"FOO='a b' grep -c x {t}",
+                f"TZ=America/Chicago date; /usr/bin/grep -c open {t}", f"F={t}; grep -n '^## ' $F"):
+            self.assertTrue(hit(shell, command), command)
+        for command in ("chief-of-stuff tracker section Log | tail -8", "chief-of-stuff tracker tasks --not done | head -20",
+                        'chief-of-stuff log --root . "cut the tail of tracker.md prose"', f"ls -la {t}", f"wc -l {t}",
+                        f"cats {t}", "grep -n TODO notes/plan.md", "cat daily/2026-10-03.md", "TZ=America/Chicago date"):
+            self.assertFalse(hit(shell, command), command)
+
     def test_every_grader_type_is_one_the_runner_dispatches(self) -> None:
         for case in CASES:
             for g in graders(spec(case)):
