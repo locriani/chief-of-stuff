@@ -89,7 +89,7 @@ def check_settings(root: Path, name: str) -> tuple[str, int]:
         load_settings(root, name)
     except (FileNotFoundError, NotADirectoryError):
         return absent
-    except (SettingsError, UnicodeDecodeError, OSError) as exc:  # schema or TOML, not UTF-8, unreadable
+    except (SettingsError, ValueError, OSError) as exc:  # schema or TOML; not UTF-8 or a NUL in the name; unreadable
         why = getattr(exc, "strerror", None) or str(exc)  # an OSError's own text carries the absolute path
         return f"settings {name} invalid: {' '.join(why.split()).removeprefix(f'{name}: ')}", 1
     return f"settings {name} ok", 0
