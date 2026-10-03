@@ -431,7 +431,7 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ConfigError, SettingsError) as exc:
         print(f"kanban: {exc}", file=sys.stderr)
         return 2
-    wanted = backlog.issue_ref(args.issue, cfg.backlog) if args.issue else None
+    wanted = backlog.parse_issue_arg(args.issue, cfg.backlog) if args.issue else None
     if args.issue and wanted is None:
         print(f"kanban: invalid issue reference {args.issue!r}", file=sys.stderr)
         return 2

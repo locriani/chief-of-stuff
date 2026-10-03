@@ -400,6 +400,12 @@ def issue_ref(cell: str, home: Backlog | GitHubBacklog | None) -> IssueRef | Non
     return IssueRef(repo, int(m.group(2)), host)
 
 
+def parse_issue_arg(arg: str, home: Backlog | GitHubBacklog | None) -> IssueRef | None:
+    """A CLI argument: `issue_ref`'s forms, plus a bare `N`, which is valid here and not as a tracker cell."""
+    text = arg.strip()
+    return issue_ref(f"#{text}" if text.isdigit() else text, home)
+
+
 def _total(cfg: Backlog, secret: str, state: str, timeout: float) -> tuple[int | None, str]:
     """GitLab's `X-Total` for one state, or a full count when it withholds the header."""
     body, headers, error = _get(f"{cfg.issues_url}?{urlencode({'state': state, 'per_page': 1, 'page': 1})}",
@@ -629,7 +635,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--parent", type=int, help="GitHub parent issue number for --create")
     parser.add_argument("--blocked-by", type=int, action="append", default=[], metavar="IID",
                         help="GitHub blocker issue number for --create; repeat for multiple blockers")
-    parser.add_argument("--close", type=int, metavar="IID", help="close one issue")
+    parser.add_argument("--close", metavar="ISSUE", help="close one issue: N, #N, or a reference in the Backlog")
     parser.add_argument("--comment", type=int, metavar="IID", help="comment on one issue")
     # No `--token`: argv is readable by `ps`, so the token comes from the environment or the
     # Keychain and from nowhere a shell history can keep it.
@@ -656,8 +662,12 @@ def main(argv: list[str] | None = None) -> int:
         writes.append(create(cfg, args.create, body=args.body, labels=labels,
                              commit=args.commit, timeout=args.timeout,
                              parent=args.parent, blocked_by=tuple(args.blocked_by)))
-    if args.close:
-        writes.append(close(cfg, args.close, commit=args.commit, timeout=args.timeout))
+    if args.close is not None:
+        ref = parse_issue_arg(args.close, cfg)
+        if ref is None or (ref.host, ref.repo) != home_of(cfg):
+            print(f"backlog: --close {args.close!r} is not an issue in this Backlog", file=sys.stderr)
+            return 2
+        writes.append(close(cfg, ref.number, commit=args.commit, timeout=args.timeout))
     if args.comment:
         writes.append(comment(cfg, args.comment, args.body, commit=args.commit, timeout=args.timeout))
     if writes:
