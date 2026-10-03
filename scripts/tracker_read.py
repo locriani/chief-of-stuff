@@ -6,8 +6,10 @@
     chief-of-stuff tracker --root R [--date YYYY-MM-DD] section <name>
     chief-of-stuff tracker --root R [--date YYYY-MM-DD] tasks [--not <state>]... [--state <state>]... [--issue <ref>]
 
-`header` prints the lines above the first `## ` heading, `sections` each heading's line number and name, `section` one section's body
-as written, and `tasks` one TOON row per task: name, owner, state, stage, issue. The item cell is never printed.
+`header` prints the lines above the first `## ` heading, `sections` each heading's line number and name,
+`section` one section's body as written, and `tasks` one TOON row per task: name, owner, state, stage, issue.
+The item cell is not printed, except that a row with no name is called by its label: the item's first words,
+clipped to 48 characters. A row the parser warns about is still printed, and named on stderr.
 """
 
 from __future__ import annotations
@@ -53,7 +55,8 @@ def main(argv: list[str] | None = None) -> int:
         print(re.split(r"(?m)^## ", text, maxsplit=1)[0].strip("\n"))
         return 0
     if args.read == "sections":
-        print("\n".join(f"{n} {line[3:]}" for n, line in enumerate(text.splitlines(), 1) if line.startswith("## ")))
+        # Lines as the Read tool counts them: `splitlines` also breaks on a form feed and U+2028.
+        print("\n".join(f"{n} {line[3:].strip()}" for n, line in enumerate(text.split("\n"), 1) if line.startswith("## ")))
         return 0
     if args.read == "section":
         heading = f"## {args.name}"
@@ -62,13 +65,16 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         print("\n".join(section(text, heading)).strip("\n"))
         return 0
-    wanted = backlog.parse_issue_arg(args.issue, cfg.backlog) if args.issue else None
-    if args.issue and wanted is None:
+    wanted = backlog.parse_issue_arg(args.issue, cfg.backlog) if args.issue is not None else None
+    if args.issue is not None and wanted is None:
         print(f"tracker: invalid issue reference {args.issue!r}", file=sys.stderr)
         return 2
-    rows = [{"name": clip_name(task.label), "owner": task.owner.strip(), "state": task.state.strip(),
-             "stage": task.stage.strip(), "issue": task.issue.strip()}
-            for task in parse_tracker(text).tasks
+    found = parse_tracker(text).tasks
+    for task in found:
+        if task.warning:
+            print(f"tracker: {clip_name(task.label)}: {task.warning}", file=sys.stderr)
+    rows = [{"name": clip_name(task.label), "owner": task.owner, "state": task.state, "stage": task.stage, "issue": task.issue}
+            for task in found
             if task.kind not in args.skip and (not args.state or task.kind in args.state)
             and (wanted is None or backlog.issue_ref(task.issue, cfg.backlog) == wanted)]
     print(toon_encode(rows) if rows else "[]")
