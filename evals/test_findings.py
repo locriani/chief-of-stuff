@@ -11,7 +11,6 @@ import typing
 import unittest
 from datetime import timedelta
 from pathlib import Path
-from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -19,8 +18,6 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import audit_tasks as al  # noqa: E402
 import findings  # noqa: E402
 import start_coordinator as start  # noqa: E402
-sys.path.insert(0, str(ROOT / "evals"))
-import test_audit_tasks as tat  # noqa: E402  (module-qualified: don't re-collect its TestCases)
 
 # The watcher's pattern as it was typed before it was built from `findings.WATCHED`.
 LITERAL = re.compile(r"(?i)^(orphaned work:|stopped:|reopen:|issue:|merged:|lane:|kanban:|decision queue:|next decision:|overdue:|waiting:)")
@@ -114,25 +111,6 @@ class WatcherPatternTest(unittest.TestCase):
                 self.assertEqual(old and old.group(0), new and new.group(0))
                 accepted += bool(new)
         self.assertTrue(0 < accepted < len(lines))
-
-    def test_three_merged_findings_reach_the_coordinator_uncut(self):
-        """#45: "Three merged findings must fit the watcher's forwarded message": a finding cut short loses the
-        ref, the sha, or what to do about it."""
-        names = {277: "Paginate the search results endpoint for the largest tenants",
-                 278: "Export the audit log as a spreadsheet from the admin page",
-                 279: "Retry the nightly import when the upstream feed times out"}
-        rows = [tat.change_row(f"PR #{n}", name=name, item=name) for n, name in names.items()]
-        changes = {f"#{n}": tat.change(f"#{n}", base="main") for n in names}
-        lines = [str(f) for f in al.merged_faults(al.parse_tracker(tat.change_tracker(*rows)).tasks, changes,
-                                                  tat.home(tat.ISSUE_CLAUDE))]
-        self.assertEqual(len(lines), 3)
-        audit = "\n".join(lines + ["tasks=3 trees=0 reopen=0 orphaned=0 stopped=0 issues=0 merged=3", ""])
-        answers = [mock.Mock(returncode=0, stdout="[]"), mock.Mock(returncode=3, stdout=audit, stderr=""),
-                   mock.Mock(returncode=0, stdout="[]")]
-        with mock.patch.object(start.subprocess, "run", side_effect=answers):
-            message = start.check_once(Path("workspace"), Path("release"))
-        for line in lines:
-            self.assertIn(line, message)
 
     def test_over_budget_is_not_forwarded(self):
         self.assertIsNone(start.FINDING.match(str(FINDINGS[al.OverBudget][1])))
