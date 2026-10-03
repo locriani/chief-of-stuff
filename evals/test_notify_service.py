@@ -143,6 +143,47 @@ class ServiceTest(WorkspaceTest):
 
 
 class LifecycleTest(WorkspaceTest):
+    def test_add_with_service_command_in_what_writes_notification(self):
+        code = service.main(["--root", str(self.root), "add", "--kind", "awaiting",
+                             "--what", "status"])
+        self.assertEqual(code, 0)
+        self.assertIn("🙋 Awaiting you — status (", self.ws.queue.read_text())
+        self.assertIn(") | status |", self.ws.queue.read_text())
+
+    def test_add_with_service_command_in_message_writes_notification(self):
+        code = service.main(["--root", str(self.root), "add", "--kind", "awaiting",
+                             "--what", "Review", "--message", "stop"])
+        self.assertEqual(code, 0)
+        self.assertIn("🙋 Awaiting you — Review (", self.ws.queue.read_text())
+        self.assertIn(") | stop |", self.ws.queue.read_text())
+
+    def test_relative_root_named_serve_routes_add_and_sync_to_notify(self):
+        root = self.root / "serve"
+        root.mkdir()
+        for name in ("CLAUDE.md", "chief-of-stuff.toml"):
+            (root / name).write_text((self.root / name).read_text())
+        with contextlib.chdir(self.root):
+            for root_args in (["--root", "serve"], ["--root=serve"]):
+                for command in (["add", "--kind", "awaiting", "--what", "Review"], ["sync"]):
+                    with self.subTest(root_args=root_args, command=command), \
+                         mock.patch.object(notify, "main", wraps=notify.main) as dispatch:
+                        argv = [*root_args, *command]
+                        self.assertEqual(service.main(argv), 0)
+                        dispatch.assert_called_once_with(argv)
+                        self.assertTrue((root / "notes/NOTIFICATIONS.md").exists())
+
+    def test_service_subcommands_reach_service(self):
+        with contextlib.chdir(self.root):
+            for root_args in ([], ["--root", str(self.root)], [f"--root={self.root}"]):
+                for command in ("serve", "ensure", "status", "stop"):
+                    with self.subTest(root_args=root_args, command=command), \
+                         mock.patch.object(service, command) as handler, \
+                         mock.patch.object(notify, "main") as dispatch:
+                        handler.return_value = {} if command == "status" else "notify: serving"
+                        self.assertEqual(service.main([*root_args, command]), 0)
+                        handler.assert_called_once_with(self.root.resolve())
+                        dispatch.assert_not_called()
+
     def test_invalid_workspace_cli_reports_error_without_traceback(self):
         (self.root / "CLAUDE.md").write_text("# Missing coordinator\n")
         errors = io.StringIO()

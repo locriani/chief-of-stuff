@@ -222,8 +222,13 @@ SERVICE = ("serve", "ensure", "status", "stop")
 def main(argv: list[str] | None = None) -> int:
     """`chief-of-stuff notify`: the service's four commands here, `add` and `sync` in notify.py."""
     argv = sys.argv[1:] if argv is None else argv
-    command = next((arg for arg in argv if arg in SERVICE), None)
-    if command is None:
+    args = iter(argv)
+    command = next(args, None)
+    while command is not None and (command == "--root" or command.startswith("--root=")):
+        if command == "--root":
+            next(args, None)
+        command = next(args, None)
+    if command not in SERVICE:
         return notify.main(argv)
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--root", default=".", help="workspace root holding CLAUDE.md")
