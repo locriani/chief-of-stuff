@@ -1,14 +1,14 @@
 name: tests
 
+# Push only. A fork cannot push a branch here, so this workflow never runs a fork's code.
+# A fork PR can still add its own workflow file. The only gate on that is the repo setting that
+# every outside contributor's workflow run needs a maintainer's approval, so never approve a run
+# on a fork PR that changes .github/.
 on:
   push:
-    branches: [main]
-  pull_request:
 
 jobs:
   unittest:
-    # A self-hosted runner on a public repo: never run a fork's code on it.
-    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, chief-of-stuff]
     steps:
       - uses: actions/checkout@v4
