@@ -226,7 +226,7 @@ def main(argv: list[str] | None = None) -> int:
     # lifetime. Failure remains visible without blocking unrelated coordination.
     try:
         notifications = subprocess.run(
-            [sys.executable, str(release / "scripts" / "notify.py"), "--root", str(root), "ensure"],
+            [sys.executable, str(release / "scripts" / "notify_service.py"), "--root", str(root), "ensure"],
             capture_output=True, text=True, timeout=60)
         if notifications.returncode:
             print(notifications.stderr.strip() or "notify: service setup failed", file=sys.stderr)

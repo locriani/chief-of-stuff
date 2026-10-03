@@ -147,7 +147,7 @@ class LifecycleTest(WorkspaceTest):
         (self.root / "CLAUDE.md").write_text("# Missing coordinator\n")
         errors = io.StringIO()
         with contextlib.redirect_stderr(errors):
-            code = notify.main(["--root", str(self.root), "ensure"])
+            code = service.main(["--root", str(self.root), "ensure"])
         self.assertEqual(code, 2)
         self.assertIn("no `## Coordinator`", errors.getvalue())
         self.assertNotIn("Traceback", errors.getvalue())

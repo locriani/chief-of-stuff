@@ -345,13 +345,8 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
     add.add_argument("--message", default="", help="the banner's body; defaults to --what")
     add.add_argument("--when", default="now", help="now, or YYYY-MM-DD HH:MM in the workspace timezone")
     sub.add_parser("sync", help="deadline warnings and the day open and close rows")
-    for command in ("serve", "ensure", "status", "stop"):
-        sub.add_parser(command, help=f"{command} the independent notification service")
     args = ap.parse_args(argv)
     root = Path(args.root).resolve()
-    if args.cmd in ("serve", "ensure", "status", "stop"):
-        import notify_service
-        return notify_service.main(args.cmd, root)
     if args.cmd == "sync":
         try:
             got = sync_workspace(root, now)

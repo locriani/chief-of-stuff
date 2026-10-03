@@ -33,7 +33,7 @@ COMMANDS = {
     "inbox": "scripts/inbox.py",
     "backlog": "scripts/backlog.py",
     "kanban": "scripts/kanban.py",
-    "notify": "scripts/notify.py",
+    "notify": "scripts/notify_service.py",
     "health": "scripts/probe_health.py",
     "pages": "scripts/pages.py",
     "decision": "scripts/decision_page.py",

@@ -1,6 +1,7 @@
 """Independent notification reconciliation and macOS user LaunchAgent lifecycle."""
 from __future__ import annotations
 
+import argparse
 import fcntl
 import hashlib
 import json
@@ -16,8 +17,9 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
+import notify
 from notify import configuration, sync_workspace
-from render_board import ConfigError, daily_trackers
+from workspace import ConfigError, daily_trackers
 from settings import SettingsError
 
 POLL = 5
@@ -176,7 +178,7 @@ def ensure(root: Path, jobs_dir: Path | None = None) -> str:
         path = job_path(root, jobs_dir)
         desired = {"Label": name,
                    "ProgramArguments": [str(Path(sys.executable).resolve()),
-                                        str(RELEASE / "scripts/notify.py"), "--root", str(root), "serve"],
+                                        str(RELEASE / "scripts/notify_service.py"), "--root", str(root), "serve"],
                    "WorkingDirectory": str(root), "RunAtLoad": True, "KeepAlive": True,
                    "ThrottleInterval": 10,
                    "StandardOutPath": str(directory / "notify-service.log"),
@@ -214,7 +216,19 @@ def stop(root: Path, jobs_dir: Path | None = None) -> str:
         return "notify: stopped"
 
 
-def main(command: str, root: Path) -> int:
+SERVICE = ("serve", "ensure", "status", "stop")
+
+
+def main(argv: list[str] | None = None) -> int:
+    """`chief-of-stuff notify`: the service's four commands here, `add` and `sync` in notify.py."""
+    argv = sys.argv[1:] if argv is None else argv
+    command = next((arg for arg in argv if arg in SERVICE), None)
+    if command is None:
+        return notify.main(argv)
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--root", default=".", help="workspace root holding CLAUDE.md")
+    ap.add_argument("cmd", choices=SERVICE)
+    root = Path(ap.parse_args(argv).root).resolve()
     try:
         if command == "serve":
             serve(root)
@@ -227,3 +241,7 @@ def main(command: str, root: Path) -> int:
     except (OSError, ValueError, RuntimeError, ConfigError, SettingsError, subprocess.TimeoutExpired) as exc:
         print(f"notify: {exc}", file=sys.stderr)
         return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

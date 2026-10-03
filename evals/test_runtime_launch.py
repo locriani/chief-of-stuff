@@ -146,7 +146,7 @@ class CoordinatorLaunchTest(unittest.TestCase):
         self.assertFalse(self.install_dir.exists())
 
     def test_all_runtimes_ensure_notifications_before_cli_and_continue_on_failure(self):
-        for runtime in start.BINARIES:
+        for runtime in start.runtimes.NAMES:
             with self.subTest(runtime=runtime), \
                  mock.patch.object(start, "resolve", return_value="/bin/fake"), \
                  mock.patch.object(start, "login_argv", side_effect=lambda cmd: cmd), \
