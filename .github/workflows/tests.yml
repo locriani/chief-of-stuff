@@ -1,0 +1,15 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  unittest:
+    # A self-hosted runner on a public repo: never run a fork's code on it.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, chief-of-stuff]
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m unittest discover -s evals -p 'test_*.py'
