@@ -227,9 +227,7 @@ def merged_faults(tasks, changes: dict, home: Backlog | GitHubBacklog, answered:
         if any(c.state == "open" for c in named):
             continue
         said = [" ".join(filter(None, (board_sources.spelled(c.ref), "merged into", c.base, c.merge_sha[:7]))) for c in named if c.state == "merged"]
-        # Short, so the watcher forwards three of these uncut: write the task done only once the change is on main
-        # and the suite ran there, or write "merged" after its ref in the row to record the merge and stop this.
-        how = '; done if green on main, or add "merged"' if said else ""
+        how = '; write the task done once main is green with it, or write "merged" after the ref' if said else ""
         if answered:
             said += [f"{board_sources.spelled(ref)} not found" for ref in refs if ref not in changes]
         if said:
