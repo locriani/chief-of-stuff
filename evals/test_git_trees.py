@@ -273,6 +273,18 @@ class FetchBaseTest(Repo):
         self.assertNotIn(str(self.clone.resolve()), err)
 
 
+    def test_the_error_text_a_remote_controls_carries_no_raw_control_character(self) -> None:
+        """#49 round 8, 3b: the line is printed, and git's stderr is whatever the remote makes it. `subprocess.run` is
+        faked. Pinned: no raw control character or line separator, `fatal: a` survives, and a, b, c stay in order (so
+        a carriage return does not cut the text). The escape's spelling is not pinned."""
+        hostile = subprocess.CompletedProcess([], 128, "", "fatal: a\x1b[31mb\rc\n")
+        with patch.object(git_trees.subprocess, "run", return_value=hostile):
+            line = git_trees.fetch_base(self.clone)
+        self.assertEqual([c for c in line if ord(c) < 0x20 or c in "\u2028\u2029"], [], repr(line))
+        self.assertTrue(line.startswith("fatal: a"), repr(line))
+        self.assertRegex(line[len("fatal: "):], "a.*b.*c")
+
+
 class GitReaderTest(unittest.TestCase):
     def test_git_that_cannot_run_or_times_out_is_128_not_1(self) -> None:
         """`merge-base --is-ancestor` answers a no with exit 1, so a failed run must not look like one: 128 is git's own
@@ -282,6 +294,33 @@ class GitReaderTest(unittest.TestCase):
                 code, text = git_trees.git(["rev-parse", "HEAD"], Path("."))
                 self.assertEqual(code, 128)
                 self.assertTrue(text.strip())
+
+
+class ShaExitTest(unittest.TestCase):
+    def test_an_unknown_anywhere_blocks_a_yes(self) -> None:
+        """#49 round 8, 2: over `(code, held)`: 1 if any repository holds the commit and says no; else 2 if any is
+        unknown (it may hold the commit, or be the project the claim is about); else 0 if any says yes; else 1; an
+        empty list is 2."""
+        yes, no_held, no_absent = (0, True), (1, True), (1, False)
+        unknown_held, unknown_absent = (2, True), (2, False)
+        table = [
+            ("yes alone", [yes], 0),
+            ("yes, no such commit elsewhere", [yes, no_absent], 0),
+            ("yes, unknown that holds it", [yes, unknown_held], 2),
+            ("yes, unknown that does not", [yes, unknown_absent], 2),
+            ("yes, a holder says no", [yes, no_held], 1),
+            ("a holder says no, unknown", [no_held, unknown_absent], 1),
+            ("a holder says no, unknown that holds it", [unknown_held, no_held], 1),
+            ("unknown alone", [unknown_absent], 2),
+            ("unknown that holds it, alone", [unknown_held], 2),
+            ("no such commit, unknown", [no_absent, unknown_absent], 2),
+            ("no such commit alone", [no_absent], 1),
+            ("a holder says no alone", [no_held], 1),
+            ("empty", [], 2),
+        ]
+        for what, answers, want in table:
+            with self.subTest(what):
+                self.assertEqual(git_trees.sha_exit(answers), want)
 
 
 class CheckShaTest(Repo):
@@ -441,6 +480,39 @@ class CheckShaTest(Repo):
         with patch.object(git_trees, "fetch_base", fetch_leaves_grafts):
             self.assertEqual(git_trees.check_sha(sha, self.clone),
                              (2, f"sha {sha}: unknown \u2014 this repository has grafts, so ancestry cannot be trusted", True))
+
+    def test_a_grafts_lookup_that_fails_is_unknown_not_no_grafts(self) -> None:
+        """#49 round 8, 1: only the `--git-path` call fails (128); every other git call is real, on a commit that is on
+        origin/main. A repository whose grafts cannot be looked up is unknown, with `held` as already known."""
+        sha = git("rev-parse", "HEAD", cwd=self.clone)
+        real = git_trees.git
+
+        def lookup_fails(args, cwd, *rest, **kw):
+            return (128, "") if "--git-path" in args else real(args, cwd, *rest, **kw)
+
+        with patch.object(git_trees, "git", lookup_fails):
+            self.assertEqual(git_trees.check_sha(sha, self.clone),
+                             (2, f"sha {sha}: unknown \u2014 git could not read this repository", True))
+
+    def test_a_grafts_file_that_cannot_be_examined_is_unknown_not_no_grafts(self) -> None:
+        """#49 round 8, 1: `os.stat` (which `Path.stat`, `is_file` and `exists` all go through) raises PermissionError,
+        for the grafts path only; every other stat is real. The file exists and is empty, so a reader that can examine
+        it finds no grafts (exit 0)."""
+        sha = git("rev-parse", "HEAD", cwd=self.clone)
+        grafts = self.clone / ".git" / "info" / "grafts"
+        grafts.parent.mkdir(exist_ok=True)
+        grafts.write_text("")
+        real = os.stat
+
+        def denied(path, *args, **kw):
+            if isinstance(path, (str, os.PathLike)) and os.fspath(path).endswith(os.path.join("info", "grafts")):
+                raise PermissionError(13, "Permission denied", os.fspath(path))
+            return real(path, *args, **kw)
+
+        self.assertEqual(git_trees.check_sha(sha, self.clone)[0], 0)
+        with patch.object(os, "stat", denied):
+            self.assertEqual(git_trees.check_sha(sha, self.clone),
+                             (2, f"sha {sha}: unknown \u2014 git could not read this repository", True))
 
     def test_a_repository_git_cannot_read_does_not_hold_it(self) -> None:
         sha = git("rev-parse", "HEAD", cwd=self.clone)
