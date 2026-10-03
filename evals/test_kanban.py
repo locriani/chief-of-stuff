@@ -97,6 +97,20 @@ class HumanHoldTest(unittest.TestCase):
             self.assertEqual(kanban.add_human_hold(ref, home, FLOW, token="test"), "")
         self.assertEqual(write.call_args.args[-1], {"add_labels": FLOW.human_review_label})
 
+    def test_gitlab_holds_an_issue_in_another_project_on_the_same_host(self):
+        home = backlog.Backlog("https://labs.example.test", "team/app", "TEAM_TOKEN")
+        ref = backlog.IssueRef("team/other", 7, "labs.example.test")
+        before = {"labels": ["03 - BUILD"]}
+        after = {"labels": [*before["labels"], FLOW.human_review_label]}
+        with mock.patch.object(kanban.backlog, "_get", side_effect=[(before, {}, ""), (after, {}, "")]) as read, \
+             mock.patch.object(kanban.backlog, "existing_labels", return_value=({FLOW.human_review_label}, "")) as labels, \
+             mock.patch.object(kanban.backlog, "_call", return_value=(after, {}, "")) as write:
+            self.assertEqual(kanban.add_human_hold(ref, home, FLOW, token="test"), "")
+        issue = "https://labs.example.test/api/v4/projects/team%2Fother/issues/7"
+        self.assertEqual(read.call_args_list[0].args[0], issue)
+        self.assertEqual(write.call_args.args[1], issue)
+        self.assertEqual(labels.call_args.args[0], backlog.Backlog("https://labs.example.test", "team/other", "TEAM_TOKEN"))
+
 
 class GitLabUpdaterTest(unittest.TestCase):
     def setUp(self):
@@ -125,6 +139,19 @@ class GitLabUpdaterTest(unittest.TestCase):
         self.assertEqual(method, "PUT")
         self.assertEqual(payload, {"add_labels": "01 - PLAN REVIEW,!! - HUMAN REVIEW REQUIRED",
                                    "remove_labels": "00 - PLAN"})
+
+    def test_an_issue_in_another_project_on_the_host_is_read_and_written_there(self):
+        cfg = backlog.Backlog("https://labs.example.test", "team/app", "TEAM_TOKEN")
+        ref = backlog.IssueRef("team/other", 7, "labs.example.test")
+        with mock.patch.object(kanban.backlog, "_get", side_effect=[(self.before, {}, ""), (self.after, {}, "")]) as read, \
+             mock.patch.object(kanban.backlog, "existing_labels", return_value=(set(FLOW.stages) | {FLOW.human_review_label}, "")) as labels, \
+             mock.patch.object(kanban.backlog, "_call", return_value=(self.after, {}, "")) as write:
+            got = kanban.sync_gitlab(cfg, ref, FLOW, "plan review", token="test", commit=True, expected_stage="plan")
+        self.assertTrue(got.done, got.error)
+        issue = "https://labs.example.test/api/v4/projects/team%2Fother/issues/7"
+        self.assertEqual([c.args[0] for c in read.call_args_list], [issue, issue])
+        self.assertEqual(write.call_args.args[1], issue)
+        self.assertEqual(labels.call_args.args[0], backlog.Backlog("https://labs.example.test", "team/other", "TEAM_TOKEN"))
 
     def test_refuses_missing_configured_label_without_writing(self):
         with mock.patch.object(kanban.backlog, "_get", return_value=(self.before, {}, "")), \

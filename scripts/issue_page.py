@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """One tracker issue's page, `/issues/<n>` (Task.dc.html, "Task page — laptop"), from the trackers and the cached
 forge sources: the header; its merge request (merge order, overlap, pipeline jobs, conflicts, threads); the issue's
-one Flow row; What happens next; Files changed; Architecture (the decision page's module graph); How it got here
+one Flow row; What happens next; Files changed; Architecture (module_graph.py, as on the decision page); How it got here
 (its Log lines); Review; Acceptance (the bullets under the issue body's "Acceptance" heading); its workers; and
 References. pages.py renders it on request into `issue-<n>.html`.
 """
@@ -16,15 +16,17 @@ from pathlib import Path
 
 import board_sources
 import flow_chart
-from decision_page import HEAD, _graph, _md, _section, context, pending_count, span
+import tracker_log
+from decision_page import HEAD, _md, _section, context, pending_count, span
 from fragment import href, tab_bar
+from module_graph import section as _graph
 from clock import dur as _dur
-from render_board import forge_ends
+from task_forge import forge_ends
 from tracker import TRAILING_NUMBER, parse_tracker, resolve_due as _resolve_due
 from workspace import Config, ConfigError, daily_trackers, read_config
 from settings import Graph, SettingsError, load as load_settings
 
-# A worker's outcome by its last launcher move's stage (flow_chart.moves: completed → pr, HUMAN REVIEW → review).
+# A worker's outcome by its last launcher move's stage (tracker_log.moves: completed → pr, HUMAN REVIEW → review).
 ENDED = {"pr": "completed", "review": "human review"}
 # The Flow chart's colours on HEAD's tokens in the dark scheme, as the board sets them (render_board.render).
 CSS = """<style>
@@ -193,8 +195,8 @@ def render(number: int, trackers: list[tuple[date, str]], sources: board_sources
     if not mine:
         return None
     keys = set().union(*map(names, mine))
-    log = sorted((m for day, text in trackers for m in flow_chart.moves(text, day, now.tzinfo)), key=lambda m: m.at)
-    # A forecast runs to the task's due, as the board's Flow chart feeds render_board._end's due.
+    log = sorted((m for day, text in trackers for m in tracker_log.moves(text, day, now.tzinfo)), key=lambda m: m.at)
+    # A forecast runs to the task's due, as the board's Flow chart feeds estimate.task_end's due.
     cfg = cfg or Config("", "", "", getattr(now.tzinfo, "key", "UTC"), (), None, None)
     ends = {t.item: end for t in parse_tracker(trackers[-1][1]).tasks
             if t.kind != "done" and (end := _resolve_due(t.due, cfg, now.date()))}
@@ -224,12 +226,12 @@ def render(number: int, trackers: list[tuple[date, str]], sources: board_sources
     for m in log:
         if not m.launch:
             continue
-        if started := board_sources.STARTED.match(m.line):
+        if started := tracker_log.STARTED_DETAIL.match(m.line):
             stage = next((x.stage for x in reversed(log) if not x.launch and x.at <= m.at and task_of(x) == task_of(m)), m.stage)
             workers.setdefault(started[2], []).append([replace(m, stage=stage), started, None])
             what[m] = f"{escape(stage)} started · {escape(started[2])} · {escape(started[4])}"
-        elif (w := flow_chart.ENDED.match(m.line)) and (runs := workers.get(w[3])):
-            # ponytail: an end pairs with a start on the same day's tracker (flow_chart.moves); a run over midnight
+        elif (w := tracker_log.ENDED.match(m.line)) and (runs := workers.get(w[3])):
+            # ponytail: an end pairs with a start on the same day's tracker (tracker_log.moves); a run over midnight
             # loses its end and counts nothing, pair across days if that shows up.
             runs[-1][2] = m
             what[m] = f"ended {escape(ENDED.get(m.stage, 'ended'))} · {escape(w[3])} · {escape(runs[-1][1][4])}"

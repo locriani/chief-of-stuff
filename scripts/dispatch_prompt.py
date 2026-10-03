@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from backlog import file_with, issue_ref  # noqa: E402
+from backlog_ref import file_with, issue_ref  # noqa: E402
 from md import section as _section  # noqa: E402
 from tracker import parse_tracker, short_name  # noqa: E402
 from workspace import ConfigError, read_config  # noqa: E402
@@ -52,6 +52,9 @@ UNNAMED = "<your_ref_or_name>"
 # Persist assignments and stop reports in the worktree.
 PROMPT_DIR = ".chief-of-stuff"
 STOP_FILE = f"{PROMPT_DIR}/stop.md"
+DISPATCH_FILE = f"{PROMPT_DIR}/dispatch.md"
+# A one-shot worker's last word; the launcher reconciles the row from it.
+RESULT_FILE = f"{PROMPT_DIR}/worker-result.toon"
 # Use the installed inbox script, not a workspace path.
 INBOX_SCRIPT = Path(__file__).resolve().parent / "inbox.py"
 # Antigravity uses the mailbox for session messages.
@@ -337,7 +340,7 @@ def compose(root: Path, day: str | None, task: str, worktree: Path | None = None
             raise RefusedError("one-shot dispatch needs a worktree")
         if rows[0].kind != "open" or rows[0].standing_for(name):
             raise RefusedError("one-shot dispatch needs an open, non-standing task")
-        result = worktree / PROMPT_DIR / "worker-result.toon"
+        result = worktree / RESULT_FILE
         lines = [
             "# One-shot assignment",
             f"You are {name or 'a worker'} in a single, noninteractive {runtime} run. Complete only this task, then exit.",
@@ -446,6 +449,21 @@ def compose(root: Path, day: str | None, task: str, worktree: Path | None = None
     if len(body) > BODY_CAP:
         raise RefusedError(f"the assignment is {len(body)} characters, over the {BODY_CAP} cap")
     return body
+
+
+def write_dispatch(cwd: Path, body: str) -> Path:
+    """Create the ignored assignment file without overwriting an earlier dispatch."""
+    path = cwd / DISPATCH_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    (path.parent / ".gitignore").write_text("*\n")
+    try:
+        with path.open("x") as fh:
+            fh.write(body if body.endswith("\n") else body + "\n")
+    except FileExistsError:
+        raise RefusedError(f"{path} already holds a dispatch; a dispatch gets a tree of its own") from None
+    except OSError as exc:
+        raise RefusedError(f"could not write {path}: {exc}") from None
+    return path
 
 
 def main(argv: list[str] | None = None) -> int:

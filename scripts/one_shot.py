@@ -21,17 +21,16 @@ import runtimes
 import tracker_write
 from _vendor.toon_format import ToonDecodeError, decode as toon_decode, encode as toon_encode
 from md import cells as _cells, is_separator as _is_separator
+from process_status import PIDFILE, running_workers
 from tracker import parse_tracker
+from tracker_log import RELAUNCHED, ended_line, relaunch_line, started_line
 from workspace import worktrees_dir
 from settings import load as load_settings
 from shell_setup import clean_env, login_argv, resolve
 
-RESULT = Path(dispatch_prompt.PROMPT_DIR) / "worker-result.toon"
+RESULT = Path(dispatch_prompt.RESULT_FILE)
 REPORT = Path(dispatch_prompt.PROMPT_DIR) / "one-shot-report.toon"
-# `<launcher pid> <task>` while a one-shot runs in this tree; the count behind `[workers] max_concurrency`.
-PIDFILE = Path(dispatch_prompt.PROMPT_DIR) / "one-shot.pid"
 NO_COMMITS = "No new commits detected"
-RELAUNCHED = ": relaunch requested for {task} — "
 BOOTSTRAP = ("Read {dispatch} first. It is your entire one-shot assignment. Work in {cwd}. "
              "Finish in this invocation and write the requested TOON result before exiting.")
 
@@ -202,7 +201,7 @@ def record_launch(path: Path, task: str, name: str, tree: str, runtime: str, mod
             lines[owned] = f"{cut}; {tree} |\n"
         else:
             lines[owned] = f"{body.rstrip()}; {tree}\n"
-        return tracker_write.append_log("".join(lines), f"- {at} one-shot {name} started: {' '.join(filter(None, (runtime, model)))}, {tree.split(' (')[0]}, task {task}", create=True)
+        return tracker_write.append_log("".join(lines), started_line(at, name, runtime, model, tree, task), create=True)
 
     tracker_write.edit(path, change)
 
@@ -220,11 +219,10 @@ def update_tracker(path: Path, task: str, name: str, owner: str, status: str, re
         if status == "relaunch":
             # Back to unassigned and open: ready, so the coordinator dispatches it again.
             lines[i] = _set_owner_state(lines[i], running, "| unassigned | open |", why)
-            note = f"- {at} one-shot {name}{RELAUNCHED.format(task=task)}{_brief(reason)}."
+            note = relaunch_line(at, name, task, _brief(reason))
         else:
             lines[i] = _set_owner_state(lines[i], running, f"| {owner} | waiting |", why)
-            note = (f"- {at} one-shot {name}: {'completed; awaiting integration' if status == 'done' else 'HUMAN REVIEW NEEDED'}"
-                    f" — {_brief(reason)}. Changes: {_brief(changes)}.")
+            note = ended_line(at, name, status, _brief(reason), _brief(changes))
         return tracker_write.append_log("".join(lines), note, create=True)
 
     tracker_write.edit(path, change)
@@ -271,7 +269,7 @@ def reconcile(root: Path, day: str, task: str, name: str, cwd: Path, exit_code: 
         else:
             errors.append("review hold: workspace has no [kanban] configuration")
         home = (backlog.GitHubBacklog(ref.repo) if ref.host == backlog.GITHUB else
-                backlog.Backlog(cfg.backlog.host, ref.repo, cfg.backlog.env, cfg.backlog.account)
+                cfg.backlog.sibling(ref.repo)
                 if isinstance(cfg.backlog, backlog.Backlog) else None)
         if home is not None:
             body = f"One-shot worker {name} needs human review.\n\nWhy: {reason}\n\nChanges made:\n{summary}"
@@ -287,34 +285,6 @@ def reconcile(root: Path, day: str, task: str, name: str, cwd: Path, exit_code: 
               "reason": reason, "changes": summary, "errors": errors}
     (cwd / REPORT).write_text(toon_encode(report) + "\n")
     return report
-
-
-def _alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
-def running_trees(trees: Path) -> dict[Path, str]:
-    """Each worktree whose one-shot launcher is alive, and its task. A launcher that died, or a restart that
-    killed it, holds no slot. ponytail: pid reuse can count a dead launcher; add the process start time if it bites."""
-    found = {}
-    for f in sorted(trees.glob(f"*/{PIDFILE}")):
-        try:
-            pid, _, task = f.read_text().partition(" ")
-            if _alive(int(pid)):
-                found[f.parent.parent] = task.strip() or f.parent.parent.name
-        except (OSError, ValueError):
-            continue
-    return found
-
-
-def running_workers(trees: Path) -> list[str]:
-    return list(running_trees(trees).values())
 
 
 @contextmanager
@@ -348,7 +318,7 @@ def run(*, root: Path, day: str | None, task: str, cwd: Path, name: str,
     binary = resolve(runtimes.binary(runtime))
     if not binary:
         raise ValueError(f"{runtime} is unavailable in the configured interactive login shell")
-    dispatch = cwd / dispatch_prompt.PROMPT_DIR / "dispatch.md"
+    dispatch = cwd / dispatch_prompt.DISPATCH_FILE
     argv = command(runtime, binary, cwd, dispatch, agent_type=agent_type, model=model, effort=effort)
     if dry_run:
         print("would run one-shot: " + " ".join(shlex.quote(x) for x in argv))
@@ -364,10 +334,9 @@ def run(*, root: Path, day: str | None, task: str, cwd: Path, name: str,
 def _launch(root: Path, cfg, chosen_day: str, task: str, cwd: Path, name: str, runtime: str, model: str,
             body: str, argv: list[str], timeout_minutes: int) -> int:
     # Same clean login-shell path as interactive sessions; auth and user PATH come from shell setup.
-    from spawn_session import write_dispatch
     # Everything that can refuse runs before anything is written; a refused row takes its dispatch back.
     launch_argv, tree = login_argv(argv), _tree_note(root, cwd)
-    written = write_dispatch(cwd, body)
+    written = dispatch_prompt.write_dispatch(cwd, body)
     logs = cwd / dispatch_prompt.PROMPT_DIR
     before_head = git_head(cwd)
     try:

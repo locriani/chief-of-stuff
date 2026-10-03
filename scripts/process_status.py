@@ -16,6 +16,9 @@ import sys
 import runtimes
 from _vendor.toon_format import encode as toon_encode
 
+# `<launcher pid> <task>` while a one-shot runs in this tree; the count behind `[workers] max_concurrency`.
+PIDFILE = Path(".chief-of-stuff") / "one-shot.pid"
+
 
 def registrations(root: Path) -> dict[int, dict[str, str]]:
     result = {}
@@ -50,6 +53,24 @@ def process_exists(pid: int) -> bool:
         return True
     except ProcessLookupError:
         return False
+
+
+def running_trees(trees: Path) -> dict[Path, str]:
+    """Each worktree whose one-shot launcher is alive, and its task. A launcher that died, or a restart that
+    killed it, holds no slot. ponytail: pid reuse can count a dead launcher; add the process start time if it bites."""
+    found = {}
+    for f in sorted(trees.glob(f"*/{PIDFILE}")):
+        try:
+            pid, _, task = f.read_text().partition(" ")
+            if process_exists(int(pid)):
+                found[f.parent.parent] = task.strip() or f.parent.parent.name
+        except (OSError, ValueError):
+            continue
+    return found
+
+
+def running_workers(trees: Path) -> list[str]:
+    return list(running_trees(trees).values())
 
 
 def check(root: Path, pids: list[int]) -> list[dict[str, str | int]]:

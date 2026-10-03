@@ -43,9 +43,9 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 from html import escape
-from urllib.parse import parse_qs, quote, urlsplit
+from urllib.parse import parse_qs, quote
 
-from workspace import ConfigError, daily_trackers, read_config
+from workspace import ConfigError, daily_trackers, pages_address, read_config
 
 SERVER = "chief-of-stuff-pages"
 PID = ".pid"
@@ -104,6 +104,7 @@ def today_board(root: Path) -> str | None:
 def fresh(root: Path, pages_dir: Path, name: str, slots=contextlib.nullcontext()) -> str:
     """Re-render the page `name` when a source is newer than its file, inside one of `slots`. Returns the render
     error, or "". On an error the last good file stays where it is."""
+    # The renderers are imported here, not at the top, to keep `pages.py --ensure` light.
     import decision_page
     import issue_page
     import render_board
@@ -416,13 +417,9 @@ def ensure(pages_dir: Path, port: int, log: Path, root: Path | None = None) -> s
 def from_config(root: Path) -> tuple[Path, int]:
     """(pages dir, port) from the block's Board line."""
     try:
-        cfg = read_config(root)
+        return pages_address(root)
     except (OSError, ConfigError) as e:
         raise PagesError(str(e)) from None
-    port = urlsplit(cfg.board_url or "").port
-    if not cfg.pages_dir or not port:
-        raise PagesError("the Board: line names no `URL http://127.0.0.1:<port>/` and `dir` to serve")
-    return root / cfg.pages_dir, port
 
 
 def main(argv: list[str] | None = None) -> int:

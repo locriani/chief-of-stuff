@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from findings import ORPHANED, UNCLAIMED
 from tree_state import TreeState, at_risk
 
 
@@ -33,7 +34,7 @@ class Orphan:
 
     def __str__(self) -> str:
         who = f"{self.owner!r} [{self.ref}]" if self.ref else f"{self.owner!r}"
-        return f"orphaned work: {self.worktree} — {self.why}, and its owner {who} {self.absence}"
+        return f"{ORPHANED} {self.worktree} — {self.why}, and its owner {who} {self.absence}"
 
 
 @dataclass(frozen=True)
@@ -44,7 +45,7 @@ class Unclaimed:
     why: str
 
     def __str__(self) -> str:
-        return (f"unclaimed work: {self.worktree} — {self.why}; "
+        return (f"{UNCLAIMED} {self.worktree} — {self.why}; "
                 "no File ownership row, worker registration or one-shot names this tree")
 
 

@@ -444,6 +444,7 @@ class DispatchFileTest(unittest.TestCase):
         out, calls = self.spawn()
         self.assertEqual(out.returncode, 1)
         self.assertIn("already", out.stderr)
+        self.assertTrue(out.stderr.startswith("refused: "), out.stderr)
         self.assertEqual((self.tree / ss.PROMPT_FILE).read_text(), "someone else's assignment\n")
         self.assertEqual(calls, [])
 

@@ -18,6 +18,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+import estimate  # noqa: E402
 import md  # noqa: E402
 import render_board as rb  # noqa: E402
 from workspace import parse_coordinator  # noqa: E402
@@ -246,7 +247,7 @@ class BarTest(unittest.TestCase):
         self.cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
         self.tasks = {task.item: task for task in rb.parse_tracker(TRACKER).tasks}
 
-    def bar(self, item: str) -> rb.Bar:
+    def bar(self, item: str) -> estimate.Bar:
         return rb.day_bar(self.tasks[item], self.cfg, NOW)
 
     def test_due_time_closes_the_bar(self) -> None:
@@ -1102,11 +1103,11 @@ class DeadlineScopeTest(unittest.TestCase):
         self.assertEqual((final.scope, final.requirements), ("named", "reqs.md"))
 
     def test_governing_deadline_skips_a_named_only_one(self) -> None:
-        self.assertEqual(rb.governing_deadline(self.cfg, SUNDAY).name, "end of day")
-        self.assertEqual(rb.governing_deadline(self.cfg, SUNDAY).at, datetime(2026, 9, 20, 23, 59, tzinfo=CT))
-        self.assertEqual(rb.governing_deadline(self.governs, SUNDAY).name, "PCCAT 1st attempt")
+        self.assertEqual(estimate.governing_deadline(self.cfg, SUNDAY).name, "end of day")
+        self.assertEqual(estimate.governing_deadline(self.cfg, SUNDAY).at, datetime(2026, 9, 20, 23, 59, tzinfo=CT))
+        self.assertEqual(estimate.governing_deadline(self.governs, SUNDAY).name, "PCCAT 1st attempt")
         before = datetime(2026, 9, 20, 11, 0, tzinfo=CT)
-        self.assertEqual(rb.governing_deadline(self.cfg, before).name, "Final")
+        self.assertEqual(estimate.governing_deadline(self.cfg, before).name, "Final")
         self.assertEqual(rb.nearest_deadline(self.cfg, SUNDAY).name, "PCCAT 1st attempt")
 
     def test_the_horizon_and_the_estimates_stop_at_end_of_day(self) -> None:
@@ -1124,9 +1125,9 @@ class DeadlineScopeTest(unittest.TestCase):
     def test_a_task_that_names_the_exam_still_draws_to_it(self) -> None:
         b = rb.day_bar(self.by["Study"], self.cfg, SUNDAY)
         self.assertEqual((b.end, b.end_src), (datetime(2026, 9, 26, 23, 59, tzinfo=CT), "due"))
-        self.assertEqual(rb._deadline_for(self.by["Study"], b, self.cfg, SUNDAY).name, "PCCAT 1st attempt")
+        self.assertEqual(estimate._deadline_for(self.by["Study"], b, self.cfg, SUNDAY).name, "PCCAT 1st attempt")
         nobody = rb.day_bar(self.by["Nobody's"], self.cfg, SUNDAY)
-        self.assertEqual(rb._deadline_for(self.by["Nobody's"], nobody, self.cfg, SUNDAY).name, "end of day")
+        self.assertEqual(estimate._deadline_for(self.by["Nobody's"], nobody, self.cfg, SUNDAY).name, "end of day")
 
     def test_the_countdown_keeps_the_exam(self) -> None:
         self.assertIn('data-deadline-name="PCCAT 1st attempt"', rb.render(SUNDAY_TRACKER, self.cfg, SUNDAY))
@@ -1199,7 +1200,7 @@ class DecisionDeadlineTest(unittest.TestCase):
         cfg = rb.with_decision_deadlines(self.cfg, tracker, NOW.date())
         exam = next(d for d in cfg.deadlines if d.name == "Exam")
         self.assertEqual(exam.scope, "named")
-        self.assertEqual(rb.governing_deadline(cfg, NOW).name, "Launch")
+        self.assertEqual(estimate.governing_deadline(cfg, NOW).name, "Launch")
 
     def test_future_decision_carries_into_the_next_daily_tracker(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

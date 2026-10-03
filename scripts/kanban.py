@@ -113,10 +113,10 @@ def sync_gitlab(cfg: backlog.Backlog, ref: backlog.IssueRef, config: Kanban, sta
             config.label_for(expected_stage)
         except KeyError:
             return Sync(ref, stage, error=f"unmapped prior stage: {expected_stage}")
-    project = cfg if cfg.project == ref.repo else backlog.Backlog(cfg.host, ref.repo, cfg.env, cfg.account)
+    project = cfg if cfg.project == ref.repo else cfg.sibling(ref.repo)
     secret = token if token is not None else backlog.token(project)
     if not secret:
-        return Sync(ref, stage, error=f"no token: set ${cfg.env} or add it to the Keychain as {cfg.service}")
+        return Sync(ref, stage, error=cfg.missing_token)
     url = f"{project.issues_url}/{ref.number}"
     row, _, error = backlog._get(url, secret, timeout)
     if error:
@@ -258,10 +258,10 @@ def add_human_hold(ref: backlog.IssueRef, home: backlog.Backlog | backlog.GitHub
         return error or ("GitHub review hold was not applied" if label not in updated else "")
     if not isinstance(home, backlog.Backlog) or ref.host != backlog.home_of(home)[0]:
         return "issue host does not match the configured backlog"
-    project = home if home.project == ref.repo else backlog.Backlog(home.host, ref.repo, home.env, home.account)
+    project = home if home.project == ref.repo else home.sibling(ref.repo)
     secret = token if token is not None else backlog.token(project)
     if not secret:
-        return f"no token: set ${home.env} or add it to the Keychain as {home.service}"
+        return home.missing_token
     url = f"{project.issues_url}/{ref.number}"
     row, _, error = backlog._get(url, secret, backlog.TIMEOUT)
     if error:

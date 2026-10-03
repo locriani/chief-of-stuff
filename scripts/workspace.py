@@ -10,9 +10,10 @@ import re
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time
 from pathlib import Path
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
-from backlog import Backlog, BacklogError, GitHubBacklog, parse_backlog
+from backlog_ref import Backlog, BacklogError, GitHubBacklog, parse_backlog
 from clock import DATE, HHMM
 from md import BULLET, cells as _cells, is_separator as _is_separator, section as _section, unmark as _unmark, unquote as _unquote
 
@@ -140,6 +141,15 @@ def parse_coordinator(text: str, today: date) -> Config:
 def read_config(root: Path) -> Config:
     """`root`'s `## Coordinator` block, read from its CLAUDE.md. Raises OSError or ConfigError."""
     return parse_coordinator((root / "CLAUDE.md").read_text(), today=date.today())
+
+
+def pages_address(root: Path) -> tuple[Path, int]:
+    """(pages dir, port) from the block's Board line, where pages.py serves. Raises OSError or ConfigError."""
+    cfg = read_config(root)
+    port = urlsplit(cfg.board_url or "").port
+    if not cfg.pages_dir or not port:
+        raise ConfigError("the Board: line names no `URL http://127.0.0.1:<port>/` and `dir` to serve")
+    return root / cfg.pages_dir, port
 
 
 def worktrees_dir(claude_md: str) -> str:

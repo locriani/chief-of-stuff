@@ -1,4 +1,5 @@
-"""Clock readings as the tracker writes them: `HH:MM`, a `HH:MM–HH:MM` range and a `YYYY-MM-DD[ HH:MM]` date."""
+"""Clock readings as the tracker writes them: `HH:MM` alone or leading a line, a `HH:MM–HH:MM` range and a
+`YYYY-MM-DD[ HH:MM]` date."""
 
 from __future__ import annotations
 
@@ -7,6 +8,8 @@ from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 HHMM = re.compile(r"^(\d{1,2}):(\d{2})$")
+# The clock a Log line or a tracker cell starts with; whatever follows it is the line's own text.
+LEADING = re.compile(r"^\s*(\d{1,2}):(\d{2})\b")
 # Accept both separators in a completed time range.
 RAN = re.compile(r"^(\d{1,2}:\d{2})[–-](\d{1,2}:\d{2})$")
 DATE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{1,2}):(\d{2}))?$")
@@ -16,6 +19,15 @@ def hhmm(value: str, day: date, zone: ZoneInfo) -> datetime | None:
     m = HHMM.match(value.strip())
     try:
         return datetime.combine(day, time(int(m[1]), int(m[2])), tzinfo=zone) if m else None
+    except ValueError:  # 24:00, 9:75: not a clock, so no clock
+        return None
+
+
+def leading(text: str | None, day: date, zone: ZoneInfo) -> datetime | None:
+    """The `HH:MM` `text` starts with, on `day`; None when it starts with no clock."""
+    m = LEADING.match(text or "")
+    try:
+        return datetime.combine(day, time(int(m[1]), int(m[2])), zone) if m else None
     except ValueError:  # 24:00, 9:75: not a clock, so no clock
         return None
 

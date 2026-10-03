@@ -9,9 +9,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from one_shot import running_trees
 from orphans import Claim
-from process_status import process_exists, registrations
+from process_status import process_exists, registrations, running_trees
 
 Claims = dict[Path, list[Claim]]
 

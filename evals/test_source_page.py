@@ -9,7 +9,7 @@ The module the implementer creates is `scripts/source_page.py` with
 
 `render` returns None when no task in `trackers` names issue `number` (as issue_page.render). The change is the one the
 sources say closes the issue; its diff is read from the clone at `root / graph.clone`, fetched and merge-based as
-decision_page._draw does. `write` writes `<pages_dir>/issue-<n>-source.html`, or removes it and returns None when
+module_graph.draw does. `write` writes `<pages_dir>/issue-<n>-source.html`, or removes it and returns None when
 `render` does. pages.py serves it at `GET /issues/<n>/source`.
 
 Markup contract these tests read (keep to it; everything else is free):

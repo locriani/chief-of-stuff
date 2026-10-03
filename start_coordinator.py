@@ -18,10 +18,13 @@ from pathlib import Path
 
 from scripts import runtimes
 from scripts._vendor.toon_format import ToonDecodeError, decode as toon_decode
+from scripts.findings import WATCHED
 from scripts.shell_setup import ShellError, login_argv, resolve
 
 SOURCE = Path(__file__).resolve().parent
 WATCH_INTERVAL = 5 * 60
+# The audit lines the watcher forwards: those starting with a watched finding, in any case.
+FINDING = re.compile("(?i)^(" + "|".join(re.escape(prefix) for prefix in WATCHED) + ")")
 
 
 class Refused(ValueError):
@@ -164,8 +167,7 @@ def check_once(root: Path, release: Path) -> str:
             lines.append(f"{len(unread)} unread coordinator message(s)")
     except (ValueError, ToonDecodeError):
         lines.append("coordinator inbox could not be parsed")
-    findings = [line for line in audit.stdout.splitlines()
-                if re.match(r"(?i)^(orphaned work:|stopped:|reopen:|issue:|lane:|kanban:|decision queue:|next decision:|overdue:|waiting:)", line)]
+    findings = [line for line in audit.stdout.splitlines() if FINDING.match(line)]
     lines.extend(findings)
     if audit.returncode and not findings:
         lines.append(f"audit exit {audit.returncode}: {audit.stderr.strip()[:120] or 'no findings printed'}")

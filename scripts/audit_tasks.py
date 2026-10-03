@@ -16,6 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from clock import HHMM, RAN, dur as _dur, hhmm as _hhmm  # noqa: E402
+from findings import ISSUE, KANBAN, LANE, NEXT, OVER, QUEUE, REOPEN, STOPPED  # noqa: E402
 from md import cells as _cells, is_separator as _is_separator, section as _section, unmark as _unmark  # noqa: E402
 from tracker import clip_name, parse_tracker  # noqa: E402
 from workspace import ConfigError, parse_coordinator, read_config, worktrees_dir  # noqa: E402
@@ -62,7 +63,7 @@ class Reopen:
     why: str
 
     def __str__(self) -> str:
-        return f"reopen: {clip_name(self.task)} — {self.worktree}: {self.why}"
+        return f"{REOPEN} {clip_name(self.task)} — {self.worktree}: {self.why}"
 
 
 @dataclass(frozen=True)
@@ -80,7 +81,7 @@ class Stop:
         kind = self.kind or "kind unstated"
         if kind == UNREADABLE:
             kind = "a stop file that is unreadable"
-        return f"stopped: {clip_name(self.task)} — {self.worktree}: {kind}{who}, and the task still reads {self.state!r}"
+        return f"{STOPPED} {clip_name(self.task)} — {self.worktree}: {kind}{who}, and the task still reads {self.state!r}"
 
 
 @dataclass(frozen=True)
@@ -91,7 +92,7 @@ class QueueFault:
     why: str
 
     def __str__(self) -> str:
-        return f"decision queue: {self.row} — {self.why}"
+        return f"{QUEUE} {self.row} — {self.why}"
 
 
 @dataclass(frozen=True)
@@ -102,7 +103,7 @@ class IssueFault:
     why: str
 
     def __str__(self) -> str:
-        return f"issue: {self.task} — {self.why}"
+        return f"{ISSUE} {self.task} — {self.why}"
 
 
 def _closed_hhmm(closed_at: str, zone) -> str:
@@ -131,6 +132,15 @@ def _tree_unlanded(root: Path | None, trees: str, owners: list, task) -> bool:
     return False
 
 
+def _config_for(home: Backlog | GitHubBacklog, host: str, repo: str) -> Backlog | GitHubBacklog:
+    """The config that reads `repo` on `host`: the home itself, a GitHub repo, or another project on the home's
+    GitLab host. The home is checked first. one_shot checks GitHub first; the two orders part only for a GitLab
+    `Backlog:` line whose host is github.com."""
+    # issue_ref admits a GitLab URL only on the Backlog's own host, so its token never leaves that host.
+    return (home if (host, repo) == home_of(home) else GitHubBacklog(repo)
+            if host == GITHUB else replace(home, project=repo))
+
+
 def issue_faults(tasks, home: Backlog | GitHubBacklog, gh=None, lanes: dict | None = None,
                  root: Path | None = None, trees: str = "", owners: list | None = None,
                  zone=None) -> list[IssueFault]:
@@ -152,9 +162,7 @@ def issue_faults(tasks, home: Backlog | GitHubBacklog, gh=None, lanes: dict | No
             refs[task] = ref
     states: dict[tuple[str, str], dict] = {}
     for want in sorted({(r.host, r.repo) for r in refs.values()}):
-        # issue_ref admits a GitLab URL only on the Backlog's own host, so its token never leaves that host.
-        cfg = (home if want == home_of(home) else GitHubBacklog(repo=want[1]) if want[0] == GITHUB
-               else replace(home, project=want[1]))
+        cfg = _config_for(home, *want)
         try:
             states[want] = issue_states(cfg, gh=gh)
         except BacklogError as e:
@@ -191,7 +199,7 @@ class LaneFault:
     why: str
 
     def __str__(self) -> str:
-        return f"lane: {self.task} — {self.why}"
+        return f"{LANE} {self.task} — {self.why}"
 
 
 def lane_faults(tasks, lanes: dict, settings_path: str | None) -> list[LaneFault]:
@@ -215,7 +223,7 @@ class KanbanFault:
     why: str
 
     def __str__(self) -> str:
-        return f"kanban: {self.task} — {self.why}"
+        return f"{KANBAN} {self.task} — {self.why}"
 
 
 def kanban_faults(tasks, home: Backlog | GitHubBacklog, config: Kanban, gh=None) -> list[KanbanFault]:
@@ -229,8 +237,7 @@ def kanban_faults(tasks, home: Backlog | GitHubBacklog, config: Kanban, gh=None)
             selected.append((task, ref))
     states = {}
     for host, repo in sorted({(ref.host, ref.repo) for _, ref in selected}):
-        cfg = (home if (host, repo) == home_of(home) else GitHubBacklog(repo)
-               if host == GITHUB else replace(home, project=repo))
+        cfg = _config_for(home, host, repo)
         try:
             states[(host, repo)] = issue_states(cfg, gh=gh)
         except BacklogError as exc:
@@ -273,7 +280,7 @@ class OverBudget:
     budget: timedelta
 
     def __str__(self) -> str:
-        return f"over budget: {self.task} running {_dur(self.ran)} ({self.size} {_dur(self.budget)})"
+        return f"{OVER} {self.task} running {_dur(self.ran)} ({self.size} {_dur(self.budget)})"
 
 
 def over_budget(tasks, budgets: dict, day: str, now: datetime) -> list[OverBudget]:
@@ -511,7 +518,7 @@ def group_reopens(reopens: list[Reopen]) -> list[str]:
     out = []
     for worktree, why in order:
         names = tasks[(worktree, why)]
-        head = f"reopen: {worktree}: {why} — {len(names)} done task{'' if len(names) == 1 else 's'}"
+        head = f"{REOPEN} {worktree}: {why} — {len(names)} done task{'' if len(names) == 1 else 's'}"
         out.append(f"{head}: {', '.join(names)}")
     return out
 
@@ -640,7 +647,7 @@ def queue_faults(tracker_text: str) -> tuple[list[QueueFault], list[str], int]:
     if open_rows:
         num, decision = open_rows[0]
         # Strip Markdown before printing the decision name.
-        lines.append(f"next decision: {num} — {clip_name(_unmark(decision))}")
+        lines.append(f"{NEXT} {num} — {clip_name(_unmark(decision))}")
     return faults, lines, len(open_rows)
 
 
