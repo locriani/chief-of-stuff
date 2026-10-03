@@ -116,10 +116,29 @@ class TrackerReadTest(unittest.TestCase):
         return [] if out.strip() == "[]" else toon_decode(out)
 
     # Field report, 0.56.0: "three rounds of hand-rolled sed and awk. They found the sections, read the Resume block, and listed the open tasks"
-    def test_sections_prints_the_headings_one_per_line(self):
+    # Eval finding on #46: the coordinator ran `grep -n "^## " <tracker>` for each heading's line number, to Read that region.
+    def test_sections_prints_each_headings_line_number_and_name_in_file_order(self):
         code, out, err = self.run_cli("sections")
         self.assertEqual(code, 0, err)
-        self.assertEqual([line.removeprefix("## ").strip() for line in out.splitlines() if line.strip()], HEADINGS)
+        lines = TRACKER.splitlines()
+        for line in out.splitlines():
+            self.assertRegex(line, r"^\d+ \S", "each line is `<line number> <name>`")
+        printed = [line.split(" ", 1) for line in out.splitlines()]
+        for number, name in printed:
+            with self.subTest(heading=name):
+                # 1-based, as the Read tool and an editor count: the line at that number is the heading itself.
+                self.assertEqual(lines[int(number) - 1], f"## {name}")
+        self.assertEqual([name for _, name in printed], [line[3:] for line in lines if line.startswith("## ")])
+
+    def test_every_name_sections_prints_can_be_passed_to_section(self):
+        _, out, _ = self.run_cli("sections")
+        names = [line.partition(" ")[2] for line in out.splitlines()]
+        self.assertEqual(len(names), len(HEADINGS))
+        for name in names:
+            with self.subTest(section=name):
+                code, body, err = self.run_cli("section", name)
+                self.assertEqual(code, 0, err)
+                self.assertEqual(body.strip("\n"), "\n".join(section(TRACKER, f"## {name}")).strip("\n"))
 
     # Field report, 0.56.0: "`chief-of-stuff tracker --section Resume` and `--tasks open` (and one for Sessions) would make each read one call"
     def test_section_prints_the_body_as_written(self):
