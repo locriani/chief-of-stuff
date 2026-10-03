@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""Probe the `Health:` targets in a workspace `## Coordinator` block and print one line each.
+"""Probe the `Health:` targets in a workspace `## Coordinator` block and print one line each, after
+one line for the file its `Settings:` line names, loaded through the settings loader.
 
 The coordinator runs this on open and on resume instead of remembering what was up an hour ago.
 One invocation covers every target, so a restart costs one call rather than one per service.
 
     python3 probe_health.py --config /path/to/CLAUDE.md
 
-Exit code is the number of targets that did not answer as expected, so a caller can branch on it
-without parsing. Every target gets a line even when it fails: a missing line would read as a
-healthy service.
+Exit code is the number of failed checks: the targets that did not answer as expected, plus one when
+the settings file cannot be loaded. A caller can branch on it without parsing. Every target gets a
+line even when it fails: a missing line would read as a healthy service. No `Settings:` line is no
+settings line, and a settings file that is not there is the defaults, not a fault.
 """
 
 from __future__ import annotations
@@ -22,7 +24,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from settings import SettingsError, load as load_settings
+from workspace import _first_path
+
 HEALTH = re.compile(r"^\s*(?:[-*]\s*)?Health:\s*(.+?)\s*$", re.MULTILINE)
+SETTINGS = re.compile(HEALTH.pattern.replace("Health", "Settings"), re.MULTILINE)
 SCHEMES = ("http", "https")
 TIMEOUT = 3.0
 
@@ -81,10 +88,26 @@ def parse_target(spec: str) -> Target:
     return Target(name, url, expect)
 
 
+def _block(path: Path) -> str:
+    return "\n".join(_section(path.read_text(), "## Coordinator"))
+
+
 def targets_from_config(path: Path) -> list[Target]:
     """Every `Health:` line inside the `## Coordinator` block. No block, no targets, no error."""
-    body = "\n".join(_section(path.read_text(), "## Coordinator"))
-    return [parse_target(m.group(1)) for m in HEALTH.finditer(body)]
+    return [parse_target(m.group(1)) for m in HEALTH.finditer(_block(path))]
+
+
+def check_settings(config: Path) -> tuple[str, int] | None:
+    """The line and fault count for the block's `Settings:` file, loaded from the config's directory. None without the line."""
+    m = SETTINGS.search(_block(config))
+    name = _first_path(m.group(1)) if m else None
+    if not name:
+        return None
+    try:
+        load_settings(config.parent, name)
+    except (SettingsError, UnicodeDecodeError, OSError) as exc:  # schema or TOML, not UTF-8, unreadable
+        return f"settings {name} invalid: {exc}", 1
+    return f"settings {name} ok", 0
 
 
 def _safe(url: str) -> str:
@@ -123,7 +146,7 @@ def report(targets: list[Target], timeout: float = TIMEOUT) -> tuple[list[str], 
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Probe the Health: targets in a ## Coordinator block.")
+    parser = argparse.ArgumentParser(description="Check the Settings: file and probe the Health: targets in a ## Coordinator block.")
     parser.add_argument("--config", default="CLAUDE.md", help="workspace CLAUDE.md holding the block")
     parser.add_argument("--timeout", type=float, default=TIMEOUT, help="seconds per target")
     args = parser.parse_args(argv)
@@ -132,6 +155,9 @@ def main(argv: list[str] | None = None) -> int:
     if not config.is_file():
         print(f"no config at {config}", file=sys.stderr)
         return 2
+    text, bad = check_settings(config) or ("", 0)
+    if text:
+        print(text)
     try:
         targets = targets_from_config(config)
     except TargetError as exc:
@@ -139,11 +165,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if not targets:
         print("no Health: targets in the ## Coordinator block")
-        return 0
-    lines, bad = report(targets, args.timeout)
+        return bad
+    lines, failed = report(targets, args.timeout)
     for text in lines:
         print(text)
-    return bad
+    return bad + failed
 
 
 if __name__ == "__main__":
