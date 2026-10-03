@@ -20,7 +20,7 @@ import findings  # noqa: E402
 import start_coordinator as start  # noqa: E402
 
 # The watcher's pattern as it was typed before it was built from `findings.WATCHED`.
-LITERAL = re.compile(r"(?i)^(orphaned work:|stopped:|reopen:|issue:|lane:|kanban:|decision queue:|next decision:|overdue:|waiting:)")
+LITERAL = re.compile(r"(?i)^(orphaned work:|stopped:|reopen:|issue:|merged:|lane:|kanban:|decision queue:|next decision:|overdue:|waiting:)")
 
 TRACKER = """## Decision queue
 
@@ -43,6 +43,7 @@ FINDINGS = {
     al.Stop: (findings.STOPPED, al.Stop("Build it", "blocked", "coordinator", "tree (feat)", "running 10:00")),
     al.QueueFault: (findings.QUEUE, al.QueueFault("row 1", "carries the number 1 twice, so there is no next one")),
     al.IssueFault: (findings.ISSUE, al.IssueFault("Build it", "no issue")),
+    al.MergedFault: (findings.MERGED, al.MergedFault("Build it", "!12 merged into main abc1234")),
     al.LaneFault: (findings.LANE, al.LaneFault("Build it", "lane review but no stage")),
     al.KanbanFault: (findings.KANBAN, al.KanbanFault("Build it", "expected 03, found 00")),
     al.OverBudget: (findings.OVER, al.OverBudget("Build it", timedelta(hours=3), "S", timedelta(hours=1))),
@@ -94,6 +95,7 @@ class WatcherPatternTest(unittest.TestCase):
         "Reopen: x", "ORPHANED WORK: x", "Next Decision: 1 — x", "Overdue: x", "WAITING:", "lane:x", "issue:",
         " issue: indented", "issues: x", "reopen x", "orphaned  work: x", "orphaned-work: x", "decision queue x",
         "stopped:\ttab", "x reopen: later in the line", "Kanban: a Kelvin sign folds to k",
+        "Merged: x", "merged x", "merges: x", "tasks=1 trees=0 reopen=0 orphaned=0 stopped=0 issues=0 merged=1",
     ]
 
     def test_the_watched_words_are_the_typed_ones_in_their_order(self):

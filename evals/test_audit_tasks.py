@@ -9,6 +9,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -19,7 +20,10 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import audit_tasks as al  # noqa: E402
+import board_sources as bs  # noqa: E402
+import test_board_sources as tbs  # noqa: E402  (module-qualified: don't re-collect its TestCases)
 from tracker import short_name  # noqa: E402
 
 CLAUDE = """# Workspace
@@ -1160,12 +1164,12 @@ class FakeGh:
 LIVE = {"o/backlog": {5: "CLOSED", 7: "OPEN", 8: "OPEN"}, "x/y": {2: "OPEN"}}
 
 
-def issue_workspace(claude: str = ISSUE_CLAUDE) -> tuple[tempfile.TemporaryDirectory, Path]:
+def issue_workspace(claude: str = ISSUE_CLAUDE, tracker: str = ISSUE_TRACKER) -> tuple[tempfile.TemporaryDirectory, Path]:
     tmp = tempfile.TemporaryDirectory()
     root = Path(tmp.name)
     (root / "daily").mkdir()
     (root / "CLAUDE.md").write_text(claude)
-    (root / "daily" / "2026-09-17-tracker.md").write_text(ISSUE_TRACKER)
+    (root / "daily" / "2026-09-17-tracker.md").write_text(tracker)
     return tmp, root
 
 
@@ -1173,20 +1177,25 @@ def issue_workspace(claude: str = ISSUE_CLAUDE) -> tuple[tempfile.TemporaryDirec
 GITLAB_CLAUDE = CLAUDE + "- Backlog: GitLab; host https://gl.example; project o/backlog\n"
 
 
+def gitlab_issues(case: unittest.TestCase):
+    """`backlog.issues` patched so the GitLab Backlog's list is LIVE's `o/backlog`; a GitHub repo is still `gh`'s."""
+    import backlog as bl
+    real = bl.issues
+
+    def fake(cfg, state="opened", **kw):
+        if isinstance(cfg, bl.Backlog):
+            case.assertEqual((cfg.host, cfg.project, state), ("https://gl.example", "o/backlog", "all"))
+            return bl.Fetch(issues=tuple(bl.Issue(n, "t", bl.CLOSED if s == "CLOSED" else bl.OPEN)
+                                         for n, s in LIVE["o/backlog"].items()))
+        return real(cfg, state=state, **kw)
+    return patch.object(bl, "issues", fake)
+
+
 class GitLabIssueAuditTest(unittest.TestCase):
     def test_a_gitlab_backlog_is_audited(self):
-        import backlog as bl
         tmp, root = issue_workspace(GITLAB_CLAUDE)
         self.addCleanup(tmp.cleanup)
-        real = bl.issues
-
-        def fake(cfg, state="opened", **kw):
-            if isinstance(cfg, bl.Backlog):
-                self.assertEqual((cfg.host, cfg.project, state), ("https://gl.example", "o/backlog", "all"))
-                return bl.Fetch(issues=tuple(bl.Issue(n, "t", bl.CLOSED if s == "CLOSED" else bl.OPEN)
-                                             for n, s in LIVE["o/backlog"].items()))
-            return real(cfg, state=state, **kw)
-        with patch.object(bl, "issues", fake):
+        with gitlab_issues(self):
             report = al.audit(root, "2026-09-17", gh=FakeGh(LIVE))
         self.assertEqual([str(f) for f in report.issues], [
             "issue: Bare — no issue; file it with chief-of-stuff backlog --create",
@@ -1474,3 +1483,337 @@ class BudgetAuditTest(unittest.TestCase):
         report = al.audit(self.root, "2026-09-17", now=datetime(2026, 9, 17, 23, 0, tzinfo=ZoneInfo("America/Chicago")))
         self.assertEqual(report.over, [])
         self.assertNotIn("over=", report.lines[-1])
+
+
+
+
+# #45: "When a task's item names a merge request or pull request that has merged, the task still reads as
+# stalled." The rule: a merged change on a task that isn't done is a `merged:` finding that says how to clear
+# it: write the task done once the change is on main and green there, or write "merged" after the ref. The forge is
+# injected (`gh` for GitHub, `call` for GitLab), so nothing here touches the network.
+MERGE_SHA, OTHER_SHA = "c0ffee1" + "d" * 33, "b01dfac" + "e" * 33
+FORBIDDEN_13 = {"type": "FORBIDDEN", "path": ["repository", "n13"], "message": "Resource not accessible"}
+GL_URL, GH_URL = "https://gl.example/o/backlog/-/merge_requests/12", "https://github.com/o/backlog/pull/12"
+
+CHANGE_TRACKER = ISSUE_TRACKER.split("| Bare |")[0] + "{rows}\n\n## Log\n\n- 09:00 opened the day\n"
+STANDING_ROW = "| impl-3 — standing implementer | impl-3: standing implementer; wait idle | impl-3 | open | 09:00 |  |  |  | !12, PR #12 |"
+
+
+def change_row(names: str, name: str = "Search", state: str = "running 09:10", issue: str = "#8",
+               item: str = "Search pagination") -> str:
+    """A task row whose checklist is `names`: what it says of its change (`!12`, `PR #12`, or the change's URL)."""
+    return f"| {name} | {item} | robin | {state} | 09:00 |  | S | {issue} | {names} |"
+
+
+def change_tracker(*rows: str) -> str:
+    return CHANGE_TRACKER.format(rows="\n".join(rows))
+
+
+def home(claude: str):
+    return al.parse_coordinator(claude, today=datetime.now().date()).backlog
+
+
+def printed(ref: str) -> str:
+    """A change's ref as a row spells it: `!12` on GitLab, `PR #12` on GitHub, where a bare `#12` is an issue."""
+    return f"PR {ref}" if ref.startswith("#") else ref
+
+
+def change(ref: str, state: str = "merged", base: str = "release", sha: str = MERGE_SHA):
+    """A change as `board_sources.change_states` answers it; only a merged one carries a merge sha."""
+    return bs.ChangeState(ref, state, base, sha if state == "merged" else "")
+
+
+class MergedChangeRuleTest(unittest.TestCase):
+    """`merged_faults(tasks, changes, home, answered=True)`: one fault per live task (not standing, not done, its
+    issue not in another repo) for the changes its row names and does not record as merged, unless one is open."""
+
+    def faults(self, claude: str, *rows: str, changes: dict, **kw) -> list:
+        return al.merged_faults(al.parse_tracker(change_tracker(*rows)).tasks, changes, home(claude), **kw)
+
+    def test_an_unacknowledged_merged_change_on_a_live_task_is_one_fault(self):
+        """The fault lists "each merged one as `<ref> merged into <base> <sha7>`", joined by `, `. On GitHub
+        "the fault prints the ref the way a row spells it, `PR #277 merged into main 294cb30`"; the `changes`
+        keys stay `#N` / `!N`."""
+        gitlab, github = {"!12": change("!12")}, {"#12": change("#12")}
+        both = {**gitlab, "!10": change("!10", sha=OTHER_SHA)}
+        pulls = {**github, "#13": change("#13", sha=OTHER_SHA)}
+        cases = (
+            ("GitLab !N", GITLAB_CLAUDE, change_row("!12"), gitlab, ["!12"]),
+            ("GitLab change URL", GITLAB_CLAUDE, change_row(GL_URL, state="open"), gitlab, ["!12"]),
+            ("GitHub PR #N", ISSUE_CLAUDE, change_row("PR #12", state="waiting"), github, ["#12"]),
+            ("GitHub change URL", ISSUE_CLAUDE, change_row(GH_URL, state="orphaned"), github, ["#12"]),
+            ("every merged ref", GITLAB_CLAUDE, change_row("!10 then !12"), both, ["!10", "!12"]),
+            ("one acknowledged, one not", GITLAB_CLAUDE, change_row("!10 merged, then !12"), both, ["!12"]),
+            # The issue cell is part of the row scan.
+            ("a change URL in the issue cell", GITLAB_CLAUDE, change_row("c", issue=GL_URL), gitlab, ["!12"]),
+            # Acknowledged is "the ref, then only non-word characters, then the word `merged`". These are not.
+            ("waiting for the merge", GITLAB_CLAUDE, change_row("waiting for !12 to be merged"), gitlab, ["!12"]),
+            ("a bare mention", ISSUE_CLAUDE, change_row("Fix the regression PR #12 introduced"), github, ["#12"]),
+            ("a longer word", GITLAB_CLAUDE, change_row("!12 mergedx"), gitlab, ["!12"]),
+            # "only `PR #277 merged` or the URL form acknowledges"
+            ("the bare number says merged", ISSUE_CLAUDE, change_row("#12 merged, held", item="Search pagination, PR #12"), github, ["#12"]),
+            # "The second form still names #9001 (we do not parse prose after the ref)."
+            ("another repo named after the ref", ISSUE_CLAUDE, change_row("upstream PR #12 in cli/cli"), github, ["#12"]),
+            # "a loud wrong finding that the reader can clear beats a silent miss": whatever comes before `PR`,
+            # the row names the home repo's #12, because "the audit cannot tell prose from a repo name".
+            ("another repo named before the ref", ISSUE_CLAUDE, change_row("blocked on upstream cli/cli PR #12"), github, ["#12"]),
+            ("a remote branch ends the sentence before", ISSUE_CLAUDE, change_row("Rebased onto origin/main. PR #12 is up"), github, ["#12"]),
+            ("a branch named before the ref", ISSUE_CLAUDE, change_row("pushed feat/search PR #12"), github, ["#12"]),
+            ("the home URL, then another ref", ISSUE_CLAUDE, change_row(f"{GH_URL} PR #13"), pulls, ["#12", "#13"]),
+            # "a ref and a following `merged` in the NEXT cell never combine"
+            ("merged starts the next cell", GITLAB_CLAUDE,
+             change_row("c", name="Search for !12", item="merged docs follow"), gitlab, ["!12"]),
+            ("merged starts the cell after an empty one", GITLAB_CLAUDE,
+             change_row("merged docs follow", item="Search waits on !12", issue=""), gitlab, ["!12"]),
+            # "Repo and host compared case-insensitively"; "No issue cell, or an unparseable one, is live."
+            ("its issue names the home repo in another case", ISSUE_CLAUDE, change_row("PR #12", issue="O/Backlog#8"), github, ["#12"]),
+            ("it has no issue", ISSUE_CLAUDE, change_row("PR #12", issue=""), github, ["#12"]),
+            ("its issue cell is not a reference", ISSUE_CLAUDE, change_row("PR #12", issue="TBD"), github, ["#12"]),
+        )
+        for what, claude, row, changes, refs in cases:
+            with self.subTest(what):
+                faults = self.faults(claude, row, changes=changes)
+                self.assertEqual(len(faults), 1, faults)
+                line = str(faults[0])
+                self.assertTrue(line.startswith("merged: Search"), line)
+                said = line.split(" — ", 1)[1]
+                for ref, c in changes.items():
+                    if ref in refs:
+                        # Seven characters of the sha, and no more, end what is said of each change.
+                        self.assertRegex(said, rf"{re.escape(printed(ref))} merged into {c.base} {c.merge_sha[:7]}(?=[,;]|$)")
+                    else:
+                        self.assertNotIn(ref, said)
+                # "a merged line tells the reader both ways to clear it": the task is done only once the change
+                # is on main and green there, or the row records the merge by writing "merged" after the ref.
+                _, cut, how = said.partition("; ")
+                self.assertTrue(cut, line)
+                for word in (r"\bdone\b", r"\bmain\b", '"merged"', r"\bafter\b"):
+                    self.assertRegex(how, word)
+
+    def test_the_refs_in_a_line_are_in_ascending_number_order(self):
+        """"Refs in a line are in ascending number order", however the row orders them."""
+        changes = {ref: change(ref) for ref in ("!9", "!10", "!12")}
+        line = str(self.faults(GITLAB_CLAUDE, change_row("!12 after !9, with !10"), changes=changes)[0])
+        self.assertEqual(re.findall(r"!\d+", line), ["!9", "!10", "!12"])
+
+    def test_a_merge_with_no_sha_leaves_no_gap_in_the_line(self):
+        """A merged ref reads `<ref> merged into <base> <sha7>`, with "no gap when the sha is empty"."""
+        line = str(self.faults(GITLAB_CLAUDE, change_row("!12"), changes={"!12": change("!12", sha="")})[0])
+        self.assertIn("!12 merged into release", line)
+        for gap in ("  ", " ;"):
+            self.assertNotIn(gap, line)
+
+    def test_a_named_change_the_forge_does_not_have_is_not_found(self):
+        """The fault lists, "only when `answered`, each missing one as `<ref> not found`", beside the merged
+        ones; "a line with only not-found refs has no instruction clause". On GitHub "not-found reads
+        `PR #999 not found`"."""
+        merged = {"!12": change("!12")}
+        self.assertEqual([str(f) for f in self.faults(GITLAB_CLAUDE, change_row("!12"), changes={})],
+                         ["merged: Search — !12 not found"])
+        self.assertEqual([str(f) for f in self.faults(ISSUE_CLAUDE, change_row("PR #999"), changes={})],
+                         ["merged: Search — PR #999 not found"])
+        for answered, found in ((True, True), (False, False)):
+            with self.subTest("beside a merged one", answered=answered):
+                faults = self.faults(GITLAB_CLAUDE, change_row("!12 then !99"), changes=merged, answered=answered)
+                self.assertEqual(len(faults), 1, faults)
+                for part in ("!12 merged into release", MERGE_SHA[:7]):
+                    self.assertIn(part, str(faults[0]))
+                self.assertEqual("!99 not found" in str(faults[0]), found, faults)
+        # A forge that answered with an error may only have left the change out.
+        self.assertEqual(self.faults(GITLAB_CLAUDE, change_row("!12"), changes={}, answered=False), [])
+
+    def test_an_open_change_clears_only_the_task_that_names_it(self):
+        """"Unless one is open" is per task: another task's merged change is still its own finding."""
+        faults = self.faults(GITLAB_CLAUDE, change_row("!12"), change_row("!13", name="Export"),
+                             changes={"!12": change("!12", "open"), "!13": change("!13")})
+        self.assertEqual([f.task for f in faults], ["Export"])
+
+    def test_no_fault(self):
+        gitlab, github = {"!12": change("!12")}, {"#12": change("#12")}
+        opened = {"!12": change("!12", "open")}
+        cases = (
+            ("its change is closed", GITLAB_CLAUDE, change_row("!12"), {"!12": change("!12", "closed")}),
+            # "Any open unacknowledged named change: no fault."
+            ("its change is open", GITLAB_CLAUDE, change_row("!12"), opened),
+            ("a later change is still open", GITLAB_CLAUDE, change_row("!10 then !12"), {**opened, "!10": change("!10")}),
+            ("one is open and one is missing", GITLAB_CLAUDE, change_row("!12 then !99"), opened),
+            # "Live task: not standing, not done, issue not in another repo."
+            ("the task is done", GITLAB_CLAUDE, change_row("!12", state="done 09:00–10:00"), gitlab),
+            ("the row is a standing session's", GITLAB_CLAUDE, STANDING_ROW, gitlab),
+            ("its issue is in another repo", ISSUE_CLAUDE, change_row("PR #12", issue="x/y#2"), github),
+            ("its issue is in another project on the host", GITLAB_CLAUDE,
+             change_row("!12", issue="https://gl.example/g/other/-/issues/2"), gitlab),
+            # "Issue not in another repo, host compared": on a GitLab home the short form reads as GitHub's o/backlog.
+            ("its issue is the home project's name on another host", GITLAB_CLAUDE, change_row("!12", issue="o/backlog#8"), gitlab),
+            # "Acknowledged = the ref, then only non-word characters, then the word `merged` ... case-insensitive"
+            ("!12 merged", GITLAB_CLAUDE, change_row("!12 merged, held for the release note"), gitlab),
+            ("!12, merged", GITLAB_CLAUDE, change_row("!12, merged"), gitlab),
+            ("**!12** merged", GITLAB_CLAUDE, change_row("**!12** merged"), gitlab),
+            ("`!12` merged", GITLAB_CLAUDE, change_row("`!12` merged"), gitlab),
+            ("!12 MERGED", GITLAB_CLAUDE, change_row("!12 MERGED"), gitlab),
+            ("<url> merged", GITLAB_CLAUDE, change_row(f"{GL_URL} merged"), gitlab),
+            ("PR #12 (merged)", ISSUE_CLAUDE, change_row("PR #12 (merged)"), github),
+            ("PR #12: merged", ISSUE_CLAUDE, change_row("PR #12: Merged; deploy pending"), github),
+            ("[PR #12](<pull url>) merged", ISSUE_CLAUDE, change_row(f"[PR #12]({GH_URL}) merged"), github),
+            ("<pull url> merged", ISSUE_CLAUDE, change_row(f"{GH_URL} merged"), github),
+            ("an acknowledged change the forge does not have", GITLAB_CLAUDE, change_row("!12 merged"), {}),
+        )
+        for what, claude, row, changes in cases:
+            with self.subTest(what):
+                self.assertEqual(self.faults(claude, row, changes=changes), [])
+
+
+def gl_change(iid: int, state: str = "merged") -> dict:
+    return {**tbs.gl_mr(iid), "state": state, "mergeCommitSha": MERGE_SHA if state == "merged" else None}
+
+
+class ForgeGh(FakeGh):
+    """FakeGh for `issue list`, and test_board_sources' FakePulls for `api graphql`."""
+
+    def __init__(self, repos: dict, *pulls: dict, **answer):
+        super().__init__(repos)
+        self.pulls = tbs.FakePulls(*pulls, **answer)
+
+    def __call__(self, args, input_text=None):
+        return self.pulls(args) if args[:2] == ["api", "graphql"] else super().__call__(args)
+
+
+class MergedChangeAuditTest(unittest.TestCase):
+    """#45: "`audit` reports that fault next to the existing issue faults." The wording is MergedChangeRuleTest's."""
+
+    def audit(self, claude: str, *rows: str, gh=None, call=None, **kw):
+        tmp, self.root = issue_workspace(claude, change_tracker(*rows))
+        self.addCleanup(tmp.cleanup)
+        with patch.dict(os.environ, {"CHIEF_OF_STUFF_GITLAB_TOKEN": "tok"}), gitlab_issues(self):
+            return al.audit(self.root, "2026-09-17", gh=gh, call=call, **kw)
+
+    def assert_merged(self, report, tasks: list[str]) -> None:
+        """The `merged:` lines printed are the report's findings, one per task named, counted in the summary."""
+        self.assertEqual([f.task for f in report.merged], tasks, report.lines)
+        self.assertEqual([line for line in report.lines if line.startswith("merged:")], [str(f) for f in report.merged])
+        self.assertIn(f" merged={len(tasks)}", report.lines[-1])
+
+    def test_an_in_progress_task_whose_merge_request_merged_is_flagged_with_the_sha(self):
+        """#45's acceptance: "a mocked GitLab: an in-progress task names `!12`, and `!12` has merged. `audit`
+        flags it with the merge sha." The adapter is "configured from the existing Backlog host, project and
+        token", and asks once."""
+        call = tbs.StrictGitLab(mrs=[gl_change(12)])
+        report = self.audit(GITLAB_CLAUDE, change_row("!12"), call=call)
+        self.assertEqual(call.posts, [("POST", "https://gl.example/api/graphql", "tok")])
+        self.assertIn('"o/backlog"', call.queries[0])
+        self.assert_merged(report, ["Search"])
+        self.assertIn(MERGE_SHA[:7], str(report.merged[0]))
+
+    def test_a_merge_request_the_forge_does_not_have_is_a_finding(self):
+        """GitLab: "a missing iid is simply absent from nodes (no error)", so the row's `!12` is not found."""
+        report = self.audit(GITLAB_CLAUDE, change_row("!12"), call=tbs.StrictGitLab())
+        self.assert_merged(report, ["Search"])
+
+    def test_a_merged_pull_request_and_a_closed_issue_are_both_findings(self):
+        """GitHub's `PR #N`. "A task with a closed issue and a merged change simply gets both findings.\""""
+        gh = ForgeGh(LIVE, tbs.gh_pull(12), tbs.gh_pull(13))
+        report = self.audit(ISSUE_CLAUDE, change_row("PR #12"),
+                            change_row("PR #13", name="Closed one", state="waiting", issue="#5"), gh=gh)
+        self.assertEqual(len(gh.pulls.calls), 1)
+        self.assertEqual([f.task for f in report.issues], ["Closed one"])
+        self.assert_merged(report, ["Search", "Closed one"])
+
+    def test_a_number_that_is_not_a_pull_request_is_not_found(self):
+        """GitHub answers such a number with a NOT_FOUND error and a failing `gh`: that is `<ref> not found`
+        on the task's line, beside any merged change, and never `merged: unknown`."""
+        report = self.audit(ISSUE_CLAUDE, change_row("PR #999"), gh=ForgeGh(LIVE))
+        self.assert_merged(report, ["Search"])
+        self.assertEqual(str(report.merged[0]), "merged: Search — PR #999 not found")
+        report = self.audit(ISSUE_CLAUDE, change_row("PR #12, PR #999"), gh=ForgeGh(LIVE, tbs.gh_pull(12)))
+        self.assert_merged(report, ["Search"])
+        for part in ("PR #12 merged into main", "PR #999 not found"):
+            self.assertIn(part, str(report.merged[0]))
+
+    def test_the_forge_is_asked_only_for_the_changes_live_rows_leave_unacknowledged(self):
+        """`change_states` is called "once with exactly those numbers (not done rows', not other-repo rows')"."""
+        gh = ForgeGh(LIVE, *(tbs.gh_pull(n) for n in (12, 13, 14, 15)))
+        report = self.audit(ISSUE_CLAUDE, change_row("PR #12"),
+                            change_row("PR #13", name="Finished", state="done 09:00–10:00", issue=""),
+                            change_row("PR #14", name="Elsewhere", issue="x/y#2"),
+                            change_row("PR #15 merged, held for the release", name="Held"), gh=gh)
+        self.assertEqual((len(gh.pulls.calls), gh.pulls.asked), (1, {12}))
+        self.assert_merged(report, ["Search"])
+
+    def test_a_mistyped_issue_cell_elsewhere_is_not_a_forge_error(self):
+        """The lean read "never asks for issues": an issue number the forge does not have is `issue_faults`' to
+        report, and a `gh` that would answer NOT_FOUND for it is never asked."""
+        gh = ForgeGh(LIVE, tbs.gh_pull(12))
+        report = self.audit(ISSUE_CLAUDE, change_row("PR #12"), change_row("c", name="Typo", issue="#404"), gh=gh)
+        self.assertEqual([f.task for f in report.issues], ["Typo"])
+        self.assertEqual(gh.pulls.asked, {12})
+        self.assert_merged(report, ["Search"])
+
+    def test_no_live_row_naming_an_unacknowledged_change_makes_no_forge_call(self):
+        """The forge is read only when "some live row names an unacknowledged change", and the summary line
+        gains ` merged=N` "only when the read happened"."""
+        rows = (("no row names a change", change_row("c")),
+                ("only a done row names one", change_row("!12, PR #12", state="done 09:00–10:00", issue="")),
+                ("only a standing row names one", STANDING_ROW),
+                ("the only one named is recorded as merged", change_row("!12 merged, PR #12 merged; held for the release")))
+        cases = [(what, claude, row) for claude in (ISSUE_CLAUDE, GITLAB_CLAUDE) for what, row in rows]
+        cases.append(("only a row whose issue is in another repo names one", ISSUE_CLAUDE, change_row("PR #12", issue="x/y#2")))
+        # "Issue not in another repo, host compared": on a GitLab home the short form reads as GitHub's o/backlog.
+        cases.append(("only a row whose issue is on another host names one", GITLAB_CLAUDE, change_row("!12", issue="o/backlog#8")))
+        # A change URL of another repo, project or host is not a change the row names.
+        cases.append(("the only URL is another repo's pull request", ISSUE_CLAUDE, change_row("https://github.com/cli/cli/pull/12")))
+        cases.append(("the only URL is another project's merge request", GITLAB_CLAUDE,
+                      change_row("https://gl.example/g/other/-/merge_requests/12")))
+        cases.append(("the only URL is another host's merge request", GITLAB_CLAUDE,
+                      change_row("https://other.example/o/backlog/-/merge_requests/12")))
+        for what, claude, row in cases:
+            with self.subTest(what, claude=claude.splitlines()[-1]):
+                gh, call = ForgeGh(LIVE, tbs.gh_pull(12)), tbs.StrictGitLab(mrs=[gl_change(12)])
+                report = self.audit(claude, row, gh=gh, call=call)
+                self.assertEqual((gh.pulls.calls, call.posts, report.merged), ([], [], []))
+                self.assertNotIn("merged", report.lines[-1])
+
+    def test_issues_off_makes_no_forge_call(self):
+        """The forge is read only when `cfg.backlog and check_issues`: `--no-issues` is the offline audit."""
+        for claude, names in ((ISSUE_CLAUDE, "PR #12"), (GITLAB_CLAUDE, "!12")):
+            with self.subTest(claude=claude.splitlines()[-1]):
+                gh, call = ForgeGh(LIVE, tbs.gh_pull(12)), tbs.StrictGitLab(mrs=[gl_change(12)])
+                report = self.audit(claude, change_row(names), gh=gh, call=call, check_issues=False)
+                self.assertEqual((gh.calls, gh.pulls.calls, call.posts, report.merged), ([], [], [], []))
+                self.assertNotIn("merged", report.lines[-1])
+
+    def test_a_forge_that_cannot_be_read_is_one_unknown_finding(self):
+        """"Error → the known faults plus one `merged: unknown — <err>`; a raise → one `merged: unknown`."
+        A change missing from an answer that came with an error is not `not found`."""
+        forbidden = {"errors": [{"type": "FORBIDDEN", "message": "Resource not accessible"}]}
+        cases = (("the forge answers an error", "PR #12", {"fail": (1, "", "gh: not logged in")}, "not logged in", []),
+                 ("the forge raises", "PR #12", {"fail": RuntimeError("the wire fell out")}, "the wire fell out", []),
+                 ("part of the answer and an error", "PR #12", forbidden, "Resource not accessible", ["Search"]),
+                 ("a missing number and an error", "PR #999", forbidden, "Resource not accessible", []),
+                 # "Any other error is an error", at a requested pull request's own path too: only NOT_FOUND there is not.
+                 ("a pull request the token may not read", "PR #12, PR #13", {"errors": [FORBIDDEN_13]}, "Resource not accessible", ["Search"]),
+                 # NOT_FOUND on the repository itself is not `PR #12 not found`.
+                 ("the repository is not there", "PR #12", {"missing_repo": True}, "Could not resolve to a Repository", []))
+        for what, names, answer, err, tasks in cases:
+            with self.subTest(what):
+                report = self.audit(ISSUE_CLAUDE, change_row(names), gh=ForgeGh(LIVE, tbs.gh_pull(12), **answer))
+                unknown = [str(f) for f in report.merged if str(f).startswith("merged: unknown — ")]
+                self.assertEqual(len(unknown), 1, report.lines)
+                self.assertIn(err, unknown[0])
+                self.assert_merged(report, tasks + ["unknown"])
+                self.assertNotIn("not found", "\n".join(report.lines))
+
+    def test_a_merge_request_missing_from_an_answer_with_an_error_is_not_not_found(self):
+        """GitLab errors beside data: the states it gave still fault, and "a missing iid in such an answer is
+        not `not found`"."""
+        call = tbs.StrictGitLab(mrs=[gl_change(12)], errors=[{"message": "Internal server error"}])
+        report = self.audit(GITLAB_CLAUDE, change_row("!12 then !99"), call=call)
+        self.assert_merged(report, ["Search", "unknown"])
+        self.assertIn("!12 merged into main", str(report.merged[0]))
+        self.assertNotIn("not found", "\n".join(report.lines))
+
+    def test_exit_code_counts_merged_findings(self):
+        """`main()`'s exit code adds `len(report.merged)`: the open issue is no finding, the merged change is one."""
+        tmp, root = issue_workspace(ISSUE_CLAUDE, change_tracker(change_row("PR #12")))
+        self.addCleanup(tmp.cleanup)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(al.main(["--root", str(root), "--date", "2026-09-17"], gh=ForgeGh(LIVE, tbs.gh_pull(12))), 1)

@@ -16,13 +16,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from clock import HHMM, RAN, dur as _dur, hhmm as _hhmm  # noqa: E402
-from findings import ISSUE, KANBAN, LANE, NEXT, OVER, QUEUE, REOPEN, STOPPED  # noqa: E402
+from findings import ISSUE, KANBAN, LANE, MERGED, NEXT, OVER, QUEUE, REOPEN, STOPPED  # noqa: E402
 from md import cells as _cells, is_separator as _is_separator, section as _section, unmark as _unmark  # noqa: E402
 from tracker import clip_name, parse_tracker  # noqa: E402
 from workspace import ConfigError, parse_coordinator, read_config, worktrees_dir  # noqa: E402
 from dispatch_prompt import PROMPT_DIR, STOP_FILE  # noqa: E402
 from backlog import CLOSED, GITHUB, Backlog, BacklogError, GitHubBacklog, file_with, home_of, issue_ref, issue_states  # noqa: E402
+import backlog  # noqa: E402
 from settings import Kanban, SettingsError, load as load_settings  # noqa: E402
+import board_sources  # noqa: E402
 import kanban as kanban_tool  # noqa: E402
 import ownership  # noqa: E402
 from git_trees import discover, git, read_state  # noqa: E402
@@ -46,6 +48,8 @@ PAREN = re.compile(r"\((.*?)\)")
 TOKEN = re.compile(r"[A-Za-z0-9]+")
 STOP = NOT_A_NAME | {"done", "from", "to", "on", "by", "worktree", "worktrees", "off", "main", "new"}
 DONE = "done"
+# After a change's ref, the row records its merge: `!58 merged`, `PR #58 (merged)`.
+ACKNOWLEDGED = r"(?i:\W+merged\b)"
 
 
 @dataclass(frozen=True)
@@ -192,6 +196,59 @@ def _ends_issue(task, lanes: dict) -> bool:
 
 
 @dataclass(frozen=True)
+class MergedFault:
+    """A task not done whose pull or merge request has merged (#45)."""
+
+    task: str
+    why: str
+
+    def __str__(self) -> str:
+        return f"{MERGED} {self.task} — {self.why}"
+
+
+def _named(task, home: Backlog | GitHubBacklog) -> set[int]:
+    """The changes a live task's row names and does not record as merged. A task is live when it is not
+    standing, not done, and its issue is not in a repo other than the Backlog's, where `PR #12` is another #12."""
+    ref = issue_ref(task.issue, home) if task.issue.strip() else None
+    elsewhere = ref is not None and (ref.host.lower(), ref.repo.lower()) != tuple(part.lower() for part in home_of(home))
+    if task.standing or task.kind == DONE or elsewhere:
+        return set()
+    return board_sources.change_numbers(task, home) - board_sources.change_numbers(task, home, ACKNOWLEDGED)
+
+
+def merged_faults(tasks, changes: dict, home: Backlog | GitHubBacklog, answered: bool = True) -> list[MergedFault]:
+    """One fault per live task for the changes its row names and does not record as merged, unless one is open:
+    each merged one, and each the forge does not have. A forge that did not answer cleanly (`answered` False)
+    may only have left a change out, so then none is `not found`."""
+    faults: list[MergedFault] = []
+    for task in tasks:
+        refs = [board_sources.change_ref(home, n) for n in sorted(_named(task, home))]
+        named = [changes[ref] for ref in refs if ref in changes]
+        if any(c.state == "open" for c in named):
+            continue
+        said = [" ".join(filter(None, (board_sources.spelled(c.ref), "merged into", c.base, c.merge_sha[:7]))) for c in named if c.state == "merged"]
+        how = '; write the task done once main is green with it, or write "merged" after the ref' if said else ""
+        if answered:
+            said += [f"{board_sources.spelled(ref)} not found" for ref in refs if ref not in changes]
+        if said:
+            faults.append(MergedFault(clip_name(task.label), ", ".join(said) + how))
+    return faults
+
+
+def _read_merged(tasks, home: Backlog | GitHubBacklog, gh, call) -> list[MergedFault] | None:
+    """`merged_faults` over the forge's answer for the changes live rows name, or None when they name none and
+    the forge is not read. A forge that cannot be read is one `unknown` fault."""
+    numbers = {n for task in tasks for n in _named(task, home)}
+    if not numbers:
+        return None
+    try:
+        changes, error = board_sources.change_states(home, numbers, gh or backlog.run_gh, call or backlog._call)
+    except Exception as e:  # a forge answer shaped unlike its schema, as board_sources.refresh reads it
+        changes, error = {}, f"{type(e).__name__}: {e}"
+    return merged_faults(tasks, changes, home, not error) + ([MergedFault("unknown", error)] if error else [])
+
+
+@dataclass(frozen=True)
 class LaneFault:
     """A task whose lane the settings file does not name, or whose stage is not one of its lane's (#33)."""
 
@@ -304,6 +361,7 @@ class Report:
     stopped: list[Stop] = field(default_factory=list)
     queue: list[QueueFault] = field(default_factory=list)
     issues: list[IssueFault] = field(default_factory=list)
+    merged: list[MergedFault] = field(default_factory=list)
     lanes: list[LaneFault] = field(default_factory=list)
     kanban: list[KanbanFault] = field(default_factory=list)
     over: list[OverBudget] = field(default_factory=list)
@@ -651,7 +709,7 @@ def queue_faults(tracker_text: str) -> tuple[list[QueueFault], list[str], int]:
     return faults, lines, len(open_rows)
 
 
-def audit(root: Path, day: str, gh=None, check_issues: bool = True, now: datetime | None = None) -> Report:
+def audit(root: Path, day: str, gh=None, check_issues: bool = True, now: datetime | None = None, call=None) -> Report:
     claude_md = (root / "CLAUDE.md").read_text()
     cfg = parse_coordinator(claude_md, today=date.today())
     trees = worktrees_dir(claude_md)
@@ -761,7 +819,7 @@ def audit(root: Path, day: str, gh=None, check_issues: bool = True, now: datetim
     report.queue.extend(faults)
     report.lines.extend(queue_lines)
     report.lines.extend(str(q) for q in report.queue)
-    issues = ""
+    issues = merged = ""
     settings = load_settings(root, cfg.settings_path)
     if cfg.backlog:
         if check_issues:
@@ -769,6 +827,11 @@ def audit(root: Path, day: str, gh=None, check_issues: bool = True, now: datetim
                                               root, trees, owners, cfg.zone))
             report.lines.extend(str(f) for f in report.issues)
             issues = f" issues={len(report.issues)}"
+            found = _read_merged(tasks, cfg.backlog, gh, call)
+            if found is not None:
+                report.merged.extend(found)
+                report.lines.extend(str(f) for f in found)
+                merged = f" merged={len(found)}"
         else:
             issues = " issues=off"
     report.lanes.extend(lane_faults(tasks, settings.lanes, cfg.settings_path))
@@ -785,7 +848,7 @@ def audit(root: Path, day: str, gh=None, check_issues: bool = True, now: datetim
     reopen = f"{facts} tree{'' if facts == 1 else 's'}/{len(report.reopen)} task{'' if len(report.reopen) == 1 else 's'}" if report.reopen else "0"
     report.lines.append(
         f"tasks={len(tasks)} trees={len(seen)} reopen={reopen} orphaned={len(report.orphans)} "
-        + (f"unclaimed={len(report.unclaimed)} " if report.unclaimed else "") + f"stopped={len(report.stopped)}" + (f" queued={queued}" if queue_lines or faults or queued else "") + issues + laned + kanban + budgeted)
+        + (f"unclaimed={len(report.unclaimed)} " if report.unclaimed else "") + f"stopped={len(report.stopped)}" + (f" queued={queued}" if queue_lines or faults or queued else "") + issues + merged + laned + kanban + budgeted)
     return report
 
 
@@ -816,7 +879,7 @@ def main(argv: list[str] | None = None, gh=None) -> int:
         return 2
     for line in report.lines:
         print(line)
-    return len(report.reopen) + len(report.stopped) + len(report.queue) + len(report.issues) + len(report.lanes) + len(report.kanban)
+    return len(report.reopen) + len(report.stopped) + len(report.queue) + len(report.issues) + len(report.merged) + len(report.lanes) + len(report.kanban)
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ mention (`!58` on GitLab, `PR #58` on GitHub, or the request's URL), and the req
 one GraphQL call per forge. Workers are the registered sessions process_status finds running, live
 one-shot workers under the Worktrees dir, and the tracker's Sessions rows. The cache is
 `<pages dir>/.sources.json`. A source that cannot be read keeps its last good facts, and `errors` says why.
+`change_states` is the audit's read of the changes its rows name, neither drawn nor cached.
 """
 
 from __future__ import annotations
@@ -37,6 +38,7 @@ CACHE = ".sources.json"
 CLOSES = re.compile(r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+(#\d+)")
 GH_PR = re.compile(r"(?i)\bPR\s*#(\d+)\b")
 GL_MR = re.compile(r"(?<![\w&])!(\d+)\b")
+GL_STATE = {"opened": "open", "locked": "closed"}
 GL_WAITING = {"pending", "created", "waiting_for_resource", "preparing", "scheduled", "manual"}
 
 GH_ISSUE = "number url title state body labels(first: 50) { nodes { name } } closedAt"
@@ -98,6 +100,14 @@ class Change:          # a PR or MR
     jobs: tuple[Job, ...] = ()
     conflicts: bool = False
     threads: tuple[ReviewThread, ...] = ()
+
+
+@dataclass(frozen=True)
+class ChangeState:     # what the audit asks of a PR or MR (#45)
+    ref: str
+    state: str         # as Change.state
+    base: str
+    merge_sha: str     # the merge commit's sha; empty unless the change merged
 
 
 @dataclass(frozen=True)
@@ -264,7 +274,7 @@ def _gl_detail(m: dict) -> tuple[tuple[Job, ...], tuple[ReviewThread, ...]]:
 
 def _gl_change(m: dict, approver: str) -> Change:
     by = {(u or {}).get("username") for u in (m.get("approvedBy") or {}).get("nodes") or []}
-    state = {"opened": "open", "locked": "closed"}.get(m["state"], m["state"])
+    state = GL_STATE.get(m["state"], m["state"])
     pipe = m.get("headPipeline") or {}
     return Change(f"!{m['iid']}", m["webUrl"], m["title"], state, bool(m.get("draft")), _gl_pipeline(pipe.get("status")),
                   approver in by if approver else bool(m.get("approved")), len(by), _when(m.get("mergedAt")),
@@ -340,6 +350,66 @@ def gitlab(home: backlog.Backlog, wanted: dict[str, set[int]], mrs: set[int], si
     return issues, changes, error
 
 
+def change_ref(home, number) -> str:
+    """How a change is keyed: `#58` for a GitHub pull request, `!58` for a GitLab merge request."""
+    return f"{'#' if isinstance(home, backlog.GitHubBacklog) else '!'}{number}"
+
+
+def spelled(ref: str) -> str:
+    """A change's ref as a row spells it: `PR #58` on GitHub, where a bare `#58` is an issue."""
+    return f"PR {ref}" if ref.startswith("#") else ref
+
+
+def change_numbers(task, home, then: str = "") -> set[int]:
+    """The pull or merge requests a task's row names: `!N` on GitLab, `PR #N` on GitHub, or the request's URL.
+    With `then`, only those a cell follows with it. Each cell is read alone, so nothing is read across two."""
+    github_home = isinstance(home, backlog.GitHubBacklog)
+    url = (rf"github\.com/{re.escape(home.repo)}/pull/(\d+)" if github_home
+           else rf"{re.escape(backlog.home_of(home)[0])}/{re.escape(home.project)}/-/merge_requests/(\d+)")
+    return {int(n) for cell in (task.name, task.item, task.issue, task.checklist)
+            for named in ((GH_PR if github_home else GL_MR).pattern, url) for n in re.findall(named + then, cell)}
+
+
+def change_states(home, numbers, gh, call) -> tuple[dict[str, ChangeState], str]:
+    """({ref: ChangeState}, error) for the changes numbered, from one GraphQL call that asks for nothing else.
+    A number the forge does not have is absent from the dict, and is no error."""
+    # ponytail: one request names every change. Past about GL_PAGE of them GitLab refuses the query as too complex,
+    # which the audit prints as `merged: unknown`; page as gitlab() does once live rows name that many.
+    states: dict[str, ChangeState] = {}
+    if isinstance(home, backlog.GitHubBacklog):
+        owner, name = home.repo.split("/", 1)
+        pulls = " ".join(f"n{n}: pullRequest(number: {n}) {{ number state baseRefName mergeCommit {{ oid }} }}"
+                         for n in sorted(numbers))
+        code, out, err = gh(["api", "graphql", "-f", f"query=query {{ repository(owner: {json.dumps(owner)}, "
+                             f"name: {json.dumps(name)}) {{ {pulls} }} }}"])
+        try:
+            body = json.loads(out)
+            nodes = body["data"]["repository"] or {}
+        except (ValueError, KeyError, TypeError):
+            return {}, err.strip() or f"gh exited {code}"
+        for p in filter(None, nodes.values()):
+            ref = change_ref(home, p["number"])
+            states[ref] = ChangeState(ref, p["state"].lower(), p.get("baseRefName") or "", (p.get("mergeCommit") or {}).get("oid") or "")
+        # A number that is not a pull request is a null node, a NOT_FOUND at its alias, and a failing `gh`.
+        return states, _graphql_errors({"errors": [e for e in body.get("errors") or [] if not (
+            isinstance(e, dict) and e.get("type") == "NOT_FOUND" and len(e.get("path") or ()) == 2)]})
+    secret = backlog.token(home)
+    if not secret:
+        return {}, home.missing_token
+    query = (f"query {{ project(fullPath: {json.dumps(home.project)}) {{ mergeRequests(iids: "
+             f"{json.dumps([str(n) for n in sorted(numbers)])}) {{ nodes {{ iid state targetBranch mergeCommitSha }} }} }} }}")
+    body, _, err = call("POST", f"{home.host.rstrip('/')}/api/graphql", secret, backlog.TIMEOUT, {"query": query})
+    body = body if isinstance(body, dict) else {}
+    project = (body.get("data") or {}).get("project")
+    if err or not project:  # a project the token cannot see answers null
+        return {}, err or _graphql_errors(body) or f"GitLab did not answer for {home.project}"
+    for m in (project.get("mergeRequests") or {}).get("nodes") or []:
+        # A fast-forward merge has no merge commit, and the head it merged from may never have reached the base.
+        ref = change_ref(home, m["iid"])
+        states[ref] = ChangeState(ref, GL_STATE.get(m["state"], m["state"]), m.get("targetBranch") or "", m.get("mergeCommitSha") or "")
+    return states, _graphql_errors(body)
+
+
 def forge(root: Path, cfg: Config, tracker: Tracker, since: datetime, gh, call):
     """What the tracker's tasks name, from the Backlog's forge: (issues, changes, error)."""
     home = cfg.backlog
@@ -352,16 +422,13 @@ def forge(root: Path, cfg: Config, tracker: Tracker, since: datetime, gh, call):
     wanted: dict[str, set[int]] = {}
     changes: set[int] = set()
     github_home = isinstance(home, backlog.GitHubBacklog)
-    url = (rf"github\.com/{re.escape(home.repo)}/pull/(\d+)" if github_home
-           else rf"{re.escape(backlog.home_of(home)[0])}/{re.escape(home.project)}/-/merge_requests/(\d+)")
     for task in tracker.tasks:
         if task.standing:
             continue
         ref = backlog.issue_ref(task.issue, home) if task.issue.strip() else None
         if ref and (ref.host == backlog.GITHUB) == github_home:
             wanted.setdefault(ref.repo, set()).add(ref.number)
-        row = " ".join((task.name, task.item, task.issue, task.checklist))
-        changes |= {int(n) for n in (GH_PR if github_home else GL_MR).findall(row) + re.findall(url, row)}
+        changes |= change_numbers(task, home)
     if github_home:
         if changes:
             wanted.setdefault(home.repo, set()).update(changes)
