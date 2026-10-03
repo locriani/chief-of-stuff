@@ -81,10 +81,14 @@ def _targets(text: str) -> list[Target]:
 
 def check_settings(root: Path, name: str) -> tuple[str, int]:
     """The line and fault count for the settings file `name`, loaded from `root`."""
-    if not (root / name).is_file():
-        return f"settings {name} absent, defaults", 0
+    absent = f"settings {name} absent, defaults", 0
     try:
+        (root / name).stat()  # is_file() answers False for a path it cannot reach; stat says which it is
+        if not (root / name).is_file():
+            return absent
         load_settings(root, name)
+    except (FileNotFoundError, NotADirectoryError):
+        return absent
     except (SettingsError, UnicodeDecodeError, OSError) as exc:  # schema or TOML, not UTF-8, unreadable
         why = getattr(exc, "strerror", None) or str(exc)  # an OSError's own text carries the absolute path
         return f"settings {name} invalid: {' '.join(why.split()).removeprefix(f'{name}: ')}", 1
