@@ -41,7 +41,7 @@ GL_WAITING = {"pending", "created", "waiting_for_resource", "preparing", "schedu
 
 GH_ISSUE = "number url title state body labels(first: 50) { nodes { name } } closedAt"
 # A review thread is its first comment, as review_threads.QUERY reads them; one comment keeps the node count low.
-GH_CHANGE = ("number url title state isDraft mergedAt baseRefName body headRefOid reviewDecision mergeable "
+GH_CHANGE = ("number url title state isDraft mergedAt baseRefName body headRefOid mergeCommit { oid } reviewDecision mergeable "
              "files(first: 100) { nodes { path additions deletions } } "
              "latestReviews(first: 50) { nodes { author { login } state submittedAt commit { oid } } } "
              "reviewThreads(first: 100) { nodes { isResolved comments(first: 1) { nodes { author { login } body createdAt url } } } } "
@@ -50,7 +50,8 @@ GH_CHANGE = ("number url title state isDraft mergedAt baseRefName body headRefOi
 GL_PAGE = 100  # the most nodes GitLab answers for one connection
 GL_ISSUE = "iid webUrl title state description labels { nodes { title } } closedAt"
 GL_CHANGE = ("iid webUrl title state draft mergedAt targetBranch description approved conflicts "
-             "approvedBy { nodes { username } } headPipeline { status } diffStats { path additions deletions } diffHeadSha")
+             "approvedBy { nodes { username } } headPipeline { status } diffStats { path additions deletions } diffHeadSha "
+             "mergeCommitSha squashCommitSha")
 # Jobs and discussions only for open changes, in a second query: in GL_CHANGE they took it past GitLab's complexity cap of 250.
 GL_DETAIL = ("iid headPipeline { jobs { nodes { name status duration } } } "
              "discussions { nodes { resolvable resolved notes(first: 1) { nodes { author { username } body createdAt url } } } }")
@@ -98,6 +99,7 @@ class Change:          # a PR or MR
     jobs: tuple[Job, ...] = ()
     conflicts: bool = False
     threads: tuple[ReviewThread, ...] = ()
+    merge_sha: str = ""       # the commit that put it on its base; the audit cites it (#45)
 
 
 @dataclass(frozen=True)
@@ -202,7 +204,8 @@ def _gh_change(key: str, p: dict, approver: str) -> Change:
                   None if pipeline == "none" else pipeline, approved,
                   sum(r.get("state") == "APPROVED" for r in reviews), _when(p.get("mergedAt")),
                   p.get("baseRefName") or "", tuple(f["path"] for f in files), _closes(p.get("body")),
-                  p.get("headRefOid") or "", _stats(files), jobs, p.get("mergeable") == "CONFLICTING", threads)
+                  p.get("headRefOid") or "", _stats(files), jobs, p.get("mergeable") == "CONFLICTING", threads,
+                  merge_sha=(p.get("mergeCommit") or {}).get("oid") or "")
 
 
 def github(home: backlog.GitHubBacklog, wanted: dict[str, set[int]], since: datetime, approver: str, gh):
@@ -270,7 +273,8 @@ def _gl_change(m: dict, approver: str) -> Change:
                   approver in by if approver else bool(m.get("approved")), len(by), _when(m.get("mergedAt")),
                   m.get("targetBranch") or "", tuple(d["path"] for d in m.get("diffStats") or []),
                   _closes(m.get("description")), m.get("diffHeadSha") or "", _stats(m.get("diffStats") or []), (),
-                  bool(m.get("conflicts")))
+                  bool(m.get("conflicts")),
+                  merge_sha=m.get("mergeCommitSha") or m.get("squashCommitSha") or m.get("diffHeadSha") or "")
 
 
 def gitlab(home: backlog.Backlog, wanted: dict[str, set[int]], mrs: set[int], since: datetime, approver: str, call):
@@ -340,6 +344,15 @@ def gitlab(home: backlog.Backlog, wanted: dict[str, set[int]], mrs: set[int], si
     return issues, changes, error
 
 
+def change_numbers(task, home) -> set[int]:
+    """The pull or merge requests a task's row names: `!N` on GitLab, `PR #N` on GitHub, or the request's URL."""
+    github_home = isinstance(home, backlog.GitHubBacklog)
+    url = (rf"github\.com/{re.escape(home.repo)}/pull/(\d+)" if github_home
+           else rf"{re.escape(backlog.home_of(home)[0])}/{re.escape(home.project)}/-/merge_requests/(\d+)")
+    row = " ".join((task.name, task.item, task.issue, task.checklist))
+    return {int(n) for n in (GH_PR if github_home else GL_MR).findall(row) + re.findall(url, row)}
+
+
 def forge(root: Path, cfg: Config, tracker: Tracker, since: datetime, gh, call):
     """What the tracker's tasks name, from the Backlog's forge: (issues, changes, error)."""
     home = cfg.backlog
@@ -352,16 +365,13 @@ def forge(root: Path, cfg: Config, tracker: Tracker, since: datetime, gh, call):
     wanted: dict[str, set[int]] = {}
     changes: set[int] = set()
     github_home = isinstance(home, backlog.GitHubBacklog)
-    url = (rf"github\.com/{re.escape(home.repo)}/pull/(\d+)" if github_home
-           else rf"{re.escape(backlog.home_of(home)[0])}/{re.escape(home.project)}/-/merge_requests/(\d+)")
     for task in tracker.tasks:
         if task.standing:
             continue
         ref = backlog.issue_ref(task.issue, home) if task.issue.strip() else None
         if ref and (ref.host == backlog.GITHUB) == github_home:
             wanted.setdefault(ref.repo, set()).add(ref.number)
-        row = " ".join((task.name, task.item, task.issue, task.checklist))
-        changes |= {int(n) for n in (GH_PR if github_home else GL_MR).findall(row) + re.findall(url, row)}
+        changes |= change_numbers(task, home)
     if github_home:
         if changes:
             wanted.setdefault(home.repo, set()).update(changes)

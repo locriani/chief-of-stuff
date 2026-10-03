@@ -11,18 +11,19 @@ import argparse
 import re
 import sys
 from dataclasses import dataclass, field, replace
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from clock import HHMM, RAN, dur as _dur, hhmm as _hhmm  # noqa: E402
-from findings import ISSUE, KANBAN, LANE, NEXT, OVER, QUEUE, REOPEN, STOPPED  # noqa: E402
+from findings import ISSUE, KANBAN, LANE, MERGED, NEXT, OVER, QUEUE, REOPEN, STOPPED  # noqa: E402
 from md import cells as _cells, is_separator as _is_separator, section as _section, unmark as _unmark  # noqa: E402
 from tracker import clip_name, parse_tracker  # noqa: E402
 from workspace import ConfigError, parse_coordinator, read_config, worktrees_dir  # noqa: E402
 from dispatch_prompt import PROMPT_DIR, STOP_FILE  # noqa: E402
-from backlog import CLOSED, GITHUB, Backlog, BacklogError, GitHubBacklog, file_with, home_of, issue_ref, issue_states  # noqa: E402
+from backlog import CLOSED, GITHUB, Backlog, BacklogError, GitHubBacklog, _call, file_with, home_of, issue_ref, issue_states, run_gh  # noqa: E402
 from settings import Kanban, SettingsError, load as load_settings  # noqa: E402
+import board_sources  # noqa: E402
 import kanban as kanban_tool  # noqa: E402
 import ownership  # noqa: E402
 from git_trees import discover, git, read_state  # noqa: E402
@@ -101,6 +102,7 @@ class IssueFault:
 
     task: str
     why: str
+    closed: bool = False  # the issue is closed under a task not done, so a merged change adds no second finding
 
     def __str__(self) -> str:
         return f"{ISSUE} {self.task} — {self.why}"
@@ -175,11 +177,11 @@ def issue_faults(tasks, home: Backlog | GitHubBacklog, gh=None, lanes: dict | No
             if _tree_unlanded(root, trees, owners, task):
                 faults.append(IssueFault(
                     name, f"{tag} is closed but its tree has work not on main; ask the user: "
-                    "reopen the issue or drop the work"))
+                    "reopen the issue or drop the work", closed=True))
             else:
                 when = _closed_hhmm(found.closed_at, zone)
                 at = f" {when}" if when else ""
-                faults.append(IssueFault(name, f"{tag} is closed{at}; write the task done{f' at {when}' if when else ''}"))
+                faults.append(IssueFault(name, f"{tag} is closed{at}; write the task done{f' at {when}' if when else ''}", closed=True))
         elif task.kind == "done" and found is not None and found.state != CLOSED and _ends_issue(task, lanes or {}):
             faults.append(IssueFault(name, f"done but {tag} is open; chief-of-stuff backlog --close {ref.number} --commit"))
     return faults
@@ -189,6 +191,46 @@ def _ends_issue(task, lanes: dict) -> bool:
     """A laned row closes its issue only at the lane's last stage; a review done mid-lane leaves it open."""
     lane = lanes.get(task.lane.strip())
     return lane is None or task.stage.strip() == lane.stages[-1]
+
+
+@dataclass(frozen=True)
+class MergedFault:
+    """A task not done whose pull or merge request has merged (#45)."""
+
+    task: str
+    why: str
+
+    def __str__(self) -> str:
+        return f"{MERGED} {self.task} — {self.why}"
+
+
+def merged_faults(tasks, changes: dict, home: Backlog | GitHubBacklog, skip=frozenset()) -> list[MergedFault]:
+    """One fault per task not done whose row names a merged change and no open one. `skip` names the tasks
+    a closed issue already speaks for."""
+    mark = "#" if isinstance(home, GitHubBacklog) else "!"
+    faults: list[MergedFault] = []
+    for task in tasks:
+        name = clip_name(task.label)
+        if task.standing or task.kind == DONE or name in skip:
+            continue
+        named = [changes[ref] for n in sorted(board_sources.change_numbers(task, home)) if (ref := f"{mark}{n}") in changes]
+        merged = [c for c in named if c.state == "merged"]
+        if not merged or any(c.state == "open" for c in named):
+            continue
+        sha = max(merged, key=lambda c: (c.merged_at is not None, c.merged_at)).merge_sha[:7]
+        said = ", ".join(f"{c.ref} merged into {c.base} {c.merge_sha[:7]}" for c in merged)
+        faults.append(MergedFault(name, f"{said}; write done {sha} once the suite ran on main, or say why not"))
+    return faults
+
+
+def _read_merged(root: Path, cfg, tracker, day: str, skip, gh, call) -> list[MergedFault]:
+    """`merged_faults` over the forge's answer; a forge that cannot be read is one `unknown` fault."""
+    since = datetime.combine(date.fromisoformat(day), time(0), cfg.zone)
+    try:
+        _, changes, error = board_sources.forge(root, cfg, tracker, since, gh or run_gh, call or _call)
+    except Exception as e:  # a forge answer shaped unlike its schema, as board_sources.refresh reads it
+        changes, error = None, f"{type(e).__name__}: {e}"
+    return merged_faults(tracker.tasks, changes or {}, cfg.backlog, skip) + ([MergedFault("unknown", error)] if error else [])
 
 
 @dataclass(frozen=True)
@@ -304,6 +346,7 @@ class Report:
     stopped: list[Stop] = field(default_factory=list)
     queue: list[QueueFault] = field(default_factory=list)
     issues: list[IssueFault] = field(default_factory=list)
+    merged: list[MergedFault] = field(default_factory=list)
     lanes: list[LaneFault] = field(default_factory=list)
     kanban: list[KanbanFault] = field(default_factory=list)
     over: list[OverBudget] = field(default_factory=list)
@@ -651,7 +694,7 @@ def queue_faults(tracker_text: str) -> tuple[list[QueueFault], list[str], int]:
     return faults, lines, len(open_rows)
 
 
-def audit(root: Path, day: str, gh=None, check_issues: bool = True, now: datetime | None = None) -> Report:
+def audit(root: Path, day: str, gh=None, check_issues: bool = True, now: datetime | None = None, call=None) -> Report:
     claude_md = (root / "CLAUDE.md").read_text()
     cfg = parse_coordinator(claude_md, today=date.today())
     trees = worktrees_dir(claude_md)
@@ -769,6 +812,11 @@ def audit(root: Path, day: str, gh=None, check_issues: bool = True, now: datetim
                                               root, trees, owners, cfg.zone))
             report.lines.extend(str(f) for f in report.issues)
             issues = f" issues={len(report.issues)}"
+            # The forge is read only when a live row names a change.
+            if any(not t.standing and t.kind != DONE and board_sources.change_numbers(t, cfg.backlog) for t in tasks):
+                report.merged.extend(_read_merged(root, cfg, tracker, day, {f.task for f in report.issues if f.closed}, gh, call))
+                report.lines.extend(str(f) for f in report.merged)
+                issues += f" merged={len(report.merged)}"
         else:
             issues = " issues=off"
     report.lanes.extend(lane_faults(tasks, settings.lanes, cfg.settings_path))
@@ -816,7 +864,7 @@ def main(argv: list[str] | None = None, gh=None) -> int:
         return 2
     for line in report.lines:
         print(line)
-    return len(report.reopen) + len(report.stopped) + len(report.queue) + len(report.issues) + len(report.lanes) + len(report.kanban)
+    return len(report.reopen) + len(report.stopped) + len(report.queue) + len(report.issues) + len(report.merged) + len(report.lanes) + len(report.kanban)
 
 
 if __name__ == "__main__":
