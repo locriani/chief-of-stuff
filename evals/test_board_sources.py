@@ -463,7 +463,8 @@ class FakePulls:
     field GitHub does not have is.
 
     `fail`, a `(code, out, err)` or an exception, is the answer instead; `errors` are errors of any other
-    kind, beside the data; `missing_repo` answers as a repository that is not there."""
+    kind, beside the data, and one at a pull request's alias is that node's answer in place of NOT_FOUND;
+    `missing_repo` answers as a repository that is not there."""
 
     FIELDS = {"number", "state", "baseRefName", "mergeCommit", "oid"}
     REPOSITORY = re.compile(r"(?:(\w+)\s*:\s*)?repository\s*\(")
@@ -495,7 +496,8 @@ class FakePulls:
                 {"type": "NOT_FOUND", "path": [repository], "message": "Could not resolve to a Repository with the name 'o/gone'."}]})
         errors = self.errors + [{"type": "NOT_FOUND", "path": [repository, alias],
                                  "message": f"Could not resolve to a PullRequest with the number of {n}."}
-                                for alias, n in numbers.items() if int(n) not in self.pulls]
+                                for alias, n in numbers.items()
+                                if int(n) not in self.pulls and not any(e.get("path") == [repository, alias] for e in self.errors)]
         body = {"data": {repository: {alias: self.pulls.get(int(n)) for alias, n in numbers.items()}}}
         return self.answer({**body, "errors": errors} if errors else body)
 
@@ -565,6 +567,9 @@ class ChangeStatesTest(unittest.TestCase):
                  ("no data", {"fail": (0, json.dumps({"message": "Bad credentials"}), "")}, ""),
                  ("another error beside the data", {"errors": [{"type": "FORBIDDEN", "message": "Resource not accessible"}]},
                   "Resource not accessible"),
+                 # Only NOT_FOUND at a requested pull request is not an error: any other kind there is one.
+                 ("another error at a pull request named", {"errors": [
+                     {"type": "FORBIDDEN", "path": ["repository", "n999"], "message": "Resource not accessible"}]}, "Resource not accessible"),
                  # NOT_FOUND on the repository itself is no clean, empty answer.
                  ("the repository is not there", {"missing_repo": True}, "Could not resolve to a Repository"))
         for what, answer, said in cases:

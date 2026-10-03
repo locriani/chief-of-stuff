@@ -1491,6 +1491,7 @@ class BudgetAuditTest(unittest.TestCase):
 # stalled." The rule: "merged but the task isn't done means `merged; mark done or say why not`". The forge is
 # injected (`gh` for GitHub, `call` for GitLab), so nothing here touches the network.
 MERGE_SHA, OTHER_SHA = "c0ffee1" + "d" * 33, "b01dfac" + "e" * 33
+FORBIDDEN_13 = {"type": "FORBIDDEN", "path": ["repository", "n13"], "message": "Resource not accessible"}
 GL_URL, GH_URL = "https://gl.example/o/backlog/-/merge_requests/12", "https://github.com/o/backlog/pull/12"
 
 CHANGE_TRACKER = ISSUE_TRACKER.split("| Bare |")[0] + "{rows}\n\n## Log\n\n- 09:00 opened the day\n"
@@ -1534,6 +1535,7 @@ class MergedChangeRuleTest(unittest.TestCase):
         keys stay `#N` / `!N`."""
         gitlab, github = {"!12": change("!12")}, {"#12": change("#12")}
         both = {**gitlab, "!10": change("!10", sha=OTHER_SHA)}
+        pulls = {**github, "#13": change("#13", sha=OTHER_SHA)}
         cases = (
             ("GitLab !N", GITLAB_CLAUDE, change_row("!12"), gitlab, ["!12"]),
             ("GitLab change URL", GITLAB_CLAUDE, change_row(GL_URL, state="open"), gitlab, ["!12"]),
@@ -1551,6 +1553,12 @@ class MergedChangeRuleTest(unittest.TestCase):
             ("the bare number says merged", ISSUE_CLAUDE, change_row("#12 merged, held", item="Search pagination, PR #12"), github, ["#12"]),
             # "The second form still names #9001 (we do not parse prose after the ref)."
             ("another repo named after the ref", ISSUE_CLAUDE, change_row("upstream PR #12 in cli/cli"), github, ["#12"]),
+            # "a loud wrong finding that the reader can clear beats a silent miss": whatever comes before `PR`,
+            # the row names the home repo's #12, because "the audit cannot tell prose from a repo name".
+            ("another repo named before the ref", ISSUE_CLAUDE, change_row("blocked on upstream cli/cli PR #12"), github, ["#12"]),
+            ("a remote branch ends the sentence before", ISSUE_CLAUDE, change_row("Rebased onto origin/main. PR #12 is up"), github, ["#12"]),
+            ("a branch named before the ref", ISSUE_CLAUDE, change_row("pushed feat/search PR #12"), github, ["#12"]),
+            ("the home URL, then another ref", ISSUE_CLAUDE, change_row(f"{GH_URL} PR #13"), pulls, ["#12", "#13"]),
             # "a ref and a following `merged` in the NEXT cell never combine"
             ("merged starts the next cell", GITLAB_CLAUDE,
              change_row("c", name="Search for !12", item="merged docs follow"), gitlab, ["!12"]),
@@ -1574,6 +1582,12 @@ class MergedChangeRuleTest(unittest.TestCase):
                         self.assertRegex(said, rf"{re.escape(printed(ref))} merged into {c.base} {c.merge_sha[:7]}(?=[,;]|$)")
                     else:
                         self.assertNotIn(ref, said)
+
+    def test_the_refs_in_a_line_are_in_ascending_number_order(self):
+        """"Refs in a line are in ascending number order", however the row orders them."""
+        changes = {ref: change(ref) for ref in ("!9", "!10", "!12")}
+        line = str(self.faults(GITLAB_CLAUDE, change_row("!12 after !9, with !10"), changes=changes)[0])
+        self.assertEqual(re.findall(r"!\d+", line), ["!9", "!10", "!12"])
 
     def test_a_merge_with_no_sha_leaves_no_gap_in_the_line(self):
         """A merged ref reads `<ref> merged into <base> <sha7>`, with "no gap when the sha is empty"."""
@@ -1622,8 +1636,8 @@ class MergedChangeRuleTest(unittest.TestCase):
             ("its issue is in another repo", ISSUE_CLAUDE, change_row("PR #12", issue="x/y#2"), github),
             ("its issue is in another project on the host", GITLAB_CLAUDE,
              change_row("!12", issue="https://gl.example/g/other/-/issues/2"), gitlab),
-            # "`owner/repo PR #N`, the repo name directly before `PR`" is that repo's pull request, not the home repo's.
-            ("another repo named before the ref", ISSUE_CLAUDE, change_row("blocked on upstream cli/cli PR #12"), github),
+            # "Issue not in another repo, host compared": on a GitLab home the short form reads as GitHub's o/backlog.
+            ("its issue is the home project's name on another host", GITLAB_CLAUDE, change_row("!12", issue="o/backlog#8"), gitlab),
             # "Acknowledged = the ref, then only non-word characters, then the word `merged` ... case-insensitive"
             ("!12 merged", GITLAB_CLAUDE, change_row("!12 merged, held for the release note"), gitlab),
             ("!12, merged", GITLAB_CLAUDE, change_row("!12, merged"), gitlab),
@@ -1736,7 +1750,14 @@ class MergedChangeAuditTest(unittest.TestCase):
                 ("the only one named is recorded as merged", change_row("!12 merged, PR #12 merged; held for the release")))
         cases = [(what, claude, row) for claude in (ISSUE_CLAUDE, GITLAB_CLAUDE) for what, row in rows]
         cases.append(("only a row whose issue is in another repo names one", ISSUE_CLAUDE, change_row("PR #12", issue="x/y#2")))
-        cases.append(("the only one named is another repo's", ISSUE_CLAUDE, change_row("blocked on upstream cli/cli PR #12")))
+        # "Issue not in another repo, host compared": on a GitLab home the short form reads as GitHub's o/backlog.
+        cases.append(("only a row whose issue is on another host names one", GITLAB_CLAUDE, change_row("!12", issue="o/backlog#8")))
+        # A change URL of another repo, project or host is not a change the row names.
+        cases.append(("the only URL is another repo's pull request", ISSUE_CLAUDE, change_row("https://github.com/cli/cli/pull/12")))
+        cases.append(("the only URL is another project's merge request", GITLAB_CLAUDE,
+                      change_row("https://gl.example/g/other/-/merge_requests/12")))
+        cases.append(("the only URL is another host's merge request", GITLAB_CLAUDE,
+                      change_row("https://other.example/o/backlog/-/merge_requests/12")))
         for what, claude, row in cases:
             with self.subTest(what, claude=claude.splitlines()[-1]):
                 gh, call = ForgeGh(LIVE, tbs.gh_pull(12)), tbs.StrictGitLab(mrs=[gl_change(12)])
@@ -1761,6 +1782,8 @@ class MergedChangeAuditTest(unittest.TestCase):
                  ("the forge raises", "PR #12", {"fail": RuntimeError("the wire fell out")}, "the wire fell out", []),
                  ("part of the answer and an error", "PR #12", forbidden, "Resource not accessible", ["Search"]),
                  ("a missing number and an error", "PR #999", forbidden, "Resource not accessible", []),
+                 # "Any other error is an error", at a requested pull request's own path too: only NOT_FOUND there is not.
+                 ("a pull request the token may not read", "PR #12, PR #13", {"errors": [FORBIDDEN_13]}, "Resource not accessible", ["Search"]),
                  # NOT_FOUND on the repository itself is not `PR #12 not found`.
                  ("the repository is not there", "PR #12", {"missing_repo": True}, "Could not resolve to a Repository", []))
         for what, names, answer, err, tasks in cases:
@@ -1770,6 +1793,7 @@ class MergedChangeAuditTest(unittest.TestCase):
                 self.assertEqual(len(unknown), 1, report.lines)
                 self.assertIn(err, unknown[0])
                 self.assert_merged(report, tasks + ["unknown"])
+                self.assertNotIn("not found", "\n".join(report.lines))
 
     def test_a_merge_request_missing_from_an_answer_with_an_error_is_not_not_found(self):
         """GitLab errors beside data: the states it gave still fault, and "a missing iid in such an answer is
