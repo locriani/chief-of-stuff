@@ -565,6 +565,30 @@ class RuntimeCheckTest(unittest.TestCase):
                 self.assertEqual(lines[2:], alone, "the targets are still probed and said as before")
                 self.assertEqual(err, "")
 
+    def test_the_runtimes_are_said_in_the_runtime_table_s_order_not_the_file_s(self):
+        # One order whatever the settings file's is: the line reads the same on every machine that names the same runtimes.
+        backwards = (GOOD + '\n[models.deep]\nrotation = ["cursor:some-model", "codex:gpt-x"]\n'
+                     '\n[models.implement]\nrotation = ["codex:gpt-x", "claude:haiku@high"]\n')
+        for present in ({"claude", "codex", "agent"}, {"codex"}):
+            with self.subTest(present=present):
+                _, lines, _, asked = self.health(SETTINGS, backwards, present=present)
+                line = self.runtimes_line(lines)
+                said = sorted(NAMED, key=lambda name: re.search(rf"\b{name}\b", line).start())
+                self.assertEqual(said, [name for name in runtimes.NAMES if name in NAMED])
+                self.assertEqual(Counter(asked), Counter(runtimes.binary(name) for name in NAMED))
+
+    def test_a_malformed_health_target_does_not_hide_the_runtimes_line(self):
+        # As for the settings fault in #47: the usage fault is exit 2 on stderr, and what was already checked is still said.
+        block = SETTINGS + "- Health: secrets file:///etc/passwd 200\n"
+        code, lines, err, _ = self.health(block, MODELS, present={"claude", "agent"})
+        self.assertRegex(self.settings_line(lines), r"\bok\b")
+        line = self.runtimes_line(lines)
+        self.assert_status(line, "claude", "ok")
+        self.assert_status(line, "codex", "missing")
+        self.assertEqual(lines.index(line), 1)
+        self.assertEqual(code, 2)
+        self.assertTrue(err.strip())
+
     def test_a_missing_runtime_with_another_binary_name_says_the_binary(self):
         # cursor installs `agent`: "cursor missing" alone does not say what to install.
         self.assertEqual(runtimes.binary("cursor"), "agent")
@@ -618,13 +642,30 @@ class RuntimeCheckTest(unittest.TestCase):
         self.assertEqual(err, "")
 
     def test_a_login_shell_fault_line_carries_no_absolute_path(self):
-        # shell_setup.login_shell's own message quotes the shell's path, which can sit under a home directory.
-        why = ShellError(f"configured login shell '{HOME}/bin/fish' is not executable")
-        code, lines, _, _ = self.health(SETTINGS, MODELS, raises=why)
-        line = self.runtimes_line(lines)
-        self.assertIn("not executable", line, "the line says why")
-        self.assertNotIn("somebody", line)
-        self.assertEqual(code, 1)
+        # A shell fault names the shell's path, which can sit under a home directory, and a home directory can hold a
+        # space. The path is quoted by `login_shell`'s own message and inside the OSError and TimeoutExpired texts
+        # `resolve` passes on, and bare where a message does not quote it. Only its last name is kept. Not pinned: a
+        # bare path with a space in it, which nothing marks the end of.
+        home = "/Users/zach smith"
+        faults = {
+            "quoted": (f"configured login shell '{HOME}/bin/fish' is not executable", "not executable"),
+            "quoted, a space in the home directory": (f"configured login shell '{home}/bin/fish' is not executable", "not executable"),
+            "quoted inside a list": (f"could not inspect login shell for claude: Command '['{home}/bin/zsh', '-lic', "
+                                     "'command -v claude']' timed out after 15 seconds", "timed out"),
+            "quoted after an errno": (f"could not inspect login shell for claude: [Errno 8] Exec format error: '{home}/bin/zsh'",
+                                      "Exec format error"),
+            "bare": (f"could not inspect login shell for claude: {HOME}/bin/fish: bad interpreter", "bad interpreter"),
+            "bare, then quoted": (f"shell {HOME}/bin/fish could not read '{home}/.config/fish/config.fish'", "could not read"),
+        }
+        for what, (message, why) in faults.items():
+            with self.subTest(what):
+                code, lines, _, _ = self.health(SETTINGS, MODELS, raises=ShellError(message))
+                line = self.runtimes_line(lines)
+                self.assertIn(why, line, "the line says why")
+                for part in ("Users", "somebody", "zach", "smith", "/bin", ".config"):
+                    self.assertNotIn(part, line)
+                self.assertRegex(line, r"\b(?:fish|zsh)\b", "the shell is still named")
+                self.assertEqual(code, 1)
 
 
 if __name__ == "__main__":

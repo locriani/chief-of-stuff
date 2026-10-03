@@ -13,7 +13,7 @@
     {
       "name": "reply names codex as missing",
       "type": "regex",
-      "pattern": "(?im)codex(?:(?!claude|cursor|agy|[.;]\\s)[^\\n]){0,60}?(?:missing|not installed|unavailable|not found|isn['’]t installed)|^(?:(?!claude|cursor|agy|[.;]\\s)[^\\n])*?(?:missing|not installed|unavailable|not found|isn['’]t installed)(?:(?!claude|cursor|agy|[.;]\\s)[^\\n]){0,40}?codex"
+      "pattern": "(?im)codex(?:(?!claude|cursor|agy|[.;]\\s)[^\\n]){0,60}?(?:(?<!not )(?<!n['’]t )missing|unavailable|not found|(?:not|isn['’]t) (?:installed|available))|^(?:(?!claude|cursor|agy|[.;]\\s)[^\\n])*?(?:(?<!not )(?<!n['’]t )missing|unavailable|not found|(?:not|isn['’]t) (?:installed|available))(?:(?!claude|cursor|agy|[.;]\\s)[^\\n]){0,40}?codex"
     }
   ],
   "max_turns": 20,

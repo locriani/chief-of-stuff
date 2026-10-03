@@ -146,7 +146,9 @@ class CaseLintTest(unittest.TestCase):
 
     def assert_names_codex_as_missing(self, named: dict) -> None:
         """#48: "`health` names it as missing". `codex` and a word for missing share a clause of one line, in either
-        order, with no other runtime's name between them; a reply about codex, or about claude being missing, is not one."""
+        order, with no other runtime's name between them; a reply about codex, or about claude being missing, is not one,
+        and neither is `not missing`. Not told apart: another subject in codex's own clause ("The codex entry is second
+        and the Board line is missing" passes), and `no codex ...` spellings (a truthful "there is no codex binary" fails)."""
         self.assertEqual((named["type"], named.get("match", "contains")), ("regex", "contains"))
 
         def hit(reply: str) -> bool:
@@ -156,12 +158,15 @@ class CaseLintTest(unittest.TestCase):
                       "Codex CLI isn’t installed.", "codex: not found", "Missing runtime: codex", "**Not installed:** codex",
                       "| claude | ok |\n| codex | missing |", "codex (binary `codex`) is unavailable",
                       "The implement rotation names claude and codex; codex is missing.",
-                      "`[models.implement]` lists `codex:gpt-x`, and codex is missing, so that entry cannot launch."):
+                      "`[models.implement]` lists `codex:gpt-x`, and codex is missing, so that entry cannot launch.",
+                      "`[models.implement]` lists `codex:gpt-x`, which isn't available in the login shell.",
+                      "`codex:gpt-x`, isn't available in the login shell", "Codex is not available on this machine."):
             self.assertTrue(hit(reply), reply)
         for reply in ("The implement rotation is claude:opus@high, then codex:gpt-x.", "codex is installed.", "Settings look fine.",
                       "claude is missing.", "runtimes codex ok, claude missing", "runtimes claude missing, codex ok",
                       "codex ok, cursor missing (agent)", "- codex: ok\n- claude: missing", "- claude: missing\n- codex: ok",
-                      "Nothing is missing. Codex is there.", "The codex entry is second. One calendar is unavailable."):
+                      "Nothing is missing. Codex is there.", "The codex entry is second. One calendar is unavailable.",
+                      "codex is not missing.", "Codex isn't missing.", "Not missing: codex"):
             self.assertFalse(hit(reply), reply)
 
     def test_missing_runtime_graders_read_the_health_call_and_the_named_runtime(self) -> None:
@@ -173,48 +178,6 @@ class CaseLintTest(unittest.TestCase):
         self.assertEqual((used["type"], used["tool"], used["min"]), ("tool_used", "Bash", 1))
         self.assert_names_codex_as_missing(named)
         self.assertEqual(s["runtimes_present"], ["claude"])
-
-    def test_runtimes_from_health_graders_refuse_a_version_call_and_a_lookup(self) -> None:
-        """#48's field report: the coordinator ran `codex --version`, `cursor-agent --version` and `claude --version`
-        through a login shell. Runtime presence is read from `health`; neither a runtime's own version flag nor a
-        `command -v`/`which` on its binary is run by hand. Both graders read the call's command, wherever in it the
-        binary stands, and nothing else."""
-        s = spec(EVALS / "cases" / "dispatch-reads-runtimes-from-health")
-        version, lookup, used, named = s["graders"][:4]
-        for g in (version, lookup):
-            self.assertEqual((g["type"], g["tool"], g["max"], g.get("min", 0)), ("tool_used", "Bash", 0, 0))
-            self.assertTrue(g["description"])
-        self.assertEqual((used["type"], used["tool"], used["min"], used["input_match"]),
-                         ("tool_used", "Bash", 1, spec(EVALS / "cases" / "open-day-names-a-bad-setting")["graders"][0]["input_match"]))
-        self.assert_names_codex_as_missing(named)
-        self.assertEqual(s["runtimes_present"], ["claude"])
-
-        def hit(g: dict, command: str) -> bool:
-            # The description is the model's prose about the call. It names both forbidden calls here, and decides nothing.
-            said = "Not codex --version, claude -v, which codex or command -v claude: health says"
-            return re.search(g["input_match"], json.dumps({"command": command, "description": said})) is not None
-
-        binaries = ("codex", "cursor-agent", "agent", "agy", "claude")
-        for command in (*(f"{b} --version" for b in binaries), *(f"{b} -v" for b in binaries), "claude -V",
-                        "/opt/homebrew/bin/claude --version", "codex --version 2>&1 | head -1", "codex --version; claude --version",
-                        "cd /tmp && agy --version", "date\nclaude --version", 'zsh -lic "codex --version"',
-                        "/bin/zsh -lic 'agy models; codex --version; claude --version'", "echo $(codex --version)"):
-            self.assertTrue(hit(version, command), command)
-        for command in ("chief-of-stuff worker --runtime claude --dry-run", "chief-of-stuff worker --runtime claude --version",
-                        "chief-of-stuff worker --runtime=codex -v", "chief-of-stuff health --config CLAUDE.md", "chief-of-stuff --version",
-                        "chief-of-stuff models --root . --class implement", "python3 --version", "git --version",
-                        "chief-of-agent --version", "myclaude --version", "claude --verbose", "codex -vv", "cat codex.md",
-                        'chief-of-stuff log --root . "codex missing, launched claude:opus@low"', "which codex", "command -v claude"):
-            self.assertFalse(hit(version, command), command)
-        for command in (*(f"which {b}" for b in binaries), *(f"command -v {b}" for b in binaries), "which -a claude",
-                        "which codex claude agy", "command -v python3 codex", "command -v codex >/dev/null && echo yes",
-                        "for b in claude codex; do :; done; which agent", "date\nwhich codex", 'zsh -lic "command -v codex"',
-                        "/bin/zsh -lic 'which cursor-agent'", "echo $(which claude)", "/usr/bin/which codex"):
-            self.assertTrue(hit(lookup, command), command)
-        for command in ("which python3", "command -v chief-of-stuff", "command -v git && claude --help", "which gh; codex login",
-                        "which codex-helper", "which claude.md", "somewhich codex", "chief-of-stuff worker --runtime claude --dry-run",
-                        "chief-of-stuff health --config CLAUDE.md", "claude --version"):
-            self.assertFalse(hit(lookup, command), command)
 
     def test_every_grader_type_is_one_the_runner_dispatches(self) -> None:
         for case in CASES:

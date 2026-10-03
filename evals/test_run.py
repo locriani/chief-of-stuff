@@ -138,6 +138,22 @@ class SandboxGuardTest(unittest.TestCase):
             env = run.eval_environment(Path(d), Path(d) / "calls.jsonl", "America/Chicago")
             self.assertNotIn("CHIEF_OF_STUFF_SHELL", env)
 
+    def test_a_case_s_runtimes_present_reaches_the_environment_its_run_is_launched_in(self) -> None:
+        """`eval_environment` builds the stand-in; this is `run_one` handing it the case's key. The host CLI is the one
+        `subprocess.run` call a case with no `repo` makes: it is stopped there, and the env it was given is asked."""
+        sys.path.insert(0, str(run.PLUGIN_ROOT / "scripts"))
+        import runtimes
+        import shell_setup
+        for present in (["claude"], ["codex", "cursor"], []):
+            with self.subTest(present=present), tempfile.TemporaryDirectory() as d:
+                case = run.Case("wired", Path(d) / "case", {"prompt": "hello", "graders": [], "runtimes_present": present})
+                stop = subprocess.TimeoutExpired("host", 1)
+                with unittest.mock.patch.object(run.subprocess, "run", side_effect=stop) as launched:
+                    self.assertEqual(run.run_one(case, "baseline", "sonnet", Path(d) / "out")[:2], ([], "timeout"))
+                env = launched.call_args.kwargs["env"]
+                found = {r.name for r in runtimes.RUNTIMES if shell_setup.resolve(r.binary, source=env)}
+                self.assertEqual(found, set(present))
+
     def test_eval_entry_point_uses_its_snapshot_and_exact_arguments(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             output = Path(d) / "results"
