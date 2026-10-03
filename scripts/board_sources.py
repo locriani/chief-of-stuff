@@ -8,6 +8,7 @@ mention (`!58` on GitLab, `PR #58` on GitHub, or the request's URL), and the req
 one GraphQL call per forge. Workers are the registered sessions process_status finds running, live
 one-shot workers under the Worktrees dir, and the tracker's Sessions rows. The cache is
 `<pages dir>/.sources.json`. A source that cannot be read keeps its last good facts, and `errors` says why.
+`change_states` is the audit's read of the changes its rows name, neither drawn nor cached.
 """
 
 from __future__ import annotations
@@ -37,7 +38,7 @@ CACHE = ".sources.json"
 CLOSES = re.compile(r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+(#\d+)")
 GH_PR = re.compile(r"(?i)\bPR\s*#(\d+)\b")
 GL_MR = re.compile(r"(?<![\w&])!(\d+)\b")
-ACKNOWLEDGED = r"(?i:\W+merged\b)"  # after a change's ref, the row records its merge: `!58 merged`, `PR #58 (merged)`
+GH_ELSEWHERE = re.compile(r"(?i)[\w.-]+/[\w.-]+\s+PR\s*#\d+\b")  # `owner/repo PR #58` is that repo's pull request
 GL_STATE = {"opened": "open", "locked": "closed"}
 GL_WAITING = {"pending", "created", "waiting_for_resource", "preparing", "scheduled", "manual"}
 
@@ -350,31 +351,33 @@ def gitlab(home: backlog.Backlog, wanted: dict[str, set[int]], mrs: set[int], si
     return issues, changes, error
 
 
-def change_ref(home, number: int) -> str:
+def change_ref(home, number) -> str:
     """How a change is keyed: `#58` for a GitHub pull request, `!58` for a GitLab merge request."""
     return f"{'#' if isinstance(home, backlog.GitHubBacklog) else '!'}{number}"
 
 
-def change_numbers(task, home, then: str = "") -> set[int]:
+def spelled(ref: str) -> str:
+    """A change's ref as a row spells it: `PR #58` on GitHub, where a bare `#58` is an issue."""
+    return f"PR {ref}" if ref.startswith("#") else ref
+
+
+def change_numbers(task, home, then: str = "", own: bool = False) -> set[int]:
     """The pull or merge requests a task's row names: `!N` on GitLab, `PR #N` on GitHub, or the request's URL.
-    With `then`, only those a cell follows with it. Each cell is read alone, so nothing is read across two."""
+    With `then`, only those a cell follows with it; with `own`, not another repo's `owner/repo PR #N`.
+    Each cell is read alone, so nothing is read across two."""
     github_home = isinstance(home, backlog.GitHubBacklog)
     url = (rf"github\.com/{re.escape(home.repo)}/pull/(\d+)" if github_home
            else rf"{re.escape(backlog.home_of(home)[0])}/{re.escape(home.project)}/-/merge_requests/(\d+)")
-    return {int(n) for cell in (task.name, task.item, task.issue, task.checklist)
+    cells = (task.name, task.item, task.issue, task.checklist)
+    return {int(n) for cell in ((GH_ELSEWHERE.sub(" ", cell) for cell in cells) if own else cells)
             for named in ((GH_PR if github_home else GL_MR).pattern, url) for n in re.findall(named + then, cell)}
-
-
-def unacknowledged(task, home) -> set[int]:
-    """The changes a task's row names and does not record as merged."""
-    return change_numbers(task, home) - change_numbers(task, home, ACKNOWLEDGED)
 
 
 def change_states(home, numbers, gh, call) -> tuple[dict[str, ChangeState], str]:
     """({ref: ChangeState}, error) for the changes numbered, from one GraphQL call that asks for nothing else.
     A number the forge does not have is absent from the dict, and is no error."""
-    # ponytail: one request names every change, and a connection answers at most GL_PAGE; page as gitlab() does
-    # once a tracker's live rows name more than that.
+    # ponytail: one request names every change. Past about GL_PAGE of them GitLab refuses the query as too complex,
+    # which the audit prints as `merged: unknown`; page as gitlab() does once live rows name that many.
     states: dict[str, ChangeState] = {}
     if isinstance(home, backlog.GitHubBacklog):
         owner, name = home.repo.split("/", 1)
@@ -388,9 +391,8 @@ def change_states(home, numbers, gh, call) -> tuple[dict[str, ChangeState], str]
         except (ValueError, KeyError, TypeError):
             return {}, err.strip() or f"gh exited {code}"
         for p in filter(None, nodes.values()):
-            state = p["state"].lower()
-            states[f"#{p['number']}"] = ChangeState(f"#{p['number']}", state, p.get("baseRefName") or "",
-                                                    (p.get("mergeCommit") or {}).get("oid") or "" if state == "merged" else "")
+            ref = change_ref(home, p["number"])
+            states[ref] = ChangeState(ref, p["state"].lower(), p.get("baseRefName") or "", (p.get("mergeCommit") or {}).get("oid") or "")
         # A number that is not a pull request is a null node, a NOT_FOUND at its alias, and a failing `gh`.
         return states, _graphql_errors({"errors": [e for e in body.get("errors") or [] if not (
             isinstance(e, dict) and e.get("type") == "NOT_FOUND" and len(e.get("path") or ()) == 2)]})
@@ -398,16 +400,16 @@ def change_states(home, numbers, gh, call) -> tuple[dict[str, ChangeState], str]
     if not secret:
         return {}, home.missing_token
     query = (f"query {{ project(fullPath: {json.dumps(home.project)}) {{ mergeRequests(iids: "
-             f"{json.dumps([str(n) for n in sorted(numbers)])}) {{ nodes {{ iid state targetBranch mergeCommitSha diffHeadSha }} }} }} }}")
+             f"{json.dumps([str(n) for n in sorted(numbers)])}) {{ nodes {{ iid state targetBranch mergeCommitSha }} }} }} }}")
     body, _, err = call("POST", f"{home.host.rstrip('/')}/api/graphql", secret, backlog.TIMEOUT, {"query": query})
     body = body if isinstance(body, dict) else {}
     project = (body.get("data") or {}).get("project")
     if err or not project:  # a project the token cannot see answers null
         return {}, err or _graphql_errors(body) or f"GitLab did not answer for {home.project}"
     for m in (project.get("mergeRequests") or {}).get("nodes") or []:
-        state = GL_STATE.get(m["state"], m["state"])
-        states[f"!{m['iid']}"] = ChangeState(f"!{m['iid']}", state, m.get("targetBranch") or "",
-                                             (m.get("mergeCommitSha") or m.get("diffHeadSha") or "") if state == "merged" else "")
+        # A fast-forward merge has no merge commit, and the head it merged from may never have reached the base.
+        ref = change_ref(home, m["iid"])
+        states[ref] = ChangeState(ref, GL_STATE.get(m["state"], m["state"]), m.get("targetBranch") or "", m.get("mergeCommitSha") or "")
     return states, _graphql_errors(body)
 
 

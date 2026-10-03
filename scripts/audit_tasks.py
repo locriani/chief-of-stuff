@@ -48,6 +48,8 @@ PAREN = re.compile(r"\((.*?)\)")
 TOKEN = re.compile(r"[A-Za-z0-9]+")
 STOP = NOT_A_NAME | {"done", "from", "to", "on", "by", "worktree", "worktrees", "off", "main", "new"}
 DONE = "done"
+# After a change's ref, the row records its merge: `!58 merged`, `PR #58 (merged)`.
+ACKNOWLEDGED = r"(?i:\W+merged\b)"
 
 
 @dataclass(frozen=True)
@@ -209,7 +211,9 @@ def _named(task, home: Backlog | GitHubBacklog) -> set[int]:
     standing, not done, and its issue is not in a repo other than the Backlog's, where `PR #12` is another #12."""
     ref = issue_ref(task.issue, home) if task.issue.strip() else None
     elsewhere = ref is not None and (ref.host.lower(), ref.repo.lower()) != tuple(part.lower() for part in home_of(home))
-    return set() if task.standing or task.kind == DONE or elsewhere else board_sources.unacknowledged(task, home)
+    if task.standing or task.kind == DONE or elsewhere:
+        return set()
+    return board_sources.change_numbers(task, home, own=True) - board_sources.change_numbers(task, home, ACKNOWLEDGED, own=True)
 
 
 def merged_faults(tasks, changes: dict, home: Backlog | GitHubBacklog, answered: bool = True) -> list[MergedFault]:
@@ -222,11 +226,11 @@ def merged_faults(tasks, changes: dict, home: Backlog | GitHubBacklog, answered:
         named = [changes[ref] for ref in refs if ref in changes]
         if any(c.state == "open" for c in named):
             continue
-        said = [" ".join(filter(None, (c.ref, "merged into", c.base, c.merge_sha[:7]))) for c in named if c.state == "merged"]
+        said = [" ".join(filter(None, (board_sources.spelled(c.ref), "merged into", c.base, c.merge_sha[:7]))) for c in named if c.state == "merged"]
         how = ('; write the task done once it is on main and the suite ran there, or write "merged" after the '
                "change in its row with why not") if said else ""
         if answered:
-            said += [f"{ref} not found" for ref in refs if ref not in changes]
+            said += [f"{board_sources.spelled(ref)} not found" for ref in refs if ref not in changes]
         if said:
             faults.append(MergedFault(clip_name(task.label), ", ".join(said) + how))
     return faults
