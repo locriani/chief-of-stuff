@@ -66,6 +66,10 @@ class ShellSetupTest(unittest.TestCase):
             self.assertEqual(shell.resolve("fakecli48", source=source), str(binary))
             self.assertIsNone(shell.resolve("othercli48", source=source), "the stand-in knows no other program")
             self.assertEqual(shell.login_shell(source), "/bin/zsh", "the login shell a launch uses is $SHELL")
+            # No `source`: production and the eval harness set the variable in the process environment.
+            with mock.patch.dict(shell.os.environ, source, clear=True):
+                self.assertEqual(shell.resolve("fakecli48"), str(binary))
+                self.assertIsNone(shell.resolve("othercli48"))
 
     def test_a_launch_goes_through_the_login_shell_not_the_lookup_stand_in(self):
         """The stand-in is named as a shell `login_argv` supports, so only its path tells it from `$SHELL`: a worker

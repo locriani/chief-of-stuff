@@ -23,6 +23,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import probe_health as ph  # noqa: E402
 import runtimes  # noqa: E402
+import test_shell_setup  # noqa: E402
 from shell_setup import ShellError  # noqa: E402
 import workspace  # noqa: E402
 
@@ -564,6 +565,25 @@ class RuntimeCheckTest(unittest.TestCase):
                 self.assertEqual(code, alone_code + len(missing))
                 self.assertEqual(lines[2:], alone, "the targets are still probed and said as before")
                 self.assertEqual(err, "")
+
+    def test_the_lookup_stand_in_in_the_process_environment_says_which_runtimes_exist(self):
+        """End to end, `resolve` unpatched: `CHIEF_OF_STUFF_SHELL` in the process environment, as the eval harness sets
+        it, answers the lookups. `$SHELL` cannot run, so a claude said ok was found by the stand-in."""
+        def setup(root: Path):
+            claude = root / "claude"
+            claude.write_text(f"#!{sys.executable}\n")
+            claude.chmod(0o755)
+            standin = test_shell_setup.ShellSetupTest.standin(self, root / "standin.py", claude)
+            env = mock.patch.dict("os.environ", {"SHELL": "/missing/shell", "CHIEF_OF_STUFF_SHELL": str(standin)}, clear=True)
+            env.start()
+            return env.stop
+
+        toml = GOOD + '\n[models.deep]\nrotation = ["claude:opus@high", "codex:gpt-x"]\n'
+        code, lines, err = self.run_health(SETTINGS, toml, setup=setup)
+        line = self.runtimes_line(lines)
+        self.assert_status(line, "claude", "ok")
+        self.assert_status(line, "codex", "missing")
+        self.assertEqual((code, err), (1, ""))
 
     def test_the_runtimes_are_said_in_the_runtime_table_s_order_not_the_file_s(self):
         # One order whatever the settings file's is: the line reads the same on every machine that names the same runtimes.
