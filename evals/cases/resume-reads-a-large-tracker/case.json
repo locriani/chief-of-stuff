@@ -1,21 +1,21 @@
 {
   "tz": "America/Chicago",
   "peers": "sessions.json",
-  "description": "A new session on a day whose tracker holds sixty tasks with paragraph-long items. Resume reads it through `chief-of-stuff tracker`, never with grep, sed, awk, tail, head or cut on the tracker file, and still reports what the `## Resume` block says (#46).",
+  "description": "A new session on a day whose tracker holds sixty tasks with paragraph-long items. Resume reads it through a `chief-of-stuff tracker` subcommand, never with grep, sed, awk, cat, head, tail or cut on the tracker file, and still reports what the `## Resume` block says (#46).",
   "prompt": "resume",
   "graders": [
     {
-      "name": "tracker read through the tracker command",
+      "name": "tracker read through a tracker subcommand",
       "type": "tool_used",
       "tool": "Bash",
-      "input_match": "(?:chief[-_]of[-_]stuff(?:\\.py)?\\s+tracker\\b|tracker_read\\.py)",
+      "input_match": "(?:chief[-_]of[-_]stuff(?:\\.py)?\\s+tracker|tracker_read\\.py)\\b(?:\\s+--\\w+(?:[= ]\\S+)?)*\\s+(?:header|sections|section|tasks)\\b",
       "min": 1
     },
     {
       "name": "no shell text tool on the tracker file",
       "type": "tool_used",
       "tool": "Bash",
-      "input_match": "\\b(?:grep|sed|awk|tail|head|cut)\\b[^|;&]*tracker\\.md|tracker\\.md[^;&]*\\|\\s*(?:grep|sed|awk|tail|head|cut)\\b",
+      "input_match": "^(?=.*(?:tracker\\.md|\\*-tracker)).*(?:\"command\": \"|[;&|(`]|\\\\n|\\b(?:do|then|else|xargs)\\s)\\s*(?:\\w+=\\S*\\s+)*(?:[\\w./-]*/)?(?:grep|sed|awk|cat|head|tail|cut)\\b",
       "max": 0
     },
     {

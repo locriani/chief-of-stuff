@@ -61,6 +61,31 @@ class CaseLintTest(unittest.TestCase):
             command = entry + ' --task "Security audit" --runtime claude --dry-run'
             self.assertRegex(json.dumps({"command": command}), pattern)
 
+    def test_large_tracker_graders_enforce_the_read_rule(self) -> None:
+        """#46: Resume "reads it through `chief-of-stuff tracker` and never runs grep, sed, or tail on the tracker file".
+        Two stored runs broke the rule and passed: a `cat` of the whole file, and a grep whose pattern held a `|`."""
+        used, shell = (g["input_match"] for g in spec(EVALS / "cases" / "resume-reads-a-large-tracker")["graders"][:2])
+        t = "daily/2026-10-03-tracker.md"
+
+        def hit(pattern: str, command: str) -> bool:
+            return re.search(pattern, json.dumps({"command": command, "description": "Read the head of the tracker"})) is not None
+
+        for command in ("chief-of-stuff tracker section Resume", "chief-of-stuff tracker --root . --date 2026-10-03 tasks --not done",
+                        "python3 /release/chief_of_stuff.py tracker header", "python3 /release/scripts/tracker_read.py --root . sections"):
+            self.assertTrue(hit(used, command), command)
+        for command in ("chief-of-stuff tracker --help", f"chief-of-stuff tracker {t} sections", "chief-of-stuff tracker",
+                        "chief-of-stuff audit --date 2026-10-03; ls daily/"):
+            self.assertFalse(hit(used, command), command)
+        for command in (f"cat {t}", f"grep -n '^## ' {t}", f'grep -n "Coordinator:\\|^## Resume" {t}', f"grep -nE '^## |^- As of' {t}",
+                        f"sed -n '10,40p' {t}", f"tail -50 {t}", f"head -8 {t}", f"cut -c1-160 {t}", f"awk -F'|' '{{print $2}}' {t}",
+                        f"cd daily && tail -5 {Path(t).name}", f"TZ=America/Chicago date; /usr/bin/grep -c open {t}",
+                        f"F={t}; grep -n '^## ' $F", f"wc -l {t} | cut -d' ' -f1", f"date\nhead -3 {t}"):
+            self.assertTrue(hit(shell, command), command)
+        for command in ("chief-of-stuff tracker section Log | tail -8", "chief-of-stuff tracker tasks --not done | head -20",
+                        'chief-of-stuff log --root . "cut the tail of tracker.md prose"', f"ls -la {t}", f"wc -l {t}",
+                        "grep -n TODO notes/plan.md", "TZ=America/Chicago date"):
+            self.assertFalse(hit(shell, command), command)
+
     def test_every_grader_type_is_one_the_runner_dispatches(self) -> None:
         for case in CASES:
             for g in graders(spec(case)):

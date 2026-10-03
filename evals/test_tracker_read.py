@@ -16,15 +16,16 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 import backlog  # noqa: E402
 from _vendor.toon_format import decode as toon_decode  # noqa: E402
 from md import section  # noqa: E402
-from tracker import clip_name, parse_tracker  # noqa: E402
+from tracker import SHORT_NAME, clip_name, parse_tracker  # noqa: E402
 from workspace import read_config  # noqa: E402
 import tracker_read  # noqa: E402
 
@@ -60,6 +61,7 @@ Coordinator: relay-12. Board: none.
 | Migrate the nightly export job to the new queue and retire the old cron entry | {PROSE}ITEMWORD4 closes it. | worker-b | waiting | 09:10 |  | L | build | review | other/repo#7 |  |
 | Report readiness | The endpoint reports `"ok"|"degraded"` and the flag reads a \\| b. {PROSE}ITEMWORD5 closes it. | worker-c | orphaned | 09:15 |  | M | build | fix | #11 |  |
 | Ship the changelog | {PROSE}ITEMWORD6 closes it. | worker-a | done 08:10–08:55 | 08:00 |  | S | docs | main | #12 |  |
+|  | Retire EARLYMARK the legacy importer once every caller has moved to the queue and the last nightly run that still depends on LATEMARK it has been watched through. {PROSE}ITEMWORD7 closes it. | unassigned | open | 09:20 |  | M |  |  |  |  |
 
 ## Decisions
 
@@ -75,6 +77,7 @@ Coordinator: relay-12. Board: none.
 ## File ownership
 
 - Audit the upload endpoint: worktree `wt-audit` · src/a/
+  - tests under tests/a/ go with it
 - Report readiness: worktree `wt-ready` · src/b/ `x|y`
 
 ## Log
@@ -82,6 +85,10 @@ Coordinator: relay-12. Board: none.
 - 09:00 opened the day
 - 09:30 audit assigned to worker-a
 """
+# An unescaped `|` in the item: thirteen cells where the header has eleven, which the parser recovers and warns about.
+WARNED_ROW = ("| Tune the limiter | The flag reads a | b | c in the notes. | worker-d | running 10:00 | 09:20 |  | S | build "
+              "| implement | #13 |  |\n")
+WARNED = TRACKER.replace("\n## Decisions", WARNED_ROW + "\n## Decisions")
 HEADINGS = ["Resume", "Tasks", "Decisions", "Sessions", "File ownership", "Log"]
 TASKS = parse_tracker(TRACKER).tasks
 
@@ -181,10 +188,17 @@ class TrackerReadTest(unittest.TestCase):
         self.assertLessEqual(len([line for line in out.splitlines() if line.strip()]), len(TASKS) + 1)
 
     # Field evidence, 0.42.0: "The output has to be one line per task and must never print the item cell."
-    def test_the_item_cell_is_never_printed(self):
+    def test_the_item_cell_is_never_printed_beyond_a_nameless_rows_clipped_label(self):
         _, out, _ = self.run_cli("tasks")
         self.assertNotIn("ITEMWORD", out)
         self.assertNotIn(PROSE.strip(), out)
+        # The one exception: a row with no name cell is called by its label, which is the item's own first words.
+        nameless = next(t for t in TASKS if "EARLYMARK" in t.item)
+        self.assertFalse(nameless.name.strip())
+        row = next(r for r in toon_decode(out) if "EARLYMARK" in r["name"])
+        self.assertEqual(row["name"], clip_name(nameless.label))
+        self.assertLessEqual(len(row["name"].rstrip("…")), SHORT_NAME)
+        self.assertNotIn("LATEMARK", out)
 
     def test_name_is_the_label_clipped_by_clip_name(self):
         rows = self.rows()
@@ -197,6 +211,45 @@ class TrackerReadTest(unittest.TestCase):
     def test_a_pipe_escaped_or_in_backticks_does_not_shift_columns(self):
         row = next(r for r in self.rows() if r["name"] == "Report readiness")
         self.assertEqual((row["owner"], row["state"], row["stage"], row["issue"]), ("worker-c", "orphaned", "fix", "#11"))
+
+    def test_state_and_issue_are_the_whole_cell_not_the_kind(self):
+        rows = {r["name"]: r for r in self.rows()}
+        self.assertEqual(rows["Audit the upload endpoint"]["state"], "running 09:30")
+        self.assertEqual(rows["Ship the changelog"]["state"], "done 08:10–08:55")
+        self.assertEqual(rows["Draft release notes"]["issue"], f"[#9]({HOST}/team/app/-/issues/9)")
+        self.assertEqual(sorted(r["issue"] for r in rows.values()), sorted(t.issue.strip() for t in TASKS))
+
+    def test_rows_come_out_in_file_order(self):
+        order = [clip_name(t.label) for t in TASKS]
+        self.assertNotEqual(order, sorted(order), "the fixture is not already sorted")
+        self.assertEqual([r["name"] for r in self.rows()], order)
+
+    def test_state_and_not_together_intersect(self):
+        self.assertEqual(sorted(r["name"] for r in self.rows("--state", "open", "--state", "running", "--not", "running")),
+                         names(t for t in TASKS if t.kind == "open"))
+
+    # Review of #46: without it `tasks --not done` silently drops or mislabels a running task.
+    def test_a_row_the_parser_warns_about_is_still_printed_and_named_on_stderr(self):
+        self.tracker.write_text(WARNED)
+        tasks = parse_tracker(WARNED).tasks
+        warned = [t for t in tasks if t.warning]
+        self.assertEqual(len(warned), 1)
+        # The task as the parser read it: a stray pipe moves cells, and the name printed is the one stdout carries.
+        name = clip_name(warned[0].label)
+        self.assertEqual(warned[0].kind, "running")
+        for args in ((), ("--not", "done")):
+            with self.subTest(args=args):
+                _, out, err = self.run_cli("tasks", *args)
+                expected = [t for t in tasks if not args or t.kind != "done"]
+                self.assertEqual([r["name"] for r in toon_decode(out)], [clip_name(t.label) for t in expected])
+                naming = [line for line in err.splitlines() if name in line]
+                self.assertEqual(len(naming), 1, err)
+                self.assertIn(warned[0].warning, naming[0])
+
+    def test_a_tracker_with_no_warned_row_prints_nothing_on_stderr(self):
+        self.assertFalse([t for t in TASKS if t.warning])
+        code, _, err = self.run_cli("tasks")
+        self.assertEqual((code, err), (0, ""))
 
     def test_cells_are_printed_as_the_parser_read_them(self):
         row = next(r for r in self.rows() if r["name"] == "Audit the upload endpoint")
@@ -254,6 +307,26 @@ class TrackerReadTest(unittest.TestCase):
                 self.assertEqual(len(expected), 1)
                 self.assertEqual([r["name"] for r in self.rows("--issue", arg)], names(expected))
 
+    def test_an_issue_that_cannot_be_parsed_is_an_error(self):
+        for arg in ("abc", "22 6", ""):
+            with self.subTest(issue=arg):
+                code, out, err = self.run_cli("tasks", "--issue", arg)
+                self.assertNotIn(code, (0, None))
+                self.assertEqual(out.strip(), "")
+                self.assertTrue(err.strip())
+
+    def test_a_missing_tracker_file_is_an_error_on_stderr_not_a_traceback(self):
+        for args in (("header",), ("sections",), ("section", "Resume"), ("tasks",)):
+            with self.subTest(args=args):
+                try:
+                    code, out, err = self.run_cli(*args, date="2026-01-01")
+                except Exception as exc:  # noqa: BLE001 — an uncaught error is the traceback this test forbids
+                    self.fail(f"raised {exc!r}")
+                self.assertNotIn(code, (0, None))
+                self.assertEqual(out.strip(), "")
+                self.assertIn("2026-01-01", err)
+                self.assertNotIn("Traceback", err)
+
     # Issue #46: "A read-only `chief-of-stuff tracker` command"
     def test_the_command_writes_nothing(self):
         before = (self.tracker.read_bytes(), self.tracker.stat().st_mtime_ns)
@@ -265,11 +338,60 @@ class TrackerReadTest(unittest.TestCase):
         self.assertEqual(sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*")), files)
 
     def test_date_defaults_to_today_in_the_workspace_zone(self):
-        today = datetime.now(read_config(self.root).zone).date().isoformat()
-        self.tracker.rename(self.tracker.with_name(f"{today}-tracker.md"))
-        code, out, err = self.run_cli("section", "Log", date=None)
+        # 03:30 UTC on the 26th is 22:30 on the 25th in America/Chicago. The fake's zoneless `now()` answers the
+        # 26th as well, so a machine-local or a UTC default looks for a tracker that is not there, at any hour.
+        instant = datetime(2026, 9, 26, 3, 30, tzinfo=timezone.utc)
+
+        class Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return instant.astimezone(tz) if tz else instant.replace(tzinfo=None)
+
+            @classmethod
+            def utcnow(cls):
+                return instant.replace(tzinfo=None)
+
+        with mock.patch.object(tracker_read, "datetime", Clock):
+            code, out, err = self.run_cli("section", "Log", date=None)
         self.assertEqual(code, 0, err)
         self.assertIn("opened the day", out)
+
+    def test_section_keeps_an_indented_line_as_written(self):
+        code, out, err = self.run_cli("section", "File ownership")
+        self.assertEqual(code, 0, err)
+        self.assertIn("\n  - tests under tests/a/ go with it", out)
+
+    def test_sections_lists_only_second_level_headings(self):
+        text = TRACKER.replace("\n## Log\n", "\n### Earlier\n\n- 08:00 a note\n\n#### Deeper\n\n## Log\n")
+        self.tracker.write_text(text)
+        code, out, err = self.run_cli("sections")
+        self.assertEqual(code, 0, err)
+        self.assertEqual([line.partition(" ")[2] for line in out.splitlines()], HEADINGS)
+
+    def test_a_heading_with_trailing_spaces_is_read_by_the_name_sections_prints(self):
+        self.tracker.write_text(TRACKER.replace("\n## Log\n", "\n## Log  \n"))
+        _, out, _ = self.run_cli("sections")
+        printed = [line.partition(" ")[2] for line in out.splitlines()]
+        self.assertEqual([name.strip() for name in printed], HEADINGS)
+        for name in printed:
+            with self.subTest(section=name):
+                code, body, err = self.run_cli("section", name)
+                self.assertEqual(code, 0, err)
+                self.assertEqual(body.strip("\n"), "\n".join(section(TRACKER, f"## {name.strip()}")).strip("\n"))
+
+    def test_sections_numbers_count_newline_lines_only(self):
+        # A form feed or U+2028 inside a line is one line to the Read tool and to an editor, and two to `str.splitlines`.
+        text = (TRACKER.replace("Coordinator: relay-12.", "Coordinator: relay-12.\x0c")
+                .replace("- Next: read", "- Next:\u2028read"))
+        self.tracker.write_text(text, encoding="utf-8")
+        code, out, err = self.run_cli("sections")
+        self.assertEqual(code, 0, err)
+        lines = text.split("\n")
+        printed = [line.partition(" ") for line in out.splitlines()]
+        self.assertEqual([name for _, _, name in printed], HEADINGS)
+        for number, _, name in printed:
+            with self.subTest(heading=name):
+                self.assertEqual(lines[int(number) - 1], f"## {name}")
 
 
 if __name__ == "__main__":
