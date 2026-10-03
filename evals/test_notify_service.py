@@ -222,8 +222,7 @@ class QueueLockTest(unittest.TestCase):
         self.assertEqual(before, ws.queue.read_bytes())
 
 
-@unittest.skipUnless(os.environ.get("CHIEF_NOTIFY_LAUNCHD_SMOKE") == "1" and sys.platform == "darwin",
-                     "explicit macOS launchd smoke test")
+@unittest.skipUnless(sys.platform == "darwin", "launchd exists only on macOS")
 class LaunchdSmokeTest(WorkspaceTest):
     def test_crash_recovery_and_updates_with_no_coordinator(self):
         # Registers only a temporary queue and job; never opens md-notify or a browser.
