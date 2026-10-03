@@ -114,17 +114,32 @@ class CaseLintTest(unittest.TestCase):
 
     def test_bad_setting_graders_read_the_health_call_and_the_named_key(self) -> None:
         """#47: "`health` names the key and exits nonzero". One grader finds the health call under each spelling the
-        allowlist admits, the other finds `[workers] mode` in the reply however it is punctuated."""
+        allowlist admits, in the call's command and nowhere else; the other finds `[workers] mode` in the reply however
+        it is punctuated, and a reply that names only the file and the value is not one that names the key."""
         used, named = (g for g in spec(EVALS / "cases" / "open-day-names-a-bad-setting")["graders"])
-        for command in ("chief-of-stuff health --config CLAUDE.md", "python3 /release/chief_of_stuff.py health --config CLAUDE.md",
-                        "python3 /release/scripts/probe_health.py --config CLAUDE.md"):
-            self.assertRegex(json.dumps({"command": command}), used["input_match"])
-        for command in ("chief-of-stuff pages --ensure", "TZ=America/Chicago date", "chief-of-stuff audit --date 2026-10-03"):
-            self.assertNotRegex(json.dumps({"command": command, "description": "Not a health call"}), used["input_match"])
+        self.assertEqual((used["type"], used["tool"], used["min"]), ("tool_used", "Bash", 1))
+
+        def hit(command: str) -> bool:
+            # The description is the model's prose about the call. It names the health call here, and decides nothing.
+            said = "Before chief-of-stuff health runs (probe_health.py)"
+            return re.search(used["input_match"], json.dumps({"command": command, "description": said})) is not None
+
+        for command in ("chief-of-stuff health --config CLAUDE.md", "chief-of-stuff health", "chief_of_stuff health",
+                        "python3 /release/chief_of_stuff.py health --config CLAUDE.md",
+                        "python3 /release/scripts/probe_health.py --config CLAUDE.md",
+                        "cd /tmp/ws; chief-of-stuff health --config CLAUDE.md 2>&1 | head -20",
+                        'echo "opening"; chief-of-stuff health'):
+            self.assertTrue(hit(command), command)
+        for command in ("chief-of-stuff pages --ensure", "TZ=America/Chicago date", "chief-of-stuff audit --date 2026-10-03",
+                        "chief-of-stuff healthcheck", "chief-of-stuff healthy --config CLAUDE.md", "chief-of-stuff health_all",
+                        "python3 /release/chief_of_stuff.py healthz", "python3 /release/scripts/probe_healthXpy"):
+            self.assertFalse(hit(command), command)
         for reply in ("`[workers] mode` must be `interactive` or `one-shot`", "workers.mode is invalid",
                       "the `mode` key under `[workers]` is not valid", "Settings: **[Workers] Mode** is wrong"):
             self.assertRegex(reply, named["pattern"])
-        for reply in ("Settings look fine.", "All workers are idle.", "Dark mode is on."):
+        for reply in ("Settings look fine.", "All workers are idle.", "Dark mode is on.",
+                      '`chief-of-stuff.toml` has `mode = "oneshot"`, not `one-shot`', "`chief-of-stuff.toml` is invalid.",
+                      "The settings file `chief-of-stuff.toml` did not load: `oneshot` is not a value it takes."):
             self.assertNotRegex(reply, named["pattern"])
 
     def test_every_grader_type_is_one_the_runner_dispatches(self) -> None:

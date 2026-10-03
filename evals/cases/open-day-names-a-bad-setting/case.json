@@ -1,13 +1,13 @@
 {
   "tz": "America/Chicago",
-  "description": "open-the-day in a workspace as `chief-of-stuff init` leaves it: a `Settings:` line and no `Health:` line. The settings file has `[workers] mode = \"oneshot\"`, which the schema refuses (it is `one-shot`). #47's acceptance: \"A red eval case with an invalid `[workers] mode`: `health` names the key and exits nonzero.\" So opening the day runs `health`, which loads the file, and the reply names the setting.",
+  "description": "open-the-day in a workspace as `chief-of-stuff init` leaves it: a `Settings:` line and no `Health:` line. The settings file has `[workers] mode = \"oneshot\"`, which the schema refuses (it is `one-shot`). #47's acceptance: \"A red eval case with an invalid `[workers] mode`: `health` names the key and exits nonzero.\" So opening the day runs `health`, which loads the file, and the reply names the setting. The `health was run` grader reads the call's `command`, not its description. Not covered: a command that names the phrase without running it (`chief-of-stuff health --help`, a grep or an echo of `chief-of-stuff health`).",
   "prompt": "Good morning.",
   "graders": [
     {
       "name": "health was run",
       "type": "tool_used",
       "tool": "Bash",
-      "input_match": "chief[-_]of[-_]stuff(?:\\.py)?\\s+health\\b|probe_health\\.py",
+      "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:chief[-_]of[-_]stuff(?:\\.py)?\\s+health\\b|probe_health\\.py)",
       "min": 1
     },
     {

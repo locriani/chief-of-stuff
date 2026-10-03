@@ -65,26 +65,16 @@ class TargetParsingTest(unittest.TestCase):
             "- Board: none\n\n"
             "## Other\n\n- Health: not-a-target https://example.test/x 200\n"
         )
-        with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "CLAUDE.md"
-            p.write_text(text)
-            targets = ph.targets_from_config(p)
         self.assertEqual(
-            [(t.name, t.url, t.expect) for t in targets],
+            [(t.name, t.url, t.expect) for t in ph._targets(text)],
             [("agent", "https://example.test/ready", 200), ("login", "https://example.test/login", 200)],
         )
 
     def test_missing_block_is_no_targets_not_an_error(self):
-        with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "CLAUDE.md"
-            p.write_text("# Workspace\n\nNothing here.\n")
-            self.assertEqual(ph.targets_from_config(p), [])
+        self.assertEqual(ph._targets("# Workspace\n\nNothing here.\n"), [])
 
     def test_expected_status_defaults_to_200(self):
-        with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "CLAUDE.md"
-            p.write_text("## Coordinator\n\n- Health: agent https://example.test/ready\n")
-            self.assertEqual(ph.targets_from_config(p)[0].expect, 200)
+        self.assertEqual(ph._targets("## Coordinator\n\n- Health: agent https://example.test/ready\n")[0].expect, 200)
 
     def test_refuses_a_non_http_scheme(self):
         with self.assertRaises(ph.TargetError):
@@ -185,20 +175,28 @@ BAD_MODE = '[workers]\nmode = "sometimes"\n'
 GOOD = '[workers]\nmode = "one-shot"\n'
 # The four lines `workspace.parse_coordinator` refuses a block without.
 FULL = "- User: Robin\n- Daily log dir: `daily/`\n- Tracker: `daily/<date>-tracker.md`\n- Timezone: UTC\n"
-# Ways a block can spell a `Settings:` line. What each one names is `workspace.read_config`'s to say, not this table's.
+# Ways a block can spell a `Settings:` line, and the file each one names (None: no settings line). The rule is
+# `workspace._bullets` over `md.BULLET`: "The block's top-level `- key: value` bullets, a repeated key's last line
+# winning", read by `settings_path` under the key `Settings` after `md.unquote`.
 FORMS = {
-    "one line": "- Settings: `a.toml`\n",
-    "two lines": "- Settings: `a.toml`\n- Settings: `b.toml`\n",
-    "two lines, the other order": "- Settings: `b.toml`\n- Settings: `a.toml`\n",
-    "nested under another bullet": "- Board: none\n  - Settings: `a.toml`\n",
-    "a star bullet": "* Settings: `a.toml`\n",
-    "no bullet": "Settings: `a.toml`\n",
-    "a bullet indented by one space": " - Settings: `a.toml`\n",
-    "a backticked label": "- `Settings`: `a.toml`\n",
-    "a space before the colon": "- Settings : a.toml\n",
-    "an empty value, then a Health: line": "- Settings:\n- Health: agent http://127.0.0.1:{port}/ready 200\n",
+    "one line": ("- Settings: `a.toml`\n", "a.toml"),
+    # a repeated key's last line wins, whichever file that is
+    "two lines": ("- Settings: `a.toml`\n- Settings: `b.toml`\n", "b.toml"),
+    "two lines, the other order": ("- Settings: `b.toml`\n- Settings: `a.toml`\n", "a.toml"),
+    # top-level only: an indented bullet belongs to the bullet above it
+    "nested under another bullet": ("- Board: none\n  - Settings: `a.toml`\n", None),
+    "a bullet indented by one space": (" - Settings: `a.toml`\n", None),
+    # md.BULLET is a `-` bullet
+    "a star bullet": ("* Settings: `a.toml`\n", None),
+    "no bullet": ("Settings: `a.toml`\n", None),
+    # the key is unquoted: backticks and the spaces around it go
+    "a backticked label": ("- `Settings`: `a.toml`\n", "a.toml"),
+    "a space before the colon": ("- Settings : a.toml\n", "a.toml"),
+    # the key is `Settings` exactly, as main's parse_coordinator reads it (`top.get("Settings", "")`)
+    "a lower-case label": ("- settings: a.toml\n", None),
+    # a line that names no path names no file
+    "an empty value, then a Health: line": ("- Settings:\n- Health: agent http://127.0.0.1:{port}/ready 200\n", None),
 }
-
 
 class SettingsCheckTest(unittest.TestCase):
     """#47: `health` loads the file the `Settings:` line names through the settings loader.
@@ -295,24 +293,22 @@ class SettingsCheckTest(unittest.TestCase):
 
     def test_health_reports_on_the_file_every_other_command_loads(self):
         """Every other command takes the path from `workspace.read_config(root).settings_path`: health names
-        that file and no other, and prints no settings line when there is none."""
-        for form, lines_ in FORMS.items():
+        that file and no other, and prints no settings line when there is none. `FORMS` says which file."""
+        for form, (lines_, want) in FORMS.items():
             with self.subTest(form):
-                named = []
+                loaded = []
 
                 def setup(root: Path) -> None:
                     for name in ("a.toml", "b.toml"):
                         (root / name).write_text(GOOD)
-                    named.append(workspace.read_config(root).settings_path)
+                    loaded.append(workspace.read_config(root).settings_path)
 
                 text = "# Workspace\n\n## Coordinator\n\n" + FULL + lines_.format(port=free_port())
+                self.assertEqual(workspace.settings_path(text), want)
                 _, lines, _ = self.run_health("", text=text, setup=setup)
+                self.assertEqual(loaded, [want], "read_config on the same block")
                 found = [x for x in lines if x.startswith("settings")]
-                if named[0] is None:
-                    self.assertEqual(found, [])
-                else:
-                    self.assertEqual(len(found), 1, found)
-                    self.assertEqual(re.findall(r"\b[ab]\.toml\b", found[0]), [named[0]])
+                self.assertEqual([re.findall(r"\b[ab]\.toml\b", x) for x in found], [[want]] if want else [])
 
     def test_a_settings_line_outside_the_coordinator_block_is_not_read(self):
         stray = f"- Settings: `{TOML}`\n"
