@@ -25,8 +25,7 @@ def clean_env(source: dict[str, str] | None = None) -> dict[str, str]:
 
 def login_shell(source: dict[str, str] | None = None) -> str:
     env = os.environ if source is None else source
-    # CHIEF_OF_STUFF_SHELL is the eval harness's stand-in for lookups; `login_argv` still launches only through a shell it knows by name.
-    shell = env.get("CHIEF_OF_STUFF_SHELL") or env.get("SHELL") or pwd.getpwuid(os.getuid()).pw_shell
+    shell = env.get("SHELL") or pwd.getpwuid(os.getuid()).pw_shell
     if not Path(shell).is_absolute() or not os.access(shell, os.X_OK):
         raise ShellError(f"configured login shell {shell!r} is not executable")
     return shell
@@ -36,7 +35,9 @@ def resolve(program: str, *, source: dict[str, str] | None = None) -> str | None
     """Return an executable path from login and interactive shell setup, never shell output text."""
     if not PROGRAM.fullmatch(program):
         raise ShellError(f"invalid executable name {program!r}")
-    shell = login_shell(source)
+    env = os.environ if source is None else source
+    # CHIEF_OF_STUFF_SHELL stands in for the login shell here only, so an eval can say which programs exist; a launch never reads it.
+    shell = login_shell({**env, "SHELL": env["CHIEF_OF_STUFF_SHELL"]} if env.get("CHIEF_OF_STUFF_SHELL") else source)
     try:
         out = subprocess.run([shell, "-lic", f"command -v {program}"], env=clean_env(source),
                              capture_output=True, text=True, timeout=15)
