@@ -10,7 +10,6 @@ import sys
 import tempfile
 import time
 import unittest
-import dataclasses
 from contextlib import redirect_stdout
 from dataclasses import replace
 from datetime import datetime
@@ -450,10 +449,16 @@ class GitLabPastOnePageTest(unittest.TestCase):
 class MergeShaTest(unittest.TestCase):
     """#45: a change's state comes "plus the merge sha", which the audit prints for a task whose change merged."""
 
-    def test_it_is_the_last_field_and_empty_by_default(self):
-        # `Change` gains a last field `merge_sha: str = ""`; a cache from an older release lacks it.
-        last = dataclasses.fields(bs.Change)[-1]
-        self.assertEqual((last.name, last.default), ("merge_sha", ""))
+    def test_a_cache_written_before_the_field_still_loads(self):
+        # A cache from an older release lacks the later fields, which keep their defaults.
+        root = workspace("GitHub issues; repo o/app")
+        bs.refresh(root, NOW, gh=FakeGh())
+        cache = root / "pages" / ".sources.json"
+        old = json.loads(cache.read_text())
+        for change in old["changes"].values():
+            del change["merge_sha"]
+        cache.write_text(json.dumps(old))
+        self.assertEqual({ref: c.merge_sha for ref, c in bs.load(root / "pages").changes.items()}, {"#58": "", "#41": ""})
 
     def test_github_reads_the_merge_commit(self):
         # GitHub's query gains `mergeCommit { oid }`; an open pull request has none.
@@ -465,11 +470,14 @@ class MergeShaTest(unittest.TestCase):
         self.assertEqual((got.changes["#115"].merge_sha, got.changes["#58"].merge_sha), (MERGE, ""))
 
     def test_gitlab_reads_the_merge_commit_then_the_squash_commit_then_the_head(self):
-        # The GitLab value is `mergeCommitSha or squashCommitSha or diffHeadSha`, and it round-trips the cache.
-        for merge, squash, want in ((MERGE, SQUASH, MERGE), (None, SQUASH, SQUASH), (None, None, HEAD)):
-            with self.subTest(mergeCommitSha=merge, squashCommitSha=squash):
+        # A merged change's value is `mergeCommitSha or squashCommitSha or diffHeadSha`, and it round-trips the
+        # cache. `merge_sha` "is empty unless the change's state is merged": an open one's head is not a merge.
+        merged_at = f"{DAY}T06:00:00+00:00"
+        for at, merge, squash, want in ((merged_at, MERGE, SQUASH, MERGE), (merged_at, None, SQUASH, SQUASH),
+                                        (merged_at, None, None, HEAD), (None, None, None, "")):
+            with self.subTest(mergedAt=at, mergeCommitSha=merge, squashCommitSha=squash):
                 root = workspace("GitLab issues; host https://labs.example.test; project team/app", mr="!54")
-                mr = {**gl_mr(54, f"{DAY}T06:00:00+00:00"), "mergeCommitSha": merge, "squashCommitSha": squash}
+                mr = {**gl_mr(54, at), "mergeCommitSha": merge, "squashCommitSha": squash}
                 queries = []
 
                 def call(method, url, token, timeout, payload=None):
@@ -482,7 +490,6 @@ class MergeShaTest(unittest.TestCase):
                     self.assertIn(asked, queries[0])
                 self.assertEqual(got.changes["!54"].merge_sha, want)
                 self.assertEqual(bs.load(root / "pages").changes["!54"].merge_sha, want)
-
 
 class WorkersTest(unittest.TestCase):
     def test_tracker_sessions_and_live_one_shots(self):

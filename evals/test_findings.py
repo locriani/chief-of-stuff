@@ -43,20 +43,16 @@ FINDINGS = {
     al.Stop: (findings.STOPPED, al.Stop("Build it", "blocked", "coordinator", "tree (feat)", "running 10:00")),
     al.QueueFault: (findings.QUEUE, al.QueueFault("row 1", "carries the number 1 twice, so there is no next one")),
     al.IssueFault: (findings.ISSUE, al.IssueFault("Build it", "no issue")),
+    al.MergedFault: (findings.MERGED, al.MergedFault("Build it", "!12 merged into main abc1234")),
     al.LaneFault: (findings.LANE, al.LaneFault("Build it", "lane review but no stage")),
     al.KanbanFault: (findings.KANBAN, al.KanbanFault("Build it", "expected 03, found 00")),
     al.OverBudget: (findings.OVER, al.OverBudget("Build it", timedelta(hours=3), "S", timedelta(hours=1))),
 }
 
 
-def samples() -> dict:
-    """FINDINGS, and the finding for a task whose change merged (#45): "merged but the task isn't done"."""
-    return {**FINDINGS, al.MergedFault: (findings.MERGED, al.MergedFault("Build it", "!12 merged into main at abc1234"))}
-
-
 def printed() -> list[tuple[str, str]]:
     """Every finding line the audit can print, with the word it should start with."""
-    lines = [(word, str(finding)) for word, finding in samples().values()]
+    lines = [(word, str(finding)) for word, finding in FINDINGS.values()]
     lines += [(findings.REOPEN, line) for line in al.group_reopens([reopen(), reopen()])]
     faults, queue, _ = al.queue_faults(TRACKER)
     lines += [(findings.NEXT, line) for line in queue]
@@ -68,8 +64,7 @@ class VocabularyTest(unittest.TestCase):
     def test_every_finding_kind_the_report_carries_has_a_sample(self):
         hints = typing.get_type_hints(al.Report)
         kinds = {typing.get_args(hint)[0] for name, hint in hints.items() if name != "lines"}
-        self.assertEqual(kinds, set(samples()))
-        self.assertEqual(hints["merged"], list[al.MergedFault])
+        self.assertEqual(kinds, set(FINDINGS))
 
     def test_every_finding_line_starts_with_its_word(self):
         lines = printed()
@@ -87,9 +82,7 @@ class VocabularyTest(unittest.TestCase):
     def test_the_gaps_are_pinned(self):
         # `over budget:` and `unclaimed work:` are printed and not forwarded; `overdue:` and `waiting:` are
         # forwarded and never printed. Closing either gap is a behaviour change, and changes this test with it.
-        # `merged:` (#45) is in neither gap: the audit prints it and the watcher forwards it.
         words = {word for word, _ in printed()}
-        self.assertIn(findings.MERGED, words & set(findings.WATCHED))
         self.assertEqual(findings.UNWATCHED, (findings.OVER, findings.UNCLAIMED))
         self.assertEqual(set(findings.WATCHED) - words, {"overdue:", "waiting:"})
 
