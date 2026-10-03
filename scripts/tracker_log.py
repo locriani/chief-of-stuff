@@ -3,7 +3,8 @@ start, end and relaunch.
 
 `chief-of-stuff log --stage` and the one-shot launcher write them with the formatters here; the Flow charts, the
 board's workers, the Workers page and the issue page read them with the patterns here. Both sides live in one
-module that draws nothing, so rewording a line changes its reader with it.
+module that draws nothing, side by side; evals/test_tracker_log.py writes and reads back every line kind, so a
+reworded formatter fails there until its pattern follows.
 """
 
 from __future__ import annotations

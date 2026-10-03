@@ -381,6 +381,7 @@ def _owned_task(name: str, tasks: tuple) -> str:
 
 
 def workers(root: Path, cfg: Config, tracker: Tracker, tracker_text: str, day: date) -> tuple[Worker, ...]:
+    zone = cfg.zone
     rows = {_bare_name(s.name): s for s in tracker.sessions}
     found = []
     records = process_status.registrations(root)
@@ -390,16 +391,16 @@ def workers(root: Path, cfg: Config, tracker: Tracker, tracker_text: str, day: d
         record = records[row["pid"]]
         s = rows.pop(_bare_name(record["name"]), None)
         found.append(Worker(record["name"], "session", record["runtime"], "", _owned_task(record["name"], tracker.tasks),
-                            record["worktree"], _when(record.get("started")), leading(s.last_reply, day, cfg.zone) if s else None))
+                            record["worktree"], _when(record.get("started")), leading(s.last_reply, day, zone) if s else None))
     found += [Worker(s.label, "session", "", "", _owned_task(s.label, tracker.tasks), "", None,
-                     leading(s.last_reply, day, cfg.zone)) for s in rows.values()]
+                     leading(s.last_reply, day, zone)) for s in rows.values()]
     started = {m[5]: m for m in (STARTED_DETAIL.match(line) for line in _section(tracker_text, "## Log")) if m}
     trees, row_of = root / worktrees_dir((root / "CLAUDE.md").read_text()), launcher(tracker.tasks)
     for tree, task in process_status.running_trees(trees).items():
         m = started.get(task)
         runtime, _, model = (m[3] if m else "").partition(" ")
         found.append(Worker(m[2] if m else tree.name, "one-shot", runtime, model, row_of(task)[1], tree.name,
-                            leading(m[1], day, cfg.zone) if m else None, None))
+                            leading(m[1], day, zone) if m else None, None))
     return tuple(found)
 
 

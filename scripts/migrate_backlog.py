@@ -13,7 +13,7 @@ Each row is keyed by a hash of its own text. That makes the report and the apply
 report **unmigratable rather than silently migrated as something else** — no disposition is not
 consent.
 
-The table is read through `render_board`'s splitter, which is mark-aware: a `|` inside a code span
+The table is read through `md`'s splitter, which is mark-aware: a `|` inside a code span
 is a pipe, not a cell edge (finding 100). A second splitter here would reintroduce that bug.
 """
 
