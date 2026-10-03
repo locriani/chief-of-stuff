@@ -10,6 +10,7 @@ import sys
 import tempfile
 import time
 import unittest
+import dataclasses
 from contextlib import redirect_stdout
 from dataclasses import replace
 from datetime import datetime
@@ -28,6 +29,7 @@ ZONE = ZoneInfo("America/Chicago")
 NOW = datetime(2026, 9, 26, 2, 10, tzinfo=ZONE)
 DAY = NOW.date().isoformat()
 HEAD = "a" * 40
+MERGE, SQUASH = "b" * 40, "c" * 40
 
 TRACKER = f"""# Tracker {DAY}
 
@@ -443,6 +445,43 @@ class GitLabPastOnePageTest(unittest.TestCase):
         got = self.refresh([("#1001", "")], FakeGitLab(issues=[gl_issue(1001)], mrs=merged))
         self.assertEqual(len(got.changes), 130)
         self.assertEqual(sorted(got.changes), sorted(f"!{n}" for n in range(3001, 3131)))
+
+
+class MergeShaTest(unittest.TestCase):
+    """#45: a change's state comes "plus the merge sha", which the audit prints for a task whose change merged."""
+
+    def test_it_is_the_last_field_and_empty_by_default(self):
+        # `Change` gains a last field `merge_sha: str = ""`; a cache from an older release lacks it.
+        last = dataclasses.fields(bs.Change)[-1]
+        self.assertEqual((last.name, last.default), ("merge_sha", ""))
+
+    def test_github_reads_the_merge_commit(self):
+        # GitHub's query gains `mergeCommit { oid }`; an open pull request has none.
+        root = workspace("GitHub issues; repo o/app")
+        gh = FakeGh(n115={**gh_pr(115, f"{DAY}T05:41:00+00:00", "MERGED"), "mergeCommit": {"oid": MERGE}},
+                    n58={**gh_pr(58), "mergeCommit": None})
+        got = bs.refresh(root, NOW, gh=gh)
+        self.assertRegex(gh.calls[0][gh.calls[0].index("-f") + 1], r"mergeCommit\s*\{\s*oid\s*\}")
+        self.assertEqual((got.changes["#115"].merge_sha, got.changes["#58"].merge_sha), (MERGE, ""))
+
+    def test_gitlab_reads_the_merge_commit_then_the_squash_commit_then_the_head(self):
+        # The GitLab value is `mergeCommitSha or squashCommitSha or diffHeadSha`, and it round-trips the cache.
+        for merge, squash, want in ((MERGE, SQUASH, MERGE), (None, SQUASH, SQUASH), (None, None, HEAD)):
+            with self.subTest(mergeCommitSha=merge, squashCommitSha=squash):
+                root = workspace("GitLab issues; host https://labs.example.test; project team/app", mr="!54")
+                mr = {**gl_mr(54, f"{DAY}T06:00:00+00:00"), "mergeCommitSha": merge, "squashCommitSha": squash}
+                queries = []
+
+                def call(method, url, token, timeout, payload=None):
+                    queries.append(payload["query"])
+                    return {"data": {"p0": {"mergeRequests": {"nodes": [mr]}, "merged": {"nodes": []}}}}, {}, ""
+
+                with mock.patch.dict(os.environ, {"CHIEF_OF_STUFF_GITLAB_TOKEN": "tok"}):
+                    got = bs.refresh(root, NOW, call=call)
+                for asked in ("mergeCommitSha", "squashCommitSha"):
+                    self.assertIn(asked, queries[0])
+                self.assertEqual(got.changes["!54"].merge_sha, want)
+                self.assertEqual(bs.load(root / "pages").changes["!54"].merge_sha, want)
 
 
 class WorkersTest(unittest.TestCase):

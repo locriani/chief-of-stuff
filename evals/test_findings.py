@@ -20,7 +20,7 @@ import findings  # noqa: E402
 import start_coordinator as start  # noqa: E402
 
 # The watcher's pattern as it was typed before it was built from `findings.WATCHED`.
-LITERAL = re.compile(r"(?i)^(orphaned work:|stopped:|reopen:|issue:|lane:|kanban:|decision queue:|next decision:|overdue:|waiting:)")
+LITERAL = re.compile(r"(?i)^(orphaned work:|stopped:|reopen:|issue:|merged:|lane:|kanban:|decision queue:|next decision:|overdue:|waiting:)")
 
 TRACKER = """## Decision queue
 
@@ -49,9 +49,14 @@ FINDINGS = {
 }
 
 
+def samples() -> dict:
+    """FINDINGS, and the finding for a task whose change merged (#45): "merged but the task isn't done"."""
+    return {**FINDINGS, al.MergedFault: (findings.MERGED, al.MergedFault("Build it", "!12 merged into main at abc1234"))}
+
+
 def printed() -> list[tuple[str, str]]:
     """Every finding line the audit can print, with the word it should start with."""
-    lines = [(word, str(finding)) for word, finding in FINDINGS.values()]
+    lines = [(word, str(finding)) for word, finding in samples().values()]
     lines += [(findings.REOPEN, line) for line in al.group_reopens([reopen(), reopen()])]
     faults, queue, _ = al.queue_faults(TRACKER)
     lines += [(findings.NEXT, line) for line in queue]
@@ -63,7 +68,8 @@ class VocabularyTest(unittest.TestCase):
     def test_every_finding_kind_the_report_carries_has_a_sample(self):
         hints = typing.get_type_hints(al.Report)
         kinds = {typing.get_args(hint)[0] for name, hint in hints.items() if name != "lines"}
-        self.assertEqual(kinds, set(FINDINGS))
+        self.assertEqual(kinds, set(samples()))
+        self.assertEqual(hints["merged"], list[al.MergedFault])
 
     def test_every_finding_line_starts_with_its_word(self):
         lines = printed()
@@ -81,7 +87,9 @@ class VocabularyTest(unittest.TestCase):
     def test_the_gaps_are_pinned(self):
         # `over budget:` and `unclaimed work:` are printed and not forwarded; `overdue:` and `waiting:` are
         # forwarded and never printed. Closing either gap is a behaviour change, and changes this test with it.
+        # `merged:` (#45) is in neither gap: the audit prints it and the watcher forwards it.
         words = {word for word, _ in printed()}
+        self.assertIn(findings.MERGED, words & set(findings.WATCHED))
         self.assertEqual(findings.UNWATCHED, (findings.OVER, findings.UNCLAIMED))
         self.assertEqual(set(findings.WATCHED) - words, {"overdue:", "waiting:"})
 
@@ -94,6 +102,7 @@ class WatcherPatternTest(unittest.TestCase):
         "Reopen: x", "ORPHANED WORK: x", "Next Decision: 1 — x", "Overdue: x", "WAITING:", "lane:x", "issue:",
         " issue: indented", "issues: x", "reopen x", "orphaned  work: x", "orphaned-work: x", "decision queue x",
         "stopped:\ttab", "x reopen: later in the line", "Kanban: a Kelvin sign folds to k",
+        "Merged: x", "merged x", "merges: x", "tasks=1 trees=0 reopen=0 orphaned=0 stopped=0 issues=0 merged=1",
     ]
 
     def test_the_watched_words_are_the_typed_ones_in_their_order(self):
