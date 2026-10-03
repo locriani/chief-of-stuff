@@ -269,7 +269,7 @@ def _lane(name: str, table) -> Lane:
         raise SettingsError(f"[lanes] {name}: stages is a non-empty list of names")
     if len(set(stages)) != len(stages):
         raise SettingsError(f"[lanes] {name}: a stage appears twice")
-    if not isinstance(gates, list) or not set(gates) <= set(stages):
+    if not isinstance(gates, list) or not all(isinstance(g, str) for g in gates) or not set(gates) <= set(stages):
         raise SettingsError(f"[lanes] {name}: gates must be stages of the lane")
     return Lane(tuple(stages), tuple(gates))
 
@@ -328,7 +328,7 @@ def _notify(table: dict, root: Path) -> Notify:
     if not isinstance(labels, list):
         raise SettingsError("[notify] deadline_warnings: a list, like [\"24h\", \"3h\"]")
     queue = table.get("queue", got.queue)
-    if not isinstance(queue, str) or not queue.strip():
+    if not isinstance(queue, str) or not queue.strip() or "\0" in queue:  # a NUL makes resolve() raise ValueError
         raise SettingsError("[notify] queue: a path under the workspace root")
     resolved = (Path(root) / queue).resolve()
     if not resolved.is_relative_to(Path(root).resolve()):
