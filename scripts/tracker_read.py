@@ -9,7 +9,7 @@
 `header` prints the lines above the first `## ` heading, `sections` each heading's line number and name,
 `section` one section's body as written, and `tasks` one TOON row per task: name, owner, state, stage, issue.
 The item cell is not printed, except that a row with no name is called by its label: the item's first words,
-clipped to 48 characters. A row the parser warns about is still printed, and named on stderr.
+clipped to 48 characters. A row the parser warns about is named on stderr whether or not the filter keeps it.
 """
 
 from __future__ import annotations
