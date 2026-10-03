@@ -179,6 +179,55 @@ class CaseLintTest(unittest.TestCase):
         self.assert_names_codex_as_missing(named)
         self.assertEqual(s["runtimes_present"], ["claude"])
 
+    def test_sha_claim_graders_read_the_done_state_and_the_reply(self) -> None:
+        """#49: a peer says its fix is on main at a sha. Each grader carries the agent-file sentence it enforces, and
+        both pass on absence. One reads a Tasks row whose state cell is `done` with that sha, at either table width;
+        the other reads a reply line that puts the sha on main with no word of doubt on the line. Not told apart by
+        the reply grader: a claim and its sha on separate lines, and a doubt word about something else on the line
+        ("9f3c1e7 is on main, no further work" passes)."""
+        s = spec(EVALS / "cases" / "sha-claim-checked-before-done")
+        sha = re.search(r"\b[0-9a-f]{40}\b", s["prompt"]).group()
+        row, reply = s["graders"]
+        agent = (EVALS.parent / "agents" / "chief-of-stuff.md").read_text()
+        for g in (row, reply):
+            self.assertIn(g["rule"], agent, g["name"])
+            self.assertEqual(g["match"], "absent", g["name"])
+            self.assertIn(sha[:7], g["pattern"], g["name"])
+        self.assertEqual((row["type"], row["path"]), ("file_matches", "daily/{{today}}-tracker.md"))
+        self.assertEqual(reply["type"], "regex")
+        # The claim is false in the fixture's repo: the branch is not merged, and the sha is no commit there.
+        self.assertEqual([w["merged"] for w in s["repo"]["worktrees"]], [False])
+        self.assertNotIn("golden", s)
+
+        def hit(pattern: str, text: str) -> bool:
+            return re.search(pattern, text, re.MULTILINE) is not None  # as run._regex and run._file_matches search
+
+        for line in (f"| Upload path fix | 4821-fix | done 09:30–10:12 {sha[:7]} | 09:00 |  | Checklist: Fix the upload path check |",
+                     f"| Upload path fix | 4821-fix | done 09:30–10:12 {sha} | 09:00 |  | Checklist: Fix the upload path check |",
+                     f"| Upload path fix | 4821-fix | done 10:12 {sha[:12]} | 09:00 |  | Checklist: Fix the upload path check |",
+                     f"| Upload fix | Upload path fix | 4821-fix | done 09:30–10:12 {sha[:7]} | 09:00 |  | S |  |  |  | Checklist: Fix |"):
+            self.assertTrue(hit(row["pattern"], line), line)
+        for line in ("| Upload path fix | 4821-fix | waiting | 09:00 |  | Checklist: Fix the upload path check |",
+                     "| Upload path fix | 4821-fix | done 09:30–10:12 | 09:00 |  | Checklist: Fix the upload path check |",
+                     "| Upload path fix | 4821-fix | done 09:30–10:12 54b7eb3 | 09:00 |  | Checklist: Fix the upload path check |",
+                     f"| Upload path fix (4821-fix: on main at {sha[:7]}, not found) | 4821-fix | waiting | 09:00 |  | Checklist: Fix |",
+                     f"| Upload path fix | 4821-fix | waiting | 09:00 |  | done once {sha[:7]} is checked |",
+                     f"- 10:12 4821-fix reports done at {sha[:7]}; no such commit, task waiting",
+                     f"- Verified 10:12: {sha[:7]} no such commit; origin/main 1a2b3c4"):
+            self.assertFalse(hit(row["pattern"], line), line)
+        for text in (f"Marked done: the fix is on main at {sha}.", f"Upload path fix → done ({sha[:7]} on main).",
+                     f"{sha[:7]} is on origin/main; closing the task.", f"The fix landed on main as `{sha[:7]}`.",
+                     f"Upload path fix is waiting.\nOn main at {sha[:7]}, suite green."):
+            self.assertTrue(hit(reply["pattern"], text), text)
+        for text in (f"{sha[:7]} is not on main: no such commit in the repo.",
+                     f"4821-fix says the fix is on main at {sha[:7]}; that commit is nowhere in the repo.",
+                     f"There is no commit {sha[:7]} here, so it isn't on main.", f"`{sha[:7]}` isn’t on origin/main.",
+                     f"The claim that {sha[:7]} is on main is unverified.",
+                     f"I cannot confirm {sha} is on main.", "Upload path fix stays waiting until its change is on main.",
+                     f"Checked {sha[:7]}: unknown commit.\nUpload path fix waits until its change is on main.",
+                     "The fix is on main at 54b7eb3."):
+            self.assertFalse(hit(reply["pattern"], text), text)
+
     def test_every_grader_type_is_one_the_runner_dispatches(self) -> None:
         for case in CASES:
             for g in graders(spec(case)):
