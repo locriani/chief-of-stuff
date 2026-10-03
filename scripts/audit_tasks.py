@@ -213,7 +213,7 @@ def _named(task, home: Backlog | GitHubBacklog) -> set[int]:
     elsewhere = ref is not None and (ref.host.lower(), ref.repo.lower()) != tuple(part.lower() for part in home_of(home))
     if task.standing or task.kind == DONE or elsewhere:
         return set()
-    return board_sources.change_numbers(task, home, own=True) - board_sources.change_numbers(task, home, ACKNOWLEDGED, own=True)
+    return board_sources.change_numbers(task, home) - board_sources.change_numbers(task, home, ACKNOWLEDGED)
 
 
 def merged_faults(tasks, changes: dict, home: Backlog | GitHubBacklog, answered: bool = True) -> list[MergedFault]:
@@ -227,8 +227,9 @@ def merged_faults(tasks, changes: dict, home: Backlog | GitHubBacklog, answered:
         if any(c.state == "open" for c in named):
             continue
         said = [" ".join(filter(None, (board_sources.spelled(c.ref), "merged into", c.base, c.merge_sha[:7]))) for c in named if c.state == "merged"]
-        how = ('; write the task done once it is on main and the suite ran there, or write "merged" after the '
-               "change in its row with why not") if said else ""
+        # Short, so the watcher forwards three of these uncut: write the task done only once the change is on main
+        # and the suite ran there, or write "merged" after its ref in the row to record the merge and stop this.
+        how = '; done if green on main, or add "merged"' if said else ""
         if answered:
             said += [f"{board_sources.spelled(ref)} not found" for ref in refs if ref not in changes]
         if said:

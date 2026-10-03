@@ -38,7 +38,6 @@ CACHE = ".sources.json"
 CLOSES = re.compile(r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+(#\d+)")
 GH_PR = re.compile(r"(?i)\bPR\s*#(\d+)\b")
 GL_MR = re.compile(r"(?<![\w&])!(\d+)\b")
-GH_ELSEWHERE = re.compile(r"(?i)[\w.-]+/[\w.-]+\s+PR\s*#\d+\b")  # `owner/repo PR #58` is that repo's pull request
 GL_STATE = {"opened": "open", "locked": "closed"}
 GL_WAITING = {"pending", "created", "waiting_for_resource", "preparing", "scheduled", "manual"}
 
@@ -361,15 +360,13 @@ def spelled(ref: str) -> str:
     return f"PR {ref}" if ref.startswith("#") else ref
 
 
-def change_numbers(task, home, then: str = "", own: bool = False) -> set[int]:
+def change_numbers(task, home, then: str = "") -> set[int]:
     """The pull or merge requests a task's row names: `!N` on GitLab, `PR #N` on GitHub, or the request's URL.
-    With `then`, only those a cell follows with it; with `own`, not another repo's `owner/repo PR #N`.
-    Each cell is read alone, so nothing is read across two."""
+    With `then`, only those a cell follows with it. Each cell is read alone, so nothing is read across two."""
     github_home = isinstance(home, backlog.GitHubBacklog)
     url = (rf"github\.com/{re.escape(home.repo)}/pull/(\d+)" if github_home
            else rf"{re.escape(backlog.home_of(home)[0])}/{re.escape(home.project)}/-/merge_requests/(\d+)")
-    cells = (task.name, task.item, task.issue, task.checklist)
-    return {int(n) for cell in ((GH_ELSEWHERE.sub(" ", cell) for cell in cells) if own else cells)
+    return {int(n) for cell in (task.name, task.item, task.issue, task.checklist)
             for named in ((GH_PR if github_home else GL_MR).pattern, url) for n in re.findall(named + then, cell)}
 
 
