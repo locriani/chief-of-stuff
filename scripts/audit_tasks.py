@@ -870,9 +870,13 @@ def main(argv: list[str] | None = None, gh=None) -> int:
         print(f"audit_tasks: {e}", file=sys.stderr)
         return 2
     if args.sha is not None:
-        tree = _handle(root, worktrees_dir((root / "CLAUDE.md").read_text()), [])
-        if not SHA.fullmatch(args.sha) or tree is None:
-            print(f"audit_tasks: --sha needs 7-40 hex digits and a git tree under {root}", file=sys.stderr)
+        if not SHA.fullmatch(args.sha):
+            print("audit_tasks: --sha takes 7-40 lowercase hex digits", file=sys.stderr)
+            return 2
+        trees = worktrees_dir((root / "CLAUDE.md").read_text())
+        tree = _handle(root, trees, [])
+        if tree is None:
+            print(f"audit_tasks: --sha found no git tree under {trees or 'the workspace root'}, so nothing was checked", file=sys.stderr)
             return 2
         code, line = git_trees.check_sha(args.sha, tree)
         print(line)
