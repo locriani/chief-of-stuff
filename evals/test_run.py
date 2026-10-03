@@ -1244,7 +1244,12 @@ class ClaudeBinaryTest(unittest.TestCase):
         os.environ.pop("CHIEF_OF_STUFF_CLAUDE", None)
 
     def test_it_resolves_an_absolute_path_rather_than_trusting_PATH(self):
-        self.assertTrue(Path(run.claude_binary()).is_absolute())
+        with tempfile.TemporaryDirectory() as bin_dir:
+            fake = Path(bin_dir) / "claude"
+            fake.write_text("#!/bin/sh\n")
+            fake.chmod(0o755)
+            with unittest.mock.patch.dict(os.environ, {"PATH": bin_dir}):
+                self.assertEqual(run.claude_binary(), str(fake.resolve()))
 
     def test_the_env_override_wins(self):
         os.environ["CHIEF_OF_STUFF_CLAUDE"] = "/somewhere/else/claude"
