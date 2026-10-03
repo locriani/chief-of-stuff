@@ -203,3 +203,9 @@ def issue_ref(cell: str, home: Backlog | GitHubBacklog | None) -> IssueRef | Non
         return IssueRef(m.group(1), int(m.group(2)))
     host, repo = home_of(home)
     return IssueRef(repo, int(m.group(2)), host)
+
+
+def parse_issue_arg(arg: str, home: Backlog | GitHubBacklog | None) -> IssueRef | None:
+    """A CLI argument: `issue_ref`'s forms, plus a bare `N`, which is valid here and not as a tracker cell."""
+    text = arg.strip()
+    return issue_ref(f"#{text}" if text.isdigit() else text, home)

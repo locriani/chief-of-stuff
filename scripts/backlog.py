@@ -23,7 +23,7 @@ from urllib.parse import urlencode, urlsplit
 # so `backlog.Backlog`, `backlog.issue_ref` and the rest still name it.
 from backlog_ref import (  # noqa: F401
     GITHUB, Backlog, BacklogError, GitHubBacklog, IssueRef, backlog_from_config, file_with, home_of, issue_ref,
-    parse_backlog,
+    parse_backlog, parse_issue_arg,
 )
 
 TIMEOUT = 5.0
@@ -456,7 +456,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--parent", type=int, help="GitHub parent issue number for --create")
     parser.add_argument("--blocked-by", type=int, action="append", default=[], metavar="IID",
                         help="GitHub blocker issue number for --create; repeat for multiple blockers")
-    parser.add_argument("--close", type=int, metavar="IID", help="close one issue")
+    parser.add_argument("--close", metavar="ISSUE", help="close one issue: N, #N, or a reference in the Backlog")
     parser.add_argument("--comment", type=int, metavar="IID", help="comment on one issue")
     # No `--token`: argv is readable by `ps`, so the token comes from the environment or the
     # Keychain and from nowhere a shell history can keep it.
@@ -483,8 +483,12 @@ def main(argv: list[str] | None = None) -> int:
         writes.append(create(cfg, args.create, body=args.body, labels=labels,
                              commit=args.commit, timeout=args.timeout,
                              parent=args.parent, blocked_by=tuple(args.blocked_by)))
-    if args.close:
-        writes.append(close(cfg, args.close, commit=args.commit, timeout=args.timeout))
+    if args.close is not None:
+        ref = parse_issue_arg(args.close, cfg)
+        if ref is None or (ref.host, ref.repo) != home_of(cfg):
+            print(f"backlog: --close {args.close!r} is not an issue in this Backlog", file=sys.stderr)
+            return 2
+        writes.append(close(cfg, ref.number, commit=args.commit, timeout=args.timeout))
     if args.comment:
         writes.append(comment(cfg, args.comment, args.body, commit=args.commit, timeout=args.timeout))
     if writes:

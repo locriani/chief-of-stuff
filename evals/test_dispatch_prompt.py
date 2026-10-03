@@ -11,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import dispatch_prompt as dp  # noqa: E402
@@ -583,6 +584,12 @@ class PromptCharacterBoundsTest(unittest.TestCase):
     def setUp(self):
         self.tmp, self.root = workspace()
         self.addCleanup(self.tmp.cleanup)
+        # The assignment quotes the inbox script's path nine times, so pin it: otherwise these bounds
+        # move with wherever the repo is checked out, and a worktree's longer path tips the large case over.
+        inbox_script = Path("/Users/someone/.claude/plugins/cache/chief-of-stuff/chief-of-stuff/0.0.0/scripts/inbox.py")
+        patcher = mock.patch.object(dp, "INBOX_SCRIPT", inbox_script)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_standard_assignment_is_well_under_body_cap(self):
         body = dp.compose(self.root, "2026-09-18", "Security audit")

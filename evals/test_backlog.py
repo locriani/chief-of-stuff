@@ -6,6 +6,7 @@ urllib would skip all four. The suite never touches the network and never reads 
 the Keychain lookup is injected, because a test that passes only on Zach's laptop proves nothing.
 """
 
+import io
 import json
 import os
 import socket
@@ -491,6 +492,20 @@ class CliWriteTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual([a.method for a in server.seen if a.method == "POST"], ["POST"])
 
+    def test_close_takes_a_bare_number_or_a_hash_number(self):
+        """#44: `audit` prints `--close 226`, the tracker writes `#226`; both close issue 226."""
+        server, base = serve({})
+        self.addCleanup(stop, server)
+        for arg in ("226", "#226"):
+            with self.subTest(arg=arg):
+                done = bl.Written(bl.CLOSE, "#226", done=True, iid=226)
+                with patch.object(bl, "close", return_value=done) as closer, \
+                        patch("sys.stdout", new=io.StringIO()):
+                    code = bl.main(["--config", self.config_at(base), "--close", arg])
+                self.assertEqual(code, 0)
+                closer.assert_called_once()
+                self.assertEqual(closer.call_args.args[1], 226)
+
 
 # ---- GitHub -------------------------------------------------------------------------------------
 #
@@ -651,6 +666,29 @@ class IssueRefTest(unittest.TestCase):
         self.assertEqual(ref.label(bl.GitHubBacklog("o/n")), f"{REPO}#9")
 
 
+class ParseIssueArgTest(unittest.TestCase):
+    """#44: a CLI argument may be a bare `N`; a tracker cell may not. Two parsers, one responsibility each."""
+
+    def test_issue_ref_stays_strict(self):
+        self.assertIsNone(bl.issue_ref("226", GH))
+
+    def test_forms(self):
+        for arg, want in (("226", (REPO, 226)), ("#226", (REPO, 226)), (" 226 ", (REPO, 226)),
+                          ("o/n#226", ("o/n", 226)),
+                          ("https://github.com/o/n/issues/226", ("o/n", 226))):
+            with self.subTest(arg=arg):
+                self.assertEqual(bl.parse_issue_arg(arg, GH), bl.IssueRef(*want))
+
+    def test_bare_number_resolves_against_a_gitlab_backlog(self):
+        self.assertEqual(bl.parse_issue_arg("226", GL), bl.parse_issue_arg("#226", GL))
+        self.assertEqual(bl.parse_issue_arg("226", GL), bl.IssueRef("g/p", 226, "gl.example"))
+
+    def test_rejects(self):
+        for arg in ("abc", "", "#", "22 6", "-5"):
+            with self.subTest(arg=arg):
+                self.assertIsNone(bl.parse_issue_arg(arg, GH))
+
+
 # Zach, 2026-09-23 22:40: "remove the github issue remote and make everything use gitlab now that we have that going."
 GL = bl.Backlog(host="https://gl.example", project="g/p")
 
@@ -809,6 +847,36 @@ class GitHubCliTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("created #101: a title", out)
         self.assertIn(["issue", "create", "-R", REPO, "--title", "a title", "--body-file", "-"], self.gh.calls)
+
+    def test_close_takes_a_bare_number_or_a_hash_number(self):
+        for arg in ("226", "#226"):
+            with self.subTest(arg=arg):
+                self.gh.calls.clear()
+                code, out = self.run_main("--close", arg, "--commit")
+                self.assertEqual((code, out), (0, "closed #226\n"))
+                self.assertEqual(self.gh.calls, [["issue", "close", "226", "-R", REPO]])
+
+    def test_close_refuses_an_issue_outside_the_backlog(self):
+        """`other/repo#5` is not the configured Backlog: an error, and `close` is never reached."""
+        err = io.StringIO()
+        try:
+            with patch("sys.stderr", new=err):
+                code, _out = self.run_main("--close", "other/repo#5", "--commit")
+        except SystemExit:
+            self.fail("argparse rejected the value; main() should return its own error")
+        self.assertNotEqual(code, 0)
+        self.assertIn("other/repo#5", err.getvalue())
+        self.assertEqual(self.gh.calls, [])
+
+    def test_close_refuses_garbage(self):
+        err = io.StringIO()
+        try:
+            with patch("sys.stderr", new=err):
+                code, _out = self.run_main("--close", "abc", "--commit")
+        except SystemExit:
+            self.fail("argparse rejected the value; main() should return its own error")
+        self.assertNotEqual(code, 0)
+        self.assertEqual(self.gh.calls, [])
 
 
 if __name__ == "__main__":
