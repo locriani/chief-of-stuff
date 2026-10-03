@@ -145,6 +145,25 @@ class CoordinatorLaunchTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertFalse(self.install_dir.exists())
 
+    def test_all_runtimes_ensure_notifications_before_cli_and_continue_on_failure(self):
+        for runtime in start.runtimes.NAMES:
+            with self.subTest(runtime=runtime), \
+                 mock.patch.object(start, "resolve", return_value="/bin/fake"), \
+                 mock.patch.object(start, "login_argv", side_effect=lambda cmd: cmd), \
+                 mock.patch.object(start.subprocess, "run", return_value=mock.Mock(
+                     returncode=2, stderr="notify: test failure")) as ensure, \
+                 mock.patch.object(start.subprocess, "call", return_value=0) as launch, \
+                 mock.patch.object(start.threading, "Thread"), \
+                 contextlib.redirect_stderr(io.StringIO()) as errors:
+                code = start.main(["--runtime", runtime, "--root", str(self.root),
+                                   "--install-dir", str(self.install_dir)])
+                self.assertEqual(code, 0)
+                argv = ensure.call_args.args[0]
+                self.assertEqual(argv[-3:], ["--root", str(self.root.resolve()), "ensure"])
+                self.assertIn("versions", argv[1])
+                launch.assert_called_once()
+                self.assertIn("test failure", errors.getvalue())
+
     def test_watcher_stops_with_its_session_and_notifies_once_per_change(self):
         release = start.install(ROOT, self.install_dir)
         stop = threading.Event()

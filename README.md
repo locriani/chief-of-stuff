@@ -40,6 +40,8 @@ The coordinator's PARA filing rule applies only when the workspace `CLAUDE.md` e
 
 Notifications are off unless the workspace settings explicitly set `[notify] adapter = "md-notify"`. The default queue path for that adapter is `notifications/NOTIFICATIONS.md` under the workspace; set `queue` to use another path.
 
+Enabled notifications have an independent macOS user service, ensured before coordinator launches on every runtime. It reconciles deadline and day notifications when configuration or tracker inputs change (checked every five seconds), every minute, and after restart, even with the coordinator closed. Use `chief-of-stuff notify --root . status` for health, `stop` to unload it, and `ensure` to restore it. Manual `sync` remains available for diagnostics. Queue writes use a shared lock; concurrent acknowledgment preservation requires the companion md-notify transaction update and a rebuilt app. See [notification lifecycle and compatibility](docs/notify.md).
+
 For a GitHub `Backlog:` line, the pinned `chief-of-stuff backlog --create <title> --body <text> --commit` files issues through `gh` without a personal plugin. It supports native `--parent` and `--blocked-by` relationships. Writes preview by default; a workspace can still set its own issue content rules. See [backlog setup](docs/backlog.md) for GitHub and GitLab configuration.
 
 An optional `[workflow] architecture_reviewer = "<session-name>"` in the workspace TOML routes filed architecture findings to that session. Without it, no particular person or agent is assumed.

@@ -222,6 +222,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         print(json.dumps({"release": str(release), "runtime": args.runtime, "argv": cmd}))
         return 0
+    # Provision before every runtime launch, independently of prompts or session
+    # lifetime. Failure remains visible without blocking unrelated coordination.
+    try:
+        notifications = subprocess.run(
+            [sys.executable, str(release / "scripts" / "notify_service.py"), "--root", str(root), "ensure"],
+            capture_output=True, text=True, timeout=60)
+        if notifications.returncode:
+            print(notifications.stderr.strip() or "notify: service setup failed", file=sys.stderr)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"notify: service setup failed: {exc}", file=sys.stderr)
     child_env = dict(os.environ, CHIEF_OF_STUFF_RELEASE=str(release), CHIEF_OF_STUFF_WORKSPACE=str(root))
     stop = threading.Event()
     monitor = None

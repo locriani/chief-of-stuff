@@ -1,0 +1,35 @@
+{
+  "tz": "America/Chicago",
+  "description": "A deadline state report is recorded without manual notification sync; an independent service owns reconciliation.",
+  "prompt": "Final is now due {{now+48h|local}}. The notification service is already running.",
+  "graders": [
+    {
+      "name": "deadline recorded",
+      "type": "file_matches",
+      "path": "CLAUDE.md",
+      "pattern": "Final: {{now+48h|local}}"
+    },
+    {
+      "name": "change logged",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?im)^- \\d{1,2}:\\d{2} .*final"
+    },
+    {
+      "name": "no manual notification sync",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "(?:notify\\.py|chief-of-stuff\\s+notify|chief_of_stuff\\.py\\s+notify)[^\\n]*\\bsync\\b",
+      "max": 0
+    },
+    {
+      "name": "queue not edited by agent",
+      "type": "tool_used",
+      "tool": "Write|Edit",
+      "input_match": "NOTIFICATIONS",
+      "max": 0
+    }
+  ],
+  "max_turns": 12,
+  "timeout_seconds": 300
+}
