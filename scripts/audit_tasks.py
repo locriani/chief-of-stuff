@@ -28,7 +28,6 @@ import board_sources  # noqa: E402
 import kanban as kanban_tool  # noqa: E402
 import ownership  # noqa: E402
 import git_trees  # noqa: E402
-from git_trees import discover, git, read_state  # noqa: E402
 from orphans import Claim, Orphan, Unclaimed, judge  # noqa: E402
 from tree_claims import Claims, one_shot_claims, registry_claims  # noqa: E402
 
@@ -527,9 +526,9 @@ def missing_tree(handle: Path | None, name: str, detail: str) -> str:
     if handle is None:
         return f"{name}: no worktree, and no tree left on disk to ask git in"
     for cand in branch_candidates(name, detail):
-        if git(["rev-parse", "--verify", "--quiet", f"refs/heads/{cand}"], handle)[0] != 0:
+        if git_trees.git(["rev-parse", "--verify", "--quiet", f"refs/heads/{cand}"], handle)[0] != 0:
             continue
-        if git(["merge-base", "--is-ancestor", cand, "main"], handle)[0] == 0:
+        if git_trees.git(["merge-base", "--is-ancestor", cand, "main"], handle)[0] == 0:
             return f"{name}: no worktree — branch {cand} is on main; merged and cleaned up"
         return f"{name}: no worktree — branch {cand} is not on main, so the work is only on that branch"
     return f"{name}: no worktree and no branch by that name — the row names a tree that was never created"
@@ -537,12 +536,12 @@ def missing_tree(handle: Path | None, name: str, detail: str) -> str:
 
 def _state(worktree: Path) -> tuple[str, str]:
     """(branch, why it is not done), where the why is empty when the work is on main and committed."""
-    _, branch = git(["rev-parse", "--abbrev-ref", "HEAD"], worktree)
-    code, dirty = git(["status", "--porcelain"], worktree)
+    _, branch = git_trees.git(["rev-parse", "--abbrev-ref", "HEAD"], worktree)
+    code, dirty = git_trees.git(["status", "--porcelain"], worktree)
     reasons = []
     if code == 0 and dirty:
         reasons.append(f"{len(dirty.splitlines())} uncommitted file(s)")
-    merged, _ = git(["merge-base", "--is-ancestor", "HEAD", "main"], worktree)
+    merged, _ = git_trees.git(["merge-base", "--is-ancestor", "HEAD", "main"], worktree)
     if merged != 0:
         reasons.append("not on main")
     return branch, "; ".join(reasons)
@@ -619,18 +618,18 @@ def landed(sha: str, worktree: Path) -> tuple[str, str]:
         return UNKNOWN_SHA, ""
     if not SHA.match(sha.lower()):
         return UNKNOWN_SHA, f"{sha!r} is not a commit id"
-    if git(["cat-file", "-e", f"{sha}^{{commit}}"], worktree)[0] != 0:
+    if git_trees.git(["cat-file", "-e", f"{sha}^{{commit}}"], worktree)[0] != 0:
         return UNKNOWN_SHA, f"no commit {sha} here, so the citation cannot be checked"
-    code, _ = git(["merge-base", "--is-ancestor", sha, "main"], worktree)
+    code, _ = git_trees.git(["merge-base", "--is-ancestor", sha, "main"], worktree)
     return (LANDED if code == 0 else NOT_LANDED), ""
 
 
 def _push_gap(worktree: Path) -> str:
     """Report main's commit and its distance from origin/main for verification."""
     # Use main, not this worktree's HEAD.
-    code, sha = git(["rev-parse", "--short", "main"], worktree)
+    code, sha = git_trees.git(["rev-parse", "--short", "main"], worktree)
     at = f"main {sha} " if code == 0 and sha and " " not in sha else "main "
-    code, counts = git(["rev-list", "--left-right", "--count", "main...origin/main"], worktree)
+    code, counts = git_trees.git(["rev-list", "--left-right", "--count", "main...origin/main"], worktree)
     if code != 0 or not counts:
         return f"{at}vs origin/main unknown"
     ahead, behind = (counts.split() + ["0", "0"])[:2]
@@ -784,7 +783,7 @@ def audit(root: Path, day: str, gh=None, check_issues: bool = True, now: datetim
             visit(row, name, None)
 
     # The trees on disk, not the rows that name them, are what the orphan check walks (#43).
-    for path in discover(root, trees):
+    for path in git_trees.discover(root, trees):
         if path not in seen:
             branch, why = _state(path)
             seen.add(path)
@@ -801,7 +800,7 @@ def audit(root: Path, day: str, gh=None, check_issues: bool = True, now: datetim
         for path, found in source.items():
             claims.setdefault(path, []).extend(found)
     for path in order:
-        finding = judge(names[path], read_state(path), claims.get(path, []))
+        finding = judge(names[path], git_trees.read_state(path), claims.get(path, []))
         if isinstance(finding, Orphan):
             report.orphans.append(finding)
         elif isinstance(finding, Unclaimed):
@@ -858,7 +857,7 @@ def main(argv: list[str] | None = None, gh=None) -> int:
     ap.add_argument("--date", help="YYYY-MM-DD; default: today in the workspace timezone")
     ap.add_argument("--root", default=".", help="workspace root holding CLAUDE.md")
     ap.add_argument("--no-issues", action="store_true", help="skip the issue check (offline); the summary says issues=off")
-    ap.add_argument("--sha", help="fetch origin main (the only ref written) and say, per repository under the worktrees dir, whether the commit with this id is on origin/main (a ref of that name is not a commit); takes no flag but --root; exit 0 if any repository says on, else 2 if any is unknown (fetch failed, grafts, shallow clone, ambiguous prefix) or usage, else 1")
+    ap.add_argument("--sha", help="fetch origin main (writing refs/remotes/origin/main, FETCH_HEAD and objects) and say, per repository under the worktrees dir, whether the commit with this id is on origin/main (a ref of that name is not a commit); takes no flag but --root; exit 1 if any repository that has the commit says it is not on origin/main, else 0 if any says on, else 2 if any is unknown (fetch failed, unreadable repository, grafts, shallow clone, ambiguous prefix) or usage, else 1")
     args = ap.parse_args(argv)
     root = Path(args.root)
     if not (root / "CLAUDE.md").is_file():
@@ -881,12 +880,12 @@ def main(argv: list[str] | None = None, gh=None) -> int:
         if not asked:
             print(f"audit_tasks: --sha found no git tree under {trees or 'the workspace root'}, so nothing was checked", file=sys.stderr)
             return 2
-        codes = []
+        answers = []
         for name, tree in asked:
-            code, line = git_trees.check_sha(args.sha, tree)
-            print(f"{line} [{name}]")
-            codes.append(code)
-        return 0 if 0 in codes else 2 if 2 in codes else 1
+            code, line, held = git_trees.check_sha(args.sha, tree)
+            print(f"{line} [{repr(name)[1:-1]}]")  # escaped: a name cannot forge a line
+            answers.append((code, held))
+        return git_trees.sha_exit(answers)
     day = args.date or datetime.now(cfg.zone).date().isoformat()
     tracker = root / cfg.tracker_path(day)
     if not tracker.is_file():
