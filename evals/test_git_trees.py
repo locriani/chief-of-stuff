@@ -121,8 +121,8 @@ class ShaVerdictTest(unittest.TestCase):
             # what, fetch_error, exists, ancestor -> code, line
             ("fetched, ancestor", "", True, True,
              0, "sha 54b7eb3: on origin/main 9c790f3 (fetched)"),
-            ("fetch failed, ancestor of the last-fetched ref", err, True, True,
-             0, f"sha 54b7eb3: on origin/main 9c790f3 as last fetched \u2014 fetch failed: {err}"),
+            ("fetch failed, ancestor of the last-fetched ref: never a yes", err, True, True,
+             2, f"sha 54b7eb3: unknown \u2014 fetch failed: {err}; origin/main 9c790f3 as last fetched holds it"),
             ("fetched, not an ancestor", "", True, False,
              1, "sha 54b7eb3: not on origin/main 9c790f3 (fetched)"),
             ("fetched, no such commit", "", False, False,
@@ -146,9 +146,9 @@ class FetchBaseTest(Repo):
     """#49: the audit never fetched, so `origin/main` was whatever the last fetch left."""
 
     def push_from_another_clone(self) -> str:
-        other = self.root / "other"
+        other = Path(tempfile.mkdtemp(dir=self.root, prefix="other-"))
         git("clone", "-q", str(self.root / "origin.git"), str(other), cwd=self.root)
-        commit(other, "theirs.txt")
+        commit(other, f"theirs-{other.name}.txt")
         git("push", "-q", "origin", "main", cwd=other)
         return git("rev-parse", "HEAD", cwd=other)
 
@@ -157,6 +157,18 @@ class FetchBaseTest(Repo):
         self.assertNotEqual(git("rev-parse", "origin/main", cwd=self.clone), new)
         self.assertEqual(git_trees.fetch_base(self.clone), "")
         self.assertEqual(git("rev-parse", "origin/main", cwd=self.clone), new)
+
+    def test_origin_main_moves_whatever_the_fetch_refspec_is(self) -> None:
+        """`git fetch origin main` only updates `refs/remotes/origin/main` when `remote.origin.fetch` maps it."""
+        for what, refspec in (("no refspec", None), ("maps only another branch", "+refs/heads/other:refs/remotes/origin/other")):
+            with self.subTest(what):
+                if refspec is None:
+                    git("config", "--unset-all", "remote.origin.fetch", cwd=self.clone)
+                else:
+                    git("config", "--replace-all", "remote.origin.fetch", refspec, cwd=self.clone)
+                new = self.push_from_another_clone()
+                self.assertEqual(git_trees.fetch_base(self.clone), "")
+                self.assertEqual(git("rev-parse", "origin/main", cwd=self.clone), new)
 
     def test_it_fetches_from_a_worktree_too(self) -> None:
         tree = self.tree("wt-a", "feat/a")

@@ -1846,15 +1846,19 @@ class ShaFlagTest(unittest.TestCase):
         return git("rev-parse", "--short", "origin/main", cwd=self.clone)
 
     def pushed_by_another_clone(self) -> str:
-        other = self.root / "other"
-        git("clone", "-q", str(self.root / "origin.git"), str(other), cwd=self.root)
-        git("config", "user.email", "o@example.test", cwd=other)
-        git("config", "user.name", "Other", cwd=other)
-        (other / "fix.txt").write_text("fix\n")
+        other = self.other_clone()
+        (other / "fix.txt").write_text(f"{other.name}\n")
         git("add", "fix.txt", cwd=other)
         git("commit", "-m", "fix", cwd=other)
         git("push", "-q", "origin", "main", cwd=other)
         return git("rev-parse", "HEAD", cwd=other)
+
+    def other_clone(self) -> Path:
+        other = Path(tempfile.mkdtemp(dir=self.root, prefix="other-"))
+        git("clone", "-q", str(self.root / "origin.git"), str(other), cwd=self.root)
+        git("config", "user.email", "o@example.test", cwd=other)
+        git("config", "user.name", "Other", cwd=other)
+        return other
 
     def test_a_commit_pushed_by_another_clone_is_found_by_fetching(self) -> None:
         """The issue's gap: the commit is on the remote's main and this clone has not fetched it."""
@@ -1890,14 +1894,16 @@ class ShaFlagTest(unittest.TestCase):
         code, out, _ = self.run_main("--sha", sha)
         self.assertEqual((code, out), (1, f"sha {sha}: no such commit after fetch, so not on origin/main {self.tip()}\n"))
 
-    def test_fetch_failed_and_the_last_fetched_ref_holds_it(self) -> None:
+    def test_fetch_failed_is_never_a_yes_even_when_the_last_fetched_ref_holds_it(self) -> None:
+        """Main may have been rewritten since the last fetch, so what the stale ref holds is not an answer."""
         sha = git("rev-parse", "origin/main", cwd=self.clone)
         git("remote", "set-url", "origin", str(self.root / "gone.git"), cwd=self.clone)
         code, out, _ = self.run_main("--sha", sha)
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 2)
         self.assertEqual(out.count("\n"), 1)
-        self.assertTrue(out.startswith(f"sha {sha}: on origin/main {self.tip()} as last fetched \u2014 fetch failed: "), out)
-        self.assertTrue(out.split("fetch failed: ", 1)[1].strip(), out)
+        self.assertTrue(out.startswith(f"sha {sha}: unknown \u2014 fetch failed: "), out)
+        self.assertTrue(out.endswith(f"; origin/main {self.tip()} as last fetched holds it\n"), out)
+        self.assertTrue(out.split("fetch failed: ", 1)[1].split("; origin/main", 1)[0].strip(), out)
 
     def test_fetch_failed_and_the_last_fetched_ref_does_not_hold_it(self) -> None:
         """No answer, not a no: the remote may hold it. Exit 2, for a commit nobody has and for one on a branch."""
@@ -1910,6 +1916,72 @@ class ShaFlagTest(unittest.TestCase):
                 self.assertEqual(out.count("\n"), 1)
                 self.assertTrue(out.startswith(f"sha {sha}: unknown \u2014 fetch failed: "), out)
                 self.assertTrue(out.endswith(f"; origin/main {self.tip()} as last fetched does not hold it\n"), out)
+
+    def test_a_ref_named_like_a_sha_is_not_a_commit(self) -> None:
+        """The answer is about the commit whose id starts with the hex, never about a ref of that name."""
+        main = git("rev-parse", "origin/main", cwd=self.clone)
+        for what, make, name in (("tag", ("tag",), "deadbee"), ("branch", ("branch",), "badc0de")):
+            with self.subTest(what):
+                git(*make, name, main, cwd=self.clone)
+                self.assertEqual(git("rev-parse", f"{name}^{{commit}}", cwd=self.clone), main)
+                code, out, _ = self.run_main("--sha", name)
+                self.assertEqual((code, out), (1, f"sha {name}: no such commit after fetch, so not on origin/main {self.tip()}\n"))
+
+    def test_a_ref_named_like_an_unmerged_commits_prefix_does_not_hide_it(self) -> None:
+        unmerged = git("rev-parse", "feat/open", cwd=self.clone)
+        short = unmerged[:7]
+        git("tag", short, git("rev-parse", "origin/main", cwd=self.clone), cwd=self.clone)
+        code, out, _ = self.run_main("--sha", short)
+        self.assertEqual((code, out), (1, f"sha {short}: not on origin/main {self.tip()} (fetched)\n"))
+
+    def test_uppercase_hex_and_a_leading_dash_are_usage_errors(self) -> None:
+        main = git("rev-parse", "origin/main", cwd=self.clone)
+        for bad in (main.upper(), main[:7].upper(), "-" + main[:7], "--" + main[:7]):
+            with self.subTest(bad), patch.object(git_trees, "fetch_base", side_effect=AssertionError("fetched"), create=True):
+                code, out, err = self.run_main(f"--sha={bad}")
+                self.assertEqual((code, out), (2, ""))
+                self.assertIn("audit_tasks:", err)
+
+    def test_the_fetch_moves_origin_main_whatever_the_fetch_config_is(self) -> None:
+        """`git fetch origin main` only updates `refs/remotes/origin/main` when `remote.origin.fetch` maps it."""
+        for what, setup in (("no refspec", ("--unset-all", "remote.origin.fetch")),
+                            ("maps only another branch", ("--replace-all", "remote.origin.fetch", "+refs/heads/other:refs/remotes/origin/other"))):
+            with self.subTest(what):
+                git("config", *setup, cwd=self.clone)
+                new = self.pushed_by_another_clone()
+                code, out, _ = self.run_main("--sha", new)
+                self.assertEqual(git("rev-parse", "origin/main", cwd=self.clone), new)
+                self.assertEqual((code, out), (0, f"sha {new}: on origin/main {self.tip()} (fetched)\n"))
+
+    def test_a_commit_main_was_rewritten_without_is_not_on_origin_main(self) -> None:
+        """Fetched once, then origin's main is force-pushed to a history without it: the fetch must follow,
+        also when the clone's refspec is not forced (no leading `+`)."""
+        for what, refspec in (("default refspec", None), ("unforced refspec", "refs/heads/*:refs/remotes/origin/*")):
+            with self.subTest(what):
+                if refspec:
+                    git("config", "--replace-all", "remote.origin.fetch", refspec, cwd=self.clone)
+                gone = self.pushed_by_another_clone()
+                self.assertEqual(self.run_main("--sha", gone)[0], 0)
+                rewriter = self.other_clone()
+                git("reset", "--hard", "-q", "HEAD~1", cwd=rewriter)
+                (rewriter / "other.txt").write_text(f"{rewriter.name}\n")
+                git("add", "other.txt", cwd=rewriter)
+                git("commit", "-m", "rewritten", cwd=rewriter)
+                git("push", "-q", "--force", "origin", "main", cwd=rewriter)
+                code, out, _ = self.run_main("--sha", gone)
+                self.assertEqual((code, out), (1, f"sha {gone}: not on origin/main {self.tip()} (fetched)\n"))
+
+    def test_no_origin_main_after_a_failed_fetch_is_unknown_without_a_path(self) -> None:
+        git("update-ref", "-d", "refs/remotes/origin/main", cwd=self.clone)
+        git("remote", "set-url", "origin", str(self.root / "gone.git"), cwd=self.clone)
+        sha = "0123456789abcdef"
+        code, out, _ = self.run_main("--sha", sha)
+        self.assertEqual(code, 2)
+        self.assertEqual(out.count("\n"), 1)
+        self.assertTrue(out.startswith(f"sha {sha}: unknown"), out)
+        for path in (self.clone, self.root / "trees"):
+            self.assertNotIn(str(path), out)
+            self.assertNotIn(str(path.resolve()), out)
 
     def test_a_malformed_sha_is_refused_on_stderr(self) -> None:
         """Not 7\u201340 hex, as `SHA` reads a done state's citation. Nothing is fetched for it."""
