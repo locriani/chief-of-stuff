@@ -941,7 +941,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_send.add_argument("--to", "--recipient", dest="recipient", required=True, help="Recipient address/name")
     p_send.add_argument("--from", "--sender", dest="sender", required=True, help="Sender address/name")
     p_send.add_argument("--type", dest="type", default="generic", help="Message type (default: generic)")
-    p_send.add_argument("--body", dest="body", default="", help="Message body text")
+    body_group = p_send.add_mutually_exclusive_group()
+    body_group.add_argument("--body", dest="body", default="", help="Message body text")
+    body_group.add_argument(
+        "--body-file",
+        dest="body_file",
+        help="Read the message body from a UTF-8 file, or '-' for stdin (use for bodies too large for one argument)",
+    )
     payload_group = p_send.add_mutually_exclusive_group()
     payload_group.add_argument("--payload", dest="payload", help="Message payload as legacy JSON string")
     payload_group.add_argument("--payload-toon", dest="payload_toon", help="Message payload as TOON string")
@@ -1072,11 +1078,26 @@ def main(argv: Sequence[str] | None = None) -> int:
                 sys.stderr.write(f"Error: Invalid payload in --payload-file: {exc}\n")
                 return 2
 
+        body = args.body
+        if args.body_file:
+            # Bytes, then UTF-8: exact content, independent of locale and newline translation.
+            try:
+                if args.body_file == "-":
+                    body = sys.stdin.buffer.read().decode("utf-8")
+                else:
+                    body = Path(args.body_file).read_bytes().decode("utf-8")
+            except FileNotFoundError:
+                sys.stderr.write(f"Error: Body file not found: {args.body_file}\n")
+                return 2
+            except (OSError, UnicodeDecodeError) as exc:
+                sys.stderr.write(f"Error: Cannot read --body-file: {exc}\n")
+                return 2
+
         try:
             msg = send_message(
                 recipient=args.recipient,
                 sender=args.sender,
-                body=args.body,
+                body=body,
                 msg_type=args.type,
                 payload=payload,
                 task=args.task,

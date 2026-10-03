@@ -49,10 +49,12 @@ class BaseAdversarialTestCase(unittest.TestCase):
         self,
         args: list[str],
         expected_code: int | None = 0,
+        input: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
         cmd = [sys.executable, str(INBOX_SCRIPT)] + args
         proc = subprocess.run(
             cmd,
+            input=input,
             capture_output=True,
             text=True,
             cwd=str(REPO_ROOT),
@@ -488,16 +490,17 @@ class Task3CLIRobustnessTest(BaseAdversarialTestCase):
         large_content = "AdversarialPayloadTestLine_500KB\n" * 18_000  # ~594 KB
         self.assertGreater(len(large_content), 500_000)
 
-        # 1. Direct CLI body
+        # 1. Direct CLI body, on stdin: Linux caps one argv string at 128 KB
         proc_send = self.run_cli(
             [
                 "send",
                 "--to", "coordinator",
                 "--from", "worker-heavy",
-                "--body", large_content,
+                "--body-file", "-",
                 "--mailbox-dir", str(self.mailbox_dir),
             ],
             expected_code=0,
+            input=large_content,
         )
         msg_id = inbox.toon_decode(proc_send.stdout)["message_id"]
 
@@ -545,6 +548,80 @@ class Task3CLIRobustnessTest(BaseAdversarialTestCase):
             expected_code=0,
         )
         self.assertEqual(json.loads(proc_payload_read.stdout)["payload"], huge_dict)
+
+    def _coordinator_bodies(self) -> list[str]:
+        return [
+            m.body
+            for m in inbox.list_messages("coordinator", mailbox_dir=self.mailbox_dir)
+        ]
+
+    def test_cli_body_file_path_round_trips_exactly(self) -> None:
+        content = "première ligne: 日本語 📬\nsecond line\n"
+        body_file = Path(self.temp_dir.name) / "body.txt"
+        body_file.write_text(content, encoding="utf-8")
+
+        self.run_cli(
+            [
+                "send",
+                "--to", "coordinator",
+                "--from", "worker",
+                "--body-file", str(body_file),
+                "--mailbox-dir", str(self.mailbox_dir),
+            ],
+            expected_code=0,
+        )
+        self.assertEqual(self._coordinator_bodies(), [content])
+
+    def test_cli_body_file_dash_reads_stdin(self) -> None:
+        content = "small body from stdin\n"
+        self.run_cli(
+            [
+                "send",
+                "--to", "coordinator",
+                "--from", "worker",
+                "--body-file", "-",
+                "--mailbox-dir", str(self.mailbox_dir),
+            ],
+            expected_code=0,
+            input=content,
+        )
+        self.assertEqual(self._coordinator_bodies(), [content])
+
+    def test_cli_body_and_body_file_together_exit_code_2(self) -> None:
+        body_file = Path(self.temp_dir.name) / "body.txt"
+        body_file.write_text("from file", encoding="utf-8")
+
+        proc = self.run_cli(
+            [
+                "send",
+                "--to", "coordinator",
+                "--from", "worker",
+                "--body", "from argv",
+                "--body-file", str(body_file),
+                "--mailbox-dir", str(self.mailbox_dir),
+            ],
+            expected_code=2,
+        )
+        self.assertIn("not allowed with", proc.stderr)
+        self.assertEqual(self._coordinator_bodies(), [])
+
+    def test_cli_body_file_missing_exit_code_2(self) -> None:
+        missing = Path(self.temp_dir.name) / "no-such-body.txt"
+
+        proc = self.run_cli(
+            [
+                "send",
+                "--to", "coordinator",
+                "--from", "worker",
+                "--body-file", str(missing),
+                "--mailbox-dir", str(self.mailbox_dir),
+            ],
+            expected_code=2,
+        )
+        self.assertIn("not found", proc.stderr)
+        self.assertIn(str(missing), proc.stderr)
+        self.assertNotIn("Traceback", proc.stderr)
+        self.assertEqual(self._coordinator_bodies(), [])
 
     def test_cli_unicode_multilingual_and_emojis(self) -> None:
         unicode_samples = [
