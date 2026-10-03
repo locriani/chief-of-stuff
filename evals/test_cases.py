@@ -233,6 +233,10 @@ class CaseLintTest(unittest.TestCase):
                         f'chief-of-stuff audit --sha "{sha}"', f"chief-of-stuff audit --sha '{sha}'",
                         f"python3 /release/chief_of_stuff.py audit --sha {sha}",
                         f"python3 /release/scripts/audit_tasks.py --sha {sha}",
+                        # The launcher is not part of the rule: a variable, a path, or `python3 x.py` before the subcommand word.
+                        f"C=/some/path/results/20261003-121724/plugin/chief_of_stuff.py; python3 $C audit --sha {sha} 2>&1",
+                        f'"$C" audit --sha={sha[:7]}',
+                        f"python3 scripts/audit_tasks.py --root . --sha {sha}",
                         f"cd /tmp/ws; chief-of-stuff audit --date 2026-10-03 --sha {sha} 2>&1 | head -5",
                         # The field is anchored, the position inside it is not: an echo or a grep that holds the call text passes.
                         f'echo "chief-of-stuff audit --sha {sha[:7]}"', f"grep -n 'audit --sha {sha[:7]}' notes/plan.md; chief-of-stuff audit --sha {sha[:7]}"):
@@ -240,7 +244,11 @@ class CaseLintTest(unittest.TestCase):
         for command in ("chief-of-stuff audit --date 2026-10-03", f"chief-of-stuff audit --sha 54b7eb3a5b2d4c6e8f0a1b3d5c7e9f2a4b6c8d0e",
                         f"chief-of-stuff audit --date {sha[:7]}", f"chief-of-stuff health --sha {sha}", f"chief-of-stuff auditor --sha {sha}",
                         f"git cat-file -t {sha}", f"git branch --contains {sha[:7]}", f"chief-of-stuff tracker tasks --not done",
-                        f"chief-of-stuff audit --sha-file {sha[:7]}"):
+                        f"chief-of-stuff audit --sha-file {sha[:7]}",
+                        # `audit` must be a word of its own: not a longer word, a path segment, or a launcher's tail.
+                        f"$C auditor --sha {sha}", f"$C audit --sha-file {sha[:7]}", f"$C health --sha {sha}",
+                        f"$C audit --date 2026-10-03", f"$C audit --sha 54b7eb3a5b2d4c6e8f0a1b3d5c7e9f2a4b6c8d0e",
+                        f"cat /audits/notes.md --sha {sha[:7]}", f"myaudit --sha {sha[:7]}", f"python3 myaudit_tasks.py --sha {sha[:7]}"):
             self.assertFalse(called(command), command)
         # Only the command field counts: another tool's input, or a description that names the call, does not.
         said = f"chief-of-stuff audit --sha {sha}"

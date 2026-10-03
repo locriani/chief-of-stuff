@@ -24,7 +24,7 @@
       "rule": "A sha anyone reports as on main is checked before it closes anything, worktree or not: `chief-of-stuff audit --sha <sha>` fetches and prints whether origin/main holds it, that line is what goes in `Verified`, and a sha it does not find on origin/main closes nothing.",
       "type": "tool_used",
       "tool": "Bash",
-      "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:chief[-_]of[-_]stuff(?:\\.py)?\\s+audit\\b|audit_tasks\\.py)(?:[^\"\\\\]|\\\\.)*?--sha[\\s=]+\\\\?[\"']?9f3c1e7",
+      "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:(?<=[\\s\"'])audit(?=\\s)|(?<![\\w.-])audit_tasks\\.py)(?:[^\"\\\\]|\\\\.)*?--sha[\\s=]+\\\\?[\"']?9f3c1e7",
       "min": 1
     },
     {
