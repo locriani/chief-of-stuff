@@ -858,7 +858,7 @@ def main(argv: list[str] | None = None, gh=None) -> int:
     ap.add_argument("--date", help="YYYY-MM-DD; default: today in the workspace timezone")
     ap.add_argument("--root", default=".", help="workspace root holding CLAUDE.md")
     ap.add_argument("--no-issues", action="store_true", help="skip the issue check (offline); the summary says issues=off")
-    ap.add_argument("--sha", help="only fetch origin main and say whether the commit with this id is on origin/main (a ref of that name is not a commit); exit 0 only when fetched and on, 1 not on, 2 unknown (fetch failed, ambiguous prefix) or usage")
+    ap.add_argument("--sha", help="fetch origin main (the only ref written) and say, per repository under the worktrees dir, whether the commit with this id is on origin/main (a ref of that name is not a commit); takes no flag but --root; exit 0 if any repository says on, else 2 if any is unknown (fetch failed, grafts, shallow clone, ambiguous prefix) or usage, else 1")
     args = ap.parse_args(argv)
     root = Path(args.root)
     if not (root / "CLAUDE.md").is_file():
@@ -870,17 +870,23 @@ def main(argv: list[str] | None = None, gh=None) -> int:
         print(f"audit_tasks: {e}", file=sys.stderr)
         return 2
     if args.sha is not None:
+        if args.date is not None or args.no_issues:
+            print("audit_tasks: --sha takes no other flag but --root", file=sys.stderr)
+            return 2
         if not SHA.fullmatch(args.sha):
             print("audit_tasks: --sha takes 7-40 lowercase hex digits", file=sys.stderr)
             return 2
         trees = worktrees_dir((root / "CLAUDE.md").read_text())
-        tree = _handle(root, trees, [])
-        if tree is None:
+        asked = git_trees.sha_trees(root, trees)
+        if not asked:
             print(f"audit_tasks: --sha found no git tree under {trees or 'the workspace root'}, so nothing was checked", file=sys.stderr)
             return 2
-        code, line = git_trees.check_sha(args.sha, tree)
-        print(line)
-        return code
+        codes = []
+        for name, tree in asked:
+            code, line = git_trees.check_sha(args.sha, tree)
+            print(f"{line} [{name}]")
+            codes.append(code)
+        return 0 if 0 in codes else 2 if 2 in codes else 1
     day = args.date or datetime.now(cfg.zone).date().isoformat()
     tracker = root / cfg.tracker_path(day)
     if not tracker.is_file():
