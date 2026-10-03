@@ -25,7 +25,8 @@ def clean_env(source: dict[str, str] | None = None) -> dict[str, str]:
 
 def login_shell(source: dict[str, str] | None = None) -> str:
     env = os.environ if source is None else source
-    shell = env.get("SHELL") or pwd.getpwuid(os.getuid()).pw_shell
+    # CHIEF_OF_STUFF_SHELL is the eval harness's stand-in for lookups; `login_argv` still launches only through a shell it knows by name.
+    shell = env.get("CHIEF_OF_STUFF_SHELL") or env.get("SHELL") or pwd.getpwuid(os.getuid()).pw_shell
     if not Path(shell).is_absolute() or not os.access(shell, os.X_OK):
         raise ShellError(f"configured login shell {shell!r} is not executable")
     return shell

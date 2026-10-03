@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Probe the `Health:` targets in a workspace `## Coordinator` block and print one line each, after
-one line for the file its `Settings:` line names, loaded through the settings loader.
+one line for the file its `Settings:` line names, loaded through the settings loader, and one for the
+runtimes its `[models]` rotations name: each `ok` or `missing`, as the login shell finds its binary.
 
 The coordinator runs this on open and on resume instead of remembering what was up an hour ago.
 One invocation covers every target, so a restart costs one call rather than one per service.
@@ -8,9 +9,11 @@ One invocation covers every target, so a restart costs one call rather than one 
     python3 probe_health.py --config /path/to/CLAUDE.md
 
 Exit code is the number of failed checks: the targets that did not answer as expected, plus one when
-the settings file cannot be loaded. A caller can branch on it without parsing. Every target gets a
+the settings file cannot be loaded, plus one for each missing runtime, or one when the login shell
+could not be asked. A caller can branch on it without parsing. Every target gets a
 line even when it fails: a missing line would read as a healthy service. No `Settings:` line is no
 settings line, and a settings file that is not there is `absent, defaults`: not a fault, and not ok.
+Settings that name no runtime, or did not load, get no runtimes line.
 A usage fault (no config at the path, a `Health:` line that is not a target) is stderr and exit 2.
 """
 
@@ -27,12 +30,17 @@ from urllib.parse import urlsplit, urlunsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from md import section
-from settings import SettingsError, load as load_settings
+from runtimes import RUNTIMES
+from settings import ModelEntry, SettingsError, load as load_settings
+from shell_setup import ShellError, resolve
 from workspace import settings_path
 
 HEALTH = re.compile(r"^\s*(?:[-*]\s*)?Health:\s*(.+?)\s*$", re.MULTILINE)
 SCHEMES = ("http", "https")
 TIMEOUT = 3.0
+# A path up to its last name, quoted or bare: a shell fault quotes the shell's path, and a home path carries a username.
+# ponytail: an unquoted path with a space keeps the words before the space; quote-aware parsing if a ShellError ever prints one bare.
+PATH_HEAD = re.compile(r"""(')[^']*/|[^\s'"]*/""")
 
 
 class TargetError(ValueError):
@@ -79,20 +87,32 @@ def _targets(text: str) -> list[Target]:
     return [parse_target(m.group(1)) for m in HEALTH.finditer("\n".join(section(text, "## Coordinator")))]
 
 
-def check_settings(root: Path, name: str) -> tuple[str, int]:
-    """The line and fault count for the settings file `name`, loaded from `root`."""
-    absent = f"settings {name} absent, defaults", 0
+def check_settings(root: Path, name: str) -> tuple[str, int, dict[str, tuple[ModelEntry, ...]]]:
+    """The line and fault count for the settings file `name`, loaded from `root`, and its `[models]` rotations."""
+    absent = f"settings {name} absent, defaults", 0, {}
     try:
         (root / name).stat()  # is_file() answers False for a path it cannot reach; stat says which it is
         if not (root / name).is_file():
             return absent
-        load_settings(root, name)
+        models = load_settings(root, name).models
     except (FileNotFoundError, NotADirectoryError):
         return absent
     except (SettingsError, ValueError, OSError) as exc:  # schema or TOML; not UTF-8 or a NUL in the name; unreadable
         why = getattr(exc, "strerror", None) or str(exc)  # an OSError's own text carries the absolute path
-        return f"settings {name} invalid: {' '.join(why.split()).removeprefix(f'{name}: ')}", 1
-    return f"settings {name} ok", 0
+        return f"settings {name} invalid: {' '.join(why.split()).removeprefix(f'{name}: ')}", 1, {}
+    return f"settings {name} ok", 0, models
+
+
+def check_runtimes(models: dict[str, tuple[ModelEntry, ...]]) -> tuple[list[str], int]:
+    """The line and fault count for the runtimes the rotations name; no line when they name none."""
+    named = [r for r in RUNTIMES if any(entry.runtime == r.name for rotation in models.values() for entry in rotation)]
+    try:
+        missing = [r for r in named if not resolve(r.binary)]
+    except ShellError as exc:
+        return ["runtimes not checked: " + PATH_HEAD.sub(r"\1", str(exc))], 1
+    said = [f"{r.name} ok" if r not in missing else
+            f"{r.name} missing" + (f" (binary {r.binary})" if r.binary != r.name else "") for r in named]
+    return ["runtimes " + ", ".join(said)] if said else [], len(missing)
 
 
 def _safe(url: str) -> str:
@@ -131,7 +151,7 @@ def report(targets: list[Target], timeout: float = TIMEOUT) -> tuple[list[str], 
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Check the Settings: file and probe the Health: targets in a ## Coordinator block.")
+    parser = argparse.ArgumentParser(description="Check the Settings: file and its runtimes, and probe the Health: targets in a ## Coordinator block.")
     parser.add_argument("--config", default="CLAUDE.md", help="workspace CLAUDE.md holding the block")
     parser.add_argument("--timeout", type=float, default=TIMEOUT, help="seconds per target")
     args = parser.parse_args(argv)
@@ -143,8 +163,10 @@ def main(argv: list[str] | None = None) -> int:
     text = config.read_text()
     bad = 0
     if name := settings_path(text):
-        said, bad = check_settings(config.parent, name)
-        print(said)
+        said, bad, models = check_settings(config.parent, name)
+        lines, missing = check_runtimes(models)
+        print("\n".join([said, *lines]))
+        bad += missing
     try:
         targets = _targets(text)
     except TargetError as exc:

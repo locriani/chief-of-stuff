@@ -3,7 +3,7 @@
 `claude plugin eval` cannot run a case under `--agent`, so the default backend drives
 `claude -p` directly. `--runtime` selects a headless Codex, Cursor, or Antigravity CLI instead.
 Grader vocabulary follows `plugin eval` where it overlaps (`tool_used`, `regex`) so cases can
-be ported later.
+be ported later. A case's `"runtimes_present": ["claude"]` makes those the only runtimes the login shell finds.
 
     python3 evals/run.py --arm baseline --case stale-clock        # Claude defaults to sonnet
     python3 evals/run.py --runtime codex --arm agent --model gpt-6-astra --effort high --case stale-clock
@@ -1498,8 +1498,24 @@ def write_shims(shim_dir: Path, prs: list | None = None, graphql: dict | None = 
         (shim_dir / "graphql.json").write_text(json.dumps(graphql))
 
 
-def eval_environment(out: Path, calls_log: Path, tz: str, root: Path | None = None) -> dict[str, str]:
-    """Pin external issue writes to the fake CLI even if a host resets its shell PATH."""
+# Answers `-lic "command -v X"` as a login shell does, from a directory of stubs and nothing else.
+LOGIN_SHELL = """#!{python}
+import sys
+from pathlib import Path
+words = sys.argv[2].split() if len(sys.argv) == 3 and sys.argv[1] == "-lic" else []
+stub = Path({present!r}) / words[2] if words[:2] == ["command", "-v"] and len(words) == 3 else None
+if not stub or not stub.is_file():
+    sys.exit(1)
+print(stub)
+"""
+
+
+def eval_environment(out: Path, calls_log: Path, tz: str, root: Path | None = None,
+                     runtimes_present: list[str] | None = None) -> dict[str, str]:
+    """Pin external issue writes to the fake CLI even if a host resets its shell PATH.
+
+    `runtimes_present` names the only runtimes `shell_setup.resolve` finds, whatever the machine has installed:
+    shims lead the real PATH and cannot take a binary off it, so a stand-in login shell answers instead."""
     shims = out / "shims"
     shims.mkdir(parents=True, exist_ok=True)
     release = root or PLUGIN_ROOT
@@ -1507,7 +1523,19 @@ def eval_environment(out: Path, calls_log: Path, tz: str, root: Path | None = No
     entry.write_text(f"#!{sys.executable}\nimport os, sys\n"
                      f"os.execv(sys.executable, [sys.executable, {str(release / 'chief_of_stuff.py')!r}, *sys.argv[1:]])\n")
     entry.chmod(0o755)
-    return dict(os.environ,
+    shell = {}
+    if runtimes_present is not None:
+        present = (shims / "present").resolve()  # beside PATH, not on it: a stub must not shadow the host's own CLI
+        present.mkdir(exist_ok=True)
+        for name in runtimes_present:
+            stub = present / runtimes.binary(name)
+            stub.write_text(f"#!{sys.executable}\n")
+            stub.chmod(0o755)
+        standin = shims / "login_shell.py"
+        standin.write_text(LOGIN_SHELL.format(python=sys.executable, present=str(present)))
+        standin.chmod(0o755)
+        shell = {"CHIEF_OF_STUFF_SHELL": str(standin.resolve())}
+    return dict(os.environ, **shell,
                 PATH=f"{shims}{os.pathsep}{os.environ['PATH']}",
                 CHIEF_OF_STUFF_GH=str((shims / "gh").resolve()),
                 CHIEF_OF_STUFF_RELEASE=str(release),
@@ -1539,7 +1567,7 @@ def run_one(case: Case, arm: str, model: str, out: Path, root: Path | None = Non
         write_shims(out / "shims", spec.get("gh_prs"), spec.get("gh_graphql"), spec.get("gh_issues"))
         calls_log.parent.mkdir(parents=True, exist_ok=True)
         calls_log.touch()
-        env = eval_environment(out, calls_log, tz, root=root)
+        env = eval_environment(out, calls_log, tz, root=root, runtimes_present=spec.get("runtimes_present"))
         env["CHIEF_OF_STUFF_WORKSPACE"] = str(work)
         mcp_config = None
         if "calendar" in spec:

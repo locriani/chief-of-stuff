@@ -7,7 +7,7 @@ This is the workspace's editable routing policy for dispatched workers. Replace 
 1. Follow an explicit user choice of provider, runtime, model, or effort exactly. Do not silently substitute a smaller model in the same family. If the requested choice is unavailable, report that and ask which alternative to use.
 2. Honor task requirements: tools, repository access, network access, context size, visual work, and the ability to run without prompts in one-shot mode.
 3. Among suitable options, choose the least expensive model likely to finish the task well. Increase reasoning effort for ambiguity, risk, or difficult debugging. Reuse a working session's model for follow-up work unless the user changes it.
-4. Record the chosen runtime, exact model ID, effort if supported, and reason in the dispatch Log; include them in proposals for new interactive sessions. Check installed CLI model lists and authentication through the configured interactive login shell. Do not print credentials.
+4. Record the chosen runtime, exact model ID, effort if supported, and reason in the dispatch Log; include them in proposals for new interactive sessions. Read which CLIs are installed from the `runtimes` line of `chief-of-stuff health`; check their model lists and authentication through the configured interactive login shell. Do not print credentials.
 
 ## Suggested routing
 
