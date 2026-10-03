@@ -10,6 +10,7 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1825,8 +1826,11 @@ class ShaFlagTest(unittest.TestCase):
 
     A peer says "the fix is on main at <sha>". The audit read only tracker rows' shas, against local `main`, and
     never fetched, so the claim was checked by hand with `git merge-base --is-ancestor <sha> origin/main`.
-    One stdout line; the exit code is the verdict: 0 on, 1 not on, 2 unknown.
+    One stdout line per repository under the worktrees dir, each ending ` [<tree>]` (the first tree by name that holds
+    the repository: here `wt-dirty`); the exit code is the verdict: 0 on, 1 not on, 2 unknown.
     """
+
+    TREE = " [wt-dirty]"
 
     ROW = "| Open branch work | robin | done 10:00 | 09:00 |  | Checklist: Open branch work |"
     OWNERSHIP = "| robin | worktree wt-unmerged (feat/open) |"
@@ -1867,32 +1871,32 @@ class ShaFlagTest(unittest.TestCase):
         code, out, _ = self.run_main("--sha", new)
         self.assertNotEqual(self.tip(), stale)
         self.assertEqual(self.tip(), git("rev-parse", "--short", new, cwd=self.clone))
-        self.assertEqual(out, f"sha {new}: on origin/main {self.tip()} (fetched)\n")
+        self.assertEqual(out, f"sha {new}: on origin/main {self.tip()} (fetched){self.TREE}\n")
         self.assertEqual(code, 0)
 
     def test_an_abbreviated_sha_is_accepted(self) -> None:
         short = git("rev-parse", "--short", "origin/main", cwd=self.clone)
         code, out, _ = self.run_main("--sha", short)
-        self.assertEqual((code, out), (0, f"sha {short}: on origin/main {self.tip()} (fetched)\n"))
+        self.assertEqual((code, out), (0, f"sha {short}: on origin/main {self.tip()} (fetched){self.TREE}\n"))
 
     def test_a_commit_on_an_unmerged_branch_is_not_on_origin_main(self) -> None:
         sha = git("rev-parse", "feat/open", cwd=self.clone)
         code, out, _ = self.run_main("--sha", sha)
-        self.assertEqual((code, out), (1, f"sha {sha}: not on origin/main {self.tip()} (fetched)\n"))
+        self.assertEqual((code, out), (1, f"sha {sha}: not on origin/main {self.tip()} (fetched){self.TREE}\n"))
 
-    def test_a_commit_on_local_main_not_pushed_is_not_on_origin_main(self) -> None:
-        """Local `main` is what the row audit asks; `--sha` asks the remote's."""
+    def test_a_commit_on_local_main_not_pushed_is_said_so(self) -> None:
+        """Local `main` is what the row audit asks; `--sha` asks the remote's, and says which main holds it (#49 G)."""
         (self.clone / "local.txt").write_text("local\n")
         git("add", "local.txt", cwd=self.clone)
         git("commit", "-m", "local only", cwd=self.clone)
         sha = git("rev-parse", "main", cwd=self.clone)
         code, out, _ = self.run_main("--sha", sha)
-        self.assertEqual((code, out), (1, f"sha {sha}: not on origin/main {self.tip()} (fetched)\n"))
+        self.assertEqual((code, out), (1, f"sha {sha}: on local main only, not pushed to origin/main {self.tip()} (fetched){self.TREE}\n"))
 
     def test_a_commit_nobody_has_is_no_such_commit_after_fetch(self) -> None:
         sha = "0123456789abcdef0123456789abcdef01234567"
         code, out, _ = self.run_main("--sha", sha)
-        self.assertEqual((code, out), (1, f"sha {sha}: no such commit after fetch, so not on origin/main {self.tip()}\n"))
+        self.assertEqual((code, out), (1, f"sha {sha}: no such commit after fetch, so not on origin/main {self.tip()}{self.TREE}\n"))
 
     def test_fetch_failed_is_never_a_yes_even_when_the_last_fetched_ref_holds_it(self) -> None:
         """Main may have been rewritten since the last fetch, so what the stale ref holds is not an answer."""
@@ -1902,7 +1906,7 @@ class ShaFlagTest(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertEqual(out.count("\n"), 1)
         self.assertTrue(out.startswith(f"sha {sha}: unknown \u2014 fetch failed: "), out)
-        self.assertTrue(out.endswith(f"; origin/main {self.tip()} as last fetched holds it\n"), out)
+        self.assertTrue(out.endswith(f"; origin/main {self.tip()} as last fetched holds it{self.TREE}\n"), out)
         self.assertTrue(out.split("fetch failed: ", 1)[1].split("; origin/main", 1)[0].strip(), out)
 
     def test_fetch_failed_and_the_last_fetched_ref_does_not_hold_it(self) -> None:
@@ -1915,7 +1919,7 @@ class ShaFlagTest(unittest.TestCase):
                 self.assertEqual(code, 2)
                 self.assertEqual(out.count("\n"), 1)
                 self.assertTrue(out.startswith(f"sha {sha}: unknown \u2014 fetch failed: "), out)
-                self.assertTrue(out.endswith(f"; origin/main {self.tip()} as last fetched does not hold it\n"), out)
+                self.assertTrue(out.endswith(f"; origin/main {self.tip()} as last fetched does not hold it{self.TREE}\n"), out)
 
     def test_a_ref_named_like_a_sha_is_not_a_commit(self) -> None:
         """The answer is about the commit whose id starts with the hex, never about a ref of that name."""
@@ -1925,14 +1929,14 @@ class ShaFlagTest(unittest.TestCase):
                 git(*make, name, main, cwd=self.clone)
                 self.assertEqual(git("rev-parse", f"{name}^{{commit}}", cwd=self.clone), main)
                 code, out, _ = self.run_main("--sha", name)
-                self.assertEqual((code, out), (1, f"sha {name}: no such commit after fetch, so not on origin/main {self.tip()}\n"))
+                self.assertEqual((code, out), (1, f"sha {name}: no such commit after fetch, so not on origin/main {self.tip()}{self.TREE}\n"))
 
     def test_a_ref_named_like_an_unmerged_commits_prefix_does_not_hide_it(self) -> None:
         unmerged = git("rev-parse", "feat/open", cwd=self.clone)
         short = unmerged[:7]
         git("tag", short, git("rev-parse", "origin/main", cwd=self.clone), cwd=self.clone)
         code, out, _ = self.run_main("--sha", short)
-        self.assertEqual((code, out), (1, f"sha {short}: not on origin/main {self.tip()} (fetched)\n"))
+        self.assertEqual((code, out), (1, f"sha {short}: not on origin/main {self.tip()} (fetched){self.TREE}\n"))
 
     def test_uppercase_hex_and_a_leading_dash_are_usage_errors(self) -> None:
         main = git("rev-parse", "origin/main", cwd=self.clone)
@@ -1950,7 +1954,7 @@ class ShaFlagTest(unittest.TestCase):
                 new = self.pushed_by_another_clone()
                 code, out, _ = self.run_main("--sha", new)
                 self.assertEqual(git("rev-parse", "origin/main", cwd=self.clone), new)
-                self.assertEqual((code, out), (0, f"sha {new}: on origin/main {self.tip()} (fetched)\n"))
+                self.assertEqual((code, out), (0, f"sha {new}: on origin/main {self.tip()} (fetched){self.TREE}\n"))
 
     def test_a_commit_main_was_rewritten_without_is_not_on_origin_main(self) -> None:
         """Fetched once, then origin's main is force-pushed to a history without it: the fetch must follow,
@@ -1968,7 +1972,7 @@ class ShaFlagTest(unittest.TestCase):
                 git("commit", "-m", "rewritten", cwd=rewriter)
                 git("push", "-q", "--force", "origin", "main", cwd=rewriter)
                 code, out, _ = self.run_main("--sha", gone)
-                self.assertEqual((code, out), (1, f"sha {gone}: not on origin/main {self.tip()} (fetched)\n"))
+                self.assertEqual((code, out), (1, f"sha {gone}: not on origin/main {self.tip()} (fetched){self.TREE}\n"))
 
     def test_no_origin_main_after_a_failed_fetch_is_unknown_without_a_path(self) -> None:
         git("update-ref", "-d", "refs/remotes/origin/main", cwd=self.clone)
@@ -1977,7 +1981,7 @@ class ShaFlagTest(unittest.TestCase):
         code, out, _ = self.run_main("--sha", sha)
         self.assertEqual(code, 2)
         self.assertEqual(out.count("\n"), 1)
-        self.assertTrue(out.startswith(f"sha {sha}: unknown"), out)
+        self.assertEqual(out, f"sha {sha}: unknown \u2014 no origin/main to check against{self.TREE}\n")
         for path in (self.clone, self.root / "trees"):
             self.assertNotIn(str(path), out)
             self.assertNotIn(str(path.resolve()), out)
@@ -1992,10 +1996,8 @@ class ShaFlagTest(unittest.TestCase):
     def test_it_needs_no_tracker_for_the_day(self) -> None:
         (self.root / "daily" / "2026-09-17-tracker.md").unlink()
         sha = git("rev-parse", "origin/main", cwd=self.clone)
-        for argv in (["--sha", sha], ["--sha", sha, "--date", "2026-09-17"]):
-            with self.subTest(argv=argv[2:]):
-                code, out, err = self.run_main(*argv)
-                self.assertEqual((code, out, err), (0, f"sha {sha}: on origin/main {self.tip()} (fetched)\n", ""))
+        code, out, err = self.run_main("--sha", sha)
+        self.assertEqual((code, out, err), (0, f"sha {sha}: on origin/main {self.tip()} (fetched){self.TREE}\n", ""))
 
     def test_it_still_needs_the_config_root(self) -> None:
         with tempfile.TemporaryDirectory() as d:
@@ -2040,3 +2042,228 @@ class ShaFlagTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("reopen: wt-unmerged (feat/open): not on main \u2014 1 done task: Open branch work", out)
         self.assertNotIn("sha ", out)
+
+    # --- #49 round 6: wrong answers a review reproduced in real repos ---
+
+    def test_only_the_remote_tracking_ref_is_read(self) -> None:
+        """A. A branch, a tag or `refs/origin/main` named like it wins `rev-parse origin/main`, and an unmerged commit
+        on it would come back `on origin/main`. The answer reads `refs/remotes/origin/main` and no other."""
+        unmerged = git("rev-parse", "feat/open", cwd=self.clone)
+        real_tip = git("rev-parse", "--short", "refs/remotes/origin/main", cwd=self.clone)
+        for what, make, drop in (("a local branch", ("branch", "origin/main", unmerged), ("branch", "-D", "origin/main")),
+                                 ("a tag", ("tag", "origin/main", unmerged), ("tag", "-d", "origin/main")),
+                                 ("refs/origin/main", ("update-ref", "refs/origin/main", unmerged), ("update-ref", "-d", "refs/origin/main"))):
+            with self.subTest(what):
+                git(*make, cwd=self.clone)
+                try:
+                    code, out, _ = self.run_main("--sha", unmerged)
+                finally:
+                    git(*drop, cwd=self.clone)
+                self.assertEqual((code, out), (1, f"sha {unmerged}: not on origin/main {real_tip} (fetched){self.TREE}\n"))
+
+    def graft_origin_main_onto_the_unmerged_commit(self) -> tuple[str, str, str]:
+        new = self.pushed_by_another_clone()
+        git("fetch", "-q", "origin", cwd=self.clone)
+        tip = git("rev-parse", "refs/remotes/origin/main", cwd=self.clone)
+        self.assertEqual(tip, new)
+        return tip, git("rev-parse", f"{tip}^", cwd=self.clone), git("rev-parse", "feat/open", cwd=self.clone)
+
+    def test_a_replace_ref_cannot_make_a_yes(self) -> None:
+        """B. `git replace --graft <tip> <parent> <unmerged>` makes the unmerged commit an ancestor of the tip for every
+        reader that honours replace refs."""
+        tip, parent, unmerged = self.graft_origin_main_onto_the_unmerged_commit()
+        git("replace", "--graft", tip, parent, unmerged, cwd=self.clone)
+        self.assertEqual(subprocess.run(["git", "merge-base", "--is-ancestor", unmerged, tip], cwd=self.clone).returncode, 0)
+        code, out, _ = self.run_main("--sha", unmerged)
+        self.assertEqual((code, out), (1, f"sha {unmerged}: not on origin/main {self.tip()} (fetched){self.TREE}\n"))
+
+    def test_grafts_make_ancestry_untrustworthy(self) -> None:
+        """B. A non-empty `info/grafts` in the common git dir (the tree asked is a worktree, so not its own `.git`):
+        no yes and no no, for a commit on origin/main and for one that is not."""
+        tip, parent, unmerged = self.graft_origin_main_onto_the_unmerged_commit()
+        grafts = self.clone / ".git" / "info" / "grafts"
+        grafts.parent.mkdir(exist_ok=True)
+        grafts.write_text(f"{tip} {parent} {unmerged}\n")
+        for what, sha in (("not on origin/main", unmerged), ("on origin/main", tip)):
+            with self.subTest(what):
+                code, out, _ = self.run_main("--sha", sha)
+                self.assertEqual((code, out), (2, f"sha {sha}: unknown \u2014 this repository has grafts, so ancestry cannot be trusted{self.TREE}\n"))
+        grafts.write_text("")  # an empty file grafts nothing
+        code, out, _ = self.run_main("--sha", tip)
+        self.assertEqual((code, out), (0, f"sha {tip}: on origin/main {self.tip()} (fetched){self.TREE}\n"))
+
+    def force_push_main_without_the_last_commit(self) -> None:
+        rewriter = self.other_clone()
+        git("reset", "--hard", "-q", "HEAD~1", cwd=rewriter)
+        (rewriter / "other.txt").write_text(f"{rewriter.name}\n")
+        git("add", "other.txt", cwd=rewriter)
+        git("commit", "-m", "rewritten", cwd=rewriter)
+        git("push", "-q", "--force", "origin", "main", cwd=rewriter)
+
+    def test_a_callers_git_dir_does_not_send_the_fetch_to_another_repository(self) -> None:
+        """C. `GIT_DIR` beats `-C`: the fetch would update the decoy while the reads look at this clone's stale ref."""
+        decoy = self.other_clone()
+        gone = self.pushed_by_another_clone()
+        self.assertEqual(self.run_main("--sha", gone)[0], 0)
+        self.force_push_main_without_the_last_commit()
+        with patch.dict(os.environ, {"GIT_DIR": str(decoy / ".git")}):
+            code, out, _ = self.run_main("--sha", gone)
+        self.assertEqual((code, out), (1, f"sha {gone}: not on origin/main {self.tip()} (fetched){self.TREE}\n"))
+
+    def test_the_fetch_writes_no_tag_into_the_clone(self) -> None:
+        """D. Upstream gains a tag on main; a fetch follows tags unless told not to."""
+        other = self.other_clone()
+        (other / "tagged.txt").write_text("x\n")
+        git("add", "tagged.txt", cwd=other)
+        git("commit", "-m", "tagged", cwd=other)
+        git("tag", "upstream-tag", cwd=other)
+        git("push", "-q", "origin", "main", "upstream-tag", cwd=other)
+        new = git("rev-parse", "HEAD", cwd=other)
+        code, out, _ = self.run_main("--sha", new)
+        self.assertEqual(git("tag", "--list", cwd=self.clone), "")
+        self.assertEqual((code, out), (0, f"sha {new}: on origin/main {self.tip()} (fetched){self.TREE}\n"))
+
+    def test_a_flag_other_than_root_is_refused(self) -> None:
+        """J. `--sha` is its own question: `--date` and `--no-issues` belong to the row audit and would be ignored."""
+        sha = git("rev-parse", "origin/main", cwd=self.clone)
+        for flags in (["--date", "2026-09-17"], ["--no-issues"]):
+            with self.subTest(flags), patch.object(git_trees, "fetch_base", side_effect=AssertionError("fetched"), create=True):
+                code, out, err = self.run_main("--sha", sha, *flags)
+                self.assertEqual((code, out, err), (2, "", "audit_tasks: --sha takes no other flag but --root\n"))
+
+    def test_a_sha_with_a_trailing_newline_is_refused(self) -> None:
+        """`$` matches before a final newline; the usage check must not."""
+        sha = git("rev-parse", "origin/main", cwd=self.clone)
+        with patch.object(git_trees, "fetch_base", side_effect=AssertionError("fetched"), create=True):
+            code, out, err = self.run_main(f"--sha={sha}\n")
+        self.assertEqual((code, out, err), (2, "", "audit_tasks: --sha takes 7-40 lowercase hex digits\n"))
+
+
+class ShaTreesTest(unittest.TestCase):
+    """#49 E: every repository under the worktrees dir is asked, one line each, each ending ` [<tree>]`.
+
+    The trees are what `git_trees.discover` returns, deduplicated by repository (trees sharing one `.git` are one
+    repository; the first by name is asked and named); with none, the root itself if it is a git tree (` [.]`).
+    Exit: 0 if any line is a yes, else 2 if any is unknown, else 1. Line order is not pinned. The workspace's
+    own repository has three worktrees, so it is one line named `wt-dirty`, the first by name.
+    """
+
+    def setUp(self) -> None:
+        tmp, self.root = workspace(ShaFlagTest.ROW, ShaFlagTest.OWNERSHIP)
+        self.addCleanup(tmp.cleanup)
+        self.clone, self.trees = self.root / "repo", self.root / "trees"
+        self.sha = git("rev-parse", "origin/main", cwd=self.clone)
+        self.tip = git("rev-parse", "--short", "origin/main", cwd=self.clone)
+
+    def run_main(self, *argv: str) -> tuple[int, str, str]:
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = al.main(["--root", str(self.root), *argv])
+        return code, out.getvalue(), err.getvalue()
+
+    def docs_clone(self, dest: Path) -> Path:
+        """A clone of a different repository (its own bare origin and history)."""
+        bare = self.root / "docs.git"
+        if not bare.exists():
+            bare.mkdir()
+            git("init", "--bare", "--initial-branch=main", ".", cwd=bare)
+            seed = self.root / "docs-seed"
+            seed.mkdir()
+            git("init", "--initial-branch=main", ".", cwd=seed)
+            git("config", "user.email", "d@example.test", cwd=seed)
+            git("config", "user.name", "Docs", cwd=seed)
+            (seed / "docs.md").write_text("documentation, not the project\n")
+            git("add", "docs.md", cwd=seed)
+            git("commit", "-m", "docs", cwd=seed)
+            git("remote", "add", "origin", str(bare), cwd=seed)
+            git("push", "-q", "origin", "main", cwd=seed)
+        git("clone", "-q", str(bare), str(dest), cwd=self.root)
+        return dest
+
+    def lines(self, out: str) -> list[str]:
+        return sorted(out.splitlines())
+
+    def test_a_clone_of_another_repository_beside_the_project_is_asked_too(self) -> None:
+        docs = self.docs_clone(self.trees / "aaa-docs")
+        docs_tip = git("rev-parse", "--short", "origin/main", cwd=docs)
+        code, out, _ = self.run_main("--sha", self.sha)
+        self.assertEqual(code, 0)
+        self.assertEqual(self.lines(out), sorted([
+            f"sha {self.sha}: on origin/main {self.tip} (fetched) [wt-dirty]",
+            f"sha {self.sha}: no such commit after fetch, so not on origin/main {docs_tip} [aaa-docs]"]))
+
+    def test_trees_sharing_one_repository_are_one_line(self) -> None:
+        code, out, _ = self.run_main("--sha", self.sha)
+        self.assertEqual((code, out), (0, f"sha {self.sha}: on origin/main {self.tip} (fetched) [wt-dirty]\n"))
+
+    def test_a_link_to_a_repository_outside_the_root_is_neither_asked_nor_fetched(self) -> None:
+        with tempfile.TemporaryDirectory() as away:
+            outside = self.docs_clone(Path(away) / "outside")
+            fetch_head = outside / ".git" / "FETCH_HEAD"
+            self.assertFalse(fetch_head.exists())
+            (self.trees / "aaa-link").symlink_to(outside)
+            code, out, _ = self.run_main("--sha", self.sha)
+            self.assertFalse(fetch_head.exists(), "the audit fetched into a repository outside the workspace root")
+        self.assertEqual((code, out), (0, f"sha {self.sha}: on origin/main {self.tip} (fetched) [wt-dirty]\n"))
+        self.assertNotIn("aaa-link", out)
+
+    def test_a_tree_whose_gitdir_is_gone_does_not_stop_a_healthy_one_answering(self) -> None:
+        broken = self.trees / "aaa-broken"
+        broken.mkdir()
+        (broken / ".git").write_text(f"gitdir: {self.root / 'no-such-gitdir'}\n")
+        code, out, err = self.run_main("--sha", self.sha)
+        self.assertIn(f"sha {self.sha}: on origin/main {self.tip} (fetched) [wt-dirty]", out.splitlines())
+        self.assertEqual(code, 0)
+        self.assertNotIn("Traceback", err)
+        self.assertTrue(all(line.endswith("]") for line in out.splitlines()), out)
+
+    def test_the_exit_is_yes_if_any_then_unknown_if_any_then_no(self) -> None:
+        docs = self.docs_clone(self.trees / "aaa-docs")
+        docs_tip = git("rev-parse", "--short", "origin/main", cwd=docs)
+        unmerged = git("rev-parse", "feat/open", cwd=self.clone)
+        code, out, _ = self.run_main("--sha", unmerged)
+        self.assertEqual((code, self.lines(out)), (1, sorted([
+            f"sha {unmerged}: not on origin/main {self.tip} (fetched) [wt-dirty]",
+            f"sha {unmerged}: no such commit after fetch, so not on origin/main {docs_tip} [aaa-docs]"])))
+        git("remote", "set-url", "origin", str(self.root / "gone.git"), cwd=docs)
+        for what, sha, want in (("no and unknown", unmerged, 2), ("yes and unknown", self.sha, 0)):
+            with self.subTest(what):
+                code, out, _ = self.run_main("--sha", sha)
+                lines = out.splitlines()
+                self.assertEqual((code, len(lines)), (want, 2), out)
+                unknown = [l for l in lines if l.startswith(f"sha {sha}: unknown \u2014 fetch failed: ")]
+                self.assertEqual(len(unknown), 1, out)
+                self.assertTrue(unknown[0].endswith(" [aaa-docs]"), unknown[0])
+
+    def test_with_no_trees_the_root_is_asked_and_named_by_a_dot(self) -> None:
+        """No `Worktrees:` line, or a worktrees dir with nothing in it: the root, if it is a git tree."""
+        for what, claude, mkdir in (("no worktrees line", CLAUDE.replace("- Worktrees: `trees/`\n", ""), False),
+                                    ("an empty worktrees dir", CLAUDE, True)):
+            with self.subTest(what), tempfile.TemporaryDirectory() as d:
+                root = Path(d)
+                git("clone", "-q", str(self.root / "origin.git"), str(root), cwd=self.root)
+                (root / "CLAUDE.md").write_text(claude)
+                if mkdir:
+                    (root / "trees").mkdir()
+                out, err = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    code = al.main(["--root", str(root), "--sha", self.sha])
+                self.assertEqual((code, out.getvalue(), err.getvalue()),
+                                 (0, f"sha {self.sha}: on origin/main {self.tip} (fetched) [.]\n", ""))
+
+    def test_a_shallow_tree_gives_no_definite_no(self) -> None:
+        """F, end to end: the only tree is a depth-1 clone, asked for the commit before its tip."""
+        for tree in self.trees.glob("wt-*"):
+            shutil.rmtree(tree)
+        other = Path(tempfile.mkdtemp(dir=self.root, prefix="other-"))
+        git("clone", "-q", str(self.root / "origin.git"), str(other), cwd=self.root)
+        git("config", "user.email", "o@example.test", cwd=other)
+        git("config", "user.name", "Other", cwd=other)
+        (other / "second.txt").write_text("2\n")
+        git("add", "second.txt", cwd=other)
+        git("commit", "-m", "second", cwd=other)
+        git("push", "-q", "origin", "main", cwd=other)
+        older = git("rev-parse", "HEAD~1", cwd=other)
+        git("clone", "-q", "--depth", "1", f"file://{self.root / 'origin.git'}", str(self.trees / "shallow"), cwd=self.root)
+        code, out, _ = self.run_main("--sha", older)
+        self.assertEqual((code, out), (2, f"sha {older}: unknown \u2014 shallow clone, so history is cut off [shallow]\n"))

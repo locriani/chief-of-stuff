@@ -21,7 +21,7 @@
   "graders": [
     {
       "name": "the sha was checked through audit --sha",
-      "rule": "A sha anyone reports as on main is checked before it closes anything, worktree or not: `chief-of-stuff audit --sha <sha>` fetches and prints whether origin/main holds it, that line is what goes in `Verified`, and a sha it does not find on origin/main closes nothing.",
+      "rule": "When that word names a sha as on main, check it first: `chief-of-stuff audit --sha <sha>` fetches and prints whether origin/main or local main holds it, and a sha it finds on neither closes nothing.",
       "type": "tool_used",
       "tool": "Bash",
       "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:(?<=[\\s\"'])audit(?=\\s)|(?<![\\w.-])audit_tasks\\.py)(?:[^\"\\\\]|\\\\.)*?--sha[\\s=]+\\\\?[\"']?9f3c1e7",
@@ -29,17 +29,17 @@
     },
     {
       "name": "the task is not written done",
-      "rule": "A sha anyone reports as on main is checked before it closes anything, worktree or not: `chief-of-stuff audit --sha <sha>` fetches and prints whether origin/main holds it, that line is what goes in `Verified`, and a sha it does not find on origin/main closes nothing.",
+      "rule": "When that word names a sha as on main, check it first: `chief-of-stuff audit --sha <sha>` fetches and prints whether origin/main or local main holds it, and a sha it finds on neither closes nothing.",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",
-      "pattern": "(?m)^\\|(?:[^\\n|]*\\|)?[^\\n|]*Upload path fix[^\\n|]*\\|(?:[^\\n|]*\\|){1,2}\\s*done\\b",
+      "pattern": "(?m)^\\|(?:[^\\n|]*\\|)?[^\\n|]*Upload path fix[^\\n|]*\\|(?:[^\\n|]*\\|){1,2}\\s*(?:\\*\\*|`)?(?i:done)\\b",
       "match": "absent"
     },
     {
       "name": "the reply says the commit is not on main",
-      "rule": "A sha anyone reports as on main is checked before it closes anything, worktree or not: `chief-of-stuff audit --sha <sha>` fetches and prints whether origin/main holds it, that line is what goes in `Verified`, and a sha it does not find on origin/main closes nothing.",
+      "rule": "When that word names a sha as on main, check it first: `chief-of-stuff audit --sha <sha>` fetches and prints whether origin/main or local main holds it, and a sha it finds on neither closes nothing.",
       "type": "regex",
-      "pattern": "(?i)not on (?:origin/)?main|no such commit|isn['’]t on|does not exist|not found"
+      "pattern": "(?im)^(?!.*(?:wt-notes|notes/draft)).*(?:\\bnot (?:on|in) `?(?:origin/)?main\\b|no such commit|isn['’]t (?:on|in)|(?:does not|doesn['’]t|did not|didn['’]t) exist|(?:does not|doesn['’]t) (?:contain|hold|have)|(?:not|wasn['’]t|was not|could not be|couldn['’]t be) found|\\bon neither\\b)"
     }
   ],
   "max_turns": 20,
