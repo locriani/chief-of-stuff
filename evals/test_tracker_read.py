@@ -85,10 +85,12 @@ Coordinator: relay-12. Board: none.
 - 09:00 opened the day
 - 09:30 audit assigned to worker-a
 """
-# An unescaped `|` in the item: thirteen cells where the header has eleven, which the parser recovers and warns about.
-WARNED_ROW = ("| Tune the limiter | The flag reads a | b | c in the notes. | worker-d | running 10:00 | 09:20 |  | S | build "
-              "| implement | #13 |  |\n")
-WARNED = TRACKER.replace("\n## Decisions", WARNED_ROW + "\n## Decisions")
+# Two rows the parser warns about. A running one with two unescaped `|` in its item: thirteen cells where the header
+# has eleven, which the parser recovers into a label longer than the clip. A done one a cell short.
+WARNED_ROWS = ("| Tune the limiter | The flag reads on | off in the config and yes | no in the notes, every time. | worker-d "
+               "| running 10:00 | 09:20 |  | S | build | implement | #13 |  |\n"
+               "| Archive the old runbook | Moved to the wiki. | Robin | done 08:30 | 08:00 |  | S |  |  |  |\n")
+WARNED = TRACKER.replace("\n## Decisions", WARNED_ROWS + "\n## Decisions")
 HEADINGS = ["Resume", "Tasks", "Decisions", "Sessions", "File ownership", "Log"]
 TASKS = parse_tracker(TRACKER).tasks
 
@@ -229,22 +231,30 @@ class TrackerReadTest(unittest.TestCase):
                          names(t for t in TASKS if t.kind == "open"))
 
     # Review of #46: without it `tasks --not done` silently drops or mislabels a running task.
-    def test_a_row_the_parser_warns_about_is_still_printed_and_named_on_stderr(self):
+    def test_every_row_the_parser_warns_about_is_named_on_stderr_whether_or_not_it_is_printed(self):
         self.tracker.write_text(WARNED)
         tasks = parse_tracker(WARNED).tasks
         warned = [t for t in tasks if t.warning]
-        self.assertEqual(len(warned), 1)
-        # The task as the parser read it: a stray pipe moves cells, and the name printed is the one stdout carries.
-        name = clip_name(warned[0].label)
-        self.assertEqual(warned[0].kind, "running")
-        for args in ((), ("--not", "done")):
+        self.assertEqual(sorted(t.kind for t in warned), ["done", "running"])
+        long = next(t for t in warned if t.kind == "running")
+        self.assertGreater(len(long.label), len(clip_name(long.label)), "one warned label is longer than the clip")
+        for args, kept in (((), lambda t: True), (("--not", "done"), lambda t: t.kind != "done"),
+                           (("--state", "done"), lambda t: t.kind == "done"), (("--state", "waiting"), lambda t: t.kind == "waiting")):
             with self.subTest(args=args):
-                _, out, err = self.run_cli("tasks", *args)
-                expected = [t for t in tasks if not args or t.kind != "done"]
-                self.assertEqual([r["name"] for r in toon_decode(out)], [clip_name(t.label) for t in expected])
-                naming = [line for line in err.splitlines() if name in line]
-                self.assertEqual(len(naming), 1, err)
-                self.assertIn(warned[0].warning, naming[0])
+                code, out, err = self.run_cli("tasks", *args)
+                self.assertEqual(code, 0, err)
+                # A warned row is still a row: it is printed when the filter keeps it, under the name the parser read.
+                self.assertEqual([r["name"] for r in toon_decode(out)], [clip_name(t.label) for t in tasks if kept(t)])
+                # One line per warned row, before any filter, carrying the name stdout uses and the parser's warning.
+                lines = err.splitlines()
+                self.assertEqual(len(lines), len(warned), err)
+                for task, line in zip(warned, lines):
+                    self.assertIn(clip_name(task.label), line)
+                    self.assertIn(task.warning, line)
+                # A line is as short as a row: never the unclipped label, never the item.
+                self.assertNotIn(long.label, err)
+                for task in warned:
+                    self.assertNotIn(task.item.strip(), err)
 
     def test_a_tracker_with_no_warned_row_prints_nothing_on_stderr(self):
         self.assertFalse([t for t in TASKS if t.warning])
@@ -314,6 +324,22 @@ class TrackerReadTest(unittest.TestCase):
                 self.assertNotIn(code, (0, None))
                 self.assertEqual(out.strip(), "")
                 self.assertTrue(err.strip())
+
+    def test_a_workspace_config_error_is_a_message_on_stderr_not_a_traceback(self):
+        for why, claude in (("no CLAUDE.md", None), ("no Coordinator block", "# Workspace\n\nNotes only.\n")):
+            (self.root / "CLAUDE.md").unlink(missing_ok=True)
+            if claude is not None:
+                (self.root / "CLAUDE.md").write_text(claude)
+            for args in (("header",), ("sections",), ("section", "Resume"), ("tasks",)):
+                with self.subTest(why=why, args=args):
+                    try:
+                        code, out, err = self.run_cli(*args)
+                    except Exception as exc:  # noqa: BLE001 — an uncaught error is the traceback this test forbids
+                        self.fail(f"raised {exc!r}")
+                    self.assertNotIn(code, (0, None))
+                    self.assertEqual(out.strip(), "")
+                    self.assertTrue(err.strip())
+                    self.assertNotIn("Traceback", err)
 
     def test_a_missing_tracker_file_is_an_error_on_stderr_not_a_traceback(self):
         for args in (("header",), ("sections",), ("section", "Resume"), ("tasks",)):
