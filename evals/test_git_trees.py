@@ -760,6 +760,58 @@ class CheckShaTest(Repo):
         self.assertFalse(git_trees._pruned(tree))
         self.assert_could_not_read(sha, tree)
 
+    def test_a_common_dir_holding_only_a_head_file_is_not_a_pruned_worktree(self) -> None:
+        """#294 round 6, A: git's `is_git_directory()` wants `HEAD` plus object storage plus ref storage. `<common>` is an
+        ordinary directory holding a file named `HEAD` and nothing else: no git directory, nothing forgot this tree."""
+        sha = git("rev-parse", "HEAD", cwd=self.clone)
+        common = self.root / "head-only"
+        common.mkdir()
+        (common / "HEAD").write_text("ref: refs/heads/main\n")
+        tree = self.trees / "hand-made"
+        tree.mkdir()
+        (tree / ".git").write_text(f"gitdir: {common}/worktrees/gone\n")
+        self.assertFalse(git_trees._pruned(tree))
+        self.assert_could_not_read(sha, tree)
+
+    def test_a_common_dir_missing_its_objects_or_refs_is_not_a_pruned_worktree(self) -> None:
+        """#294 round 6, A: a real pruned worktree, then the main clone's `objects` (or `refs`) directory is renamed away:
+        `<common>` holds `HEAD` but is not a git directory any more, so the tree is not known to be forgotten."""
+        for part in ("objects", "refs"):
+            with self.subTest(part):
+                sha, tree = self.pruned(f"wt-no-{part}")
+                self.assertTrue(git_trees._pruned(tree))  # as `pruned()` made it, before the rename
+                (self.clone / ".git" / part).rename(self.clone / ".git" / f"{part}-away")
+                try:
+                    self.assertFalse(git_trees._pruned(tree))
+                    self.assert_could_not_read(sha, tree)
+                finally:  # the next subtest needs a working clone
+                    (self.clone / ".git" / f"{part}-away").rename(self.clone / ".git" / part)
+
+    def test_git_rejects_extra_whitespace_in_a_gitfile_so_it_is_not_a_pruned_worktree(self) -> None:
+        """#294 round 6, B: git removes only the terminal CR/LF of the gitfile line and takes every other byte after
+        `gitdir: ` as the path. Real git (2.54), on a live worktree, answers `fatal: not a git repository: (null)` (exit 128)
+        for `gitdir:  <target>` (two spaces) and for `gitdir: <target> ` (a trailing space). With the target gone, neither
+        is a pruned worktree: `.strip()` would read the path git never looked up."""
+        _, tree = self.pruned()
+        gone = self.clone / ".git" / "worktrees" / "wt-dead"
+        live_tree = self.tree("wt-live", "feat/wt-live")
+        live = self.clone / ".git" / "worktrees" / "wt-live"
+        for what, line in (("two spaces", "gitdir:  {}\n"), ("trailing space", "gitdir: {} \n")):
+            with self.subTest(what):
+                (live_tree / ".git").write_text(line.format(live))
+                self.assertEqual(git_trees.git(["rev-parse", "--git-dir"], live_tree)[0], 128)
+                (tree / ".git").write_text(line.format(gone))
+                self.assertFalse(git_trees._pruned(tree))
+                self.assert_could_not_read(git("rev-parse", "HEAD", cwd=self.clone), tree)
+
+    def test_a_crlf_line_ending_on_a_pruned_worktrees_dot_git_is_still_pruned(self) -> None:
+        """#294 round 6, B: git removes a terminal CR as well as the LF (real git 2.54 opens a live worktree whose gitfile
+        ends `\\r\\n`), so a CRLF-terminated `.git` file of a pruned worktree is still pruned."""
+        sha, tree = self.pruned()
+        (tree / ".git").write_bytes(f"gitdir: {self.clone / '.git' / 'worktrees' / 'wt-dead'}\r\n".encode())
+        self.assertTrue(git_trees._pruned(tree))
+        self.assertEqual(git_trees.check_sha(sha, tree), (2, f"sha {sha}: {self.NOT_A_REPOSITORY}", False))
+
     def test_git_refusing_or_not_running_on_a_healthy_repository_could_not_read_it_and_it_may_hold_it(self) -> None:
         """#294 round 2: the repository is real and healthy, but every `git` call fails: `fatal: detected dubious
         ownership` (git refuses a directory another user owns), or `(128, "")` (a timeout, git not on PATH). That is not
