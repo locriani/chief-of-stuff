@@ -42,7 +42,7 @@ REF = re.compile(r"\s*\[[0-9a-f]{4,}\]\s*$")
 # Context refs can appear anywhere in a cell.
 ANY_REF = re.compile(r"\[([0-9a-f]{4,})\]")
 # Accept abbreviated or full Git hashes in done states.
-SHA = re.compile(r"^[0-9a-f]{7,40}$")
+SHA = re.compile(r"^[0-9a-f]{7,64}$")
 LANDED, NOT_LANDED, UNKNOWN_SHA = "landed", "not-landed", "unknown"
 PAREN = re.compile(r"\((.*?)\)")
 TOKEN = re.compile(r"[A-Za-z0-9]+")
@@ -882,7 +882,7 @@ def main(argv: list[str] | None = None, gh=None) -> int:
             print("audit_tasks: --sha takes no other flag but --root", file=sys.stderr)
             return 2
         if not SHA.fullmatch(args.sha):
-            print("audit_tasks: --sha takes 7-40 lowercase hex digits", file=sys.stderr)
+            print("audit_tasks: --sha takes 7-64 lowercase hex digits", file=sys.stderr)
             return 2
         trees = worktrees_dir((root / "CLAUDE.md").read_text())
         asked = git_trees.sha_trees(root, trees)

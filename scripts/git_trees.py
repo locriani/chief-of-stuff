@@ -34,6 +34,7 @@ def git(args: list[str], cwd: Path) -> tuple[int, str]:
             ["git", "-C", str(cwd), *args],
             capture_output=True,
             text=True,
+            errors="backslashreplace",  # a byte that is not UTF-8 (a Linux ref name) reads as `\xff`, never raises
             timeout=GIT_TIMEOUT,
             env={**GIT_ENV, "PATH": "/usr/bin:/bin:/usr/local/bin", "HOME": str(cwd)},
         )
@@ -98,7 +99,8 @@ def fetch_base(tree: Path, timeout: int = 30) -> str:
     try:
         out = subprocess.run(
             ["git", "-C", str(tree), "fetch", "-q", "--no-tags", "origin", f"+refs/heads/main:{REF}"],
-            capture_output=True, text=True, timeout=timeout, env={**env, "GIT_TERMINAL_PROMPT": "0"},
+            capture_output=True, text=True, errors="backslashreplace", timeout=timeout,  # stderr from ssh or a helper may hold any byte
+            env={**env, "GIT_TERMINAL_PROMPT": "0"},
         )
     except (OSError, subprocess.SubprocessError) as exc:  # not `exc`'s text: a timeout's repeats the tree's path
         return f"git fetch did not run ({type(exc).__name__})"
