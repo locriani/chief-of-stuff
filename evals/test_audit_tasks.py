@@ -1985,7 +1985,10 @@ class ShaFlagTest(unittest.TestCase):
 
     def test_uppercase_hex_and_a_leading_dash_are_usage_errors(self) -> None:
         main = git("rev-parse", "origin/main", cwd=self.clone)
-        for bad in (main.upper(), main[:7].upper(), "-" + main[:7], "--" + main[:7]):
+        # `.upper()` changes nothing when the hex it is given has no a-f, which is a valid sha: cut the prefix at its first letter.
+        first_letter = re.search("[a-f]", main)
+        upper = main[:max(7, first_letter.end())].upper() if first_letter else "ABCDEF1"
+        for bad in (main.upper() if first_letter else "ABCDEF1", upper, "-" + main[:7], "--" + main[:7]):
             with self.subTest(bad), patch.object(git_trees, "fetch_base", side_effect=AssertionError("fetched")):
                 code, out, err = self.run_main(f"--sha={bad}")
                 self.assertEqual((code, out, err), (2, "", "audit_tasks: --sha takes 7-40 lowercase hex digits\n"))
