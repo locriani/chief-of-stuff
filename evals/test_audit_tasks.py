@@ -1981,7 +1981,7 @@ class ShaFlagTest(unittest.TestCase):
     def test_uppercase_hex_and_a_leading_dash_are_usage_errors(self) -> None:
         main = git("rev-parse", "origin/main", cwd=self.clone)
         for bad in (main.upper(), main[:7].upper(), "-" + main[:7], "--" + main[:7]):
-            with self.subTest(bad), patch.object(git_trees, "fetch_base", side_effect=AssertionError("fetched"), create=True):
+            with self.subTest(bad), patch.object(git_trees, "fetch_base", side_effect=AssertionError("fetched")):
                 code, out, err = self.run_main(f"--sha={bad}")
                 self.assertEqual((code, out, err), (2, "", "audit_tasks: --sha takes 7-40 lowercase hex digits\n"))
 
@@ -2029,7 +2029,7 @@ class ShaFlagTest(unittest.TestCase):
     def test_a_malformed_sha_is_refused_on_stderr(self) -> None:
         """Not 7\u201340 hex, as `SHA` reads a done state's citation. Nothing is fetched for it."""
         for bad in ("zzz", "abc123", "0123456789abcdef0123456789abcdef012345678", "--help-me", "main", "54b7eb3;ls"):
-            with self.subTest(bad), patch.object(git_trees, "fetch_base", side_effect=AssertionError("fetched"), create=True):
+            with self.subTest(bad), patch.object(git_trees, "fetch_base", side_effect=AssertionError("fetched")):
                 code, out, err = self.run_main(f"--sha={bad}")
                 self.assertEqual((code, out, err), (2, "", "audit_tasks: --sha takes 7-40 lowercase hex digits\n"))
 
@@ -2053,7 +2053,7 @@ class ShaFlagTest(unittest.TestCase):
         for what, claude, where in (("a worktrees dir", CLAUDE, "trees/"),
                                     ("no worktrees line", CLAUDE.replace("- Worktrees: `trees/`\n", ""), "the workspace root")):
             with self.subTest(what), tempfile.TemporaryDirectory() as d, \
-                    patch.object(git_trees, "fetch_base", side_effect=AssertionError("fetched"), create=True):
+                    patch.object(git_trees, "fetch_base", side_effect=AssertionError("fetched")):
                 (Path(d) / "CLAUDE.md").write_text(claude)
                 out, err = io.StringIO(), io.StringIO()
                 with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -2072,8 +2072,8 @@ class ShaFlagTest(unittest.TestCase):
                 fetched.append(argv)
             return real(argv, *a, **kw)
 
-        with patch.object(git_trees, "fetch_base", side_effect=AssertionError("fetched"), create=True), \
-                patch.object(git_trees, "check_sha", side_effect=AssertionError("checked"), create=True), \
+        with patch.object(git_trees, "fetch_base", side_effect=AssertionError("fetched")), \
+                patch.object(git_trees, "check_sha", side_effect=AssertionError("checked")), \
                 patch.object(subprocess, "run", watch):
             during = self.run_main("--date", "2026-09-17")
         self.assertEqual(fetched, [])
@@ -2167,14 +2167,14 @@ class ShaFlagTest(unittest.TestCase):
         """J. `--sha` is its own question: `--date` and `--no-issues` belong to the row audit and would be ignored."""
         sha = git("rev-parse", "origin/main", cwd=self.clone)
         for flags in (["--date", "2026-09-17"], ["--no-issues"]):
-            with self.subTest(flags), patch.object(git_trees, "fetch_base", side_effect=AssertionError("fetched"), create=True):
+            with self.subTest(flags), patch.object(git_trees, "fetch_base", side_effect=AssertionError("fetched")):
                 code, out, err = self.run_main("--sha", sha, *flags)
                 self.assertEqual((code, out, err), (2, "", "audit_tasks: --sha takes no other flag but --root\n"))
 
     def test_a_sha_with_a_trailing_newline_is_refused(self) -> None:
         """`$` matches before a final newline; the usage check must not."""
         sha = git("rev-parse", "origin/main", cwd=self.clone)
-        with patch.object(git_trees, "fetch_base", side_effect=AssertionError("fetched"), create=True):
+        with patch.object(git_trees, "fetch_base", side_effect=AssertionError("fetched")):
             code, out, err = self.run_main(f"--sha={sha}\n")
         self.assertEqual((code, out, err), (2, "", "audit_tasks: --sha takes 7-40 lowercase hex digits\n"))
 
@@ -2221,8 +2221,16 @@ class ShaTreesTest(unittest.TestCase):
         git("clone", "-q", str(bare), str(dest), cwd=self.root)
         return dest
 
+    OVERALL = {0: "overall on origin/main", 1: "overall not on origin/main", 2: "overall unknown"}
+
     def lines(self, out: str) -> list[str]:
-        return sorted(out.splitlines())
+        """The per-repository lines, sorted: the last line is the overall one (`assert_overall`)."""
+        return sorted(out.splitlines()[:-1])
+
+    def assert_overall(self, out: str, sha: str, code: int) -> None:
+        """#49 round 9, 3: with more than one repository, one last stdout line says the verdict the exit code carries,
+        since a run piped through `head` or chained with `;` loses the code."""
+        self.assertEqual(out.splitlines()[-1], f"sha {sha}: {self.OVERALL[code]}", out)
 
     def test_a_clone_of_another_repository_beside_the_project_is_asked_too(self) -> None:
         docs = self.docs_clone(self.trees / "aaa-docs")
@@ -2232,6 +2240,7 @@ class ShaTreesTest(unittest.TestCase):
         self.assertEqual(self.lines(out), sorted([
             f"sha {self.sha}: on origin/main {self.tip} (fetched) [wt-dirty]",
             f"sha {self.sha}: no such commit after fetch, so not on origin/main {docs_tip} [aaa-docs]"]))
+        self.assert_overall(out, self.sha, 0)
 
     def test_trees_sharing_one_repository_are_one_line(self) -> None:
         code, out, _ = self.run_main("--sha", self.sha)
@@ -2254,9 +2263,10 @@ class ShaTreesTest(unittest.TestCase):
         (broken / ".git").write_text(f"gitdir: {self.root / 'no-such-gitdir'}\n")
         code, out, err = self.run_main("--sha", self.sha)
         self.assertIn(f"sha {self.sha}: on origin/main {self.tip} (fetched) [wt-dirty]", out.splitlines())
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 2)  # round 8: the broken tree is an unknown, which blocks the healthy tree's yes
         self.assertNotIn("Traceback", err)
-        self.assertTrue(all(line.endswith("]") for line in out.splitlines()), out)
+        self.assertTrue(all(line.endswith("]") for line in out.splitlines()[:-1]), out)
+        self.assert_overall(out, self.sha, 2)
 
     def test_the_exit_is_no_if_a_holder_says_no_then_unknown_then_yes_then_no(self) -> None:
         docs = self.docs_clone(self.trees / "aaa-docs")
@@ -2266,6 +2276,7 @@ class ShaTreesTest(unittest.TestCase):
         self.assertEqual((code, self.lines(out)), (1, sorted([
             f"sha {unmerged}: not on origin/main {self.tip} (fetched) [wt-dirty]",
             f"sha {unmerged}: no such commit after fetch, so not on origin/main {docs_tip} [aaa-docs]"])))
+        self.assert_overall(out, unmerged, 1)
         git("remote", "set-url", "origin", str(self.root / "gone.git"), cwd=docs)
         nobody = "0123456789abcdef0123456789abcdef01234567"
         # a repository that holds the commit and says no outranks an unknown elsewhere; one that never had it does not
@@ -2275,7 +2286,8 @@ class ShaTreesTest(unittest.TestCase):
             with self.subTest(what):
                 code, out, _ = self.run_main("--sha", sha)
                 lines = out.splitlines()
-                self.assertEqual((code, len(lines)), (want, 2), out)
+                self.assertEqual((code, len(lines)), (want, 3), out)  # two repositories and the overall line
+                self.assert_overall(out, sha, want)
                 unknown = [l for l in lines if l.startswith(f"sha {sha}: unknown \u2014 fetch failed: ")]
                 self.assertEqual(len(unknown), 1, out)
                 self.assertTrue(unknown[0].endswith(" [aaa-docs]"), unknown[0])
@@ -2309,7 +2321,27 @@ class ShaTreesTest(unittest.TestCase):
                         patch.object(git_trees, "check_sha", lambda sha, tree: next(seen)):
                     code, out, _ = self.run_main("--sha", self.sha)
                 self.assertEqual(code, want, out)
-                self.assertEqual(out.splitlines(), [f"{line} {i} [t{i}]" for i, (_, line, _) in enumerate(answers)])
+                per_repo = [f"{line} {i} [t{i}]" for i, (_, line, _) in enumerate(answers)]
+                # round 9, 3: more than one repository adds the overall line; one repository adds none
+                self.assertEqual(out.splitlines(), per_repo + ([f"sha {self.sha}: {self.OVERALL[want]}"] if len(answers) > 1 else []))
+
+    def test_more_than_one_repository_ends_with_the_overall_answer_one_repository_does_not(self) -> None:
+        """#49 round 9, 3: the table over the three exits, each with two repositories, then with one. Exit 0 says
+        `overall on origin/main`, 1 `overall not on origin/main`, 2 `overall unknown`; it is the last line, exactly one
+        line after the per-repository ones, and no line is added for a single repository."""
+        yes, no, unknown = (0, "yes", True), (1, "no", True), (2, "unknown", False)
+        for want, answers in ((0, [yes, yes]), (1, [no, yes]), (2, [unknown, unknown])):
+            for count in (2, 1):
+                with self.subTest(exit=want, repositories=count):
+                    chosen = answers[:count]
+                    trees = [(f"t{i}", self.trees) for i in range(len(chosen))]
+                    seen = iter([(code, f"{line} {i}", held) for i, (code, line, held) in enumerate(chosen)])
+                    with patch.object(git_trees, "sha_trees", return_value=trees), \
+                            patch.object(git_trees, "check_sha", lambda sha, tree: next(seen)):
+                        code, out, _ = self.run_main("--sha", self.sha)
+                    self.assertEqual(code, want, out)
+                    per_repo = [f"{line} {i} [t{i}]" for i, (_, line, _) in enumerate(chosen)]
+                    self.assertEqual(out.splitlines(), per_repo + ([f"sha {self.sha}: {self.OVERALL[want]}"] if count == 2 else []))
 
     def test_a_clone_of_the_project_that_has_the_unpushed_commit_cannot_outvote_the_project(self) -> None:
         """#49 round 7, 1a: the commit is only on the project's local main. A clone of the project (its origin is the
@@ -2324,6 +2356,7 @@ class ShaTreesTest(unittest.TestCase):
             f"sha {sha}: on local main only, not pushed to origin/main {self.tip} (fetched) [wt-dirty]",
             f"sha {sha}: on origin/main {git('rev-parse', '--short', 'origin/main', cwd=self.trees / 'proj2')} (fetched) [proj2]"]))
         self.assertEqual(code, 1)
+        self.assert_overall(out, sha, 1)
 
     def test_a_tree_whose_origin_holds_the_unmerged_commit_cannot_outvote_the_project(self) -> None:
         """#49 round 7, 1b: `trees/evil` is a fresh `git init` whose origin is a bare repository with the project's
@@ -2342,6 +2375,7 @@ class ShaTreesTest(unittest.TestCase):
             f"sha {unmerged}: not on origin/main {self.tip} (fetched) [wt-dirty]",
             f"sha {unmerged}: on origin/main {git('rev-parse', '--short', 'origin/main', cwd=evil)} (fetched) [evil]"]))
         self.assertEqual(code, 1)
+        self.assert_overall(out, unmerged, 1)
 
     def test_an_unreachable_project_remote_blocks_a_yes_from_a_fresh_init(self) -> None:
         """#49 round 8, 2: the project's remote is unreachable (its fetch fails; it holds the commit on a branch), and
@@ -2359,7 +2393,8 @@ class ShaTreesTest(unittest.TestCase):
         git("remote", "set-url", "origin", str(self.root / "gone.git"), cwd=self.clone)
         code, out, _ = self.run_main("--sha", unmerged)
         lines = out.splitlines()
-        self.assertEqual(len(lines), 2, out)
+        self.assertEqual(len(lines), 3, out)  # two repositories and the overall line
+        self.assert_overall(out, unmerged, 2)
         self.assertEqual(sum(l.startswith(f"sha {unmerged}: unknown \u2014 fetch failed: ") and l.endswith(" [wt-dirty]") for l in lines), 1, out)
         self.assertIn(f"sha {unmerged}: on origin/main {git('rev-parse', '--short', 'origin/main', cwd=evil)} (fetched) [evil]", lines)
         self.assertEqual(code, 2)
@@ -2371,7 +2406,8 @@ class ShaTreesTest(unittest.TestCase):
             with self.subTest(hostile), patch.object(git_trees, "fetch_base", return_value=hostile):
                 code, out, _ = self.run_main("--sha", self.sha)
                 self.assertEqual(code, 2)
-                assert_one_clean_line_each(self, out, 2)
+                assert_one_clean_line_each(self, out, 3)  # two repositories and the overall line, all clean
+                self.assert_overall(out, self.sha, 2)
         with patch.object(git_trees, "fetch_base", return_value=HOSTILE_FETCH[0]):
             out = self.run_main("--sha", self.sha)[1]
         self.assertIn("\\r", out)
@@ -2406,7 +2442,8 @@ class ShaTreesTest(unittest.TestCase):
                 finally:
                     shutil.rmtree(self.trees / name)
                 self.assertEqual(code, 0)
-                self.assertEqual(out.count("\n"), 2, out)  # wt-dirty and the one named tree
+                self.assertEqual(out.count("\n"), 3, out)  # wt-dirty, the one named tree, and the overall line
+                self.assert_overall(out, self.sha, 0)
                 self.assertNotIn("\r", out)
                 self.assertNotIn("\x1b", out)
                 self.assertFalse([l for l in out.splitlines() if l.startswith(forged)], out)

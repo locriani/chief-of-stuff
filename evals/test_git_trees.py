@@ -205,6 +205,16 @@ class FetchBaseTest(Repo):
                 self.assertIsInstance(err, str)
                 self.assertTrue(err.strip())
 
+    def test_the_error_never_carries_the_exceptions_text(self) -> None:
+        """#49 round 9, 5: a timeout's text repeats its command, which holds the tree's path; the error is printed."""
+        cmd = ["git", "-C", str(self.clone), "fetch", "-q", "origin"]
+        for exc in (subprocess.TimeoutExpired(cmd=cmd, timeout=30), OSError(2, "No such file", str(self.clone))):
+            with self.subTest(type(exc).__name__), patch.object(git_trees.subprocess, "run", side_effect=exc):
+                err = git_trees.fetch_base(self.clone)
+                self.assertTrue(err.strip())
+                for path in (self.clone, self.clone.resolve()):
+                    self.assertNotIn(str(path), err)
+
     def test_the_call_is_the_callers_environment_with_prompts_off(self) -> None:
         """Not through the sandboxed `git()`: a fetch needs the caller's credentials and ssh agent."""
         seen = {}
@@ -525,8 +535,46 @@ class CheckShaTest(Repo):
     def test_origin_main_missing_though_the_fetch_succeeded_is_unknown(self) -> None:
         sha = git("rev-parse", "HEAD", cwd=self.clone)
         git("update-ref", "-d", "refs/remotes/origin/main", cwd=self.clone)
-        with patch.object(git_trees, "fetch_base", return_value=""):
-            self.assertEqual(git_trees.check_sha(sha, self.clone), (2, f"sha {sha}: unknown \u2014 no origin/main to check against", True))
+        with patch.object(git_trees, "fetch_base", return_value=""):  # `sha` is on local main, so the line says so (round 9, 1)
+            self.assertEqual(git_trees.check_sha(sha, self.clone),
+                             (2, f"sha {sha}: unknown \u2014 no origin/main to check against; local main holds it", True))
+
+    def test_no_origin_main_still_says_local_main_holds_it(self) -> None:
+        """#49 round 9, 1: a clone whose `origin` was removed has no `refs/remotes/origin/main`. A commit on local main
+        gets the `; local main holds it` suffix on the unknown line; a commit on a branch only, and one nobody has, keep
+        the line without it."""
+        on_main = git("rev-parse", "HEAD", cwd=self.clone)
+        branch = self.tree("wt-a", "feat/a")
+        commit(branch, "a.txt")
+        on_branch = git("rev-parse", "HEAD", cwd=branch)
+        nobody = "0123456789abcdef0123456789abcdef01234567"
+        git("remote", "remove", "origin", cwd=self.clone)
+        self.assertEqual(git("for-each-ref", "refs/remotes", cwd=self.clone), "")
+        line = "unknown \u2014 no origin/main to check against"
+        for what, sha, suffix, held in (("on local main", on_main, "; local main holds it", True),
+                                        ("on a branch only", on_branch, "", True),
+                                        ("nobody has it", nobody, "", False)):
+            with self.subTest(what):
+                self.assertEqual(git_trees.check_sha(sha, self.clone), (2, f"sha {sha}: {line}{suffix}", held))
+
+    def test_a_single_call_that_fails_is_unknown_never_a_plain_no(self) -> None:
+        """#49 round 9, 2: only the named git call returns `(128, "")`; every other call is real. The commit is on a
+        branch and not on origin/main, so a plain answer would be exit 1 `not on origin/main`."""
+        tree = self.tree("wt-a", "feat/a")
+        commit(tree, "a.txt")
+        sha = git("rev-parse", "HEAD", cwd=tree)
+        real = git_trees.git
+        fails = {
+            "the shallow check": lambda args: args[:2] == ["rev-parse", "--is-shallow-repository"],
+            "the local main ancestry check": lambda args: args[:2] == ["merge-base", "--is-ancestor"] and args[-1] == "refs/heads/main",
+        }
+        for what, named in fails.items():
+            def fake(args, cwd, *rest, **kw):
+                return (128, "") if named(args) else real(args, cwd, *rest, **kw)
+
+            with self.subTest(what), patch.object(git_trees, "git", fake):
+                self.assertEqual(git_trees.check_sha(sha, tree),
+                                 (2, f"sha {sha}: unknown \u2014 git could not read this repository", True))
 
 
 if __name__ == "__main__":
