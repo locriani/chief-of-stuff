@@ -668,6 +668,91 @@ class CheckShaTest(Repo):
         self.assertEqual(git_trees.git(["rev-parse", "--git-dir"], tree)[0], 128)
         self.assert_could_not_read(sha, tree)
 
+    def tree_naming(self, name: str, common: Path) -> Path:
+        """A directory whose `.git` file says `gitdir: <common>/worktrees/gone`: a pruned worktree of whatever `<common>` is."""
+        tree = self.trees / name
+        tree.mkdir()
+        (tree / ".git").write_text(f"gitdir: {common}/worktrees/gone\n")
+        return tree
+
+    def test_a_pruned_worktree_naming_a_plain_dir_inside_another_repository_is_not_answered_by_that_repository(self) -> None:
+        """#294 round 8, A: `<common>` is a plain directory inside `outer`'s working tree, so git run there walks UP and
+        answers for `outer`. The redirect is answered only when `<common>` is itself the git directory git uses there:
+        otherwise `outer`'s yes is another repository's, and `audit --sha` (a gate) must not close a task on it."""
+        sha = git("rev-parse", "HEAD", cwd=self.clone)
+        outer = self.clone
+        self.assertEqual(git_trees.check_sha(sha, outer)[0], 0)  # outer says yes
+        sub = outer / "sub"
+        (sub / "worktrees").mkdir(parents=True)
+        self.assertEqual(git_trees.check_sha(sha, sub)[0], 0)  # and so does git run in sub: it found outer
+        tree = self.tree_naming("wt-outer", sub)
+        self.assertEqual(git_trees.git(["rev-parse", "--git-dir"], tree)[0], 128)
+        self.assert_could_not_read(sha, tree)
+
+    def test_a_tree_made_by_init_separate_git_dir_whose_git_dir_is_gone_inside_another_repository_is_not_answered_by_it(self) -> None:
+        """#294 round 8, A, without a hand-written `.git` file: `git init --separate-git-dir <outer>/sub/worktrees/x <tree>`
+        writes it, then the git directory is removed. Same expectation as the hand-written one."""
+        sha = git("rev-parse", "HEAD", cwd=self.clone)
+        sub = self.clone / "sub"
+        (sub / "worktrees").mkdir(parents=True)
+        tree, gitdir = self.trees / "wt-separate", sub / "worktrees" / "x"
+        tree.mkdir()
+        git("init", "--initial-branch=main", f"--separate-git-dir={gitdir}", ".", cwd=tree)
+        commit(tree, "a.txt")
+        written = (tree / ".git").read_text().strip().removeprefix("gitdir: ")  # git writes the resolved path
+        self.assertEqual(Path(written), gitdir.resolve())
+        shutil.rmtree(gitdir)
+        self.assertEqual(git_trees.git(["rev-parse", "--git-dir"], tree)[0], 128)
+        self.assert_could_not_read(sha, tree)
+
+    def promptly(self, sha: str, tree: Path) -> tuple[int, str, bool]:
+        """`check_sha(sha, tree)` in a daemon thread that must finish in 10s. A redirect that follows another is cut at 4
+        calls (a hang would otherwise spawn git until the stack runs out), so the failure says what happened."""
+        real, calls, out = git_trees.check_sha, [], []
+
+        def counted(sha, tree):
+            calls.append(tree)
+            if len(calls) > 4:
+                raise RecursionError("check_sha called itself more than 4 times")
+            return real(sha, tree)
+
+        def run():
+            try:
+                out.append(git_trees.check_sha(sha, tree))
+            except RecursionError as e:
+                out.append(e)
+
+        with patch.object(git_trees, "check_sha", counted):
+            thread = threading.Thread(target=run, daemon=True)
+            thread.start()
+            thread.join(timeout=10)
+        self.assertFalse(thread.is_alive(), "check_sha did not return: a redirect is followed again and again")
+        self.assertNotIsInstance(out[0], RecursionError, f"check_sha recursed through redirects: {out[0]}")
+        return out[0]
+
+    def test_a_redirect_is_followed_once_so_two_dirs_naming_each_other_are_not_a_loop(self) -> None:
+        """#294 round 8, B: A's `.git` names `<B>/worktrees/gone` and B's names `<A>/worktrees/gone`; neither is a
+        repository. The redirected call must not follow another: could not read, `held` True, promptly (it recursed)."""
+        sha = git("rev-parse", "HEAD", cwd=self.clone)
+        a, b = self.root / "A", self.root / "B"
+        a.mkdir()
+        b.mkdir()
+        (a / ".git").write_text(f"gitdir: {b}/worktrees/gone\n")
+        (b / ".git").write_text(f"gitdir: {a}/worktrees/gone\n")
+        self.assertEqual(self.promptly(sha, a), (2, f"sha {sha}: {self.COULD_NOT_READ}", True))
+
+    def test_a_yes_is_not_reachable_through_a_chain_of_redirects(self) -> None:
+        """#294 round 8, B: A names B, B names C, and C is a real git directory with the commit on origin/main (the
+        main clone's `.git`). B is not a repository and the redirect is not followed twice: could not read, `held` True."""
+        sha = git("rev-parse", "HEAD", cwd=self.clone)
+        a, b = self.root / "A", self.root / "B"
+        a.mkdir()
+        b.mkdir()
+        (a / ".git").write_text(f"gitdir: {b}/worktrees/gone\n")
+        (b / ".git").write_text(f"gitdir: {self.clone / '.git'}/worktrees/gone\n")
+        self.assertEqual(git_trees.check_sha(sha, self.clone / ".git")[0], 0)  # C says yes
+        self.assertEqual(self.promptly(sha, a), (2, f"sha {sha}: {self.COULD_NOT_READ}", True))
+
     def live_with_a_commit(self, name: str = "wt-live") -> tuple[str, Path, Path]:
         """`(sha, tree, target)`: a real linked worktree holding a commit; `target` is its `<common>/worktrees/<name>`."""
         tree = self.tree(name, f"feat/{name}")
