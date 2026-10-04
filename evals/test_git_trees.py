@@ -423,8 +423,9 @@ class CheckShaTest(Repo):
     def test_a_read_that_fails_is_unknown_never_no_such_commit(self) -> None:
         """#49 round 7, 2: exit 128 from the read that lists the commits (`rev-parse --disambiguate`) or from `cat-file -t`
         on an id it listed means git could not read the repository, which says nothing about whether the commit exists.
-        `held` is True (round 10, 2): git could not read the repository, so it may hold the commit. Not `cat-file -e <id>^{commit}`: that exits 128 for a blob or a missing
-        object too (see the next test), so its 128 is an answer, not a fault."""
+        `held` is True (round 10, 2): git could not read the repository, so it may hold the commit. Not
+        `cat-file -e <id>^{commit}`: that exits 128 for a blob or a missing object too (see the next test), so its 128
+        is an answer, not a fault."""
         sha = git("rev-parse", "HEAD", cwd=self.clone)
         real = git_trees.git
         for what, broken in (("disambiguate", lambda a: a[0] == "rev-parse" and a[1].startswith("--disambiguate=")),
@@ -584,6 +585,40 @@ class CheckShaTest(Repo):
             with self.subTest(what), patch.object(git_trees, "git", fake):
                 self.assertEqual(git_trees.check_sha(sha, tree),
                                  (2, f"sha {sha}: unknown \u2014 git could not read this repository", True))
+
+    def test_origin_main_holding_it_needs_no_local_main_fact(self) -> None:
+        """A commit origin/main holds (the fetch worked) is a yes even when the local main lookup, or the ancestry check
+        against local main, faults: local main only feeds the note and the `local main only` wording."""
+        sha = git("rev-parse", "HEAD", cwd=self.clone)
+        real = git_trees.git
+        faults = {
+            "the local main ref lookup": lambda a: a[:1] == ["rev-parse"] and "--verify" in a and "refs/heads/main" in a,
+            "the local main ancestry check": lambda a: a[:2] == ["merge-base", "--is-ancestor"] and a[-1] == "refs/heads/main",
+        }
+        for what, named in faults.items():
+            hits = []
+
+            def fake(args, cwd, *rest, named=named, hits=hits, **kw):
+                if named(args):
+                    hits.append(args)
+                    return 128, ""
+                return real(args, cwd, *rest, **kw)
+
+            with self.subTest(what), patch.object(git_trees, "git", fake):
+                self.assertEqual(git_trees.check_sha(sha, self.clone),
+                                 (0, f"sha {sha}: on origin/main {self.tip()} (fetched)", True))
+            self.assertTrue(hits, f"{what} was never reached")
+
+    def test_a_tag_named_main_is_not_local_main_in_a_clone_with_no_local_main(self) -> None:
+        """The sibling of `test_a_tag_named_main_is_not_local_main`, whose repository has a local main branch. Here there
+        is no `refs/heads/main` at all, only a tag `main` on the unmerged branch commit: plain `not on origin/main`."""
+        sha = self.pushed_branch_commit()
+        for what, clone in self.clones_without_local_main().items():
+            git("tag", "main", sha, cwd=clone)
+            self.assertEqual(git("for-each-ref", "refs/heads/main", cwd=clone), "")
+            with self.subTest(what):
+                tip = git("rev-parse", "--short", "refs/remotes/origin/main", cwd=clone)
+                self.assertEqual(git_trees.check_sha(sha, clone), (1, f"sha {sha}: not on origin/main {tip} (fetched)", True))
 
     def pushed_branch_commit(self) -> str:
         tree = self.tree("wt-a", "feat/a")
