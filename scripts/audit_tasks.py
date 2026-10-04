@@ -865,8 +865,8 @@ def main(argv: list[str] | None = None, gh=None) -> int:
         "origin/main lags, such as a fork beside the upstream, says no until it catches up); else 2 if none was asked or usage, or "
         "any repository that has, or may have (git cannot read it), the commit is unknown (fetch failed, repository or grafts "
         "unreadable, grafts, no origin/main, shallow clone, ambiguous prefix, git could not compare); else 0 if any says on; else 2 "
-        "if any is unknown; else 1. An unknown repository that does not hold the commit (a pruned worktree: its "
-        ".git file names a worktrees/<name> that is gone while the main clone is there; no remote, offline, shallow) blocks no yes; "
+        "if any is unknown; else 1. An unknown repository that does not hold the commit (no remote, offline, shallow) blocks no yes; "
+        "a pruned worktree (its .git file names a worktrees/<name> that is gone) is answered by its repository; "
         "any other repository git cannot read may hold it and blocks a yes. A repository with no local "
         "main is simply not on local main. With more than one repository the last line is the overall answer"))
     args = ap.parse_args(argv)

@@ -141,7 +141,7 @@ def sha_exit(answers: list[tuple[int, bool]]) -> int:
     read it): 1 if one that holds it says no (a clone or a fresh `git init` whose origin was
     pointed at the commit cannot outvote it); else 2 if there is none, or one is unknown and held (a repository that
     may hold the commit may be the project the claim is about, so it blocks a yes); else 0 if any says yes; else 2 if
-    any is unknown; else 1. An unknown that does not hold the commit (a pruned worktree, no remote, offline,
+    any is unknown; else 1. An unknown that does not hold the commit (no remote, offline,
     shallow) blocks no yes, so an unrelated repository cannot veto it forever."""
     if (1, True) in answers:
         return 1
@@ -175,38 +175,42 @@ def _has_grafts(tree: Path) -> bool | None:
     return stat.S_ISREG(info.st_mode) and info.st_size > 0
 
 
-def _pruned(tree: Path) -> bool:
-    """Whether `tree` is a pruned worktree: its `.git` is a regular file whose first line is `gitdir: <path>` (that exact prefix, as
-    git requires) with `<path>` = `<common>/worktrees/<name>`, KNOWN gone (`lstat` says not found; a permission error, any
-    other `OSError` or a dangling symlink is present or unknown), and `<common>` a git directory by git's own measure (it holds a
-    `HEAD` file, an `objects` directory and a `refs` directory). Only the terminal `\r`/`\n` of the line is trimmed, as git does; every
-    other byte after `gitdir: ` is the path. Read from the file and the filesystem, never git (a probe can time out); anything else, False."""
+def _pruned_common(tree: Path) -> Path | None:
+    """The repository (`<common>`) of a pruned worktree, else None. `tree` is pruned when its `.git` is a regular file whose first
+    line is `gitdir: <path>` (that exact prefix, as git requires) with `<path>` = `<common>/worktrees/<name>`, KNOWN gone (`lstat`
+    says not found; a permission error, any other `OSError` or a dangling symlink is present or unknown). Only the terminal
+    `\r`/`\n` of the line is trimmed, as git does; every other byte after `gitdir: ` is the path. Read from the file and the
+    filesystem, never git (a probe can time out). Whether git can use `<common>` is not asked here: `check_sha` asks git."""
     if not (tree / ".git").is_file():  # a regular file only: open() on a FIFO blocks forever
-        return False  # ponytail: a swap for a FIFO between this check and the open still blocks; os.open with O_NONBLOCK plus fstat
+        return None  # ponytail: a swap for a FIFO between this check and the open still blocks; os.open with O_NONBLOCK plus fstat
     try:
         with open(tree / ".git") as f:
             line = f.readline(4096)
         path = line.removeprefix("gitdir: ")
         target = tree / path.rstrip("\r\n")  # an absolute path replaces `tree`
-        common = target.parent.parent
         if path != line and target.parent.name == "worktrees":
             try:
                 target.lstat()
             except FileNotFoundError:
-                return (common / "HEAD").is_file() and (common / "objects").is_dir() and (common / "refs").is_dir()
+                return target.parent.parent
     except (OSError, ValueError):
         pass
-    return False
+    return None
+
+
+def _pruned(tree: Path) -> bool:
+    """Whether `tree` is a pruned worktree: `_pruned_common` finds its repository."""
+    return _pruned_common(tree) is not None
 
 
 def check_sha(sha: str, tree: Path) -> tuple[int, str, bool]:
     """One repository's `(exit code, line, held)`; `held` is whether it has a commit with that id, or may have one (git
-    cannot read it). A pruned worktree (`_pruned`: its `.git` file is a `gitdir: ` line naming a `<common>/worktrees/<name>` known gone
-    while `<common>` is a git directory: a `HEAD` file, an `objects` directory and a `refs` directory) holds nothing, so it blocks
-    no yes; it is checked only when the commit lookup failed. Every other failed read (a refusal, a timeout, an unusable `.git`
-    directory, a main clone that moved) may hold the commit and blocks a yes. The commit is the one whose object id starts
+    cannot read it). A pruned worktree (`_pruned_common`: its `.git` file names a `<common>/worktrees/<name>` known gone) is
+    answered by its repository: `check_sha(sha, <common>)`, git run in the repository's git directory, checked only when the
+    commit lookup failed. Every other failed read (a refusal, a timeout, an unusable `.git` directory, a main clone that
+    moved, a `<common>` git cannot use) may hold the commit and blocks a yes. The commit is the one whose object id starts
     with `sha`, never a tag or branch named like it, and the question is about `refs/remotes/origin/main` only. Exit 0 only when the fetch worked and
-    origin/main holds it; 1 when it does not; 2 (unknown, never a no) for every cause: a pruned worktree, the fetch
+    origin/main holds it; 1 when it does not; 2 (unknown, never a no) for every cause: the fetch
     failed (a stale ref cannot say yes), git cannot read the repository (the commit lookup, the grafts lookup or file,
     the shallow check, or, when origin/main does not hold it, the local main lookup or ancestry), there are grafts
     (checked after the fetch, which a hook may have written one in), no origin/main, two commits share the prefix, git
@@ -215,8 +219,8 @@ def check_sha(sha: str, tree: Path) -> tuple[int, str, bool]:
     commit."""
     fetch_error = fetch_base(tree)
     commits = _commits(sha, tree)
-    if commits is None and _pruned(tree):  # the repository forgot this tree: it holds nothing (#294)
-        return 2, f"sha {sha}: unknown \u2014 not a git repository", False
+    if commits is None and (common := _pruned_common(tree)):  # the repository forgot this tree: it answers for it (#294)
+        return check_sha(sha, common)  # `<common>` has no `.git` file, so this cannot loop
     held = commits is None or bool(commits)  # any other repository git could not read may hold it
 
     def unknown(why: str) -> tuple[int, str, bool]:
