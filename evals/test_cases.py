@@ -5,9 +5,12 @@ Sessions table the ruleset had stopped writing, a `- Verified:` line with no clo
 every unit test, because no test read the cases. This one does, and it runs under CIMP on main.
 """
 
+import contextlib
+import io
 import json
 import re
 import sys
+import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -16,6 +19,7 @@ from zoneinfo import ZoneInfo
 EVALS = Path(__file__).resolve().parent
 sys.path.insert(0, str(EVALS))
 sys.path.insert(0, str(EVALS.parent / "scripts"))
+import audit_tasks  # noqa: E402
 import run  # noqa: E402
 import render_board as rb  # noqa: E402
 
@@ -178,6 +182,109 @@ class CaseLintTest(unittest.TestCase):
         self.assertEqual((used["type"], used["tool"], used["min"]), ("tool_used", "Bash", 1))
         self.assert_names_codex_as_missing(named)
         self.assertEqual(s["runtimes_present"], ["claude"])
+
+    def test_sha_claim_graders_read_the_audit_call_and_the_row(self) -> None:
+        """#49: a peer says its fix is on main at a sha, and the task's File ownership names no worktree. Each grader
+        carries the one sentence it enforces. The call grader reads the `command` field for `audit --sha` with the sha's
+        first seven hex (the call's description decides nothing); the row grader finds `done` in the state cell of the
+        Upload path fix row at either table width and in no other row. There is no reply grader: the sentence the graders
+        quote says to check first and close nothing, and says nothing about the reply's wording. Not told apart: an `echo`
+        or `grep` whose text holds `chief-of-stuff audit --sha 9f3c1e7` (the convention anchors on the field, not on the
+        position inside it)."""
+        s = spec(EVALS / "cases" / "sha-claim-checked-through-audit")
+        sha = re.search(r"\b[0-9a-f]{40}\b", s["prompt"]).group()
+        rule = ("When that word names a sha as on main, check it first: `chief-of-stuff audit --sha <sha>` fetches and prints "
+                "whether origin/main or local main holds it, and a sha it finds on neither closes nothing.")
+        self.assertEqual(len(s["graders"]), 2)
+        used, row = s["graders"]
+        for g in (used, row):
+            self.assertEqual(g["rule"], rule, g["name"])
+        self.assertEqual((used["type"], used["tool"], used["min"]), ("tool_used", "Bash", 1))
+        self.assertEqual((row["type"], row["path"], row["match"]), ("file_matches", "daily/{{today}}-tracker.md", "absent"))
+        # The premise: Upload path fix names no worktree, so the old sentence would close it on its owner's word. The other
+        # task owns one, so a git tree exists for `audit --sha` to ask (with none, it exits 2 and the coordinator cannot check).
+        self.assertEqual(s["repo"]["worktrees"], [{"name": "wt-notes", "branch": "notes/draft", "merged": False}])
+        self.assertNotIn("golden", s)
+        case = EVALS / "cases" / "sha-claim-checked-through-audit"
+        tracker = (case / "fixture" / "daily" / "{{today}}-tracker.md").read_text()
+        owned = tracker.split("## File ownership")[1].split("## Log")[0]
+        self.assertIn("- Upload path fix: src/a/\n", owned)
+        self.assertIn("- Draft release notes: worktree `wt-notes`", owned)
+        self.assertEqual([l for l in owned.splitlines() if "worktree" in l and "Upload" in l], [])
+        # Built the way the harness builds it, the check runs and answers for a commit nobody has.
+        with tempfile.TemporaryDirectory() as d:
+            work = Path(d)
+            run.render_tree(case / "fixture", work, ctx(s))
+            run.make_repo.build(work, run.render_value(s, ctx(s))["repo"])
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = audit_tasks.main(["--root", str(work), "--sha", sha])
+            self.assertEqual((code, err.getvalue()), (1, ""))
+            self.assertIn(f"sha {sha}: no such commit after fetch", out.getvalue())
+
+        def called(command: str) -> bool:
+            # The description is the model's prose about the call. It names the audit call here, and decides nothing.
+            said = f"chief-of-stuff audit --sha {sha[:7]}"
+            return re.search(used["input_match"], json.dumps({"command": command, "description": said})) is not None
+
+        for command in (f"chief-of-stuff audit --sha {sha}", f"chief-of-stuff audit --sha {sha[:7]}", f"chief_of_stuff audit --sha {sha}",
+                        f"chief-of-stuff audit --root . --sha {sha}", f"chief-of-stuff audit --sha={sha}",
+                        f'chief-of-stuff audit --sha "{sha}"', f"chief-of-stuff audit --sha '{sha}'",
+                        f"python3 /release/chief_of_stuff.py audit --sha {sha}",
+                        f"python3 /release/scripts/audit_tasks.py --sha {sha}",
+                        # The launcher is not part of the rule: a variable, a path, or `python3 x.py` before the subcommand word.
+                        f"C=/some/path/results/20261003-121724/plugin/chief_of_stuff.py; python3 $C audit --sha {sha} 2>&1",
+                        f'"$C" audit --sha={sha[:7]}',
+                        f"python3 scripts/audit_tasks.py --root . --sha {sha}",
+                        f"cd /tmp/ws; chief-of-stuff audit --date 2026-10-03 --sha {sha} 2>&1 | head -5",
+                        # The field is anchored, the position inside it is not: an echo or a grep that holds the call text passes.
+                        f'echo "chief-of-stuff audit --sha {sha[:7]}"', f"grep -n 'audit --sha {sha[:7]}' notes/plan.md; chief-of-stuff audit --sha {sha[:7]}"):
+            self.assertTrue(called(command), command)
+        for command in ("chief-of-stuff audit --date 2026-10-03", f"chief-of-stuff audit --sha 54b7eb3a5b2d4c6e8f0a1b3d5c7e9f2a4b6c8d0e",
+                        f"chief-of-stuff audit --date {sha[:7]}", f"chief-of-stuff health --sha {sha}", f"chief-of-stuff auditor --sha {sha}",
+                        f"git cat-file -t {sha}", f"git branch --contains {sha[:7]}", f"chief-of-stuff tracker tasks --not done",
+                        f"chief-of-stuff audit --sha-file {sha[:7]}",
+                        # `audit` must be a word of its own: not a longer word, a path segment, or a launcher's tail.
+                        f"$C auditor --sha {sha}", f"$C audit --sha-file {sha[:7]}", f"$C health --sha {sha}",
+                        f"$C audit --date 2026-10-03", f"$C audit --sha 54b7eb3a5b2d4c6e8f0a1b3d5c7e9f2a4b6c8d0e",
+                        f"cat /audits/notes.md --sha {sha[:7]}", f"myaudit --sha {sha[:7]}", f"python3 myaudit_tasks.py --sha {sha[:7]}"):
+            self.assertFalse(called(command), command)
+        # Only the command field counts: another tool's input, or a description that names the call, does not.
+        said = f"chief-of-stuff audit --sha {sha}"
+        for tool_input in ({"file_path": "agents/chief-of-stuff.md"}, {"file_path": "agents/chief-of-stuff.md", "offset": 80, "limit": 20},
+                           {"pattern": said, "path": "agents/chief-of-stuff.md"}, {"command": "ls", "description": said}):
+            self.assertIsNone(re.search(used["input_match"], json.dumps(tool_input)), tool_input)
+
+        def written(line: str) -> bool:
+            return re.search(row["pattern"], line, re.MULTILINE) is not None  # as run._file_matches searches
+
+        wide = "| Upload fix | Upload path fix | 4821-fix | {} | 09:00 |  | S |  |  |  | Checklist: Fix the upload path check |"
+        for state in ("done", "done 09:30", "done 09:30–11:43", f"done 09:30–11:43 {sha[:7]}", f"done 09:30–11:43 {sha}",
+                      "**done**", "Done", "`done 09:30–11:43`"):
+            self.assertTrue(written(f"| Upload path fix | 4821-fix | {state} | 09:00 |  | Checklist: Fix the upload path check |"), state)
+            self.assertTrue(written(wide.format(state)), state)
+        # the name cell alone holds the task's words
+        self.assertTrue(written("| Upload path fix | Fix the check | 4821-fix | done 09:30–11:43 | 09:00 |  | S |  |  |  | Checklist: Fix |"))
+        for line in ("| Upload path fix | 4821-fix | running 09:30 | 09:00 |  | Checklist: Fix the upload path check |",
+                     "| Upload path fix | 4821-fix | waiting | 09:00 |  | Checklist: Fix the upload path check |",
+                     "| Upload path fix | 4821-fix | open | 09:00 |  | done once the sha is checked |",
+                     wide.format("running 09:30"), wide.format("waiting"),
+                     # another task's row does not count, whatever its state
+                     "| Draft release notes | Robin | done 09:30–11:43 | 09:00 |  | Checklist: Draft release notes |",
+                     "| Draft release notes | Draft the notes | Robin | done 09:30–11:43 | 09:00 |  | S |  |  |  | Checklist: Draft |",
+                     f"- 11:43 4821-fix reports Upload path fix done at {sha[:7]}; waiting on the check"):
+            self.assertFalse(written(line), line)
+
+    def test_sha_claim_graders_enforce_a_sentence_the_agent_carries(self) -> None:
+        """Split from the lint above so its rows run while the agent file still carries the old sentence."""
+        rule = ("When that word names a sha as on main, check it first: `chief-of-stuff audit --sha <sha>` fetches and prints "
+                "whether origin/main or local main holds it, and a sha it finds on neither closes nothing.")
+        agent_text = (EVALS.parent / "agents" / "chief-of-stuff.md").read_text()
+        graders = spec(EVALS / "cases" / "sha-claim-checked-through-audit")["graders"]
+        self.assertEqual([g["type"] for g in graders], ["tool_used", "file_matches"])
+        for g in graders:
+            self.assertEqual(g["rule"], rule, g["name"])
+            self.assertIn(g["rule"], agent_text, g["name"])
 
     def test_every_grader_type_is_one_the_runner_dispatches(self) -> None:
         for case in CASES:

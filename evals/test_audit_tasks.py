@@ -10,6 +10,7 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -22,7 +23,9 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import audit_tasks as al  # noqa: E402
+import git_trees  # noqa: E402
 import board_sources as bs  # noqa: E402
+import test_git_trees as tgt  # noqa: E402  (module-qualified: don't re-collect its TestCases)
 import test_board_sources as tbs  # noqa: E402  (module-qualified: don't re-collect its TestCases)
 from tracker import short_name  # noqa: E402
 
@@ -1817,3 +1820,738 @@ class MergedChangeAuditTest(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(al.main(["--root", str(root), "--date", "2026-09-17"], gh=ForgeGh(LIVE, tbs.gh_pull(12))), 1)
+
+
+HOSTILE_FETCH = ("fatal: boom\rsha deadbee: on origin/main 1234567 (fetched) [proj]\x1b[2K",
+                 "fatal: x\u2028sha deadbee: on origin/main 1234567 (fetched) [proj]\u2029\x00y\tz\x07",
+                 # round 10, 3: DEL, a C1 control (CSI) and a bidi override, which `ord(c) < 0x20` does not call control
+                 "fatal: p\x7fq\x9br\u202esha deadbee: on origin/main 1234567 (fetched) [proj]\u202c")
+
+
+def assert_one_clean_line_each(test: unittest.TestCase, out: str, count: int) -> None:
+    """#49 round 8, 3; round 10, 3: `count` lines, each ended by one `\\n`, none holding a character that is not printable
+    (`str.isprintable`: a control character, DEL, a C1 control, a bidi override, U+2028/U+2029; a space is printable)."""
+    test.assertTrue(out.endswith("\n"), repr(out))
+    lines = out.split("\n")[:-1]
+    test.assertEqual((len(lines), len(out.splitlines())), (count, count), repr(out))
+    for line in lines:
+        test.assertEqual([c for c in line if not c.isprintable()], [], repr(line))
+
+
+class ShaFlagTest(unittest.TestCase):
+    """#49: `audit --sha <sha>` fetches `origin main`, then says whether that commit is on `origin/main`.
+
+    A peer says "the fix is on main at <sha>". The audit read only tracker rows' shas, against local `main`, and
+    never fetched, so the claim was checked by hand with `git merge-base --is-ancestor <sha> origin/main`.
+    One stdout line per repository under the worktrees dir, each ending ` [<tree>]` (the first tree by name that holds
+    the repository: here `wt-dirty`); the exit code is the verdict: 0 on, 1 not on, 2 unknown.
+    """
+
+    TREE = " [wt-dirty]"
+
+    ROW = "| Open branch work | robin | done 10:00 | 09:00 |  | Checklist: Open branch work |"
+    OWNERSHIP = "| robin | worktree wt-unmerged (feat/open) |"
+
+    def setUp(self) -> None:
+        tmp, self.root = workspace(self.ROW, self.OWNERSHIP)
+        self.addCleanup(tmp.cleanup)
+        self.clone = self.root / "repo"
+
+    def run_main(self, *argv: str) -> tuple[int, str, str]:
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = al.main(["--root", str(self.root), *argv])
+        return code, out.getvalue(), err.getvalue()
+
+    def tip(self) -> str:
+        return git("rev-parse", "--short", "origin/main", cwd=self.clone)
+
+    def pushed_by_another_clone(self) -> str:
+        other = self.other_clone()
+        (other / "fix.txt").write_text(f"{other.name}\n")
+        git("add", "fix.txt", cwd=other)
+        git("commit", "-m", "fix", cwd=other)
+        git("push", "-q", "origin", "main", cwd=other)
+        return git("rev-parse", "HEAD", cwd=other)
+
+    def other_clone(self) -> Path:
+        other = Path(tempfile.mkdtemp(dir=self.root, prefix="other-"))
+        git("clone", "-q", str(self.root / "origin.git"), str(other), cwd=self.root)
+        git("config", "user.email", "o@example.test", cwd=other)
+        git("config", "user.name", "Other", cwd=other)
+        return other
+
+    def test_a_commit_pushed_by_another_clone_is_found_by_fetching(self) -> None:
+        """The issue's gap: the commit is on the remote's main and this clone has not fetched it."""
+        new = self.pushed_by_another_clone()
+        stale = self.tip()
+        code, out, _ = self.run_main("--sha", new)
+        self.assertNotEqual(self.tip(), stale)
+        self.assertEqual(self.tip(), git("rev-parse", "--short", new, cwd=self.clone))
+        self.assertEqual(out, f"sha {new}: on origin/main {self.tip()} (fetched){self.TREE}\n")
+        self.assertEqual(code, 0)
+
+    def test_an_abbreviated_sha_is_accepted(self) -> None:
+        short = git("rev-parse", "--short", "origin/main", cwd=self.clone)
+        code, out, _ = self.run_main("--sha", short)
+        self.assertEqual((code, out), (0, f"sha {short}: on origin/main {self.tip()} (fetched){self.TREE}\n"))
+
+    def test_a_commit_on_an_unmerged_branch_is_not_on_origin_main(self) -> None:
+        sha = git("rev-parse", "feat/open", cwd=self.clone)
+        code, out, _ = self.run_main("--sha", sha)
+        self.assertEqual((code, out), (1, f"sha {sha}: not on origin/main {self.tip()} (fetched){self.TREE}\n"))
+
+    def test_a_commit_on_local_main_not_pushed_is_said_so(self) -> None:
+        """Local `main` is what the row audit asks; `--sha` asks the remote's, and says which main holds it (#49 G)."""
+        (self.clone / "local.txt").write_text("local\n")
+        git("add", "local.txt", cwd=self.clone)
+        git("commit", "-m", "local only", cwd=self.clone)
+        sha = git("rev-parse", "main", cwd=self.clone)
+        code, out, _ = self.run_main("--sha", sha)
+        self.assertEqual((code, out), (1, f"sha {sha}: on local main only, not pushed to origin/main {self.tip()} (fetched){self.TREE}\n"))
+
+    def test_fetch_failed_still_says_local_main_holds_it(self) -> None:
+        """#49 round 7, 5: unknown stays unknown (exit 2), and the fact that local main holds the commit is said."""
+        (self.clone / "local.txt").write_text("local\n")
+        git("add", "local.txt", cwd=self.clone)
+        git("commit", "-m", "local only", cwd=self.clone)
+        sha = git("rev-parse", "main", cwd=self.clone)
+        git("remote", "set-url", "origin", str(self.root / "gone.git"), cwd=self.clone)
+        code, out, _ = self.run_main("--sha", sha)
+        self.assertEqual(code, 2)
+        self.assertEqual(out.count("\n"), 1)
+        self.assertTrue(out.endswith(f"; origin/main {self.tip()} as last fetched does not hold it; local main holds it{self.TREE}\n"), out)
+
+    def test_a_fetch_error_a_remote_controls_cannot_forge_or_split_a_line(self) -> None:
+        """#49 round 8, 3a: `fetch_base` returns text with a carriage return, an escape, a line separator and a NUL, and
+        a fake verdict line after the carriage return. One repository, one line, nothing raw; the escapes are shown."""
+        # `fetch_base` is patched to return raw control characters, which the real one no longer does: this pins `main`'s own
+        # escaping of whatever a verdict line carries, not `fetch_base`'s.
+        sha = git("rev-parse", "origin/main", cwd=self.clone)
+        for hostile in HOSTILE_FETCH:
+            with self.subTest(hostile), patch.object(git_trees, "fetch_base", return_value=hostile):
+                code, out, _ = self.run_main("--sha", sha)
+                self.assertEqual(code, 2)
+                assert_one_clean_line_each(self, out, 1)
+                self.assertTrue(out.startswith(f"sha {sha}: unknown \u2014 fetch failed: fatal: "), repr(out))
+        with patch.object(git_trees, "fetch_base", return_value=HOSTILE_FETCH[0]):
+            out = self.run_main("--sha", sha)[1]
+        self.assertIn("\\r", out)
+        self.assertIn("\\x1b", out)
+
+    def test_a_commit_nobody_has_is_no_such_commit_after_fetch(self) -> None:
+        sha = "0123456789abcdef0123456789abcdef01234567"
+        code, out, _ = self.run_main("--sha", sha)
+        self.assertEqual((code, out), (1, f"sha {sha}: no such commit after fetch, so not on origin/main {self.tip()}{self.TREE}\n"))
+
+    def test_fetch_failed_is_never_a_yes_even_when_the_last_fetched_ref_holds_it(self) -> None:
+        """Main may have been rewritten since the last fetch, so what the stale ref holds is not an answer."""
+        sha = git("rev-parse", "origin/main", cwd=self.clone)
+        git("remote", "set-url", "origin", str(self.root / "gone.git"), cwd=self.clone)
+        code, out, _ = self.run_main("--sha", sha)
+        self.assertEqual(code, 2)
+        self.assertEqual(out.count("\n"), 1)
+        self.assertTrue(out.startswith(f"sha {sha}: unknown \u2014 fetch failed: "), out)
+        self.assertTrue(out.endswith(f"; origin/main {self.tip()} as last fetched holds it{self.TREE}\n"), out)
+        self.assertTrue(out.split("fetch failed: ", 1)[1].split("; origin/main", 1)[0].strip(), out)
+
+    def test_fetch_failed_and_the_last_fetched_ref_does_not_hold_it(self) -> None:
+        """No answer, not a no: the remote may hold it. Exit 2, for a commit nobody has and for one on a branch."""
+        git("remote", "set-url", "origin", str(self.root / "gone.git"), cwd=self.clone)
+        for what, sha in (("no such commit", "0123456789abcdef0123456789abcdef01234567"),
+                          ("not an ancestor", git("rev-parse", "feat/open", cwd=self.clone))):
+            with self.subTest(what):
+                code, out, _ = self.run_main("--sha", sha)
+                self.assertEqual(code, 2)
+                self.assertEqual(out.count("\n"), 1)
+                self.assertTrue(out.startswith(f"sha {sha}: unknown \u2014 fetch failed: "), out)
+                self.assertTrue(out.endswith(f"; origin/main {self.tip()} as last fetched does not hold it{self.TREE}\n"), out)
+
+    def test_a_ref_named_like_a_sha_is_not_a_commit(self) -> None:
+        """The answer is about the commit whose id starts with the hex, never about a ref of that name."""
+        main = git("rev-parse", "origin/main", cwd=self.clone)
+        for what, make, name in (("tag", ("tag",), "deadbee"), ("branch", ("branch",), "badc0de")):
+            with self.subTest(what):
+                git(*make, name, main, cwd=self.clone)
+                self.assertEqual(git("rev-parse", f"{name}^{{commit}}", cwd=self.clone), main)
+                code, out, _ = self.run_main("--sha", name)
+                self.assertEqual((code, out), (1, f"sha {name}: no such commit after fetch, so not on origin/main {self.tip()}{self.TREE}\n"))
+
+    def test_a_ref_named_like_an_unmerged_commits_prefix_does_not_hide_it(self) -> None:
+        unmerged = git("rev-parse", "feat/open", cwd=self.clone)
+        short = unmerged[:7]
+        git("tag", short, git("rev-parse", "origin/main", cwd=self.clone), cwd=self.clone)
+        code, out, _ = self.run_main("--sha", short)
+        self.assertEqual((code, out), (1, f"sha {short}: not on origin/main {self.tip()} (fetched){self.TREE}\n"))
+
+    def test_uppercase_hex_and_a_leading_dash_are_usage_errors(self) -> None:
+        main = git("rev-parse", "origin/main", cwd=self.clone)
+        # `.upper()` changes nothing when the hex it is given has no a-f, which is a valid sha: cut the prefix at its first letter.
+        first_letter = re.search("[a-f]", main)
+        upper = main[:max(7, first_letter.end())].upper() if first_letter else "ABCDEF1"
+        for bad in (main.upper() if first_letter else "ABCDEF1", upper, "-" + main[:7], "--" + main[:7]):
+            with self.subTest(bad), patch.object(git_trees, "fetch_base", side_effect=AssertionError("fetched")):
+                code, out, err = self.run_main(f"--sha={bad}")
+                self.assertEqual((code, out, err), (2, "", "audit_tasks: --sha takes 7-64 lowercase hex digits\n"))
+
+    def test_the_fetch_moves_origin_main_whatever_the_fetch_config_is(self) -> None:
+        """`git fetch origin main` only updates `refs/remotes/origin/main` when `remote.origin.fetch` maps it."""
+        for what, setup in (("no refspec", ("--unset-all", "remote.origin.fetch")),
+                            ("maps only another branch", ("--replace-all", "remote.origin.fetch", "+refs/heads/other:refs/remotes/origin/other"))):
+            with self.subTest(what):
+                git("config", *setup, cwd=self.clone)
+                new = self.pushed_by_another_clone()
+                code, out, _ = self.run_main("--sha", new)
+                self.assertEqual(git("rev-parse", "origin/main", cwd=self.clone), new)
+                self.assertEqual((code, out), (0, f"sha {new}: on origin/main {self.tip()} (fetched){self.TREE}\n"))
+
+    def test_a_commit_main_was_rewritten_without_is_not_on_origin_main(self) -> None:
+        """Fetched once, then origin's main is force-pushed to a history without it: the fetch must follow,
+        also when the clone's refspec is not forced (no leading `+`)."""
+        for what, refspec in (("default refspec", None), ("unforced refspec", "refs/heads/*:refs/remotes/origin/*")):
+            with self.subTest(what):
+                if refspec:
+                    git("config", "--replace-all", "remote.origin.fetch", refspec, cwd=self.clone)
+                gone = self.pushed_by_another_clone()
+                self.assertEqual(self.run_main("--sha", gone)[0], 0)
+                rewriter = self.other_clone()
+                git("reset", "--hard", "-q", "HEAD~1", cwd=rewriter)
+                (rewriter / "other.txt").write_text(f"{rewriter.name}\n")
+                git("add", "other.txt", cwd=rewriter)
+                git("commit", "-m", "rewritten", cwd=rewriter)
+                git("push", "-q", "--force", "origin", "main", cwd=rewriter)
+                code, out, _ = self.run_main("--sha", gone)
+                self.assertEqual((code, out), (1, f"sha {gone}: not on origin/main {self.tip()} (fetched){self.TREE}\n"))
+
+    def test_no_origin_main_after_a_failed_fetch_is_unknown_without_a_path(self) -> None:
+        git("update-ref", "-d", "refs/remotes/origin/main", cwd=self.clone)
+        git("remote", "set-url", "origin", str(self.root / "gone.git"), cwd=self.clone)
+        sha = "0123456789abcdef"
+        code, out, _ = self.run_main("--sha", sha)
+        self.assertEqual(code, 2)
+        self.assertEqual(out.count("\n"), 1)
+        self.assertEqual(out, f"sha {sha}: unknown \u2014 no origin/main to check against{self.TREE}\n")
+        for path in (self.clone, self.root / "trees"):
+            self.assertNotIn(str(path), out)
+            self.assertNotIn(str(path.resolve()), out)
+
+    def test_a_malformed_sha_is_refused_on_stderr(self) -> None:
+        """Not 7\u201364 hex, as `SHA` reads a done state's citation. Nothing is fetched for it."""
+        for bad in ("zzz", "abc123", "0" * 65, "--help-me", "main", "54b7eb3;ls"):
+            with self.subTest(bad), patch.object(git_trees, "fetch_base", side_effect=AssertionError("fetched")):
+                code, out, err = self.run_main(f"--sha={bad}")
+                self.assertEqual((code, out, err), (2, "", "audit_tasks: --sha takes 7-64 lowercase hex digits\n"))
+
+    def test_a_64_digit_id_is_not_a_usage_error(self) -> None:
+        """#49 round 11: 7-64 lowercase hex. 64 is a full SHA-256 object id; it reaches the fetch like any other id."""
+        for sha in ("0123456789abcdef" * 4, "0" * 41):
+            with self.subTest(len(sha)), patch.object(git_trees, "fetch_base", return_value="") as fetch:
+                code, out, err = self.run_main(f"--sha={sha}")
+                self.assertNotIn("takes 7-64", err)
+                self.assertTrue(fetch.called)
+
+    @unittest.skipUnless(tgt.git_makes_sha256(), "this git cannot `init --object-format=sha256`")
+    def test_a_full_sha256_id_is_answered_through_main(self) -> None:
+        """#49 round 11: the same as `check_sha`'s, through `--sha`: a SHA-256 origin, clone and worktree under the workspace."""
+        for name in ("repo", "origin.git", "trees"):
+            shutil.rmtree(self.root / name)
+        origin, clone, wt = self.root / "origin.git", self.root / "repo", self.root / "trees" / "wt-dirty"
+        origin.mkdir()
+        clone.mkdir()
+        git("init", "--bare", "--object-format=sha256", "--initial-branch=main", ".", cwd=origin)
+        git("init", "--object-format=sha256", "--initial-branch=main", ".", cwd=clone)
+        git("config", "user.email", "t@example.test", cwd=clone)
+        git("config", "user.name", "Test", cwd=clone)
+        (clone / "README.md").write_text("base\n")
+        git("add", "README.md", cwd=clone)
+        git("commit", "-m", "base", cwd=clone)
+        git("remote", "add", "origin", str(origin), cwd=clone)
+        git("push", "-u", "origin", "main", cwd=clone)
+        git("worktree", "add", "-b", "feat/dirty", str(wt), "main", cwd=clone)
+        sha = git("rev-parse", "HEAD", cwd=clone)
+        self.assertEqual(len(sha), 64)
+        code, out, err = self.run_main("--sha", sha)
+        self.assertEqual((code, out, err), (0, f"sha {sha}: on origin/main {self.tip()} (fetched){self.TREE}\n", ""))
+
+    def test_it_needs_no_tracker_for_the_day(self) -> None:
+        (self.root / "daily" / "2026-09-17-tracker.md").unlink()
+        sha = git("rev-parse", "origin/main", cwd=self.clone)
+        code, out, err = self.run_main("--sha", sha)
+        self.assertEqual((code, out, err), (0, f"sha {sha}: on origin/main {self.tip()} (fetched){self.TREE}\n", ""))
+
+    def test_it_still_needs_the_config_root(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = al.main(["--root", d, "--sha", "0123456789abcdef"])
+            self.assertEqual((code, out.getvalue()), (2, ""))
+            self.assertIn("no CLAUDE.md", err.getvalue())
+
+    def test_with_no_git_tree_there_is_nowhere_to_ask(self) -> None:
+        """A different fault from a malformed sha, so a different line: it names where it looked as the config writes it
+        (never an absolute path), or the workspace root when there is no `Worktrees:` line. Nothing is fetched."""
+        for what, claude, where in (("a worktrees dir", CLAUDE, "trees/"),
+                                    ("no worktrees line", CLAUDE.replace("- Worktrees: `trees/`\n", ""), "the workspace root")):
+            with self.subTest(what), tempfile.TemporaryDirectory() as d, \
+                    patch.object(git_trees, "fetch_base", side_effect=AssertionError("fetched")):
+                (Path(d) / "CLAUDE.md").write_text(claude)
+                out, err = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    code = al.main(["--root", d, "--sha", "0123456789abcdef"])
+                self.assertEqual((code, out.getvalue()), (2, ""))
+                self.assertEqual(err.getvalue(), f"audit_tasks: --sha found no git tree under {where}, so nothing was checked\n")
+                self.assertNotIn(d, err.getvalue())
+
+    def test_a_plain_audit_never_fetches_and_reads_as_before(self) -> None:
+        """Guard: the fetch belongs to `--sha`. The row audit stays offline and its lines and exit do not move."""
+        before = self.run_main("--date", "2026-09-17")
+        real, fetched = subprocess.run, []
+
+        def watch(argv, *a, **kw):
+            if "fetch" in argv:
+                fetched.append(argv)
+            return real(argv, *a, **kw)
+
+        with patch.object(git_trees, "fetch_base", side_effect=AssertionError("fetched")), \
+                patch.object(git_trees, "check_sha", side_effect=AssertionError("checked")), \
+                patch.object(subprocess, "run", watch):
+            during = self.run_main("--date", "2026-09-17")
+        self.assertEqual(fetched, [])
+        self.assertEqual(during, before)
+        code, out, _ = before
+        self.assertEqual(code, 1)
+        self.assertIn("reopen: wt-unmerged (feat/open): not on main \u2014 1 done task: Open branch work", out)
+        self.assertNotIn("sha ", out)
+
+    # --- #49 round 6: wrong answers a review reproduced in real repos ---
+
+    def test_only_the_remote_tracking_ref_is_read(self) -> None:
+        """A. A branch, a tag or `refs/origin/main` named like it wins `rev-parse origin/main`, and an unmerged commit
+        on it would come back `on origin/main`. The answer reads `refs/remotes/origin/main` and no other."""
+        unmerged = git("rev-parse", "feat/open", cwd=self.clone)
+        real_tip = git("rev-parse", "--short", "refs/remotes/origin/main", cwd=self.clone)
+        for what, make, drop in (("a local branch", ("branch", "origin/main", unmerged), ("branch", "-D", "origin/main")),
+                                 ("a tag", ("tag", "origin/main", unmerged), ("tag", "-d", "origin/main")),
+                                 ("refs/origin/main", ("update-ref", "refs/origin/main", unmerged), ("update-ref", "-d", "refs/origin/main"))):
+            with self.subTest(what):
+                git(*make, cwd=self.clone)
+                try:
+                    code, out, _ = self.run_main("--sha", unmerged)
+                finally:
+                    git(*drop, cwd=self.clone)
+                self.assertEqual((code, out), (1, f"sha {unmerged}: not on origin/main {real_tip} (fetched){self.TREE}\n"))
+
+    def graft_origin_main_onto_the_unmerged_commit(self) -> tuple[str, str, str]:
+        new = self.pushed_by_another_clone()
+        git("fetch", "-q", "origin", cwd=self.clone)
+        tip = git("rev-parse", "refs/remotes/origin/main", cwd=self.clone)
+        self.assertEqual(tip, new)
+        return tip, git("rev-parse", f"{tip}^", cwd=self.clone), git("rev-parse", "feat/open", cwd=self.clone)
+
+    def test_a_replace_ref_cannot_make_a_yes(self) -> None:
+        """B. `git replace --graft <tip> <parent> <unmerged>` makes the unmerged commit an ancestor of the tip for every
+        reader that honours replace refs."""
+        tip, parent, unmerged = self.graft_origin_main_onto_the_unmerged_commit()
+        git("replace", "--graft", tip, parent, unmerged, cwd=self.clone)
+        self.assertEqual(subprocess.run(["git", "merge-base", "--is-ancestor", unmerged, tip], cwd=self.clone).returncode, 0)
+        code, out, _ = self.run_main("--sha", unmerged)
+        self.assertEqual((code, out), (1, f"sha {unmerged}: not on origin/main {self.tip()} (fetched){self.TREE}\n"))
+
+    def test_grafts_make_ancestry_untrustworthy(self) -> None:
+        """B. A non-empty `info/grafts` in the common git dir (the tree asked is a worktree, so not its own `.git`):
+        no yes and no no, for a commit on origin/main and for one that is not."""
+        tip, parent, unmerged = self.graft_origin_main_onto_the_unmerged_commit()
+        grafts = self.clone / ".git" / "info" / "grafts"
+        grafts.parent.mkdir(exist_ok=True)
+        grafts.write_text(f"{tip} {parent} {unmerged}\n")
+        for what, sha in (("not on origin/main", unmerged), ("on origin/main", tip)):
+            with self.subTest(what):
+                code, out, _ = self.run_main("--sha", sha)
+                self.assertEqual((code, out), (2, f"sha {sha}: unknown \u2014 this repository has grafts, so ancestry cannot be trusted{self.TREE}\n"))
+        grafts.write_text("")  # an empty file grafts nothing
+        code, out, _ = self.run_main("--sha", tip)
+        self.assertEqual((code, out), (0, f"sha {tip}: on origin/main {self.tip()} (fetched){self.TREE}\n"))
+
+    def force_push_main_without_the_last_commit(self) -> None:
+        rewriter = self.other_clone()
+        git("reset", "--hard", "-q", "HEAD~1", cwd=rewriter)
+        (rewriter / "other.txt").write_text(f"{rewriter.name}\n")
+        git("add", "other.txt", cwd=rewriter)
+        git("commit", "-m", "rewritten", cwd=rewriter)
+        git("push", "-q", "--force", "origin", "main", cwd=rewriter)
+
+    def test_a_callers_git_dir_does_not_send_the_fetch_to_another_repository(self) -> None:
+        """C. `GIT_DIR` beats `-C`: the fetch would update the decoy while the reads look at this clone's stale ref."""
+        decoy = self.other_clone()
+        gone = self.pushed_by_another_clone()
+        self.assertEqual(self.run_main("--sha", gone)[0], 0)
+        self.force_push_main_without_the_last_commit()
+        with patch.dict(os.environ, {"GIT_DIR": str(decoy / ".git")}):
+            code, out, _ = self.run_main("--sha", gone)
+        self.assertEqual((code, out), (1, f"sha {gone}: not on origin/main {self.tip()} (fetched){self.TREE}\n"))
+
+    def test_the_fetch_writes_no_tag_into_the_clone(self) -> None:
+        """D. Upstream gains a tag on main; a fetch follows tags unless told not to."""
+        other = self.other_clone()
+        (other / "tagged.txt").write_text("x\n")
+        git("add", "tagged.txt", cwd=other)
+        git("commit", "-m", "tagged", cwd=other)
+        git("tag", "upstream-tag", cwd=other)
+        git("push", "-q", "origin", "main", "upstream-tag", cwd=other)
+        new = git("rev-parse", "HEAD", cwd=other)
+        code, out, _ = self.run_main("--sha", new)
+        self.assertEqual(git("tag", "--list", cwd=self.clone), "")
+        self.assertEqual((code, out), (0, f"sha {new}: on origin/main {self.tip()} (fetched){self.TREE}\n"))
+
+    def test_a_flag_other_than_root_is_refused(self) -> None:
+        """J. `--sha` is its own question: `--date` and `--no-issues` belong to the row audit and would be ignored."""
+        sha = git("rev-parse", "origin/main", cwd=self.clone)
+        for flags in (["--date", "2026-09-17"], ["--no-issues"]):
+            with self.subTest(flags), patch.object(git_trees, "fetch_base", side_effect=AssertionError("fetched")):
+                code, out, err = self.run_main("--sha", sha, *flags)
+                self.assertEqual((code, out, err), (2, "", "audit_tasks: --sha takes no other flag but --root\n"))
+
+    def test_a_sha_with_a_trailing_newline_is_refused(self) -> None:
+        """`$` matches before a final newline; the usage check must not."""
+        sha = git("rev-parse", "origin/main", cwd=self.clone)
+        with patch.object(git_trees, "fetch_base", side_effect=AssertionError("fetched")):
+            code, out, err = self.run_main(f"--sha={sha}\n")
+        self.assertEqual((code, out, err), (2, "", "audit_tasks: --sha takes 7-64 lowercase hex digits\n"))
+
+
+class ShaTreesTest(unittest.TestCase):
+    """#49 E: every repository under the worktrees dir is asked, one line each, each ending ` [<tree>]`.
+
+    The trees are what `git_trees.discover` returns, deduplicated by repository (trees sharing one `.git` are one
+    repository; the first by name is asked and named); with none, the root itself if it is a git tree (` [.]`).
+    Exit: 1 if any repository that holds the commit says it is not on origin/main (round 7), else 2 if there is none or
+    any is unknown and may hold the commit (round 8; round 10: a repository git could not read may hold it, one that
+    plainly lacks it does not), else 0 if any line is a yes, else 2 if any is unknown, else 1. Line order is not pinned. The workspace's
+    own repository has three worktrees, so it is one line named `wt-dirty`, the first by name.
+    """
+
+    def setUp(self) -> None:
+        tmp, self.root = workspace(ShaFlagTest.ROW, ShaFlagTest.OWNERSHIP)
+        self.addCleanup(tmp.cleanup)
+        self.clone, self.trees = self.root / "repo", self.root / "trees"
+        self.sha = git("rev-parse", "origin/main", cwd=self.clone)
+        self.tip = git("rev-parse", "--short", "origin/main", cwd=self.clone)
+
+    def run_main(self, *argv: str) -> tuple[int, str, str]:
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = al.main(["--root", str(self.root), *argv])
+        return code, out.getvalue(), err.getvalue()
+
+    def docs_clone(self, dest: Path) -> Path:
+        """A clone of a different repository (its own bare origin and history)."""
+        bare = self.root / "docs.git"
+        if not bare.exists():
+            bare.mkdir()
+            git("init", "--bare", "--initial-branch=main", ".", cwd=bare)
+            seed = self.root / "docs-seed"
+            seed.mkdir()
+            git("init", "--initial-branch=main", ".", cwd=seed)
+            git("config", "user.email", "d@example.test", cwd=seed)
+            git("config", "user.name", "Docs", cwd=seed)
+            (seed / "docs.md").write_text("documentation, not the project\n")
+            git("add", "docs.md", cwd=seed)
+            git("commit", "-m", "docs", cwd=seed)
+            git("remote", "add", "origin", str(bare), cwd=seed)
+            git("push", "-q", "origin", "main", cwd=seed)
+        git("clone", "-q", str(bare), str(dest), cwd=self.root)
+        return dest
+
+    OVERALL = {0: "overall on origin/main", 1: "overall not on origin/main", 2: "overall unknown"}
+
+    def lines(self, out: str) -> list[str]:
+        """The per-repository lines, sorted: the last line is the overall one (`assert_overall`)."""
+        return sorted(out.splitlines()[:-1])
+
+    def assert_overall(self, out: str, sha: str, code: int) -> None:
+        """#49 round 9, 3: with more than one repository, one last stdout line says the verdict the exit code carries,
+        since a run piped through `head` or chained with `;` loses the code."""
+        self.assertEqual(out.splitlines()[-1], f"sha {sha}: {self.OVERALL[code]}", out)
+
+    def test_a_clone_of_another_repository_beside_the_project_is_asked_too(self) -> None:
+        docs = self.docs_clone(self.trees / "aaa-docs")
+        docs_tip = git("rev-parse", "--short", "origin/main", cwd=docs)
+        code, out, _ = self.run_main("--sha", self.sha)
+        self.assertEqual(code, 0)
+        self.assertEqual(self.lines(out), sorted([
+            f"sha {self.sha}: on origin/main {self.tip} (fetched) [wt-dirty]",
+            f"sha {self.sha}: no such commit after fetch, so not on origin/main {docs_tip} [aaa-docs]"]))
+        self.assert_overall(out, self.sha, 0)
+
+    def test_trees_sharing_one_repository_are_one_line(self) -> None:
+        code, out, _ = self.run_main("--sha", self.sha)
+        self.assertEqual((code, out), (0, f"sha {self.sha}: on origin/main {self.tip} (fetched) [wt-dirty]\n"))
+
+    def test_a_link_to_a_repository_outside_the_root_is_neither_asked_nor_fetched(self) -> None:
+        with tempfile.TemporaryDirectory() as away:
+            outside = self.docs_clone(Path(away) / "outside")
+            fetch_head = outside / ".git" / "FETCH_HEAD"
+            self.assertFalse(fetch_head.exists())
+            (self.trees / "aaa-link").symlink_to(outside)
+            code, out, _ = self.run_main("--sha", self.sha)
+            self.assertFalse(fetch_head.exists(), "the audit fetched into a repository outside the workspace root")
+        self.assertEqual((code, out), (0, f"sha {self.sha}: on origin/main {self.tip} (fetched) [wt-dirty]\n"))
+        self.assertNotIn("aaa-link", out)
+
+    def test_a_tree_whose_gitdir_is_gone_does_not_stop_a_healthy_one_answering(self) -> None:
+        broken = self.trees / "aaa-broken"
+        broken.mkdir()
+        (broken / ".git").write_text(f"gitdir: {self.root / 'no-such-gitdir'}\n")
+        code, out, err = self.run_main("--sha", self.sha)
+        self.assertIn(f"sha {self.sha}: on origin/main {self.tip} (fetched) [wt-dirty]", out.splitlines())
+        # round 10, 2: git could not read the broken tree at all, so it may hold the commit: its unknown blocks the healthy yes
+        self.assertEqual(code, 2)
+        self.assertNotIn("Traceback", err)
+        self.assertTrue(all(line.endswith("]") for line in out.splitlines()[:-1]), out)
+        self.assert_overall(out, self.sha, 2)
+
+    def test_a_repository_with_no_remote_beside_the_project_does_not_block_a_yes(self) -> None:
+        """#49 round 10, 2: `docs` is a `git init` with one commit and no remote: its unknown (no origin/main) does not hold
+        the commit, so the project's yes stands. Exit 0, all three lines, the overall one saying on origin/main."""
+        docs = self.trees / "docs"
+        docs.mkdir()
+        git("init", "--initial-branch=main", ".", cwd=docs)
+        git("config", "user.email", "d@example.test", cwd=docs)
+        git("config", "user.name", "Docs", cwd=docs)
+        (docs / "docs.md").write_text("documentation, not the project\n")
+        git("add", "docs.md", cwd=docs)
+        git("commit", "-m", "docs", cwd=docs)
+        code, out, err = self.run_main("--sha", self.sha)
+        self.assertEqual(self.lines(out), sorted([
+            f"sha {self.sha}: on origin/main {self.tip} (fetched) [wt-dirty]",
+            f"sha {self.sha}: unknown \u2014 no origin/main to check against [docs]"]))
+        self.assert_overall(out, self.sha, 0)
+        self.assertEqual((code, err), (0, ""))
+
+    def test_the_exit_is_no_if_a_holder_says_no_then_unknown_then_yes_then_no(self) -> None:
+        docs = self.docs_clone(self.trees / "aaa-docs")
+        docs_tip = git("rev-parse", "--short", "origin/main", cwd=docs)
+        unmerged = git("rev-parse", "feat/open", cwd=self.clone)
+        code, out, _ = self.run_main("--sha", unmerged)
+        self.assertEqual((code, self.lines(out)), (1, sorted([
+            f"sha {unmerged}: not on origin/main {self.tip} (fetched) [wt-dirty]",
+            f"sha {unmerged}: no such commit after fetch, so not on origin/main {docs_tip} [aaa-docs]"])))
+        self.assert_overall(out, unmerged, 1)
+        git("remote", "set-url", "origin", str(self.root / "gone.git"), cwd=docs)
+        nobody = "0123456789abcdef0123456789abcdef01234567"
+        # a repository that holds the commit and says no outranks an unknown elsewhere; an unknown that never had the commit
+        # blocks no yes (round 10, 2), and is the answer only when nothing else is
+        for what, sha, want in (("a holder says no, another is unknown", unmerged, 1),
+                                ("no such commit, another is unknown", nobody, 2),
+                                ("yes, another is unknown and never had it", self.sha, 0)):
+            with self.subTest(what):
+                code, out, _ = self.run_main("--sha", sha)
+                lines = out.splitlines()
+                self.assertEqual((code, len(lines)), (want, 3), out)  # two repositories and the overall line
+                self.assert_overall(out, sha, want)
+                unknown = [l for l in lines if l.startswith(f"sha {sha}: unknown \u2014 fetch failed: ")]
+                self.assertEqual(len(unknown), 1, out)
+                self.assertTrue(unknown[0].endswith(" [aaa-docs]"), unknown[0])
+
+    def test_the_exit_over_every_mix_of_answers(self) -> None:
+        """#49 round 8, 2; round 10, 2: over the per-repository `(code, line, held)`: any repository that HOLDS the commit
+        and says no (code 1, held) is 1; else an unknown that holds it (or none at all) is 2; else any yes is 0; else any
+        unknown is 2; else 1. Every line still prints."""
+        yes, unknown, unknown_held = (0, "yes", True), (2, "unknown", False), (2, "unknown, holds it", True)
+        no_held, no_absent, local_only = (1, "no, held", True), (1, "no, absent", False), (1, "local main only", True)
+        table = [
+            ("a holder says no, another says yes", [no_held, yes], 1),
+            ("local main only, another says yes", [local_only, yes], 1),
+            ("a holder says no, another is unknown", [no_held, unknown], 1),
+            ("a holder says no, yes and unknown", [yes, no_held, unknown], 1),
+            ("yes alone", [yes], 0),
+            ("yes and a no that never had it", [yes, no_absent], 0),
+            ("yes and an unknown that does not hold it", [yes, unknown], 0),
+            ("yes and an unknown that holds it", [yes, unknown_held], 2),
+            ("yes, an unknown that holds it and one that does not", [unknown, yes, unknown_held], 2),
+            ("unknown alone", [unknown], 2),
+            ("unknown and a no that never had it", [no_absent, unknown], 2),
+            ("no alone, never had it", [no_absent], 1),
+            ("no alone, held", [no_held], 1),
+            ("two nos", [no_absent, no_held], 1),
+        ]
+        for what, answers, want in table:
+            with self.subTest(what):
+                trees = [(f"t{i}", self.trees) for i in range(len(answers))]
+                seen = iter([(code, f"{line} {i}", held) for i, (code, line, held) in enumerate(answers)])
+                with patch.object(git_trees, "sha_trees", return_value=trees), \
+                        patch.object(git_trees, "check_sha", lambda sha, tree: next(seen)):
+                    code, out, _ = self.run_main("--sha", self.sha)
+                self.assertEqual(code, want, out)
+                per_repo = [f"{line} {i} [t{i}]" for i, (_, line, _) in enumerate(answers)]
+                # round 9, 3: more than one repository adds the overall line; one repository adds none
+                self.assertEqual(out.splitlines(), per_repo + ([f"sha {self.sha}: {self.OVERALL[want]}"] if len(answers) > 1 else []))
+
+    def test_more_than_one_repository_ends_with_the_overall_answer_one_repository_does_not(self) -> None:
+        """#49 round 9, 3: the table over the three exits, each with two repositories, then with one. Exit 0 says
+        `overall on origin/main`, 1 `overall not on origin/main`, 2 `overall unknown`; it is the last line, exactly one
+        line after the per-repository ones, and no line is added for a single repository."""
+        yes, no, unknown = (0, "yes", True), (1, "no", True), (2, "unknown", False)
+        for want, answers in ((0, [yes, yes]), (1, [no, yes]), (2, [unknown, unknown])):
+            for count in (2, 1):
+                with self.subTest(exit=want, repositories=count):
+                    chosen = answers[:count]
+                    trees = [(f"t{i}", self.trees) for i in range(len(chosen))]
+                    seen = iter([(code, f"{line} {i}", held) for i, (code, line, held) in enumerate(chosen)])
+                    with patch.object(git_trees, "sha_trees", return_value=trees), \
+                            patch.object(git_trees, "check_sha", lambda sha, tree: next(seen)):
+                        code, out, _ = self.run_main("--sha", self.sha)
+                    self.assertEqual(code, want, out)
+                    per_repo = [f"{line} {i} [t{i}]" for i, (_, line, _) in enumerate(chosen)]
+                    self.assertEqual(out.splitlines(), per_repo + ([f"sha {self.sha}: {self.OVERALL[want]}"] if count == 2 else []))
+
+    def test_a_clone_of_the_project_that_has_the_unpushed_commit_cannot_outvote_the_project(self) -> None:
+        """#49 round 7, 1a: the commit is only on the project's local main. A clone of the project (its origin is the
+        project) fetches it into its origin/main and says yes; the project says `on local main only`. Exit 1."""
+        (self.clone / "local.txt").write_text("local\n")
+        git("add", "local.txt", cwd=self.clone)
+        git("commit", "-m", "local only", cwd=self.clone)
+        sha = git("rev-parse", "main", cwd=self.clone)
+        git("clone", "-q", str(self.clone), str(self.trees / "proj2"), cwd=self.root)
+        code, out, _ = self.run_main("--sha", sha)
+        self.assertEqual(self.lines(out), sorted([
+            f"sha {sha}: on local main only, not pushed to origin/main {self.tip} (fetched) [wt-dirty]",
+            f"sha {sha}: on origin/main {git('rev-parse', '--short', 'origin/main', cwd=self.trees / 'proj2')} (fetched) [proj2]"]))
+        self.assertEqual(code, 1)
+        self.assert_overall(out, sha, 1)
+
+    def test_a_tree_whose_origin_holds_the_unmerged_commit_cannot_outvote_the_project(self) -> None:
+        """#49 round 7, 1b: `trees/evil` is a fresh `git init` whose origin is a bare repository with the project's
+        unmerged commit on its main. It says yes; the project holds the commit on a branch and says no. Exit 1."""
+        unmerged = git("rev-parse", "feat/open", cwd=self.clone)
+        bare = self.root / "evil-origin.git"
+        bare.mkdir()
+        git("init", "--bare", "--initial-branch=main", ".", cwd=bare)
+        git("push", "-q", str(bare), "feat/open:main", cwd=self.clone)
+        evil = self.trees / "evil"
+        evil.mkdir()
+        git("init", "--initial-branch=main", ".", cwd=evil)
+        git("remote", "add", "origin", str(bare), cwd=evil)
+        code, out, _ = self.run_main("--sha", unmerged)
+        self.assertEqual(self.lines(out), sorted([
+            f"sha {unmerged}: not on origin/main {self.tip} (fetched) [wt-dirty]",
+            f"sha {unmerged}: on origin/main {git('rev-parse', '--short', 'origin/main', cwd=evil)} (fetched) [evil]"]))
+        self.assertEqual(code, 1)
+        self.assert_overall(out, unmerged, 1)
+
+    def test_an_unreachable_project_remote_blocks_a_yes_from_a_fresh_init(self) -> None:
+        """#49 round 8, 2: the project's remote is unreachable (its fetch fails; it holds the commit on a branch), and
+        `trees/evil`, a fresh `git init` whose origin is a bare repository with that commit on its main, says yes. The
+        unknown may be the very project the claim is about: exit 2, both lines printed."""
+        unmerged = git("rev-parse", "feat/open", cwd=self.clone)
+        bare = self.root / "evil-origin.git"
+        bare.mkdir()
+        git("init", "--bare", "--initial-branch=main", ".", cwd=bare)
+        git("push", "-q", str(bare), "feat/open:main", cwd=self.clone)
+        evil = self.trees / "evil"
+        evil.mkdir()
+        git("init", "--initial-branch=main", ".", cwd=evil)
+        git("remote", "add", "origin", str(bare), cwd=evil)
+        git("remote", "set-url", "origin", str(self.root / "gone.git"), cwd=self.clone)
+        code, out, _ = self.run_main("--sha", unmerged)
+        lines = out.splitlines()
+        self.assertEqual(len(lines), 3, out)  # two repositories and the overall line
+        self.assert_overall(out, unmerged, 2)
+        self.assertEqual(sum(l.startswith(f"sha {unmerged}: unknown \u2014 fetch failed: ") and l.endswith(" [wt-dirty]") for l in lines), 1, out)
+        self.assertIn(f"sha {unmerged}: on origin/main {git('rev-parse', '--short', 'origin/main', cwd=evil)} (fetched) [evil]", lines)
+        self.assertEqual(code, 2)
+
+    def test_a_fetch_error_a_remote_controls_is_one_clean_line_per_repository(self) -> None:
+        """#49 round 8, 3a: two repositories, `fetch_base` hostile for both: two lines, nothing raw, escapes shown."""
+        # `fetch_base` is patched to return raw control characters, which the real one no longer does: this pins `main`'s own
+        # escaping of whatever a verdict line carries, not `fetch_base`'s.
+        self.docs_clone(self.trees / "aaa-docs")
+        for hostile in HOSTILE_FETCH:
+            with self.subTest(hostile), patch.object(git_trees, "fetch_base", return_value=hostile):
+                code, out, _ = self.run_main("--sha", self.sha)
+                self.assertEqual(code, 2)
+                assert_one_clean_line_each(self, out, 3)  # two repositories and the overall line, all clean
+                self.assert_overall(out, self.sha, 2)
+        with patch.object(git_trees, "fetch_base", return_value=HOSTILE_FETCH[0]):
+            out = self.run_main("--sha", self.sha)[1]
+        self.assertIn("\\r", out)
+        self.assertIn("\\x1b", out)
+
+    def test_a_root_that_is_a_clone_with_trees_under_it_is_asked_once(self) -> None:
+        """#49 round 7, 3: the root is asked, as `.`, only when no tree was found. Here the root is a clone and has a
+        worktree under `trees/`: one line, for the worktree."""
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            git("clone", "-q", str(self.root / "origin.git"), str(root), cwd=self.root)
+            (root / "CLAUDE.md").write_text(CLAUDE)
+            (root / "trees").mkdir()
+            git("worktree", "add", "-q", "-b", "feat/x", str(root / "trees" / "wt-a"), "main", cwd=root)
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = al.main(["--root", str(root), "--sha", self.sha])
+            self.assertEqual((code, out.getvalue(), err.getvalue()),
+                             (0, f"sha {self.sha}: on origin/main {self.tip} (fetched) [wt-a]\n", ""))
+
+    def test_a_tree_name_with_a_control_character_cannot_forge_a_line(self) -> None:
+        """#49 round 7, 8: the name is printed escaped (as `repr` does) inside the brackets, so stdout has one line per
+        repository and no line is the forged text. A path component cannot hold `/`, so the forgery says `origin\u2215main`
+        (division slash); the point is the line break, which a real forgery would carry just the same."""
+        forged = f"sha {self.sha}: on origin\u2215main {self.tip} (fetched)"
+        for what, ctl, shown in (("newline", "\n", "\\n"), ("carriage return", "\r", "\\r"), ("escape", "\x1b", "\\x1b"),
+                                 ("DEL", "\x7f", "\\x7f"), ("C1 control (CSI)", "\x9b", "\\x9b"),
+                                 ("bidi override", "\u202e", "\\u202e")):
+            with self.subTest(what):
+                name = f"aaa{ctl}{forged}"
+                try:  # round 10, 3: skip a character only if the filesystem will not make a directory of that name
+                    (self.trees / name).mkdir()
+                    (self.trees / name).rmdir()
+                except OSError as e:
+                    self.skipTest(f"cannot create a directory named with {what}: {e}")
+                self.docs_clone(self.trees / name)
+                try:
+                    code, out, _ = self.run_main("--sha", self.sha)
+                finally:
+                    shutil.rmtree(self.trees / name)
+                self.assertEqual(code, 0)
+                self.assertEqual(out.count("\n"), 3, out)  # wt-dirty, the one named tree, and the overall line
+                self.assert_overall(out, self.sha, 0)
+                self.assertNotIn("\r", out)
+                self.assertNotIn("\x1b", out)
+                self.assertEqual([c for c in out.replace("\n", "") if not c.isprintable()], [], repr(out))
+                self.assertFalse([l for l in out.splitlines() if l.startswith(forged)], out)
+                named = [l for l in out.splitlines() if l.endswith("]") and "[aaa" in l]
+                self.assertEqual(len(named), 1, out)
+                self.assertIn(f"aaa{shown}", named[0])
+
+    def test_with_no_trees_the_root_is_asked_and_named_by_a_dot(self) -> None:
+        """No `Worktrees:` line, or a worktrees dir with nothing in it: the root, if it is a git tree."""
+        for what, claude, mkdir in (("no worktrees line", CLAUDE.replace("- Worktrees: `trees/`\n", ""), False),
+                                    ("an empty worktrees dir", CLAUDE, True)):
+            with self.subTest(what), tempfile.TemporaryDirectory() as d:
+                root = Path(d)
+                git("clone", "-q", str(self.root / "origin.git"), str(root), cwd=self.root)
+                (root / "CLAUDE.md").write_text(claude)
+                if mkdir:
+                    (root / "trees").mkdir()
+                out, err = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    code = al.main(["--root", str(root), "--sha", self.sha])
+                self.assertEqual((code, out.getvalue(), err.getvalue()),
+                                 (0, f"sha {self.sha}: on origin/main {self.tip} (fetched) [.]\n", ""))
+
+    def test_a_shallow_tree_gives_no_definite_no(self) -> None:
+        """F, end to end: the only tree is a depth-1 clone, asked for the commit before its tip."""
+        for tree in self.trees.glob("wt-*"):
+            shutil.rmtree(tree)
+        other = Path(tempfile.mkdtemp(dir=self.root, prefix="other-"))
+        git("clone", "-q", str(self.root / "origin.git"), str(other), cwd=self.root)
+        git("config", "user.email", "o@example.test", cwd=other)
+        git("config", "user.name", "Other", cwd=other)
+        (other / "second.txt").write_text("2\n")
+        git("add", "second.txt", cwd=other)
+        git("commit", "-m", "second", cwd=other)
+        git("push", "-q", "origin", "main", cwd=other)
+        older = git("rev-parse", "HEAD~1", cwd=other)
+        git("clone", "-q", "--depth", "1", f"file://{self.root / 'origin.git'}", str(self.trees / "shallow"), cwd=self.root)
+        code, out, _ = self.run_main("--sha", older)
+        self.assertEqual((code, out), (2, f"sha {older}: unknown \u2014 shallow clone, so history is cut off [shallow]\n"))
