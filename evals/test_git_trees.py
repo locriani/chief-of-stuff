@@ -729,6 +729,37 @@ class CheckShaTest(Repo):
                 (tree / ".git").write_text(line.format(gone) + "\n")
                 self.assertFalse(git_trees._pruned(tree))
 
+    def test_a_separate_git_dir_repository_whose_git_dir_is_gone_is_not_a_pruned_worktree(self) -> None:
+        """#294 round 5: `git init --separate-git-dir <x>/worktrees/repo <tree>` writes a `.git` file of exactly the
+        `gitdir: <x>/worktrees/<name>` form but made no linked worktree: `<x>` is no git directory. When that git
+        directory becomes unavailable (a volume gone, a rename) while `<x>` remains, nothing says the repository forgot
+        the tree: it may hold the commit and blocks a yes. `<common>` must be a git directory (it holds `HEAD`)."""
+        tree, separate = self.root / "sep-tree", self.root / "x" / "worktrees" / "repo"
+        tree.mkdir()
+        separate.parent.mkdir(parents=True)  # git wants the parent of the git directory to exist
+        git("init", "--initial-branch=main", "--separate-git-dir", str(separate), str(tree), cwd=self.root)
+        self.assertEqual((tree / ".git").read_text(), f"gitdir: {separate.resolve()}\n")  # as git wrote it (symlinks resolved)
+        commit(tree, "a.txt")
+        sha = git("rev-parse", "HEAD", cwd=tree)
+        self.assertFalse((self.root / "x" / "HEAD").exists())  # `<x>` is just a directory, not a git directory
+        shutil.rmtree(separate)
+        self.assertTrue((self.root / "x").is_dir())
+        self.assertEqual(git_trees.git(["rev-parse", "--git-dir"], tree)[0], 128)
+        self.assertFalse(git_trees._pruned(tree))
+        self.assert_could_not_read(sha, tree)
+
+    def test_a_common_dir_that_is_an_empty_directory_is_not_a_pruned_worktree(self) -> None:
+        """#294 round 5: `gitdir: <empty dir>/worktrees/gone`: the target is gone and `<common>` is a directory, but it
+        holds no `HEAD`, so it is no git directory and nothing forgot this tree. Unknown, `held` True."""
+        sha = git("rev-parse", "HEAD", cwd=self.clone)
+        common = self.root / "empty-common"
+        common.mkdir()
+        tree = self.trees / "hand-made"
+        tree.mkdir()
+        (tree / ".git").write_text(f"gitdir: {common}/worktrees/gone\n")
+        self.assertFalse(git_trees._pruned(tree))
+        self.assert_could_not_read(sha, tree)
+
     def test_git_refusing_or_not_running_on_a_healthy_repository_could_not_read_it_and_it_may_hold_it(self) -> None:
         """#294 round 2: the repository is real and healthy, but every `git` call fails: `fatal: detected dubious
         ownership` (git refuses a directory another user owns), or `(128, "")` (a timeout, git not on PATH). That is not
