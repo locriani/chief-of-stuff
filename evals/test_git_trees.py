@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -668,6 +669,40 @@ class CheckShaTest(Repo):
         target.symlink_to(self.root / "nowhere")
         self.assertFalse(git_trees._pruned(tree))
         self.assert_could_not_read(sha, tree)
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "no FIFOs on this platform")
+    def test_a_dot_git_that_is_not_a_regular_file_is_not_read_and_not_a_pruned_worktree(self) -> None:
+        """#294 round 4: `open()` on a FIFO blocks until a writer shows up, so `audit --sha` hung on a tree whose `.git` is
+        a FIFO (or a symlink to one). `_pruned` reads only a regular file; anything else is not pruned and it returns at
+        once. Each call runs in a daemon thread so a hang is a failure here, not a hung suite."""
+        sha = git("rev-parse", "HEAD", cwd=self.clone)
+
+        def promptly(fn, *args):
+            out = []
+            thread = threading.Thread(target=lambda: out.append(fn(*args)), daemon=True)
+            thread.start()
+            thread.join(timeout=3)
+            self.assertFalse(thread.is_alive(), f"{fn.__name__} is blocked reading a non-regular .git")
+            return out[0]
+
+        for what, linked in (("a FIFO", False), ("a symlink to a FIFO", True)):
+            with self.subTest(what):
+                tree = self.trees / f"fifo-{linked}"
+                tree.mkdir()
+                fifo = self.root / "fifo-target" if linked else tree / ".git"
+                os.mkfifo(fifo)
+                if linked:
+                    (tree / ".git").symlink_to(fifo)
+
+                def release(fifo=fifo):  # a blocked reader gets EOF once a writer opens and closes it
+                    try:
+                        os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+                    except OSError:
+                        pass
+                self.addCleanup(release)
+                self.assertIs(promptly(git_trees._pruned, tree), False)
+                with patch.object(git_trees, "git", lambda *a, **kw: (128, "")):
+                    self.assertEqual(promptly(git_trees.check_sha, sha, tree), (2, f"sha {sha}: {self.COULD_NOT_READ}", True))
 
     def test_a_dot_git_first_line_without_the_gitdir_prefix_is_not_a_pruned_worktree(self) -> None:
         """#294 round 3, 2: a bare path `<common>/worktrees/<gone>` is not a gitfile (git: `invalid gitfile format`), so it
