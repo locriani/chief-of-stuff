@@ -857,7 +857,16 @@ def main(argv: list[str] | None = None, gh=None) -> int:
     ap.add_argument("--date", help="YYYY-MM-DD; default: today in the workspace timezone")
     ap.add_argument("--root", default=".", help="workspace root holding CLAUDE.md")
     ap.add_argument("--no-issues", action="store_true", help="skip the issue check (offline); the summary says issues=off")
-    ap.add_argument("--sha", help="fetch origin main (writing refs/remotes/origin/main, FETCH_HEAD and objects) and say, per repository under the worktrees dir, whether the commit with this id is on origin/main (a ref of that name is not a commit); takes no flag but --root; exit 1 if any repository that has the commit says it is not on origin/main (a tree a worker creates with its own origin, holding a commit the project never fetched, can still say on, since the veto needs the commit object; a second clone whose origin/main lags, such as a fork beside the upstream, says no until it catches up), else 2 if any is unknown (fetch failed, repository or grafts unreadable, grafts, no origin/main, shallow clone, ambiguous prefix, git could not compare) or none was asked or usage, else 0 if any says on, else 1; with more than one repository the last line is the overall answer")
+    ap.add_argument("--sha", help=(
+        "fetch origin main (writing refs/remotes/origin/main, FETCH_HEAD and objects) and say, per repository under the worktrees dir, "
+        "whether the commit with this id is on origin/main (a ref of that name is not a commit); takes no flag but --root. "
+        "Exit 1 if any repository that has the commit says it is not on origin/main (a tree a worker creates with its own origin, "
+        "holding a commit the project never fetched, can still say on, since the veto needs the commit object; a second clone whose "
+        "origin/main lags, such as a fork beside the upstream, says no until it catches up); else 2 if none was asked or usage, or "
+        "any repository that has, or may have (git could not read it), the commit is unknown (fetch failed, repository or grafts "
+        "unreadable, grafts, no origin/main, shallow clone, ambiguous prefix, git could not compare); else 0 if any says on; else 2 "
+        "if any is unknown; else 1. An unknown repository that does not hold the commit blocks no yes. A repository with no local "
+        "main is simply not on local main. With more than one repository the last line is the overall answer"))
     args = ap.parse_args(argv)
     root = Path(args.root)
     if not (root / "CLAUDE.md").is_file():

@@ -90,8 +90,8 @@ def sha_trees(root: Path, trees: str) -> list[tuple[str, Path]]:
 
 def fetch_base(tree: Path, timeout: int = 30) -> str:
     """`""` once `origin/main` is fetched, else one line saying why: the first `fatal:` line, else the last, with the
-    tree's path blanked and the control characters escaped (`clean`), since it is printed. The refspec is explicit and forced, so the ref moves whatever
-    `remote.origin.fetch` says and follows a rewritten main, and `--no-tags` keeps it the only ref written. Not through
+    tree's path blanked and the control characters escaped (`clean`), since it is printed. The refspec is explicit and forced, so the ref moves
+    whatever `remote.origin.fetch` says and follows a rewritten main, and `--no-tags` keeps it the only ref written. Not through
     `git()`: a fetch needs the caller's credentials and ssh agent, which that sandboxed call strips."""
     env = {k: v for k, v in os.environ.items() if k not in REPO_VARS}
     try:
@@ -109,8 +109,9 @@ def fetch_base(tree: Path, timeout: int = 30) -> str:
 
 
 def clean(text: str) -> str:
-    """`text` with every character that is not printable (a control character, U+2028, U+2029) spelled as `repr` spells
-    it, so what a remote or a tree name says cannot forge or split a line. Escapes only those: cleaning twice is a no-op."""
+    """`text` with every character `str.isprintable` rejects (a control character, DEL, a C1 control, a bidi or zero-width
+    character, U+2028, U+2029) spelled as `repr` spells it, so what a remote or a tree name says cannot forge or split a
+    line. Escapes only those: cleaning twice is a no-op."""
     return "".join(c if c.isprintable() else repr(c)[1:-1] for c in text)
 
 
@@ -133,13 +134,17 @@ def sha_verdict(sha: str, fetch_error: str, exists: bool, ancestor: bool, tip: s
 
 
 def sha_exit(answers: list[tuple[int, bool]]) -> int:
-    """The exit over every repository's `(code, held)`: 1 if one that HAS the commit says no (a clone or a fresh
-    `git init` whose origin was pointed at the commit cannot outvote it), else 2 if any is unknown, or there is none (an
-    unknown may be the project the claim is about, so it blocks a yes), else 0 if any says yes, else 1."""
-    codes = [code for code, _ in answers]
-    if any(code == 1 and held for code, held in answers):
+    """The exit over every repository's `(code, held)`, `held` being that it has, or may have, the commit: 1 if one that
+    holds it says no (a clone or a fresh `git init` whose origin was pointed at the commit cannot outvote it); else 2 if
+    there is none, or one is unknown and held (a repository that may hold the commit may be the project the claim is
+    about, so it blocks a yes); else 0 if any says yes; else 2 if any is unknown; else 1. An unknown that does not hold
+    the commit (no remote, offline, shallow) blocks no yes, so an unrelated repository cannot veto it forever."""
+    if (1, True) in answers:
         return 1
-    return 2 if 2 in codes or not codes else 0 if 0 in codes else 1
+    if not answers or (2, True) in answers:
+        return 2
+    codes = [code for code, _ in answers]
+    return 0 if 0 in codes else 2 if 2 in codes else 1
 
 
 def _commits(sha: str, tree: Path) -> list[str] | None:
@@ -167,17 +172,17 @@ def _has_grafts(tree: Path) -> bool | None:
 
 
 def check_sha(sha: str, tree: Path) -> tuple[int, str, bool]:
-    """One repository's `(exit code, line, held)`; `held` is whether it has a commit with that id (False when it could
-    not be read). The commit is the one whose object id starts with `sha`, never a tag or branch named like it, and
-    the question is about `refs/remotes/origin/main` only. Exit 0 only when the fetch worked and origin/main holds it;
-    1 when it does not; 2 (unknown, never a no) for every cause: the fetch failed (a stale ref cannot say yes), git
-    cannot read the repository (the commit lookup, the grafts lookup or file, the shallow check, local main's
-    ancestry), there are grafts (checked after the fetch, which a hook may have written one in), no origin/main, two
-    commits share the prefix, git cannot compare, or the clone is shallow and the commit may be in what was cut off.
-    The unknown lines say `; local main holds it` when `refs/heads/main` has the commit."""
+    """One repository's `(exit code, line, held)`; `held` is whether it has, or (git could not read it) may have, a commit
+    with that id. The commit is the one whose object id starts with `sha`, never a tag or branch named like it, and the
+    question is about `refs/remotes/origin/main` only. Exit 0 only when the fetch worked and origin/main holds it; 1 when
+    it does not; 2 (unknown, never a no) for every cause: the fetch failed (a stale ref cannot say yes), git cannot read
+    the repository (the commit lookup, the grafts lookup or file, the shallow check, the local main lookup or ancestry),
+    there are grafts (checked after the fetch, which a hook may have written one in), no origin/main, two commits share
+    the prefix, git cannot compare, or the clone is shallow and the commit may be in what was cut off. A repository with
+    no `refs/heads/main` is simply not on local main. The unknown lines say `; local main holds it` when it has the commit."""
     fetch_error = fetch_base(tree)
     commits = _commits(sha, tree)
-    held = bool(commits)
+    held = commits is None or bool(commits)  # a repository git could not read may hold it
 
     def unknown(why: str) -> tuple[int, str, bool]:
         return 2, f"sha {sha}: unknown \u2014 {why}", held
@@ -187,7 +192,8 @@ def check_sha(sha: str, tree: Path) -> tuple[int, str, bool]:
         return unknown("git could not read this repository")
     if grafted:
         return unknown("this repository has grafts, so ancestry cannot be trusted")
-    local_code = git(["merge-base", "--is-ancestor", commits[0], "refs/heads/main"], tree)[0] if len(commits) == 1 else 1
+    ref = git(["rev-parse", "--verify", "-q", "refs/heads/main"], tree)[0] if len(commits) == 1 else 1  # 1: no such ref
+    local_code = git(["merge-base", "--is-ancestor", commits[0], "refs/heads/main"], tree)[0] if ref == 0 else ref
     note = _local_note(local_code == 0)
     code, tip = git(["rev-parse", "--short", REF], tree)
     if code != 0:
@@ -197,9 +203,9 @@ def check_sha(sha: str, tree: Path) -> tuple[int, str, bool]:
     compared = git(["merge-base", "--is-ancestor", commits[0], REF], tree)[0] if held else 1
     if compared not in (0, 1):
         return unknown(f"git could not compare it with {BASE}")
-    if local_code not in (0, 1) and compared != 0:  # ponytail: a clone with no local main is unknown, never a no
+    if local_code not in (0, 1) and compared != 0:  # origin/main holding it needs no local fact
         return unknown("git could not read this repository")
-    code, line = sha_verdict(sha, fetch_error, held, compared == 0, tip, local_code == 0 and compared == 1)  # origin/main holding it needs no local fact
+    code, line = sha_verdict(sha, fetch_error, held, compared == 0, tip, local_code == 0 and compared == 1)
     if code == 1:
         shallow, out = git(["rev-parse", "--is-shallow-repository"], tree)
         if shallow != 0:
