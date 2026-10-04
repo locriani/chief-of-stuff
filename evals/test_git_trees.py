@@ -633,6 +633,67 @@ class CheckShaTest(Repo):
         self.assertEqual(git_trees.git(["rev-parse", "--git-dir"], tree)[0], 128)
         self.assert_could_not_read(sha, tree)
 
+    def live_with_a_commit(self, name: str = "wt-live") -> tuple[str, Path, Path]:
+        """`(sha, tree, target)`: a real linked worktree holding a commit; `target` is its `<common>/worktrees/<name>`."""
+        tree = self.tree(name, f"feat/{name}")
+        commit(tree, "a.txt")
+        return git("rev-parse", "HEAD", cwd=tree), tree, self.clone / ".git" / "worktrees" / name
+
+    def deny(self, path: Path) -> None:
+        os.chmod(path, 0)
+        self.addCleanup(os.chmod, path, 0o755)  # runs before the temp dir is removed
+
+    @unittest.skipIf(os.geteuid() == 0, "root can look inside a directory with mode 000")
+    def test_a_worktrees_dir_that_cannot_be_looked_into_is_not_a_pruned_worktree(self) -> None:
+        """#294 round 3, 1a: `chmod 000 <common>/worktrees`: the target is still there, it just cannot be examined, and
+        `Path.exists()` answers False for that. "Cannot look" is not "gone": a live worktree that may hold the commit."""
+        sha, tree, target = self.live_with_a_commit()
+        self.deny(target.parent)
+        self.assertFalse(git_trees._pruned(tree))
+        self.assert_could_not_read(sha, tree)
+
+    @unittest.skipIf(os.geteuid() == 0, "root can look inside a directory with mode 000")
+    def test_a_common_dir_that_cannot_be_looked_into_is_not_a_pruned_worktree(self) -> None:
+        """#294 round 3, 1b: same with `chmod 000 <common>`."""
+        sha, tree, target = self.live_with_a_commit()
+        self.deny(target.parent.parent)
+        self.assertFalse(git_trees._pruned(tree))
+        self.assert_could_not_read(sha, tree)
+
+    def test_a_target_that_is_a_dangling_symlink_is_present_not_a_pruned_worktree(self) -> None:
+        """#294 round 3, 1c: `<common>/worktrees/<name>` replaced by a symlink to nowhere is present (as a link), so the
+        repository is not known to have forgotten the tree."""
+        sha, tree, target = self.live_with_a_commit()
+        shutil.rmtree(target)
+        target.symlink_to(self.root / "nowhere")
+        self.assertFalse(git_trees._pruned(tree))
+        self.assert_could_not_read(sha, tree)
+
+    def test_a_dot_git_first_line_without_the_gitdir_prefix_is_not_a_pruned_worktree(self) -> None:
+        """#294 round 3, 2: a bare path `<common>/worktrees/<gone>` is not a gitfile (git: `invalid gitfile format`), so it
+        names no repository that forgot anything. `<common>` exists, the target does not."""
+        sha, tree = self.pruned()
+        gone = self.clone / ".git" / "worktrees" / "wt-dead"
+        (tree / ".git").write_text(f"{gone}\n")
+        self.assertFalse(git_trees._pruned(tree))
+        self.assert_could_not_read(sha, tree)
+
+    def test_git_rejects_gitdir_without_a_space_or_after_leading_spaces_so_neither_is_a_pruned_worktree(self) -> None:
+        """#294 round 3, 2: real git (2.54) rejects `gitdir:<path>` and `  gitdir: <path>` as a `.git` file (`fatal: invalid
+        gitfile format`), checked on a live worktree first. The same text with the target gone is not a pruned worktree."""
+        _, tree = self.pruned()
+        gone = self.clone / ".git" / "worktrees" / "wt-dead"
+        live_tree = self.tree("wt-live", "feat/wt-live")
+        live = self.clone / ".git" / "worktrees" / "wt-live"
+        for what, line in (("no space", "gitdir:{}"), ("leading spaces", "  gitdir: {}")):
+            with self.subTest(what):
+                (live_tree / ".git").write_text(line.format(live) + "\n")
+                code, out = git_trees.git(["rev-parse", "--git-dir"], live_tree)
+                self.assertEqual(code, 128, out)
+                self.assertIn("invalid gitfile format", out)
+                (tree / ".git").write_text(line.format(gone) + "\n")
+                self.assertFalse(git_trees._pruned(tree))
+
     def test_git_refusing_or_not_running_on_a_healthy_repository_could_not_read_it_and_it_may_hold_it(self) -> None:
         """#294 round 2: the repository is real and healthy, but every `git` call fails: `fatal: detected dubious
         ownership` (git refuses a directory another user owns), or `(128, "")` (a timeout, git not on PATH). That is not
