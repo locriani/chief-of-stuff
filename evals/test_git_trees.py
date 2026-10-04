@@ -284,15 +284,16 @@ class FetchBaseTest(Repo):
 
 
     def test_the_error_text_a_remote_controls_carries_no_raw_control_character(self) -> None:
-        """#49 round 8, 3b: the line is printed, and git's stderr is whatever the remote makes it. `subprocess.run` is
-        faked. Pinned: no raw control character or line separator, `fatal: a` survives, and a, b, c stay in order (so
-        a carriage return does not cut the text). The escape's spelling is not pinned."""
-        hostile = subprocess.CompletedProcess([], 128, "", "fatal: a\x1b[31mb\rc\n")
+        """#49 round 8, 3b; round 10, 3: the line is printed, and git's stderr is whatever the remote makes it.
+        `subprocess.run` is faked. Pinned: no character that is not printable (a control character, DEL, a C1 control such
+        as CSI `\\x9b`, a bidi override, U+2028/9), `fatal: a` survives, and a to f stay in order (so a carriage return
+        does not cut the text). The escape's spelling is not pinned."""
+        hostile = subprocess.CompletedProcess([], 128, "", "fatal: a\x1b[31mb\rc\x7fd\x9be\u202ef\n")
         with patch.object(git_trees.subprocess, "run", return_value=hostile):
             line = git_trees.fetch_base(self.clone)
-        self.assertEqual([c for c in line if ord(c) < 0x20 or c in "\u2028\u2029"], [], repr(line))
+        self.assertEqual([c for c in line if not c.isprintable()], [], repr(line))
         self.assertTrue(line.startswith("fatal: a"), repr(line))
-        self.assertRegex(line[len("fatal: "):], "a.*b.*c")
+        self.assertRegex(line[len("fatal: "):], "a.*b.*c.*d.*e.*f")
 
 
 class GitReaderTest(unittest.TestCase):
@@ -307,23 +308,24 @@ class GitReaderTest(unittest.TestCase):
 
 
 class ShaExitTest(unittest.TestCase):
-    def test_an_unknown_anywhere_blocks_a_yes(self) -> None:
-        """#49 round 8, 2: over `(code, held)`: 1 if any repository holds the commit and says no; else 2 if any is
-        unknown (it may hold the commit, or be the project the claim is about); else 0 if any says yes; else 1; an
-        empty list is 2."""
+    def test_an_unknown_blocks_a_yes_only_when_that_repository_may_hold_the_commit(self) -> None:
+        """#49 round 10, 2: over `(code, held)`: 1 if any repository holds the commit and says no; else 2 if the list is
+        empty or any repository is unknown AND held (it may hold the commit, or be the project the claim is about); else
+        0 if any says yes; else 2 if any is unknown; else 1. An unrelated repository (no remote, a `master` default, a
+        shallow clone, offline) does not hold the commit, so it cannot veto a yes forever."""
         yes, no_held, no_absent = (0, True), (1, True), (1, False)
         unknown_held, unknown_absent = (2, True), (2, False)
         table = [
             ("yes alone", [yes], 0),
             ("yes, no such commit elsewhere", [yes, no_absent], 0),
             ("yes, unknown that holds it", [yes, unknown_held], 2),
-            ("yes, unknown that does not", [yes, unknown_absent], 2),
+            ("yes, unknown that does not", [yes, unknown_absent], 0),
             ("yes, a holder says no", [yes, no_held], 1),
-            ("a holder says no, unknown", [no_held, unknown_absent], 1),
+            ("a holder says no, unknown that does not hold it", [no_held, unknown_absent], 1),
             ("a holder says no, unknown that holds it", [unknown_held, no_held], 1),
-            ("unknown alone", [unknown_absent], 2),
+            ("unknown that does not hold it, alone", [unknown_absent], 2),
             ("unknown that holds it, alone", [unknown_held], 2),
-            ("no such commit, unknown", [no_absent, unknown_absent], 2),
+            ("no such commit, unknown that does not hold it", [no_absent, unknown_absent], 2),
             ("no such commit alone", [no_absent], 1),
             ("a holder says no alone", [no_held], 1),
             ("empty", [], 2),
@@ -421,7 +423,7 @@ class CheckShaTest(Repo):
     def test_a_read_that_fails_is_unknown_never_no_such_commit(self) -> None:
         """#49 round 7, 2: exit 128 from the read that lists the commits (`rev-parse --disambiguate`) or from `cat-file -t`
         on an id it listed means git could not read the repository, which says nothing about whether the commit exists.
-        `held` is False: nothing was read. Not `cat-file -e <id>^{commit}`: that exits 128 for a blob or a missing
+        `held` is True (round 10, 2): git could not read the repository, so it may hold the commit. Not `cat-file -e <id>^{commit}`: that exits 128 for a blob or a missing
         object too (see the next test), so its 128 is an answer, not a fault."""
         sha = git("rev-parse", "HEAD", cwd=self.clone)
         real = git_trees.git
@@ -432,7 +434,7 @@ class CheckShaTest(Repo):
 
             with self.subTest(what), patch.object(git_trees, "git", fake):
                 self.assertEqual(git_trees.check_sha(sha, self.clone),
-                                 (2, f"sha {sha}: unknown \u2014 git could not read this repository", False))
+                                 (2, f"sha {sha}: unknown \u2014 git could not read this repository", True))
 
     def test_a_prefix_that_names_a_blob_is_no_such_commit_not_a_read_fault(self) -> None:
         """`rev-parse --disambiguate` lists objects of every type, and `cat-file -e <blob>^{commit}` exits 128. That is
@@ -524,13 +526,14 @@ class CheckShaTest(Repo):
             self.assertEqual(git_trees.check_sha(sha, self.clone),
                              (2, f"sha {sha}: unknown \u2014 git could not read this repository", True))
 
-    def test_a_repository_git_cannot_read_does_not_hold_it(self) -> None:
+    def test_a_repository_git_cannot_read_may_hold_it(self) -> None:
+        """#49 round 10, 2: it may hold the commit, so it reports `held` True and its unknown blocks a yes."""
         sha = git("rev-parse", "HEAD", cwd=self.clone)
         broken = self.trees / "broken"
         broken.mkdir()
         (broken / ".git").write_text(f"gitdir: {self.root / 'no-such-gitdir'}\n")
         code, _, held = git_trees.check_sha(sha, broken)
-        self.assertEqual((code, held), (2, False))
+        self.assertEqual((code, held), (2, True))
 
     def test_origin_main_missing_though_the_fetch_succeeded_is_unknown(self) -> None:
         sha = git("rev-parse", "HEAD", cwd=self.clone)
@@ -558,15 +561,21 @@ class CheckShaTest(Repo):
                 self.assertEqual(git_trees.check_sha(sha, self.clone), (2, f"sha {sha}: {line}{suffix}", held))
 
     def test_a_single_call_that_fails_is_unknown_never_a_plain_no(self) -> None:
-        """#49 round 9, 2: only the named git call returns `(128, "")`; every other call is real. The commit is on a
-        branch and not on origin/main, so a plain answer would be exit 1 `not on origin/main`."""
+        """#49 round 9, 2; round 10, 1: only the named git call returns `(128, "")`; every other call is real. The commit is
+        on a branch and not on origin/main, so a plain answer would be exit 1 `not on origin/main`. This tree has a local
+        main, so the ref-existence lookup (`rev-parse --verify -q refs/heads/main`) says so (exit 0) and a failing
+        merge-base is a real fault; when that lookup itself returns 128 (a missing ref is exit 1, a fault is 128) it is
+        a fault too."""
         tree = self.tree("wt-a", "feat/a")
         commit(tree, "a.txt")
         sha = git("rev-parse", "HEAD", cwd=tree)
         real = git_trees.git
+        is_lookup = lambda args: args[:1] == ["rev-parse"] and "--verify" in args and "refs/heads/main" in args
+        self.assertEqual(real(["rev-parse", "--verify", "-q", "refs/heads/main"], tree)[0], 0)
         fails = {
             "the shallow check": lambda args: args[:2] == ["rev-parse", "--is-shallow-repository"],
             "the local main ancestry check": lambda args: args[:2] == ["merge-base", "--is-ancestor"] and args[-1] == "refs/heads/main",
+            "the local main ref lookup": is_lookup,
         }
         for what, named in fails.items():
             def fake(args, cwd, *rest, **kw):
@@ -575,6 +584,57 @@ class CheckShaTest(Repo):
             with self.subTest(what), patch.object(git_trees, "git", fake):
                 self.assertEqual(git_trees.check_sha(sha, tree),
                                  (2, f"sha {sha}: unknown \u2014 git could not read this repository", True))
+
+    def pushed_branch_commit(self) -> str:
+        tree = self.tree("wt-a", "feat/a")
+        commit(tree, "a.txt")
+        git("push", "-q", "origin", "feat/a", cwd=tree)
+        return git("rev-parse", "HEAD", cwd=tree)
+
+    def clones_without_local_main(self) -> dict[str, Path]:
+        """Two real clones of origin with no `refs/heads/main`: `clone -b feat/a`, and a clone whose main was deleted."""
+        origin = f"file://{self.root / 'origin.git'}"
+        only_branch = self.root / "only-branch"
+        git("clone", "-q", "-b", "feat/a", origin, str(only_branch), cwd=self.root)
+        deleted = self.root / "deleted"
+        git("clone", "-q", origin, str(deleted), cwd=self.root)
+        git("checkout", "-q", "feat/a", cwd=deleted)
+        git("branch", "-D", "main", cwd=deleted)
+        clones = {"clone -b feat/a": only_branch, "after branch -D main": deleted}
+        for clone in clones.values():
+            self.assertEqual(git("for-each-ref", "refs/heads/main", cwd=clone), "")
+        return clones
+
+    def test_a_clone_with_no_local_main_says_no_not_unknown(self) -> None:
+        """#49 round 10, 1: `git clone -b feat <origin>` has no `refs/heads/main`, and `merge-base ... refs/heads/main`
+        exits 128 on the missing ref. A pushed branch commit that is not on origin/main is the plain no, with no local-main
+        suffix, whether the clone never had a main or had it deleted. Real repositories."""
+        sha = self.pushed_branch_commit()
+        for what, clone in self.clones_without_local_main().items():
+            with self.subTest(what):
+                tip = git("rev-parse", "--short", "refs/remotes/origin/main", cwd=clone)
+                self.assertEqual(git_trees.check_sha(sha, clone), (1, f"sha {sha}: not on origin/main {tip} (fetched)", True))
+
+    def test_a_clone_with_no_local_main_still_gives_a_yes_for_what_origin_main_holds(self) -> None:
+        sha = git("rev-parse", "HEAD", cwd=self.clone)
+        self.pushed_branch_commit()
+        for what, clone in self.clones_without_local_main().items():
+            with self.subTest(what):
+                tip = git("rev-parse", "--short", "refs/remotes/origin/main", cwd=clone)
+                self.assertEqual(git_trees.check_sha(sha, clone), (0, f"sha {sha}: on origin/main {tip} (fetched)", True))
+
+    def test_a_failed_fetch_in_a_clone_with_no_local_main_keeps_the_fetch_reason(self) -> None:
+        """#49 round 10, 1: the line is the fetch-failed one, with no `; local main holds it` suffix (there is no local
+        main), not `git could not read this repository`."""
+        sha = self.pushed_branch_commit()
+        for what, clone in self.clones_without_local_main().items():
+            with self.subTest(what):
+                git("remote", "set-url", "origin", str(self.root / "gone.git"), cwd=clone)
+                err = git_trees.fetch_base(clone)
+                self.assertTrue(err)
+                tip = git("rev-parse", "--short", "refs/remotes/origin/main", cwd=clone)
+                self.assertEqual(git_trees.check_sha(sha, clone),
+                                 (2, f"sha {sha}: unknown \u2014 fetch failed: {err}; origin/main {tip} as last fetched does not hold it", True))
 
 
 if __name__ == "__main__":

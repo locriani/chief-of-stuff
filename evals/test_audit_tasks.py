@@ -1822,16 +1822,19 @@ class MergedChangeAuditTest(unittest.TestCase):
 
 
 HOSTILE_FETCH = ("fatal: boom\rsha deadbee: on origin/main 1234567 (fetched) [proj]\x1b[2K",
-                 "fatal: x\u2028sha deadbee: on origin/main 1234567 (fetched) [proj]\u2029\x00y\tz\x07")
+                 "fatal: x\u2028sha deadbee: on origin/main 1234567 (fetched) [proj]\u2029\x00y\tz\x07",
+                 # round 10, 3: DEL, a C1 control (CSI) and a bidi override, which `ord(c) < 0x20` does not call control
+                 "fatal: p\x7fq\x9br\u202esha deadbee: on origin/main 1234567 (fetched) [proj]\u202c")
 
 
 def assert_one_clean_line_each(test: unittest.TestCase, out: str, count: int) -> None:
-    """#49 round 8, 3: `count` lines, each ended by one `\\n`, none holding a control character or U+2028/U+2029."""
+    """#49 round 8, 3; round 10, 3: `count` lines, each ended by one `\\n`, none holding a character that is not printable
+    (`str.isprintable`: a control character, DEL, a C1 control, a bidi override, U+2028/U+2029; a space is printable)."""
     test.assertTrue(out.endswith("\n"), repr(out))
     lines = out.split("\n")[:-1]
     test.assertEqual((len(lines), len(out.splitlines())), (count, count), repr(out))
     for line in lines:
-        test.assertEqual([c for c in line if ord(c) < 0x20 or c in "\u2028\u2029"], [], repr(line))
+        test.assertEqual([c for c in line if not c.isprintable()], [], repr(line))
 
 
 class ShaFlagTest(unittest.TestCase):
@@ -1921,6 +1924,8 @@ class ShaFlagTest(unittest.TestCase):
     def test_a_fetch_error_a_remote_controls_cannot_forge_or_split_a_line(self) -> None:
         """#49 round 8, 3a: `fetch_base` returns text with a carriage return, an escape, a line separator and a NUL, and
         a fake verdict line after the carriage return. One repository, one line, nothing raw; the escapes are shown."""
+        # `fetch_base` is patched to return raw control characters, which the real one no longer does: this pins `main`'s own
+        # escaping of whatever a verdict line carries, not `fetch_base`'s.
         sha = git("rev-parse", "origin/main", cwd=self.clone)
         for hostile in HOSTILE_FETCH:
             with self.subTest(hostile), patch.object(git_trees, "fetch_base", return_value=hostile):
@@ -2184,8 +2189,9 @@ class ShaTreesTest(unittest.TestCase):
 
     The trees are what `git_trees.discover` returns, deduplicated by repository (trees sharing one `.git` are one
     repository; the first by name is asked and named); with none, the root itself if it is a git tree (` [.]`).
-    Exit: 1 if any repository that holds the commit says it is not on origin/main (round 7), else 2 if any is
-    unknown (round 8: an unknown blocks a yes), else 0 if any line is a yes, else 1. Line order is not pinned. The workspace's
+    Exit: 1 if any repository that holds the commit says it is not on origin/main (round 7), else 2 if there is none or
+    any is unknown and may hold the commit (round 8; round 10: a repository git could not read may hold it, one that
+    plainly lacks it does not), else 0 if any line is a yes, else 2 if any is unknown, else 1. Line order is not pinned. The workspace's
     own repository has three worktrees, so it is one line named `wt-dirty`, the first by name.
     """
 
@@ -2263,10 +2269,29 @@ class ShaTreesTest(unittest.TestCase):
         (broken / ".git").write_text(f"gitdir: {self.root / 'no-such-gitdir'}\n")
         code, out, err = self.run_main("--sha", self.sha)
         self.assertIn(f"sha {self.sha}: on origin/main {self.tip} (fetched) [wt-dirty]", out.splitlines())
-        self.assertEqual(code, 2)  # round 8: the broken tree is an unknown, which blocks the healthy tree's yes
+        # round 10, 2: git could not read the broken tree at all, so it may hold the commit: its unknown blocks the healthy yes
+        self.assertEqual(code, 2)
         self.assertNotIn("Traceback", err)
         self.assertTrue(all(line.endswith("]") for line in out.splitlines()[:-1]), out)
         self.assert_overall(out, self.sha, 2)
+
+    def test_a_repository_with_no_remote_beside_the_project_does_not_block_a_yes(self) -> None:
+        """#49 round 10, 2: `docs` is a `git init` with one commit and no remote: its unknown (no origin/main) does not hold
+        the commit, so the project's yes stands. Exit 0, all three lines, the overall one saying on origin/main."""
+        docs = self.trees / "docs"
+        docs.mkdir()
+        git("init", "--initial-branch=main", ".", cwd=docs)
+        git("config", "user.email", "d@example.test", cwd=docs)
+        git("config", "user.name", "Docs", cwd=docs)
+        (docs / "docs.md").write_text("documentation, not the project\n")
+        git("add", "docs.md", cwd=docs)
+        git("commit", "-m", "docs", cwd=docs)
+        code, out, err = self.run_main("--sha", self.sha)
+        self.assertEqual(self.lines(out), sorted([
+            f"sha {self.sha}: on origin/main {self.tip} (fetched) [wt-dirty]",
+            f"sha {self.sha}: unknown \u2014 no origin/main to check against [docs]"]))
+        self.assert_overall(out, self.sha, 0)
+        self.assertEqual((code, err), (0, ""))
 
     def test_the_exit_is_no_if_a_holder_says_no_then_unknown_then_yes_then_no(self) -> None:
         docs = self.docs_clone(self.trees / "aaa-docs")
@@ -2279,10 +2304,11 @@ class ShaTreesTest(unittest.TestCase):
         self.assert_overall(out, unmerged, 1)
         git("remote", "set-url", "origin", str(self.root / "gone.git"), cwd=docs)
         nobody = "0123456789abcdef0123456789abcdef01234567"
-        # a repository that holds the commit and says no outranks an unknown elsewhere; one that never had it does not
+        # a repository that holds the commit and says no outranks an unknown elsewhere; an unknown that never had the commit
+        # blocks no yes (round 10, 2), and is the answer only when nothing else is
         for what, sha, want in (("a holder says no, another is unknown", unmerged, 1),
                                 ("no such commit, another is unknown", nobody, 2),
-                                ("yes and unknown", self.sha, 2)):
+                                ("yes, another is unknown and never had it", self.sha, 0)):
             with self.subTest(what):
                 code, out, _ = self.run_main("--sha", sha)
                 lines = out.splitlines()
@@ -2293,9 +2319,9 @@ class ShaTreesTest(unittest.TestCase):
                 self.assertTrue(unknown[0].endswith(" [aaa-docs]"), unknown[0])
 
     def test_the_exit_over_every_mix_of_answers(self) -> None:
-        """#49 round 8, 2: over the per-repository `(code, line, held)`: any repository that HOLDS the commit and says
-        no (code 1, held) is 1; else any unknown is 2 (it may hold the commit); else any yes is 0; else 1; none is 2.
-        Every line still prints."""
+        """#49 round 8, 2; round 10, 2: over the per-repository `(code, line, held)`: any repository that HOLDS the commit
+        and says no (code 1, held) is 1; else an unknown that holds it (or none at all) is 2; else any yes is 0; else any
+        unknown is 2; else 1. Every line still prints."""
         yes, unknown, unknown_held = (0, "yes", True), (2, "unknown", False), (2, "unknown, holds it", True)
         no_held, no_absent, local_only = (1, "no, held", True), (1, "no, absent", False), (1, "local main only", True)
         table = [
@@ -2305,8 +2331,9 @@ class ShaTreesTest(unittest.TestCase):
             ("a holder says no, yes and unknown", [yes, no_held, unknown], 1),
             ("yes alone", [yes], 0),
             ("yes and a no that never had it", [yes, no_absent], 0),
-            ("yes and unknown", [yes, unknown], 2),
+            ("yes and an unknown that does not hold it", [yes, unknown], 0),
             ("yes and an unknown that holds it", [yes, unknown_held], 2),
+            ("yes, an unknown that holds it and one that does not", [unknown, yes, unknown_held], 2),
             ("unknown alone", [unknown], 2),
             ("unknown and a no that never had it", [no_absent, unknown], 2),
             ("no alone, never had it", [no_absent], 1),
@@ -2401,6 +2428,8 @@ class ShaTreesTest(unittest.TestCase):
 
     def test_a_fetch_error_a_remote_controls_is_one_clean_line_per_repository(self) -> None:
         """#49 round 8, 3a: two repositories, `fetch_base` hostile for both: two lines, nothing raw, escapes shown."""
+        # `fetch_base` is patched to return raw control characters, which the real one no longer does: this pins `main`'s own
+        # escaping of whatever a verdict line carries, not `fetch_base`'s.
         self.docs_clone(self.trees / "aaa-docs")
         for hostile in HOSTILE_FETCH:
             with self.subTest(hostile), patch.object(git_trees, "fetch_base", return_value=hostile):
@@ -2433,9 +2462,16 @@ class ShaTreesTest(unittest.TestCase):
         repository and no line is the forged text. A path component cannot hold `/`, so the forgery says `origin\u2215main`
         (division slash); the point is the line break, which a real forgery would carry just the same."""
         forged = f"sha {self.sha}: on origin\u2215main {self.tip} (fetched)"
-        for what, ctl, shown in (("newline", "\n", "\\n"), ("carriage return", "\r", "\\r"), ("escape", "\x1b", "\\x1b")):
+        for what, ctl, shown in (("newline", "\n", "\\n"), ("carriage return", "\r", "\\r"), ("escape", "\x1b", "\\x1b"),
+                                 ("DEL", "\x7f", "\\x7f"), ("C1 control (CSI)", "\x9b", "\\x9b"),
+                                 ("bidi override", "\u202e", "\\u202e")):
             with self.subTest(what):
                 name = f"aaa{ctl}{forged}"
+                try:  # round 10, 3: skip a character only if the filesystem will not make a directory of that name
+                    (self.trees / name).mkdir()
+                    (self.trees / name).rmdir()
+                except OSError as e:
+                    self.skipTest(f"cannot create a directory named with {what}: {e}")
                 self.docs_clone(self.trees / name)
                 try:
                     code, out, _ = self.run_main("--sha", self.sha)
@@ -2446,6 +2482,7 @@ class ShaTreesTest(unittest.TestCase):
                 self.assert_overall(out, self.sha, 0)
                 self.assertNotIn("\r", out)
                 self.assertNotIn("\x1b", out)
+                self.assertEqual([c for c in out.replace("\n", "") if not c.isprintable()], [], repr(out))
                 self.assertFalse([l for l in out.splitlines() if l.startswith(forged)], out)
                 named = [l for l in out.splitlines() if l.endswith("]") and "[aaa" in l]
                 self.assertEqual(len(named), 1, out)
