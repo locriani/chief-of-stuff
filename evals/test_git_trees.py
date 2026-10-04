@@ -787,22 +787,31 @@ class CheckShaTest(Repo):
                 finally:  # the next subtest needs a working clone
                     (self.clone / ".git" / f"{part}-away").rename(self.clone / ".git" / part)
 
-    def test_git_rejects_extra_whitespace_in_a_gitfile_so_it_is_not_a_pruned_worktree(self) -> None:
-        """#294 round 6, B: git removes only the terminal CR/LF of the gitfile line and takes every other byte after
-        `gitdir: ` as the path. Real git (2.54), on a live worktree, answers `fatal: not a git repository: (null)` (exit 128)
-        for `gitdir:  <target>` (two spaces) and for `gitdir: <target> ` (a trailing space). With the target gone, neither
-        is a pruned worktree: `.strip()` would read the path git never looked up."""
+    def test_two_spaces_after_gitdir_make_a_path_git_never_looks_up_so_it_is_not_a_pruned_worktree(self) -> None:
+        """#294 round 6, B: git removes only the terminal CR/LF of the gitfile line; every other byte after `gitdir: ` is the
+        path. `gitdir:  <target>` (two spaces) is the path ` <target>`, relative to the tree, which does not exist and has no
+        git directory above it. Real git (2.54) answers `fatal: not a git repository: (null)` (exit 128) for it on a live
+        worktree. Not a pruned worktree."""
         _, tree = self.pruned()
         gone = self.clone / ".git" / "worktrees" / "wt-dead"
         live_tree = self.tree("wt-live", "feat/wt-live")
-        live = self.clone / ".git" / "worktrees" / "wt-live"
-        for what, line in (("two spaces", "gitdir:  {}\n"), ("trailing space", "gitdir: {} \n")):
-            with self.subTest(what):
-                (live_tree / ".git").write_text(line.format(live))
-                self.assertEqual(git_trees.git(["rev-parse", "--git-dir"], live_tree)[0], 128)
-                (tree / ".git").write_text(line.format(gone))
-                self.assertFalse(git_trees._pruned(tree))
-                self.assert_could_not_read(git("rev-parse", "HEAD", cwd=self.clone), tree)
+        (live_tree / ".git").write_text(f"gitdir:  {self.clone / '.git' / 'worktrees' / 'wt-live'}\n")
+        self.assertEqual(git_trees.git(["rev-parse", "--git-dir"], live_tree)[0], 128)
+        (tree / ".git").write_text(f"gitdir:  {gone}\n")
+        self.assertFalse(git_trees._pruned(tree))
+        self.assert_could_not_read(git("rev-parse", "HEAD", cwd=self.clone), tree)
+
+    def test_a_trailing_space_in_a_gitfile_path_is_part_of_the_name_not_trimmed(self) -> None:
+        """#294 round 6, B: git removes only the terminal CR/LF of the gitfile line, so `gitdir: <common>/worktrees/<name> `
+        names the entry `<name> ` (with the space). That entry exists here (as a directory git cannot use), while `<name>`
+        itself is the pruned one: trimming the space would look up the absent `<name>` and call the tree pruned."""
+        sha, tree = self.pruned()
+        named = self.clone / ".git" / "worktrees" / "wt-dead "
+        named.mkdir()
+        (tree / ".git").write_text(f"gitdir: {named}\n")
+        self.assertEqual(git_trees.git(["rev-parse", "--git-dir"], tree)[0], 128)  # git cannot open it either
+        self.assertFalse(git_trees._pruned(tree))
+        self.assert_could_not_read(sha, tree)
 
     def test_a_crlf_line_ending_on_a_pruned_worktrees_dot_git_is_still_pruned(self) -> None:
         """#294 round 6, B: git removes a terminal CR as well as the LF (real git 2.54 opens a live worktree whose gitfile
