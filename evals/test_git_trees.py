@@ -5,6 +5,7 @@ have no useful fake.
 """
 
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -198,6 +199,20 @@ class FetchBaseTest(Repo):
         self.assertTrue(err.strip())
         self.assertNotIn("\n", err)  # one line: it is printed inside the verdict line
 
+    def test_a_non_utf8_byte_on_stderr_is_an_unknown_line_not_a_traceback(self) -> None:
+        """#49 round 11: git, ssh or a credential helper can write any byte to stderr; decoding it as text raised
+        `UnicodeDecodeError`, which is neither `OSError` nor `SubprocessError`. A REAL subprocess, not a fake `run` (a fake
+        returning a str would hide it): `core.sshCommand` in this clone is a Python one-liner that writes `fatal: boom \xff`
+        to stderr and exits 128, and origin is an ssh-style URL, so the real `git fetch` runs it and relays the bytes."""
+        helper = "import sys; sys.stderr.buffer.write(b'fatal: boom \\xff\\n'); sys.exit(128)"
+        git("remote", "set-url", "origin", "ssh://example.invalid/x.git", cwd=self.clone)
+        git("config", "core.sshCommand", f"{shlex.quote(sys.executable)} -c {shlex.quote(helper)}", cwd=self.clone)
+        err = git_trees.fetch_base(self.clone)
+        self.assertIsInstance(err, str)
+        self.assertTrue(err.strip())
+        self.assertEqual([c for c in err if not c.isprintable()], [], repr(err))
+        self.assertIn("fatal: boom", err)
+
     def test_git_that_cannot_run_or_times_out_is_an_error_string(self) -> None:
         for exc in (OSError("no git"), subprocess.TimeoutExpired(["git"], 30)):
             with self.subTest(type(exc).__name__), patch.object(git_trees.subprocess, "run", side_effect=exc):
@@ -307,6 +322,23 @@ class GitReaderTest(unittest.TestCase):
                 self.assertTrue(text.strip())
 
 
+class NonUtf8OutputTest(Repo):
+    def test_a_ref_name_with_a_non_utf8_byte_is_read_not_a_traceback(self) -> None:
+        """#49 round 11: `git()` also decodes output as text. A checkout on a filesystem that allows any byte in a name (Linux)
+        can be on a branch like `b\\xff`; macOS refuses to create one, so it is written as git would store it: a packed ref
+        and a HEAD that names it. `git rev-parse --abbrev-ref HEAD` then prints the byte. Real repository, no fake."""
+        sha = git("rev-parse", "HEAD", cwd=self.clone)
+        git_dir = self.clone / ".git"
+        (git_dir / "packed-refs").write_bytes(b"# pack-refs with: peeled fully-peeled sorted \n" + sha.encode() + b" refs/heads/b\xff\n")
+        (git_dir / "HEAD").write_bytes(b"ref: refs/heads/b\xff\n")
+        raw = subprocess.run(["git", "-C", str(self.clone), "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True)
+        self.assertEqual(raw.stdout, b"b\xff\n")  # the premise: git itself prints the byte
+        code, text = git_trees.git(["rev-parse", "--abbrev-ref", "HEAD"], self.clone)
+        self.assertEqual(code, 0)
+        self.assertTrue(text.startswith("b"), repr(text))
+        self.assertEqual(git_trees.read_state(self.clone).branch[:1], "b")
+
+
 class ShaExitTest(unittest.TestCase):
     def test_an_unknown_blocks_a_yes_only_when_that_repository_may_hold_the_commit(self) -> None:
         """#49 round 10, 2: over `(code, held)`: 1 if any repository holds the commit and says no; else 2 if the list is
@@ -333,6 +365,31 @@ class ShaExitTest(unittest.TestCase):
         for what, answers, want in table:
             with self.subTest(what):
                 self.assertEqual(git_trees.sha_exit(answers), want)
+
+
+def git_makes_sha256() -> bool:
+    with tempfile.TemporaryDirectory() as d:
+        return subprocess.run(["git", "init", "-q", "--object-format=sha256", d], capture_output=True, env=ENV).returncode == 0
+
+
+@unittest.skipUnless(git_makes_sha256(), "this git cannot `init --object-format=sha256`")
+class Sha256CheckTest(unittest.TestCase):
+    def test_a_full_sha256_id_pushed_to_main_is_on_origin_main(self) -> None:
+        """#49 round 11: a repository made with `--object-format=sha256` has 64-digit ids; `--sha` refused them as usage."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            origin, clone = root / "origin.git", root / "repo"
+            origin.mkdir()
+            clone.mkdir()
+            git("init", "--bare", "--object-format=sha256", "--initial-branch=main", ".", cwd=origin)
+            git("init", "--object-format=sha256", "--initial-branch=main", ".", cwd=clone)
+            commit(clone, "README.md")
+            git("remote", "add", "origin", str(origin), cwd=clone)
+            git("push", "-u", "origin", "main", cwd=clone)
+            sha = git("rev-parse", "HEAD", cwd=clone)
+            tip = git("rev-parse", "--short", "origin/main", cwd=clone)
+            self.assertEqual(len(sha), 64)
+            self.assertEqual(git_trees.check_sha(sha, clone), (0, f"sha {sha}: on origin/main {tip} (fetched)", True))
 
 
 class CheckShaTest(Repo):

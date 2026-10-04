@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import audit_tasks as al  # noqa: E402
 import git_trees  # noqa: E402
 import board_sources as bs  # noqa: E402
+import test_git_trees as tgt  # noqa: E402  (module-qualified: don't re-collect its TestCases)
 import test_board_sources as tbs  # noqa: E402  (module-qualified: don't re-collect its TestCases)
 from tracker import short_name  # noqa: E402
 
@@ -1991,7 +1992,7 @@ class ShaFlagTest(unittest.TestCase):
         for bad in (main.upper() if first_letter else "ABCDEF1", upper, "-" + main[:7], "--" + main[:7]):
             with self.subTest(bad), patch.object(git_trees, "fetch_base", side_effect=AssertionError("fetched")):
                 code, out, err = self.run_main(f"--sha={bad}")
-                self.assertEqual((code, out, err), (2, "", "audit_tasks: --sha takes 7-40 lowercase hex digits\n"))
+                self.assertEqual((code, out, err), (2, "", "audit_tasks: --sha takes 7-64 lowercase hex digits\n"))
 
     def test_the_fetch_moves_origin_main_whatever_the_fetch_config_is(self) -> None:
         """`git fetch origin main` only updates `refs/remotes/origin/main` when `remote.origin.fetch` maps it."""
@@ -2035,11 +2036,42 @@ class ShaFlagTest(unittest.TestCase):
             self.assertNotIn(str(path.resolve()), out)
 
     def test_a_malformed_sha_is_refused_on_stderr(self) -> None:
-        """Not 7\u201340 hex, as `SHA` reads a done state's citation. Nothing is fetched for it."""
-        for bad in ("zzz", "abc123", "0123456789abcdef0123456789abcdef012345678", "--help-me", "main", "54b7eb3;ls"):
+        """Not 7\u201364 hex, as `SHA` reads a done state's citation. Nothing is fetched for it."""
+        for bad in ("zzz", "abc123", "0" * 65, "--help-me", "main", "54b7eb3;ls"):
             with self.subTest(bad), patch.object(git_trees, "fetch_base", side_effect=AssertionError("fetched")):
                 code, out, err = self.run_main(f"--sha={bad}")
-                self.assertEqual((code, out, err), (2, "", "audit_tasks: --sha takes 7-40 lowercase hex digits\n"))
+                self.assertEqual((code, out, err), (2, "", "audit_tasks: --sha takes 7-64 lowercase hex digits\n"))
+
+    def test_a_64_digit_id_is_not_a_usage_error(self) -> None:
+        """#49 round 11: 7-64 lowercase hex. 64 is a full SHA-256 object id; it reaches the fetch like any other id."""
+        for sha in ("0123456789abcdef" * 4, "0" * 41):
+            with self.subTest(len(sha)), patch.object(git_trees, "fetch_base", return_value="") as fetch:
+                code, out, err = self.run_main(f"--sha={sha}")
+                self.assertNotIn("takes 7-64", err)
+                self.assertTrue(fetch.called)
+
+    @unittest.skipUnless(tgt.git_makes_sha256(), "this git cannot `init --object-format=sha256`")
+    def test_a_full_sha256_id_is_answered_through_main(self) -> None:
+        """#49 round 11: the same as `check_sha`'s, through `--sha`: a SHA-256 origin, clone and worktree under the workspace."""
+        for name in ("repo", "origin.git", "trees"):
+            shutil.rmtree(self.root / name)
+        origin, clone, wt = self.root / "origin.git", self.root / "repo", self.root / "trees" / "wt-dirty"
+        origin.mkdir()
+        clone.mkdir()
+        git("init", "--bare", "--object-format=sha256", "--initial-branch=main", ".", cwd=origin)
+        git("init", "--object-format=sha256", "--initial-branch=main", ".", cwd=clone)
+        git("config", "user.email", "t@example.test", cwd=clone)
+        git("config", "user.name", "Test", cwd=clone)
+        (clone / "README.md").write_text("base\n")
+        git("add", "README.md", cwd=clone)
+        git("commit", "-m", "base", cwd=clone)
+        git("remote", "add", "origin", str(origin), cwd=clone)
+        git("push", "-u", "origin", "main", cwd=clone)
+        git("worktree", "add", "-b", "feat/dirty", str(wt), "main", cwd=clone)
+        sha = git("rev-parse", "HEAD", cwd=clone)
+        self.assertEqual(len(sha), 64)
+        code, out, err = self.run_main("--sha", sha)
+        self.assertEqual((code, out, err), (0, f"sha {sha}: on origin/main {self.tip()} (fetched){self.TREE}\n", ""))
 
     def test_it_needs_no_tracker_for_the_day(self) -> None:
         (self.root / "daily" / "2026-09-17-tracker.md").unlink()
@@ -2184,7 +2216,7 @@ class ShaFlagTest(unittest.TestCase):
         sha = git("rev-parse", "origin/main", cwd=self.clone)
         with patch.object(git_trees, "fetch_base", side_effect=AssertionError("fetched")):
             code, out, err = self.run_main(f"--sha={sha}\n")
-        self.assertEqual((code, out, err), (2, "", "audit_tasks: --sha takes 7-40 lowercase hex digits\n"))
+        self.assertEqual((code, out, err), (2, "", "audit_tasks: --sha takes 7-64 lowercase hex digits\n"))
 
 
 class ShaTreesTest(unittest.TestCase):
