@@ -137,11 +137,11 @@ def sha_verdict(sha: str, fetch_error: str, exists: bool, ancestor: bool, tip: s
 
 
 def sha_exit(answers: list[tuple[int, bool]]) -> int:
-    """The exit over every repository's `(code, held)`, `held` being that it has the commit, or may have it (git opens
-    the repository but cannot read it): 1 if one that holds it says no (a clone or a fresh `git init` whose origin was
+    """The exit over every repository's `(code, held)`, `held` being that it has the commit, or may have it (git cannot
+    read it): 1 if one that holds it says no (a clone or a fresh `git init` whose origin was
     pointed at the commit cannot outvote it); else 2 if there is none, or one is unknown and held (a repository that
     may hold the commit may be the project the claim is about, so it blocks a yes); else 0 if any says yes; else 2 if
-    any is unknown; else 1. An unknown that does not hold the commit (not a git repository, no remote, offline,
+    any is unknown; else 1. An unknown that does not hold the commit (a pruned worktree, no remote, offline,
     shallow) blocks no yes, so an unrelated repository cannot veto it forever."""
     if (1, True) in answers:
         return 1
@@ -175,13 +175,26 @@ def _has_grafts(tree: Path) -> bool | None:
     return stat.S_ISREG(info.st_mode) and info.st_size > 0
 
 
+def _pruned(tree: Path) -> bool:
+    """Whether `tree` is a pruned worktree: its `.git` is a file whose `gitdir:` is `<common>/worktrees/<name>`, that is gone,
+    and `<common>` is a directory. Read from the file and the filesystem, never git (a probe can time out); anything else, False."""
+    try:
+        with open(tree / ".git") as f:
+            line = f.readline(4096).strip()
+        target = tree / line.removeprefix("gitdir:").strip()  # an absolute path replaces `tree`
+        return line.startswith("gitdir:") and target.parent.name == "worktrees" and not target.exists() and target.parent.parent.is_dir()
+    except (OSError, ValueError):
+        return False
+
+
 def check_sha(sha: str, tree: Path) -> tuple[int, str, bool]:
     """One repository's `(exit code, line, held)`; `held` is whether it has a commit with that id, or may have one (git
-    opens it but cannot read it). A tree that is not a git repository at all (`rev-parse --git-dir` fails, as in a
-    stale worktree whose git directory is gone) holds nothing; that probe runs only when the commit lookup failed, so
-    a healthy tree pays no extra call. The commit is the one whose object id starts with `sha`, never a tag or branch
+    cannot read it). A pruned worktree (`_pruned`: its `.git` file names a `<common>/worktrees/<name>` that is gone while
+    `<common>` is there) holds nothing, so it blocks no yes; it is checked only when the commit lookup failed. Every other
+    failed read (a refusal, a timeout, an unusable `.git` directory, a main clone that moved) may hold the commit and blocks
+    a yes. The commit is the one whose object id starts with `sha`, never a tag or branch
     named like it, and the question is about `refs/remotes/origin/main` only. Exit 0 only when the fetch worked and
-    origin/main holds it; 1 when it does not; 2 (unknown, never a no) for every cause: not a git repository, the fetch
+    origin/main holds it; 1 when it does not; 2 (unknown, never a no) for every cause: a pruned worktree, the fetch
     failed (a stale ref cannot say yes), git cannot read the repository (the commit lookup, the grafts lookup or file,
     the shallow check, or, when origin/main does not hold it, the local main lookup or ancestry), there are grafts
     (checked after the fetch, which a hook may have written one in), no origin/main, two commits share the prefix, git
@@ -190,9 +203,9 @@ def check_sha(sha: str, tree: Path) -> tuple[int, str, bool]:
     commit."""
     fetch_error = fetch_base(tree)
     commits = _commits(sha, tree)
-    if commits is None and git(["rev-parse", "--git-dir"], tree)[0] != 0:  # git cannot even find it: it holds nothing (#294)
+    if commits is None and _pruned(tree):  # the repository forgot this tree: it holds nothing (#294)
         return 2, f"sha {sha}: unknown \u2014 not a git repository", False
-    held = commits is None or bool(commits)  # a repository git could not read may hold it
+    held = commits is None or bool(commits)  # any other repository git could not read may hold it
 
     def unknown(why: str) -> tuple[int, str, bool]:
         return 2, f"sha {sha}: unknown \u2014 {why}", held
