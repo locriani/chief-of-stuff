@@ -90,9 +90,10 @@ def sha_trees(root: Path, trees: str) -> list[tuple[str, Path]]:
 
 def fetch_base(tree: Path, timeout: int = 30) -> str:
     """`""` once `origin/main` is fetched, else one line saying why: the first `fatal:` line, else the last, with the
-    tree's path blanked and the control characters escaped (`clean`), since it is printed. The refspec is explicit and forced, so the ref moves
-    whatever `remote.origin.fetch` says and follows a rewritten main, and `--no-tags` keeps it the only ref written. Not through
-    `git()`: a fetch needs the caller's credentials and ssh agent, which that sandboxed call strips."""
+    tree's path blanked and every non-printable character escaped (`clean`), since it is printed. The refspec is
+    explicit and forced, so the ref moves whatever `remote.origin.fetch` says and follows a rewritten main, and
+    `--no-tags` keeps it the only ref written. Not through `git()`: a fetch needs the caller's credentials and ssh
+    agent, which that sandboxed call strips."""
     env = {k: v for k, v in os.environ.items() if k not in REPO_VARS}
     try:
         out = subprocess.run(
@@ -176,7 +177,8 @@ def check_sha(sha: str, tree: Path) -> tuple[int, str, bool]:
     with that id. The commit is the one whose object id starts with `sha`, never a tag or branch named like it, and the
     question is about `refs/remotes/origin/main` only. Exit 0 only when the fetch worked and origin/main holds it; 1 when
     it does not; 2 (unknown, never a no) for every cause: the fetch failed (a stale ref cannot say yes), git cannot read
-    the repository (the commit lookup, the grafts lookup or file, the shallow check, the local main lookup or ancestry),
+    the repository (the commit lookup, the grafts lookup or file, the shallow check, or, when origin/main does not hold
+    it, the local main lookup or ancestry),
     there are grafts (checked after the fetch, which a hook may have written one in), no origin/main, two commits share
     the prefix, git cannot compare, or the clone is shallow and the commit may be in what was cut off. A repository with
     no `refs/heads/main` is simply not on local main. The unknown lines say `; local main holds it` when it has the commit."""
