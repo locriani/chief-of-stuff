@@ -178,20 +178,22 @@ def _has_grafts(tree: Path) -> bool | None:
 def _pruned(tree: Path) -> bool:
     """Whether `tree` is a pruned worktree: its `.git` is a regular file whose first line is `gitdir: <path>` (that exact prefix, as
     git requires) with `<path>` = `<common>/worktrees/<name>`, KNOWN gone (`lstat` says not found; a permission error, any
-    other `OSError` or a dangling symlink is present or unknown), and `<common>` a git directory (it holds `HEAD`). Read from the file
-    and the filesystem, never git (a probe can time out); anything else, False."""
+    other `OSError` or a dangling symlink is present or unknown), and `<common>` a git directory by git's own measure (it holds a
+    `HEAD` file, an `objects` directory and a `refs` directory). Only the terminal `\r`/`\n` of the line is trimmed, as git does; every
+    other byte after `gitdir: ` is the path. Read from the file and the filesystem, never git (a probe can time out); anything else, False."""
     if not (tree / ".git").is_file():  # a regular file only: open() on a FIFO blocks forever
         return False  # ponytail: a swap for a FIFO between this check and the open still blocks; os.open with O_NONBLOCK plus fstat
     try:
         with open(tree / ".git") as f:
             line = f.readline(4096)
         path = line.removeprefix("gitdir: ")
-        target = tree / path.strip()  # an absolute path replaces `tree`
+        target = tree / path.rstrip("\r\n")  # an absolute path replaces `tree`
+        common = target.parent.parent
         if path != line and target.parent.name == "worktrees":
             try:
                 target.lstat()
             except FileNotFoundError:
-                return (target.parent.parent / "HEAD").is_file()
+                return (common / "HEAD").is_file() and (common / "objects").is_dir() and (common / "refs").is_dir()
     except (OSError, ValueError):
         pass
     return False
@@ -200,10 +202,10 @@ def _pruned(tree: Path) -> bool:
 def check_sha(sha: str, tree: Path) -> tuple[int, str, bool]:
     """One repository's `(exit code, line, held)`; `held` is whether it has a commit with that id, or may have one (git
     cannot read it). A pruned worktree (`_pruned`: its `.git` file is a `gitdir: ` line naming a `<common>/worktrees/<name>` known gone
-    while `<common>` is a git directory: it holds `HEAD`) holds nothing, so it blocks no yes; it is checked only when the commit
-    lookup failed. Every other failed read (a refusal, a timeout, an unusable `.git` directory, a main clone that moved) may hold the
-    commit and blocks a yes. The commit is the one whose object id starts with `sha`, never a tag or branch
-    named like it, and the question is about `refs/remotes/origin/main` only. Exit 0 only when the fetch worked and
+    while `<common>` is a git directory: a `HEAD` file, an `objects` directory and a `refs` directory) holds nothing, so it blocks
+    no yes; it is checked only when the commit lookup failed. Every other failed read (a refusal, a timeout, an unusable `.git`
+    directory, a main clone that moved) may hold the commit and blocks a yes. The commit is the one whose object id starts
+    with `sha`, never a tag or branch named like it, and the question is about `refs/remotes/origin/main` only. Exit 0 only when the fetch worked and
     origin/main holds it; 1 when it does not; 2 (unknown, never a no) for every cause: a pruned worktree, the fetch
     failed (a stale ref cannot say yes), git cannot read the repository (the commit lookup, the grafts lookup or file,
     the shallow check, or, when origin/main does not hold it, the local main lookup or ancestry), there are grafts
