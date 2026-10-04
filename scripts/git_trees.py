@@ -176,15 +176,18 @@ def _has_grafts(tree: Path) -> bool | None:
 
 
 def _pruned(tree: Path) -> bool:
-    """Whether `tree` is a pruned worktree: its `.git` is a file whose first line is `gitdir: <path>` (that exact prefix, as
+    """Whether `tree` is a pruned worktree: its `.git` is a regular file whose first line is `gitdir: <path>` (that exact prefix, as
     git requires) with `<path>` = `<common>/worktrees/<name>`, KNOWN gone (`lstat` says not found; a permission error, any
     other `OSError` or a dangling symlink is present or unknown), and `<common>` a directory we can see. Read from the file
     and the filesystem, never git (a probe can time out); anything else, False."""
+    if not (tree / ".git").is_file():  # a regular file only: open() on a FIFO blocks forever
+        return False  # ponytail: a swap for a FIFO between this check and the open still blocks; os.open with O_NONBLOCK plus fstat
     try:
         with open(tree / ".git") as f:
             line = f.readline(4096)
-        target = tree / line.removeprefix("gitdir: ").strip()  # an absolute path replaces `tree`
-        if line.startswith("gitdir: ") and target.parent.name == "worktrees":
+        path = line.removeprefix("gitdir: ")
+        target = tree / path.strip()  # an absolute path replaces `tree`
+        if path != line and target.parent.name == "worktrees":
             try:
                 target.lstat()
             except FileNotFoundError:
