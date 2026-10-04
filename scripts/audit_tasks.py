@@ -863,9 +863,9 @@ def main(argv: list[str] | None = None, gh=None) -> int:
         "Exit 1 if any repository that has the commit says it is not on origin/main (a tree a worker creates with its own origin, "
         "holding a commit the project never fetched, can still say on, since the veto needs the commit object; a second clone whose "
         "origin/main lags, such as a fork beside the upstream, says no until it catches up); else 2 if none was asked or usage, or "
-        "any repository that has, or may have (git could not read it), the commit is unknown (fetch failed, repository or grafts "
+        "any repository that has, or may have (git opens it but could not read it), the commit is unknown (fetch failed, repository or grafts "
         "unreadable, grafts, no origin/main, shallow clone, ambiguous prefix, git could not compare); else 0 if any says on; else 2 "
-        "if any is unknown; else 1. An unknown repository that does not hold the commit blocks no yes. A repository with no local "
+        "if any is unknown; else 1. An unknown repository that does not hold the commit (a tree that is not a git repository, such as a stale worktree, among them) blocks no yes. A repository with no local "
         "main is simply not on local main. With more than one repository the last line is the overall answer"))
     args = ap.parse_args(argv)
     root = Path(args.root)

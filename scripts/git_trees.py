@@ -137,11 +137,11 @@ def sha_verdict(sha: str, fetch_error: str, exists: bool, ancestor: bool, tip: s
 
 
 def sha_exit(answers: list[tuple[int, bool]]) -> int:
-    """The exit over every repository's `(code, held)`, `held` being that it has, or may have, the commit: 1 if one that
+    """The exit over every repository's `(code, held)`, `held` being that it has, or may have (git opens it but cannot read it), the commit: 1 if one that
     holds it says no (a clone or a fresh `git init` whose origin was pointed at the commit cannot outvote it); else 2 if
     there is none, or one is unknown and held (a repository that may hold the commit may be the project the claim is
     about, so it blocks a yes); else 0 if any says yes; else 2 if any is unknown; else 1. An unknown that does not hold
-    the commit (no remote, offline, shallow) blocks no yes, so an unrelated repository cannot veto it forever."""
+    the commit (not a git repository, no remote, offline, shallow) blocks no yes, so an unrelated repository cannot veto it forever."""
     if (1, True) in answers:
         return 1
     if not answers or (2, True) in answers:
@@ -175,10 +175,12 @@ def _has_grafts(tree: Path) -> bool | None:
 
 
 def check_sha(sha: str, tree: Path) -> tuple[int, str, bool]:
-    """One repository's `(exit code, line, held)`; `held` is whether it has, or (git could not read it) may have, a commit
-    with that id. The commit is the one whose object id starts with `sha`, never a tag or branch named like it, and the
+    """One repository's `(exit code, line, held)`; `held` is whether it has, or (git opens it but could not read it) may have, a
+    commit with that id; a tree that is not a git repository at all (`rev-parse --git-dir` fails, as in a stale worktree
+    whose git directory is gone) holds nothing: `unknown \u2014 not a git repository`, `held` False. That probe runs only
+    when the commit lookup failed, so a healthy tree pays no extra call; the fetch has run by then and fails at once. The commit is the one whose object id starts with `sha`, never a tag or branch named like it, and the
     question is about `refs/remotes/origin/main` only. Exit 0 only when the fetch worked and origin/main holds it; 1 when
-    it does not; 2 (unknown, never a no) for every cause: the fetch failed (a stale ref cannot say yes), git cannot read
+    it does not; 2 (unknown, never a no) for every cause: not a git repository, the fetch failed (a stale ref cannot say yes), git cannot read
     the repository (the commit lookup, the grafts lookup or file, the shallow check, or, when origin/main does not hold
     it, the local main lookup or ancestry),
     there are grafts (checked after the fetch, which a hook may have written one in), no origin/main, two commits share
@@ -186,6 +188,8 @@ def check_sha(sha: str, tree: Path) -> tuple[int, str, bool]:
     no `refs/heads/main` is simply not on local main. The unknown lines say `; local main holds it` when it has the commit."""
     fetch_error = fetch_base(tree)
     commits = _commits(sha, tree)
+    if commits is None and git(["rev-parse", "--git-dir"], tree)[0] != 0:  # git cannot even find it: it holds nothing (#294)
+        return 2, f"sha {sha}: unknown \u2014 not a git repository", False
     held = commits is None or bool(commits)  # a repository git could not read may hold it
 
     def unknown(why: str) -> tuple[int, str, bool]:
