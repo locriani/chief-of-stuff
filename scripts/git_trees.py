@@ -176,21 +176,28 @@ def _has_grafts(tree: Path) -> bool | None:
 
 
 def _pruned(tree: Path) -> bool:
-    """Whether `tree` is a pruned worktree: its `.git` is a file whose `gitdir:` is `<common>/worktrees/<name>`, that is gone,
-    and `<common>` is a directory. Read from the file and the filesystem, never git (a probe can time out); anything else, False."""
+    """Whether `tree` is a pruned worktree: its `.git` is a file whose first line is `gitdir: <path>` (that exact prefix, as
+    git requires) with `<path>` = `<common>/worktrees/<name>`, KNOWN gone (`lstat` says not found; a permission error, any
+    other `OSError` or a dangling symlink is present or unknown), and `<common>` a directory we can see. Read from the file
+    and the filesystem, never git (a probe can time out); anything else, False."""
     try:
         with open(tree / ".git") as f:
-            line = f.readline(4096).strip()
-        target = tree / line.removeprefix("gitdir:").strip()  # an absolute path replaces `tree`
-        return line.startswith("gitdir:") and target.parent.name == "worktrees" and not target.exists() and target.parent.parent.is_dir()
+            line = f.readline(4096)
+        target = tree / line.removeprefix("gitdir: ").strip()  # an absolute path replaces `tree`
+        if line.startswith("gitdir: ") and target.parent.name == "worktrees":
+            try:
+                target.lstat()
+            except FileNotFoundError:
+                return target.parent.parent.is_dir()
     except (OSError, ValueError):
-        return False
+        pass
+    return False
 
 
 def check_sha(sha: str, tree: Path) -> tuple[int, str, bool]:
     """One repository's `(exit code, line, held)`; `held` is whether it has a commit with that id, or may have one (git
-    cannot read it). A pruned worktree (`_pruned`: its `.git` file names a `<common>/worktrees/<name>` that is gone while
-    `<common>` is there) holds nothing, so it blocks no yes; it is checked only when the commit lookup failed. Every other
+    cannot read it). A pruned worktree (`_pruned`: its `.git` file is a `gitdir: ` line naming a `<common>/worktrees/<name>` known gone
+    while `<common>` is a directory) holds nothing, so it blocks no yes; it is checked only when the commit lookup failed. Every other
     failed read (a refusal, a timeout, an unusable `.git` directory, a main clone that moved) may hold the commit and blocks
     a yes. The commit is the one whose object id starts with `sha`, never a tag or branch
     named like it, and the question is about `refs/remotes/origin/main` only. Exit 0 only when the fetch worked and
