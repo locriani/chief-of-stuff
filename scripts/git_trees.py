@@ -180,7 +180,8 @@ def _pruned_common(tree: Path) -> Path | None:
     line is `gitdir: <path>` (that exact prefix, as git requires) with `<path>` = `<common>/worktrees/<name>`, KNOWN gone (`lstat`
     says not found; a permission error, any other `OSError` or a dangling symlink is present or unknown). Only the terminal
     `\r`/`\n` of the line is trimmed, as git does; every other byte after `gitdir: ` is the path. Read from the file and the
-    filesystem, never git (a probe can time out). Whether git can use `<common>` is not asked here: `check_sha` asks git."""
+    filesystem, never git (a probe can time out). Whether `<common>` is itself the git directory git uses there (rule A) is not
+    asked here: `check_sha` asks git, once, and follows the redirect once (rule B)."""
     if not (tree / ".git").is_file():  # a regular file only: open() on a FIFO blocks forever
         return None  # ponytail: a swap for a FIFO between this check and the open still blocks; os.open with O_NONBLOCK plus fstat
     try:
@@ -206,10 +207,12 @@ def _pruned(tree: Path) -> bool:
 def check_sha(sha: str, tree: Path) -> tuple[int, str, bool]:
     """One repository's `(exit code, line, held)`; `held` is whether it has a commit with that id, or may have one (git
     cannot read it). A pruned worktree (`_pruned_common`: its `.git` file names a `<common>/worktrees/<name>` known gone) is
-    answered by its repository: `check_sha(sha, <common>)`, git run in the repository's git directory, checked only when the
-    commit lookup failed. Every other failed read (a refusal, a timeout, an unusable `.git` directory, a main clone that
-    moved, a `<common>` git cannot use) may hold the commit and blocks a yes. The commit is the one whose object id starts
-    with `sha`, never a tag or branch named like it, and the question is about `refs/remotes/origin/main` only. Exit 0 only when the fetch worked and
+    answered by its repository, checked only when the commit lookup failed, with two rules. A: only when `<common>` is itself
+    the git directory git uses there (`rev-parse --git-dir` prints `.`), else a plain directory inside another repository would
+    answer for that one. B: the redirect is followed once, and the answer is `_verdict`, which never redirects.
+    Every other failed read (a refusal, a timeout, an unusable `.git` directory, a main clone that moved, a `<common>` git
+    cannot use) may hold the commit and blocks a yes. The commit is the one whose object id starts with `sha`, never a tag or
+    branch named like it, and the question is about `refs/remotes/origin/main` only. Exit 0 only when the fetch worked and
     origin/main holds it; 1 when it does not; 2 (unknown, never a no) for every cause: the fetch
     failed (a stale ref cannot say yes), git cannot read the repository (the commit lookup, the grafts lookup or file,
     the shallow check, or, when origin/main does not hold it, the local main lookup or ancestry), there are grafts
@@ -219,8 +222,14 @@ def check_sha(sha: str, tree: Path) -> tuple[int, str, bool]:
     commit."""
     fetch_error = fetch_base(tree)
     commits = _commits(sha, tree)
-    if commits is None and (common := _pruned_common(tree)):  # the repository forgot this tree: it answers for it (#294)
-        return check_sha(sha, common)  # `<common>` has no `.git` file, so this cannot loop
+    if commits is None and (common := _pruned_common(tree)) and git(["rev-parse", "--git-dir"], common) == (0, "."):  # A (#294)
+        tree, fetch_error = common, fetch_base(common)  # the repository forgot this tree: it answers for it, once (B)
+        commits = _commits(sha, tree)
+    return _verdict(sha, tree, fetch_error, commits)
+
+
+def _verdict(sha: str, tree: Path, fetch_error: str, commits: list[str] | None) -> tuple[int, str, bool]:
+    """`check_sha`'s answer for one repository whose fetch and commit lookup are done. It never redirects."""
     held = commits is None or bool(commits)  # any other repository git could not read may hold it
 
     def unknown(why: str) -> tuple[int, str, bool]:
