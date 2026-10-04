@@ -2298,17 +2298,85 @@ class ShaTreesTest(unittest.TestCase):
         self.assertEqual((code, out), (0, f"sha {self.sha}: on origin/main {self.tip} (fetched) [wt-dirty]\n"))
         self.assertNotIn("aaa-link", out)
 
+    def dead_file(self, name: str) -> Path:
+        """A tree whose `.git` FILE points at a git directory that is not there."""
+        tree = self.trees / name
+        tree.mkdir()
+        (tree / ".git").write_text(f"gitdir: {self.root / 'no-such-gitdir'}\n")
+        return tree
+
+    def dead_worktree(self, name: str) -> Path:
+        """A real `git worktree add` whose `<common>/worktrees/<name>` was then deleted: every git call there prints
+        `fatal: not a git repository` (the stale worktree of #294)."""
+        git("worktree", "add", "-b", f"feat/{name}", str(self.trees / name), "main", cwd=self.clone)
+        shutil.rmtree(self.clone / ".git" / "worktrees" / name)
+        return self.trees / name
+
+    def dead_line(self, name: str) -> str:
+        return f"sha {self.sha}: unknown \u2014 not a git repository [{name}]"
+
     def test_a_tree_whose_gitdir_is_gone_does_not_stop_a_healthy_one_answering(self) -> None:
-        broken = self.trees / "aaa-broken"
-        broken.mkdir()
-        (broken / ".git").write_text(f"gitdir: {self.root / 'no-such-gitdir'}\n")
+        """#294: a tree that is not a git repository at all (`rev-parse --git-dir` fails) cannot hold the commit, the same as
+        an absent tree, so its unknown blocks no yes. Both shapes of dead tree, beside the project: the project's yes
+        stands (exit 0), the dead tree is still listed with the reason it was not asked, and the overall line says yes.
+        (Was pinned to exit 2 `overall unknown`: the bug, a stale worktree ended every `--sha` unknown forever.)"""
+        for what, make, name in (("a .git file pointing nowhere", self.dead_file, "aaa-broken"),
+                                 ("a worktree whose gitdir was removed", self.dead_worktree, "zzz-dead")):
+            with self.subTest(what):
+                make(name)
+                code, out, err = self.run_main("--sha", self.sha)
+                self.assertEqual(self.lines(out), sorted([
+                    f"sha {self.sha}: on origin/main {self.tip} (fetched) [wt-dirty]", self.dead_line(name)]))
+                self.assert_overall(out, self.sha, 0)
+                self.assertEqual((code, err), (0, ""))
+            shutil.rmtree(self.trees / name)
+
+    def test_every_dead_tree_is_listed_once_and_none_blocks_the_yes(self) -> None:
+        """#294: `sha_trees` lists a tree git cannot resolve a common dir for as its own repository (it is not dropped), so
+        two dead trees are two lines, one each, with the project's yes and the overall yes."""
+        self.dead_file("aaa-broken")
+        self.dead_worktree("zzz-dead")
         code, out, err = self.run_main("--sha", self.sha)
-        self.assertIn(f"sha {self.sha}: on origin/main {self.tip} (fetched) [wt-dirty]", out.splitlines())
-        # round 10, 2: git could not read the broken tree at all, so it may hold the commit: its unknown blocks the healthy yes
-        self.assertEqual(code, 2)
-        self.assertNotIn("Traceback", err)
-        self.assertTrue(all(line.endswith("]") for line in out.splitlines()[:-1]), out)
+        self.assertEqual(self.lines(out), sorted([
+            f"sha {self.sha}: on origin/main {self.tip} (fetched) [wt-dirty]",
+            self.dead_line("aaa-broken"), self.dead_line("zzz-dead")]))
+        self.assertEqual(sum("not a git repository" in l for l in out.splitlines()), 2, out)
+        self.assert_overall(out, self.sha, 0)
+        self.assertEqual((code, err), (0, ""))
+
+    def test_dead_trees_alone_are_unknown_nothing_said_yes(self) -> None:
+        """#294: with no healthy repository an unknown is still an unknown (exit 2, never 1): more than one dead tree prints
+        each line and `overall unknown`; a single one prints its line and no overall line."""
+        shutil.rmtree(self.trees)
+        self.trees.mkdir()
+        self.dead_file("aaa-broken")
+        code, out, _ = self.run_main("--sha", self.sha)
+        self.assertEqual((code, out), (2, self.dead_line("aaa-broken") + "\n"))
+        self.dead_worktree("zzz-dead")
+        code, out, _ = self.run_main("--sha", self.sha)
+        self.assertEqual((code, self.lines(out)), (2, sorted([self.dead_line("aaa-broken"), self.dead_line("zzz-dead")])))
         self.assert_overall(out, self.sha, 2)
+
+    def test_a_repository_git_can_open_but_not_read_still_blocks_the_yes(self) -> None:
+        """#294 keeps the other half of round 10, 2: `rev-parse --git-dir` succeeds but the commit lookup faults, so the
+        repository may hold the commit and blocks the project's yes (exit 2). Only that call is made to fail, for the
+        tree named `aaa-open`; a dead tree beside it is listed and changes nothing."""
+        self.dead_file("zzz-dead")
+        self.docs_clone(self.trees / "aaa-open")
+        real = git_trees.git
+
+        def fake(args, cwd, *rest, **kw):
+            if Path(cwd).name == "aaa-open" and args[:1] == ["rev-parse"] and args[1].startswith("--disambiguate="):
+                return 128, "fatal: boom"
+            return real(args, cwd, *rest, **kw)
+
+        with patch.object(git_trees, "git", fake):
+            code, out, _ = self.run_main("--sha", self.sha)
+        self.assertEqual(self.lines(out), sorted([
+            f"sha {self.sha}: on origin/main {self.tip} (fetched) [wt-dirty]",
+            f"sha {self.sha}: unknown \u2014 git could not read this repository [aaa-open]", self.dead_line("zzz-dead")]))
+        self.assert_overall(out, self.sha, 2)
+        self.assertEqual(code, 2)
 
     def test_a_repository_with_no_remote_beside_the_project_does_not_block_a_yes(self) -> None:
         """#49 round 10, 2: `docs` is a `git init` with one commit and no remote: its unknown (no origin/main) does not hold

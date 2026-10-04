@@ -6,6 +6,7 @@ have no useful fake.
 
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -584,14 +585,47 @@ class CheckShaTest(Repo):
             self.assertEqual(git_trees.check_sha(sha, self.clone),
                              (2, f"sha {sha}: unknown \u2014 git could not read this repository", True))
 
-    def test_a_repository_git_cannot_read_may_hold_it(self) -> None:
-        """#49 round 10, 2: it may hold the commit, so it reports `held` True and its unknown blocks a yes."""
+    NOT_A_REPOSITORY = "unknown \u2014 not a git repository"
+
+    def test_a_worktree_whose_gitdir_was_removed_is_not_a_repository_and_holds_nothing(self) -> None:
+        """#294: `git worktree add`, then `<common>/worktrees/<name>` is deleted (`git worktree prune` after the directory
+        went, or a clone removed under it): the `.git` file points nowhere, `rev-parse --git-dir` fails, and every other
+        call prints `fatal: not a git repository`. git cannot even find the repository, so it cannot hold the commit: the
+        same as a tree that is absent. `held` is False, so it blocks no yes."""
+        sha = git("rev-parse", "HEAD", cwd=self.clone)
+        tree = self.tree("wt-dead", "feat/dead")
+        shutil.rmtree(self.clone / ".git" / "worktrees" / "wt-dead")
+        self.assertEqual(git_trees.git(["rev-parse", "--git-dir"], tree)[0], 128)
+        self.assertEqual(git_trees.check_sha(sha, tree), (2, f"sha {sha}: {self.NOT_A_REPOSITORY}", False))
+
+    def test_a_dot_git_file_pointing_at_a_path_that_does_not_exist_is_not_a_repository(self) -> None:
+        """#294: the second shape of a dead tree, a directory whose `.git` FILE says `gitdir: /nonexistent/path`.
+        (Was `test_a_repository_git_cannot_read_may_hold_it`, which pinned `held` True for exactly this tree: that is the
+        bug. The repository that may hold it is the one git can open and not read, the next test.)"""
         sha = git("rev-parse", "HEAD", cwd=self.clone)
         broken = self.trees / "broken"
         broken.mkdir()
-        (broken / ".git").write_text(f"gitdir: {self.root / 'no-such-gitdir'}\n")
-        code, _, held = git_trees.check_sha(sha, broken)
-        self.assertEqual((code, held), (2, True))
+        (broken / ".git").write_text("gitdir: /nonexistent/path\n")
+        self.assertEqual(git_trees.git(["rev-parse", "--git-dir"], broken)[0], 128)
+        self.assertEqual(git_trees.check_sha(sha, broken), (2, f"sha {sha}: {self.NOT_A_REPOSITORY}", False))
+
+    def test_a_repository_git_can_open_but_not_read_may_hold_it(self) -> None:
+        """#294 (was #49 round 10, 2): git finds the git directory (`rev-parse --git-dir` is real and succeeds) but the commit
+        lookup (`rev-parse --disambiguate`, or `cat-file -t` on an id it listed) faults. That is a repository that may hold
+        the commit: `git could not read this repository`, `held` True, so its unknown blocks a yes. Only the named call
+        fails; the fake must not also fail `--git-dir`, or this would describe a repository that is not one."""
+        sha = git("rev-parse", "HEAD", cwd=self.clone)
+        tree = self.tree("wt-a", "feat/a")
+        real = git_trees.git
+        self.assertEqual(real(["rev-parse", "--git-dir"], tree)[0], 0)
+        for what, broken in (("disambiguate", lambda a: a[0] == "rev-parse" and a[1].startswith("--disambiguate=")),
+                             ("cat-file -t", lambda a: a[:2] == ["cat-file", "-t"])):
+            def fake(args, cwd, *rest, broken=broken, **kw):
+                return (128, "fatal: boom") if broken(args) else real(args, cwd, *rest, **kw)
+
+            with self.subTest(what), patch.object(git_trees, "git", fake):
+                self.assertEqual(git_trees.check_sha(sha, tree),
+                                 (2, f"sha {sha}: unknown \u2014 git could not read this repository", True))
 
     def test_origin_main_missing_though_the_fetch_succeeded_is_unknown(self) -> None:
         sha = git("rev-parse", "HEAD", cwd=self.clone)
