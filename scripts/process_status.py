@@ -12,15 +12,18 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from datetime import datetime
 
 import runtimes
 from _vendor.toon_format import encode as toon_encode
-from git_trees import clean
-from workspace import worktrees_dir
+from git_trees import clean, read_regular
+from tracker import parse_tracker
+from workspace import read_config, worktrees_dir
 
 # `<launcher pid> <task>` while a one-shot runs in this tree; the count behind `[workers] max_concurrency`.
 PIDFILE = Path(".chief-of-stuff") / "one-shot.pid"
-# The pid file sits in a worker's own tree, so its task is untrusted: one printable line of at most this many characters.
+# The pid file and the tree's name are a worker's to write, so `processes` prints neither raw: a task only when the
+# tracker holds it, a tree name escaped, each at most this many characters. The readers below return them raw.
 TASK_MAX = 200
 
 
@@ -60,19 +63,32 @@ def process_exists(pid: int) -> bool:
 
 
 def one_shot_runs(trees: Path) -> list[tuple[Path, int, str]]:
-    """(worktree, launcher pid, task) for each one-shot whose launcher is alive. A launcher that died, or a restart
-    that killed it, holds no slot. ponytail: pid reuse can count a dead launcher; add the process start time if it bites."""
+    """(worktree, launcher pid, task) for each one-shot whose launcher is alive; the one reader of the pid files. The file
+    is untrusted: opened without blocking or following a symlink, a regular file only, a bounded read, a pid of ASCII
+    digits. The task is RAW, the first line as written (the board joins on it) or the tree's name when empty: print it only
+    through `main`. A launcher that died, or a restart that killed it, holds no slot. ponytail: pid reuse can count a dead
+    launcher; add the process start time if it bites."""
     found = []
     for f in sorted(trees.glob(f"*/{PIDFILE}")):
         try:
-            with f.open() as h:
-                pid, _, task = h.read(8 * TASK_MAX).partition(" ")  # a bounded read: the file is not ours
-            if int(pid) > 0 and process_exists(int(pid)):
-                task = clean((task.splitlines() or [""])[0])[:TASK_MAX].strip()
-                found.append((f.parent.parent, int(pid), task or f.parent.parent.name))
-        except (OSError, ValueError):
+            data = read_regular(f, 8 * TASK_MAX, nofollow=True)
+            pid, _, task = ((data or b"").decode(errors="replace").splitlines() or [""])[0].partition(" ")
+            if data is not None and pid.isascii() and pid.isdecimal() and int(pid) > 0 and process_exists(int(pid)):
+                found.append((f.parent.parent, int(pid), task.strip() or f.parent.parent.name))
+        except OSError:
             continue
     return found
+
+
+def known_tasks(root: Path) -> set[str]:
+    """The item and the name of each row in today's Tasks table; empty when the workspace names no tracker, has none for
+    today, or holds one that cannot be parsed."""
+    try:
+        cfg = read_config(root)
+        text = (root / cfg.tracker_path(datetime.now(cfg.zone).date().isoformat())).read_text()
+        return {s.strip() for t in parse_tracker(text).tasks for s in (t.item, t.name)}
+    except Exception:  # no config, no file, a bad zone or table: no known tasks, and the rows still list
+        return set()
 
 
 def running_trees(trees: Path) -> dict[Path, str]:
@@ -134,8 +150,9 @@ def main(argv: list[str] | None = None) -> int:
             runs = one_shot_runs(args.root / worktrees_dir((args.root / "CLAUDE.md").read_text()))
         except (OSError, UnicodeDecodeError):  # no CLAUDE.md, or one that cannot be decoded: no trees dir to look in
             runs = []
-        rows += [{"pid": pid, "task": task, "worktree": str(tree), "status": "running", "kind": "one-shot"}
-                 for tree, pid, task in runs]
+        known = known_tasks(args.root)  # printed: a task only when the tracker holds it, a tree name escaped
+        rows += [{"pid": pid, "task": task[:TASK_MAX] if task in known else "", "worktree": clean(tree.name)[:TASK_MAX],
+                  "status": "running", "kind": "one-shot"} for tree, pid, task in runs]
     print(toon_encode(rows) if rows else "[]")
     return 0
 
