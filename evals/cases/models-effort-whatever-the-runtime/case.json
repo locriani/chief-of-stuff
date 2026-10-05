@@ -15,18 +15,26 @@
   "graders": [
     {
       "name": "the task is dispatched",
-      "rule": "A `[models]` entry is launched with its effort whatever the runtime: the worker call carries `--effort <the entry's effort>`, or `--class <class>` with no `--runtime`/`--model` (which takes the entry whole).",
+      "rule": "Launch an entry as `--runtime <runtime> --model <model-id>`, plus `--effort <effort>` when the entry has one, with the model ID verbatim.",
       "type": "tool_used",
       "tool": "Bash",
-      "input_match": "(?s)(?:chief-of-stuff\\s+worker|chief_of_stuff\\.py\\s+worker|spawn_session\\.py)(?=.*--task\\b)(?=.*--dry-run)(?:(?=.*--effort[ =]medium\\b)|(?=.*--class[ =]implement\\b)(?!.*--runtime)(?!.*--model))",
+      "input_match": "(?:chief-of-stuff\\s+worker|chief_of_stuff\\.py\\s+worker|\\$\\{?\\w+\\}?(?:\\\\\")?\\s+worker|spawn_session\\.py)(?=(?:\\\\\"(?:[^\\\\]|\\\\[^\"])*\\\\\"|'[^']*'|[^;&|\\\\\"']|\\\\(?![n\"]))*--task(?![\\w.-]))(?=(?:\\\\\"(?:[^\\\\]|\\\\[^\"])*\\\\\"|'[^']*'|[^;&|\\\\\"']|\\\\(?![n\"]))*--dry-run(?![\\w.-]))(?:(?=(?:\\\\\"(?:[^\\\\]|\\\\[^\"])*\\\\\"|'[^']*'|[^;&|\\\\\"']|\\\\(?![n\"]))*--runtime[ =](?:\\\\\"|')?codex(?![\\w.-]))(?=(?:\\\\\"(?:[^\\\\]|\\\\[^\"])*\\\\\"|'[^']*'|[^;&|\\\\\"']|\\\\(?![n\"]))*--model[ =](?:\\\\\"|')?gpt-x(?![\\w.-]))(?=(?:\\\\\"(?:[^\\\\]|\\\\[^\"])*\\\\\"|'[^']*'|[^;&|\\\\\"']|\\\\(?![n\"]))*--effort[ =](?:\\\\\"|')?medium(?![\\w.-]))|(?=(?:\\\\\"(?:[^\\\\]|\\\\[^\"])*\\\\\"|'[^']*'|[^;&|\\\\\"']|\\\\(?![n\"]))*--class[ =](?:\\\\\"|')?implement(?![\\w.-]))(?!(?:\\\\\"(?:[^\\\\]|\\\\[^\"])*\\\\\"|'[^']*'|[^;&|\\\\\"']|\\\\(?![n\"]))*--runtime(?![\\w.-]))(?!(?:\\\\\"(?:[^\\\\]|\\\\[^\"])*\\\\\"|'[^']*'|[^;&|\\\\\"']|\\\\(?![n\"]))*--model(?![\\w.-]))(?!(?:\\\\\"(?:[^\\\\]|\\\\[^\"])*\\\\\"|'[^']*'|[^;&|\\\\\"']|\\\\(?![n\"]))*--effort(?![\\w.-])))",
       "min": 1
     },
     {
       "name": "no worker call omits the entry's effort",
-      "rule": "A `[models]` entry is launched with its effort whatever the runtime: the worker call carries `--effort <the entry's effort>`, or `--class <class>` with no `--runtime`/`--model` (which takes the entry whole).",
+      "rule": "Launch an entry as `--runtime <runtime> --model <model-id>`, plus `--effort <effort>` when the entry has one, with the model ID verbatim.",
       "type": "tool_used",
       "tool": "Bash",
-      "input_match": "(?s)(?:chief-of-stuff\\s+worker|chief_of_stuff\\.py\\s+worker|spawn_session\\.py)(?=.*--task\\b)(?!.*--effort[ =]medium\\b)(?!(?=.*--class[ =]implement\\b)(?!.*--runtime)(?!.*--model))",
+      "input_match": "(?:chief-of-stuff\\s+worker|chief_of_stuff\\.py\\s+worker|\\$\\{?\\w+\\}?(?:\\\\\")?\\s+worker|spawn_session\\.py)(?=(?:\\\\\"(?:[^\\\\]|\\\\[^\"])*\\\\\"|'[^']*'|[^;&|\\\\\"']|\\\\(?![n\"]))*--task(?![\\w.-]))(?!(?:\\\\\"(?:[^\\\\]|\\\\[^\"])*\\\\\"|'[^']*'|[^;&|\\\\\"']|\\\\(?![n\"]))*--effort[ =](?:\\\\\"|')?medium(?![\\w.-]))(?!(?=(?:\\\\\"(?:[^\\\\]|\\\\[^\"])*\\\\\"|'[^']*'|[^;&|\\\\\"']|\\\\(?![n\"]))*--class[ =](?:\\\\\"|')?implement(?![\\w.-]))(?!(?:\\\\\"(?:[^\\\\]|\\\\[^\"])*\\\\\"|'[^']*'|[^;&|\\\\\"']|\\\\(?![n\"]))*--runtime(?![\\w.-]))(?!(?:\\\\\"(?:[^\\\\]|\\\\[^\"])*\\\\\"|'[^']*'|[^;&|\\\\\"']|\\\\(?![n\"]))*--model(?![\\w.-]))(?!(?:\\\\\"(?:[^\\\\]|\\\\[^\"])*\\\\\"|'[^']*'|[^;&|\\\\\"']|\\\\(?![n\"]))*--effort(?![\\w.-])))",
+      "max": 0
+    },
+    {
+      "name": "launches no other model or runtime",
+      "rule": "Launch an entry as `--runtime <runtime> --model <model-id>`, plus `--effort <effort>` when the entry has one, with the model ID verbatim.",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "(?:chief-of-stuff\\s+worker|chief_of_stuff\\.py\\s+worker|\\$\\{?\\w+\\}?(?:\\\\\")?\\s+worker|spawn_session\\.py)(?=(?:\\\\\"(?:[^\\\\]|\\\\[^\"])*\\\\\"|'[^']*'|[^;&|\\\\\"']|\\\\(?![n\"]))*--task(?![\\w.-]))(?:(?=(?:\\\\\"(?:[^\\\\]|\\\\[^\"])*\\\\\"|'[^']*'|[^;&|\\\\\"']|\\\\(?![n\"]))*--runtime[ =](?!(?:\\\\\"|')?codex(?![\\w.-])))|(?=(?:\\\\\"(?:[^\\\\]|\\\\[^\"])*\\\\\"|'[^']*'|[^;&|\\\\\"']|\\\\(?![n\"]))*--model[ =](?!(?:\\\\\"|')?gpt-x(?![\\w.-]))))",
       "max": 0
     },
     {

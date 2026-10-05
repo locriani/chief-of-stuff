@@ -286,6 +286,79 @@ class CaseLintTest(unittest.TestCase):
             self.assertEqual(g["rule"], rule, g["name"])
             self.assertIn(g["rule"], agent_text, g["name"])
 
+    def test_effort_graders_enforce_a_sentence_the_agent_carries(self) -> None:
+        """#52: every grader of the effort case quotes the one sentence the agent file carries."""
+        rule = ("Launch an entry as `--runtime <runtime> --model <model-id>`, plus `--effort <effort>` when the entry has one, "
+                "with the model ID verbatim.")
+        agent_text = (EVALS.parent / "agents" / "chief-of-stuff.md").read_text()
+        for g in spec(EVALS / "cases" / "models-effort-whatever-the-runtime")["graders"][:3]:
+            self.assertEqual(g["rule"], rule, g["name"])
+            self.assertIn(g["rule"], agent_text, g["name"])
+
+    def test_effort_graders_judge_each_worker_launch_for_the_codex_entry(self) -> None:
+        """#52: the suggested entry is `codex:gpt-x@medium`. Per launch (a `worker` call with `--task`, up to the next `;`, `&`,
+        `|` or line break, a quoted argument stepped over whole), the call carries `--runtime codex --model gpt-x --effort medium`
+        or `--class implement` and none of the three flags. Three graders read the same call, as `run._tool_used` does (the
+        regex searches the call's JSON): the first is the satisfying launch (min 1), the second any launch that omits the
+        effort or runs another (max 0), the third any launch of another runtime or model (max 0). A Claude launch
+        (`--runtime claude --model sonnet --effort medium`) carries the effort, so the second lets it through; it does not
+        satisfy the first, and the third is what fails it, the way `models-rotation-first-entry` splits "launches the first
+        entry" from "launches no other model". Ceiling: a quote left open, or a quote with a `\\"` inside it, ends the
+        command early, and the flags after it go unseen."""
+        ok, no_effort, other = (g["input_match"] for g in spec(EVALS / "cases" / "models-effort-whatever-the-runtime")["graders"][:3])
+        w = 'chief-of-stuff worker --root . --task "T"'
+        tail = "--one-shot --dry-run"
+
+        def hits(pattern: str, command: str) -> bool:
+            # The description is the model's prose about the call. It names flags here, and decides nothing.
+            said = "Dry-run the worker with --runtime claude --model sonnet --effort medium --class implement"
+            return re.search(pattern, json.dumps({"command": command, "description": said})) is not None
+
+        # command: (satisfies "the task is dispatched", is a "launch that omits the effort", is a "launch of another entry")
+        table = {
+            f"{w} --runtime codex --model gpt-x --effort medium {tail}": (True, False, False),
+            f"{w} --class implement {tail}": (True, False, False),
+            f'{w} --runtime "codex" --model \'gpt-x\' --effort "medium" {tail}': (True, False, False),
+            f"{w} --class 'implement' {tail}": (True, False, False),
+            f'{w} --runtime codex --model gpt-x --effort=medium {tail}': (True, False, False),
+            f"python3 /release/chief_of_stuff.py worker --effort medium --runtime codex --model gpt-x --task x {tail}": (True, False, False),
+            # a second command that is not a launch: its `--model` is not this launch's
+            f"{w} --class implement --dry-run; chief-of-stuff worker --help | grep -- --model": (True, False, False),
+            f"chief-of-stuff worker --help | grep -- --model; {w} --class implement --dry-run": (True, False, False),
+            f"{w} --class implement --dry-run\nchief-of-stuff worker --help | grep -- --model": (True, False, False),
+            f"cd /ws && {w} --class implement --dry-run && echo '--model x'": (True, False, False),
+            # the launcher held in a variable, as a stored run had it
+            "P=/r/plugin/chief_of_stuff.py; python3 $P worker --root . --one-shot --runtime codex --model gpt-x --effort medium "
+            '--name n --task "T" --dry-run 2>&1': (True, False, False),
+            'python3 "$P" worker --task "T" --runtime codex --model gpt-x --dry-run': (False, True, False),
+            'python3 $P worker --task "T" --class implement --dry-run': (True, False, False),
+            # a `;` inside the task text does not end the command
+            'chief-of-stuff worker --task "Fix the export; add tests" --class implement --dry-run': (True, False, False),
+            # no effort
+            f"{w} --runtime codex --model gpt-x --dry-run": (False, True, False),
+            f"{w} --runtime codex --model gpt-x --dry-run; echo '--effort medium'": (False, True, False),
+            f"{w} --runtime codex --model gpt-x --dry-run\necho '--effort medium'": (False, True, False),
+            f"{w} --runtime codex --model gpt-x --dry-run && chief-of-stuff worker --help --effort medium": (False, True, False),
+            # explicit flags disable the class, so no effort
+            f"{w} --class implement --runtime codex --model gpt-x --dry-run": (False, True, False),
+            f"{w} --class implement --model gpt-x --dry-run": (False, True, False),
+            # another effort than the entry's
+            f"{w} --class implement --effort low --dry-run": (False, True, False),
+            f"{w} --runtime codex --model gpt-x --effort high --dry-run": (False, True, False),
+            f"{w} --runtime codex --model gpt-x --effort mediumish --dry-run": (False, True, False),
+            # the other entry, with an effort: not the suggested one
+            f"{w} --runtime claude --model sonnet --effort medium --dry-run": (False, False, True),
+            f"{w} --runtime codex --model gpt-xl --effort medium --dry-run": (False, False, True),
+            f"{w} --runtime codex --model gpt-x --effort medium --dry-run; {w} --runtime claude --model sonnet --effort medium": (True, False, True),
+            f"{w} --runtime codex --model gpt-x --effort medium --dry-run; {w} --class implement --effort low --dry-run": (True, True, False),
+            # not a launch
+            "chief-of-stuff worker --help | grep -- --model": (False, False, False),
+            "chief-of-stuff models --root . --class implement": (False, False, False),
+            f"{w} --dry-run": (False, True, False),
+        }
+        for command, want in table.items():
+            self.assertEqual(tuple(hits(p, command) for p in (ok, no_effort, other)), want, command)
+
     def test_every_grader_type_is_one_the_runner_dispatches(self) -> None:
         for case in CASES:
             for g in graders(spec(case)):
