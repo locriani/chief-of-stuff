@@ -75,12 +75,14 @@ def discover(root: Path, trees: str) -> list[Path]:
 
 def sha_trees(root: Path, trees: str) -> list[tuple[str, Path]]:
     """(name, tree) for each repository `--sha` should ask: the first tree by name of each repository `discover`
-    finds (trees sharing a common git dir are one), else the root named `.` when it is a git tree, else none."""
+    finds (trees sharing a common git dir are one, as is a pruned
+    worktree with its repository), else the root named `.` when it is a git tree, else none."""
     seen: set[Path] = set()
     found = []
     for tree in discover(root, trees):
         code, common = git(["rev-parse", "--path-format=absolute", "--git-common-dir"], tree)
-        key = Path(common).resolve() if code == 0 else tree  # a tree git cannot read is its own repository
+        pruned = None if code == 0 else _pruned_common(tree)
+        key = Path(common).resolve() if code == 0 else pruned.resolve() if pruned else tree  # unreadable: its pruned repository, else itself
         if key not in seen:
             seen.add(key)
             found.append((tree.name, tree))
@@ -176,20 +178,20 @@ def _has_grafts(tree: Path) -> bool | None:
 
 
 def _pruned_common(tree: Path) -> Path | None:
-    """The repository (`<common>`) of a pruned worktree, else None. `tree` is pruned when its `.git` is a regular file whose first
-    line is `gitdir: <path>` (that exact prefix, as git requires) with `<path>` = `<common>/worktrees/<name>`, KNOWN gone (`lstat`
-    says not found; a permission error, any other `OSError` or a dangling symlink is present or unknown). Only the terminal
-    `\r`/`\n` of the line is trimmed, as git does; every other byte after `gitdir: ` is the path. Read from the file and the
-    filesystem, never git (a probe can time out). Whether `<common>` is itself the git directory git uses there (rule A) is not
+    """The repository (`<common>`) of a pruned worktree, else None. `tree` is pruned when its `.git` is a regular file whose
+    content is `gitdir: <path>` (that exact prefix, as git requires) with `<path>` = `<common>/worktrees/<name>`, KNOWN gone (`lstat`
+    says not found; a permission error, any other `OSError` or a dangling symlink is present or unknown). Only the trailing run of
+    `\r`/`\n` is trimmed, as git does; every other byte after `gitdir: ` is the path, and a path left with one is no path. Read from
+    the file and the filesystem, never git (a probe can time out). Whether `<common>` is itself the git directory git uses there (rule A) is not
     asked here: `check_sha` asks git, once, and follows the redirect once (rule B)."""
     if not (tree / ".git").is_file():  # a regular file only: open() on a FIFO blocks forever
         return None  # ponytail: a swap for a FIFO between this check and the open still blocks; os.open with O_NONBLOCK plus fstat
     try:
-        with open(tree / ".git") as f:
-            line = f.readline(4096)
-        path = line.removeprefix("gitdir: ")
-        target = tree / path.rstrip("\r\n")  # an absolute path replaces `tree`
-        if path != line and target.parent.name == "worktrees":
+        with open(tree / ".git", newline="") as f:  # newline="": a lone `\r` stays one
+            line = f.read(4096)
+        path = line.removeprefix("gitdir: ").rstrip("\r\n")
+        target = tree / path  # an absolute path replaces `tree`
+        if line.startswith("gitdir: ") and not {"\r", "\n"} & set(path) and target.parent.name == "worktrees":
             try:
                 target.lstat()
             except FileNotFoundError:
