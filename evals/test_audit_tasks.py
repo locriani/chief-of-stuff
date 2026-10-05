@@ -1415,6 +1415,25 @@ class ClosedIssueOnOpenTaskTest(unittest.TestCase):
             "ask the user: reopen the issue or drop the work",
             [str(f) for f in report.issues])
 
+    def test_a_task_named_for_a_listed_session_does_not_take_that_sessions_tree(self):
+        """#51: `arch` is a listed session, so the bare `arch` row is that session's own, not the open task named
+        `arch`'s (kim's): `_tree_unlanded` must key on no name, and the closed issue's task is written done."""
+        root = self.workspace()
+        tracker = root / "daily" / "2026-09-17-tracker.md"
+        tracker.write_text(tracker.read_text().replace(
+            "\n## File ownership",
+            "| arch | Review the architecture | kim | waiting | 09:00 |  | S | #8 | c |\n\n"
+            "## Sessions\n\n| ref | name | state | doing | waiting on | free at | constraints | children | last reply |\n"
+            "|---|---|---|---|---|---|---|---|---|\n"
+            "| a1b2c3 | arch | working | a task | | now | | none | 09:30 |\n"
+            "| b2c3d4 | kim | working | a task | | now | | none | 09:30 |\n\n## File ownership", 1
+        ).replace("| kim | worktree wt-merged (landed) |",
+                  "| kim | worktree wt-merged (landed) |\n| arch | worktree wt-unmerged (feat/open) |"))
+        gh = FakeGh({"o/backlog": {5: "CLOSED", 6: "CLOSED", 7: "CLOSED", 8: "CLOSED"}})
+        report = al.audit(root, "2026-09-17", gh=gh)
+        self.assertIn("issue: arch — #8 is closed; write the task done",
+                      [str(f) for f in report.issues])
+
 
 LANE_CLAUDE = CLAUDE + "- Settings: `cos.toml`\n"
 LANE_TOML = '[lanes]\nbuild = { stages = ["implement", "pr", "review", "triage", "merge"], gates = ["triage", "merge"] }\n'
