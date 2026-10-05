@@ -2840,6 +2840,40 @@ class OwnershipRowKeyedOnNameTest(unittest.TestCase):
         self.assertIn("wt-unmerged", str(orphan))
         self.assertIn("names a ref no ## Sessions row carries", str(orphan))
 
+    # A context that is the name of a session listed in `## Sessions` is that session's row, not a task-name key:
+    # a session's File ownership row may be the bare session name, and a task named for the session must not take it.
+    def test_a_bare_session_row_is_not_keyed_on_a_done_task_named_for_the_session(self) -> None:
+        """`arch`'s row is the session's own running work; the done task named `arch` is kim's and has no tree."""
+        tmp, root = named_workspace(
+            self.named("arch", "Delete the old importer", "kim")
+            + "\n" + self.named("docs", "Edit the guide", "arch", "running 09:10"),
+            "| arch | worktree wt-unmerged (feat/open) |",
+            sessions=session_row("arch") + "\n" + session_row("kim", "b2c3d4"))
+        self.addCleanup(tmp.cleanup)
+        report = al.audit(root, "2026-09-17")
+        self.assertEqual(report.reopen, [], report.lines)
+
+    def test_a_bare_session_row_with_a_ref_is_not_keyed_on_a_task_named_for_the_session(self) -> None:
+        """Guard: `arch [a1b2c3]` is not the name `arch`, so the ref spelling never joined by name."""
+        tmp, root = named_workspace(
+            self.named("arch", "Delete the old importer", "kim"),
+            "| arch [a1b2c3] | worktree wt-unmerged (feat/open) |",
+            sessions=session_row("arch [a1b2c3]") + "\n" + session_row("kim", "b2c3d4"))
+        self.addCleanup(tmp.cleanup)
+        report = al.audit(root, "2026-09-17")
+        self.assertEqual(report.reopen, [], report.lines)
+
+    def test_a_bare_row_named_for_no_listed_session_is_still_its_tasks_row(self) -> None:
+        """Guard: with no session called `arch`, a bare `arch` row is indistinguishable from a one-shot's row keyed
+        on its task's name, so it stays live through that task's listed owner. (No red orphan-side shape exists: a
+        row for a listed session is live by its own context whether or not a task shares the name.)"""
+        tmp, root = named_workspace(
+            self.named("arch", "Review the architecture", "kim", "running 09:10"),
+            "| arch | worktree wt-unmerged (feat/open) |", sessions=session_row("kim"))
+        self.addCleanup(tmp.cleanup)
+        report = al.audit(root, "2026-09-17")
+        self.assertEqual(report.orphans, [], report.lines)
+
     def test_only_a_context_that_is_the_name_is_keyed_on_it(self) -> None:
         item = "Tidy the importer"
         for context in ("alpha (v2)", "alpha [1234]", "**alpha**", "`alpha`"):
