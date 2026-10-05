@@ -15,10 +15,13 @@ import sys
 
 import runtimes
 from _vendor.toon_format import encode as toon_encode
+from git_trees import clean
 from workspace import worktrees_dir
 
 # `<launcher pid> <task>` while a one-shot runs in this tree; the count behind `[workers] max_concurrency`.
 PIDFILE = Path(".chief-of-stuff") / "one-shot.pid"
+# The pid file sits in a worker's own tree, so its task is untrusted: one printable line of at most this many characters.
+TASK_MAX = 200
 
 
 def registrations(root: Path) -> dict[int, dict[str, str]]:
@@ -52,7 +55,7 @@ def process_exists(pid: int) -> bool:
         return True
     except PermissionError:
         return True
-    except ProcessLookupError:
+    except (ProcessLookupError, OverflowError):  # OverflowError: a pid too large for the OS is no process
         return False
 
 
@@ -62,9 +65,11 @@ def one_shot_runs(trees: Path) -> list[tuple[Path, int, str]]:
     found = []
     for f in sorted(trees.glob(f"*/{PIDFILE}")):
         try:
-            pid, _, task = f.read_text().partition(" ")
+            with f.open() as h:
+                pid, _, task = h.read(8 * TASK_MAX).partition(" ")  # a bounded read: the file is not ours
             if int(pid) > 0 and process_exists(int(pid)):
-                found.append((f.parent.parent, int(pid), task.strip() or f.parent.parent.name))
+                task = clean((task.splitlines() or [""])[0])[:TASK_MAX].strip()
+                found.append((f.parent.parent, int(pid), task or f.parent.parent.name))
         except (OSError, ValueError):
             continue
     return found
@@ -127,7 +132,7 @@ def main(argv: list[str] | None = None) -> int:
     if not pids:
         try:
             runs = one_shot_runs(args.root / worktrees_dir((args.root / "CLAUDE.md").read_text()))
-        except OSError:  # no CLAUDE.md, so no trees dir to look in
+        except (OSError, UnicodeDecodeError):  # no CLAUDE.md, or one that cannot be decoded: no trees dir to look in
             runs = []
         rows += [{"pid": pid, "task": task, "worktree": str(tree), "status": "running", "kind": "one-shot"}
                  for tree, pid, task in runs]
