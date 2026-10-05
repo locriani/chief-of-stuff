@@ -121,6 +121,19 @@ class OneShotRunsTests(unittest.TestCase):
         _, rows = self.processes("123")
         self.assertEqual(rows, [{"pid": 123, "name": "worker", "runtime": "cursor", "status": "running"}])
 
+    def test_a_non_positive_pid_is_not_a_live_run(self):
+        # Real process_exists on purpose: os.kill(0, 0) and os.kill(-1, 0) succeed (they signal a process group /
+        # every process), so only the reader rejecting the pid keeps `0 task` from counting against max_concurrency.
+        self.pidfile("group", "0 Group task\n")
+        self.pidfile("everyone", "-1 Everyone task\n")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(process_status.main(["--root", str(self.root)]), 0)
+        self.assertEqual(out.getvalue().strip(), "[]")
+        trees = self.root / "trees"
+        self.assertEqual(process_status.running_trees(trees), {})
+        self.assertEqual(process_status.running_workers(trees), [])
+
 
 if __name__ == "__main__":
     unittest.main()
