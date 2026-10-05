@@ -27,7 +27,7 @@ import git_trees  # noqa: E402
 import board_sources as bs  # noqa: E402
 import test_git_trees as tgt  # noqa: E402  (module-qualified: don't re-collect its TestCases)
 import test_board_sources as tbs  # noqa: E402  (module-qualified: don't re-collect its TestCases)
-from tracker import short_name  # noqa: E402
+from tracker import Task, short_name  # noqa: E402
 
 CLAUDE = """# Workspace
 
@@ -2707,9 +2707,9 @@ class ShaTreesTest(unittest.TestCase):
 NAMED_HEADER = "| name | item | owner | state | since | due | size | checklist |\n|---|---|---|---|---|---|---|---|"
 
 
-def named_workspace(rows: str, ownership: str) -> tuple[tempfile.TemporaryDirectory, Path]:
+def named_workspace(rows: str, ownership: str, sessions: str = "") -> tuple[tempfile.TemporaryDirectory, Path]:
     """`workspace` with the Tasks table carrying the `name` column (#51)."""
-    tmp, root = workspace(rows, ownership)
+    tmp, root = workspace(rows, ownership, sessions)
     tracker = root / "daily" / "2026-09-17-tracker.md"
     tracker.write_text(tracker.read_text().replace(
         "| item | owner | state | since | due | checklist |\n|---|---|---|---|---|---|", NAMED_HEADER))
@@ -2781,3 +2781,50 @@ class OwnershipRowKeyedOnNameTest(unittest.TestCase):
         rows, note = al.rows_for("Tidy the importer", "robin", owners, "alpha")
         self.assertEqual(rows, [])
         self.assertIn("ambiguous", note)
+
+    # A one-shot's row keyed on its task's name: the task's owner, not the row's context, is what `## Sessions` lists.
+    SAM_ALPHA = "| alpha | Tidy the importer | sam | done 10:00 | 09:00 |  | S | Checklist: Tidy |"
+    UNPUSHED = "| alpha | worktree wt-unmerged (feat/open) |"
+
+    def task(self, name: str, owner: str = "sam", item: str = "Tidy the importer") -> Task:
+        return Task(item=item, owner=owner, state="running 09:10", since="09:00", due="", checklist="", name=name)
+
+    def claim(self, row: al.OwnerRow, tasks: list[Task], roster: set[str]):
+        return al.row_claim(row, tasks, roster, set(), "robin")
+
+    def test_a_name_keyed_rows_claim_is_live_while_its_tasks_owner_is_listed(self) -> None:
+        self.assertTrue(self.claim(self.row("alpha"), [self.task("alpha")], {"sam"}).live)
+
+    def test_an_item_keyed_rows_claim_is_live_while_its_tasks_owner_is_listed(self) -> None:
+        """The shape the name-keyed case must match."""
+        self.assertTrue(self.claim(self.row("Tidy the importer"), [self.task("alpha")], {"sam"}).live)
+
+    def test_a_name_keyed_tree_with_unpushed_work_is_not_an_orphan_while_its_tasks_owner_is_listed(self) -> None:
+        tmp, root = named_workspace(self.SAM_ALPHA, self.UNPUSHED, sessions=session_row("sam"))
+        self.addCleanup(tmp.cleanup)
+        report = al.audit(root, "2026-09-17")
+        self.assertEqual(report.orphans, [], report.lines)
+
+    def test_a_name_keyed_tree_whose_tasks_owner_is_not_listed_is_still_an_orphan(self) -> None:
+        tmp, root = named_workspace(self.SAM_ALPHA, self.UNPUSHED, sessions=session_row("kim"))
+        self.addCleanup(tmp.cleanup)
+        [orphan] = al.audit(root, "2026-09-17").orphans
+        self.assertIn("wt-unmerged", str(orphan))
+        self.assertIn("is not in ## Sessions", str(orphan))
+
+    def test_a_name_keyed_rows_claim_is_not_live_when_its_tasks_owner_is_not_listed(self) -> None:
+        self.assertFalse(self.claim(self.row("alpha"), [self.task("alpha")], {"kim"}).live)
+
+    def test_a_row_keyed_on_a_name_no_task_carries_is_not_live(self) -> None:
+        self.assertFalse(self.claim(self.row("gamma"), [self.task("alpha")], {"sam"}).live)
+
+    def test_a_row_keyed_on_another_tasks_name_is_not_live_through_this_task(self) -> None:
+        tasks = [self.task("alpha", "sam"), self.task("beta", "kim", "Trim the exporter")]
+        self.assertFalse(self.claim(self.row("beta"), tasks, {"sam"}).live)
+
+    def test_a_blank_task_name_never_claims_a_row(self) -> None:
+        """`parse_ownership` yields a row with an empty context, so this can occur."""
+        for context in ("", "   "):
+            with self.subTest(context=repr(context)):
+                row = al.OwnerRow(context, ["wt-a"])
+                self.assertFalse(self.claim(row, [self.task("", "sam"), self.task("  ", "sam")], {"sam"}).live)
