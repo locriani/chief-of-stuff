@@ -1,0 +1,52 @@
+{
+  "tz": "America/Chicago",
+  "repo": {
+    "clone": "repo",
+    "trees": "trees",
+    "worktrees": [],
+    "files": {
+      "src/export.py": "def to_csv(rows):\n    return '\\n'.join(','.join(str(c) for c in row) for row in rows)\n",
+      "src/__init__.py": "",
+      "tests/test_export.py": "from src.export import to_csv\n\n\ndef test_plain():\n    assert to_csv([[1, 2]]) == '1,2'\n"
+    }
+  },
+  "description": "#52: A `[models]` entry is launched with its effort whatever the runtime: the worker call carries `--effort <the entry's effort>`, or `--class <class>` with no `--runtime`/`--model` (which takes the entry whole). The implement rotation's first entry is codex:gpt-x@medium; a worker call `--runtime codex --model gpt-x` with no `--effort` leaves the worker at whatever the user's codex config says. Graded on every recorded worker call (a denied call is an attempt), not on wording.",
+  "prompt": "Dispatch the CSV export fix. For this isolated test, use --dry-run for the worker launch and treat the dry run as the launch; do not start a real worker process.",
+  "graders": [
+    {
+      "name": "the task is dispatched",
+      "rule": "Launch an entry as `--runtime <runtime> --model <model-id>`, plus `--effort <effort>` when the entry has one, with the model ID verbatim.",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "(?:chief-of-stuff\\s+worker|chief_of_stuff\\.py\\s+worker|\\$\\{?\\w+\\}?(?:\\\\\")?\\s+worker|spawn_session\\.py)(?=(?:\\\\\"(?:[^\\\\]|\\\\[^\"])*\\\\\"|'[^']*'|[^;&|\\\\\"']|\\\\(?![n\"]))*--task(?![\\w.-]))(?=(?:\\\\\"(?:[^\\\\]|\\\\[^\"])*\\\\\"|'[^']*'|[^;&|\\\\\"']|\\\\(?![n\"]))*--dry-run(?![\\w.-]))(?:(?=(?:\\\\\"(?:[^\\\\]|\\\\[^\"])*\\\\\"|'[^']*'|[^;&|\\\\\"']|\\\\(?![n\"]))*--runtime[ =](?:\\\\\"|')?codex(?![\\w.-]))(?=(?:\\\\\"(?:[^\\\\]|\\\\[^\"])*\\\\\"|'[^']*'|[^;&|\\\\\"']|\\\\(?![n\"]))*--model[ =](?:\\\\\"|')?gpt-x(?![\\w.-]))(?=(?:\\\\\"(?:[^\\\\]|\\\\[^\"])*\\\\\"|'[^']*'|[^;&|\\\\\"']|\\\\(?![n\"]))*--effort[ =](?:\\\\\"|')?medium(?![\\w.-]))|(?=(?:\\\\\"(?:[^\\\\]|\\\\[^\"])*\\\\\"|'[^']*'|[^;&|\\\\\"']|\\\\(?![n\"]))*--class[ =](?:\\\\\"|')?implement(?![\\w.-]))(?!(?:\\\\\"(?:[^\\\\]|\\\\[^\"])*\\\\\"|'[^']*'|[^;&|\\\\\"']|\\\\(?![n\"]))*--runtime(?![\\w.-]))(?!(?:\\\\\"(?:[^\\\\]|\\\\[^\"])*\\\\\"|'[^']*'|[^;&|\\\\\"']|\\\\(?![n\"]))*--model(?![\\w.-]))(?!(?:\\\\\"(?:[^\\\\]|\\\\[^\"])*\\\\\"|'[^']*'|[^;&|\\\\\"']|\\\\(?![n\"]))*--effort(?![\\w.-])))",
+      "min": 1
+    },
+    {
+      "name": "no worker call omits the entry's effort",
+      "rule": "Launch an entry as `--runtime <runtime> --model <model-id>`, plus `--effort <effort>` when the entry has one, with the model ID verbatim.",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "(?:chief-of-stuff\\s+worker|chief_of_stuff\\.py\\s+worker|\\$\\{?\\w+\\}?(?:\\\\\")?\\s+worker|spawn_session\\.py)(?=(?:\\\\\"(?:[^\\\\]|\\\\[^\"])*\\\\\"|'[^']*'|[^;&|\\\\\"']|\\\\(?![n\"]))*--task(?![\\w.-]))(?!(?:\\\\\"(?:[^\\\\]|\\\\[^\"])*\\\\\"|'[^']*'|[^;&|\\\\\"']|\\\\(?![n\"]))*--effort[ =](?:\\\\\"|')?medium(?![\\w.-]))(?!(?=(?:\\\\\"(?:[^\\\\]|\\\\[^\"])*\\\\\"|'[^']*'|[^;&|\\\\\"']|\\\\(?![n\"]))*--class[ =](?:\\\\\"|')?implement(?![\\w.-]))(?!(?:\\\\\"(?:[^\\\\]|\\\\[^\"])*\\\\\"|'[^']*'|[^;&|\\\\\"']|\\\\(?![n\"]))*--runtime(?![\\w.-]))(?!(?:\\\\\"(?:[^\\\\]|\\\\[^\"])*\\\\\"|'[^']*'|[^;&|\\\\\"']|\\\\(?![n\"]))*--model(?![\\w.-]))(?!(?:\\\\\"(?:[^\\\\]|\\\\[^\"])*\\\\\"|'[^']*'|[^;&|\\\\\"']|\\\\(?![n\"]))*--effort(?![\\w.-])))",
+      "max": 0
+    },
+    {
+      "name": "launches no other model or runtime",
+      "rule": "Launch an entry as `--runtime <runtime> --model <model-id>`, plus `--effort <effort>` when the entry has one, with the model ID verbatim.",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "(?:chief-of-stuff\\s+worker|chief_of_stuff\\.py\\s+worker|\\$\\{?\\w+\\}?(?:\\\\\")?\\s+worker|spawn_session\\.py)(?=(?:\\\\\"(?:[^\\\\]|\\\\[^\"])*\\\\\"|'[^']*'|[^;&|\\\\\"']|\\\\(?![n\"]))*--task(?![\\w.-]))(?:(?=(?:\\\\\"(?:[^\\\\]|\\\\[^\"])*\\\\\"|'[^']*'|[^;&|\\\\\"']|\\\\(?![n\"]))*--runtime[ =](?!(?:\\\\\"|')?codex(?![\\w.-])))|(?=(?:\\\\\"(?:[^\\\\]|\\\\[^\"])*\\\\\"|'[^']*'|[^;&|\\\\\"']|\\\\(?![n\"]))*--model[ =](?!(?:\\\\\"|')?gpt-x(?![\\w.-]))))",
+      "max": 0
+    },
+    {
+      "name": "configuration unchanged",
+      "type": "file_unchanged",
+      "path": "chief-of-stuff.toml"
+    }
+  ],
+  "max_turns": 24,
+  "timeout_seconds": 600,
+  "runtimes_present": [
+    "claude",
+    "codex"
+  ]
+}

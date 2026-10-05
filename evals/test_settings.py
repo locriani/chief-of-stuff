@@ -317,6 +317,19 @@ class ModelsTest(unittest.TestCase):
         self.assertEqual((first.runtime, first.model, first.effort), ("codex", "gpt-test:preview", "medium"))
         self.assertIsNone(got["implement"][1].effort)
 
+    def test_an_effort_on_a_runtime_that_takes_none_is_refused_at_load(self):
+        # #52: refused here, naming the entry the user wrote; not at launch about a `--effort` flag never typed.
+        with self.assertRaises(st.SettingsError) as raised:
+            self.load('[models.deep]\nrotation = ["cursor:gpt-x@high", "claude:opus"]\n')
+        for word in ("cursor:gpt-x@high", "cursor", "effort"):
+            self.assertIn(word, str(raised.exception))
+
+    def test_an_effort_loads_where_the_runtime_takes_one_and_none_loads_anywhere(self):
+        for entry in ("cursor:gpt-x", "codex:gpt-x@high", "agy:gem-x@high"):
+            with self.subTest(entry=entry):
+                self.assertEqual([str(e) for e in self.load(f'[models.deep]\nrotation = ["{entry}"]\n').models["deep"]],
+                                 [entry])
+
     def test_bad_tables_are_refused(self):
         for bad in (
             '[models]\ndeep = "claude:opus"\n',

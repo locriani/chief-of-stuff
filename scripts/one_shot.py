@@ -39,15 +39,12 @@ def command(runtime: str, binary: str, cwd: Path, dispatch: Path, *, agent_type:
             model: str, effort: str) -> list[str]:
     """A single foreground CLI invocation, without interactive plan or mailbox modes."""
     prompt = BOOTSTRAP.format(dispatch=dispatch, cwd=cwd)
+    tail: list[str] = []
     if runtime == "claude":
         argv = [binary, "--print", "--permission-mode", "auto", "--permission-prompts", "none",
                 "--no-session-persistence", "--plugin-dir", str(Path(__file__).resolve().parent.parent)]
         if agent_type:
             argv += ["--agent", agent_type]
-        if model:
-            argv += ["--model", model]
-        if effort:
-            argv += ["--effort", effort]
     elif runtime == "codex":
         # `never` returns blocked operations to the model instead of waiting for a human.
         argv = [binary, "-a", "never", "exec", "-C", str(cwd), "--sandbox", "workspace-write",
@@ -59,21 +56,16 @@ def command(runtime: str, binary: str, cwd: Path, dispatch: Path, *, agent_type:
                                  timeout=15)
         if git_dir.returncode == 0:
             argv += ["--add-dir", str(Path(git_dir.stdout.strip()).resolve())]
-        if model:
-            argv += ["--model", model]
     elif runtime == "cursor":
         argv = [binary, "--print", "--force", "--trust", "--workspace", str(cwd)]
-        if model:
-            argv += ["--model", model]
     elif runtime == "agy":
         argv = [binary, "--mode", "accept-edits", "--dangerously-skip-permissions"]
-        if model:
-            argv += ["--model", model]
         # agy's --print takes the prompt as its value, so it goes last, right before the prompt.
-        argv += ["--print"]
+        tail = ["--print"]
     else:
         raise ValueError(f"unknown runtime {runtime}")
-    return [*argv, prompt]
+    flags = [*(["--model", model] if model else []), *runtimes.get(runtime).effort_tokens(effort)]
+    return [*argv, *flags, *tail, prompt]
 
 
 def worker_result(path: Path, exit_code: int) -> tuple[str, str, str]:
@@ -172,7 +164,8 @@ def _tree_note(root: Path, cwd: Path) -> str:
     return f"worktree `{tree}` ({branch or 'detached'})"
 
 
-def record_launch(path: Path, task: str, name: str, tree: str, runtime: str, model: str, at: str) -> None:
+def record_launch(path: Path, task: str, name: str, tree: str, runtime: str, model: str, at: str,
+                  effort: str = "") -> None:
     """Before the worker runs: the row is the worker's and running, File ownership names its tree, and the Log says so."""
     if "|" in name or "\n" in name:
         raise ValueError("worker name cannot be written as a tracker owner")
@@ -201,7 +194,7 @@ def record_launch(path: Path, task: str, name: str, tree: str, runtime: str, mod
             lines[owned] = f"{cut}; {tree} |\n"
         else:
             lines[owned] = f"{body.rstrip()}; {tree}\n"
-        return tracker_write.append_log("".join(lines), started_line(at, name, runtime, model, tree, task), create=True)
+        return tracker_write.append_log("".join(lines), started_line(at, name, runtime, model, tree, task, effort), create=True)
 
     tracker_write.edit(path, change)
 
@@ -328,11 +321,11 @@ def run(*, root: Path, day: str | None, task: str, cwd: Path, name: str,
         raise ValueError(f"no worktree at {cwd}")
     trees = root / worktrees_dir((root / "CLAUDE.md").read_text())
     with slot(trees, cwd, task, load_settings(root, cfg.settings_path).workers.max_concurrency):
-        return _launch(root, cfg, chosen_day, task, cwd, name, runtime, model, body, argv, timeout_minutes)
+        return _launch(root, cfg, chosen_day, task, cwd, name, runtime, model, effort, body, argv, timeout_minutes)
 
 
 def _launch(root: Path, cfg, chosen_day: str, task: str, cwd: Path, name: str, runtime: str, model: str,
-            body: str, argv: list[str], timeout_minutes: int) -> int:
+            effort: str, body: str, argv: list[str], timeout_minutes: int) -> int:
     # Same clean login-shell path as interactive sessions; auth and user PATH come from shell setup.
     # Everything that can refuse runs before anything is written; a refused row takes its dispatch back.
     launch_argv, tree = login_argv(argv), _tree_note(root, cwd)
@@ -341,7 +334,7 @@ def _launch(root: Path, cfg, chosen_day: str, task: str, cwd: Path, name: str, r
     before_head = git_head(cwd)
     try:
         record_launch(root / cfg.tracker_path(chosen_day), task, name, tree, runtime, model,
-                      tracker_write.stamp(cfg.zone))
+                      tracker_write.stamp(cfg.zone), effort)
     except Exception:
         written.unlink(missing_ok=True)
         raise

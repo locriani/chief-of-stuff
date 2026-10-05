@@ -1,5 +1,7 @@
 """One-shot workers exit once and leave a reviewable task outcome."""
 
+import contextlib
+import io
 import os
 import re
 import subprocess
@@ -15,6 +17,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import one_shot  # noqa: E402
+import spawn_session  # noqa: E402
 import shell_setup  # noqa: E402
 from _vendor.toon_format import decode as toon_decode  # noqa: E402
 
@@ -92,12 +95,44 @@ class CommandTest(unittest.TestCase):
         self.assertIn(("--sandbox", "workspace-write"), pairs)
         self.assertFalse([a for a in args if "danger" in a])
 
+    def test_codex_takes_its_effort_as_a_config_override(self):
+        # #52: codex has no --effort flag; without this a one-shot runs on the user's own model_reasoning_effort.
+        def pairs(effort):
+            args = one_shot.command("codex", "/bin/fake", Path("/tmp/one-shot-tree"), Path("/tmp/d.md"),
+                                    agent_type=None, model="", effort=effort)
+            return args, list(zip(args, args[1:]))
+
+        args, with_effort = pairs("high")
+        self.assertIn(("-c", "model_reasoning_effort=high"), with_effort)
+        self.assertIn(("-c", "sandbox_workspace_write.network_access=true"), with_effort)
+        args, without = pairs("")
+        self.assertFalse([a for a in args if "model_reasoning_effort" in a])
+
+    def test_a_runtime_with_no_one_shot_branch_is_refused_by_name(self):
+        # #52: not a KeyError from the table, and never another runtime's argv.
+        fifth = one_shot.runtimes.Runtime("fifth", binary="fifth", display="Fifth", needs_model=False, schedules=False)
+        for name in ("nope", "fifth"):
+            with self.subTest(name=name), \
+                 mock.patch.dict(one_shot.runtimes._BY_NAME, {"fifth": fifth}), \
+                 self.assertRaisesRegex(ValueError, name):
+                one_shot.command(name, "/bin/fake", Path("/tmp/t"), Path("/tmp/d.md"), agent_type=None, model="m",
+                                 effort="high")
+
     def test_agy_print_takes_the_prompt_as_its_value(self):
         # agy's --print takes a value: a flag after it becomes the prompt, and agy exits 2.
         dispatch = Path("/tmp/one-shot-tree/.chief-of-stuff/dispatch.md")
         args = one_shot.command("agy", "/bin/fake", dispatch.parent.parent, dispatch,
                                 agent_type=None, model="gemini-x", effort="")
         self.assertIn(str(dispatch), args[args.index("--print") + 1])
+
+    def test_agy_takes_its_effort_before_the_print_value(self):
+        # agy's CLI lists `--effort (low|medium|high|xhigh|max)`; `--print` still ends the flags and takes the prompt.
+        dispatch = Path("/tmp/one-shot-tree/.chief-of-stuff/dispatch.md")
+        args = one_shot.command("agy", "/bin/fake", dispatch.parent.parent, dispatch,
+                                agent_type=None, model="m", effort="high")
+        self.assertIn(("--effort", "high"), list(zip(args, args[1:])))
+        self.assertEqual(args[-2], "--print")
+        self.assertIn(str(dispatch), args[-1])
 
     def test_exit_zero_without_structured_result_requires_review(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -153,12 +188,12 @@ class RunTest(unittest.TestCase):
         path.chmod(0o755)
         return path
 
-    def _run(self, fake: Path, tree: Path | None = None) -> int:
+    def _run(self, fake: Path, tree: Path | None = None, model: str = "", effort: str = "") -> int:
         with mock.patch.object(one_shot, "resolve", return_value=str(fake)), \
              mock.patch.object(one_shot, "login_argv", side_effect=lambda argv: argv):
             return one_shot.run(root=self.root, day="2026-09-18", task="Security audit",
                                 cwd=tree or self.tree, name="worker01", runtime="codex", agent_type=None,
-                                model="", effort="", dry_run=False)
+                                model=model, effort=effort, dry_run=False)
 
     def test_done_exits_once_and_leaves_waiting_for_integration(self):
         fake = self._fake('status: done\nreason: completed audit\nchanges: committed handler and ran tests\n',
@@ -183,6 +218,35 @@ class RunTest(unittest.TestCase):
         self.assertRegex(during, r"(?m)^- \d\d:\d\d one-shot worker01 started: codex, worktree `worker`, "
                                  r"task Security audit$")
         self.assertIn(f"worktree `worker` ({branch})", self.tracker.read_text())
+
+    def test_the_log_line_names_the_effort_the_worker_ran_at(self):
+        # #52: the Log is the durable record of what ran; it had the model and never the effort.
+        fake = self._fake('status: done\nreason: done\nchanges: checked\n', write_partial=False)
+        self.assertEqual(self._run(fake, model="gpt-test", effort="medium"), 0)
+        self.assertIn("one-shot worker01 started: codex gpt-test effort=medium, worktree `worker`",
+                      (self.root / "during.md").read_text())
+
+    def test_an_effort_with_no_model_is_not_read_as_the_model(self):
+        # #52: `codex medium` would read as a model named medium; the effort word names itself.
+        fake = self._fake('status: done\nreason: done\nchanges: checked\n', write_partial=False)
+        self.assertEqual(self._run(fake, effort="medium"), 0)
+        self.assertIn("one-shot worker01 started: codex effort=medium, worktree `worker`",
+                      (self.root / "during.md").read_text())
+
+    def test_a_class_entrys_effort_is_the_one_the_log_line_names(self):
+        # #52: --class supplies the effort; the Log records the effective one, not the flag (there was none).
+        (self.root / "CLAUDE.md").write_text(CLAUDE + "- Settings: `chief-of-stuff.toml`\n")
+        (self.root / "chief-of-stuff.toml").write_text('[models.implement]\nrotation = ["codex:gpt-test@medium"]\n')
+        fake = self._fake('status: done\nreason: done\nchanges: checked\n', write_partial=False)
+        with mock.patch.object(one_shot, "resolve", return_value=str(fake)), \
+             mock.patch.object(one_shot, "login_argv", side_effect=lambda argv: argv), \
+             contextlib.redirect_stdout(io.StringIO()):
+            code = spawn_session.main(["--one-shot", "--root", str(self.root), "--date", self.tracker.name[:10],
+                                       "--cwd", str(self.tree), "--name", "worker01", "--task", "Security audit",
+                                       "--class", "implement"])
+        self.assertEqual(code, 0)
+        self.assertIn("one-shot worker01 started: codex gpt-test effort=medium, worktree `worker`",
+                      (self.root / "during.md").read_text())
 
     def test_a_refused_launch_takes_its_dispatch_back_so_a_retry_can_use_the_tree(self):
         # A dispatch left behind makes the retry refuse the tree, and the coordinator makes a second one.

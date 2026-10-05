@@ -1,0 +1,5 @@
+[workers]
+mode = "one-shot"
+
+[models.implement]
+rotation = ["codex:gpt-x@medium", "claude:sonnet@medium"]

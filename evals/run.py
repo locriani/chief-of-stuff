@@ -1097,7 +1097,7 @@ def command(case: Case, arm: str, model: str, prompt: str | None, mcp_config: di
     if arm == "agent":
         cmd += ["--agent", AGENT]
     if effort:
-        cmd += ["--effort", effort]
+        cmd += runtimes.get("claude").effort_tokens(effort)
     return cmd
 
 
@@ -1126,7 +1126,7 @@ def host_command(runtime: str, model: str, prompt: str, work: Path, root: Path,
             if extra_write:
                 cmd += ["-c", f"sandbox_workspace_write.writable_roots={json.dumps([str(extra_write)])}"]
         if effort:
-            cmd += ["-c", f"model_reasoning_effort={json.dumps(effort)}"]
+            cmd += runtimes.get("codex").effort_tokens(effort)
         for name, server in servers.items():
             cmd += ["-c", f"mcp_servers.{name}.command={json.dumps(server['command'])}",
                     "-c", f"mcp_servers.{name}.args={json.dumps(server['args'])}"]
@@ -1140,7 +1140,7 @@ def host_command(runtime: str, model: str, prompt: str, work: Path, root: Path,
                (["--resume", session_id] if session_id else []) + [prompt]
     return [binary, "--print", prompt, "--output-format", "stream-json", "--model", model,
             "--sandbox"] + (["--add-dir", str(extra_write)] if extra_write else []) + \
-           (["--effort", effort] if effort else []) + \
+           runtimes.get("agy").effort_tokens(effort or "") + \
            (["--conversation", session_id] if session_id else ["--new-project"])
 
 

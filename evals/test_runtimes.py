@@ -61,6 +61,22 @@ class EveryLauncherCoversEveryRuntimeTest(unittest.TestCase):
                     self.assertEqual(argv[0], "/bin/cli")
                     self.assertIn(str(cwd / "dispatch.md"), argv[-1])
 
+    def test_every_runtime_that_takes_an_effort_passes_it_before_the_prompt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = Path(tmp)
+            for runtime in (r for r in runtimes.RUNTIMES if r.takes_effort):
+                with self.subTest(runtime=runtime.name):
+                    def windows(effort):  # the argv, as every run of consecutive tokens (`-c` alone is not the effort)
+                        got = one_shot.command(runtime.name, "/bin/cli", cwd, cwd / "dispatch.md", agent_type=None,
+                                               model="m", effort=effort)
+                        return got, [got[i:i + len(tokens)] for i in range(len(got))]
+
+                    tokens = runtime.effort_tokens("high")
+                    got, runs = windows("high")
+                    self.assertIn(str(cwd / "dispatch.md"), got[-1])
+                    self.assertIn(tokens, runs)
+                    self.assertNotIn(tokens, windows("")[1])
+
     def test_every_runtime_is_a_settings_entry(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -88,6 +104,10 @@ class EveryLauncherCoversEveryRuntimeTest(unittest.TestCase):
 
 class CapabilityTest(unittest.TestCase):
     """What a record says a launch takes, the worker launcher enforces."""
+
+    def test_the_runtimes_that_take_an_effort(self):
+        # agy's CLI lists `--effort`; cursor's does not.
+        self.assertEqual([r.name for r in runtimes.RUNTIMES if r.takes_effort], ["claude", "codex", "agy"])
 
     def test_a_runtime_without_effort_refuses_it(self):
         for runtime in runtimes.RUNTIMES:

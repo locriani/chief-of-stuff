@@ -81,6 +81,17 @@ class ArgvTest(unittest.TestCase):
         self.assertEqual(argv, ["run", "--dangerous"])
         self.assertEqual(len(argv), 2, "a value never splits into more argv entries than it occupies")
 
+    def test_an_unset_field_drops_its_flag_only_when_the_flag_and_value_are_separate_tokens(self):
+        # A `-c VALUE` pair goes together; a placeholder that is its own flag (`--model={model}`) goes alone,
+        # and the flag before it stays.
+        for template, want in (
+            (["wrap", "-C", "{cwd}", "-x", "--effort={effort}", "run"], ["wrap", "-C", "/tmp/wt", "-x", "run"]),
+            (["wrap", "-c", "model_reasoning_effort={effort}", "run"], ["wrap", "run"]),
+            (["wrap", "--bool", "--model={model}", "go"], ["wrap", "--bool", "go"]),
+        ):
+            with self.subTest(template=template):
+                self.assertEqual(ss.argv(template, agent_type=None, cwd="/tmp/wt", title="t"), want)
+
     def test_an_unknown_placeholder_is_refused_rather_than_left_in_the_argv(self):
         with self.assertRaises(ss.RefusedError):
             ss.argv(["run", "{whatever}"], agent_type="x", cwd="/tmp", title="t")
@@ -678,10 +689,20 @@ class AgyTest(unittest.TestCase):
         out = run_main("--runtime", "agy", "--model", "x;rm -rf ~")
         self.assertEqual(out.returncode, 1)
 
-    def test_effort_is_claude_only(self):
+    def test_effort_reaches_the_agy_tab(self):
         out = run_main("--runtime", "agy", "--model", "gemini-3.8-flash-high", "--effort", "high")
-        self.assertEqual(out.returncode, 1)
-        self.assertIn("--effort", out.stderr)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("--effort high", out.stdout)
+
+    def test_the_effort_comes_before_the_bootstrap_prompt(self):
+        # `-i` takes the prompt as its value: the effort pair must not sit between them.
+        tokens = ss.runtime_tokens(cwd="/tmp/wt", agent_type=None, binary=self.AGY, title="agy-01", runtime="agy",
+                                   model="gemini-3.8-flash-high", effort="high", workspace="/tmp/ws")
+        agy = tokens[tokens.index(str(self.AGY)):]
+        self.assertTrue(agy[agy.index("-i") + 1].startswith("Read the file"), agy)
+        effort = agy.index("--effort")
+        self.assertEqual(agy[effort + 1], "high")
+        self.assertLess(effort + 1, agy.index("-i"))
 
     def test_the_dry_run_shows_the_agy_tab(self):
         out = run_main("--runtime", "agy", "--model", "gemini-3.8-flash-high")
@@ -716,6 +737,32 @@ class ClaudeModelTest(unittest.TestCase):
         for extra in (["--effort", "extreme"], ["--model", "x;rm -rf ~"]):
             with self.subTest(extra=extra):
                 self.assertEqual(run_main(*extra).returncode, 1 if "--model" in extra else 2)
+
+
+class EffortPerRuntimeTest(unittest.TestCase):
+    """#52: each runtime says how it takes an effort, or why it cannot; none silently inherits the user's config."""
+
+    def codex_tokens(self, **kw):
+        tokens = ss.runtime_tokens(cwd="/tmp/wt", agent_type=None, binary=Path("/bin/codex"), title="codex-01",
+                                   runtime="codex", workspace="/tmp/ws", **kw)
+        return tokens[tokens.index("/bin/codex"):]  # codex's own argv, past the env and wrapper prefix
+
+    def test_an_interactive_codex_launch_carries_its_effort(self):
+        tokens = self.codex_tokens(effort="low")
+        self.assertIn(("-c", "model_reasoning_effort=low"), list(zip(tokens, tokens[1:])))
+        self.assertTrue(tokens[-1].startswith("Read the file"), tokens[-1])  # the bootstrap prompt stays last
+
+    def test_without_an_effort_a_codex_launch_leaves_the_users_config_alone(self):
+        tokens = self.codex_tokens()
+        self.assertNotIn("-c", tokens)
+        self.assertFalse([t for t in tokens if "model_reasoning_effort" in t])
+
+    def test_a_runtime_that_cannot_express_effort_is_refused_by_name(self):
+        out = run_main("--runtime", "cursor", "--effort", "medium")
+        self.assertEqual(out.returncode, 1)
+        self.assertTrue(out.stderr.startswith("refused:"), out.stderr)
+        self.assertIn("--effort", out.stderr)
+        self.assertIn("cursor", out.stderr)
 
 
 class TmuxLauncherTest(unittest.TestCase):
@@ -885,10 +932,54 @@ class WorkerModeTest(unittest.TestCase):
             with unittest.mock.patch("one_shot.run", return_value=0) as one_shot:
                 self.assertEqual(ss.main(args), 0)
                 got = one_shot.call_args.kwargs
-                self.assertEqual((got["runtime"], got["model"], got["effort"]), ("codex", "gpt-test", ""))
+                self.assertEqual((got["runtime"], got["model"], got["effort"]), ("codex", "gpt-test", "medium"))
             with contextlib.redirect_stderr(io.StringIO()) as err:
                 self.assertEqual(ss.main(args[:-1] + ["review"]), 1)
             self.assertIn("[models.review]", err.getvalue())
+
+    def dry_run_argv(self, args: list[str]) -> list[str]:
+        """The argv a one-shot dry run prints, with the CLI found at a fixed path."""
+        with unittest.mock.patch("one_shot.resolve", return_value="/bin/fake"), \
+             contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(ss.main(args), 0)
+        (line,) = [l for l in out.getvalue().splitlines() if l.startswith("would run one-shot: ")]
+        return shlex.split(line.removeprefix("would run one-shot: "))
+
+    def test_codex_takes_its_effort_as_a_config_override(self):
+        """#52: codex has no --effort flag; `-c model_reasoning_effort=<level>` is how a launch sets it."""
+        _, args = self.one_shot_workspace()
+        argv = self.dry_run_argv(args + ["--runtime", "codex", "--effort", "medium"])
+        self.assertIn(("-c", "model_reasoning_effort=medium"), list(zip(argv, argv[1:])))
+
+    def test_agy_takes_its_effort_in_a_one_shot_before_the_print_value(self):
+        """#52: agy lists `--effort`; `--print` takes the prompt, so the pair comes before it."""
+        _, args = self.one_shot_workspace()
+        argv = self.dry_run_argv(args + ["--runtime", "agy", "--model", "m", "--effort", "medium"])
+        self.assertIn(("--effort", "medium"), list(zip(argv, argv[1:])))
+        self.assertEqual(argv[-2], "--print")
+
+    def test_a_class_entry_whose_runtime_cannot_express_effort_is_refused_not_dropped(self):
+        """#52: `cursor:<model>@high` silently ran with no effort; with none named it still launches."""
+        tree, args = self.one_shot_workspace()
+        toml = tree.parent.parent / "chief-of-stuff.toml"
+        toml.write_text('[workers]\nmode = "one-shot"\n\n[models.implement]\nrotation = ["cursor:gpt-x@high"]\n')
+        with unittest.mock.patch("one_shot.resolve", return_value="/bin/fake"), \
+             contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(ss.main(args + ["--class", "implement"]), 1)
+        self.assertTrue(err.getvalue().startswith("refused:"), err.getvalue())
+        self.assertIn("cursor:gpt-x@high", err.getvalue())  # the entry the user wrote; no `--effort` flag was typed
+        toml.write_text('[workers]\nmode = "one-shot"\n\n[models.implement]\nrotation = ["cursor:gpt-x"]\n')
+        self.assertIn("--model", self.dry_run_argv(args + ["--class", "implement"]))
+
+    def test_a_class_entrys_codex_effort_reaches_the_launch_and_an_explicit_effort_wins(self):
+        """#52: `codex:<model>@medium` was parsed and then dropped, so codex ran on the user's own config effort."""
+        tree, args = self.one_shot_workspace()
+        (tree.parent.parent / "chief-of-stuff.toml").write_text(
+            '[workers]\nmode = "one-shot"\n\n[models.implement]\nrotation = ["codex:gpt-test@medium"]\n')
+        for extra, level in (([], "medium"), (["--effort", "high"], "high")):
+            with self.subTest(extra=extra):
+                argv = self.dry_run_argv(args + ["--class", "implement", *extra])
+                self.assertIn(("-c", f"model_reasoning_effort={level}"), list(zip(argv, argv[1:])))
 
     def test_cli_one_shot_selects_one_task_in_interactive_workspace(self):
         with tempfile.TemporaryDirectory() as d:

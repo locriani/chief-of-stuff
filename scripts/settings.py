@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
 
+import runtimes
 from runtimes import NAMES as RUNTIMES
 
 ADAPTERS = ("md-notify", "off")
@@ -154,6 +155,8 @@ def _entry(where: str, text) -> ModelEntry:
     model, at, effort = rest.rpartition("@") if "@" in rest else (rest, "", None)
     if at and effort not in EFFORTS:
         raise SettingsError(f"{where}: {text!r} effort must be one of {', '.join(EFFORTS)}")
+    if at and not runtimes.get(runtime).takes_effort:
+        raise SettingsError(f"{where}: {text!r} {runtime} takes no effort; drop @{effort}")
     if not model.strip():
         raise SettingsError(f"{where}: {text!r} has no model ID")
     return ModelEntry(runtime, model, effort)

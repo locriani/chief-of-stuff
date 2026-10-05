@@ -29,6 +29,17 @@ class RoundTripTest(unittest.TestCase):
         bare = tl.started_line("09:15", "worker01", "claude", "", TREE, "Security audit")
         self.assertEqual(tl.STARTED_DETAIL.match(bare)[3], "claude")
 
+    def test_a_started_line_with_an_effort_after_the_model_is_still_read(self):
+        # (#52) What the pages read: STARTED (workers page, moves) and STARTED_DETAIL (issue page) both match it,
+        # and the time, name, tree and task come out as without an effort.
+        line = "- 09:15 one-shot worker01 started: codex gpt-test effort=medium, worktree `trees/up`, task Security audit"
+        self.assertEqual(tl.STARTED.match(line).groups(), ("09", "15", "worker01", "Security audit"))
+        got = tl.STARTED_DETAIL.match(line)
+        self.assertEqual((got[1], got[2], got[4], got[5]), ("09:15", "worker01", "trees/up", "Security audit"))
+        moves = tl.moves(f"## Log\n\n{line}\n", DAY, CT)
+        self.assertEqual([(m.at.strftime("%H:%M"), m.name, m.stage, m.launch, m.worker) for m in moves],
+                         [("09:15", "Security audit", "implement", True, "worker01")])
+
     def test_an_ended_line(self):
         for status, outcome in (("done", tl.COMPLETED), ("human_review", tl.HUMAN_REVIEW)):
             with self.subTest(status=status):
