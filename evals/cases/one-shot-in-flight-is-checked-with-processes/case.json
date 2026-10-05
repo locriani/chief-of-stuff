@@ -10,7 +10,7 @@
       "notes/.keep": ""
     }
   },
-  "description": "#53: a one-shot run is in flight (its row is running, its File ownership row names the tree, its launcher left a live pid in the tree). A scheduled check asks whether it is still running. The coordinator answers through the `processes` entry point, never `ps` or `pgrep` over tree paths, and does not launch the running task again. The live pid is 1, which exists on every host, so the one-shot row `processes` prints is real.",
+  "description": "#53: a one-shot run is in flight (its row is running, its File ownership row names the tree, its launcher left a live pid in the tree). A scheduled check asks whether it is still running. The coordinator answers through the `processes` entry point, never `ps` or `pgrep` over tree paths, and does not launch the running task again. The live pid is 1, which exists on every host, so the one-shot row `processes` prints is real. The positive grader quotes the sentence at agents/chief-of-stuff.md that names `processes`; that sentence speaks of registered workers, and the agent has no sentence saying `processes` also answers for one-shot runs. The reply graders quote the sentence that defines what `running` and `gone` mean.",
   "prompt": "[Scheduled check] Is the Rate limit headers one-shot still running? For this isolated test, use --dry-run for any worker launch and do not start a real worker process.",
   "graders": [
     {
@@ -18,16 +18,37 @@
       "rule": "Ready means an open, unassigned task with clear scope, File ownership, an issue when required, no conflicting owner, and no unresolved human-review hold or lane gate.",
       "type": "tool_used",
       "tool": "Bash",
-      "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:spawn_session\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worker)\\b(?:[^\"\\\\]|\\\\.)*?--task[\\s=]+\\\\?[\"']?Rate limit headers",
+      "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:spawn_session\\.py|(?:chief[-_]of[-_]stuff(?:\\.py)?|(?:\\\\\")?\\$\\{?\\w+\\}?(?:\\\\\")?)\\s+worker)\\b(?:[^\"\\\\]|\\\\.)*?--task[\\s=]+\\$?\\\\?[\"\\']?Rate limit headers|\"command\": \"(?:[^\"\\\\]|\\\\.)*?(\\w+)=\\$?\\\\?[\"\\']?Rate limit headers(?:[^\"\\\\]|\\\\.)*?(?:spawn_session\\.py|(?:chief[-_]of[-_]stuff(?:\\.py)?|(?:\\\\\")?\\$\\{?\\w+\\}?(?:\\\\\")?)\\s+worker)\\b(?:[^\"\\\\]|\\\\.)*?--task[\\s=]+\\\\?[\"\\']?\\$\\{?\\1\\b",
       "max": 0
+    },
+    {
+      "name": "liveness is asked of `processes`",
+      "rule": "For registered workers, check process state with `chief-of-stuff processes --root <workspace> [PID ...]`.",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "\"command\": \"(?:(?:[^\"\\\\]|\\\\.)*?(?:[;&|(`]|\\\\n))?(?:\\s|\\\\t)*(?:python3?\\s+)?(?:(?:[\\w./~-]*/)?(?:chief[-_]of[-_]stuff(?:\\.py)?\\s+processes|process_status\\.py)|(?:\\\\\")?\\$\\{?\\w+\\}?(?:\\\\\")?\\s+processes)(?![\\w.-])",
+      "min": 1
     },
     {
       "name": "liveness is not read from ps or pgrep",
       "rule": "Use this helper instead of ad hoc `ps` or `pgrep` calls, and do not mark an `unverified` worker gone.",
       "type": "tool_used",
       "tool": "Bash",
-      "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?<![\\w.-])(?:pgrep|pkill|ps)\\s",
+      "input_match": "\"command\": \"(?:(?:[^\"\\\\]|\\\\.)*?(?:[;&|(`]|\\\\n))?(?:\\s|\\\\t)*(?:[\\w./~-]*/)?(?:ps|pgrep|pkill)(?![\\w.-])",
       "max": 0
+    },
+    {
+      "name": "the answer says it is still running",
+      "rule": "`running` verifies a registered worker's command and worktree; `gone` means the PID no longer exists; `pid_reused` means it belongs to another process; `unverified` means its identity could not be checked.",
+      "type": "regex",
+      "pattern": "(?i)(?<!not )(?<!not still )(?<!longer )\\brunning\\b"
+    },
+    {
+      "name": "the answer does not say it stopped",
+      "rule": "`running` verifies a registered worker's command and worktree; `gone` means the PID no longer exists; `pid_reused` means it belongs to another process; `unverified` means its identity could not be checked.",
+      "type": "regex",
+      "pattern": "(?i)(?:^|[.!?]\\s+|\\n\\s*[-*]?\\s*)(?![^.!?\\n]*\\b(?:if|whether|unless|until)\\b)[^.!?\\n]*?(?:\\b(?:has|have)\\s+(?:stopped|finished|exited|completed|died)\\b|\\b(?:is|was)\\s+(?:gone|dead|finished|done|complete)\\b|\\bno longer running\\b|\\bnot (?:still )?running\\b)",
+      "match": "absent"
     }
   ],
   "max_turns": 24,
