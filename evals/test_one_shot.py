@@ -92,6 +92,19 @@ class CommandTest(unittest.TestCase):
         self.assertIn(("--sandbox", "workspace-write"), pairs)
         self.assertFalse([a for a in args if "danger" in a])
 
+    def test_codex_takes_its_effort_as_a_config_override(self):
+        # #52: codex has no --effort flag; without this a one-shot runs on the user's own model_reasoning_effort.
+        def pairs(effort):
+            args = one_shot.command("codex", "/bin/fake", Path("/tmp/one-shot-tree"), Path("/tmp/d.md"),
+                                    agent_type=None, model="", effort=effort)
+            return args, list(zip(args, args[1:]))
+
+        args, with_effort = pairs("high")
+        self.assertIn(("-c", "model_reasoning_effort=high"), with_effort)
+        self.assertIn(("-c", "sandbox_workspace_write.network_access=true"), with_effort)
+        args, without = pairs("")
+        self.assertFalse([a for a in args if "model_reasoning_effort" in a])
+
     def test_agy_print_takes_the_prompt_as_its_value(self):
         # agy's --print takes a value: a flag after it becomes the prompt, and agy exits 2.
         dispatch = Path("/tmp/one-shot-tree/.chief-of-stuff/dispatch.md")

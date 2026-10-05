@@ -718,6 +718,42 @@ class ClaudeModelTest(unittest.TestCase):
                 self.assertEqual(run_main(*extra).returncode, 1 if "--model" in extra else 2)
 
 
+class EffortPerRuntimeTest(unittest.TestCase):
+    """#52: each runtime says how it takes an effort, or why it cannot; none silently inherits the user's config."""
+
+    def codex_tokens(self, **kw):
+        tokens = ss.runtime_tokens(cwd="/tmp/wt", agent_type=None, binary=Path("/bin/codex"), title="codex-01",
+                                   runtime="codex", workspace="/tmp/ws", **kw)
+        return tokens[tokens.index("/bin/codex"):]  # codex's own argv, past the env and wrapper prefix
+
+    def test_an_interactive_codex_launch_carries_its_effort(self):
+        tokens = self.codex_tokens(effort="low")
+        self.assertIn(("-c", "model_reasoning_effort=low"), list(zip(tokens, tokens[1:])))
+
+    def test_without_an_effort_a_codex_launch_leaves_the_users_config_alone(self):
+        tokens = self.codex_tokens()
+        self.assertNotIn("-c", tokens)
+        self.assertFalse([t for t in tokens if "model_reasoning_effort" in t])
+
+    def test_a_runtime_that_cannot_express_effort_is_refused_by_name(self):
+        for runtime, extra in (("cursor", []), ("agy", ["--model", "gemini-3.8-flash-high"])):
+            with self.subTest(runtime=runtime):
+                out = run_main("--runtime", runtime, *extra, "--effort", "medium")
+                self.assertEqual(out.returncode, 1)
+                self.assertTrue(out.stderr.startswith("refused:"), out.stderr)
+                self.assertIn("--effort", out.stderr)
+                self.assertIn(runtime, out.stderr)
+                if runtime == "agy":
+                    self.assertIn("model id", out.stderr)
+
+    def test_codex_has_no_max_level(self):
+        out = run_main("--runtime", "codex", "--effort", "max")
+        self.assertEqual(out.returncode, 1)
+        self.assertTrue(out.stderr.startswith("refused:"), out.stderr)
+        self.assertIn("max", out.stderr)
+        self.assertIn("codex", out.stderr)
+
+
 class TmuxLauncherTest(unittest.TestCase):
     def test_tmux_executes_worker_argv_without_a_shell(self):
         command = ss.tmux_command(tmux=Path("/bin/tmux"), binary=Path("/bin/codex"),
@@ -885,10 +921,34 @@ class WorkerModeTest(unittest.TestCase):
             with unittest.mock.patch("one_shot.run", return_value=0) as one_shot:
                 self.assertEqual(ss.main(args), 0)
                 got = one_shot.call_args.kwargs
-                self.assertEqual((got["runtime"], got["model"], got["effort"]), ("codex", "gpt-test", ""))
+                self.assertEqual((got["runtime"], got["model"], got["effort"]), ("codex", "gpt-test", "medium"))
             with contextlib.redirect_stderr(io.StringIO()) as err:
                 self.assertEqual(ss.main(args[:-1] + ["review"]), 1)
             self.assertIn("[models.review]", err.getvalue())
+
+    def dry_run_argv(self, args: list[str]) -> list[str]:
+        """The argv a one-shot dry run prints, with the CLI found at a fixed path."""
+        with unittest.mock.patch("one_shot.resolve", return_value="/bin/fake"), \
+             contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(ss.main(args), 0)
+        (line,) = [l for l in out.getvalue().splitlines() if l.startswith("would run one-shot: ")]
+        return shlex.split(line.removeprefix("would run one-shot: "))
+
+    def test_codex_takes_its_effort_as_a_config_override(self):
+        """#52: codex has no --effort flag; `-c model_reasoning_effort=<level>` is how a launch sets it."""
+        _, args = self.one_shot_workspace()
+        argv = self.dry_run_argv(args + ["--runtime", "codex", "--effort", "medium"])
+        self.assertIn(("-c", "model_reasoning_effort=medium"), list(zip(argv, argv[1:])))
+
+    def test_a_class_entrys_codex_effort_reaches_the_launch_and_an_explicit_effort_wins(self):
+        """#52: `codex:<model>@medium` was parsed and then dropped, so codex ran on the user's own config effort."""
+        tree, args = self.one_shot_workspace()
+        (tree.parent.parent / "chief-of-stuff.toml").write_text(
+            '[workers]\nmode = "one-shot"\n\n[models.implement]\nrotation = ["codex:gpt-test@medium"]\n')
+        for extra, level in (([], "medium"), (["--effort", "high"], "high")):
+            with self.subTest(extra=extra):
+                argv = self.dry_run_argv(args + ["--class", "implement", *extra])
+                self.assertIn(("-c", f"model_reasoning_effort={level}"), list(zip(argv, argv[1:])))
 
     def test_cli_one_shot_selects_one_task_in_interactive_workspace(self):
         with tempfile.TemporaryDirectory() as d:
