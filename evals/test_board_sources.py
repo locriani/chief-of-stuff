@@ -677,6 +677,23 @@ class WorkersTest(unittest.TestCase):
                                  ("impl-1", "codex", model, "Rate limit", "rate-limit", "01:28"))
 
 
+    def test_a_long_item_or_one_with_a_no_break_space_still_joins_its_log_line_and_row(self):
+        # The board joins a live one-shot to its Log `started:` line and Tasks row by the task text the launcher
+        # wrote, so `running_trees` hands it that text as written: not cut, not cleaned.
+        for what, item in (("280 characters", "Rate limit headers, PR #58 " + "w" * 253),
+                           ("no-break space", "Rate limit\u00a0headers, PR #58")):
+            with self.subTest(what):
+                root = workspace("GitHub issues; repo o/app")
+                tree = root / "trees" / "rate-limit" / ".chief-of-stuff"
+                tree.mkdir(parents=True)
+                (tree / "one-shot.pid").write_text(f"{os.getpid()} {item}\n")
+                text = TRACKER.replace("Rate limit headers, PR #58", item).replace("{issue}", "#115").replace("{mr}", "")
+                (root / "daily" / f"{DAY}-tracker.md").write_text(text)
+                one = next(w for w in bs.refresh(root, NOW, gh=FakeGh()).workers if w.kind == "one-shot")
+                self.assertEqual((one.name, one.runtime, one.model, one.task, one.tree, one.started and one.started.strftime("%H:%M")),
+                                 ("impl-1", "claude", "opus", "Rate limit", "rate-limit", "01:28"))
+
+
 class LaunchedWorkerNameTest(unittest.TestCase):
     """A live one-shot is named by its task row even after the row's item stops matching its launch (#182)."""
 
