@@ -121,13 +121,13 @@ def _closed_hhmm(closed_at: str, zone) -> str:
         return ""
 
 
-def _tree_unlanded(root: Path | None, trees: str, owners: list, task) -> bool:
+def _tree_unlanded(root: Path | None, trees: str, owners: list, task, roster=(), refs=()) -> bool:
     """Does this task's File-ownership worktree carry a commit `main` never got? Reuses `_state`'s own
     merge-base check — the same signal `reopen` already reads off a done task's tree (#221). No
     resolvable tree (none owns the task, or it is missing) answers False: nothing is there to unland."""
     if root is None:
         return False
-    rows, _ = rows_for(task.item, task.owner, owners or [])
+    rows, _ = rows_for(task.item, task.owner, owners or [], key_name(task, roster, refs))
     for row in rows:
         for name in row.worktrees:
             path, _, _ = _resolve(root, trees, name)
@@ -147,7 +147,7 @@ def _config_for(home: Backlog | GitHubBacklog, host: str, repo: str) -> Backlog 
 
 def issue_faults(tasks, home: Backlog | GitHubBacklog, gh=None, lanes: dict | None = None,
                  root: Path | None = None, trees: str = "", owners: list | None = None,
-                 zone=None) -> list[IssueFault]:
+                 zone=None, roster=(), session_refs=()) -> list[IssueFault]:
     """Compare task issues with one issue-list request per repository."""
     refs = {}
     faults: list[IssueFault] = []
@@ -176,7 +176,7 @@ def issue_faults(tasks, home: Backlog | GitHubBacklog, gh=None, lanes: dict | No
         if task.needs_issue and found is None:
             faults.append(IssueFault(name, f"{tag} not found in {ref.repo}"))
         elif task.needs_issue and found.state == CLOSED:
-            if _tree_unlanded(root, trees, owners, task):
+            if _tree_unlanded(root, trees, owners, task, roster, session_refs):
                 faults.append(IssueFault(
                     name, f"{tag} is closed but its tree has work not on main; ask the user: "
                     "reopen the issue or drop the work"))
@@ -445,6 +445,18 @@ def owns(row: OwnerRow, owner: str) -> bool:
     return _bare(row.context) == _bare(owner)
 
 
+def key_name(task, roster: set[str], refs: set[str]) -> str:
+    """The Tasks-table name a File ownership row may be keyed on: none when it is a listed session's name, since
+    that bare context is the session's own row, not the task's."""
+    return "" if listed(task.name, roster, refs)[0] else task.name
+
+
+def keyed_on(row: OwnerRow, item: str, name: str) -> bool:
+    """A File ownership row keyed on a task's item, or whose whole context is its Tasks-table `name`, is keyed on that
+    task. The name is compared exactly, as dispatch does: a session's `arch (deletion)` is not a task named `arch`."""
+    return owns(row, item) or (bool(name.strip()) and row.context.strip() == name.strip())
+
+
 def _tokens(text: str) -> set[str]:
     return {t.lower() for t in TOKEN.findall(text) if len(t) > 1 and not t.isdigit() and t.lower() not in STOP}
 
@@ -454,16 +466,16 @@ def _detail(context: str) -> str:
     return " ".join(PAREN.findall(context))
 
 
-def rows_for(item: str, owner: str, owners: list[OwnerRow]) -> tuple[list[OwnerRow], str]:
+def rows_for(item: str, owner: str, owners: list[OwnerRow], name: str = "") -> tuple[list[OwnerRow], str]:
     """The rows that speak for this task, and a note when nothing does.
 
     A context owns several tasks at once — `architecture` held both a deletion and a doc edit — so
-    the bare name cannot attribute a tree. A row keyed by the task item is exact and wins. Otherwise
+    the bare name cannot attribute a tree. A row keyed by the task item, or by its Tasks-table `name`, is exact and wins. Otherwise
     the owner's rows are scored on how much of the task item their parenthetical repeats; a lone best
     row wins, and a tie or a blank draws nothing, because attributing the wrong tree reopens a task
     that is genuinely finished.
     """
-    exact = [r for r in owners if owns(r, item)]
+    exact = [r for r in owners if keyed_on(r, item, name)]
     if exact:
         return exact, ""
     mine = [r for r in owners if owns(r, owner)]
@@ -486,7 +498,7 @@ def row_claim(row: OwnerRow, tasks, roster: set[str], refs: set[str], user: str)
     if not roster:
         return Claim(owner, True)
     here, missing = listed(row.context, roster, refs, user)
-    keyed = next((t for t in tasks if owns(row, t.item)), None)
+    keyed = next((t for t in tasks if keyed_on(row, t.item, t.name)), None)
     here = here or (keyed is not None and listed(keyed.owner, roster, refs, user)[0])
     how = "names a ref no ## Sessions row carries" if missing else "is not in ## Sessions"
     return Claim(owner, here, how, missing)
@@ -769,7 +781,7 @@ def audit(root: Path, day: str, gh=None, check_issues: bool = True, now: datetim
                                        f"{name} ({branch})", task.state.strip()))
 
     for task in tasks:
-        rows, note = rows_for(task.item, task.owner, owners)
+        rows, note = rows_for(task.item, task.owner, owners, key_name(task, roster, refs))
         if note and note not in noted:
             noted.add(note)
             report.lines.append(note)
@@ -824,7 +836,7 @@ def audit(root: Path, day: str, gh=None, check_issues: bool = True, now: datetim
     if cfg.backlog:
         if check_issues:
             report.issues.extend(issue_faults(tasks, cfg.backlog, gh, settings.lanes,
-                                              root, trees, owners, cfg.zone))
+                                              root, trees, owners, cfg.zone, roster, refs))
             report.lines.extend(str(f) for f in report.issues)
             issues = f" issues={len(report.issues)}"
             found = _read_merged(tasks, cfg.backlog, gh, call)
