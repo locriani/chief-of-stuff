@@ -968,6 +968,64 @@ class CheckShaTest(Repo):
                 self.assertEqual(git_trees.check_sha(sha, tree), git_trees.check_sha(sha, self.clone))
                 self.assertEqual(git_trees.check_sha(sha, tree)[0], 0)
 
+    def test_a_gitfile_longer_than_the_read_bound_with_junk_after_the_padding_is_not_a_pruned_worktree(self) -> None:
+        """#294 round 11, 1: git reads the whole gitfile, so `gitdir: <path>` + CR/LF padding past 4096 characters + `junk`
+        puts `junk` after the trailing run, in the path, and git rejects it (real git exits 128 on a LIVE worktree with that
+        file, checked first). Content the read bound cuts off is never ignored: not a pruned worktree, so could not read."""
+        sha, tree = self.pruned()
+        gone = self.clone / ".git" / "worktrees" / "wt-dead"
+        live_tree, live = self.tree("wt-live", "feat/wt-live"), self.clone / ".git" / "worktrees" / "wt-live"
+        padding = b"\r\n" * 3000  # 6000 characters, past any 4096 bound
+        (live_tree / ".git").write_bytes(f"gitdir: {live}".encode() + padding + b"junk")
+        self.assertEqual(git_trees.git(["rev-parse", "--git-dir"], live_tree)[0], 128)  # git rejects it too
+        (tree / ".git").write_bytes(f"gitdir: {gone}".encode() + padding + b"junk")
+        self.assertIsNone(git_trees._pruned_common(tree))
+        self.assert_could_not_read(sha, tree)
+
+    def test_a_pruned_worktrees_gitfile_padded_with_hundreds_of_trailing_newlines_is_still_pruned(self) -> None:
+        """#294 round 11, 1 pin: a long trailing run of line breaks well under the read bound is still only the trailing run
+        (real git opens a LIVE worktree with that file, checked first), so the tree is pruned: a yes from its repository."""
+        sha, tree = self.pruned()
+        gone = self.clone / ".git" / "worktrees" / "wt-dead"
+        live_tree, live = self.tree("wt-live", "feat/wt-live"), self.clone / ".git" / "worktrees" / "wt-live"
+        (live_tree / ".git").write_bytes(f"gitdir: {live}".encode() + b"\n" * 300)
+        self.assertEqual(git_trees.git(["rev-parse", "--git-dir"], live_tree)[0], 0)
+        (tree / ".git").write_bytes(f"gitdir: {gone}".encode() + b"\n" * 300)
+        self.assertEqual(git_trees._pruned_common(tree).resolve(), (self.clone / ".git").resolve())
+        self.assertEqual(git_trees.check_sha(sha, tree), git_trees.check_sha(sha, self.clone))
+        self.assertEqual(git_trees.check_sha(sha, tree)[0], 0)
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "no FIFOs on this platform")
+    def test_whether_dot_git_is_a_regular_file_is_decided_on_the_opened_file_not_by_a_check_before_the_open(self) -> None:
+        """#294 round 11, 2: `is_file()` before `open()` leaves a window for a FIFO swapped in between, and `open()` on a
+        FIFO blocks forever. Not raced: the pre-open check is made to lie (`Path.is_file` says True), so only a decision on
+        the opened file can see a FIFO (or a symlink to one) and return None at once. A daemon thread, so a hang fails here."""
+        for what, linked in (("a FIFO", False), ("a symlink to a FIFO", True)):
+            with self.subTest(what):
+                tree = self.trees / f"swapped-{linked}"
+                tree.mkdir()
+                fifo = self.root / "swapped-target" if linked else tree / ".git"
+                os.mkfifo(fifo)
+                if linked:
+                    (tree / ".git").symlink_to(fifo)
+
+                def release(fifo=fifo):  # a blocked reader gets EOF once a writer opens and closes it
+                    try:
+                        os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+                    except OSError:
+                        pass
+                self.addCleanup(release)
+                out = []
+                with patch.object(git_trees.Path, "is_file", lambda self: True):
+                    thread = threading.Thread(target=lambda: out.append(git_trees._pruned_common(tree)), daemon=True)
+                    thread.start()
+                    thread.join(timeout=3)
+                    alive = thread.is_alive()
+                    release()
+                    thread.join(timeout=3)
+                self.assertFalse(alive, "_pruned_common is blocked opening a FIFO its pre-open check called a file")
+                self.assertEqual(out, [None])
+
     def test_the_repository_of_a_pruned_worktree_is_the_grandparent_of_its_gitfile_target_so_it_still_answers(self) -> None:
         """#294 round 9, pin: `<common>` is `<common>/worktrees/<name>`'s GRANDPARENT. A real `git worktree add`, then the
         clone's whole `<common>/worktrees` directory (not just the entry) is removed: the repository is still the clone's
