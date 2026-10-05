@@ -38,7 +38,7 @@ CLAUDE_ARGV = ["claude", "--agent", "{type}", "--name", "{title}", "--model", "{
                *runtimes.get("claude").effort_argv, "--permission-mode", "plan", BOOTSTRAP]
 # Antigravity gets its name from the tab and assignment and reads workspace rules explicitly.
 AGY_BOOTSTRAP = BOOTSTRAP + " Then read {root}/CLAUDE.md: its house rules bind you."
-AGY_ARGV = ["agy", "--model", "{model}", "--mode", "plan", "-i", AGY_BOOTSTRAP]
+AGY_ARGV = ["agy", "--model", "{model}", *runtimes.get("agy").effort_argv, "--mode", "plan", "-i", AGY_BOOTSTRAP]
 CODEX_ARGV = ["codex", "-C", "{cwd}", "--sandbox", "read-only", "--model", "{model}",
               *runtimes.get("codex").effort_argv, AGY_BOOTSTRAP]
 CURSOR_ARGV = ["agent", "--workspace", "{cwd}", "--mode", "plan", "--model", "{model}", AGY_BOOTSTRAP]
@@ -88,19 +88,15 @@ def launcher(template: list[str] | None = None) -> list[str]:
 
 
 def _without(template: list[str], field: str) -> list[str]:
-    """Remove an unset field and its flag without changing argv token boundaries."""
+    """Remove an unset field and its flag without changing argv token boundaries: a token that is itself a flag
+    (`--model={model}`) goes alone; a value goes with the flag before it."""
     mark = "{" + field + "}"
-    out, skip = [], False
-    for i, token in enumerate(template):
-        if skip:
-            skip = False
-            continue
-        if mark in token:
-            continue
-        if token.startswith("-") and i + 1 < len(template) and mark in template[i + 1]:
-            skip = True
-            continue
-        out.append(token)
+    out = []
+    for token in template:
+        if mark not in token:
+            out.append(token)
+        elif not token.startswith("-") and out and out[-1].startswith("-"):
+            out.pop()
     return out
 
 
@@ -226,7 +222,7 @@ def main(argv_in: list[str] | None = None) -> int:
                     help="terminal launcher; default: [workers] launcher in workspace settings, then ghostty")
     ap.add_argument("--model", default="", help="model id; required for agy")
     ap.add_argument("--effort", default="", choices=("", "low", "medium", "high", "xhigh", "max"),
-                    help="claude or codex; agy's effort is in its model id")
+                    help="not supported for cursor")
     ap.add_argument("--dry-run", action="store_true", help="print the argv and start nothing")
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--one-shot", action="store_true",
@@ -246,9 +242,7 @@ def main(argv_in: list[str] | None = None) -> int:
                 raise SettingsError(f"no [models.{args.model_class}] in the Settings TOML")
             entry = settings.models[args.model_class][0]
             args.runtime, args.model = entry.runtime, entry.model
-            # A runtime that cannot express effort drops the entry's effort.
-            if runtimes.get(entry.runtime).takes_effort:
-                args.effort = args.effort or entry.effort or ""
+            args.effort = args.effort or entry.effort or ""  # a runtime that cannot express it refuses it below
     except (dispatch_prompt.RefusedError, SettingsError, OSError) as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 1
@@ -259,11 +253,7 @@ def main(argv_in: list[str] | None = None) -> int:
         print(f"refused: --model needs a model id (agy: one from `agy models`, and it is required), not {args.model!r}", file=sys.stderr)
         return 1
     if args.effort and not runtime.takes_effort:
-        why = "; its effort is part of the model id" if runtime.name == "agy" else ""
-        print(f"refused: --effort is not supported for {runtime.name}{why}", file=sys.stderr)
-        return 1
-    if args.effort and args.effort not in runtime.efforts:
-        print(f"refused: --effort {args.effort} is not a {runtime.name} level; it takes {', '.join(runtime.efforts)}", file=sys.stderr)
+        print(f"refused: --effort is not supported for {runtime.name}", file=sys.stderr)
         return 1
     # Compose and launch must use the same absolute cwd.
     args.cwd = os.path.abspath(args.cwd)

@@ -39,13 +39,13 @@ def command(runtime: str, binary: str, cwd: Path, dispatch: Path, *, agent_type:
             model: str, effort: str) -> list[str]:
     """A single foreground CLI invocation, without interactive plan or mailbox modes."""
     prompt = BOOTSTRAP.format(dispatch=dispatch, cwd=cwd)
+    flags = [*(["--model", model] if model else []), *runtimes.get(runtime).effort_tokens(effort)]
     if runtime == "claude":
         argv = [binary, "--print", "--permission-mode", "auto", "--permission-prompts", "none",
                 "--no-session-persistence", "--plugin-dir", str(Path(__file__).resolve().parent.parent)]
         if agent_type:
             argv += ["--agent", agent_type]
-        if model:
-            argv += ["--model", model]
+        argv += flags
     elif runtime == "codex":
         # `never` returns blocked operations to the model instead of waiting for a human.
         argv = [binary, "-a", "never", "exec", "-C", str(cwd), "--sandbox", "workspace-write",
@@ -57,21 +57,16 @@ def command(runtime: str, binary: str, cwd: Path, dispatch: Path, *, agent_type:
                                  timeout=15)
         if git_dir.returncode == 0:
             argv += ["--add-dir", str(Path(git_dir.stdout.strip()).resolve())]
-        if model:
-            argv += ["--model", model]
+        argv += flags
     elif runtime == "cursor":
         argv = [binary, "--print", "--force", "--trust", "--workspace", str(cwd)]
-        if model:
-            argv += ["--model", model]
-    elif runtime == "agy":
+        argv += flags
+    else:  # agy
         argv = [binary, "--mode", "accept-edits", "--dangerously-skip-permissions"]
-        if model:
-            argv += ["--model", model]
+        argv += flags
         # agy's --print takes the prompt as its value, so it goes last, right before the prompt.
         argv += ["--print"]
-    else:
-        raise ValueError(f"unknown runtime {runtime}")
-    return [*argv, *runtimes.get(runtime).effort_tokens(effort), prompt]
+    return [*argv, prompt]
 
 
 def worker_result(path: Path, exit_code: int) -> tuple[str, str, str]:

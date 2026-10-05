@@ -17,8 +17,7 @@ class Runtime:
     display: str  # how a prompt names the host
     needs_model: bool  # a worker launch refuses to start without `--model`
     schedules: bool  # the host can run a recurring in-session check; without one, checks happen each turn
-    effort_argv: tuple[str, ...] = ()  # the argv tokens that pass an effort, `{effort}` standing for the level; none where effort is part of the model id or absent
-    efforts: tuple[str, ...] = ()  # the levels it accepts
+    effort_argv: tuple[str, ...] = ()  # the argv tokens that pass an effort, `{effort}` standing for the level; none where the CLI takes no effort
 
     @property
     def takes_effort(self) -> bool:
@@ -31,11 +30,12 @@ class Runtime:
 
 RUNTIMES = (
     Runtime("claude", binary="claude", display="Claude Code", needs_model=False, schedules=True,
-            effort_argv=("--effort", "{effort}"), efforts=("low", "medium", "high", "xhigh", "max")),
+            effort_argv=("--effort", "{effort}")),
     Runtime("codex", binary="codex", display="Codex CLI", needs_model=False, schedules=False,
-            effort_argv=("-c", "model_reasoning_effort={effort}"), efforts=("low", "medium", "high", "xhigh")),
+            effort_argv=("-c", "model_reasoning_effort={effort}")),
     Runtime("cursor", binary="agent", display="Cursor CLI", needs_model=False, schedules=True),
-    Runtime("agy", binary="agy", display="Antigravity", needs_model=True, schedules=True),
+    Runtime("agy", binary="agy", display="Antigravity", needs_model=True, schedules=True,
+            effort_argv=("--effort", "{effort}")),
 )
 NAMES = tuple(runtime.name for runtime in RUNTIMES)
 _BY_NAME = {runtime.name: runtime for runtime in RUNTIMES}

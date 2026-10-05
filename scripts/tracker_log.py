@@ -36,10 +36,10 @@ def stage_line(at: str, name: str, stage: str) -> str:
 
 
 def started_line(at: str, name: str, runtime: str, model: str, tree: str, task: str, effort: str = "") -> str:
-    """The launcher's line before worker `name` runs: `started: <runtime> <model> <effort>, worktree ...`, the model and
-    effort words only when set. `tree` is how File ownership names the tree, worktree `<tree>` (<branch>); the line
-    leaves the branch out."""
-    return f"- {at} one-shot {name} started: {' '.join(filter(None, (runtime, model, effort)))}, {tree.split(' (')[0]}, task {task}"
+    """The launcher's line before worker `name` runs: `started: <runtime> <model> effort=<level>, worktree ...`, the model and
+    effort words only when set; the effort names itself, so no model is ever read from it. `tree` is how File
+    ownership names the tree, worktree `<tree>` (<branch>); the line leaves the branch out."""
+    return f"- {at} one-shot {name} started: {' '.join(filter(None, (runtime, model, effort and f'effort={effort}')))}, {tree.split(' (')[0]}, task {task}"
 
 
 def ended_line(at: str, name: str, status: str, reason: str, changes: str) -> str:
