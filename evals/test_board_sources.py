@@ -661,6 +661,19 @@ class WorkersTest(unittest.TestCase):
         self.assertNotIn("review of #58", session.task)
         self.assertEqual(session.last.strftime("%H:%M"), "01:58")
 
+    def test_an_effort_after_the_model_is_not_part_of_the_model(self):
+        # (#52) `started: <runtime> <model> <effort>`: the worker still has its runtime and model, and the same
+        # name, task, tree and start time as when the line names no effort.
+        root = workspace("GitHub issues; repo o/app")
+        tree = root / "trees" / "rate-limit" / ".chief-of-stuff"
+        tree.mkdir(parents=True)
+        (tree / "one-shot.pid").write_text(f"{os.getpid()} Rate limit headers, PR #58\n")
+        text = TRACKER.replace("started: claude opus,", "started: codex gpt-test medium,").replace("{issue}", "#115").replace("{mr}", "")
+        (root / "daily" / f"{DAY}-tracker.md").write_text(text)
+        one = next(w for w in bs.refresh(root, NOW, gh=FakeGh()).workers if w.kind == "one-shot")
+        self.assertEqual((one.name, one.runtime, one.model, one.task, one.tree, one.started.strftime("%H:%M")),
+                         ("impl-1", "codex", "gpt-test", "Rate limit", "rate-limit", "01:28"))
+
 
 class LaunchedWorkerNameTest(unittest.TestCase):
     """A live one-shot is named by its task row even after the row's item stops matching its launch (#182)."""
