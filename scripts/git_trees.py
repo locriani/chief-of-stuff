@@ -178,17 +178,27 @@ def _has_grafts(tree: Path) -> bool | None:
 
 
 def _pruned_common(tree: Path) -> Path | None:
-    """The repository (`<common>`) of a pruned worktree, else None. `tree` is pruned when its `.git` is a regular file whose
-    content is `gitdir: <path>` (that exact prefix, as git requires) with `<path>` = `<common>/worktrees/<name>`, KNOWN gone (`lstat`
-    says not found; a permission error, any other `OSError` or a dangling symlink is present or unknown). Only the trailing run of
-    `\r`/`\n` is trimmed, as git does; every other byte after `gitdir: ` is the path, and a path left with one is no path. Read from
-    the file and the filesystem, never git (a probe can time out). Whether `<common>` is itself the git directory git uses there (rule A) is not
-    asked here: `check_sha` asks git, once, and follows the redirect once (rule B)."""
-    if not (tree / ".git").is_file():  # a regular file only: open() on a FIFO blocks forever
-        return None  # ponytail: a swap for a FIFO between this check and the open still blocks; os.open with O_NONBLOCK plus fstat
+    """The repository (`<common>`) of a pruned worktree, else None. `tree` is pruned when its `.git` is a regular file (decided on the
+    opened one) of at most 4096 characters whose content is `gitdir: <path>` (that exact prefix, as git requires) with
+    `<path>` = `<common>/worktrees/<name>`, KNOWN gone (`lstat` says not found; a permission error, any other `OSError` or a dangling
+    symlink is present or unknown). Only the trailing run of `\r`/`\n` is trimmed, as git does; every other byte after `gitdir: ` is the
+    path, and a path left with one is no path. Read from the file and the filesystem, never git (a probe can time out). Whether
+    `<common>` is itself the git directory git uses there (rule A) is not asked here: `check_sha` asks git, once, and follows the
+    redirect once (rule B)."""
     try:
-        with open(tree / ".git", newline="") as f:  # newline="": a lone `\r` stays one
-            line = f.read(4096)
+        fd = os.open(tree / ".git", os.O_RDONLY | os.O_NONBLOCK)  # O_NONBLOCK: opening a FIFO must not block
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):  # decided on the opened file, so a swap after the open cannot matter
+                return None
+            f = open(fd, newline="")  # newline="": a lone `\r` stays one
+            fd = -1  # `f` owns it now
+        finally:
+            if fd >= 0:
+                os.close(fd)
+        with f:
+            line = f.read(4097)  # one past the bound: content beyond it is never ignored
+        if len(line) > 4096:
+            return None
         path = line.removeprefix("gitdir: ").rstrip("\r\n")
         target = tree / path  # an absolute path replaces `tree`
         if line.startswith("gitdir: ") and not {"\r", "\n"} & set(path) and target.parent.name == "worktrees":
