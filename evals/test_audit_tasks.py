@@ -1399,6 +1399,22 @@ class ClosedIssueOnOpenTaskTest(unittest.TestCase):
             "ask the user: reopen the issue or drop the work",
             [str(f) for f in report.issues])
 
+    def test_an_unlanded_worktree_keyed_on_the_tasks_name_asks_the_user_too(self):
+        """#51: a prefix-less item whose File ownership row is keyed on the task's `name` — `_tree_unlanded`
+        must hand the name to `rows_for`, or this task is attributed no tree and is told to write it done."""
+        root = self.workspace()
+        tracker = root / "daily" / "2026-09-17-tracker.md"
+        tracker.write_text(tracker.read_text().replace(
+            "\n## File ownership",
+            "| alpha | Tidy the importer | sam | waiting | 09:00 |  | S | #8 | c |\n\n## File ownership", 1
+        ).replace("| kim | worktree wt-merged (landed) |", "| kim | worktree wt-merged (landed) |\n| alpha | worktree wt-unmerged (feat/open) |"))
+        gh = FakeGh({"o/backlog": {5: "CLOSED", 6: "CLOSED", 7: "CLOSED", 8: "CLOSED"}})
+        report = al.audit(root, "2026-09-17", gh=gh)
+        self.assertIn(
+            "issue: alpha — #8 is closed but its tree has work not on main; "
+            "ask the user: reopen the issue or drop the work",
+            [str(f) for f in report.issues])
+
 
 LANE_CLAUDE = CLAUDE + "- Settings: `cos.toml`\n"
 LANE_TOML = '[lanes]\nbuild = { stages = ["implement", "pr", "review", "triage", "merge"], gates = ["triage", "merge"] }\n'
@@ -2773,6 +2789,67 @@ class OwnershipRowKeyedOnNameTest(unittest.TestCase):
         keyed = self.row("Tidy the importer")
         self.assertEqual(al.rows_for("Tidy the importer", "robin", [keyed, self.row("beta", "wt-b")], "alpha"),
                          ([keyed], ""))
+
+    # The join is on the whole context: a task's name is a slug in the namespace session names live in, so a
+    # task named `arch` must not take the rows of the session `arch`. Dispatch joins `row.context in keys`.
+    @staticmethod
+    def named(name: str, item: str, owner: str, state: str = "done 10:00") -> str:
+        return f"| {name} | {item} | {owner} | {state} | 09:00 |  | S | Checklist: x |"
+
+    def test_a_session_rows_are_not_keyed_on_a_task_that_shares_the_sessions_name(self) -> None:
+        """The done task's owner-scored row is the merged importer tree; `arch (guide edit)` is the session's, not its."""
+        for label, ref, owner in (("plain", "", "arch"), ("ref", " [a1b2c3]", "arch [a1b2c3]")):
+            with self.subTest(label):
+                tmp, root = named_workspace(
+                    self.named("arch", "Delete the old importer", owner)
+                    + "\n" + self.named("docs", "Edit the guide", owner, "running 09:10"),
+                    f"| arch{ref} (importer deletion) | worktree wt-merged (landed) |\n"
+                    f"| arch{ref} (guide edit) | worktree wt-unmerged (feat/open) |",
+                    sessions=session_row("arch"))
+                self.addCleanup(tmp.cleanup)
+                report = al.audit(root, "2026-09-17")
+                self.assertEqual(report.reopen, [], report.lines)
+
+    def test_a_row_of_another_session_is_not_keyed_on_a_task_named_for_it(self) -> None:
+        tmp, root = named_workspace(
+            self.named("arch", "Delete the old importer", "kim"),
+            "| kim | worktree wt-merged (landed) |\n| arch (guide edit) | worktree wt-unmerged (feat/open) |",
+            sessions=session_row("arch") + "\n" + session_row("kim", "b2c3d4"))
+        self.addCleanup(tmp.cleanup)
+        self.assertEqual(al.audit(root, "2026-09-17").reopen, [])
+
+    def test_a_dead_sessions_row_is_not_kept_live_by_a_task_named_for_it(self) -> None:
+        tmp, root = named_workspace(
+            self.named("arch", "Review the architecture", "kim", "running 09:10"),
+            "| arch (deletion) | worktree wt-unmerged (feat/open) |", sessions=session_row("kim"))
+        self.addCleanup(tmp.cleanup)
+        report = al.audit(root, "2026-09-17")
+        self.assertEqual(len(report.orphans), 1, report.lines)
+        orphan = report.orphans[0]
+        self.assertIn("wt-unmerged", str(orphan))
+        self.assertIn("is not in ## Sessions", str(orphan))
+
+    def test_a_dead_sessions_ref_row_is_not_kept_live_by_a_task_named_for_it(self) -> None:
+        tmp, root = named_workspace(
+            self.named("arch", "Review the architecture", "kim", "running 09:10"),
+            "| arch [ffff01] (deletion) | worktree wt-unmerged (feat/open) |", sessions=session_row("kim"))
+        self.addCleanup(tmp.cleanup)
+        report = al.audit(root, "2026-09-17")
+        self.assertEqual(len(report.orphans), 1, report.lines)
+        orphan = report.orphans[0]
+        self.assertIn("wt-unmerged", str(orphan))
+        self.assertIn("names a ref no ## Sessions row carries", str(orphan))
+
+    def test_only_a_context_that_is_the_name_is_keyed_on_it(self) -> None:
+        item = "Tidy the importer"
+        for context in ("alpha (v2)", "alpha [1234]", "**alpha**", "`alpha`"):
+            with self.subTest(context):
+                self.assertFalse(al.keyed_on(self.row(context), item, "alpha"))
+        self.assertTrue(al.keyed_on(self.row("alpha"), item, "alpha"))
+
+    def test_the_item_arm_still_reads_a_bare_context(self) -> None:
+        """Only the name arm tightens: a row keyed on the item keeps `owns`'s reading, parenthetical and all."""
+        self.assertTrue(al.keyed_on(self.row("Tidy the importer (v2)"), "Tidy the importer", "alpha"))
 
     def test_a_row_keyed_on_another_tasks_name_is_not_this_tasks(self) -> None:
         other = self.row("beta", "wt-b")
