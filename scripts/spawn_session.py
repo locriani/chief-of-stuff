@@ -34,12 +34,13 @@ BOOTSTRAP = ("Read the file {dispatch} — that is your assignment, in full, and
 # Pin cwd in argv because the terminal may ignore its configured directory.
 ENV_BIN = "/usr/bin/env"
 # Enforce planning at launch and pass the assigned session name explicitly.
-CLAUDE_ARGV = ["claude", "--agent", "{type}", "--name", "{title}", "--model", "{model}", "--effort", "{effort}",
-               "--permission-mode", "plan", BOOTSTRAP]
+CLAUDE_ARGV = ["claude", "--agent", "{type}", "--name", "{title}", "--model", "{model}",
+               *runtimes.get("claude").effort_argv, "--permission-mode", "plan", BOOTSTRAP]
 # Antigravity gets its name from the tab and assignment and reads workspace rules explicitly.
 AGY_BOOTSTRAP = BOOTSTRAP + " Then read {root}/CLAUDE.md: its house rules bind you."
 AGY_ARGV = ["agy", "--model", "{model}", "--mode", "plan", "-i", AGY_BOOTSTRAP]
-CODEX_ARGV = ["codex", "-C", "{cwd}", "--sandbox", "read-only", "--model", "{model}", AGY_BOOTSTRAP]
+CODEX_ARGV = ["codex", "-C", "{cwd}", "--sandbox", "read-only", "--model", "{model}",
+              *runtimes.get("codex").effort_argv, AGY_BOOTSTRAP]
 CURSOR_ARGV = ["agent", "--workspace", "{cwd}", "--mode", "plan", "--model", "{model}", AGY_BOOTSTRAP]
 TEMPLATES = {"claude": CLAUDE_ARGV, "agy": AGY_ARGV, "codex": CODEX_ARGV, "cursor": CURSOR_ARGV}
 MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
@@ -96,7 +97,7 @@ def _without(template: list[str], field: str) -> list[str]:
             continue
         if mark in token:
             continue
-        if token.startswith("--") and i + 1 < len(template) and mark in template[i + 1]:
+        if token.startswith("-") and i + 1 < len(template) and mark in template[i + 1]:
             skip = True
             continue
         out.append(token)
@@ -225,7 +226,7 @@ def main(argv_in: list[str] | None = None) -> int:
                     help="terminal launcher; default: [workers] launcher in workspace settings, then ghostty")
     ap.add_argument("--model", default="", help="model id; required for agy")
     ap.add_argument("--effort", default="", choices=("", "low", "medium", "high", "xhigh", "max"),
-                    help="claude only; agy's effort is in its model id")
+                    help="claude or codex; agy's effort is in its model id")
     ap.add_argument("--dry-run", action="store_true", help="print the argv and start nothing")
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--one-shot", action="store_true",
@@ -245,7 +246,7 @@ def main(argv_in: list[str] | None = None) -> int:
                 raise SettingsError(f"no [models.{args.model_class}] in the Settings TOML")
             entry = settings.models[args.model_class][0]
             args.runtime, args.model = entry.runtime, entry.model
-            # ponytail: only a runtime that takes --effort gets the entry's effort here; the others need their own flag.
+            # A runtime that cannot express effort drops the entry's effort.
             if runtimes.get(entry.runtime).takes_effort:
                 args.effort = args.effort or entry.effort or ""
     except (dispatch_prompt.RefusedError, SettingsError, OSError) as exc:
@@ -258,7 +259,11 @@ def main(argv_in: list[str] | None = None) -> int:
         print(f"refused: --model needs a model id (agy: one from `agy models`, and it is required), not {args.model!r}", file=sys.stderr)
         return 1
     if args.effort and not runtime.takes_effort:
-        print("refused: --effort is claude only", file=sys.stderr)
+        why = "; its effort is part of the model id" if runtime.name == "agy" else ""
+        print(f"refused: --effort is not supported for {runtime.name}{why}", file=sys.stderr)
+        return 1
+    if args.effort and args.effort not in runtime.efforts:
+        print(f"refused: --effort {args.effort} is not a {runtime.name} level; it takes {', '.join(runtime.efforts)}", file=sys.stderr)
         return 1
     # Compose and launch must use the same absolute cwd.
     args.cwd = os.path.abspath(args.cwd)

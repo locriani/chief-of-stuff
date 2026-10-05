@@ -46,8 +46,6 @@ def command(runtime: str, binary: str, cwd: Path, dispatch: Path, *, agent_type:
             argv += ["--agent", agent_type]
         if model:
             argv += ["--model", model]
-        if effort:
-            argv += ["--effort", effort]
     elif runtime == "codex":
         # `never` returns blocked operations to the model instead of waiting for a human.
         argv = [binary, "-a", "never", "exec", "-C", str(cwd), "--sandbox", "workspace-write",
@@ -73,7 +71,7 @@ def command(runtime: str, binary: str, cwd: Path, dispatch: Path, *, agent_type:
         argv += ["--print"]
     else:
         raise ValueError(f"unknown runtime {runtime}")
-    return [*argv, prompt]
+    return [*argv, *runtimes.get(runtime).effort_tokens(effort), prompt]
 
 
 def worker_result(path: Path, exit_code: int) -> tuple[str, str, str]:

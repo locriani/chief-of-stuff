@@ -678,7 +678,7 @@ class AgyTest(unittest.TestCase):
         out = run_main("--runtime", "agy", "--model", "x;rm -rf ~")
         self.assertEqual(out.returncode, 1)
 
-    def test_effort_is_claude_only(self):
+    def test_effort_is_refused_for_agy(self):
         out = run_main("--runtime", "agy", "--model", "gemini-3.8-flash-high", "--effort", "high")
         self.assertEqual(out.returncode, 1)
         self.assertIn("--effort", out.stderr)

@@ -15,16 +15,27 @@ class Runtime:
     name: str  # the `--runtime` value, a `[models]` entry's prefix, and a registration's `runtime`
     binary: str  # the executable its CLI installs
     display: str  # how a prompt names the host
-    takes_effort: bool  # a launch passes `--effort`; elsewhere effort is part of the model id or absent
     needs_model: bool  # a worker launch refuses to start without `--model`
     schedules: bool  # the host can run a recurring in-session check; without one, checks happen each turn
+    effort_argv: tuple[str, ...] = ()  # the argv tokens that pass an effort, `{effort}` standing for the level; none where effort is part of the model id or absent
+    efforts: tuple[str, ...] = ()  # the levels it accepts
+
+    @property
+    def takes_effort(self) -> bool:
+        return bool(self.effort_argv)
+
+    def effort_tokens(self, level: str) -> list[str]:
+        """The argv tokens that pass `level`; none for an empty level."""
+        return [token.format(effort=level) for token in self.effort_argv] if level else []
 
 
 RUNTIMES = (
-    Runtime("claude", binary="claude", display="Claude Code", takes_effort=True, needs_model=False, schedules=True),
-    Runtime("codex", binary="codex", display="Codex CLI", takes_effort=False, needs_model=False, schedules=False),
-    Runtime("cursor", binary="agent", display="Cursor CLI", takes_effort=False, needs_model=False, schedules=True),
-    Runtime("agy", binary="agy", display="Antigravity", takes_effort=False, needs_model=True, schedules=True),
+    Runtime("claude", binary="claude", display="Claude Code", needs_model=False, schedules=True,
+            effort_argv=("--effort", "{effort}"), efforts=("low", "medium", "high", "xhigh", "max")),
+    Runtime("codex", binary="codex", display="Codex CLI", needs_model=False, schedules=False,
+            effort_argv=("-c", "model_reasoning_effort={effort}"), efforts=("low", "medium", "high", "xhigh")),
+    Runtime("cursor", binary="agent", display="Cursor CLI", needs_model=False, schedules=True),
+    Runtime("agy", binary="agy", display="Antigravity", needs_model=True, schedules=True),
 )
 NAMES = tuple(runtime.name for runtime in RUNTIMES)
 _BY_NAME = {runtime.name: runtime for runtime in RUNTIMES}
