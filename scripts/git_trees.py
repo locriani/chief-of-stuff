@@ -199,11 +199,6 @@ def _pruned_common(tree: Path) -> Path | None:
     return None
 
 
-def _pruned(tree: Path) -> bool:
-    """Whether `tree` is a pruned worktree: `_pruned_common` finds its repository."""
-    return _pruned_common(tree) is not None
-
-
 def check_sha(sha: str, tree: Path) -> tuple[int, str, bool]:
     """One repository's `(exit code, line, held)`; `held` is whether it has a commit with that id, or may have one (git
     cannot read it). A pruned worktree (`_pruned_common`: its `.git` file names a `<common>/worktrees/<name>` known gone) is
