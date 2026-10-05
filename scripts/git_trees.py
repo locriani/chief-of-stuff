@@ -179,7 +179,7 @@ def _has_grafts(tree: Path) -> bool | None:
 
 def _pruned_common(tree: Path) -> Path | None:
     """The repository (`<common>`) of a pruned worktree, else None. `tree` is pruned when its `.git` is a regular file (decided on the
-    opened one) of at most 4096 characters whose content is `gitdir: <path>` (that exact prefix, as git requires) with
+    opened one) of at most 4096 bytes whose content is `gitdir: <path>` (that exact prefix, as git requires) with
     `<path>` = `<common>/worktrees/<name>`, KNOWN gone (`lstat` says not found; a permission error, any other `OSError` or a dangling
     symlink is present or unknown). Only the trailing run of `\r`/`\n` is trimmed, as git does; every other byte after `gitdir: ` is the
     path, and a path left with one is no path. Read from the file and the filesystem, never git (a probe can time out). Whether
@@ -190,13 +190,9 @@ def _pruned_common(tree: Path) -> Path | None:
         try:
             if not stat.S_ISREG(os.fstat(fd).st_mode):  # decided on the opened file, so a swap after the open cannot matter
                 return None
-            f = open(fd, newline="")  # newline="": a lone `\r` stays one
-            fd = -1  # `f` owns it now
+            line = os.read(fd, 4097).decode()  # one past the bound: content beyond it is never ignored
         finally:
-            if fd >= 0:
-                os.close(fd)
-        with f:
-            line = f.read(4097)  # one past the bound: content beyond it is never ignored
+            os.close(fd)
         if len(line) > 4096:
             return None
         path = line.removeprefix("gitdir: ").rstrip("\r\n")
