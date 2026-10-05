@@ -2227,7 +2227,8 @@ class ShaTreesTest(unittest.TestCase):
     Exit: 1 if any repository that holds the commit says it is not on origin/main (round 7), else 2 if there is none or
     any is unknown and may hold the commit (round 8; round 10: a repository git could not read may hold it, one that
     plainly lacks it does not), else 0 if any line is a yes, else 2 if any is unknown, else 1. Line order is not pinned. The workspace's
-    own repository has three worktrees, so it is one line named `wt-dirty`, the first by name.
+    own repository has three worktrees, so it is one line named `wt-dirty`, the first by name. A pruned worktree is a tree of its
+    repository (#294 round 10), so it joins that repository's one line rather than adding one.
     """
 
     def setUp(self) -> None:
@@ -2320,16 +2321,28 @@ class ShaTreesTest(unittest.TestCase):
     def unread_line(self, name: str) -> str:
         return f"sha {self.sha}: unknown \u2014 git could not read this repository [{name}]"
 
+    def run_counting_fetches(self, sha: str) -> tuple[int, str, str, list[Path]]:
+        """`run_main("--sha", sha)` plus the repository each `git_trees.fetch_base` call that could reach one went to: the
+        resolved common git dir of the tree it was called on. A fetch on a pruned tree itself (git cannot read it, so it
+        reaches nothing) is not counted; the redirect to `<common>` is, as is a fetch on a healthy tree."""
+        real, reached = git_trees.fetch_base, []
+
+        def counting(tree, *rest, **kw):
+            code, common = git_trees.git(["rev-parse", "--path-format=absolute", "--git-common-dir"], tree)
+            if code == 0:
+                reached.append(Path(common).resolve())
+            return real(tree, *rest, **kw)
+
+        with patch.object(git_trees, "fetch_base", counting):
+            return (*self.run_main("--sha", sha), reached)
+
     def test_a_pruned_worktree_does_not_stop_a_healthy_one_answering(self) -> None:
         """#294, the live shape: a pruned worktree (its `.git` file names `<common>/worktrees/<name>`, which is gone, `<common>`
-        is not) of the same repository as a healthy tree that says yes. The repository answers for it (round 7), so its own
-        line says `on origin/main` too: exit 0, the dead tree is still listed, and the overall line says yes."""
+        is not) of the same repository as a healthy tree that says yes. It is a tree of that repository (round 10), so it is
+        not a second repository: one line, the healthy tree's, exit 0, and no overall line (one repository)."""
         self.dead_worktree("zzz-dead")
         code, out, err = self.run_main("--sha", self.sha)
-        self.assertEqual(self.lines(out), sorted([
-            f"sha {self.sha}: on origin/main {self.tip} (fetched) [wt-dirty]", self.pruned_line("zzz-dead")]))
-        self.assert_overall(out, self.sha, 0)
-        self.assertEqual((code, err), (0, ""))
+        self.assertEqual((code, out, err), (0, f"sha {self.sha}: on origin/main {self.tip} (fetched) [wt-dirty]\n", ""))
 
     def test_a_dot_git_file_pointing_at_a_repository_that_is_gone_blocks_the_yes(self) -> None:
         """#294 round 2: `.git` names a path with no repository behind it. Nothing says a repository forgot the tree, so it
@@ -2389,21 +2402,30 @@ class ShaTreesTest(unittest.TestCase):
             f"sha {unmerged}: not on origin/main {self.tip} (fetched) [zzz-dead]"]))
         self.assert_overall(out, unmerged, 1)
 
-    def test_every_pruned_worktree_is_listed_once_and_each_is_answered_by_its_repository(self) -> None:
-        """#294: `sha_trees` lists a tree git cannot resolve a common dir for as its own repository (it is not dropped), so
-        two pruned worktrees are two lines, one each, with the project's yes and the overall yes."""
+    def test_a_healthy_tree_and_two_pruned_worktrees_of_one_repository_are_one_line_and_one_fetch(self) -> None:
+        """#294 round 10, A: the healthy tree (`wt-dirty`, first by name) and two pruned worktrees (`zzz-*`) of one repository
+        are one repository: exit 0, exactly one line, no overall line, and the repository is fetched once. Counted: the
+        `fetch_base` calls whose tree resolves to a repository, per resolved repository (a fetch on a dead tree itself reaches
+        none). Before, each pruned tree was listed and its repository fetched again for each, so one transient failure
+        among the duplicates turned the repository's yes into `overall unknown`."""
+        self.dead_worktree("zzz-dead")
+        self.dead_worktree("zzz-dead2")
+        code, out, err, reached = self.run_counting_fetches(self.sha)
+        self.assertEqual((code, out, err), (0, f"sha {self.sha}: on origin/main {self.tip} (fetched) [wt-dirty]\n", ""))
+        self.assertEqual(reached, [(self.clone / ".git").resolve()])
+
+    def test_pruned_worktrees_that_sort_before_the_healthy_tree_are_the_one_line_and_one_fetch(self) -> None:
+        """#294 round 10, A: the first by name is the one listed, whichever kind it is. `aaa-dead` sorts before `wt-dirty`, so
+        the line is `[aaa-dead]` (answered by its repository: a yes) and the healthy tree and `zzz-dead` are not listed."""
         self.dead_worktree("aaa-dead")
         self.dead_worktree("zzz-dead")
-        code, out, err = self.run_main("--sha", self.sha)
-        self.assertEqual(self.lines(out), sorted([
-            f"sha {self.sha}: on origin/main {self.tip} (fetched) [wt-dirty]",
-            self.pruned_line("aaa-dead"), self.pruned_line("zzz-dead")]))
-        self.assert_overall(out, self.sha, 0)
-        self.assertEqual((code, err), (0, ""))
+        code, out, err, reached = self.run_counting_fetches(self.sha)
+        self.assertEqual((code, out, err), (0, self.pruned_line("aaa-dead") + "\n", ""))
+        self.assertEqual(reached, [(self.clone / ".git").resolve()])
 
     def test_pruned_trees_alone_are_answered_by_their_repository(self) -> None:
-        """#294 round 7: with the project's only trees pruned worktrees, the repository still answers for them: a single one
-        prints its line and no overall line; more than one prints each line and the overall one. Here: yes, exit 0."""
+        """#294 round 7, round 10: with the project's only trees pruned worktrees, the repository still answers for them, and
+        they are one repository however many: one line (the first by name), no overall line. Here: yes, exit 0."""
         shutil.rmtree(self.trees)
         self.trees.mkdir()
         self.dead_worktree("aaa-dead")
@@ -2411,13 +2433,13 @@ class ShaTreesTest(unittest.TestCase):
         self.assertEqual((code, out), (0, self.pruned_line("aaa-dead") + "\n"))
         self.dead_worktree("zzz-dead")
         code, out, _ = self.run_main("--sha", self.sha)
-        self.assertEqual((code, self.lines(out)), (0, sorted([self.pruned_line("aaa-dead"), self.pruned_line("zzz-dead")])))
-        self.assert_overall(out, self.sha, 0)
+        self.assertEqual((code, out), (0, self.pruned_line("aaa-dead") + "\n"))
 
     def test_a_repository_git_can_open_but_not_read_still_blocks_the_yes(self) -> None:
         """#294 keeps the other half of round 10, 2: `rev-parse --git-dir` succeeds but the commit lookup faults, so the
         repository may hold the commit and blocks the project's yes (exit 2). Only that call is made to fail, for the
-        tree named `aaa-open`; a pruned worktree beside it is answered by its repository (yes) and changes nothing."""
+        tree named `aaa-open`; a pruned worktree beside it is a tree of the healthy tree's repository (round 10), so it adds
+        no line and changes nothing."""
         self.dead_worktree("zzz-dead")
         self.docs_clone(self.trees / "aaa-open")
         real = git_trees.git
@@ -2431,7 +2453,7 @@ class ShaTreesTest(unittest.TestCase):
             code, out, _ = self.run_main("--sha", self.sha)
         self.assertEqual(self.lines(out), sorted([
             f"sha {self.sha}: on origin/main {self.tip} (fetched) [wt-dirty]",
-            f"sha {self.sha}: unknown \u2014 git could not read this repository [aaa-open]", self.pruned_line("zzz-dead")]))
+            f"sha {self.sha}: unknown \u2014 git could not read this repository [aaa-open]"]))
         self.assert_overall(out, self.sha, 2)
         self.assertEqual(code, 2)
 

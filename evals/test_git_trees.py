@@ -53,6 +53,14 @@ class Repo(unittest.TestCase):
         git("worktree", "add", "-b", branch, str(self.trees / name), "main", cwd=self.clone)
         return self.trees / name
 
+    def pruned(self, name: str = "wt-dead") -> tuple[str, Path]:
+        """`(sha, tree)`: a real `git worktree add`, then `<common>/worktrees/<name>` deleted. The repository is still
+        there and no longer knows this tree."""
+        sha = git("rev-parse", "HEAD", cwd=self.clone)
+        tree = self.tree(name, f"feat/{name}")
+        shutil.rmtree(self.clone / ".git" / "worktrees" / name)
+        return sha, tree
+
 
 class ReadStateTest(Repo):
     def test_a_fresh_branch_at_main_holds_nothing(self) -> None:
@@ -588,14 +596,6 @@ class CheckShaTest(Repo):
 
     COULD_NOT_READ = "unknown \u2014 git could not read this repository"
 
-    def pruned(self, name: str = "wt-dead") -> tuple[str, Path]:
-        """`(sha, tree)`: a real `git worktree add`, then `<common>/worktrees/<name>` deleted. The repository is still
-        there and no longer knows this tree."""
-        sha = git("rev-parse", "HEAD", cwd=self.clone)
-        tree = self.tree(name, f"feat/{name}")
-        shutil.rmtree(self.clone / ".git" / "worktrees" / name)
-        return sha, tree
-
     def assert_could_not_read(self, sha: str, tree: Path) -> None:
         self.assertEqual(git_trees.check_sha(sha, tree), (2, f"sha {sha}: {self.COULD_NOT_READ}", True))
 
@@ -935,6 +935,39 @@ class CheckShaTest(Repo):
         self.assertEqual(git_trees.check_sha(sha, tree), git_trees.check_sha(sha, self.clone))
         self.assertEqual(git_trees.check_sha(sha, tree)[0], 0)
 
+    def test_a_line_break_inside_the_gitfile_path_is_not_a_pruned_worktree(self) -> None:
+        """#294 round 10, B: git reads the whole gitfile and strips only the trailing CR/LF run, so `gitdir: <path>\njunk\n`
+        names a path with a line break in it, which git rejects (real git 2.54 exits 128 on a LIVE worktree with that file,
+        checked first). Reading only the first line would call the pruned tree pruned and import its repository's answer:
+        not a pruned worktree, so could not read, `held` True."""
+        sha, tree = self.pruned()
+        gone = self.clone / ".git" / "worktrees" / "wt-dead"
+        live_tree, live = self.tree("wt-live", "feat/wt-live"), self.clone / ".git" / "worktrees" / "wt-live"
+        for what, tail in (("a junk line", b"\njunk\n"), ("a junk line with no final newline", b"\njunk"),
+                           ("a junk line and a trailing blank", b"\njunk\n\n"), ("a lone CR then junk", b"\rjunk\n")):
+            with self.subTest(what):
+                (live_tree / ".git").write_bytes(f"gitdir: {live}".encode() + tail)
+                self.assertEqual(git_trees.git(["rev-parse", "--git-dir"], live_tree)[0], 128)  # git rejects it too
+                (tree / ".git").write_bytes(f"gitdir: {gone}".encode() + tail)
+                self.assertIsNone(git_trees._pruned_common(tree))
+                self.assert_could_not_read(sha, tree)
+
+    def test_a_pruned_worktrees_gitfile_may_end_with_any_run_of_cr_lf_or_none(self) -> None:
+        """#294 round 10, B: only the trailing CR/LF run is not part of the path, and real git 2.54 opens a LIVE worktree
+        whose file ends `\r\n`, `\n\n`, `\r\r\n` or with no newline at all (checked first). A pruned worktree whose `.git` ends any of
+        those ways is still pruned: answered by its repository, a yes here."""
+        sha, tree = self.pruned()
+        gone = self.clone / ".git" / "worktrees" / "wt-dead"
+        live_tree, live = self.tree("wt-live", "feat/wt-live"), self.clone / ".git" / "worktrees" / "wt-live"
+        for what, tail in (("CRLF", b"\r\n"), ("no newline", b""), ("a blank line", b"\n\n"), ("CR CR LF", b"\r\r\n")):
+            with self.subTest(what):
+                (live_tree / ".git").write_bytes(f"gitdir: {live}".encode() + tail)
+                self.assertEqual(git_trees.git(["rev-parse", "--git-dir"], live_tree)[0], 0)
+                (tree / ".git").write_bytes(f"gitdir: {gone}".encode() + tail)
+                self.assertEqual(git_trees._pruned_common(tree).resolve(), (self.clone / ".git").resolve())
+                self.assertEqual(git_trees.check_sha(sha, tree), git_trees.check_sha(sha, self.clone))
+                self.assertEqual(git_trees.check_sha(sha, tree)[0], 0)
+
     def test_the_repository_of_a_pruned_worktree_is_the_grandparent_of_its_gitfile_target_so_it_still_answers(self) -> None:
         """#294 round 9, pin: `<common>` is `<common>/worktrees/<name>`'s GRANDPARENT. A real `git worktree add`, then the
         clone's whole `<common>/worktrees` directory (not just the entry) is removed: the repository is still the clone's
@@ -1136,6 +1169,66 @@ class CheckShaTest(Repo):
                 tip = git("rev-parse", "--short", "refs/remotes/origin/main", cwd=clone)
                 self.assertEqual(git_trees.check_sha(sha, clone),
                                  (2, f"sha {sha}: unknown \u2014 fetch failed: {err}; origin/main {tip} as last fetched does not hold it", True))
+
+
+class ShaTreesTest(Repo):
+    """#294 round 10, A: `sha_trees` lists one tree per repository. A pruned worktree is a tree of the repository its `.git`
+    file names (`<common>`, resolved), so it is keyed by that, exactly as a healthy worktree is keyed by its common git dir:
+    the first tree by name is the one listed, whichever kind it is."""
+
+    def listed(self) -> list[str]:
+        return [name for name, _ in git_trees.sha_trees(self.root, "trees/")]
+
+    def other_repository_pruned(self, name: str) -> None:
+        """A second, unrelated repository with a pruned worktree `name` under the worktrees directory."""
+        other = self.root / "other"
+        other.mkdir(exist_ok=True)
+        if not (other / ".git").exists():
+            git("init", "--initial-branch=main", ".", cwd=other)
+            commit(other, "o.txt")
+        git("worktree", "add", "-b", f"feat/{name}", str(self.trees / name), "main", cwd=other)
+        shutil.rmtree(other / ".git" / "worktrees" / name)
+
+    def test_pruned_worktrees_that_sort_first_are_one_entry_and_the_healthy_tree_is_not_listed(self) -> None:
+        self.pruned("aaa-dead")
+        self.pruned("bbb-dead")
+        self.tree("zzz-live", "feat/zzz-live")
+        self.assertEqual(git_trees.sha_trees(self.root, "trees/"), [("aaa-dead", (self.trees / "aaa-dead").resolve())])
+
+    def test_a_healthy_tree_that_sorts_first_is_the_one_entry_for_its_repository_and_its_pruned_worktrees(self) -> None:
+        self.tree("aaa-live", "feat/aaa-live")
+        self.pruned("bbb-dead")
+        self.pruned("ccc-dead")
+        self.assertEqual(git_trees.sha_trees(self.root, "trees/"), [("aaa-live", (self.trees / "aaa-live").resolve())])
+
+    def test_pruned_worktrees_of_one_repository_and_no_healthy_tree_are_one_entry(self) -> None:
+        self.pruned("aaa-dead")
+        self.pruned("bbb-dead")
+        self.assertEqual(self.listed(), ["aaa-dead"])
+
+    def test_pruned_worktrees_of_two_repositories_are_two_entries(self) -> None:
+        self.pruned("aaa-dead")
+        self.other_repository_pruned("bbb-dead")
+        self.assertEqual(self.listed(), ["aaa-dead", "bbb-dead"])
+
+    def test_a_pruned_worktree_is_keyed_by_its_resolved_repository(self) -> None:
+        """The gitfile names `<common>` through a symlink; the healthy tree's common git dir is the real path. Same repository."""
+        self.pruned("aaa-dead")
+        link = self.root / "link-to-git"
+        link.symlink_to(self.clone / ".git")
+        (self.trees / "aaa-dead" / ".git").write_text(f"gitdir: {link}/worktrees/aaa-dead\n")
+        self.tree("zzz-live", "feat/zzz-live")
+        self.assertEqual(self.listed(), ["aaa-dead"])
+
+    def test_a_tree_git_cannot_read_that_is_not_pruned_is_its_own_entry(self) -> None:
+        """`gitdir: /nonexistent/path` names no `<common>/worktrees/<name>`: nothing says a repository forgot it, so each
+        such tree stays its own repository (unchanged), beside the healthy one."""
+        self.tree("aaa-live", "feat/aaa-live")
+        for name in ("bbb-broken", "ccc-broken"):
+            (self.trees / name).mkdir()
+            (self.trees / name / ".git").write_text("gitdir: /nonexistent/path\n")
+            self.assertIsNone(git_trees._pruned_common(self.trees / name))
+        self.assertEqual(self.listed(), ["aaa-live", "bbb-broken", "ccc-broken"])
 
 
 if __name__ == "__main__":
