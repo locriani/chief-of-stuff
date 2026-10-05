@@ -108,6 +108,16 @@ class CommandTest(unittest.TestCase):
         args, without = pairs("")
         self.assertFalse([a for a in args if "model_reasoning_effort" in a])
 
+    def test_a_runtime_with_no_one_shot_branch_is_refused_by_name(self):
+        # #52: not a KeyError from the table, and never another runtime's argv.
+        fifth = one_shot.runtimes.Runtime("fifth", binary="fifth", display="Fifth", needs_model=False, schedules=False)
+        for name in ("nope", "fifth"):
+            with self.subTest(name=name), \
+                 mock.patch.dict(one_shot.runtimes._BY_NAME, {"fifth": fifth}), \
+                 self.assertRaisesRegex(ValueError, name):
+                one_shot.command(name, "/bin/fake", Path("/tmp/t"), Path("/tmp/d.md"), agent_type=None, model="m",
+                                 effort="high")
+
     def test_agy_print_takes_the_prompt_as_its_value(self):
         # agy's --print takes a value: a flag after it becomes the prompt, and agy exits 2.
         dispatch = Path("/tmp/one-shot-tree/.chief-of-stuff/dispatch.md")

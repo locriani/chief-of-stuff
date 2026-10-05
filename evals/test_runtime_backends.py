@@ -12,7 +12,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import run  # noqa: E402
 
 
+def has_run(cmd, runtime):
+    """#52: the eval harness passes an effort as the same consecutive tokens the worker launcher does."""
+    tokens = run.runtimes.get(runtime).effort_tokens("high")
+    return any(cmd[i:i + len(tokens)] == tokens for i in range(len(cmd)))
+
+
 class HostCommandTest(unittest.TestCase):
+    def test_agy_and_claude_pass_their_effort_as_the_launcher_does(self):
+        with mock.patch.object(run.shutil, "which", return_value="/bin/agy"):
+            self.assertTrue(has_run(run.host_command("agy", "m", "hi", Path("/tmp/work"), Path("/tmp/plugin"),
+                                                     effort="high"), "agy"))
+        self.assertTrue(has_run(run.command(run.Case("c", Path("/c"), {}), "baseline", "sonnet", "x", effort="high"),
+                                "claude"))
+
     def test_each_backend_runs_headlessly_on_an_explicit_model(self):
         with mock.patch.object(run.shutil, "which", side_effect=lambda name: "/bin/" + name):
             for runtime, flag in (("codex", "--json"), ("cursor", "stream-json"), ("agy", "stream-json")):
@@ -36,7 +49,7 @@ class HostCommandTest(unittest.TestCase):
                                    effort="high")
         self.assertEqual(cmd[1:3], ["exec", "resume"])
         self.assertEqual(cmd[-2:], ["thread-123", "next"])
-        self.assertIn('model_reasoning_effort="high"', cmd)
+        self.assertTrue(has_run(cmd, "codex"), cmd)  # the launcher's own tokens, not a second spelling
         self.assertIn('sandbox_mode="workspace-write"', cmd)
         self.assertNotIn("--last", cmd)
         with mock.patch.object(run.shutil, "which", return_value="/bin/codex"):

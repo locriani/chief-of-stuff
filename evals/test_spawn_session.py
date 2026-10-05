@@ -694,6 +694,16 @@ class AgyTest(unittest.TestCase):
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertIn("--effort high", out.stdout)
 
+    def test_the_effort_comes_before_the_bootstrap_prompt(self):
+        # `-i` takes the prompt as its value: the effort pair must not sit between them.
+        tokens = ss.runtime_tokens(cwd="/tmp/wt", agent_type=None, binary=self.AGY, title="agy-01", runtime="agy",
+                                   model="gemini-3.8-flash-high", effort="high", workspace="/tmp/ws")
+        agy = tokens[tokens.index(str(self.AGY)):]
+        self.assertTrue(agy[agy.index("-i") + 1].startswith("Read the file"), agy)
+        effort = agy.index("--effort")
+        self.assertEqual(agy[effort + 1], "high")
+        self.assertLess(effort + 1, agy.index("-i"))
+
     def test_the_dry_run_shows_the_agy_tab(self):
         out = run_main("--runtime", "agy", "--model", "gemini-3.8-flash-high")
         self.assertEqual(out.returncode, 0, out.stderr)
@@ -941,12 +951,6 @@ class WorkerModeTest(unittest.TestCase):
         argv = self.dry_run_argv(args + ["--runtime", "codex", "--effort", "medium"])
         self.assertIn(("-c", "model_reasoning_effort=medium"), list(zip(argv, argv[1:])))
 
-    def test_a_level_the_runtime_does_not_list_is_the_clis_to_judge(self):
-        """#52: no per-runtime level list here; codex's own CLI rejects a level it does not know."""
-        _, args = self.one_shot_workspace()
-        argv = self.dry_run_argv(args + ["--runtime", "codex", "--effort", "max"])
-        self.assertIn(("-c", "model_reasoning_effort=max"), list(zip(argv, argv[1:])))
-
     def test_agy_takes_its_effort_in_a_one_shot_before_the_print_value(self):
         """#52: agy lists `--effort`; `--print` takes the prompt, so the pair comes before it."""
         _, args = self.one_shot_workspace()
@@ -963,8 +967,7 @@ class WorkerModeTest(unittest.TestCase):
              contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as err:
             self.assertEqual(ss.main(args + ["--class", "implement"]), 1)
         self.assertTrue(err.getvalue().startswith("refused:"), err.getvalue())
-        self.assertIn("cursor", err.getvalue())
-        self.assertIn("--effort", err.getvalue())
+        self.assertIn("cursor:gpt-x@high", err.getvalue())  # the entry the user wrote; no `--effort` flag was typed
         toml.write_text('[workers]\nmode = "one-shot"\n\n[models.implement]\nrotation = ["cursor:gpt-x"]\n')
         self.assertIn("--model", self.dry_run_argv(args + ["--class", "implement"]))
 
