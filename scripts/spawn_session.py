@@ -222,7 +222,7 @@ def main(argv_in: list[str] | None = None) -> int:
                     help="terminal launcher; default: [workers] launcher in workspace settings, then ghostty")
     ap.add_argument("--model", default="", help="model id; required for agy")
     ap.add_argument("--effort", default="", choices=("", "low", "medium", "high", "xhigh", "max"),
-                    help="not supported for cursor")
+                    help="not supported for " + ", ".join(r.name for r in runtimes.RUNTIMES if not r.takes_effort))
     ap.add_argument("--dry-run", action="store_true", help="print the argv and start nothing")
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--one-shot", action="store_true",
@@ -242,7 +242,7 @@ def main(argv_in: list[str] | None = None) -> int:
                 raise SettingsError(f"no [models.{args.model_class}] in the Settings TOML")
             entry = settings.models[args.model_class][0]
             args.runtime, args.model = entry.runtime, entry.model
-            args.effort = args.effort or entry.effort or ""  # a runtime that cannot express it refuses it below
+            args.effort = args.effort or entry.effort or ""  # an entry's own effort was checked at load
     except (dispatch_prompt.RefusedError, SettingsError, OSError) as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 1
