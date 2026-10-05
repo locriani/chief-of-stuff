@@ -446,8 +446,9 @@ def owns(row: OwnerRow, owner: str) -> bool:
 
 
 def keyed_on(row: OwnerRow, item: str, name: str) -> bool:
-    """A File ownership row keyed on a task's item or its Tasks-table `name` is keyed on that task."""
-    return owns(row, item) or owns(row, name)
+    """A File ownership row keyed on a task's item, or whose whole context is its Tasks-table `name`, is keyed on that
+    task. The name is compared exactly, as dispatch does: a session's `arch (deletion)` is not a task named `arch`."""
+    return owns(row, item) or (bool(name.strip()) and row.context.strip() == name.strip())
 
 
 def _tokens(text: str) -> set[str]:
