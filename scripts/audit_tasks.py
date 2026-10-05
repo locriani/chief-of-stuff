@@ -445,6 +445,11 @@ def owns(row: OwnerRow, owner: str) -> bool:
     return _bare(row.context) == _bare(owner)
 
 
+def keyed_on(row: OwnerRow, item: str, name: str) -> bool:
+    """A File ownership row keyed on a task's item or its Tasks-table `name` is keyed on that task."""
+    return owns(row, item) or owns(row, name)
+
+
 def _tokens(text: str) -> set[str]:
     return {t.lower() for t in TOKEN.findall(text) if len(t) > 1 and not t.isdigit() and t.lower() not in STOP}
 
@@ -463,7 +468,7 @@ def rows_for(item: str, owner: str, owners: list[OwnerRow], name: str = "") -> t
     row wins, and a tie or a blank draws nothing, because attributing the wrong tree reopens a task
     that is genuinely finished.
     """
-    exact = [r for r in owners if owns(r, item) or (name.strip() and owns(r, name))]
+    exact = [r for r in owners if keyed_on(r, item, name)]
     if exact:
         return exact, ""
     mine = [r for r in owners if owns(r, owner)]
@@ -486,7 +491,7 @@ def row_claim(row: OwnerRow, tasks, roster: set[str], refs: set[str], user: str)
     if not roster:
         return Claim(owner, True)
     here, missing = listed(row.context, roster, refs, user)
-    keyed = next((t for t in tasks if owns(row, t.item)), None)
+    keyed = next((t for t in tasks if keyed_on(row, t.item, t.name)), None)
     here = here or (keyed is not None and listed(keyed.owner, roster, refs, user)[0])
     how = "names a ref no ## Sessions row carries" if missing else "is not in ## Sessions"
     return Claim(owner, here, how, missing)
