@@ -27,11 +27,6 @@ PIDFILE = Path(".chief-of-stuff") / "one-shot.pid"
 TASK_MAX = 200
 
 
-def shown(text: str) -> str:
-    """Text a worker wrote, as printed: escaped first, then cut to TASK_MAX."""
-    return clean(text)[:TASK_MAX]
-
-
 def registrations(root: Path) -> dict[int, dict[str, str]]:
     result = {}
     for path in sorted((root / ".chief-of-stuff" / "sessions").glob("*.json")):
@@ -156,7 +151,7 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, UnicodeDecodeError):  # no CLAUDE.md, or one that cannot be decoded: no trees dir to look in
             runs = []
         known = known_tasks(args.root)  # printed: a task only when the tracker holds it, a tree name escaped
-        rows += [{"pid": pid, "task": task[:TASK_MAX] if task in known else "", "worktree": shown(tree.name),
+        rows += [{"pid": pid, "task": task[:TASK_MAX] if task in known else "", "worktree": clean(tree.name)[:TASK_MAX],
                   "status": "running", "kind": "one-shot"} for tree, pid, task in runs]
     print(toon_encode(rows) if rows else "[]")
     return 0

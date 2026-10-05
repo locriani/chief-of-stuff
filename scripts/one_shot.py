@@ -21,7 +21,7 @@ import runtimes
 import tracker_write
 from _vendor.toon_format import ToonDecodeError, decode as toon_decode, encode as toon_encode
 from md import cells as _cells, is_separator as _is_separator
-from process_status import PIDFILE, running_workers, shown
+from process_status import PIDFILE, running_workers
 from tracker import parse_tracker
 from tracker_log import RELAUNCHED, ended_line, relaunch_line, started_line
 from workspace import worktrees_dir
@@ -289,8 +289,8 @@ def slot(trees: Path, cwd: Path, task: str, cap: int | None):
         fcntl.flock(lock, fcntl.LOCK_EX)
         busy = running_workers(trees)
         if cap is not None and len(busy) >= cap:
-            raise ValueError(f"{len(busy)} one-shot workers running ({', '.join(map(shown, busy))}); "
-                             f"[workers] max_concurrency is {cap}")
+            raise ValueError(f"{len(busy)} one-shot workers running; [workers] max_concurrency is {cap} "
+                             "(list them: chief-of-stuff processes --root .)")
         (cwd / PIDFILE).parent.mkdir(exist_ok=True)
         (cwd / PIDFILE).write_text(f"{os.getpid()} {task}\n")
     finally:
