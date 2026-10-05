@@ -4,7 +4,7 @@
 replace ref cannot rewrite ancestry. `read_state` fills a `TreeState`; `discover` lists the trees under the
 `Worktrees:` dir, so the audit starts from what is on disk rather than from the File ownership rows that happen to
 name a tree. The one write is `fetch_base`, which moves `refs/remotes/origin/main` (no other ref) and leaves `FETCH_HEAD` and the
-fetched objects behind, for `check_sha`.
+fetched objects behind, for `check_sha` and `make_worktree`.
 """
 
 from __future__ import annotations
@@ -96,14 +96,17 @@ def fetch_base(tree: Path, timeout: int = 30) -> str:
     tree's path blanked and every non-printable character escaped (`clean`), since it is printed. The refspec is
     explicit and forced, so the ref moves whatever `remote.origin.fetch` says and follows a rewritten main, and
     `--no-tags` keeps it the only ref written. Not through `git()`: a fetch needs the caller's credentials and ssh
-    agent, which that sandboxed call strips."""
+    agent, which that sandboxed call strips. A fetch that loses a race for the ref (`cannot lock ref`) runs once more."""
     env = {k: v for k, v in os.environ.items() if k not in REPO_VARS}
     try:
-        out = subprocess.run(
-            ["git", "-C", str(tree), "fetch", "-q", "--no-tags", "origin", f"+refs/heads/main:{REF}"],
-            capture_output=True, text=True, errors="backslashreplace", timeout=timeout,  # stderr from ssh or a helper may hold any byte
-            env={**env, "GIT_TERMINAL_PROMPT": "0"},
-        )
+        for _ in range(2):  # a concurrent fetch holding the ref has moved it by the second try
+            out = subprocess.run(
+                ["git", "-C", str(tree), "fetch", "-q", "--no-tags", "origin", f"+refs/heads/main:{REF}"],
+                capture_output=True, text=True, errors="backslashreplace", timeout=timeout,  # stderr from ssh or a helper may hold any byte
+                env={**env, "GIT_TERMINAL_PROMPT": "0"},
+            )
+            if out.returncode == 0 or "cannot lock ref" not in out.stderr:
+                break
     except (OSError, subprocess.SubprocessError) as exc:  # not `exc`'s text: a timeout's repeats the tree's path
         return f"git fetch did not run ({type(exc).__name__})"
     if out.returncode == 0:

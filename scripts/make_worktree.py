@@ -26,7 +26,7 @@ GIT_TIMEOUT = 30
 
 
 class RefusedError(ValueError):
-    """Invalid worktree request; nothing created."""
+    """Invalid worktree request; no worktree or branch created (a fetch may already have moved origin/main)."""
 
 
 @dataclass(frozen=True)
@@ -98,26 +98,31 @@ def resolve(root: Path, trees: str, name: str) -> Path:
 def base_ref(fetch_error: str, from_local: bool) -> str:
     """The ref to cut from: local main when asked, the fetched origin/main when the fetch worked, else a refusal."""
     if from_local:
-        return "main"
+        return "refs/heads/main"
     if fetch_error:
-        raise RefusedError(f"fetching origin/main failed: {fetch_error}; --from-local cuts from local main instead")
+        raise RefusedError(f"fetching origin/main failed: {fetch_error}")
     return git_trees.REF
 
 
 def build(root: Path, clone: Path, trees: str, name: str, branch: str, agent_type: str, from_local: bool = False) -> Made:
-    """Check everything that came out of a file, then make the tree. A refusal creates nothing."""
+    """Check everything that came out of a file, then make the tree. A refusal creates no worktree or branch (a fetch may
+    already have moved origin/main)."""
     check_type((root / "CLAUDE.md").read_text() if (root / "CLAUDE.md").is_file() else "", agent_type)
     check_branch(branch, clone)
     path = resolve(root, trees, name)
+    no_main, local = git(["log", "-1", "--format=%h %cr", "refs/heads/main"], clone)  # git would quietly fall back to origin/main
+    if from_local and no_main:
+        raise RefusedError("no local main to cut from; drop --from-local")
     try:
         ref = base_ref("" if from_local else git_trees.fetch_base(clone), from_local)
     except RefusedError as exc:
-        raise RefusedError(f"{exc} (local main is {git(['log', '-1', '--format=%h %cr', 'main'], clone)[1]})") from None
+        raise RefusedError(f"{exc}; no local main" if no_main else f"{exc}; --from-local cuts from local main ({local}) instead") from None
     path.parent.mkdir(parents=True, exist_ok=True)
     code, detail = git(["worktree", "add", "--no-track", "-b", branch, "--", str(path), ref], clone)
     if code != 0:
         raise RefusedError(f"git worktree add failed: {detail}")
-    return Made(path, branch, agent_type, "local main" if from_local else "origin/main", git(["rev-parse", "--short", "HEAD"], path)[1])
+    sha = r[1] if (r := git(["rev-parse", "--short", "HEAD"], path))[0] == 0 else "?"  # not git's error text
+    return Made(path, branch, agent_type, "local main" if from_local else "origin/main", sha)
 
 
 def line(made: Made) -> str:
@@ -128,7 +133,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--type", dest="agent_type", required=True, help="an agent type from the Coordinator block")
     ap.add_argument("--name", required=True, help="the worktree directory name, one path segment")
-    ap.add_argument("--branch", required=True, help="the new branch, cut from origin/main, freshly fetched")
+    ap.add_argument("--branch", required=True, help="the new branch, cut from origin/main unless --from-local")
     ap.add_argument("--from-local", action="store_true", help="cut from local main, skipping the fetch of origin/main")
     ap.add_argument("--root", default=".", help="workspace root holding CLAUDE.md")
     ap.add_argument("--clone", required=True, help="the repository the worktree belongs to")
