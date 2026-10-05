@@ -24,7 +24,7 @@ These are examples, not assumed installed model IDs. The table is not an authori
 
 ## Workspace choices
 
-Record the exact model IDs for this workspace in the Settings TOML (`chief-of-stuff.toml`), one `[models.<class>]` table per task class. Each rotation entry is `runtime:model-id@effort`, with the runtime one of `claude`, `agy`, `codex` or `cursor`, the model ID used verbatim, and `@high`, `@medium` or `@low` optional. The first entry is the suggested model; the rest is the fallback order when a model is unavailable or out of quota.
+Record the exact model IDs for this workspace in the Settings TOML (`chief-of-stuff.toml`), one `[models.<class>]` table per task class. Each rotation entry is `runtime:model-id@effort`, with the runtime one of `claude`, `agy`, `codex` or `cursor`, the model ID used verbatim, and `@high`, `@medium` or `@low` optional (not for `cursor`, which takes no effort). The first entry is the suggested model; the rest is the fallback order when a model is unavailable or out of quota.
 
 ```toml
 [models.deep]
