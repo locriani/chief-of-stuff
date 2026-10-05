@@ -442,6 +442,60 @@ class CaseLintTest(unittest.TestCase):
                 if lines:
                     self.assertIn("verified", rb.resume_fields(rb.parse_resume(text)), f"{case.name}: {f.name}: Verified parsed but not drawn")
 
+    def test_one_shot_in_flight_graders_enforce_sentences_the_agent_carries(self) -> None:
+        """#53: a running one-shot is neither launched again (the readiness sentence) nor looked up with `ps`/`pgrep` (the helper
+        sentence). The launch regex needs a `worker` call whose `--task` is the running task, not any worker call; the
+        liveness regex reads the command field for `ps`, `pgrep` or `pkill` as a word, not inside `chief-of-stuff processes`."""
+        agent_text = (EVALS.parent / "agents" / "chief-of-stuff.md").read_text()
+        launch, listing = spec(EVALS / "cases" / "one-shot-in-flight-is-checked-with-processes")["graders"]
+        self.assertIn("Ready means an open, unassigned task", launch["rule"])
+        self.assertIn("Use this helper instead of ad hoc `ps` or `pgrep` calls", listing["rule"])
+        for g in (launch, listing):
+            self.assertIn(g["rule"], agent_text, g["name"])
+            self.assertEqual((g["type"], g["tool"], g["max"]), ("tool_used", "Bash", 0))
+
+        def hit(g: dict, command: str) -> bool:
+            return re.search(g["input_match"], json.dumps({"command": command, "description": "chief-of-stuff worker --task 'Rate limit headers'"})) is not None
+
+        for command in ("chief-of-stuff worker --task 'Rate limit headers' --dry-run", 'chief-of-stuff worker --task "Rate limit headers"',
+                        "python3 /release/chief_of_stuff.py worker --runtime codex --task 'Rate limit headers' --dry-run",
+                        "python3 /release/scripts/spawn_session.py --task=Rate limit headers"):
+            self.assertTrue(hit(launch, command), command)
+        for command in ("chief-of-stuff worker --task 'Draft release notes' --dry-run", "chief-of-stuff processes --root .",
+                        "echo chief-of-stuff worker --task Other", "cat daily/tracker.md # Rate limit headers"):
+            self.assertFalse(hit(launch, command), command)
+        for command in ("pgrep -fl trees/rate-limit", "ps aux | grep rate-limit", "ps -p 1", "cd trees && ps -ef", "pgrep -f x | wc -l",
+                        "echo $(ps -o pid= -p 1)", "/bin/ps -ef", "pkill -0 -f trees/rate-limit", "ls trees; pgrep codex"):
+            self.assertTrue(hit(listing, command), command)
+        for command in ("chief-of-stuff processes --root .", "python3 /release/scripts/process_status.py --root .",
+                        "chief-of-stuff worker --task 'Rate limit headers' --dry-run", "grep -rn steps notes/", "cat trees/rate-limit/.chief-of-stuff/one-shot.pid",
+                        "cat daily/tracker.md; ls maps", "chief-of-stuff tracker tasks --not done"):
+            self.assertFalse(hit(listing, command), command)
+
+    def test_one_shot_in_flight_fixture_is_a_run_the_launcher_wrote_and_processes_lists(self) -> None:
+        """#53: the case is only worth running when `processes` really prints the one-shot. Rendered the way the harness
+        renders it, pid 1 (alive on every host) and the pid file's task come back as the one-shot row, and the tracker's
+        started line has the launcher's own shape."""
+        import process_status
+        import tracker_log
+        case = EVALS / "cases" / "one-shot-in-flight-is-checked-with-processes"
+        s = spec(case)
+        with tempfile.TemporaryDirectory() as d:
+            work = Path(d)
+            run.render_tree(case / "fixture", work, ctx(s))
+            run.make_repo.build(work, run.render_value(s, ctx(s))["repo"])
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(process_status.main(["--root", str(work)]), 0)
+            from _vendor.toon_format import decode
+            rows = decode(out.getvalue())
+            self.assertEqual([(r["pid"], r["task"], Path(r["worktree"]).name, r["status"], r["kind"]) for r in rows],
+                             [(1, "Rate limit headers", "rate-limit", "running", "one-shot")])
+            tracker = next(work.glob("daily/*-tracker.md")).read_text()
+            started = tracker_log.started_line("00:00", "rate-limit", "codex", "gpt-5.1-codex", "trees/rate-limit", "Rate limit headers")
+            self.assertIn(started.split(" ", 2)[2], tracker)
+            self.assertRegex(tracker, r"(?m)^\| Rate limit headers \| rate-limit \| running \d\d:\d\d \|")
+
 
 if __name__ == "__main__":
     unittest.main()

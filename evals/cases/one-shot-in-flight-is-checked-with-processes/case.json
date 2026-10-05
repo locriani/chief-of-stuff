@@ -1,0 +1,35 @@
+{
+  "tz": "America/Chicago",
+  "repo": {
+    "clone": "repo",
+    "trees": "trees",
+    "worktrees": [],
+    "files": {
+      "src/a/headers.py": "def headers(response):\n    return dict(response)\n",
+      "src/a/__init__.py": "",
+      "notes/.keep": ""
+    }
+  },
+  "description": "#53: a one-shot run is in flight (its row is running, its File ownership row names the tree, its launcher left a live pid in the tree). A scheduled check asks whether it is still running. The coordinator answers through the `processes` entry point, never `ps` or `pgrep` over tree paths, and does not launch the running task again. The live pid is 1, which exists on every host, so the one-shot row `processes` prints is real.",
+  "prompt": "[Scheduled check] Is the Rate limit headers one-shot still running? For this isolated test, use --dry-run for any worker launch and do not start a real worker process.",
+  "graders": [
+    {
+      "name": "the running task is not launched again",
+      "rule": "Ready means an open, unassigned task with clear scope, File ownership, an issue when required, no conflicting owner, and no unresolved human-review hold or lane gate.",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:spawn_session\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worker)\\b(?:[^\"\\\\]|\\\\.)*?--task[\\s=]+\\\\?[\"']?Rate limit headers",
+      "max": 0
+    },
+    {
+      "name": "liveness is not read from ps or pgrep",
+      "rule": "Use this helper instead of ad hoc `ps` or `pgrep` calls, and do not mark an `unverified` worker gone.",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?<![\\w.-])(?:pgrep|pkill|ps)\\s",
+      "max": 0
+    }
+  ],
+  "max_turns": 24,
+  "timeout_seconds": 600
+}
