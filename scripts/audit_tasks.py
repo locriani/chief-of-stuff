@@ -127,7 +127,7 @@ def _tree_unlanded(root: Path | None, trees: str, owners: list, task) -> bool:
     resolvable tree (none owns the task, or it is missing) answers False: nothing is there to unland."""
     if root is None:
         return False
-    rows, _ = rows_for(task.item, task.owner, owners or [])
+    rows, _ = rows_for(task.item, task.owner, owners or [], task.name)
     for row in rows:
         for name in row.worktrees:
             path, _, _ = _resolve(root, trees, name)
@@ -454,16 +454,16 @@ def _detail(context: str) -> str:
     return " ".join(PAREN.findall(context))
 
 
-def rows_for(item: str, owner: str, owners: list[OwnerRow]) -> tuple[list[OwnerRow], str]:
+def rows_for(item: str, owner: str, owners: list[OwnerRow], name: str = "") -> tuple[list[OwnerRow], str]:
     """The rows that speak for this task, and a note when nothing does.
 
     A context owns several tasks at once — `architecture` held both a deletion and a doc edit — so
-    the bare name cannot attribute a tree. A row keyed by the task item is exact and wins. Otherwise
+    the bare name cannot attribute a tree. A row keyed by the task item, or by its Tasks-table `name`, is exact and wins. Otherwise
     the owner's rows are scored on how much of the task item their parenthetical repeats; a lone best
     row wins, and a tie or a blank draws nothing, because attributing the wrong tree reopens a task
     that is genuinely finished.
     """
-    exact = [r for r in owners if owns(r, item)]
+    exact = [r for r in owners if owns(r, item) or (name.strip() and owns(r, name))]
     if exact:
         return exact, ""
     mine = [r for r in owners if owns(r, owner)]
@@ -769,7 +769,7 @@ def audit(root: Path, day: str, gh=None, check_issues: bool = True, now: datetim
                                        f"{name} ({branch})", task.state.strip()))
 
     for task in tasks:
-        rows, note = rows_for(task.item, task.owner, owners)
+        rows, note = rows_for(task.item, task.owner, owners, task.name)
         if note and note not in noted:
             noted.add(note)
             report.lines.append(note)
