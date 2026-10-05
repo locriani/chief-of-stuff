@@ -115,6 +115,15 @@ class CommandTest(unittest.TestCase):
                                 agent_type=None, model="gemini-x", effort="")
         self.assertIn(str(dispatch), args[args.index("--print") + 1])
 
+    def test_agy_takes_its_effort_before_the_print_value(self):
+        # agy's CLI lists `--effort (low|medium|high|xhigh|max)`; `--print` still ends the flags and takes the prompt.
+        dispatch = Path("/tmp/one-shot-tree/.chief-of-stuff/dispatch.md")
+        args = one_shot.command("agy", "/bin/fake", dispatch.parent.parent, dispatch,
+                                agent_type=None, model="m", effort="high")
+        self.assertIn(("--effort", "high"), list(zip(args, args[1:])))
+        self.assertEqual(args[-2], "--print")
+        self.assertIn(str(dispatch), args[-1])
+
     def test_exit_zero_without_structured_result_requires_review(self):
         with tempfile.TemporaryDirectory() as tmp:
             status, reason, changes = one_shot.worker_result(Path(tmp) / "missing.toon", 0)
@@ -204,7 +213,14 @@ class RunTest(unittest.TestCase):
         # #52: the Log is the durable record of what ran; it had the model and never the effort.
         fake = self._fake('status: done\nreason: done\nchanges: checked\n', write_partial=False)
         self.assertEqual(self._run(fake, model="gpt-test", effort="medium"), 0)
-        self.assertIn("one-shot worker01 started: codex gpt-test medium, worktree `worker`",
+        self.assertIn("one-shot worker01 started: codex gpt-test effort=medium, worktree `worker`",
+                      (self.root / "during.md").read_text())
+
+    def test_an_effort_with_no_model_is_not_read_as_the_model(self):
+        # #52: `codex medium` would read as a model named medium; the effort word names itself.
+        fake = self._fake('status: done\nreason: done\nchanges: checked\n', write_partial=False)
+        self.assertEqual(self._run(fake, effort="medium"), 0)
+        self.assertIn("one-shot worker01 started: codex effort=medium, worktree `worker`",
                       (self.root / "during.md").read_text())
 
     def test_a_class_entrys_effort_is_the_one_the_log_line_names(self):
@@ -219,7 +235,7 @@ class RunTest(unittest.TestCase):
                                        "--cwd", str(self.tree), "--name", "worker01", "--task", "Security audit",
                                        "--class", "implement"])
         self.assertEqual(code, 0)
-        self.assertIn("one-shot worker01 started: codex gpt-test medium, worktree `worker`",
+        self.assertIn("one-shot worker01 started: codex gpt-test effort=medium, worktree `worker`",
                       (self.root / "during.md").read_text())
 
     def test_a_refused_launch_takes_its_dispatch_back_so_a_retry_can_use_the_tree(self):

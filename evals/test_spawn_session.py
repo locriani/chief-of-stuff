@@ -81,6 +81,17 @@ class ArgvTest(unittest.TestCase):
         self.assertEqual(argv, ["run", "--dangerous"])
         self.assertEqual(len(argv), 2, "a value never splits into more argv entries than it occupies")
 
+    def test_an_unset_field_drops_its_flag_only_when_the_flag_and_value_are_separate_tokens(self):
+        # A `-c VALUE` pair goes together; a placeholder that is its own flag (`--model={model}`) goes alone,
+        # and the flag before it stays.
+        for template, want in (
+            (["wrap", "-C", "{cwd}", "-x", "--effort={effort}", "run"], ["wrap", "-C", "/tmp/wt", "-x", "run"]),
+            (["wrap", "-c", "model_reasoning_effort={effort}", "run"], ["wrap", "run"]),
+            (["wrap", "--bool", "--model={model}", "go"], ["wrap", "--bool", "go"]),
+        ):
+            with self.subTest(template=template):
+                self.assertEqual(ss.argv(template, agent_type=None, cwd="/tmp/wt", title="t"), want)
+
     def test_an_unknown_placeholder_is_refused_rather_than_left_in_the_argv(self):
         with self.assertRaises(ss.RefusedError):
             ss.argv(["run", "{whatever}"], agent_type="x", cwd="/tmp", title="t")
@@ -678,10 +689,10 @@ class AgyTest(unittest.TestCase):
         out = run_main("--runtime", "agy", "--model", "x;rm -rf ~")
         self.assertEqual(out.returncode, 1)
 
-    def test_effort_is_refused_for_agy(self):
+    def test_effort_reaches_the_agy_tab(self):
         out = run_main("--runtime", "agy", "--model", "gemini-3.8-flash-high", "--effort", "high")
-        self.assertEqual(out.returncode, 1)
-        self.assertIn("--effort", out.stderr)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("--effort high", out.stdout)
 
     def test_the_dry_run_shows_the_agy_tab(self):
         out = run_main("--runtime", "agy", "--model", "gemini-3.8-flash-high")
@@ -729,6 +740,7 @@ class EffortPerRuntimeTest(unittest.TestCase):
     def test_an_interactive_codex_launch_carries_its_effort(self):
         tokens = self.codex_tokens(effort="low")
         self.assertIn(("-c", "model_reasoning_effort=low"), list(zip(tokens, tokens[1:])))
+        self.assertTrue(tokens[-1].startswith("Read the file"), tokens[-1])  # the bootstrap prompt stays last
 
     def test_without_an_effort_a_codex_launch_leaves_the_users_config_alone(self):
         tokens = self.codex_tokens()
@@ -736,22 +748,11 @@ class EffortPerRuntimeTest(unittest.TestCase):
         self.assertFalse([t for t in tokens if "model_reasoning_effort" in t])
 
     def test_a_runtime_that_cannot_express_effort_is_refused_by_name(self):
-        for runtime, extra in (("cursor", []), ("agy", ["--model", "gemini-3.8-flash-high"])):
-            with self.subTest(runtime=runtime):
-                out = run_main("--runtime", runtime, *extra, "--effort", "medium")
-                self.assertEqual(out.returncode, 1)
-                self.assertTrue(out.stderr.startswith("refused:"), out.stderr)
-                self.assertIn("--effort", out.stderr)
-                self.assertIn(runtime, out.stderr)
-                if runtime == "agy":
-                    self.assertIn("model id", out.stderr)
-
-    def test_codex_has_no_max_level(self):
-        out = run_main("--runtime", "codex", "--effort", "max")
+        out = run_main("--runtime", "cursor", "--effort", "medium")
         self.assertEqual(out.returncode, 1)
         self.assertTrue(out.stderr.startswith("refused:"), out.stderr)
-        self.assertIn("max", out.stderr)
-        self.assertIn("codex", out.stderr)
+        self.assertIn("--effort", out.stderr)
+        self.assertIn("cursor", out.stderr)
 
 
 class TmuxLauncherTest(unittest.TestCase):
@@ -939,6 +940,33 @@ class WorkerModeTest(unittest.TestCase):
         _, args = self.one_shot_workspace()
         argv = self.dry_run_argv(args + ["--runtime", "codex", "--effort", "medium"])
         self.assertIn(("-c", "model_reasoning_effort=medium"), list(zip(argv, argv[1:])))
+
+    def test_a_level_the_runtime_does_not_list_is_the_clis_to_judge(self):
+        """#52: no per-runtime level list here; codex's own CLI rejects a level it does not know."""
+        _, args = self.one_shot_workspace()
+        argv = self.dry_run_argv(args + ["--runtime", "codex", "--effort", "max"])
+        self.assertIn(("-c", "model_reasoning_effort=max"), list(zip(argv, argv[1:])))
+
+    def test_agy_takes_its_effort_in_a_one_shot_before_the_print_value(self):
+        """#52: agy lists `--effort`; `--print` takes the prompt, so the pair comes before it."""
+        _, args = self.one_shot_workspace()
+        argv = self.dry_run_argv(args + ["--runtime", "agy", "--model", "m", "--effort", "medium"])
+        self.assertIn(("--effort", "medium"), list(zip(argv, argv[1:])))
+        self.assertEqual(argv[-2], "--print")
+
+    def test_a_class_entry_whose_runtime_cannot_express_effort_is_refused_not_dropped(self):
+        """#52: `cursor:<model>@high` silently ran with no effort; with none named it still launches."""
+        tree, args = self.one_shot_workspace()
+        toml = tree.parent.parent / "chief-of-stuff.toml"
+        toml.write_text('[workers]\nmode = "one-shot"\n\n[models.implement]\nrotation = ["cursor:gpt-x@high"]\n')
+        with unittest.mock.patch("one_shot.resolve", return_value="/bin/fake"), \
+             contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(ss.main(args + ["--class", "implement"]), 1)
+        self.assertTrue(err.getvalue().startswith("refused:"), err.getvalue())
+        self.assertIn("cursor", err.getvalue())
+        self.assertIn("--effort", err.getvalue())
+        toml.write_text('[workers]\nmode = "one-shot"\n\n[models.implement]\nrotation = ["cursor:gpt-x"]\n')
+        self.assertIn("--model", self.dry_run_argv(args + ["--class", "implement"]))
 
     def test_a_class_entrys_codex_effort_reaches_the_launch_and_an_explicit_effort_wins(self):
         """#52: `codex:<model>@medium` was parsed and then dropped, so codex ran on the user's own config effort."""
