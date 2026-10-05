@@ -2702,3 +2702,82 @@ class ShaTreesTest(unittest.TestCase):
         git("clone", "-q", "--depth", "1", f"file://{self.root / 'origin.git'}", str(self.trees / "shallow"), cwd=self.root)
         code, out, _ = self.run_main("--sha", older)
         self.assertEqual((code, out), (2, f"sha {older}: unknown \u2014 shallow clone, so history is cut off [shallow]\n"))
+
+
+NAMED_HEADER = "| name | item | owner | state | since | due | size | checklist |\n|---|---|---|---|---|---|---|---|"
+
+
+def named_workspace(rows: str, ownership: str) -> tuple[tempfile.TemporaryDirectory, Path]:
+    """`workspace` with the Tasks table carrying the `name` column (#51)."""
+    tmp, root = workspace(rows, ownership)
+    tracker = root / "daily" / "2026-09-17-tracker.md"
+    tracker.write_text(tracker.read_text().replace(
+        "| item | owner | state | since | due | checklist |\n|---|---|---|---|---|---|", NAMED_HEADER))
+    return tmp, root
+
+
+class OwnershipRowKeyedOnNameTest(unittest.TestCase):
+    """#51: a File ownership row keyed on a task's `name` speaks for that task, exactly as one keyed on its item does.
+
+    The dispatch side joins on the name (`task_keys`, `resolve_task`); the audit read only the item, so a
+    name-keyed row attributed no tree to its task and that task's worktree was never checked for unlanded work.
+    """
+
+    ALPHA = "| alpha | Tidy the importer | robin | done 10:00 | 09:00 |  | S | Checklist: Tidy |"
+    BETA = "| beta | Trim the exporter | robin | done 10:00 | 09:00 |  | S | Checklist: Trim |"
+
+    def row(self, context: str, tree: str = "wt-a") -> al.OwnerRow:
+        return al.parse_ownership(f"| {context} | worktree {tree} (feat/a) |")[0]
+
+    def test_a_task_whose_name_keys_the_row_reopens_for_that_trees_unlanded_work(self) -> None:
+        tmp, root = named_workspace(self.ALPHA, "| alpha | worktree wt-unmerged (feat/open) |")
+        self.addCleanup(tmp.cleanup)
+        report = al.audit(root, "2026-09-17")
+        self.assertEqual([r.task for r in report.reopen], ["Tidy the importer"], report.lines)
+        self.assertIn("wt-unmerged", str(report.reopen[0]))
+
+    def test_two_tasks_of_one_owner_each_get_their_own_name_keyed_tree(self) -> None:
+        tmp, root = named_workspace(
+            f"{self.ALPHA}\n{self.BETA}",
+            "| alpha | worktree wt-unmerged (feat/open) |\n| beta | worktree wt-merged (landed) |")
+        self.addCleanup(tmp.cleanup)
+        report = al.audit(root, "2026-09-17")
+        self.assertEqual([r.task for r in report.reopen], ["Tidy the importer"], report.lines)
+        self.assertFalse([l for l in report.lines if "ambiguous" in l], report.lines)
+
+    def test_rows_for_takes_the_name_row_as_exact(self) -> None:
+        keyed = self.row("alpha")
+        rows, note = al.rows_for("Tidy the importer", "robin", [self.row("beta", "wt-b"), keyed], "alpha")
+        self.assertEqual(rows, [keyed])
+        self.assertEqual(note, "")
+
+    def test_a_name_keyed_row_wins_over_owner_scoring(self) -> None:
+        """Two rows for the owner and none naming the item would be `ambiguous`; the name settles it."""
+        keyed = self.row("alpha", "wt-c")
+        owners = [self.row("robin (first thing)"), self.row("robin (second thing)", "wt-b"), keyed]
+        self.assertEqual(al.rows_for("Tidy the importer", "robin", owners)[0], [])
+        rows, note = al.rows_for("Tidy the importer", "robin", owners, "alpha")
+        self.assertEqual((rows, note), ([keyed], ""))
+
+    def test_an_empty_name_changes_nothing(self) -> None:
+        owners = [self.row("robin (first thing)"), self.row("robin (second thing)", "wt-b"), self.row("alpha", "wt-c")]
+        self.assertEqual(al.rows_for("Tidy the importer", "robin", owners, ""),
+                         al.rows_for("Tidy the importer", "robin", owners))
+
+    def test_a_name_no_row_carries_falls_back_to_the_owners_row(self) -> None:
+        mine = self.row("robin")
+        self.assertEqual(al.rows_for("Tidy the importer", "robin", [mine, self.row("beta", "wt-b")], "alpha"),
+                         ([mine], ""))
+
+    def test_an_item_keyed_row_still_wins(self) -> None:
+        keyed = self.row("Tidy the importer")
+        self.assertEqual(al.rows_for("Tidy the importer", "robin", [keyed, self.row("beta", "wt-b")], "alpha"),
+                         ([keyed], ""))
+
+    def test_a_row_keyed_on_another_tasks_name_is_not_this_tasks(self) -> None:
+        other = self.row("beta", "wt-b")
+        self.assertEqual(al.rows_for("Tidy the importer", "robin", [other], "alpha"), ([], ""))
+        owners = [self.row("robin (first thing)"), self.row("robin (second thing)", "wt-c"), other]
+        rows, note = al.rows_for("Tidy the importer", "robin", owners, "alpha")
+        self.assertEqual(rows, [])
+        self.assertIn("ambiguous", note)
