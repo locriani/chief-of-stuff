@@ -2227,7 +2227,8 @@ class ShaTreesTest(unittest.TestCase):
     Exit: 1 if any repository that holds the commit says it is not on origin/main (round 7), else 2 if there is none or
     any is unknown and may hold the commit (round 8; round 10: a repository git could not read may hold it, one that
     plainly lacks it does not), else 0 if any line is a yes, else 2 if any is unknown, else 1. Line order is not pinned. The workspace's
-    own repository has three worktrees, so it is one line named `wt-dirty`, the first by name.
+    own repository has three worktrees, so it is one line named `wt-dirty`, the first by name. A pruned worktree is a tree of its
+    repository (#294 round 10), so it joins that repository's one line rather than adding one.
     """
 
     def setUp(self) -> None:
@@ -2298,17 +2299,163 @@ class ShaTreesTest(unittest.TestCase):
         self.assertEqual((code, out), (0, f"sha {self.sha}: on origin/main {self.tip} (fetched) [wt-dirty]\n"))
         self.assertNotIn("aaa-link", out)
 
-    def test_a_tree_whose_gitdir_is_gone_does_not_stop_a_healthy_one_answering(self) -> None:
-        broken = self.trees / "aaa-broken"
-        broken.mkdir()
-        (broken / ".git").write_text(f"gitdir: {self.root / 'no-such-gitdir'}\n")
+    def dead_file(self, name: str) -> Path:
+        """A tree whose `.git` FILE points at a repository that is not there at all (no `<common>` behind it)."""
+        tree = self.trees / name
+        tree.mkdir()
+        (tree / ".git").write_text(f"gitdir: {self.root / 'no-such-gitdir'}\n")
+        return tree
+
+    def dead_worktree(self, name: str) -> Path:
+        """A pruned worktree: a real `git worktree add` whose `<common>/worktrees/<name>` was then deleted, the repository
+        itself still there (the stale worktree of #294)."""
+        git("worktree", "add", "-b", f"feat/{name}", str(self.trees / name), "main", cwd=self.clone)
+        shutil.rmtree(self.clone / ".git" / "worktrees" / name)
+        return self.trees / name
+
+    def pruned_line(self, name: str) -> str:
+        """#294 round 7: a pruned worktree is answered by its repository, so for the project's `origin/main` commit it says
+        what the main clone says."""
+        return f"sha {self.sha}: on origin/main {self.tip} (fetched) [{name}]"
+
+    def unread_line(self, name: str) -> str:
+        return f"sha {self.sha}: unknown \u2014 git could not read this repository [{name}]"
+
+    def run_counting_fetches(self, sha: str) -> tuple[int, str, str, list[Path]]:
+        """`run_main("--sha", sha)` plus the repository each `git_trees.fetch_base` call that could reach one went to: the
+        resolved common git dir of the tree it was called on. A fetch on a pruned tree itself (git cannot read it, so it
+        reaches nothing) is not counted; the redirect to `<common>` is, as is a fetch on a healthy tree."""
+        real, reached = git_trees.fetch_base, []
+
+        def counting(tree, *rest, **kw):
+            code, common = git_trees.git(["rev-parse", "--path-format=absolute", "--git-common-dir"], tree)
+            if code == 0:
+                reached.append(Path(common).resolve())
+            return real(tree, *rest, **kw)
+
+        with patch.object(git_trees, "fetch_base", counting):
+            return (*self.run_main("--sha", sha), reached)
+
+    def test_a_pruned_worktree_does_not_stop_a_healthy_one_answering(self) -> None:
+        """#294, the live shape: a pruned worktree (its `.git` file names `<common>/worktrees/<name>`, which is gone, `<common>`
+        is not) of the same repository as a healthy tree that says yes. It is a tree of that repository (round 10), so it is
+        not a second repository: one line, the healthy tree's, exit 0, and no overall line (one repository)."""
+        self.dead_worktree("zzz-dead")
         code, out, err = self.run_main("--sha", self.sha)
-        self.assertIn(f"sha {self.sha}: on origin/main {self.tip} (fetched) [wt-dirty]", out.splitlines())
-        # round 10, 2: git could not read the broken tree at all, so it may hold the commit: its unknown blocks the healthy yes
-        self.assertEqual(code, 2)
-        self.assertNotIn("Traceback", err)
-        self.assertTrue(all(line.endswith("]") for line in out.splitlines()[:-1]), out)
+        self.assertEqual((code, out, err), (0, f"sha {self.sha}: on origin/main {self.tip} (fetched) [wt-dirty]\n", ""))
+
+    def test_a_dot_git_file_pointing_at_a_repository_that_is_gone_blocks_the_yes(self) -> None:
+        """#294 round 2: `.git` names a path with no repository behind it. Nothing says a repository forgot the tree, so it
+        may be the project's (an unmounted volume): its unknown blocks the project's yes. Exit 2, `overall unknown`."""
+        self.dead_file("aaa-broken")
+        code, out, err = self.run_main("--sha", self.sha)
+        self.assertEqual(self.lines(out), sorted([
+            f"sha {self.sha}: on origin/main {self.tip} (fetched) [wt-dirty]", self.unread_line("aaa-broken")]))
         self.assert_overall(out, self.sha, 2)
+        self.assertEqual((code, err), (2, ""))
+
+    def test_a_worktree_whose_main_clone_was_moved_does_not_let_another_trees_yes_through(self) -> None:
+        """#294 round 2, the security case: the project is a set of linked worktrees; `feat/open`'s commit is unmerged there,
+        and the main clone is then renamed away (`<common>` is gone). Beside them a fresh `git init` tree whose own
+        origin/main holds that commit says yes. The project's tree may hold the commit, unmerged: exit 2, not 0."""
+        unmerged = git("rev-parse", "feat/open", cwd=self.clone)
+        bare = self.root / "other.git"
+        bare.mkdir()
+        git("init", "--bare", "--initial-branch=main", ".", cwd=bare)
+        git("push", "-q", str(bare), "feat/open:main", cwd=self.clone)
+        fresh = self.trees / "aaa-fresh"
+        fresh.mkdir()
+        git("init", "--initial-branch=main", ".", cwd=fresh)
+        git("remote", "add", "origin", str(bare), cwd=fresh)
+        code, out, _ = self.run_main("--sha", unmerged)
+        self.assertIn(f"sha {unmerged}: on origin/main {unmerged[:7]} (fetched) [aaa-fresh]", out.splitlines())  # the yes is real
+        self.clone.rename(self.root / "repo-moved")
+        code, out, err = self.run_main("--sha", unmerged)
+        self.assert_overall(out, unmerged, 2)
+        self.assertEqual((code, err), (2, ""))
+        self.assertIn(f"sha {unmerged}: on origin/main {unmerged[:7]} (fetched) [aaa-fresh]", out.splitlines())
+        self.assertIn(f"sha {unmerged}: unknown \u2014 git could not read this repository [wt-dirty]", out.splitlines())
+
+    def test_a_pruned_worktree_whose_repository_holds_the_commit_unmerged_does_not_let_another_trees_yes_through(self) -> None:
+        """#294 round 7, the security case: pruning a worktree entry does not remove the commit from `<common>`. The project's
+        only tree under the worktrees directory is a pruned worktree; its main clone lives OUTSIDE that directory (so it is
+        not listed) and holds `feat/open`'s commit unmerged on a branch. Beside it a fresh `git init` tree whose own
+        origin/main holds the commit says yes. The repository answers for the pruned tree: `not on origin/main`, a holder
+        says no, exit 1, not 0."""
+        unmerged = git("rev-parse", "feat/open", cwd=self.clone)
+        shutil.rmtree(self.trees)  # the project's linked trees are gone: only the pruned worktree below is left
+        self.trees.mkdir()
+        self.dead_worktree("zzz-dead")
+        bare = self.root / "other.git"
+        bare.mkdir()
+        git("init", "--bare", "--initial-branch=main", ".", cwd=bare)
+        git("push", "-q", str(bare), "feat/open:main", cwd=self.clone)
+        fresh = self.trees / "aaa-fresh"
+        fresh.mkdir()
+        git("init", "--initial-branch=main", ".", cwd=fresh)
+        git("remote", "add", "origin", str(bare), cwd=fresh)
+        self.assertEqual(git_trees.check_sha(unmerged, fresh)[0], 0)  # the yes is real
+        code, out, err = self.run_main("--sha", unmerged)
+        self.assertEqual((code, err), (1, ""), out)
+        self.assertEqual(self.lines(out), sorted([
+            f"sha {unmerged}: on origin/main {unmerged[:7]} (fetched) [aaa-fresh]",
+            f"sha {unmerged}: not on origin/main {self.tip} (fetched) [zzz-dead]"]))
+        self.assert_overall(out, unmerged, 1)
+
+    def test_a_healthy_tree_and_two_pruned_worktrees_of_one_repository_are_one_line_and_one_fetch(self) -> None:
+        """#294 round 10, A: the healthy tree (`wt-dirty`, first by name) and two pruned worktrees (`zzz-*`) of one repository
+        are one repository: exit 0, exactly one line, no overall line, and the repository is fetched once. Counted: the
+        `fetch_base` calls whose tree resolves to a repository, per resolved repository (a fetch on a dead tree itself reaches
+        none). Before, each pruned tree was listed and its repository fetched again for each, so one transient failure
+        among the duplicates turned the repository's yes into `overall unknown`."""
+        self.dead_worktree("zzz-dead")
+        self.dead_worktree("zzz-dead2")
+        code, out, err, reached = self.run_counting_fetches(self.sha)
+        self.assertEqual((code, out, err), (0, f"sha {self.sha}: on origin/main {self.tip} (fetched) [wt-dirty]\n", ""))
+        self.assertEqual(reached, [(self.clone / ".git").resolve()])
+
+    def test_pruned_worktrees_that_sort_before_the_healthy_tree_are_the_one_line_and_one_fetch(self) -> None:
+        """#294 round 10, A: the first by name is the one listed, whichever kind it is. `aaa-dead` sorts before `wt-dirty`, so
+        the line is `[aaa-dead]` (answered by its repository: a yes) and the healthy tree and `zzz-dead` are not listed."""
+        self.dead_worktree("aaa-dead")
+        self.dead_worktree("zzz-dead")
+        code, out, err, reached = self.run_counting_fetches(self.sha)
+        self.assertEqual((code, out, err), (0, self.pruned_line("aaa-dead") + "\n", ""))
+        self.assertEqual(reached, [(self.clone / ".git").resolve()])
+
+    def test_pruned_trees_alone_are_answered_by_their_repository(self) -> None:
+        """#294 round 7, round 10: with the project's only trees pruned worktrees, the repository still answers for them, and
+        they are one repository however many: one line (the first by name), no overall line. Here: yes, exit 0."""
+        shutil.rmtree(self.trees)
+        self.trees.mkdir()
+        self.dead_worktree("aaa-dead")
+        code, out, _ = self.run_main("--sha", self.sha)
+        self.assertEqual((code, out), (0, self.pruned_line("aaa-dead") + "\n"))
+        self.dead_worktree("zzz-dead")
+        code, out, _ = self.run_main("--sha", self.sha)
+        self.assertEqual((code, out), (0, self.pruned_line("aaa-dead") + "\n"))
+
+    def test_a_repository_git_can_open_but_not_read_still_blocks_the_yes(self) -> None:
+        """#294 keeps the other half of round 10, 2: `rev-parse --git-dir` succeeds but the commit lookup faults, so the
+        repository may hold the commit and blocks the project's yes (exit 2). Only that call is made to fail, for the
+        tree named `aaa-open`; a pruned worktree beside it is a tree of the healthy tree's repository (round 10), so it adds
+        no line and changes nothing."""
+        self.dead_worktree("zzz-dead")
+        self.docs_clone(self.trees / "aaa-open")
+        real = git_trees.git
+
+        def fake(args, cwd, *rest, **kw):
+            if Path(cwd).name == "aaa-open" and args[:1] == ["rev-parse"] and args[1].startswith("--disambiguate="):
+                return 128, "fatal: boom"
+            return real(args, cwd, *rest, **kw)
+
+        with patch.object(git_trees, "git", fake):
+            code, out, _ = self.run_main("--sha", self.sha)
+        self.assertEqual(self.lines(out), sorted([
+            f"sha {self.sha}: on origin/main {self.tip} (fetched) [wt-dirty]",
+            f"sha {self.sha}: unknown \u2014 git could not read this repository [aaa-open]"]))
+        self.assert_overall(out, self.sha, 2)
+        self.assertEqual(code, 2)
 
     def test_a_repository_with_no_remote_beside_the_project_does_not_block_a_yes(self) -> None:
         """#49 round 10, 2: `docs` is a `git init` with one commit and no remote: its unknown (no origin/main) does not hold

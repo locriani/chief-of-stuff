@@ -75,12 +75,14 @@ def discover(root: Path, trees: str) -> list[Path]:
 
 def sha_trees(root: Path, trees: str) -> list[tuple[str, Path]]:
     """(name, tree) for each repository `--sha` should ask: the first tree by name of each repository `discover`
-    finds (trees sharing a common git dir are one), else the root named `.` when it is a git tree, else none."""
+    finds (trees sharing a common git dir are one, as is a pruned
+    worktree with its repository), else the root named `.` when it is a git tree, else none."""
     seen: set[Path] = set()
     found = []
     for tree in discover(root, trees):
         code, common = git(["rev-parse", "--path-format=absolute", "--git-common-dir"], tree)
-        key = Path(common).resolve() if code == 0 else tree  # a tree git cannot read is its own repository
+        pruned = None if code == 0 else _pruned_common(tree)
+        key = Path(common).resolve() if code == 0 else pruned.resolve() if pruned else tree  # unreadable: its pruned repository, else itself
         if key not in seen:
             seen.add(key)
             found.append((tree.name, tree))
@@ -137,11 +139,12 @@ def sha_verdict(sha: str, fetch_error: str, exists: bool, ancestor: bool, tip: s
 
 
 def sha_exit(answers: list[tuple[int, bool]]) -> int:
-    """The exit over every repository's `(code, held)`, `held` being that it has, or may have, the commit: 1 if one that
-    holds it says no (a clone or a fresh `git init` whose origin was pointed at the commit cannot outvote it); else 2 if
-    there is none, or one is unknown and held (a repository that may hold the commit may be the project the claim is
-    about, so it blocks a yes); else 0 if any says yes; else 2 if any is unknown; else 1. An unknown that does not hold
-    the commit (no remote, offline, shallow) blocks no yes, so an unrelated repository cannot veto it forever."""
+    """The exit over every repository's `(code, held)`, `held` being that it has the commit, or may have it (git cannot
+    read it): 1 if one that holds it says no (a clone or a fresh `git init` whose origin was
+    pointed at the commit cannot outvote it); else 2 if there is none, or one is unknown and held (a repository that
+    may hold the commit may be the project the claim is about, so it blocks a yes); else 0 if any says yes; else 2 if
+    any is unknown; else 1. An unknown that does not hold the commit (no remote, offline,
+    shallow) blocks no yes, so an unrelated repository cannot veto it forever."""
     if (1, True) in answers:
         return 1
     if not answers or (2, True) in answers:
@@ -174,19 +177,64 @@ def _has_grafts(tree: Path) -> bool | None:
     return stat.S_ISREG(info.st_mode) and info.st_size > 0
 
 
+def _pruned_common(tree: Path) -> Path | None:
+    """The repository (`<common>`) of a pruned worktree, else None. `tree` is pruned when its `.git` is a regular file (decided on the
+    opened one) of at most 4096 bytes whose content is `gitdir: <path>` (that exact prefix, as git requires) with
+    `<path>` = `<common>/worktrees/<name>`, KNOWN gone (`lstat` says not found; a permission error, any other `OSError` or a dangling
+    symlink is present or unknown). Only the trailing run of `\r`/`\n` is trimmed, as git does; every other byte after `gitdir: ` is the
+    path, and a path left with one is no path. Read from the file and the filesystem, never git (a probe can time out). Whether
+    `<common>` is itself the git directory git uses there (rule A) is not asked here: `check_sha` asks git, once, and follows the
+    redirect once (rule B)."""
+    try:
+        fd = os.open(tree / ".git", os.O_RDONLY | os.O_NONBLOCK)  # O_NONBLOCK: opening a FIFO must not block
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):  # decided on the opened file, so a swap after the open cannot matter
+                return None
+            data = os.read(fd, 4097)  # one past the bound: content beyond it is never ignored
+        finally:
+            os.close(fd)
+        if len(data) > 4096:
+            return None
+        line = data.decode()
+        path = line.removeprefix("gitdir: ").rstrip("\r\n")
+        target = tree / path  # an absolute path replaces `tree`
+        if line.startswith("gitdir: ") and not {"\r", "\n"} & set(path) and target.parent.name == "worktrees":
+            try:
+                target.lstat()
+            except FileNotFoundError:
+                return target.parent.parent
+    except (OSError, ValueError):
+        pass
+    return None
+
+
 def check_sha(sha: str, tree: Path) -> tuple[int, str, bool]:
-    """One repository's `(exit code, line, held)`; `held` is whether it has, or (git could not read it) may have, a commit
-    with that id. The commit is the one whose object id starts with `sha`, never a tag or branch named like it, and the
-    question is about `refs/remotes/origin/main` only. Exit 0 only when the fetch worked and origin/main holds it; 1 when
-    it does not; 2 (unknown, never a no) for every cause: the fetch failed (a stale ref cannot say yes), git cannot read
-    the repository (the commit lookup, the grafts lookup or file, the shallow check, or, when origin/main does not hold
-    it, the local main lookup or ancestry),
-    there are grafts (checked after the fetch, which a hook may have written one in), no origin/main, two commits share
-    the prefix, git cannot compare, or the clone is shallow and the commit may be in what was cut off. A repository with
-    no `refs/heads/main` is simply not on local main. The unknown lines say `; local main holds it` when it has the commit."""
+    """One repository's `(exit code, line, held)`; `held` is whether it has a commit with that id, or may have one (git
+    cannot read it). A pruned worktree (`_pruned_common`: its `.git` file names a `<common>/worktrees/<name>` known gone) is
+    answered by its repository, checked only when the commit lookup failed, with two rules. A: only when `<common>` is itself
+    the git directory git uses there (`rev-parse --git-dir` prints `.`), else a plain directory inside another repository would
+    answer for that one. B: the redirect is followed once, and the answer is `_verdict`, which never redirects.
+    Every other failed read (a refusal, a timeout, an unusable `.git` directory, a main clone that moved, a `<common>` git
+    cannot use) may hold the commit and blocks a yes. The commit is the one whose object id starts with `sha`, never a tag or
+    branch named like it, and the question is about `refs/remotes/origin/main` only. Exit 0 only when the fetch worked and
+    origin/main holds it; 1 when it does not; 2 (unknown, never a no) for every cause: the fetch
+    failed (a stale ref cannot say yes), git cannot read the repository (the commit lookup, the grafts lookup or file,
+    the shallow check, or, when origin/main does not hold it, the local main lookup or ancestry), there are grafts
+    (checked after the fetch, which a hook may have written one in), no origin/main, two commits share the prefix, git
+    cannot compare, or the clone is shallow and the commit may be in what was cut off. A repository with no
+    `refs/heads/main` is simply not on local main. The unknown lines say `; local main holds it` when it has the
+    commit."""
     fetch_error = fetch_base(tree)
     commits = _commits(sha, tree)
-    held = commits is None or bool(commits)  # a repository git could not read may hold it
+    if commits is None and (common := _pruned_common(tree)) and git(["rev-parse", "--git-dir"], common) == (0, "."):  # A (#294)
+        tree, fetch_error = common, fetch_base(common)  # the repository forgot this tree: it answers for it, once (B)
+        commits = _commits(sha, tree)
+    return _verdict(sha, tree, fetch_error, commits)
+
+
+def _verdict(sha: str, tree: Path, fetch_error: str, commits: list[str] | None) -> tuple[int, str, bool]:
+    """`check_sha`'s answer for one repository whose fetch and commit lookup are done. It never redirects."""
+    held = commits is None or bool(commits)  # any other repository git could not read may hold it
 
     def unknown(why: str) -> tuple[int, str, bool]:
         return 2, f"sha {sha}: unknown \u2014 {why}", held
