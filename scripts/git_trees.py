@@ -190,11 +190,12 @@ def _pruned_common(tree: Path) -> Path | None:
         try:
             if not stat.S_ISREG(os.fstat(fd).st_mode):  # decided on the opened file, so a swap after the open cannot matter
                 return None
-            line = os.read(fd, 4097).decode()  # one past the bound: content beyond it is never ignored
+            data = os.read(fd, 4097)  # one past the bound: content beyond it is never ignored
         finally:
             os.close(fd)
-        if len(line) > 4096:
+        if len(data) > 4096:
             return None
+        line = data.decode()
         path = line.removeprefix("gitdir: ").rstrip("\r\n")
         target = tree / path  # an absolute path replaces `tree`
         if line.startswith("gitdir: ") and not {"\r", "\n"} & set(path) and target.parent.name == "worktrees":
