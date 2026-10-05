@@ -8,9 +8,12 @@ main with --from-local. This module does not remove worktrees or branches.
 from __future__ import annotations
 
 import argparse
+import fcntl
+import os
 import re
 import subprocess
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -104,24 +107,41 @@ def base_ref(fetch_error: str, from_local: bool) -> str:
     return git_trees.REF
 
 
+@contextmanager
+def clone_lock(clone: Path):
+    """Hold the clone's lock: a `git fetch` overlapping another dispatch's `git worktree add` fails with `bad object
+    worktrees/<name>/HEAD`. The lock is on the git common directory, so every worktree of one repository shares it and no
+    file is left behind. The wait is bounded by the holders' own git timeouts."""
+    code, common = git(["rev-parse", "--path-format=absolute", "--git-common-dir"], clone)
+    if code != 0 or not Path(common).is_dir():
+        raise RefusedError(f"{clone} is not a git repository")
+    fd = os.open(common, os.O_RDONLY)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
 def build(root: Path, clone: Path, trees: str, name: str, branch: str, agent_type: str, from_local: bool = False) -> Made:
     """Check everything that came out of a file, then make the tree. A refusal creates no worktree or branch (a fetch may
     already have moved origin/main)."""
     check_type((root / "CLAUDE.md").read_text() if (root / "CLAUDE.md").is_file() else "", agent_type)
     check_branch(branch, clone)
     path = resolve(root, trees, name)
-    no_main, local = git(["log", "-1", "--format=%h %cr", "refs/heads/main"], clone)  # git would quietly fall back to origin/main
-    if from_local and no_main:
-        raise RefusedError("no local main to cut from; drop --from-local")
-    try:
-        ref = base_ref("" if from_local else git_trees.fetch_base(clone), from_local)
-    except RefusedError as exc:
-        raise RefusedError(f"{exc}; no local main" if no_main else f"{exc}; --from-local cuts from local main ({local}) instead") from None
-    path.parent.mkdir(parents=True, exist_ok=True)
-    code, detail = git(["worktree", "add", "--no-track", "-b", branch, "--", str(path), ref], clone)
-    if code != 0:
-        raise RefusedError(f"git worktree add failed: {detail}")
-    sha = r[1] if (r := git(["rev-parse", "--short", "HEAD"], path))[0] == 0 else "?"  # not git's error text
+    with clone_lock(clone):
+        no_main, local = git(["log", "-1", "--format=%h %cr", "refs/heads/main"], clone)  # git would quietly fall back to origin/main
+        if from_local and no_main:
+            raise RefusedError("no local main to cut from; drop --from-local")
+        try:
+            ref = base_ref("" if from_local else git_trees.fetch_base(clone), from_local)
+        except RefusedError as exc:
+            raise RefusedError(f"{exc}; no local main" if no_main else f"{exc}; --from-local cuts from local main ({local}) instead") from None
+        path.parent.mkdir(parents=True, exist_ok=True)
+        code, detail = git(["worktree", "add", "--no-track", "-b", branch, "--", str(path), ref], clone)
+        if code != 0:
+            raise RefusedError(f"git worktree add failed: {detail}")
+        sha = r[1] if (r := git(["rev-parse", "--short", "HEAD"], path))[0] == 0 else "?"  # not git's error text
     return Made(path, branch, agent_type, "local main" if from_local else "origin/main", sha)
 
 
