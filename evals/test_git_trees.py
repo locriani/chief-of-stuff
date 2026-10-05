@@ -982,6 +982,40 @@ class CheckShaTest(Repo):
         self.assertIsNone(git_trees._pruned_common(tree))
         self.assert_could_not_read(sha, tree)
 
+    @staticmethod
+    def padded_past_the_byte_bound(head: str) -> bytes:
+        """`head` + CR/LF padding + `junk`, with `junk` starting at byte 4097: the first 4097 bytes are all `head` and padding."""
+        head_bytes = head.encode()
+        padding = b"\r\n" * ((4097 - len(head_bytes)) // 2) + b"\n" * ((4097 - len(head_bytes)) % 2)
+        return head_bytes + padding + b"junk"
+
+    def test_a_gitfile_over_the_byte_bound_with_a_multibyte_name_and_junk_after_the_padding_is_not_a_pruned_worktree(self) -> None:
+        """#294 round 12: the gitfile bound is measured in bytes, and nothing past it is ignored. A multibyte character in the
+        first 4097 bytes makes them decode to 4096 characters or fewer, so a character count under the bound lets the tail
+        (`junk`, after the trailing run, so in the path) go unseen. Real git exits 128 on a LIVE worktree with equivalent
+        content (checked first); a pruned worktree with it is not pruned: could not read."""
+        sha, tree = self.pruned("gøne")
+        gone = self.clone / ".git" / "worktrees" / "gøne"
+        live_tree, live = self.tree("lïve", "feat/live"), self.clone / ".git" / "worktrees" / "lïve"
+        (live_tree / ".git").write_bytes(self.padded_past_the_byte_bound(f"gitdir: {live}"))
+        self.assertEqual(git_trees.git(["rev-parse", "--git-dir"], live_tree)[0], 128)  # git rejects it too
+        data = self.padded_past_the_byte_bound(f"gitdir: {gone}")
+        self.assertLessEqual(len(data[:4097].decode(errors="ignore")), 4096)  # a character count sees under the bound
+        self.assertGreaterEqual(data.index(b"junk"), 4097)  # and junk lies beyond the bytes read
+        (tree / ".git").write_bytes(data)
+        self.assertFalse(gone.exists())
+        self.assertIsNone(git_trees._pruned_common(tree))
+        self.assert_could_not_read(sha, tree)
+
+    def test_a_pruned_worktree_with_a_multibyte_entry_name_and_an_ordinary_gitfile_is_still_pruned(self) -> None:
+        """#294 round 12 pin: a multibyte entry name alone changes nothing; the short gitfile git wrote names a gone entry, so
+        the tree is pruned and its repository answers for it."""
+        sha, tree = self.pruned("gøne")
+        self.assertFalse((self.clone / ".git" / "worktrees" / "gøne").exists())
+        self.assertEqual(git_trees._pruned_common(tree).resolve(), (self.clone / ".git").resolve())
+        self.assertEqual(git_trees.check_sha(sha, tree), git_trees.check_sha(sha, self.clone))
+        self.assertEqual(git_trees.check_sha(sha, tree)[0], 0)
+
     def test_a_pruned_worktrees_gitfile_padded_with_hundreds_of_trailing_newlines_is_still_pruned(self) -> None:
         """#294 round 11, 1 pin: a long trailing run of line breaks well under the read bound is still only the trailing run
         (real git opens a LIVE worktree with that file, checked first), so the tree is pruned: a yes from its repository."""
