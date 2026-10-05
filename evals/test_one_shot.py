@@ -1,5 +1,7 @@
 """One-shot workers exit once and leave a reviewable task outcome."""
 
+import contextlib
+import io
 import os
 import re
 import subprocess
@@ -15,6 +17,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import one_shot  # noqa: E402
+import spawn_session  # noqa: E402
 import shell_setup  # noqa: E402
 from _vendor.toon_format import decode as toon_decode  # noqa: E402
 
@@ -166,12 +169,12 @@ class RunTest(unittest.TestCase):
         path.chmod(0o755)
         return path
 
-    def _run(self, fake: Path, tree: Path | None = None) -> int:
+    def _run(self, fake: Path, tree: Path | None = None, model: str = "", effort: str = "") -> int:
         with mock.patch.object(one_shot, "resolve", return_value=str(fake)), \
              mock.patch.object(one_shot, "login_argv", side_effect=lambda argv: argv):
             return one_shot.run(root=self.root, day="2026-09-18", task="Security audit",
                                 cwd=tree or self.tree, name="worker01", runtime="codex", agent_type=None,
-                                model="", effort="", dry_run=False)
+                                model=model, effort=effort, dry_run=False)
 
     def test_done_exits_once_and_leaves_waiting_for_integration(self):
         fake = self._fake('status: done\nreason: completed audit\nchanges: committed handler and ran tests\n',
@@ -196,6 +199,28 @@ class RunTest(unittest.TestCase):
         self.assertRegex(during, r"(?m)^- \d\d:\d\d one-shot worker01 started: codex, worktree `worker`, "
                                  r"task Security audit$")
         self.assertIn(f"worktree `worker` ({branch})", self.tracker.read_text())
+
+    def test_the_log_line_names_the_effort_the_worker_ran_at(self):
+        # #52: the Log is the durable record of what ran; it had the model and never the effort.
+        fake = self._fake('status: done\nreason: done\nchanges: checked\n', write_partial=False)
+        self.assertEqual(self._run(fake, model="gpt-test", effort="medium"), 0)
+        self.assertIn("one-shot worker01 started: codex gpt-test medium, worktree `worker`",
+                      (self.root / "during.md").read_text())
+
+    def test_a_class_entrys_effort_is_the_one_the_log_line_names(self):
+        # #52: --class supplies the effort; the Log records the effective one, not the flag (there was none).
+        (self.root / "CLAUDE.md").write_text(CLAUDE + "- Settings: `chief-of-stuff.toml`\n")
+        (self.root / "chief-of-stuff.toml").write_text('[models.implement]\nrotation = ["codex:gpt-test@medium"]\n')
+        fake = self._fake('status: done\nreason: done\nchanges: checked\n', write_partial=False)
+        with mock.patch.object(one_shot, "resolve", return_value=str(fake)), \
+             mock.patch.object(one_shot, "login_argv", side_effect=lambda argv: argv), \
+             contextlib.redirect_stdout(io.StringIO()):
+            code = spawn_session.main(["--one-shot", "--root", str(self.root), "--date", self.tracker.name[:10],
+                                       "--cwd", str(self.tree), "--name", "worker01", "--task", "Security audit",
+                                       "--class", "implement"])
+        self.assertEqual(code, 0)
+        self.assertIn("one-shot worker01 started: codex gpt-test medium, worktree `worker`",
+                      (self.root / "during.md").read_text())
 
     def test_a_refused_launch_takes_its_dispatch_back_so_a_retry_can_use_the_tree(self):
         # A dispatch left behind makes the retry refuse the tree, and the coordinator makes a second one.
