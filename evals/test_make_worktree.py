@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -391,6 +392,125 @@ class ConcurrentDispatchTest(CloneCase):
         self.assertEqual(refused, {}, "no dispatch is refused by another")
         for made in results.values():
             self.assertEqual(rev(made.path), remote_head)
+
+
+# A second dispatch is its own process: it wraps the same two calls the thread test wraps, and says when its
+# `git worktree add` returned. The sleep keeps the first dispatch inside its fetch while the second one runs the git calls
+# that come before its own fetch (about 0.2s each on a slow machine).
+CHILD_DISPATCH = """
+import sys, time
+from pathlib import Path
+scripts, root, clone, marks = sys.argv[1:5]
+sys.path.insert(0, scripts)
+import git_trees
+import make_worktree as mw
+real_fetch, real_git = git_trees.fetch_base, mw.git
+def fetch(*a, **k):
+    Path(marks, "started").touch()
+    time.sleep(2)
+    return real_fetch(*a, **k)
+def git(args, cwd):
+    out = real_git(args, cwd)
+    if args[:2] == ["worktree", "add"]:
+        Path(marks, "add_end").write_text(repr(time.time()))
+    return out
+git_trees.fetch_base, mw.git = fetch, git
+mw.build(Path(root), Path(clone), "trees", "wt-child", "feat/child", "implementer")
+"""
+
+
+class SerializedDispatchTest(CloneCase):
+    """Rule: in one clone, the fetch-and-add of one dispatch never overlaps the fetch-and-add of another. The span runs
+    from the start of a build's fetch (with --from-local, of its `git worktree add`) to the end of its `git worktree add`."""
+
+    BUILDERS = 4
+    HOLD = 0.2  # seconds a build stays at the start of its span, so a build that is not serialized must overlap another
+
+    def spans(self, from_local: bool) -> tuple[dict[str, tuple[float, float]], dict[str, object]]:
+        """Run BUILDERS simultaneous builds; (thread -> (span start, span end), thread -> Made or the exception)."""
+        events: list[tuple[str, str, float]] = []
+        real_git, real_fetch = mw.git, git_trees.fetch_base
+
+        def note(kind: str):
+            events.append((threading.current_thread().name, kind, time.monotonic()))
+
+        def fetch_base(tree, *a, **k):
+            note("start")
+            time.sleep(self.HOLD)
+            return real_fetch(tree, *a, **k)
+
+        def git(args, cwd):
+            adding = args[:2] == ["worktree", "add"]
+            if adding and from_local:
+                note("start")
+                time.sleep(self.HOLD)
+            out = real_git(args, cwd)
+            if adding:
+                note("end")
+            return out
+
+        go = threading.Barrier(self.BUILDERS)
+        results: dict[str, object] = {}
+
+        def dispatch(i: int):
+            go.wait()
+            try:
+                results[f"b{i}"] = self.build(name=f"wt-{i}", branch=f"feat/s{i}", from_local=from_local)
+            except Exception as exc:  # the test reports it, whatever it is
+                results[f"b{i}"] = exc
+
+        with mock.patch.object(mw.git_trees, "fetch_base", fetch_base), mock.patch.object(mw, "git", git):
+            threads = [threading.Thread(target=dispatch, args=(i,), name=f"b{i}") for i in range(self.BUILDERS)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+        marks = {(who, kind): at for who, kind, at in events}
+        return {w: (marks[w, "start"], marks[w, "end"]) for w in results if (w, "start") in marks and (w, "end") in marks}, results
+
+    def assert_serialized(self, from_local: bool):
+        spans, results = self.spans(from_local)
+        ordered = sorted(spans.items(), key=lambda kv: kv[1])
+        for (a, (_, a_end)), (b, (b_start, _)) in zip(ordered, ordered[1:]):
+            self.assertGreaterEqual(b_start, a_end, f"{b} began its fetch-and-add {a_end - b_start:.2f}s before {a} finished its own: {ordered}")
+        refused = {w: str(r) for w, r in results.items() if not isinstance(r, mw.Made)}
+        self.assertEqual(refused, {}, "no dispatch is refused by another")
+
+    def test_threads_fetch_and_add_one_at_a_time(self):
+        self.assert_serialized(from_local=False)
+
+    def test_threads_with_from_local_add_one_at_a_time(self):
+        self.assert_serialized(from_local=True)
+
+    def test_a_second_process_waits_for_the_first_to_finish_adding(self):
+        marks = self.root / "marks"
+        marks.mkdir()
+        scripts = Path(mw.__file__).resolve().parent
+        child = subprocess.Popen(
+            [sys.executable, "-c", CHILD_DISPATCH, str(scripts), str(self.root), str(self.clone), str(marks)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        self.addCleanup(child.kill)
+        deadline = time.monotonic() + 30
+        while not (marks / "started").exists():
+            if child.poll() is not None:
+                self.fail(f"the first dispatch ended before its fetch: {child.communicate()[1]}")
+            self.assertLess(time.monotonic(), deadline, "the first dispatch never reached its fetch")
+            time.sleep(0.01)
+        real_fetch = git_trees.fetch_base
+        began: list[float] = []
+
+        def fetch_base(*a, **k):
+            began.append(time.time())
+            return real_fetch(*a, **k)
+
+        with mock.patch.object(mw.git_trees, "fetch_base", fetch_base):
+            made = self.build(name="wt-parent", branch="feat/parent")
+        _, err = child.communicate(timeout=60)
+        self.assertEqual(child.returncode, 0, f"the first dispatch failed: {err}")
+        self.assertIsInstance(made, mw.Made)
+        add_end = float((marks / "add_end").read_text())
+        self.assertGreaterEqual(began[0], add_end, f"the second dispatch began its fetch {add_end - began[0]:.2f}s before the first finished its add")
 
 
 class LocalMainIsTheBranchTest(CloneCase):
