@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check worker PIDs in one call without exposing their command lines.
 
-With no PIDs, check every registered worker. PIDs can be space or comma separated.
+With no PIDs, check every registered worker and list every live one-shot run. PIDs can be space or comma separated.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ import sys
 
 import runtimes
 from _vendor.toon_format import encode as toon_encode
+from workspace import worktrees_dir
 
 # `<launcher pid> <task>` while a one-shot runs in this tree; the count behind `[workers] max_concurrency`.
 PIDFILE = Path(".chief-of-stuff") / "one-shot.pid"
@@ -55,18 +56,23 @@ def process_exists(pid: int) -> bool:
         return False
 
 
-def running_trees(trees: Path) -> dict[Path, str]:
-    """Each worktree whose one-shot launcher is alive, and its task. A launcher that died, or a restart that
-    killed it, holds no slot. ponytail: pid reuse can count a dead launcher; add the process start time if it bites."""
-    found = {}
+def one_shot_runs(trees: Path) -> list[tuple[Path, int, str]]:
+    """(worktree, launcher pid, task) for each one-shot whose launcher is alive. A launcher that died, or a restart
+    that killed it, holds no slot. ponytail: pid reuse can count a dead launcher; add the process start time if it bites."""
+    found = []
     for f in sorted(trees.glob(f"*/{PIDFILE}")):
         try:
             pid, _, task = f.read_text().partition(" ")
-            if process_exists(int(pid)):
-                found[f.parent.parent] = task.strip() or f.parent.parent.name
+            if int(pid) > 0 and process_exists(int(pid)):
+                found.append((f.parent.parent, int(pid), task.strip() or f.parent.parent.name))
         except (OSError, ValueError):
             continue
     return found
+
+
+def running_trees(trees: Path) -> dict[Path, str]:
+    """Each worktree whose one-shot launcher is alive, and its task."""
+    return {tree: task for tree, _, task in one_shot_runs(trees)}
 
 
 def running_workers(trees: Path) -> list[str]:
@@ -111,13 +117,20 @@ def check(root: Path, pids: list[int]) -> list[dict[str, str | int]]:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--root", type=Path, required=True, help="workspace containing the worker registry")
-    ap.add_argument("pids", nargs="*", help="PIDs, separated by spaces or commas; omit for all workers")
+    ap.add_argument("pids", nargs="*", help="PIDs, separated by spaces or commas; omit for all workers and one-shot runs")
     args = ap.parse_args(argv)
     try:
         pids = parse_pids(args.pids)
     except ValueError as exc:
         ap.error(str(exc))
-    rows = check(args.root, pids)
+    rows: list[dict[str, str | int]] = check(args.root, pids)
+    if not pids:
+        try:
+            runs = one_shot_runs(args.root / worktrees_dir((args.root / "CLAUDE.md").read_text()))
+        except OSError:  # no CLAUDE.md, so no trees dir to look in
+            runs = []
+        rows += [{"pid": pid, "task": task, "worktree": str(tree), "status": "running", "kind": "one-shot"}
+                 for tree, pid, task in runs]
     print(toon_encode(rows) if rows else "[]")
     return 0
 
