@@ -170,7 +170,8 @@ def _tree_note(root: Path, cwd: Path) -> str:
     return f"worktree `{tree}` ({branch or 'detached'})"
 
 
-def record_launch(path: Path, task: str, name: str, tree: str, runtime: str, model: str, at: str) -> None:
+def record_launch(path: Path, task: str, name: str, tree: str, runtime: str, model: str, at: str,
+                  effort: str = "") -> None:
     """Before the worker runs: the row is the worker's and running, File ownership names its tree, and the Log says so."""
     if "|" in name or "\n" in name:
         raise ValueError("worker name cannot be written as a tracker owner")
@@ -199,7 +200,7 @@ def record_launch(path: Path, task: str, name: str, tree: str, runtime: str, mod
             lines[owned] = f"{cut}; {tree} |\n"
         else:
             lines[owned] = f"{body.rstrip()}; {tree}\n"
-        return tracker_write.append_log("".join(lines), started_line(at, name, runtime, model, tree, task), create=True)
+        return tracker_write.append_log("".join(lines), started_line(at, name, runtime, model, tree, task, effort), create=True)
 
     tracker_write.edit(path, change)
 
@@ -326,11 +327,11 @@ def run(*, root: Path, day: str | None, task: str, cwd: Path, name: str,
         raise ValueError(f"no worktree at {cwd}")
     trees = root / worktrees_dir((root / "CLAUDE.md").read_text())
     with slot(trees, cwd, task, load_settings(root, cfg.settings_path).workers.max_concurrency):
-        return _launch(root, cfg, chosen_day, task, cwd, name, runtime, model, body, argv, timeout_minutes)
+        return _launch(root, cfg, chosen_day, task, cwd, name, runtime, model, effort, body, argv, timeout_minutes)
 
 
 def _launch(root: Path, cfg, chosen_day: str, task: str, cwd: Path, name: str, runtime: str, model: str,
-            body: str, argv: list[str], timeout_minutes: int) -> int:
+            effort: str, body: str, argv: list[str], timeout_minutes: int) -> int:
     # Same clean login-shell path as interactive sessions; auth and user PATH come from shell setup.
     # Everything that can refuse runs before anything is written; a refused row takes its dispatch back.
     launch_argv, tree = login_argv(argv), _tree_note(root, cwd)
@@ -339,7 +340,7 @@ def _launch(root: Path, cfg, chosen_day: str, task: str, cwd: Path, name: str, r
     before_head = git_head(cwd)
     try:
         record_launch(root / cfg.tracker_path(chosen_day), task, name, tree, runtime, model,
-                      tracker_write.stamp(cfg.zone))
+                      tracker_write.stamp(cfg.zone), effort)
     except Exception:
         written.unlink(missing_ok=True)
         raise

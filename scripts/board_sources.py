@@ -465,7 +465,7 @@ def workers(root: Path, cfg: Config, tracker: Tracker, tracker_text: str, day: d
     trees, row_of = root / worktrees_dir((root / "CLAUDE.md").read_text()), launcher(tracker.tasks)
     for tree, task in process_status.running_trees(trees).items():
         m = started.get(task)
-        runtime, _, model = (m[3] if m else "").partition(" ")
+        runtime, model, *_ = [*(m[3] if m else "").split(" "), "", ""]
         found.append(Worker(m[2] if m else tree.name, "one-shot", runtime, model, row_of(task)[1], tree.name,
                             leading(m[1], day, zone) if m else None, None))
     return tuple(found)
