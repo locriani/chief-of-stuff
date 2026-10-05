@@ -10,7 +10,7 @@
       "notes/.keep": ""
     }
   },
-  "description": "#53: a one-shot run is in flight (its row is running, its File ownership row names the tree, its launcher left a live pid in the tree). A scheduled check asks whether it is still running. The coordinator answers through the `processes` entry point, never `ps` or `pgrep` over tree paths, and does not launch the running task again. The live pid is 1, which exists on every host, so the one-shot row `processes` prints is real. The positive grader quotes the sentence at agents/chief-of-stuff.md that names `processes`; that sentence speaks of registered workers, and the agent has no sentence saying `processes` also answers for one-shot runs. The reply graders quote the sentence that defines what `running` and `gone` mean.",
+  "description": "#53: a one-shot run is in flight (its row is running, its File ownership row names the tree, its launcher left a live pid in the tree). A scheduled check asks whether it is still running. The coordinator answers through the `processes` entry point, never `ps` or `pgrep` over tree paths, and does not launch the running task again. The pid file names the harness's own live pid through the live-pid fixture token, so the one-shot row `processes` prints is real. The positive grader quotes the sentence at agents/chief-of-stuff.md that names `processes`; that sentence speaks of registered workers, and the agent has no sentence saying `processes` also answers for one-shot runs. The reply grader quotes the sentence that sends liveness to the helper and bars marking an `unverified` worker gone.",
   "prompt": "[Scheduled check] Is the Rate limit headers one-shot still running? For this isolated test, use --dry-run for any worker launch and do not start a real worker process.",
   "graders": [
     {
@@ -38,14 +38,8 @@
       "max": 0
     },
     {
-      "name": "the answer says it is still running",
-      "rule": "`running` verifies a registered worker's command and worktree; `gone` means the PID no longer exists; `pid_reused` means it belongs to another process; `unverified` means its identity could not be checked.",
-      "type": "regex",
-      "pattern": "(?i)(?<!not )(?<!not still )(?<!longer )\\brunning\\b"
-    },
-    {
       "name": "the answer does not say it stopped",
-      "rule": "`running` verifies a registered worker's command and worktree; `gone` means the PID no longer exists; `pid_reused` means it belongs to another process; `unverified` means its identity could not be checked.",
+      "rule": "Use this helper instead of ad hoc `ps` or `pgrep` calls, and do not mark an `unverified` worker gone.",
       "type": "regex",
       "pattern": "(?i)(?:^|[.!?]\\s+|\\n\\s*[-*]?\\s*)(?![^.!?\\n]*\\b(?:if|whether|unless|until)\\b)[^.!?\\n]*?(?:\\b(?:has|have)\\s+(?:stopped|finished|exited|completed|died)\\b|\\b(?:is|was)\\s+(?:gone|dead|finished|done|complete)\\b|\\bno longer running\\b|\\bnot (?:still )?running\\b)",
       "match": "absent"

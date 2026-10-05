@@ -319,9 +319,8 @@ class OneShotRunsTests(unittest.TestCase):
         link = self.root / "trees" / "linked" / ".chief-of-stuff" / "one-shot.pid"
         link.parent.mkdir(parents=True)
         link.symlink_to(outside)
-        text, rows = self.processes()
-        self.assertEqual((rows, self.running()), ([], {}))
-        self.assertNotIn("secret", text)
+        text, _ = self.processes()
+        self.assertEqual((text.strip(), self.running()), ("[]", {}))
 
     def test_only_ascii_decimal_digits_are_a_pid(self):
         # int() takes all of these, and the fake process table would call each one alive.

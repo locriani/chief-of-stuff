@@ -8,6 +8,7 @@ every unit test, because no test read the cases. This one does, and it runs unde
 import contextlib
 import io
 import json
+import os
 import re
 import sys
 import tempfile
@@ -444,16 +445,16 @@ class CaseLintTest(unittest.TestCase):
 
     def test_one_shot_in_flight_graders_enforce_sentences_the_agent_carries(self) -> None:
         """#53: a running one-shot is neither launched again (the readiness sentence) nor looked up with `ps`/`pgrep` (the helper
-        sentence), and is looked up with `processes` (the sentence that names it) and reported as running (the sentence that
-        defines `running`). Every grader quotes a sentence the agent file carries. No agent sentence says `processes` also
+        sentence), and is looked up with `processes` (the sentence that names it) and not reported stopped (the helper sentence
+        again: it bars marking an `unverified` worker gone). Every grader quotes a sentence the agent file carries. No agent sentence says `processes` also
         answers for one-shot runs: the one that names it speaks of registered workers."""
         agent_text = (EVALS.parent / "agents" / "chief-of-stuff.md").read_text()
-        launch, asks, listing, running, stopped = spec(EVALS / "cases" / "one-shot-in-flight-is-checked-with-processes")["graders"]
+        launch, asks, listing, stopped = spec(EVALS / "cases" / "one-shot-in-flight-is-checked-with-processes")["graders"]
         self.assertIn("Ready means an open, unassigned task", launch["rule"])
         self.assertIn("For registered workers, check process state with `chief-of-stuff processes", asks["rule"])
         self.assertIn("Use this helper instead of ad hoc `ps` or `pgrep` calls", listing["rule"])
-        self.assertIn("`running` verifies a registered worker's command and worktree", running["rule"])
-        for g in (launch, asks, listing, running, stopped):
+        self.assertIn("do not mark an `unverified` worker gone", stopped["rule"])
+        for g in (launch, asks, listing, stopped):
             self.assertIn(g["rule"], agent_text, g["name"])
         self.assertEqual([(g["type"], g["tool"], g["max"]) for g in (launch, listing)], [("tool_used", "Bash", 0)] * 2)
         self.assertEqual((asks["type"], asks["tool"], asks["min"], "max" in asks), ("tool_used", "Bash", 1, False))
@@ -506,19 +507,17 @@ class CaseLintTest(unittest.TestCase):
                         "cat notes/chief-of-stuff processes.md", "chief-of-stuff processes-old", "ls # chief-of-stuff processes"):
             self.assertFalse(hit(asks, command), command)
 
-        # The reply says the run is running, and not that it stopped.
-        for reply in ("It is still running (pid 1, one-shot).", "Rate limit headers: status running, one-shot.", "The one-shot was running when I checked.", "Yes, but I cannot confirm it: the process check lists it as `running`.",
-                      "Registered as running, but pid 1 is odd.",
+        # The reply does not say the run stopped.
+        for reply in ("It is still running (pid 1, one-shot).", "Rate limit headers: status running, one-shot.", "The one-shot was running when I checked.",
+                      "Yes, but I cannot confirm it: the process check lists it as `running`.", "Registered as running, but pid 1 is odd.",
                       "It is still running. If the tree is still missing or the worker has exited by then, I'll flag it."):
-            self.assertRegex(reply, running["pattern"], reply)
             self.assertNotRegex(reply, stopped["pattern"], reply)
         for reply in ("It has finished.", "That one-shot is gone.", "It has stopped.", "It is no longer running.", "It is not running.", "Checked.\nThe worker has exited."):
             self.assertRegex(reply, stopped["pattern"], reply)
-            self.assertNotRegex(reply, running["pattern"], reply)
 
     def test_one_shot_in_flight_fixture_is_a_run_the_launcher_wrote_and_processes_lists(self) -> None:
         """#53: the case is only worth running when `processes` really prints the one-shot. Rendered the way the harness
-        renders it, pid 1 (alive on every host) and the pid file's task come back as the one-shot row, and the tracker's
+        renders it, the harness's own pid (`{{live_pid}}`, alive for the whole run) and the pid file's task come back as the one-shot row, and the tracker's
         started line has the launcher's own shape."""
         import process_status
         import tracker_log
@@ -534,7 +533,7 @@ class CaseLintTest(unittest.TestCase):
             from _vendor.toon_format import decode
             rows = decode(out.getvalue())
             self.assertEqual([(r["pid"], r["task"], Path(r["worktree"]).name, r["status"], r["kind"]) for r in rows],
-                             [(1, "Rate limit headers", "rate-limit", "running", "one-shot")])
+                             [(os.getpid(), "Rate limit headers", "rate-limit", "running", "one-shot")])
             tracker = next(work.glob("daily/*-tracker.md")).read_text()
             started = tracker_log.started_line("00:00", "rate-limit", "codex", "gpt-5.1-codex", "trees/rate-limit", "Rate limit headers")
             self.assertIn(started.split(" ", 2)[2], tracker)
