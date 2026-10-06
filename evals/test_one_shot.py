@@ -349,6 +349,43 @@ class RunTest(unittest.TestCase):
         self.assertIn("worktree is not clean", self.tracker.read_text())
         self.assertIn("partial.txt", self.tracker.read_text())
 
+    def _read_only(self) -> None:
+        """The task owns nothing: its File ownership cell says `none`, as a launch then appends the tree to it."""
+        self.tracker.write_text(TRACKER.replace("`src/a/`", "none; read-only review of the importer"))
+
+    def _read_only_report(self, fake: Path) -> dict:
+        self._run(fake)
+        return toon_decode((self.tree / one_shot.REPORT).read_text())
+
+    def test_a_read_only_task_that_left_a_commit_needs_review_whatever_the_worker_wrote(self):
+        # #57: a worker told to review committed and opened a PR, and the run was reported done.
+        self._read_only()
+        report = self._read_only_report(self._fake('status: done\nreason: reviewed\nchanges: none\n', commit_partial=True))
+        self.assertEqual(report["status"], "human_review")
+        self.assertTrue(report["reason"].startswith("read-only task left changes:"), report["reason"])
+        self.assertIn("partial.txt", report["reason"])
+        tracker = self.tracker.read_text()
+        self.assertIn("| Security audit | Robin | waiting |", tracker)
+        self.assertIn("HUMAN REVIEW NEEDED", tracker)
+
+    def test_a_read_only_task_that_left_an_uncommitted_file_needs_review_whatever_the_worker_wrote(self):
+        self._read_only()
+        report = self._read_only_report(self._fake('status: done\nreason: reviewed\nchanges: none\n'))
+        self.assertEqual(report["status"], "human_review")
+        self.assertTrue(report["reason"].startswith("read-only task left changes:"), report["reason"])
+        self.assertIn("partial.txt", report["reason"])
+        self.assertIn("HUMAN REVIEW NEEDED", self.tracker.read_text())
+
+    def test_a_read_only_task_that_changed_only_the_private_directory_stays_done(self):
+        self._read_only()
+        report = self._read_only_report(self._fake('status: done\nreason: reviewed\nchanges: none\n', write_partial=False))
+        self.assertEqual(report["status"], "done")
+        self.assertIn("| Security audit | Robin | waiting |", self.tracker.read_text())
+
+    def test_a_task_that_owns_paths_may_commit_and_stays_done(self):
+        report = self._read_only_report(self._fake('status: done\nreason: fixed\nchanges: partial.txt\n', commit_partial=True))
+        self.assertEqual(report["status"], "done")
+
     def test_relaunch_leaves_the_task_ready_and_the_user_out_of_it(self):
         # A stop a fresh run fixes is the coordinator's to relaunch, not the user's to review (#68).
         fake = self._fake('status: relaunch\nreason: target PR merged before work began\nchanges: none\n',
