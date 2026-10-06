@@ -3,6 +3,7 @@ render_board adapts lanes and tasks to it."""
 
 from __future__ import annotations
 
+import inspect
 import re
 import sys
 import unittest
@@ -73,10 +74,10 @@ class Render(unittest.TestCase):
         self.assertEqual(more.count('class="columns-card"'), 3, "the folded cards are one click away, not dropped")
         self.assertNotIn("columns-more", columns.render([columns.Column("implement", cards)], limit=5))
 
-    def test_the_footer_strip_tallies_its_cards(self) -> None:
-        foot = columns.Column("no lane", (C("a", "open"), C("b", "waiting"), C("c", "open")))
-        html = columns.render([col("implement", 1)], footer=foot)
-        self.assertIn('<summary><span class="columns-foot-name">no lane · 3</span><span>2 open</span><span>1 waiting</span></summary>', html)
+    def test_render_takes_the_columns_and_a_limit_and_draws_no_footer_strip(self) -> None:
+        # #350: NO LANE is gone from the user's model, so `render(cols, limit=LIMIT)` has no `footer` parameter
+        # and no `columns-foot` markup (a column count and card count are all its `<figure>` carries).
+        self.assertEqual(list(inspect.signature(columns.render).parameters), ["cols", "limit"])
         self.assertNotIn("columns-foot", columns.render([col("implement", 1)]))
 
     def test_text_is_escaped(self) -> None:
@@ -124,34 +125,38 @@ class Adapter(unittest.TestCase):
         return rb.build_columns(rb.parse_tracker(TRACKER).tasks, self.LANES if lanes is None else lanes, kanban)
 
     def test_every_lane_stage_is_a_column_even_an_empty_one(self) -> None:
-        cols, _ = self.build()
+        cols = self.build()
         self.assertEqual([c.name for c in cols], ["implement", "review", "triage", "merge", "main"])
         self.assertEqual([len(c.cards) for c in cols], [1, 0, 1, 0, 1])
 
     def test_a_card_at_pr_draws_in_the_next_stage_column(self) -> None:
         tasks = [rb.Task("x", "w", "open", "", "", "", name="Open the PR", lane="build", stage="pr")]
-        cols, _ = rb.build_columns(tasks, self.LANES)
+        cols = rb.build_columns(tasks, self.LANES)
         self.assertNotIn("pr", [c.name for c in cols])
         self.assertEqual([c.name for c in next(c for c in cols if c.name == "review").cards], ["Open the PR"])
 
     def test_a_card_is_the_task_in_tracker_words(self) -> None:
         # The issue ref opens its task page by number alone (#209), with no sources to know it by.
-        card = self.build()[0][0].cards[0]
+        card = self.build()[0].cards[0]
         self.assertEqual((card.name, card.kind, card.refs, card.owner, card.state),
                          ("Rate limit headers", "running", (("#118", "/issues/118"),), "worker-07", "running 01:28"))
 
     def test_gates_come_from_the_lanes(self) -> None:
-        cols, _ = self.build()
+        cols = self.build()
         self.assertEqual([c.name for c in cols if c.kind == "gate"], ["triage", "merge"])
         self.assertEqual({c.note for c in cols if c.kind == "gate"}, {"gate"})
 
-    def test_tasks_with_no_lane_go_to_the_footer(self) -> None:
-        _, foot = self.build()
-        self.assertEqual((foot.name, [c.name for c in foot.cards]), ("no lane", ["Rotate key", "Book room"]))
+    def test_build_columns_returns_the_columns_list_and_a_task_with_no_lane_is_in_none_of_them(self) -> None:
+        # #350: `build_columns(...) -> list[columns.Column]`, the stage columns alone. "Rotate key" and "Book room"
+        # name no lane, so no column holds them.
+        cols = self.build()
+        self.assertIsInstance(cols, list)
+        self.assertTrue(all(isinstance(c, columns.Column) for c in cols), cols)
+        self.assertEqual([c.name for col in cols for c in col.cards], ["Rate limit headers", "Session timeout", "Locale fallback"])
 
     def test_a_kanban_hold_stage_flags_its_cards_on_hold(self) -> None:
         kanban = st.Kanban(("todo", "doing"), "needs-human", {"implement": 1, "triage": 1, "main": 1}, hold_stages=("triage",))
-        held = [(c.name, c.flag, c.marks) for col in self.build(kanban=kanban)[0] for c in col.cards if c.flag]
+        held = [(c.name, c.flag, c.marks) for col in self.build(kanban=kanban) for c in col.cards if c.flag]
         self.assertEqual(held, [("Session timeout", columns.Mark("ON HOLD", "hold"), ())])
 
     def test_lanes_merge_in_order_and_disjoint_lanes_stay_whole(self) -> None:
@@ -160,7 +165,7 @@ class Adapter(unittest.TestCase):
         self.assertEqual(rb.stage_order(lanes), ["implement", "triage", "review", "merge", "ask", "do"])
 
     def test_a_stage_no_lane_names_still_gets_a_column(self) -> None:
-        self.assertEqual([c.name for c in self.build(lanes={})[0]], ["implement", "triage", "main"])
+        self.assertEqual([c.name for c in self.build(lanes={})], ["implement", "triage", "main"])
 
 
 if __name__ == "__main__":

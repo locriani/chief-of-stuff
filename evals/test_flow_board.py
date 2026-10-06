@@ -154,7 +154,7 @@ class Build(unittest.TestCase):
 
     def test_a_card_gains_its_change_ref_and_marks(self) -> None:
         # Both refs open the task page (#209): !48 names #9, so it lands there too.
-        card = next(c for col in self.cols()[0] for c in col.cards if c.name == "Cut the release")
+        card = next(c for col in self.cols() for c in col.cards if c.name == "Cut the release")
         self.assertEqual(card.refs, (("#9", "/issues/9"), ("!48", "/issues/9")))
         self.assertEqual(card.marks, (columns.Mark("passed", "passed"),))
 
@@ -166,17 +166,17 @@ class Build(unittest.TestCase):
     def test_an_issue_url_matches_its_number(self) -> None:
         # A ref's number, not a matching sources.issues URL, decides its link: it still opens /issues/7,
         # sources.issues["#7"] notwithstanding (#209).
-        card = next(c for col in self.cols()[0] for c in col.cards if c.name == "Write README")
+        card = next(c for col in self.cols() for c in col.cards if c.name == "Write README")
         self.assertEqual(card.refs, (("#7", "/issues/7"),))
 
     def test_a_tracker_issue_url_links_without_sources(self) -> None:
-        card = next(c for col in rb.build_columns(rb.parse_tracker(TRACKER).tasks, LANES)[0] for c in col.cards if c.name == "Write README")
+        card = next(c for col in rb.build_columns(rb.parse_tracker(TRACKER).tasks, LANES) for c in col.cards if c.name == "Write README")
         self.assertEqual(card.refs, (("#7", "/issues/7"),))
-        bare = next(c for col in self.cols()[0] for c in col.cards if c.name == "Webhook check")
+        bare = next(c for col in self.cols() for c in col.cards if c.name == "Webhook check")
         self.assertEqual((bare.refs, bare.href), ((), ""))
 
     def test_main_holds_the_changes_merged_today(self) -> None:
-        main = self.cols()[0][-1]
+        main = self.cols()[-1]
         self.assertEqual((main.name, [(c.name, c.refs, c.owner, c.state, c.kind) for c in main.cards]),
                          ("main", [("Locale fallback", (("#8", "/issues/8"), ("!37", "/issues/8")),
                                     "merged 12:30", "done", "merged today")]))
@@ -184,15 +184,15 @@ class Build(unittest.TestCase):
         self.assertIn("+ <span>2 merged today</span>", html)
 
     def test_drift_marks_the_card(self) -> None:
-        card = next(c for col in self.cols(kanban=KANBAN)[0] for c in col.cards if c.name == "Write README")
+        card = next(c for col in self.cols(kanban=KANBAN) for c in col.cards if c.name == "Write README")
         self.assertIn(columns.Mark("drift", "drift"), card.marks)
-        cut = next(c for col in self.cols(kanban=KANBAN)[0] for c in col.cards if c.name == "Cut the release")
+        cut = next(c for col in self.cols(kanban=KANBAN) for c in col.cards if c.name == "Cut the release")
         self.assertNotIn(columns.Mark("drift", "drift"), cut.marks)
 
     def test_empty_sources_draw_the_cards_as_before(self) -> None:
         tasks = rb.parse_tracker(TRACKER).tasks
         self.assertEqual(rb.build_columns(tasks, LANES, KANBAN, bs.EMPTY, NOW), rb.build_columns(tasks, LANES, KANBAN))
-        self.assertEqual([c.name for c in rb.build_columns(tasks, LANES)[0]], ["implement", "review", "triage", "merge"])
+        self.assertEqual([c.name for c in rb.build_columns(tasks, LANES)], ["implement", "review", "triage", "merge"])
 
     def test_a_merged_change_draws_the_card_at_its_lanes_last_stage(self) -> None:
         # (#240) A stalled coordinator can leave the tracker cell at `merge` for hours after the change actually
@@ -205,7 +205,7 @@ class Build(unittest.TestCase):
                                   "| Ship the tool | Ship it | Robin | waiting | 09:00 |  | S | build | merge | #8 | Checklist: ship |\n"
                                   "\n## Decisions")
         tasks = rb.parse_tracker(tracker).tasks
-        cols, _ = rb.build_columns(tasks, lanes, kanban, sources, NOW)
+        cols = rb.build_columns(tasks, lanes, kanban, sources, NOW)
         card = card_named(cols, "Ship the tool")
         self.assertEqual(next(col.name for col in cols if card in col.cards), "main")
         self.assertNotIn(columns.Mark("drift", "drift"), card.marks)
@@ -231,19 +231,19 @@ class CardLinkTest(unittest.TestCase):
         # links to `/issues/N`, and its `!N` ref links to the change's page" — !48 names #9, so both land there.
         # Cut the release has an open change; Write README's issue cell is a URL.
         for sources in (SOURCES, bs.EMPTY):
-            cols = rb.build_columns(rb.parse_tracker(TRACKER).tasks, LANES, None, sources, NOW)[0]
+            cols = rb.build_columns(rb.parse_tracker(TRACKER).tasks, LANES, None, sources, NOW)
             with self.subTest(sources="some" if sources.changes else "none"):
                 self.assertEqual(card_named(cols, "Write README").href, "/issues/7")
                 self.assertEqual(card_named(cols, "Write README").refs, (("#7", "/issues/7"),))
                 self.assertEqual(card_named(cols, "Cut the release").href, "/issues/9")
-        cut = card_named(rb.build_columns(rb.parse_tracker(TRACKER).tasks, LANES, None, SOURCES, NOW)[0], "Cut the release")
+        cut = card_named(rb.build_columns(rb.parse_tracker(TRACKER).tasks, LANES, None, SOURCES, NOW), "Cut the release")
         self.assertEqual(cut.refs, (("#9", "/issues/9"), ("!48", "/issues/9")))
 
     def test_a_card_whose_issue_has_no_number_keeps_its_link(self) -> None:
         # "A card whose issue cell has no number keeps its current link." Set beside a numbered card, which moves.
         tasks = [rb.Task(f"Item {i}", "Robin", "open", "09:00", "", "c", name=f"Task {i}", issue=issue, lane="build", stage="implement")
                  for i, issue in enumerate(("https://forge/i/readme", "", "TBD", "#12"))]
-        cols = rb.build_columns(tasks, LANES)[0]
+        cols = rb.build_columns(tasks, LANES)
         self.assertEqual([card_named(cols, f"Task {i}").href for i in range(4)], ["https://forge/i/readme", "", "", "/issues/12"])
 
     def test_merged_today_cards_link_through_their_issue(self) -> None:
@@ -252,7 +252,7 @@ class CardLinkTest(unittest.TestCase):
         # no number to route through, its own ref keeps the forge link (#209 gives no other page for it).
         sources = replace(SOURCES, changes={**SOURCES.changes, "!38": change("!38", state="merged", merged_at=NOW - timedelta(hours=1),
                                                                             title="Unfiled fix")})
-        main = rb.build_columns(rb.parse_tracker(TRACKER).tasks, LANES, None, sources, NOW)[0][-1]
+        main = rb.build_columns(rb.parse_tracker(TRACKER).tasks, LANES, None, sources, NOW)[-1]
         self.assertEqual({c.name: (c.href, c.refs) for c in main.cards}, {
             "Locale fallback": ("/issues/8", (("#8", "/issues/8"), ("!37", "/issues/8"))),
             "Unfiled fix": ("https://forge/38", (("!38", "https://forge/38"),))})
@@ -267,7 +267,7 @@ class UnassignedCardTest(unittest.TestCase):
                              ("unassigned-bot", "unassigned-bot")):
             task = rb.Task("Check the webhook signature", owner, "open", "09:00", "", "c", name="Webhook check",
                            lane="build", stage="implement")
-            html = columns.render(rb.build_columns([task], LANES)[0])
+            html = columns.render(rb.build_columns([task], LANES))
             with self.subTest(owner=owner):
                 if shown:
                     self.assertIn(f'<span class="columns-owner">{shown}</span>', html)
@@ -283,13 +283,13 @@ class CardRefAndOwnerLinkTest(unittest.TestCase):
     A live worker owner links to `/workers`; a person or `unassigned` owner stays plain text."""
 
     def test_an_issue_ref_links_to_its_issues_page(self) -> None:
-        html = columns.render(rb.build_columns(rb.parse_tracker(TRACKER).tasks, LANES, None, SOURCES, NOW)[0])
+        html = columns.render(rb.build_columns(rb.parse_tracker(TRACKER).tasks, LANES, None, SOURCES, NOW))
         self.assertIn('<a href="/issues/9">#9</a>', html)
 
     def test_a_change_ref_links_to_its_issues_task_page_not_the_forge(self) -> None:
         # !48 belongs to #9 (SOURCES). Today it opens https://forge/48; no change route exists to replace that
         # with, so it should take #9's task page instead.
-        html = columns.render(rb.build_columns(rb.parse_tracker(TRACKER).tasks, LANES, None, SOURCES, NOW)[0])
+        html = columns.render(rb.build_columns(rb.parse_tracker(TRACKER).tasks, LANES, None, SOURCES, NOW))
         self.assertIn('<a href="/issues/9">!48</a>', html)
         self.assertNotIn('href="https://forge/48"', html)
 
@@ -298,7 +298,7 @@ class CardRefAndOwnerLinkTest(unittest.TestCase):
         # it is shown on (which is keyed by #9, drawn here second in !99's issues).
         multi = change("!99", issues=("#3", "#9"), title="Cross-filed fix")
         sources = replace(SOURCES, changes={**SOURCES.changes, "!99": multi})
-        html = columns.render(rb.build_columns(rb.parse_tracker(TRACKER).tasks, LANES, None, sources, NOW)[0])
+        html = columns.render(rb.build_columns(rb.parse_tracker(TRACKER).tasks, LANES, None, sources, NOW))
         self.assertIn('<a href="/issues/3">!99</a>', html)
 
     def test_only_a_worker_owner_becomes_a_link(self) -> None:
@@ -310,7 +310,7 @@ class CardRefAndOwnerLinkTest(unittest.TestCase):
                          name="Write README", lane="build", stage="triage"),
                  rb.Task("Check the webhook signature", "unassigned", "open", "09:00", "", "c",
                          name="Webhook check", lane="build", stage="implement")]
-        html = columns.render(rb.build_columns(tasks, LANES, None, SOURCES, NOW)[0])
+        html = columns.render(rb.build_columns(tasks, LANES, None, SOURCES, NOW))
         with self.subTest(owner="impl-07, a running worker"):
             m = re.search(r'<a[^>]*href="/workers"[^>]*>impl-07</a>', html)
             self.assertIsNotNone(m, html)
@@ -336,7 +336,8 @@ class Page(unittest.TestCase):
 
     def test_the_header_names_each_source_time_and_the_counts(self) -> None:
         self.assertIn("rendered 14:30 CDT · tracker 14:25 · kanban 14:28 · merge requests 14:27 · workers 14:30 · "
-                      "4 tasks · 1 in no lane", self.body)
+                      "4 tasks</div>", self.body)
+        self.assertNotRegex(self.body, r"(?i)no[ -]lane")  # #350: NO LANE is gone; the 4 still counts the task with no lane
 
     def test_a_source_error_is_in_the_header(self) -> None:
         html = rb.render(TRACKER, self.cfg, NOW, lanes=LANES, sources=bs.Sources({}, {}, {}, (), {"workers": "no registry"}))

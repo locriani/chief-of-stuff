@@ -1791,19 +1791,21 @@ class LaneColumnsTest(unittest.TestCase):
         self.assertTrue(all(not t.warning for t in tasks), [t.warning for t in tasks])
 
 
-    def test_the_board_draws_the_stage_columns_and_an_unlaned_task_is_in_the_no_lane_strip(self) -> None:
+    def test_the_board_draws_the_stage_columns_and_a_task_with_no_lane_is_in_none_of_them(self) -> None:
+        # #350: NO LANE is gone from the board, so a task with no lane is drawn in no BUILD column and no strip.
         cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
         html = rb.render(TRACKER_LANED, cfg, NOW, lanes=self.LANES)
         self.assertIn('<section id="flow"><h2>Build</h2>', html)
         build = html.split('<section id="flow">')[1].split('<div class="panels">')[0]
-        columns, foot = build.split('class="columns-foot"')
-        self.assertIn("Cut the release", columns)
-        self.assertIn("Console", foot)
-        self.assertNotIn("Console", columns)
-        # A tracker with no lanes has no stage columns: every task is in the strip.
+        self.assertIn("Cut the release", build)
+        self.assertNotIn("Console", build)
+        self.assertNotIn("columns-foot", html)
+        self.assertNotRegex(html, r"(?i)no[ -]lane")
+        # A tracker with no lanes has no stage columns, and its tasks are not drawn in BUILD at all.
         plain = rb.render(TRACKER, cfg, NOW)
         self.assertIn('<figure class="columns"', plain)
         self.assertNotIn("<table", plain.split('<section id="flow">')[1].split('<div class="panels">')[0])
+        self.assertNotIn("columns-card", plain)
 
 
 
