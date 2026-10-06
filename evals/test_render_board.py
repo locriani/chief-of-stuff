@@ -212,20 +212,20 @@ class SessionParseTest(unittest.TestCase):
     def test_waiting_on_nobody_is_not_an_edge_to_a_node_called_nothing(self) -> None:
         """The live tracker says `nothing; the stack-default fix landed`. That is not a session."""
         for cell in ("nothing", "none", "-", "—", "nobody", "Nothing; the fix landed"):
-            s = rb.Session(ref="a", name="n", state="idle", doing="", waiting_on=cell,
+            s = tr.Session(ref="a", name="n", state="idle", doing="", waiting_on=cell,
                            free_at="", constraints="", children="", last_reply="")
             self.assertEqual(s.waits_on, "", cell)
 
     def test_a_comma_separates_who_from_why_when_no_dash_does(self) -> None:
         """Live: `Zach, in that session` — three sessions wrote this cell and did not agree on a separator."""
-        s = rb.Session(ref="a", name="n", state="waiting", doing="", waiting_on="Zach, in that session",
+        s = tr.Session(ref="a", name="n", state="waiting", doing="", waiting_on="Zach, in that session",
                        free_at="", constraints="", children="", last_reply="")
         self.assertEqual(s.waits_on, "Zach")
         self.assertEqual(s.waits_for, "in that session")
 
     def test_the_node_label_drops_the_history_the_name_cell_accretes(self) -> None:
         """Live: `update-claude-md-docs (third name, same ref)`. The graph wants the name, not its provenance."""
-        s = rb.Session(ref="a", name="update-claude-md-docs (third name, same ref)", state="idle", doing="",
+        s = tr.Session(ref="a", name="update-claude-md-docs (third name, same ref)", state="idle", doing="",
                        waiting_on="", free_at="", constraints="", children="", last_reply="")
         self.assertEqual(s.label, "update-claude-md-docs")
 
@@ -1127,9 +1127,6 @@ class DeadlineScopeTest(unittest.TestCase):
     def test_a_task_that_names_the_exam_still_draws_to_it(self) -> None:
         b = rb.day_bar(self.by["Study"], self.cfg, SUNDAY)
         self.assertEqual((b.end, b.end_src), (datetime(2026, 9, 26, 23, 59, tzinfo=CT), "due"))
-        self.assertEqual(estimate._deadline_for(self.by["Study"], b, self.cfg, SUNDAY).name, "PCCAT 1st attempt")
-        nobody = rb.day_bar(self.by["Nobody's"], self.cfg, SUNDAY)
-        self.assertEqual(estimate._deadline_for(self.by["Nobody's"], nobody, self.cfg, SUNDAY).name, "end of day")
 
     def test_the_countdown_keeps_the_exam(self) -> None:
         self.assertIn('data-deadline-name="PCCAT 1st attempt"', rb.render(SUNDAY_TRACKER, self.cfg, SUNDAY))
@@ -1333,152 +1330,27 @@ Coordinator: coordinator. Board: board-7.
 
 
 class SectionOrderTest(unittest.TestCase):
-    """Stage 0: the page's section headings appear in the design's order.
+    """The page's sections appear in the Flow artboard's order (#259).
 
-    DUE NEXT · BLOCKED · 24 HOURS · WEEK · LANES · SESSIONS. The headings before LANES exist to
-    prove the order; stages 1-6 thicken them. Requirements is not yet shown (stage 5).
+    Tabs, header, tiles, BUILD, the MERGE ORDER / DECISIONS / WORKERS panels, then the Flow charts (this tracker
+    has no stage history, so none; test_board_flow_design.py pins their place after the panels).
+    Due next, Blocked, the 24-hour day strip, Lanes and Sessions are not in the design, so none is drawn.
     """
+
+    ORDER = ['<nav class="tabs"', '<header class="panels-head"', '<nav class="panels-tiles"', "<h2>Build</h2>",
+             '<div class="panels">']
 
     def setUp(self) -> None:
         self.cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
         self.html = rb.render(TRACER_TRACKER, self.cfg, NOW)
 
     def test_section_headings_appear_in_the_right_order(self) -> None:
-        headings = re.findall(r"<h2>(.*?)</h2>", self.html)
-        # Normalise: strip inline meta, lowercase. "Flow · 24 hours" → "flow · 24 hours".
-        labels = [h.strip().lower() for h in headings]
-        expected_order = ["due next", "blocked", "24 hours", "lanes"]
-        found = [l for l in labels if any(e in l for e in expected_order)]
-        filtered = []
-        for l in found:
-            for e in expected_order:
-                if e in l:
-                    filtered.append(e)
-                    break
-        # They appear in the design's order — no earlier section after a later one.
-        for i in range(len(filtered) - 1):
-            self.assertLess(expected_order.index(filtered[i]),
-                            expected_order.index(filtered[i + 1]),
-                            f"{filtered[i]} should precede {filtered[i + 1]}")
+        at = [self.html.index(mark) for mark in self.ORDER]
+        self.assertEqual(at, sorted(at))
 
-    def test_due_next_section_exists_with_a_count(self) -> None:
-        self.assertRegex(self.html, r'<h2>Due next</h2>')
-
-    def test_blocked_section_exists_with_a_count(self) -> None:
-        self.assertRegex(self.html, r'<h2>Blocked</h2>')
-
-    def test_lanes_replaces_build(self) -> None:
-        """The Build heading becomes Lanes — same content, the design's name."""
-        self.assertNotIn("<h2>Build</h2>", self.html)
-        self.assertIn("<h2>Lanes</h2>", self.html)
-
-    def test_sessions_section_exists(self) -> None:
-        self.assertRegex(self.html, r'<h2>Sessions</h2>')
-
-    def test_sessions_section_shows_a_session(self) -> None:
-        # The session from TRACER_TRACKER appears somewhere after the Sessions heading.
-        after_sessions = self.html.split("<h2>Sessions</h2>", 1)
-        self.assertEqual(len(after_sessions), 2, "Sessions heading not found")
-        self.assertIn("impl-2", after_sessions[1].split("</section>", 1)[0])
-
-
-class RollingAxisTest(unittest.TestCase):
-    """Stage 0: the 24 HOURS strip spans now → now+24h, not day-start to midnight.
-
-    The axis collapses to one hour at 23:00 under the old clamp. A rolling window fixes that.
-    """
-
-    def setUp(self) -> None:
-        self.cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
-        self.html = rb.render(TRACER_TRACKER, self.cfg, NOW)
-
-    def test_the_24h_section_is_a_gantt_chart(self) -> None:
-        # The 24 HOURS section contains a gantt figure.
-        m = re.search(r'<h2>[^<]*24 hours[^<]*</h2>', self.html, re.I)
-        self.assertIsNotNone(m, "No 24 hours heading found")
-        after = self.html[m.end():]
-        self.assertIn('<figure class="gantt"', after.split("</section>", 1)[0])
-
-    def test_the_axis_spans_24h_from_now(self) -> None:
-        """The gantt's aria-label names the window, which must start near now and end ~24h later."""
-        m = re.search(r'<figure class="gantt" aria-label="([^"]+)"', self.html)
-        self.assertIsNotNone(m)
-        # The label contains the time range. For NOW=14:30, expect something like "... 14:00 to ... 14:00"
-        # (floored/ceiled to tick step). The key test: the end is NOT midnight of today.
-        label = m.group(1)
-        # The gantt aria label says "N rows, <start> to <end>, now <time>"
-        self.assertIn("now 14:30", label)
-
-
-class SwimlanesTest(unittest.TestCase):
-    """Stage 0: bars are grouped under deadline swimlane headers inside the 24 HOURS chart.
-
-    `swimlanes()` groups bars by their governing deadline, and each group carries a header row.
-    """
-
-    def setUp(self) -> None:
-        self.cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
-
-    def test_swimlanes_groups_bars_by_deadline(self) -> None:
-        tasks = [t for t in rb.parse_tracker(TRACER_TRACKER).tasks if not t.standing]
-        active = [t for t in tasks if t.kind != "done"]
-        hist = rb.history(tasks, self.cfg, NOW)
-        est = rb.estimates(active, self.cfg, NOW, hist)
-        bars = [rb.day_bar(t, self.cfg, NOW, est) for t in tasks if t.kind != "done"]
-        groups = rb.swimlanes(bars, self.cfg, NOW)
-        # At least one group — the governing deadline.
-        self.assertTrue(len(groups) > 0)
-        # Each group is (deadline_name, list_of_bars).
-        for name, group_bars in groups:
-            self.assertIsInstance(name, str)
-            self.assertTrue(len(group_bars) > 0)
-
-    def test_a_due_task_lands_under_its_own_deadline(self) -> None:
-        """'Cut the release branch' is due Launch; it goes under Launch, not end of day."""
-        tasks = [t for t in rb.parse_tracker(TRACER_TRACKER).tasks if not t.standing]
-        active = [t for t in tasks if t.kind != "done"]
-        hist = rb.history(tasks, self.cfg, NOW)
-        est = rb.estimates(active, self.cfg, NOW, hist)
-        bars = [rb.day_bar(t, self.cfg, NOW, est) for t in active]
-        groups = rb.swimlanes(bars, self.cfg, NOW)
-        launch_bars = [b for name, bs in groups if name == "Launch" for b in bs]
-        self.assertTrue(any(b.name == "Cut the release branch" for b in launch_bars))
-
-
-class BarLabelTest(unittest.TestCase):
-    """Stage 0: a bar on the 24h strip carries task.label and nothing else; detail is a hover panel.
-
-    Start, end, state and due are already encoded in the bar's position and length; they move to a
-    hover panel built from the data-* attributes, shown by CSS :hover / :focus-within.
-    """
-
-    def setUp(self) -> None:
-        self.cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
-        self.html = rb.render(TRACER_TRACKER, self.cfg, NOW)
-
-    def test_the_bar_carries_the_task_label_as_visible_text(self) -> None:
-        """The bar's visible text is the task name, not the full item prose."""
-        # Find the 24h section's gantt chart and check bar labels.
-        m = re.search(r'<h2>[^<]*24 hours[^<]*</h2>(.*?)</section>', self.html, re.I | re.S)
-        self.assertIsNotNone(m)
-        section = m.group(1)
-        # "Cut the release branch" should appear as a bar name.
-        self.assertIn("Cut the release branch", section)
-        # The full prose with "23:40: handed to impl-2" should NOT be in the bar's visible label.
-        # It should only be in title/data-* attributes.
-        # The gantt-name span carries the visible label.
-        name_spans = re.findall(r'<span class="gantt-name">(.*?)</span>', section)
-        for span in name_spans:
-            self.assertNotIn("23:40", span, "Bar label should not carry history")
-
-    def test_the_hover_panel_carries_the_detail(self) -> None:
-        """The bar's title attribute carries the detail the label dropped."""
-        m = re.search(r'<h2>[^<]*24 hours[^<]*</h2>(.*?)</section>', self.html, re.I | re.S)
-        self.assertIsNotNone(m)
-        section = m.group(1)
-        # The gantt bar's title carries the detail.
-        titles = re.findall(r'title="([^"]*)"', section)
-        self.assertTrue(any("10:30" in t for t in titles), "A bar title should carry a time")
+    def test_the_removed_sections_are_not_drawn(self) -> None:
+        for gone in ("Due next", "Blocked", "Sessions", "24 hours", "Lanes"):
+            self.assertNotIn(f"<h2>{gone}</h2>", self.html)
 
 
 class InlineMarksTest(unittest.TestCase):
@@ -1877,128 +1749,20 @@ class LaneColumnsTest(unittest.TestCase):
         self.assertTrue(all(not t.warning for t in tasks), [t.warning for t in tasks])
 
 
-    def test_the_board_draws_a_lane_table_and_an_unlaned_task_is_a_row(self) -> None:
+    def test_the_board_draws_the_stage_columns_and_an_unlaned_task_is_in_the_no_lane_strip(self) -> None:
         cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
         html = rb.render(TRACKER_LANED, cfg, NOW, lanes=self.LANES)
-        self.assertIn('<section id="flow"><h2>Lanes</h2>', html)
-        self.assertIn('<table class="lane-table"', html)
-        # Every non-standing task is a row — laned or not.
-        self.assertIn('Cut the release', html.split('<table class="lane-table"')[1].split('</table>')[0])
-        self.assertIn('Console', html.split('<table class="lane-table"')[1].split('</table>')[0])
-        # A tracker with no lanes still draws the table, not a columns board.
+        self.assertIn('<section id="flow"><h2>Build</h2>', html)
+        build = html.split('<section id="flow">')[1].split('<div class="panels">')[0]
+        columns, foot = build.split('class="columns-foot"')
+        self.assertIn("Cut the release", columns)
+        self.assertIn("Console", foot)
+        self.assertNotIn("Console", columns)
+        # A tracker with no lanes has no stage columns: every task is in the strip.
         plain = rb.render(TRACKER, cfg, NOW)
-        self.assertIn('<table class="lane-table"', plain)
-        self.assertNotIn('<figure class="columns"', plain)
+        self.assertIn('<figure class="columns"', plain)
+        self.assertNotIn("<table", plain.split('<section id="flow">')[1].split('<div class="panels">')[0])
 
-
-# --- stage 1: one lane table, unassigned / queue filters, density cap -------------------------
-# The kanban-column view (columns.py) is replaced by one flat HTML table. Unassigned and the
-# queue are rows in that table, distinguished by data-* attributes that CSS can filter on.
-# The density cap from 0.3.1 comes back at 32 000 bytes — the loan from Stage 0 is repaid.
-
-LANE_TABLE_TRACKER = """# Tracker 2026-09-16
-
-Coordinator: coordinator. Board: board-7.
-
-## Tasks
-
-| name | item | owner | state | since | due | size | lane | stage | issue | checklist |
-|---|---|---|---|---|---|---|---|---|---|---|
-| Cut the release | Cut the release branch | impl-2 | running 10:30 | 10:30 | 23:00 | M | build | review | #9 | Checklist: cut |
-| Write README | Write eval README | Robin | open | 09:00 | 17:00 | S | build | triage |  | Checklist: readme |
-| Console | Rotate the key | unassigned | open | 09:00 | 17:00 | S |  |  |  | Checklist: key |
-| Backlog item | Triage the backlog | Robin | open | 09:00 |  | M |  |  |  | Checklist: backlog |
-| Done task | Shipped yesterday | Robin | done 08:00-09:00 | 2026-09-15 |  | S | build | merge | #8 | Checklist: done |
-
-## Sessions
-
-| ref | name | state | doing | waiting on | free at | constraints | children | last reply |
-|---|---|---|---|---|---|---|---|---|
-| a1b2c3 | impl-2 | working | the release branch | | 15:00 | TDD | none | 14:20 |
-
-## Log
-
-- 09:00 opened the day
-"""
-
-
-class LaneTableTest(unittest.TestCase):
-    """Stage 1: the LANES section is a single HTML table, not a column board.
-
-    Every non-standing task is a row — including done tasks (marked with data-state='done').
-    Unassigned and queued tasks are rows in the same table, marked by data-* attributes so CSS
-    can filter them. The columns board is gone.
-    """
-
-    LANES = {"build": st.Lane(("implement", "pr", "review", "triage", "merge"), ("triage", "merge"))}
-
-    def setUp(self) -> None:
-        self.cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
-        self.html = rb.render(LANE_TABLE_TRACKER, self.cfg, NOW, lanes=self.LANES)
-        # The table is inside the Lanes section.
-        m = re.search(r'<table class="lane-table"[^>]*>(.*?)</table>', self.html, re.S)
-        self.assertIsNotNone(m, "No lane-table found in the rendered page")
-        self.table = m.group(0)
-
-    def test_the_lanes_section_contains_a_table_not_columns(self) -> None:
-        """The columns board (<figure class="columns">) is replaced by a lane table."""
-        lanes_section = self.html.split('<section id="flow">')[1].split('</section>')[0]
-        self.assertNotIn('<figure class="columns"', lanes_section)
-        self.assertIn('<table class="lane-table"', lanes_section)
-
-    def test_every_task_is_a_row(self) -> None:
-        """Each non-standing task appears as a <tr> inside the table, including done tasks."""
-        for name in ("Cut the release", "Write README", "Console", "Backlog item", "Done task"):
-            self.assertIn(name, self.table, f"{name} should be a row in the lane table")
-
-    def test_done_tasks_carry_data_state_done(self) -> None:
-        """Done tasks are rows, marked with data-state='done' — they were cards in the columns board."""
-        rows = re.findall(r'<tr[^>]*>.*?</tr>', self.table, re.S)
-        done_rows = [r for r in rows if 'Done task' in r]
-        self.assertTrue(done_rows, "Done task should be a row in the lane table")
-        self.assertIn('data-state="done"', done_rows[0])
-
-    def test_unassigned_rows_are_marked(self) -> None:
-        """A task with owner `unassigned` carries `data-unassigned` on its row."""
-        self.assertIn('data-unassigned', self.table)
-        # The row with "Console" should be the one marked.
-        rows = re.findall(r'<tr[^>]*>.*?</tr>', self.table, re.S)
-        console_rows = [r for r in rows if 'Console' in r]
-        self.assertTrue(console_rows, "Console row not found")
-        self.assertIn('data-unassigned', console_rows[0])
-
-    def test_queued_rows_are_marked(self) -> None:
-        """A task that is owned but not running carries `data-queued` on its row."""
-        rows = re.findall(r'<tr[^>]*>.*?</tr>', self.table, re.S)
-        # "Write README" is open, owned by Robin, not running — it is queued.
-        readme_rows = [r for r in rows if 'Write README' in r]
-        self.assertTrue(readme_rows, "Write README row not found")
-        self.assertIn('data-queued', readme_rows[0])
-        # "Cut the release" is running — not queued.
-        cut_rows = [r for r in rows if 'Cut the release' in r]
-        self.assertTrue(cut_rows, "Cut the release row not found")
-        self.assertNotIn('data-queued', cut_rows[0])
-
-    def test_each_row_carries_its_owner_and_state(self) -> None:
-        """The table row shows the owner and a state indicator."""
-        rows = re.findall(r'<tr[^>]*>.*?</tr>', self.table, re.S)
-        cut_row = [r for r in rows if 'Cut the release' in r][0]
-        self.assertIn('impl-2', cut_row)
-        self.assertIn('running', cut_row)
-
-    def test_lane_and_stage_shown_when_present(self) -> None:
-        """A laned task's row shows the lane and stage."""
-        rows = re.findall(r'<tr[^>]*>.*?</tr>', self.table, re.S)
-        cut_row = [r for r in rows if 'Cut the release' in r][0]
-        self.assertIn('build', cut_row)
-        self.assertIn('review', cut_row)
-
-    def test_no_lane_tasks_have_empty_lane_cells(self) -> None:
-        """A task with no lane is a row with empty lane/stage, not in a separate footer."""
-        rows = re.findall(r'<tr[^>]*>.*?</tr>', self.table, re.S)
-        console_row = [r for r in rows if 'Console' in r][0]
-        # It should NOT be in a separate footer or section — it is a row in the same table.
-        self.assertNotIn('columns-foot', self.html.split('<section id="flow">')[1].split('</section>')[0])
 
 
 class DensityTest(unittest.TestCase):
@@ -2014,99 +1778,3 @@ class DensityTest(unittest.TestCase):
         html = rb.render(TRACER_TRACKER, cfg, NOW)
         self.assertLess(len(html), 32_000,
                         f"Board page is {len(html)} bytes, budget is 32 000")
-
-
-# Body lane log: the Calendar section with body events (gym, eat, recreation, sleep)
-# and a non-body event (Standup) that stays as a regular calendar event.
-BODY_LOG = """# 2026-09-16
-
-## Goal
-
-## Calendar
-
-- 09:00–09:15 CDT Standup (work)
-- 16:30-17:30 Gym
-- 18:00–18:40 Eat (dinner)
-- 20:00–21:30 Recreation
-| 23:10 | 23:59 | Sleep |
-
-## Checklist
-
-- [ ] Write eval README
-"""
-
-
-class BodyLaneTest(unittest.TestCase):
-    """Stage 2: the BODY lane — sleep, eat, gym, recreation — drawn on the 24h strip.
-
-    The 24 hours the board draws are a day of a person, not of a queue: the hours already spent
-    asleep, eating, at the gym or off are not available for work, and until they are on the strip
-    every deadline above them reads as if they were. They come from the calendar the daily log
-    already carries, so this needs no new grammar — an event whose title names one of the four
-    kinds is a body segment, and every other event stays what it was.
-
-    The four fills are: sleep #332288, eat #D55E00, gym #117733, recreation #F0E442.
-    """
-
-    def setUp(self) -> None:
-        self.cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
-        self.html = rb.render(TRACKER, self.cfg, NOW, log_text=BODY_LOG)
-        # The day-strip section
-        self.day = self.html.split('id="day-strip"')[1].split('</section>')[0] if 'id="day-strip"' in self.html else ""
-
-    def test_the_four_kinds_are_classified_off_the_calendar(self) -> None:
-        """body_kind recognises sleep, eat, gym, recreation as whole words and rejects substrings."""
-        self.assertEqual(
-            [rb.body_kind(t) for t in ("Sleep", "Eat (dinner)", "Gym", "Recreation",
-                                       "Standup (work)", "Table meeting", "sleepy hollow review")],
-            ["sleep", "eat", "gym", "recreation", "", "", ""],
-        )
-
-    def test_parse_calendar_extracts_timed_events(self) -> None:
-        """parse_calendar reads both bullet and table entries from the daily log's Calendar section."""
-        events = rb.parse_calendar(BODY_LOG, NOW.date(), CT)
-        titles = [e.title for e in events]
-        self.assertIn("Standup", titles)
-        self.assertIn("Gym", titles)
-        self.assertIn("Sleep", titles)
-        self.assertEqual(len(events), 5)
-
-    def test_the_body_row_is_the_first_row_of_the_strip(self) -> None:
-        """The body lane row comes before any task row in the 24h gantt chart."""
-        self.assertIn("body", self.day)
-        rows = re.findall(r'<div class="gantt-row">(.*?)</div>\s*</div>', self.day, re.S)
-        # The first gantt-row should contain the body lane name
-        first_name = re.search(r'class="gantt-name">(.*?)</span>', rows[0])
-        self.assertIsNotNone(first_name)
-        self.assertEqual(first_name.group(1), "body")
-
-    def test_body_segments_carry_their_kind_as_category(self) -> None:
-        """Each body event is a gantt segment with data-cat set to its body kind."""
-        cats = re.findall(r'data-cat="(sleep|eat|gym|recreation)"', self.day)
-        self.assertIn("gym", cats)
-        self.assertIn("eat", cats)
-        self.assertIn("recreation", cats)
-        self.assertIn("sleep", cats)
-
-    def test_body_css_fills(self) -> None:
-        """The body kinds get their own colour rules in the page CSS."""
-        css = self.html.split("<style>")[1].split("</style>")[0]
-        for kind, fill in (("sleep", "#332288"), ("eat", "#D55E00"),
-                           ("gym", "#117733"), ("recreation", "#F0E442")):
-            self.assertIn(f'data-cat="{kind}"', css, f"missing CSS rule for {kind}")
-
-    def test_no_body_events_when_no_log(self) -> None:
-        """Without log_text, the day strip has no body row."""
-        html_no_log = rb.render(TRACKER, self.cfg, NOW)
-        if 'id="day-strip"' in html_no_log:
-            day = html_no_log.split('id="day-strip"')[1].split('</section>')[0]
-            # There should be no body row
-            body_rows = re.findall(r'class="gantt-name">body</span>', day)
-            self.assertEqual(len(body_rows), 0)
-
-    def test_density_with_body_stays_bounded(self) -> None:
-        """The body lane does not blow the page past the 32 KB budget."""
-        html = rb.render(TRACER_TRACKER, self.cfg, NOW, log_text=BODY_LOG)
-        self.assertLess(len(html), 32_000,
-                        f"Board page is {len(html)} bytes, budget is 32 000")
-
