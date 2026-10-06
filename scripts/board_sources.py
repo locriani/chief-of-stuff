@@ -284,70 +284,61 @@ def _gl_change(m: dict, approver: str) -> Change:
 
 
 def gitlab(home: backlog.Backlog, wanted: dict[str, set[int]], mrs: set[int], since: datetime, approver: str, call):
-    """(issues, changes, error) from the host's /api/graphql, with the Backlog's token: one POST, and one more for open changes' jobs and threads.
-    A connection answers at most GL_PAGE nodes, so past that the same query goes again for the next GL_PAGE iids and the next merged page."""
+    """(issues, changes, error) from the host's /api/graphql, with the Backlog's token: one POST per connection (a project's issues,
+    the named merge requests, the merged page), each under GitLab's complexity cap, then one for open changes' jobs and threads.
+    A connection answers at most GL_PAGE nodes, so past that it goes again for the next GL_PAGE iids or the next merged page.
+    A POST that fails costs only its own cards: the rest are kept and the first error is returned; None, None when every one failed."""
     secret = backlog.token(home)
     if not secret:
         return None, None, home.missing_token
-    projects = sorted(set(wanted) | {home.project})
-    left = {project: sorted(wanted.get(project) or ()) for project in projects}
-    mrs, cursor = sorted(mrs), ""  # cursor: the merged page to ask for next, None once the last one is in
-    issues, changes, error = None, None, ""
-    host = backlog.home_of(home)[0]
-    while True:
-        parts = []
-        for i, project in enumerate(projects):
-            fields = []
-            if left[project]:
-                fields.append(f"issues(iids: {json.dumps([str(n) for n in left[project][:GL_PAGE]])}) {{ nodes {{ {GL_ISSUE} }} }}")
-            if project == home.project:
-                if mrs:
-                    fields.append(f"mergeRequests(iids: {json.dumps([str(n) for n in mrs[:GL_PAGE]])}) {{ nodes {{ {GL_CHANGE} }} }}")
-                if cursor is not None:
-                    after = f", after: {json.dumps(cursor)}" if cursor else ""
-                    fields.append(f"merged: mergeRequests(state: merged, mergedAfter: {json.dumps(since.isoformat())}{after}) "
-                                  f"{{ nodes {{ {GL_CHANGE} }} pageInfo {{ hasNextPage endCursor }} }}")
-            if fields:
-                parts.append(f"p{i}: project(fullPath: {json.dumps(project)}) {{ {' '.join(fields)} }}")
-        if not parts:
-            break
+    host, errors, issues, changes = backlog.home_of(home)[0], [], {}, {}
+    answered = False
+
+    def ask(project: str, fields: str) -> list | dict | None:
+        nonlocal answered
         body, _, err = call("POST", f"{home.host.rstrip('/')}/api/graphql", secret, backlog.TIMEOUT,
-                            {"query": "query { " + " ".join(parts) + " }"})
+                            {"query": f"query {{ p0: project(fullPath: {json.dumps(project)}) {{ {fields} }} }}"})
         if err or not isinstance(body, dict) or not isinstance(body.get("data"), dict):
-            err = err or _graphql_errors(body if isinstance(body, dict) else {}) or "GitLab did not answer"
-            if issues is None:
-                return None, None, err
-            return issues, changes, error or err  # a later page failed: the board keeps what the first ones gave
-        issues, changes = issues or {}, changes or {}
-        for i, project in enumerate(projects):
-            p = body["data"].get(f"p{i}") or {}
-            for node in (p.get("issues") or {}).get("nodes") or []:
-                key = backlog.IssueRef(project, int(node["iid"]), host).label(home)
-                issues[key] = Issue(key, node["webUrl"], node["title"], {"opened": "open"}.get(node["state"], node["state"]),
-                                    tuple(x["title"] for x in (node.get("labels") or {}).get("nodes") or []),
-                                    node.get("description") or "", _when(node.get("closedAt")))
-            for node in ((p.get("mergeRequests") or {}).get("nodes") or []) + ((p.get("merged") or {}).get("nodes") or []):
-                changes.setdefault(f"!{node['iid']}", _gl_change(node, approver))
-            left[project] = left[project][GL_PAGE:]
-        info = (((body["data"].get(f"p{projects.index(home.project)}") or {}).get("merged") or {}).get("pageInfo") or {})
+            errors.append(err or _graphql_errors(body if isinstance(body, dict) else {}) or "GitLab did not answer")
+            return None
+        answered = True
+        if message := _graphql_errors(body):
+            errors.append(message)
+        return body["data"].get("p0") or {}
+
+    def pages(project: str, name: str, iids: list[int], body: str):
+        for start in range(0, len(iids), GL_PAGE):
+            got = ask(project, f"{name}(iids: {json.dumps([str(n) for n in iids[start:start + GL_PAGE]])}) {{ nodes {{ {body} }} }}")
+            if got is None:
+                return
+            yield from (got.get(name) or {}).get("nodes") or []
+
+    for project in sorted(set(wanted) | {home.project}):
+        for node in pages(project, "issues", sorted(wanted.get(project) or ()), GL_ISSUE):
+            key = backlog.IssueRef(project, int(node["iid"]), host).label(home)
+            issues[key] = Issue(key, node["webUrl"], node["title"], {"opened": "open"}.get(node["state"], node["state"]),
+                                tuple(x["title"] for x in (node.get("labels") or {}).get("nodes") or []),
+                                node.get("description") or "", _when(node.get("closedAt")))
+    for node in pages(home.project, "mergeRequests", sorted(mrs), GL_CHANGE):
+        changes.setdefault(f"!{node['iid']}", _gl_change(node, approver))
+    cursor = ""  # the merged page to ask for next, None once the last one is in
+    while cursor is not None:
+        after = f", after: {json.dumps(cursor)}" if cursor else ""
+        got = ask(home.project, f"merged: mergeRequests(state: merged, mergedAfter: {json.dumps(since.isoformat())}{after}) "
+                                f"{{ nodes {{ {GL_CHANGE} }} pageInfo {{ hasNextPage endCursor }} }}")
+        if got is None:
+            break
+        for node in (got.get("merged") or {}).get("nodes") or []:
+            changes.setdefault(f"!{node['iid']}", _gl_change(node, approver))  # a named change wins over the same one here
+        info = (got.get("merged") or {}).get("pageInfo") or {}
         cursor = info.get("endCursor") if info.get("hasNextPage") else None
-        mrs = mrs[GL_PAGE:]
-        error = error or _graphql_errors(body)
-    opened = sorted(int(k[1:]) for k, c in changes.items() if c.state == "open")
-    for start in range(0, len(opened), GL_PAGE):
-        query = (f"query {{ p0: project(fullPath: {json.dumps(home.project)}) {{ "
-                 f"mergeRequests(iids: {json.dumps([str(n) for n in opened[start:start + GL_PAGE]])}) {{ nodes {{ {GL_DETAIL} }} }} }} }}")
-        body, _, err = call("POST", f"{home.host.rstrip('/')}/api/graphql", secret, backlog.TIMEOUT, {"query": query})
-        if err or not isinstance(body, dict) or not isinstance(body.get("data"), dict):
-            # The board still renders the changes without their jobs and threads.
-            return issues, changes, error or err or _graphql_errors(body if isinstance(body, dict) else {}) or "GitLab did not answer"
-        for node in ((body["data"].get("p0") or {}).get("mergeRequests") or {}).get("nodes") or []:
-            key = f"!{node['iid']}"
-            if key in changes:
-                jobs, threads = _gl_detail(node)
-                changes[key] = replace(changes[key], jobs=jobs, threads=threads)
-        error = error or _graphql_errors(body)
-    return issues, changes, error
+    if not answered:
+        return None, None, errors[0]
+    for node in pages(home.project, "mergeRequests", sorted(int(k[1:]) for k, c in changes.items() if c.state == "open"), GL_DETAIL):
+        if (key := f"!{node['iid']}") in changes:  # the board still renders a change without its jobs and threads
+            jobs, threads = _gl_detail(node)
+            changes[key] = replace(changes[key], jobs=jobs, threads=threads)
+    return issues, changes, errors[0] if errors else ""
 
 
 def change_ref(home, number) -> str:
