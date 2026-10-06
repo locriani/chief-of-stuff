@@ -2,6 +2,7 @@
 
 import contextlib
 import io
+import multiprocessing
 import os
 import re
 import subprocess
@@ -689,6 +690,57 @@ class RunTest(unittest.TestCase):
         self.assertIn("already relaunched once", end.read_text())
         self.assertEqual(self.tracker.read_text(), (self.root / "during.md").read_text())
 
+    def _overlap_tracker(self, audit: str, running: str, ready: str = "`src/z/`", running_state: str = "running 08:30") -> None:
+        """Security audit is the launch; Export header is another worker's row; Draft notes is ready and unlaunched."""
+        self.tracker.write_text(
+            "# Tracker\n\n## Tasks\n\n| item | owner | state | since | due | checklist |\n|---|---|---|---|---|---|\n"
+            "| Security audit | unassigned | open | 09:00 | | Inspect upload handler |\n"
+            f"| Export header | worker07 | {running_state} | 08:00 | | Export |\n"
+            "| Draft notes | unassigned | open | 09:00 | | Notes |\n\n"
+            "## File ownership\n\n| context | paths |\n|---|---|\n"
+            f"| Security audit | {audit} |\n| Export header | {running}; worktree `trees/export` (feat/export) |\n"
+            f"| Draft notes | {ready} |\n\n## Log\n\n- 09:00 opened\n")
+
+    def test_a_launch_whose_paths_overlap_a_running_row_is_refused_and_nothing_starts(self):
+        # #365 review R10. Reason names the overlap and the running task. The row, the Log, the dispatch file and the worker are untouched.
+        self._overlap_tracker("`src/a/upload.py`", "`src/a/`")
+        before = self.tracker.read_text()
+        fake = self._fake('status: done\nreason: r\nchanges: c\n')
+        with self.assertRaisesRegex(ValueError, r"(?s)overlap.*Export header|Export header.*overlap"):
+            self._run(fake)
+        self.assertEqual(self.tracker.read_text(), before)
+        self.assertFalse((self.root / "during.md").exists(), "the worker started")
+        self.assertFalse((self.tree / dispatch_prompt.DISPATCH_FILE).exists(), "the dispatch file was left behind")
+        self.assertEqual(process_status.running_trees(self.root / "trees"), {})
+
+    def test_record_launch_refuses_under_the_lock_and_writes_nothing(self):
+        self._overlap_tracker("`src/a/`", "`src/a/deep/x.py`")
+        before = self.tracker.read_text()
+        with self.assertRaisesRegex(ValueError, "overlap"):
+            one_shot.record_launch(self.tracker, "Security audit", "worker01", "worktree `w` (b)", "codex", "", "10:00")
+        self.assertEqual(self.tracker.read_text(), before)
+
+    def test_a_launch_that_overlaps_nothing_running_starts(self):
+        self._overlap_tracker("`src/a/`", "`src/b/`")
+        self.assertEqual(self._run(self._fake('status: done\nreason: r\nchanges: c\n', write_partial=False)), 0)
+        self.assertTrue((self.root / "during.md").exists())
+
+    def test_a_read_only_launch_starts_whatever_is_running(self):
+        self._overlap_tracker("none; read-only review of `src/a/`", "`src/a/`")
+        self.assertEqual(self._run(self._fake('status: done\nreason: r\nchanges: c\n', write_partial=False)), 0)
+
+    def test_a_read_only_running_row_blocks_nothing(self):
+        self._overlap_tracker("`src/a/`", "none; read-only review of `src/a/`")
+        self.assertEqual(self._run(self._fake('status: done\nreason: r\nchanges: c\n', write_partial=False)), 0)
+
+    def test_overlap_with_a_ready_row_does_not_refuse_the_coordinator_orders_those(self):
+        self._overlap_tracker("`src/a/`", "`src/b/`", ready="`src/a/upload.py`")
+        self.assertEqual(self._run(self._fake('status: done\nreason: r\nchanges: c\n', write_partial=False)), 0)
+
+    def test_a_row_that_is_no_longer_running_blocks_nothing(self):
+        self._overlap_tracker("`src/a/`", "`src/a/`", running_state="waiting")
+        self.assertEqual(self._run(self._fake('status: done\nreason: r\nchanges: c\n', write_partial=False)), 0)
+
     def _cap(self, n: int) -> None:
         (self.root / "CLAUDE.md").write_text(CLAUDE + "- Settings: `cos.toml`\n")
         (self.root / "cos.toml").write_text(f"[workers]\nmode = \"one-shot\"\nmax_concurrency = {n}\n")
@@ -836,30 +888,55 @@ class RunTest(unittest.TestCase):
         self.assertEqual(got, one_shot.backlog.GitHubBacklog("team/app"))
 
 
-# #365: several launches at once. Each launch is its own process, so these start real processes that wait at a gate (a file)
-# and go together, instead of threads in one interpreter that share its import lock.
+# #365: several launches at once. Each launch is its own process: spawned children wait at one Barrier and go together, the
+# way test_inbox_adversarial.py starts its writers. The child functions are module level so a spawned child can import them.
 LAUNCHERS = 6
-SCRIPTS = str(Path(__file__).resolve().parents[1] / "scripts")
+_MP = multiprocessing.get_context("spawn")
+WIDEN = 0.05  # seconds a child lingers inside the locked region, so a missing lock loses a write every run, not now and then
 
 
-def _tracker_for(n: int) -> str:
-    rows = "".join(f"| Task {i} | unassigned | open | 09:00 | | Inspect {i} |\n" for i in range(n))
-    owned = "".join(f"| Task {i} | `src/m{i}/` |\n" for i in range(n))
+def _tracker_for(cells: list[str]) -> str:
+    rows = "".join(f"| Task {i} | unassigned | open | 09:00 | | Inspect {i} |\n" for i in range(len(cells)))
+    owned = "".join(f"| Task {i} | {cell} |\n" for i, cell in enumerate(cells))
     return ("# Tracker\n\n## Tasks\n\n| item | owner | state | since | due | checklist |\n|---|---|---|---|---|---|\n" + rows +
             "\n## File ownership\n\n| context | paths |\n|---|---|\n" + owned + "\n## Log\n\n- 09:00 opened\n")
 
 
-def _gate(path: Path, seconds: float = 30) -> str:
-    """Python run in each child: wait until `path` exists, so the children start their writes together."""
-    return (f"import time, pathlib\nend = time.monotonic() + {seconds}\n"
-            f"while not pathlib.Path({str(path)!r}).exists():\n    assert time.monotonic() < end, 'gate never opened'\n    time.sleep(0.001)\n")
+def _launch_child(barrier, out: str, tracker: str, i: int) -> None:
+    real = one_shot.tracker_write.append_log
+
+    def slow(*args, **kwargs):  # still inside the lock `edit` holds: the read is behind us, the write is ahead
+        time.sleep(WIDEN)
+        return real(*args, **kwargs)
+
+    one_shot.tracker_write.append_log = slow
+    barrier.wait(30)
+    try:
+        one_shot.record_launch(Path(tracker), f"Task {i}", f"worker{i}", f"worktree `tree{i}` (branch{i})", "codex", f"m{i}", f"10:0{i}")
+        outcome = "ok"
+    except ValueError as exc:
+        outcome = f"refused: {exc}"
+    (Path(out) / str(i)).write_text(outcome)
 
 
-def _start_together(codes: list[str], gate: Path) -> list[subprocess.Popen]:
-    procs = [subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for code in codes]
-    time.sleep(0.5)  # every child is started and spinning at the gate
-    gate.write_text("go")
-    return procs
+def _slot_child(barrier, answered, out: str, trees: str, i: int, cap: int) -> None:
+    real = one_shot.running_trees
+
+    def slow(*args, **kwargs):  # between counting the running workers and writing our own pid file
+        counted = real(*args, **kwargs)
+        time.sleep(WIDEN)
+        return counted
+
+    one_shot.running_trees = slow
+    barrier.wait(30)
+    outcome = "refused"
+    try:
+        with one_shot.slot(Path(trees), Path(trees) / f"w{i}", f"Task {i}", cap):
+            outcome = "in"
+            answered.wait(30)  # a winner keeps its slot until every launch has been answered
+    except ValueError:
+        answered.wait(30)
+    (Path(out) / str(i)).write_text(outcome)
 
 
 class ConcurrentLaunchTest(unittest.TestCase):
@@ -869,25 +946,26 @@ class ConcurrentLaunchTest(unittest.TestCase):
         self.root = Path(self.tmp.name)
         (self.root / "daily").mkdir()
         (self.root / "trees").mkdir()
-        self.gate = self.root / "go"
+        self.out = self.root / "out"
+        self.out.mkdir()
 
-    def _finish(self, procs: list[subprocess.Popen]) -> list[tuple[int, str]]:
-        done = []
+    def _launches(self, cells: list[str]) -> tuple[Path, dict[int, str]]:
+        tracker = self.root / "daily/2026-09-18-tracker.md"
+        tracker.write_text(_tracker_for(cells))
+        barrier = _MP.Barrier(len(cells))
+        procs = [_MP.Process(target=_launch_child, args=(barrier, str(self.out), str(tracker), i)) for i in range(len(cells))]
         for p in procs:
-            _, err = p.communicate(timeout=60)
-            done.append((p.returncode, err))
-        return done
+            p.start()
+        for p in procs:
+            p.join(timeout=60)
+            self.assertEqual(p.exitcode, 0, f"launch {p.pid} exited {p.exitcode}")
+        return tracker, {int(f.name): f.read_text() for f in self.out.iterdir()}
 
     def test_simultaneous_launches_lose_no_row_no_worktree_and_no_started_line(self):
         # The guard issue #365 asks for: the launcher's tracker writes (started line, owner and state, File ownership worktree)
-        # from six launches at the same instant on one tracker. Green when written: the writes share one lock; this keeps them so.
-        tracker = self.root / "daily/2026-09-18-tracker.md"
-        tracker.write_text(_tracker_for(LAUNCHERS))
-        codes = [_gate(self.gate) + f"import sys\nfrom pathlib import Path\nsys.path.insert(0, {SCRIPTS!r})\nimport one_shot\n"
-                 f"one_shot.record_launch(Path({str(tracker)!r}), 'Task {i}', 'worker{i}', "
-                 f"'worktree `tree{i}` (branch{i})', 'codex', 'm{i}', '10:0{i}')\n" for i in range(LAUNCHERS)]
-        results = self._finish(_start_together(codes, self.gate))
-        self.assertEqual([code for code, _ in results], [0] * LAUNCHERS, [err for _, err in results])
+        # from six launches at the same instant on one tracker, each held inside the lock for a moment so a missing lock loses writes.
+        tracker, outcomes = self._launches([f"`src/m{i}/`" for i in range(LAUNCHERS)])
+        self.assertEqual(outcomes, {i: "ok" for i in range(LAUNCHERS)})
         text = tracker.read_text()
         for i in range(LAUNCHERS):
             with self.subTest(task=i):
@@ -900,47 +978,35 @@ class ConcurrentLaunchTest(unittest.TestCase):
         self.assertNotIn("unassigned", text)
         self.assertEqual(list((self.root / "daily").glob(".*")), [], "a temporary tracker copy was left behind")
 
-    def test_a_slot_cap_holds_when_launches_claim_at_once(self):
-        # `slot` claims under a lock on the Worktrees dir: with a cap of 3, six simultaneous launches get exactly 3 slots and
-        # three refusals, never more. Winners hold their slot until all six have answered.
-        trees, cap = self.root / "trees", 3
-        answered = self.root / "answered"
-        answered.mkdir()
-        codes = []
-        for i in range(LAUNCHERS):
-            tree = trees / f"w{i}"
-            tree.mkdir()
-            codes.append(_gate(self.gate) + f"import sys, time\nfrom pathlib import Path\nsys.path.insert(0, {SCRIPTS!r})\nimport one_shot\n"
-                         f"answered = Path({str(answered)!r})\n"
-                         f"def wait():\n    end = time.monotonic() + 30\n"
-                         f"    while len(list(answered.iterdir())) < {LAUNCHERS}:\n        assert time.monotonic() < end\n        time.sleep(0.001)\n"
-                         f"try:\n    with one_shot.slot(Path({str(trees)!r}), Path({str(tree)!r}), 'Task {i}', {cap}):\n"
-                         f"        (answered / 'in{i}').write_text('')\n        wait()\n"
-                         f"except ValueError:\n    (answered / 'refused{i}').write_text('')\n    sys.exit(3)\n")
-        results = self._finish(_start_together(codes, self.gate))
-        self.assertEqual(sorted(code for code, _ in results), [0] * cap + [3] * (LAUNCHERS - cap), [err for _, err in results])
+    def test_of_two_overlapping_launches_at_once_exactly_one_starts(self):
+        # #365 review R10: the overlap check reads the tracker under the same lock as the write, so two launches of rows that
+        # share a path cannot both pass it. Task 2 owns another path and starts either way.
+        tracker, outcomes = self._launches(["`src/a/`", "`src/a/upload.py`", "`src/c/`"])
+        self.assertEqual(outcomes[2], "ok")
+        self.assertEqual(sorted(outcomes[i][:2] for i in (0, 1)), ["ok", "re"], outcomes)
+        refused = next(v for v in outcomes.values() if v.startswith("refused"))
+        self.assertIn("overlap", refused)
+        text = tracker.read_text()
+        self.assertEqual(len(re.findall(r"(?m)^\| Task \d \| worker\d \| running ", text)), 2)
+        self.assertEqual(len(re.findall(r"(?m)^- 10:0\d one-shot worker\d started: ", text)), 2)
+        self.assertEqual(text.count("; worktree "), 2)
 
-    def test_simultaneous_launches_each_get_a_slot_of_their_own(self):
-        # With room for all six, each claims its own tree's pid file at once: six distinct slots, six distinct pids.
-        trees = self.root / "trees"
-        held = self.root / "held"
-        held.mkdir()
-        codes = []
-        for i in range(LAUNCHERS):
-            tree = trees / f"w{i}"
-            tree.mkdir()
-            codes.append(_gate(self.gate) + f"import sys, time\nfrom pathlib import Path\nsys.path.insert(0, {SCRIPTS!r})\nimport one_shot\n"
-                         f"held = Path({str(held)!r})\ntree = Path({str(tree)!r})\n"
-                         f"with one_shot.slot(Path({str(trees)!r}), tree, 'Task {i}', {LAUNCHERS}):\n"
-                         f"    (held / 'w{i}').write_text((tree / one_shot.PIDFILE).read_text())\n"
-                         f"    end = time.monotonic() + 30\n"
-                         f"    while len(list(held.iterdir())) < {LAUNCHERS}:\n        assert time.monotonic() < end\n        time.sleep(0.001)\n")
-        results = self._finish(_start_together(codes, self.gate))
-        self.assertEqual([code for code, _ in results], [0] * LAUNCHERS, [err for _, err in results])
-        claims = {f.name: f.read_text().split(maxsplit=1) for f in held.iterdir()}
-        self.assertEqual(sorted(claims), [f"w{i}" for i in range(LAUNCHERS)])
-        self.assertEqual(len({pid for pid, _ in claims.values()}), LAUNCHERS)
-        self.assertEqual({name: task.strip() for name, (_, task) in claims.items()}, {f"w{i}": f"Task {i}" for i in range(LAUNCHERS)})
+    def test_a_slot_cap_holds_when_many_launches_claim_at_once(self):
+        # `slot` claims under a lock on the Worktrees dir: with a cap of 3, twelve simultaneous claims get exactly 3 slots, each
+        # counted and written inside the lock; without it every claimant counts zero running workers and all twelve get in.
+        trees, cap, claimants = self.root / "trees", 3, 12
+        for i in range(claimants):
+            (trees / f"w{i}").mkdir()
+        answered = _MP.Barrier(claimants)
+        barrier = _MP.Barrier(claimants)
+        procs = [_MP.Process(target=_slot_child, args=(barrier, answered, str(self.out), str(trees), i, cap)) for i in range(claimants)]
+        for p in procs:
+            p.start()
+        for p in procs:
+            p.join(timeout=60)
+            self.assertEqual(p.exitcode, 0, f"claim {p.pid} exited {p.exitcode}")
+        outcomes = [f.read_text() for f in self.out.iterdir()]
+        self.assertEqual((outcomes.count("in"), outcomes.count("refused")), (cap, claimants - cap), outcomes)
 
 
 if __name__ == "__main__":

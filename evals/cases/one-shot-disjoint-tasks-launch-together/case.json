@@ -9,35 +9,54 @@
       "src/a/__init__.py": "",
       "src/b/report.py": "def report(rows):\n    return '\\n'.join(rows)\n",
       "src/b/__init__.py": "",
+      "src/c/export.py": "def header(row):\n    return ','.join(row)\n",
+      "src/c/__init__.py": "",
       "tests/a/.keep": "",
-      "tests/b/.keep": ""
+      "tests/b/.keep": "",
+      "tests/c/.keep": ""
     }
   },
-  "description": "Three ready one-shot tasks: Alpha fix and Beta fix own disjoint paths, Alpha follow-up owns a file inside Alpha fix's. The coordinator launches both disjoint tasks in this one turn, each as its own launcher call, and holds the overlapping one back until Alpha fix has returned. Observable: the launcher calls the agent issues, with --dry-run. Not observable: the harness flattens tool calls, so it cannot tell two calls in one assistant message from two in consecutive ones, and a dry run returns at once, so it cannot show the agent not waiting on a running worker. What it can show is that the agent, which today launches one task and stops, now launches both disjoint tasks in one run and still holds the overlapping one.",
+  "description": "Four tracker rows. Fix upload handler is running (a live launcher pid in its tree) and owns `src/a/`. Add upload limits is ready and owns `src/a/upload.py`, inside the running row's paths. Fix report writer and Fix export header are ready and own `src/b/` and `src/c/`. The coordinator starts the two disjoint tasks, each as its own launcher call and each in the background, and starts neither the running task again nor the one that overlaps it. What it sees: the harness records every tool call's whole input, so `run_in_background: true` is graded. A coordinator that launches in the foreground, or chains launches in one command, cannot show this behaviour: origin/main's agent file says 'Run tasks sequentially in the foreground' and goes red on the background graders. What it cannot see: two calls in one assistant message look like two in consecutive ones (background calls return at once, so the difference does not matter), a dry run returns at once, and a loop over a shell variable launching several tasks in one command. `worker --check` starts nothing and is never counted as a launch.",
   "prompt": "Start the ready tasks. For this isolated test, use --dry-run for every worker launch and do not start a real worker process.",
   "graders": [
     {
-      "name": "Alpha fix launched",
-      "rule": "Launch every ready one-shot task whose File ownership paths overlap no other running or ready task at once, in the same turn, each as its own launcher call; a read-only task overlaps nothing; run overlapping tasks one after the other.",
+      "name": "Fix report writer launched in the background",
+      "rule": "Launch every ready one-shot task whose File ownership paths overlap no other running or ready task at once, in the same turn, each as its own launcher call started in the background (Bash `run_in_background: true`); a read-only task overlaps nothing.",
       "type": "tool_used",
       "tool": "Bash",
-      "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:spawn_session\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worker)\\b(?=(?:[^\"\\\\]|\\\\.)*--dry-run)(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"']?Alpha fix\\b",
+      "input_match": "\\A(?=.*\"run_in_background\": true).*?\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:spawn_session\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worker)\\b(?!(?:(?![;&|]|\\\\n)(?:[^\"\\\\]|\\\\.))*--check)(?=(?:(?![;&|]|\\\\n)(?:[^\"\\\\]|\\\\.))*--dry-run)(?:(?![;&|]|\\\\n)(?:[^\"\\\\]|\\\\.))*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix report writer\\b",
       "min": 1
     },
     {
-      "name": "Beta fix launched too, without waiting for Alpha fix to return",
-      "rule": "Launch every ready one-shot task whose File ownership paths overlap no other running or ready task at once, in the same turn, each as its own launcher call; a read-only task overlaps nothing; run overlapping tasks one after the other.",
+      "name": "Fix export header launched in the background",
+      "rule": "Launch every ready one-shot task whose File ownership paths overlap no other running or ready task at once, in the same turn, each as its own launcher call started in the background (Bash `run_in_background: true`); a read-only task overlaps nothing.",
       "type": "tool_used",
       "tool": "Bash",
-      "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:spawn_session\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worker)\\b(?=(?:[^\"\\\\]|\\\\.)*--dry-run)(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"']?Beta fix\\b",
+      "input_match": "\\A(?=.*\"run_in_background\": true).*?\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:spawn_session\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worker)\\b(?!(?:(?![;&|]|\\\\n)(?:[^\"\\\\]|\\\\.))*--check)(?=(?:(?![;&|]|\\\\n)(?:[^\"\\\\]|\\\\.))*--dry-run)(?:(?![;&|]|\\\\n)(?:[^\"\\\\]|\\\\.))*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix export header\\b",
       "min": 1
     },
     {
-      "name": "the overlapping task is not started while Alpha fix runs",
-      "rule": "Launch every ready one-shot task whose File ownership paths overlap no other running or ready task at once, in the same turn, each as its own launcher call; a read-only task overlaps nothing; run overlapping tasks one after the other.",
+      "name": "no single command launches two tasks",
+      "rule": "Launch every ready one-shot task whose File ownership paths overlap no other running or ready task at once, in the same turn, each as its own launcher call started in the background (Bash `run_in_background: true`); a read-only task overlaps nothing.",
       "type": "tool_used",
       "tool": "Bash",
-      "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:spawn_session\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worker)\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"']?Alpha follow-up\\b",
+      "input_match": "\"command\": \"(?!(?:[^\"\\\\]|\\\\.)*--check)(?:[^\"\\\\]|\\\\.)*?(?:spawn_session\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worker)\\b(?:[^\"\\\\]|\\\\.)*?(?:--task[=\\s]+\\$?\\\\?[\"\\']?Fix upload handler\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Add upload limits\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Fix upload handler\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix report writer\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Fix upload handler\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix export header\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Add upload limits\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix upload handler\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Add upload limits\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix report writer\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Add upload limits\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix export header\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Fix report writer\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix upload handler\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Fix report writer\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Add upload limits\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Fix report writer\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix export header\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Fix export header\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix upload handler\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Fix export header\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Add upload limits\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Fix export header\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix report writer\\b)",
+      "max": 0
+    },
+    {
+      "name": "the task that overlaps a running row is not launched",
+      "rule": "Launch every ready one-shot task whose File ownership paths overlap no other running or ready task at once, in the same turn, each as its own launcher call started in the background (Bash `run_in_background: true`); a read-only task overlaps nothing.",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:spawn_session\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worker)\\b(?!(?:(?![;&|]|\\\\n)(?:[^\"\\\\]|\\\\.))*--check)(?:(?![;&|]|\\\\n)(?:[^\"\\\\]|\\\\.))*?--task[=\\s]+\\$?\\\\?[\"\\']?Add upload limits\\b",
+      "max": 0
+    },
+    {
+      "name": "the running task is not launched again",
+      "rule": "Ready means an open, unassigned task with clear scope, File ownership, an issue when required, no conflicting owner, and no unresolved human-review hold or lane gate.",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:spawn_session\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worker)\\b(?!(?:(?![;&|]|\\\\n)(?:[^\"\\\\]|\\\\.))*--check)(?:(?![;&|]|\\\\n)(?:[^\"\\\\]|\\\\.))*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix upload handler\\b",
       "max": 0
     },
     {
@@ -45,7 +64,7 @@
       "rule": "Write none of these yourself, before or during the run; it changes the row again when it returns.",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",
-      "pattern": "(?s)\\A(?=.*\\| Alpha fix \\| unassigned \\| open \\|)(?=.*\\| Beta fix \\| unassigned \\| open \\|)(?=.*\\| Alpha follow-up \\| unassigned \\| open \\|)"
+      "pattern": "(?s)\\A(?=.*\\| Fix upload handler \\| worker07 \\| running )(?=.*\\| Add upload limits \\| unassigned \\| open \\|)(?=.*\\| Fix report writer \\| unassigned \\| open \\|)(?=.*\\| Fix export header \\| unassigned \\| open \\|)"
     },
     {
       "name": "no routine approval question",

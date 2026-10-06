@@ -6,8 +6,9 @@ Ship the release.
 
 ## Checklist
 
-- [ ] Alpha fix
-- [ ] Beta fix
-- [ ] Alpha follow-up
+- [ ] Fix upload handler
+- [ ] Add upload limits
+- [ ] Fix report writer
+- [ ] Fix export header
 
 ## End of day

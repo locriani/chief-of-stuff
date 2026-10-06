@@ -22,5 +22,59 @@ class ReadOnlyTest(unittest.TestCase):
                 self.assertIs(ownership.read_only(cell), False)
 
 
+class OverlapTest(unittest.TestCase):
+    """#365 review (R10): `ownership.overlaps(a, b)` is the one definition of "overlap", read by the launcher and `worker --check`.
+
+    Two File ownership cells overlap when any path of one equals, contains or is contained in a path of the other. A path is a
+    backticked token in the cell (a cell with none is split on commas), compared on path-segment boundaries, ignoring a
+    leading `./` and a trailing `/`. The `; worktree ...` suffix the launcher adds is no part of the cell. A read-only cell
+    (`ownership.read_only`) and an empty cell overlap nothing. Not defined here, filed: glob characters in a path.
+    """
+
+    def test_equal_contained_and_containing_paths_overlap_in_both_directions(self):
+        for a, b in (("`src/a/upload.py`", "`src/a/upload.py`"),
+                     ("`src/a/`", "`src/a/upload.py`"),
+                     ("`src/a`", "`src/a/deep/er/x.py`"),
+                     ("`src/a/`", "`src/a`"),
+                     ("`./src/a/`", "`src/a/x.py`"),
+                     ("`notes/x.md`, `src/a/`", "`src/b/`, `src/a/upload.py`")):
+            for first, second in ((a, b), (b, a)):
+                with self.subTest(first=first, second=second):
+                    self.assertIs(ownership.overlaps(first, second), True)
+
+    def test_a_name_that_only_starts_the_same_does_not_overlap(self):
+        for a, b in (("`src/a`", "`src/ab`"), ("`src/a/`", "`src/ab/x.py`"), ("`src/a/upload.py`", "`src/a/upload.pyc`"),
+                     ("`src/a/`", "`src/b/`"), ("`tests/a/`", "`src/a/`")):
+            for first, second in ((a, b), (b, a)):
+                with self.subTest(first=first, second=second):
+                    self.assertIs(ownership.overlaps(first, second), False)
+
+    def test_prose_around_the_paths_is_ignored_but_a_backticked_path_in_it_counts(self):
+        row = "`src/a/` (the upload handler; tests under `tests/a/`)"
+        self.assertIs(ownership.overlaps(row, "`tests/a/test_upload.py`"), True)
+        self.assertIs(ownership.overlaps(row, "`docs/`"), False)
+
+    def test_a_cell_with_no_backticks_is_read_as_comma_separated_paths(self):
+        self.assertIs(ownership.overlaps("src/a/, notes/x.md", "`src/a/upload.py`"), True)
+        self.assertIs(ownership.overlaps("src/a/, notes/x.md", "`src/b/`"), False)
+
+    def test_the_worktree_suffix_the_launcher_adds_is_ignored(self):
+        started = "`src/a/`; worktree `trees/src/a-fix` (feat/a)"
+        self.assertIs(ownership.overlaps(started, "`trees/src/a-fix/`"), False)
+        self.assertIs(ownership.overlaps(started, "`src/a/upload.py`"), True)
+        self.assertIs(ownership.overlaps("`src/b/`", started), False)
+
+    def test_a_read_only_cell_and_an_empty_cell_overlap_nothing(self):
+        for quiet in ("none", "None; read-only review of `src/a/`", "none (read-only)", "none; worktree `t` (b)", "", "   "):
+            with self.subTest(quiet=quiet):
+                self.assertIs(ownership.overlaps(quiet, "`src/a/`"), False)
+                self.assertIs(ownership.overlaps("`src/a/`", quiet), False)
+                self.assertIs(ownership.overlaps(quiet, quiet), False)
+
+    def test_a_cell_overlaps_a_copy_of_itself(self):
+        # The launcher excludes the row being launched by key, not by this test: a task is never compared with itself.
+        self.assertIs(ownership.overlaps("`src/a/`", "`src/a/`"), True)
+
+
 if __name__ == "__main__":
     unittest.main()
