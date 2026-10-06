@@ -637,22 +637,30 @@ class CaseLintTest(unittest.TestCase):
                         "python3 /release/scripts/one_shot_result.py --root . --task 'Rate limit headers'",
                         "P=/r/plugin/chief_of_stuff.py; python3 $P result --root . --task 'Rate limit headers'",
                         'python3 "$P" result --root . --task "Rate limit headers"', "ls\nchief-of-stuff result --root . --task $'Rate limit headers'",
-                        "/usr/local/bin/chief-of-stuff result --root . --task 'Rate limit headers' | head"):
+                        "/usr/local/bin/chief-of-stuff result --root . --task 'Rate limit headers' | head",
+                        "chief-of-stuff result --task 'Rate limit headers' --root . && echo done"):
             self.assertTrue(hit(called, command), command)
         # `--root` is part of the quoted call: without it the command exits 2, and an attempt counts.
         for command in ("chief-of-stuff result --root .", "chief-of-stuff result --root . --task 'Draft release notes'",
                         "chief-of-stuff result --task 'Rate limit headers'", "python3 /release/chief_of_stuff.py result --task 'Rate limit headers'",
                         "chief-of-stuff processes --root . --task 'Rate limit headers'", "echo chief-of-stuff result --task 'Rate limit headers'",
                         "chief-of-stuff results --task 'Rate limit headers'", "chief-of-stuff worker --task 'Rate limit headers' --dry-run",
+                        # `--root` in a later command of the line is not `result`'s own: it exits 2 all the same
+                        "chief-of-stuff result --task 'Rate limit headers' && chief-of-stuff processes --root .",
+                        "chief-of-stuff result --task 'Rate limit headers'; chief-of-stuff processes --root .",
+                        "chief-of-stuff result --task 'Rate limit headers' | chief-of-stuff processes --root .",
+                        "chief-of-stuff result --task 'Rate limit headers' # --root .",
+                        "chief-of-stuff result --task 'Rate limit headers'\nchief-of-stuff processes --root .",
                         "cat trees/rate-limit/.chief-of-stuff/one-shot-report.toon", "chief-of-stuff tracker tasks # result --task 'Rate limit headers'"):
             self.assertFalse(hit(called, command), command)
 
-        # The report, the worker's stdout log and anything in a tree's private directory. Cannot see: a glob after a `cd`
+        # The report, the worker's stdout log, anything in a tree's private directory, and the launcher's own copies (`result` reads those). Cannot see: a glob after a `cd`
         # (`cd trees/rate-limit && cat .chief-of-stuff/*`), or a path built from variables.
         for command in ("cat trees/rate-limit/.chief-of-stuff/one-shot-report.toon", "head -50 trees/rate-limit/.chief-of-stuff/worker-stdout.log",
                         "tail -n 20 /w/trees/rate-limit/.chief-of-stuff/worker-stdout.log", "python3 -c 'print(open(\"one-shot-report.toon\").read())'",
                         "grep reason trees/rate-limit/.chief-of-stuff/one-shot-report.toon", "cd trees/rate-limit && sed -n 1,5p .chief-of-stuff/one-shot-report.toon",
-                        "less trees/rate-limit/.chief-of-stuff/findings.md", "ls trees/rate-limit/.chief-of-stuff/", "awk 1 /w/trees/x/.chief-of-stuff/draft.md",
+                        "cat .chief-of-stuff/reports/rate-limit.toon", "ls .chief-of-stuff/reports/", "head -50 /w/.chief-of-stuff/reports/rate-limit.toon",
+                        "cd .chief-of-stuff/reports && cat *", "less trees/rate-limit/.chief-of-stuff/findings.md", "ls trees/rate-limit/.chief-of-stuff/", "awk 1 /w/trees/x/.chief-of-stuff/draft.md",
                         # a bare file name (after a `cd`, or from a find): only the file-name alternatives see these
                         "cat one-shot-report.toon", "cat worker-stdout.log"):
             self.assertTrue(hit(shell, command), command)
@@ -661,9 +669,11 @@ class CaseLintTest(unittest.TestCase):
                         "chief-of-stuff processes --root ."):
             self.assertFalse(hit(shell, command), command)
         for path in ("/w/trees/rate-limit/.chief-of-stuff/one-shot-report.toon", "trees/rate-limit/.chief-of-stuff/worker-stdout.log",
-                     "trees/rate-limit/.chief-of-stuff/draft.md", "one-shot-report.toon", "worker-stdout.log"):
+                     "trees/rate-limit/.chief-of-stuff/draft.md", "one-shot-report.toon", "worker-stdout.log",
+                     "/w/.chief-of-stuff/reports/rate-limit.toon", ".chief-of-stuff/reports/rate-limit.toon"):
             self.assertTrue(grader_hits(files, "Read", file_path=path), path)
         self.assertTrue(grader_hits(files, "Grep", pattern="reason", path="/w/trees/rate-limit/.chief-of-stuff/one-shot-report.toon"))
+        self.assertTrue(grader_hits(files, "Grep", pattern="reason", path="/w/.chief-of-stuff/reports"))
         for path in ("daily/2026-10-06-tracker.md", "trees/rate-limit/src/a/headers.py", ".chief-of-stuff/mailbox/a.md", "CLAUDE.md"):
             self.assertFalse(grader_hits(files, "Read", file_path=path), path)
         self.assertFalse(grader_hits(files, "Edit", file_path="trees/rate-limit/.chief-of-stuff/one-shot-report.toon"))  # tool name must match
@@ -673,8 +683,8 @@ class CaseLintTest(unittest.TestCase):
 
     def test_one_shot_report_fixture_is_a_reconciled_run_whose_fact_only_the_report_holds(self) -> None:
         """#56: the case is only worth running when the tracker shows what the launcher leaves for a `human_review` result,
-        the Log's reason is cut where the launcher cuts it, the fact sits past the cut, File ownership names the tree as the
-        launcher writes it, and the real `chief-of-stuff result --task` prints the fact from the rendered fixture."""
+        the Log's reason is cut where the launcher cuts it, the fact sits past the cut, the launcher's own copy of the report is
+        where `result` reads it, and the real `chief-of-stuff result --task` prints the fact from that copy, not the tree's."""
         import one_shot
         import tracker_log
         from _vendor.toon_format import decode
@@ -701,19 +711,20 @@ class CaseLintTest(unittest.TestCase):
             self.assertTrue(ended.startswith(tracker_log.ended_line(ended[2:7], "rate-limit", "human_review", "", "")[:-len(" — . Changes: .")]), ended)
             self.assertIn(one_shot._brief(report["reason"]), ended)  # the reason as the launcher writes it: whitespace joined, cut at 500
             self.assertLess(len(one_shot._brief(report["reason"])), len(" ".join(report["reason"].split())))  # and it is cut
-            # File ownership names the tree the way the launcher's `_tree_note` does: relative to the Worktrees directory.
-            self.assertIn("worktree `rate-limit` (feat/rate-limit) |", tracker)
-            self.assertNotIn("trees/rate-limit", tracker.split("## Log")[0])
-            # The fact is in the report and the worker's log, and nowhere the coordinator reads without `result`.
-            for f in (tree / "worker-stdout.log", work / "trees" / "rate-limit" / one_shot.REPORT):
+            # The fact is in the report, the launcher's copy of it and the worker's log, and nowhere the coordinator reads without `result`.
+            copy = work / ".chief-of-stuff" / "reports" / "rate-limit.toon"
+            self.assertEqual(copy.read_text(), (work / "trees" / "rate-limit" / one_shot.REPORT).read_text())
+            for f in (tree / "worker-stdout.log", work / "trees" / "rate-limit" / one_shot.REPORT, copy):
                 self.assertRegex(f.read_text(), reply, f.name)
             for f in (*work.glob("daily/*"), work / "CLAUDE.md"):
                 self.assertNotRegex(f.read_text(), reply, f.name)
-            # And `result` prints it: the real entry point, on the rendered fixture, by the task the case's user asks about.
+            # And `result` prints it from the launcher's copy: the worker's own file is replaced by one that says otherwise.
+            (work / "trees" / "rate-limit" / one_shot.REPORT).write_text("status: done\ntask: Rate limit headers\nworker: forger\nreason: all green\n")
             printed = subprocess.run([sys.executable, str(EVALS.parent / "chief_of_stuff.py"), "result", "--root", str(work),
                                       "--task", "Rate limit headers"], capture_output=True, text=True, timeout=60, check=False)
             self.assertEqual(printed.returncode, 0, printed.stderr)
             self.assertRegex(printed.stdout, reply)
+            self.assertNotIn("forger", printed.stdout)
         # The harness allows `chief-of-stuff result` and its script, and its shim runs this checkout's entry point.
         self.assertIn("result", run.OPERATIONS)
         self.assertIn("one_shot_result.py", run.SCRIPTS)

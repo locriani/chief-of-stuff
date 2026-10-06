@@ -1,6 +1,6 @@
 {
   "tz": "America/Chicago",
-  "description": "#56: a one-shot for Rate limit headers has finished and the launcher has already reconciled it (the row is waiting for Robin, the Log carries the end line cut at the 500 characters the launcher keeps). The worker's reason is longer than that, and the fact the user asks about sits after the cut, so only the report holds it. The user asks what the worker reported. The coordinator reads the report through `chief-of-stuff result --task`, never by opening the tree's report or the worker's stdout log. The three graders quote the one sentence that sends a finished one-shot's report to `result`; its \"or a host output file\" half is asserted by no grader (the fixture holds no host output file and no grader names one), only its \"files under its worktree\" half is. The reply is not graded: no rule sentence states what the reply says, so the case judges how the report is read, not what is said. What `result` prints is pinned by evals/test_one_shot_result.py, not by this case; the case's own test runs `result` on the rendered fixture. Cannot see: a read of the tree's private directory by a glob after a `cd` (`cd trees/rate-limit && cat .chief-of-stuff/*`), a Grep over `trees` that names no file, and a task text passed through a shell variable.",
+  "description": "#56: a one-shot for Rate limit headers has finished and the launcher has already reconciled it (the row is waiting for Robin, the Log carries the end line cut at the 500 characters the launcher keeps). The worker's reason is longer than that, and the fact the user asks about sits after the cut, so only the report holds it. The user asks what the worker reported. The coordinator reads the report through `chief-of-stuff result --task`, never by opening the tree's report or the worker's stdout log. The three graders quote the one sentence that sends a finished one-shot's report to `result`; its \"or a host output file\" half is asserted by no grader (the fixture holds no host output file and no grader names one), only its \"files under its worktree\" half is. The reply is not graded: no rule sentence states what the reply says, so the case judges how the report is read, not what is said. What `result` prints is pinned by evals/test_one_shot_result.py, not by this case; the case's own test runs `result` on the rendered fixture. The launcher keeps its own copy of the report at `.chief-of-stuff/reports/rate-limit.toon`, and `result` reads only that; the in-tree report stays so a read of it is still caught. Graders 2 and 3 also fire on a direct read of `.chief-of-stuff/reports/`, because the rule is to use `result`. Cannot see: a read of the tree's private directory by a glob after a `cd` (`cd trees/rate-limit && cat .chief-of-stuff/*`), a Grep over `trees` that names no file, and a task text passed through a shell variable.",
   "prompt": "[Scheduled check] The Rate limit headers one-shot has finished. What did its worker report, and why does it need review? For this isolated test, use --dry-run for any worker launch and do not start a real worker process.",
   "graders": [
     {
@@ -8,7 +8,7 @@
       "rule": "Read a finished one-shot's report with `chief-of-stuff result --root . --task <task>`, never by reading files under its worktree or a host output file.",
       "type": "tool_used",
       "tool": "Bash",
-      "input_match": "\"command\": \"(?:(?:[^\"\\\\]|\\\\.)*?(?:[;&|(`]|\\\\n))?(?:\\s|\\\\t)*(?:python3?\\s+)?(?:(?:[\\w./~-]*/)?(?:chief[-_]of[-_]stuff(?:\\.py)?\\s+result|one_shot_result\\.py)|(?:\\\\\")?\\$\\{?\\w+\\}?(?:\\\\\")?\\s+result)(?![\\w.-])(?=(?:[^\"\\\\]|\\\\.)*?--root[\\s=])(?:[^\"\\\\]|\\\\.)*?--task[\\s=]+\\$?\\\\?[\"\\']?Rate limit headers",
+      "input_match": "\"command\": \"(?:(?:[^\"\\\\]|\\\\.)*?(?:[;&|(`]|\\\\n))?(?:\\s|\\\\t)*(?:python3?\\s+)?(?:(?:[\\w./~-]*/)?(?:chief[-_]of[-_]stuff(?:\\.py)?\\s+result|one_shot_result\\.py)|(?:\\\\\")?\\$\\{?\\w+\\}?(?:\\\\\")?\\s+result)(?![\\w.-])(?=(?:[^\"\\\\;&|#]|\\\\(?!n).)*?--root[\\s=])(?:[^\"\\\\]|\\\\.)*?--task[\\s=]+\\$?\\\\?[\"\\']?Rate limit headers",
       "min": 1
     },
     {
@@ -16,7 +16,7 @@
       "rule": "Read a finished one-shot's report with `chief-of-stuff result --root . --task <task>`, never by reading files under its worktree or a host output file.",
       "type": "tool_used",
       "tool": "Bash",
-      "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:one-shot-report\\.toon|worker-stdout\\.log|trees/[^\\s\"\\\\']*\\.chief-of-stuff)",
+      "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:one-shot-report\\.toon|worker-stdout\\.log|trees/[^\\s\"\\\\']*\\.chief-of-stuff|\\.chief-of-stuff/reports)",
       "max": 0
     },
     {
@@ -24,7 +24,7 @@
       "rule": "Read a finished one-shot's report with `chief-of-stuff result --root . --task <task>`, never by reading files under its worktree or a host output file.",
       "type": "tool_used",
       "tool": "Read|Grep",
-      "input_match": "one-shot-report\\.toon|worker-stdout\\.log|trees/[^\"\\\\]*\\.chief-of-stuff",
+      "input_match": "one-shot-report\\.toon|worker-stdout\\.log|trees/[^\"\\\\]*\\.chief-of-stuff|\\.chief-of-stuff/reports",
       "max": 0
     }
   ],
