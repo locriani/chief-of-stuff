@@ -366,9 +366,6 @@ def _launch(root: Path, cfg, chosen_day: str, task: str, cwd: Path, name: str, r
     written = dispatch_prompt.write_dispatch(cwd, body)
     logs = cwd / dispatch_prompt.PROMPT_DIR
     before_head = git_head(cwd)
-    # Decided here, from the cell the assignment was composed from, before the worker or the launch note can touch it.
-    text = (root / cfg.tracker_path(chosen_day)).read_text()
-    cell = ownership.cell(text, dispatch_prompt.task_keys(task, dispatch_prompt.task_name(text, task)))
     try:
         record_launch(root / cfg.tracker_path(chosen_day), task, name, tree, runtime, model,
                       tracker_write.stamp(cfg.zone), effort)
@@ -400,6 +397,6 @@ def _launch(root: Path, cfg, chosen_day: str, task: str, cwd: Path, name: str, r
         (logs / "worker-stderr.log").write_text(f"Could not start worker: {exc}\n")
         exit_code = 127
     report = reconcile(root, chosen_day, task, name, cwd, exit_code, before_head,
-                       read_only=cell is not None and ownership.read_only(cell))
+                       read_only=dispatch_prompt.READ_ONLY in body.splitlines())  # held to what it was told
     print(toon_encode(report))
     return 0 if report["status"] == "done" and not report["errors"] else 1
