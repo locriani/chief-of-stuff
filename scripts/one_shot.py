@@ -242,6 +242,8 @@ def write_report(root: Path, cwd: Path, report: dict) -> None:
     """The launcher's own copy, which `result` reads, then the worker's in the tree; the tree is the worker's, so a failure there costs nothing."""
     text = toon_encode(report) + "\n"
     _replace_into(launcher_copy(root, cwd), text)
+    if (cwd / REPORT).parent.is_symlink():
+        return
     try:
         _replace_into(cwd / REPORT, text)
     except OSError:
