@@ -221,6 +221,15 @@ def update_tracker(path: Path, task: str, name: str, owner: str, status: str, re
     tracker_write.edit(path, change)
 
 
+def write_report(root: Path, cwd: Path, report: dict) -> None:
+    """The report in the tree, for the worker's record, and the launcher's own copy that `result` reads."""
+    text = toon_encode(report) + "\n"
+    copy = root / dispatch_prompt.REPORTS_DIR / f"{cwd.name}.toon"
+    copy.parent.mkdir(parents=True, exist_ok=True)
+    for path in (cwd / REPORT, copy):
+        path.write_text(text)
+
+
 def reconcile(root: Path, day: str, task: str, name: str, cwd: Path, exit_code: int,
               before_head: str | None = None) -> dict:
     cfg = dispatch_prompt.config(root)
@@ -251,7 +260,7 @@ def reconcile(root: Path, day: str, task: str, name: str, cwd: Path, exit_code: 
         report = {"status": "human_review", "task": task, "worker": name, "runtime_exit": exit_code,
                   "reason": "task row changed during the one-shot run; reconcile it manually",
                   "changes": summary, "errors": [f"{dispatch_prompt.TRACKER_ERROR} task row changed; no issue or tracker update was made"]}
-        (cwd / REPORT).write_text(toon_encode(report) + "\n")
+        write_report(root, cwd, report)
         return report
     ref = backlog.issue_ref(row.issue, cfg.backlog) if row and row.issue.strip() else None
     if status == "human_review" and ref:
@@ -276,7 +285,7 @@ def reconcile(root: Path, day: str, task: str, name: str, cwd: Path, exit_code: 
         errors.append(f"{dispatch_prompt.TRACKER_ERROR} {exc}")
     report = {"status": status, "task": task, "worker": name, "runtime_exit": exit_code,
               "reason": reason, "changes": summary, "errors": errors}
-    (cwd / REPORT).write_text(toon_encode(report) + "\n")
+    write_report(root, cwd, report)
     return report
 
 

@@ -57,6 +57,9 @@ DISPATCH_FILE = f"{PROMPT_DIR}/dispatch.md"
 RESULT_FILE = f"{PROMPT_DIR}/worker-result.toon"
 # What the launcher leaves for the coordinator, and the prefix of its error for a tracker it could not update.
 REPORT_FILE = f"{PROMPT_DIR}/one-shot-report.toon"
+# The launcher's own copy of each report, under the workspace root as `<tree directory name>.toon`: nothing in a tree can change it.
+REPORTS_DIR = f"{PROMPT_DIR}/reports"
+REPORT_KEYS = ("status", "task", "worker", "runtime_exit", "reason", "changes", "errors")
 TRACKER_ERROR = "tracker:"
 # Use the installed inbox script, not a workspace path.
 INBOX_SCRIPT = Path(__file__).resolve().parent / "inbox.py"

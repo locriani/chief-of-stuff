@@ -14,7 +14,6 @@ from pathlib import Path
 import re
 import subprocess
 import sys
-from collections.abc import Container
 from datetime import datetime, timedelta
 
 import runtimes
@@ -84,9 +83,9 @@ def one_shot_runs(trees: Path) -> list[tuple[Path, int, str]]:
     return found
 
 
-def tracker_texts(root: Path) -> list[str]:
+def tracker_texts(root: Path, warn: bool = True) -> list[str]:
     """Today's and yesterday's tracker (a run can outlive midnight), each one that exists. When the config, the zone or a
-    file that is there cannot be read: one stderr line, and none."""
+    file that is there cannot be read: none, and one stderr line unless `warn` is off."""
     try:
         cfg = read_config(root)
         today = datetime.now(cfg.zone).date()
@@ -98,17 +97,14 @@ def tracker_texts(root: Path) -> list[str]:
                 continue
         return texts
     except (OSError, ConfigError, ValueError, KeyError):
-        print("one-shot tasks not shown: the tracker could not be read", file=sys.stderr)
+        if warn:
+            print("one-shot tasks not shown: the tracker could not be read", file=sys.stderr)
         return []
 
 
 def known_tasks(texts: list[str]) -> set[str]:
     """The item and the name of each row in the Tasks table of these trackers: what a worker's task may be printed as."""
     return {s.strip() for text in texts for t in parse_tracker(text).tasks for s in (t.item, t.name)} - {""}
-
-
-def shown_task(task: str, known: Container[str]) -> str:
-    return task[:TASK_MAX] if task in known else ""
 
 
 def shown_tree(name: str) -> str:
@@ -172,7 +168,7 @@ def main(argv: list[str] | None = None) -> int:
             print("one-shot runs not checked: CLAUDE.md could not be read", file=sys.stderr)
             runs = []
         known = known_tasks(tracker_texts(args.root)) if runs else set()  # printed: a task only when a tracker holds it
-        rows += [{"pid": pid, "task": shown_task(task, known), "worktree": shown_tree(tree.name), "status": "running",
+        rows += [{"pid": pid, "task": task[:TASK_MAX] if task in known else "", "worktree": shown_tree(tree.name), "status": "running",
                   "kind": "one-shot"} for tree, pid, task in runs]
     print(toon_encode(rows) if rows else "[]")
     return 0
