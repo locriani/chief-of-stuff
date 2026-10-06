@@ -1018,7 +1018,7 @@ class ReviewerRoutingTest(unittest.TestCase):
 class ReadOnlyAssignmentTest(unittest.TestCase):
     """#57: a task whose File ownership cell starts with `none` is read-only; a worker told to commit did, and opened a PR."""
 
-    SENTENCE = "Do not edit, commit, push, merge or open a pull request: this task is read-only. Put what you found in the result."
+    SENTENCE = "Do not edit, commit, push, merge or open a pull request: this task is read-only. Write what you found in your result or report, and nothing else."
     ONE_SHOT_COMMITS = ("Commit the finished change on this worktree's branch and open a pull request when tests pass; do not merge.",
                         "Commit the finished change on this worktree's branch; do not push or merge without existing authorization.")
 
