@@ -1295,6 +1295,14 @@ class DecisionDeadlineTest(unittest.TestCase):
         required = "leaves both cells blank and draws no card in BUILD"
         self.assertTrue(required in rules, f"the agent file does not say {required!r}")
 
+    def test_agent_rules_say_a_carried_row_keeps_its_lane_and_stage(self) -> None:
+        # #350: board-on-open-the-day's graders pin `build | implement` on the carried rows, and a carried task with no lane
+        # and stage has no card in BUILD. So the Open the day carry-over sentence must name both. It must read exactly:
+        #   "becomes a row in today's tracker Tasks, same item, owner, lane, stage, and checklist reference, with today's date as `since`"
+        rules = (Path(__file__).resolve().parents[1] / "agents/chief-of-stuff.md").read_text()
+        required = "same item, owner, lane, stage, and checklist reference"
+        self.assertTrue(required in rules, f"the agent file does not say {required!r}")
+
     def test_agent_rules_do_not_say_the_board_draws_an_arrow_to_the_waiting_on_who(self) -> None:
         # Sessions are gone (#259), so the board draws no arrow. The `waiting on` bullet keeps its order (who first, then why)
         # and loses the clause "The who is what the board draws an arrow to".
