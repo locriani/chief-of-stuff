@@ -202,6 +202,26 @@ class ResultTests(unittest.TestCase):
                     self.assertEqual(target.read_bytes(), before, "the launcher wrote through the link")
                     self.assertEqual(toon_decode((self.reports / f"{tree}.toon").read_text()), written)
 
+    def test_a_linked_private_directory_in_the_tree_is_not_written_through(self):
+        self.reports.mkdir(parents=True)
+        with tempfile.TemporaryDirectory() as outside:
+            held = Path(outside) / one_shot.REPORT.name
+            held.write_bytes(b"keep me\n")
+            # the launcher's own reports directory; a directory outside the workspace holding a report of its own
+            for tree, target in (("rate-limit", self.reports), ("search", Path(outside))):
+                with self.subTest(tree):
+                    listing = sorted(p.name for p in target.iterdir())
+                    (self.root / "trees" / tree).mkdir(parents=True)
+                    (self.root / "trees" / tree / ".chief-of-stuff").symlink_to(target, target_is_directory=True)
+                    written = self.reconcile(tree)
+                    self.assertEqual(toon_decode((self.reports / f"{tree}.toon").read_text()), written)
+                    if target == self.reports:
+                        self.assertEqual(sorted(p.name for p in target.iterdir()), [f"{tree}.toon"], "the launcher wrote through the link")
+                        self.assertEqual(len(self.rows()), 1)
+                    else:
+                        self.assertEqual(sorted(p.name for p in target.iterdir()), listing, "the launcher wrote through the link")
+                        self.assertEqual(held.read_bytes(), b"keep me\n", "the launcher wrote through the link")
+
     def kept_after_a_failed_write(self, tree: str) -> None:
         """The launcher's copy holds this run's report, not the older one planted, though the write in `tree` failed."""
         copy = self.plant(tree, report(reason="an older run"))
