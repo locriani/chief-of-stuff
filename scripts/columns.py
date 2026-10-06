@@ -90,8 +90,7 @@ def render(cols: list[Column], limit: int = LIMIT) -> str:
     """The board as one `<figure>`: at most `limit` cards a column, the rest folded."""
     n = sum(len(c.cards) for c in cols)
     out = [f'<figure class="columns" aria-label="{len(cols)} column{"" if len(cols) == 1 else "s"}, {n} card{"" if n == 1 else "s"}">',
-           '<div class="columns-grid">', *(_column(c, limit) for c in cols), "</div>"]
-    out.append("</figure>")
+           '<div class="columns-grid">', *(_column(c, limit) for c in cols), "</div>", "</figure>"]
     return "\n".join(out)
 
 
@@ -118,8 +117,7 @@ BASE_CSS = """\
 .columns-flagged{border:2px solid var(--c);padding-bottom:0;overflow:hidden}
 .columns-flag{margin:3px -7px 0;padding:2px 0;border:0;text-align:center;font-size:10px;font-weight:700;letter-spacing:.14em;text-transform:uppercase}
 .columns-more{font-size:11px;color:var(--columns-muted)}
-.columns-more>summary{cursor:pointer;display:flex;gap:14px;flex-wrap:wrap}
-.columns-more>summary{gap:6px}
+.columns-more>summary{cursor:pointer;display:flex;gap:6px;flex-wrap:wrap}
 .columns-more[open]{display:flex;flex-direction:column;gap:6px}
 .columns summary:focus-visible{outline:2px solid var(--columns-ink);outline-offset:1px}
 """
