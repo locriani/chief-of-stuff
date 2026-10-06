@@ -777,5 +777,78 @@ class CaseLintTest(unittest.TestCase):
         self.assertIn(f"Bash(python3 {run.PLUGIN_ROOT / 'chief_of_stuff.py'} result:*)", allowed)
 
 
+    def test_worker_check_graders_enforce_a_sentence_the_agent_carries(self) -> None:
+        """#61: the five graders of worker-check-validates-a-new-row quote one sentence, and the agent file must carry it.
+
+        RED until the code author adds this sentence to agents/chief-of-stuff.md, where `worker` is documented:
+
+        Before proposing a new task for dispatch, validate its Tasks and File ownership rows with
+        `chief-of-stuff worker --check --root . --task <name>`, which takes no `--cwd` or `--name`, makes no worktree and
+        starts nothing; when it prints `refused: <why>`, tell the user that refusal and do not propose the task.
+
+        The "do not propose the task" half is asserted by no grader."""
+        agent_text = (EVALS.parent / "agents" / "chief-of-stuff.md").read_text()
+        case = EVALS / "cases" / "worker-check-validates-a-new-row"
+        s = spec(case)
+        check, no_flags, no_tree, no_launch, reply = s["graders"]
+        rule = ("Before proposing a new task for dispatch, validate its Tasks and File ownership rows with "
+                "`chief-of-stuff worker --check --root . --task <name>`, which takes no `--cwd` or `--name`, makes no worktree and "
+                "starts nothing; when it prints `refused: <why>`, tell the user that refusal and do not propose the task.")
+        for g in s["graders"]:
+            self.assertEqual(g["rule"], rule, g["name"])
+        self.assertEqual((check["type"], check["tool"], check["min"], "max" in check), ("tool_used", "Bash", 1, False))
+        self.assertEqual([(g["tool"], g["max"]) for g in (no_flags, no_tree, no_launch)], [("Bash", 0), ("Bash", 0), ("Agent|Task", 0)])
+
+        def ran(g: dict, command: str) -> bool:
+            return grader_hits(g, "Bash", command=command, description="chief-of-stuff worker --check --task 'Retry budget'; worktree")
+
+        for command in ("chief-of-stuff worker --check --root . --task 'Retry budget'", 'chief-of-stuff worker --task "Retry budget" --check --root .',
+                        "chief-of-stuff worker --check --root . --task=Retry budget",
+                        "python3 ${CLAUDE_PLUGIN_ROOT}/chief_of_stuff.py worker --check --root . --task 'Retry budget'",
+                        'python3 "$CLAUDE_PLUGIN_ROOT/chief_of_stuff.py" worker --check --root . --task "Retry budget"',
+                        "TZ=America/Chicago chief-of-stuff worker --check --root . --task 'Retry budget'",
+                        "cd /ws && chief-of-stuff worker --check --root . --task 'Retry budget' 2>&1",
+                        "python3 /r/scripts/spawn_session.py --check --root . --task 'Retry budget'"):
+            self.assertTrue(ran(check, command), command)
+        for command in ("chief-of-stuff worker --root . --task 'Retry budget'", "chief-of-stuff worker --check --task 'Retry budget'",
+                        "chief-of-stuff worker --check --root .", "chief-of-stuff worker --check --root . --task 'Security audit'",
+                        "chief-of-stuff worker --dry-run --root . --task 'Retry budget' --cwd /tmp --name w1",
+                        "echo chief-of-stuff worker --check --root . --task 'Retry budget'",
+                        "chief-of-stuff audit --check --root . --task 'Retry budget'",
+                        "chief-of-stuff worker --check --root . --task 'Security audit' && chief-of-stuff processes --task 'Retry budget'"):
+            self.assertFalse(ran(check, command), command)
+        for command in ("chief-of-stuff worker --check --root . --task 'Retry budget' --cwd /tmp",
+                        "chief-of-stuff worker --check --name w1 --root . --task 'Retry budget'",
+                        "chief-of-stuff worker --dry-run --cwd /tmp --name w1 --root . --task 'Retry budget'"):
+            self.assertTrue(ran(no_flags, command), command)
+        for command in ("chief-of-stuff worker --check --root . --task 'Retry budget'", "chief-of-stuff worktree --type implementer"):
+            self.assertFalse(ran(no_flags, command), command)
+        for command in ("chief-of-stuff worktree --type implementer --name w1 --branch b --root .", "git worktree add ../w1",
+                        "python3 /r/scripts/make_worktree.py --name w1", "python3 ${CLAUDE_PLUGIN_ROOT}/chief_of_stuff.py worktree --name w1"):
+            self.assertTrue(ran(no_tree, command), command)
+        self.assertFalse(ran(no_tree, "chief-of-stuff worker --check --root . --task 'Retry budget'"))
+        for text in ("It is not ready: there is no File ownership row for Retry budget.", "The File ownership row is missing.",
+                     "refused: no File ownership row for 'Retry budget' in daily/x.md", "Retry budget lacks a File ownership row."):
+            self.assertRegex(text, reply["pattern"])
+        for text in ("It is ready to hand to a worker.", "The File ownership section lists Security audit.", ""):
+            self.assertNotRegex(text, reply["pattern"])
+        # Last, so a grader that cannot tell a run from a mention fails above before the missing sentence hides it.
+        for g in s["graders"]:
+            self.assertIn(g["rule"], agent_text, g["name"])
+
+    def test_worker_check_fixture_is_a_row_with_no_file_ownership_row(self) -> None:
+        """#61: the premise is only worth running when the new row is a valid open task whose File ownership row is the one
+        thing missing (another task's row is there), and the real compose refuses it for exactly that."""
+        import dispatch_prompt
+        case = EVALS / "cases" / "worker-check-validates-a-new-row"
+        with tempfile.TemporaryDirectory() as d:
+            work = Path(d)
+            run.render_tree(case / "fixture", work, ctx(spec(case)))
+            day = next(work.glob("daily/*-tracker.md")).name[:-len("-tracker.md")]
+            with self.assertRaisesRegex(dispatch_prompt.RefusedError, r"no File ownership row for 'Retry budget'"):
+                dispatch_prompt.compose(work, day, "Retry budget")
+            self.assertIn("src/a/", dispatch_prompt.compose(work, day, "Security audit"))
+
+
 if __name__ == "__main__":
     unittest.main()
