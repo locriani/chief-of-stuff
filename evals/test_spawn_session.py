@@ -1048,8 +1048,9 @@ class CheckTest(unittest.TestCase):
 
     def test_a_task_name_resolves_to_its_row(self):
         named = TRACKER.replace("| item | owner | state | since | due | checklist |\n|---|---|---|---|---|---|",
-                                "| name | item | owner | state | since | due | checklist |\n|---|---|---|---|---|---|---|", 1
-                                ).replace("| Security audit | unassigned |", "| audit | Security audit | unassigned |", 1)
+                                "| name | item | owner | state | since | due | size | checklist |\n|---|---|---|---|---|---|---|---|", 1
+                                ).replace("| Security audit | unassigned | open | 09:00 |  |",
+                                          "| audit | Security audit | unassigned | open | 09:00 |  | S |", 1)
         root = self.workspace(named)
         code, out, err = self.check(root, task="audit")
         self.assertEqual((code, err), (0, ""))
