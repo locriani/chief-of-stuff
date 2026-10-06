@@ -2,8 +2,8 @@
 
 ## Tasks
 
-| item | owner | state | since | due | checklist |
-|---|---|---|---|---|---|
+| name | item | owner | state | since | due | size | lane | stage | issue | checklist |
+|---|---|---|---|---|---|---|---|---|---|---|
 
 ## Decisions
 

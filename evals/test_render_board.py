@@ -313,6 +313,15 @@ class DoneClockAfterMidnightTest(unittest.TestCase):
         self.assertEqual(b.end, datetime(2026, 9, 17, 0, 3, tzinfo=CT))
 
 
+# A task is drawn on the board only when it has a lane and a stage (#350), so a test that reads a task back
+# off the page gives the row both.
+LANED_HEAD = "| name | item | owner | state | since | due | size | lane | stage | issue | checklist |\n|---|---|---|---|---|---|---|---|---|---|---|\n"
+LANED_TRACKER = (
+    "# Tracker 2026-09-16\n\nCoordinator: coordinator. Board: board-7.\n\n## Tasks\n\n" + LANED_HEAD
+    + "| Write eval README | Write eval README | Robin | open | 09:00 | 17:00 | S | build | implement |  | Checklist: Write eval README |\n"
+    + "\n## Decisions\n\n## Log\n\n- 09:00 opened the day\n")
+
+
 class RenderTest(unittest.TestCase):
     def setUp(self) -> None:
         self.cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
@@ -331,7 +340,7 @@ class RenderTest(unittest.TestCase):
 
 
     def test_escapes_html(self) -> None:
-        html = rb.render(TRACKER.replace("Write eval README", "Write <b>README</b> & more"), self.cfg, NOW)
+        html = rb.render(LANED_TRACKER.replace("Write eval README", "Write <b>README</b> & more"), self.cfg, NOW)
         self.assertNotIn("<b>README</b>", html)
         self.assertIn("&lt;b&gt;README&lt;/b&gt; &amp; more", html)
 
@@ -342,7 +351,7 @@ class RenderTest(unittest.TestCase):
         # `24:00`, `9:75` or `2026-02-30` in since or due raised ValueError, and the board never re-rendered.
         for bad in ("24:00", "9:75", "2026-02-30", "2026-09-16 25:00"):
             with self.subTest(cell=bad):
-                html = rb.render(TRACKER.replace("| 09:00 | 17:00 |", f"| {bad} | {bad} |", 1), self.cfg, NOW)
+                html = rb.render(LANED_TRACKER.replace("| 09:00 | 17:00 |", f"| {bad} | {bad} |", 1), self.cfg, NOW)
                 self.assertIn("Write eval README", html)
 
 
@@ -1277,6 +1286,23 @@ class DecisionDeadlineTest(unittest.TestCase):
             with self.subTest(kept=kept):
                 self.assertTrue(kept in rules, f"the agent file lost {kept!r}")
 
+    def test_agent_rules_say_a_task_with_no_lane_or_stage_has_no_card_in_build(self) -> None:
+        # #350: BUILD draws a card only for a task with a lane and a stage, so the agent file must answer "why is X not on the
+        # board" for a task with no tree. The Tasks `lane`/`stage` sentence must read exactly:
+        #   "A task with no tree (a decision, a relay, a console action) leaves both cells blank and draws no card in BUILD."
+        # (the header, the tiles and the Flow charts still count it; the sentence need not say so).
+        rules = (Path(__file__).resolve().parents[1] / "agents/chief-of-stuff.md").read_text()
+        required = "leaves both cells blank and draws no card in BUILD"
+        self.assertTrue(required in rules, f"the agent file does not say {required!r}")
+
+    def test_agent_rules_say_a_carried_row_keeps_its_lane_and_stage(self) -> None:
+        # #350: board-on-open-the-day's graders pin `build | implement` on the carried rows, and a carried task with no lane
+        # and stage has no card in BUILD. So the Open the day carry-over sentence must name both. It must read exactly:
+        #   "becomes a row in today's tracker Tasks, same item, owner, lane, stage, and checklist reference, with today's date as `since`"
+        rules = (Path(__file__).resolve().parents[1] / "agents/chief-of-stuff.md").read_text()
+        required = "same item, owner, lane, stage, and checklist reference"
+        self.assertTrue(required in rules, f"the agent file does not say {required!r}")
+
     def test_agent_rules_do_not_say_the_board_draws_an_arrow_to_the_waiting_on_who(self) -> None:
         # Sessions are gone (#259), so the board draws no arrow. The `waiting on` bullet keeps its order (who first, then why)
         # and loses the clause "The who is what the board draws an arrow to".
@@ -1559,8 +1585,8 @@ class TaskStateCarriesAShaTest(unittest.TestCase):
     def test_the_sha_reaches_the_board_as_written(self) -> None:
         """Confirmed against the rendered artifact, not the call graph: chief-of-stuff-improvements
         read the code and said the sha would show; it also said its own read was a hypothesis."""
-        text = SIZED_TRACKER.replace("| A oldest | worker | open | 2026-09-15 |  | M | c |",
-                                     f"| A oldest | worker | done 09:00–10:00 {self.SHA} | 2026-09-15 |  | M | c |")
+        text = ("# T\n\n## Tasks\n\n" + LANED_HEAD
+                + f"| A oldest | A oldest | worker | done 09:00–10:00 {self.SHA} | 2026-09-15 |  | M | build | merge |  | c |\n")
         cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
         html = rb.render(text, cfg, NOW)
         self.assertIn(self.SHA, html)
@@ -1638,10 +1664,10 @@ class StandingRowsAreNotTasksTest(unittest.TestCase):
 
 ## Tasks
 
-| name | item | owner | state | since | due | size | checklist |
-|---|---|---|---|---|---|---|---|
-| impl02 — standing implementer | impl02: standing implementer. Register with the coordinator, then wait idle for an assignment; write nothing until one arrives. | impl02 | running 10:00 | 2026-09-16 |  | S |  |
-| Fix the parser | Fix the parser: make it strict | impl02 | open | 11:00 |  | M |  |
+| name | item | owner | state | since | due | size | lane | stage | issue | checklist |
+|---|---|---|---|---|---|---|---|---|---|---|
+| impl02 — standing implementer | impl02: standing implementer. Register with the coordinator, then wait idle for an assignment; write nothing until one arrives. | impl02 | running 10:00 | 2026-09-16 |  | S | build | implement |  |  |
+| Fix the parser | Fix the parser: make it strict | impl02 | open | 11:00 |  | M | build | implement |  |  |
 
 ## Sessions
 
@@ -1673,7 +1699,7 @@ class StandingRowsAreNotTasksTest(unittest.TestCase):
         body = self.html.split("</style>", 1)[1]
         self.assertNotIn("standing implementer", body)
         self.assertIn("Fix the parser", body)
-        self.assertIn("1 task · ", body)
+        self.assertIn(" · 1 task</div>", body)  # the header ends at the count now that " · N in no lane" is gone (#350)
 
 
 # Zach, 2026-09-22 22:20: "each entry in the task tracker is actually backed by an entry in github".
@@ -1791,19 +1817,21 @@ class LaneColumnsTest(unittest.TestCase):
         self.assertTrue(all(not t.warning for t in tasks), [t.warning for t in tasks])
 
 
-    def test_the_board_draws_the_stage_columns_and_an_unlaned_task_is_in_the_no_lane_strip(self) -> None:
+    def test_the_board_draws_the_stage_columns_and_a_task_with_no_lane_is_in_none_of_them(self) -> None:
+        # #350: NO LANE is gone from the board, so a task with no lane is drawn in no BUILD column and no strip.
         cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
         html = rb.render(TRACKER_LANED, cfg, NOW, lanes=self.LANES)
         self.assertIn('<section id="flow"><h2>Build</h2>', html)
         build = html.split('<section id="flow">')[1].split('<div class="panels">')[0]
-        columns, foot = build.split('class="columns-foot"')
-        self.assertIn("Cut the release", columns)
-        self.assertIn("Console", foot)
-        self.assertNotIn("Console", columns)
-        # A tracker with no lanes has no stage columns: every task is in the strip.
+        self.assertIn("Cut the release", build)
+        self.assertNotIn("Console", build)
+        self.assertNotIn("columns-foot", html)
+        self.assertNotRegex(html, r"(?i)no[ -]lane")
+        # A tracker with no lanes has no stage columns, and its tasks are not drawn in BUILD at all.
         plain = rb.render(TRACKER, cfg, NOW)
         self.assertIn('<figure class="columns"', plain)
         self.assertNotIn("<table", plain.split('<section id="flow">')[1].split('<div class="panels">')[0])
+        self.assertNotIn('class="columns-card', plain)  # the bare word is also in the page's CSS
 
 
 

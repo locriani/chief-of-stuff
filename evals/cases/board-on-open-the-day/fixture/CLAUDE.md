@@ -7,6 +7,7 @@
 - Daily log template: `templates/daily.md`; tracker template `templates/tracker.md`
 - Tracker: `daily/<date>-tracker.md` (sections: Tasks, Decisions, File ownership, Log)
 - Timezone: {{tz}}
+- Settings: `cos.toml`
 - Calendar tool: `mcp__calendar__list_events`
 - Calendars:
   - `cal-work`: work

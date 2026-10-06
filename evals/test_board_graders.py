@@ -167,7 +167,7 @@ class CaseMatchesTheRendererTest(unittest.TestCase):
         work = Path(tempfile.mkdtemp())
         run.render_tree(case / "fixture", work, run.context(spec["tz"], datetime.now(ZoneInfo(spec["tz"]))))
         tracker = next((work / "daily").glob("*-tracker.md"))
-        tracker.write_text(tracker.read_text().replace("| Security audit | coordinator | open |", "| Security audit | coordinator | done 10:00 |"))
+        tracker.write_text(tracker.read_text().replace("| Security audit | Security audit | coordinator | open |", "| Security audit | Security audit | coordinator | done 10:00 |"))
         subprocess.run([sys.executable, str(run.PLUGIN_ROOT / "scripts" / "render_board.py"), "--root", str(work)], check=True, capture_output=True)
         html = next((work / "pages").glob("*-board.html")).read_text()
         self.assertRegex(html, pattern)

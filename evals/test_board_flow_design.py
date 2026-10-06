@@ -1,13 +1,12 @@
 """#259: the board draws only the Flow artboard's sections, and draws each task once in BUILD.
 
 The reference is the canvas's Flow artboard (Flow.dc.html), top to bottom: the tab bar; the header; six tiles;
-BUILD, the stage columns plus a `NO LANE · N` strip; the panels; `FLOW · 24 HOURS` and `FLOW · 7 DAYS` with one legend.
+BUILD, the stage columns (no NO LANE strip: #350); the panels; `FLOW · 24 HOURS` and `FLOW · 7 DAYS` with one legend.
 Due next, Blocked, Sessions, the 24-hour day strip and the Lanes table are not in it, so none is drawn.
 
 Artboard markers the stage columns map onto columns.py's classes: a column (`columns-col`, head `columns-name`, gate
 columns `columns-gate`, count `columns-count`); a card (`columns-card`, name link `columns-card-name`, refs
-`columns-refs`, owner `columns-owner`, state chip `columns-chip`, held card `columns-flagged` + `columns-flag`); the
-NO LANE strip (`columns-foot`, `columns-foot-name`). The artboard's BUILD container is `id="flow"`, which the tiles
+`columns-refs`, owner `columns-owner`, state chip `columns-chip`, held card `columns-flagged` + `columns-flag`). The artboard's BUILD container is `id="flow"`, which the tiles
 link to, so that id stays: it is the stage columns, not the Lanes table.
 
 The Flow charts draw a task again by the artboard's own rows (one row per task, a bar per stage). That is the chart, not
@@ -30,11 +29,25 @@ from test_flow_chart import KANBAN, LANES, NOW, TODAY, TODAY_TRACKER, YESTERDAY,
 
 CLAUDE = ("# W\n\n## Coordinator\n\n- User: Robin\n- Daily log dir: `daily/`\n- Tracker: `daily/<date>-tracker.md`\n"
           "- Timezone: America/Chicago\n- Settings: `cos.toml`\n")
-# Four tasks in the build lane (one held at the triage gate, one merged into main) and one in no lane.
+# Four tasks in the build lane (one held at the triage gate, one merged into main) and four in no lane, which BUILD does
+# not draw (#350) while the tiles and Flow charts still count them: one that never moved (no tile, no Flow row), one
+# running and one orphaned (the RUNNING and ORPHANED tiles), and two with `stage:` Log lines (a Flow row each; the waiting
+# one owned by a person, so its row ends in a hold bar).
 LANED = ["Upload size limit", "Cache warmup", "Locale fallback", "Session timeout"]
-NO_LANE = ["Rotate keys"]
+IDLE = ["Rotate keys"]
+MOVED = ["Renew certs", "Sign vendor form"]
+NO_LANE = IDLE + MOVED + ["Archive logs"]
 TRACKER = TODAY_TRACKER.replace(
-    "\n\n## Log", "\n| Rotate keys | Rotate the keys | Robin | open | 2026-09-26 |  | S |  |  |  | c |\n\n## Log")
+    "\n\n## Log", """
+| Rotate keys | Rotate the keys | Robin | open | 2026-09-26 |  | S |  |  |  | c |
+| Renew certs | Renew the certs | impl-2 | running 01:20 | 2026-09-26 |  | S |  |  |  | c |
+| Archive logs | Archive the logs | unassigned | orphaned | 2026-09-26 |  | S |  |  |  | c |
+| Sign vendor form | Sign the form | Robin | waiting | 2026-09-26 |  | S |  |  |  | c |
+
+## Log""").replace("- 01:40 stage: Cache warmup → triage\n", """- 01:20 stage: Renew certs → implement
+- 01:40 stage: Cache warmup → triage
+- 01:50 stage: Sign vendor form → review
+""")
 
 REMOVED = ('id="due-next"', 'id="blocked"', 'id="sessions"', 'id="day-strip"', "<h2>Due next</h2>", "<h2>Blocked</h2>",
            "<h2>Sessions</h2>", "<h2>24 hours</h2>", "<h2>Lanes</h2>", "lane-table", 'class="lt-', "session-row")
@@ -89,7 +102,7 @@ class Board(unittest.TestCase):
 class FlowDesign(Board):
     def test_the_sections_are_the_artboards_in_its_order(self) -> None:
         marks = ['<nav class="tabs"', '<header class="panels-head"', '<nav class="panels-tiles"', r"<h2>\s*Build\s*</h2>",
-                 '<figure class="columns"', 'class="columns-foot"', '<div class="panels">',
+                 '<figure class="columns"', '<div class="panels">',
                  '<section class="panels-panel" id="merge"', '<section class="panels-panel" id="decisions"',
                  '<section class="panels-panel" id="workers"', "<h2>Flow · 24 hours</h2>", "<h2>Flow · 7 days</h2>", 'class="gantt-legend"']
         found = [(at(self.body, m), m) for m in marks]
@@ -137,10 +150,17 @@ class OneBuildDrawing(Board):
     def drawn(self, name: str, within: str) -> int:
         return len(re.findall(rf">\s*{re.escape(name)}\s*<", within))
 
-    def test_each_task_is_drawn_once_between_the_tiles_and_the_panels(self) -> None:
-        for name in LANED + NO_LANE:
+    def test_each_laned_task_is_drawn_once_between_the_tiles_and_the_panels(self) -> None:
+        for name in LANED:
             with self.subTest(task=name):
                 self.assertEqual(self.drawn(name, self.build), 1)
+
+    def test_a_task_with_no_lane_is_not_drawn_in_build(self) -> None:
+        # #350: the NO LANE strip is gone, so BUILD draws the laned tasks only.
+        for name in NO_LANE:
+            with self.subTest(task=name):
+                self.assertEqual(self.drawn(name, self.build), 0)
+                self.assertFalse(name in self.build, f"{name!r} is drawn in BUILD")
 
     def test_no_task_is_drawn_above_build(self) -> None:
         # Due next and Blocked sat above BUILD and named tasks; the header and tiles carry counts only.
@@ -148,19 +168,25 @@ class OneBuildDrawing(Board):
             with self.subTest(task=name):
                 self.assertFalse(name in self.before, f"{name!r} is drawn above BUILD")
 
-    def test_a_laned_task_is_a_stage_column_card_and_a_no_lane_task_is_in_the_strip(self) -> None:
-        foot = self.build.split('class="columns-foot"', 1)[1]
-        columns = self.build.split('class="columns-foot"', 1)[0]
-        for name in LANED:
+    def test_a_task_with_no_lane_is_still_counted_as_before(self) -> None:
+        # Pinned to what the code draws today, so the removal changes none of it: the header counts all 8 tasks, the
+        # tiles read BLOCKED 1, DECISIONS 0, APPROVED 0, RUNNING 2 (Upload size limit and the lane-less Renew certs),
+        # DRIFT 0, ORPHANED 1 (the lane-less Archive logs), and the Flow charts draw a row for each lane-less task that
+        # moved, in both charts, and none for the one that never did.
+        self.seen(r"\b8 tasks\b", self.body, "the header counting the tasks with no lane")
+        tiles = re.findall(r'<span class="panels-label">(\w+)</span><b class="panels-count">(\d+)</b>', self.body)
+        self.assertEqual(tiles, [("BLOCKED", "1"), ("DECISIONS", "0"), ("APPROVED", "0"), ("RUNNING", "2"), ("DRIFT", "0"),
+                                 ("ORPHANED", "1")])
+        flow = self.body[at(self.body, "<h2>Flow · 24 hours</h2>"):]
+        for name in IDLE:
             with self.subTest(task=name):
-                self.assertEqual((self.drawn(name, columns), self.drawn(name, foot)), (1, 0))
-        for name in NO_LANE:
+                self.assertEqual(self.drawn(name, flow), 0)
+        for name in MOVED:
             with self.subTest(task=name):
-                self.assertEqual((self.drawn(name, columns), self.drawn(name, foot)), (0, 1))
+                self.assertEqual(self.drawn(name, flow), 2, "a row in each of the two Flow charts")
 
     def test_the_cards_are_the_laned_tasks_and_no_more(self) -> None:
-        columns = self.build.split('class="columns-foot"', 1)[0]
-        self.assertEqual(sorted(re.findall(r'<(?:a|div) class="columns-card-name"[^>]*>([^<]+)<', columns)), sorted(LANED))
+        self.assertEqual(sorted(re.findall(r'<(?:a|div) class="columns-card-name"[^>]*>([^<]+)<', self.build)), sorted(LANED))
 
 
 class BuildColumns(Board):
@@ -204,9 +230,11 @@ class BuildColumns(Board):
         card = self.column("triage")
         self.seen(r'class="columns-card columns-flagged".*>Cache warmup<.*columns-flag"', card, "a flagged Cache warmup card")
 
-    def test_the_no_lane_strip_counts_what_the_header_does(self) -> None:
-        self.seen(r'<span class="columns-foot-name">\s*no lane · 1\s*</span>', self.build, "the NO LANE · 1 strip")
-        self.seen("1 in no lane", self.body, "the header's no-lane count")
+    def test_there_is_no_no_lane_strip_or_count(self) -> None:
+        # #350: no `columns-foot` strip, no "no lane" text anywhere, and the header reads `N tasks` with no clause after it.
+        self.absent("columns-foot", self.body)
+        self.assertIsNone(re.search(r"no[ _-]?lane", self.body, re.I), "the board says 'no lane'")
+        self.seen(r"· 8 tasks</div>", self.body, "the header ending at its task count")
 
 
 if __name__ == "__main__":

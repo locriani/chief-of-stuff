@@ -55,6 +55,20 @@
       "pattern": "(?m)^\\|(?:[^|\\n]*\\|)?\\s*Review deploy config\\s*\\|"
     },
     {
+      "name": "carried rows keep their lane and stage: README",
+      "rule": "becomes a row in today's tracker Tasks, same item, owner, and checklist reference, with today's date as `since`",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^\\|[^\\n]*Write eval README[^\\n]*\\|\\s*build\\s*\\|\\s*implement\\s*\\|"
+    },
+    {
+      "name": "carried rows keep their lane and stage: deploy review",
+      "rule": "becomes a row in today's tracker Tasks, same item, owner, and checklist reference, with today's date as `since`",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^\\|[^\\n]*Review deploy config[^\\n]*\\|\\s*build\\s*\\|\\s*review\\s*\\|"
+    },
+    {
       "name": "tracker has Decisions",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",

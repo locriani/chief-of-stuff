@@ -1,8 +1,8 @@
-"""A column board as an HTML fragment and its CSS: cards under column heads, with an overflow fold and a footer strip.
+"""A column board as an HTML fragment and its CSS: cards under column heads, with an overflow fold.
 
 Generic by design: it knows columns, cards, tags and marks, never what a column or a state means.
 Colours come from the palette passed to `css`; kinds are CSS classes a host can restyle or add to.
-No JavaScript: overflow and the footer are native `<details>`, everything else is a class.
+No JavaScript: overflow is a native `<details>`, everything else is a class.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ class Mark:
 @dataclass(frozen=True)
 class Card:
     name: str
-    kind: str  # the chip's palette key, and what overflow and the footer tally
+    kind: str  # the chip's palette key, and what overflow tallies
     refs: tuple[tuple[str, str], ...] = ()  # (text, url); a blank url draws plain text
     owner: str = ""
     state: str = ""  # the chip's text; blank draws no chip
@@ -86,15 +86,11 @@ def _column(col: Column, limit: int) -> str:
             f'<span class="columns-count">{len(col.cards)}</span></div>{"".join(map(_card, shown))}{more}</section>')
 
 
-def render(cols: list[Column], footer: Column | None = None, limit: int = LIMIT) -> str:
-    """The board as one `<figure>`: at most `limit` cards a column, the rest folded; `footer` as a tallied strip."""
+def render(cols: list[Column], limit: int = LIMIT) -> str:
+    """The board as one `<figure>`: at most `limit` cards a column, the rest folded."""
     n = sum(len(c.cards) for c in cols)
     out = [f'<figure class="columns" aria-label="{len(cols)} column{"" if len(cols) == 1 else "s"}, {n} card{"" if n == 1 else "s"}">',
-           '<div class="columns-grid">', *(_column(c, limit) for c in cols), "</div>"]
-    if footer:
-        out.append(f'<details class="columns-foot"><summary><span class="columns-foot-name">{_esc(footer.name)} · {len(footer.cards)}</span>'
-                   f'{tally(footer.cards)}</summary><div class="columns-foot-cards">{"".join(map(_card, footer.cards))}</div></details>')
-    out.append("</figure>")
+           '<div class="columns-grid">', *(_column(c, limit) for c in cols), "</div>", "</figure>"]
     return "\n".join(out)
 
 
@@ -120,13 +116,9 @@ BASE_CSS = """\
 .columns-mark{font-size:10px;padding:0 5px;border-radius:3px}
 .columns-flagged{border:2px solid var(--c);padding-bottom:0;overflow:hidden}
 .columns-flag{margin:3px -7px 0;padding:2px 0;border:0;text-align:center;font-size:10px;font-weight:700;letter-spacing:.14em;text-transform:uppercase}
-.columns-more,.columns-foot{font-size:11px;color:var(--columns-muted)}
-.columns-more>summary,.columns-foot>summary{cursor:pointer;display:flex;gap:14px;flex-wrap:wrap}
-.columns-more>summary{gap:6px}
+.columns-more{font-size:11px;color:var(--columns-muted)}
+.columns-more>summary{cursor:pointer;display:flex;gap:6px;flex-wrap:wrap}
 .columns-more[open]{display:flex;flex-direction:column;gap:6px}
-.columns-foot{margin-top:6px;border-top:1px solid var(--columns-rule);padding-top:5px;font-size:11.5px}
-.columns-foot-name{font:12.5px "Cormorant SC",Georgia,serif;letter-spacing:.08em;text-transform:uppercase;color:var(--columns-ink)}
-.columns-foot-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:6px;margin-top:6px;color:var(--columns-ink)}
 .columns summary:focus-visible{outline:2px solid var(--columns-ink);outline-offset:1px}
 """
 
