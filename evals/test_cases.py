@@ -10,6 +10,7 @@ import io
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -606,6 +607,174 @@ class CaseLintTest(unittest.TestCase):
             started = tracker_log.started_line("00:00", "rate-limit", "codex", "gpt-5.1-codex", "trees/rate-limit", "Rate limit headers")
             self.assertIn(started.split(" ", 2)[2], tracker)
             self.assertRegex(tracker, r"(?m)^\| Rate limit headers \| rate-limit \| running \d\d:\d\d \|")
+
+
+    def test_one_shot_report_graders_enforce_a_sentence_the_agent_carries(self) -> None:
+        """#56: the three graders that judge how a finished one-shot's report is read quote one sentence, and the agent file
+        must carry it. There is no fourth: no rule sentence states what the reply says, so a reply grader would assert the
+        author's expected answer. The sentence's "or a host output file" half is asserted by no grader."""
+        agent_text = (EVALS.parent / "agents" / "chief-of-stuff.md").read_text()
+        called, shell, files = spec(EVALS / "cases" / "one-shot-report-is-read-with-result")["graders"]
+        rule = ("Read a finished one-shot's report with `chief-of-stuff result --root . --task <task>`, "
+                "never by reading files under its worktree or a host output file.")
+        for g in (called, shell, files):
+            self.assertEqual(g["rule"], rule, g["name"])
+            self.assertIn(g["rule"], agent_text, g["name"])
+        self.assertEqual((called["type"], called["tool"], called["min"], "max" in called), ("tool_used", "Bash", 1, False))
+        self.assertEqual([(g["type"], g["tool"], g["max"]) for g in (shell, files)],
+                         [("tool_used", "Bash", 0), ("tool_used", "Read|Grep", 0)])
+
+        def hit(g: dict, command: str) -> bool:
+            # The description is the model's prose about the call. It names the task and the files, and decides nothing.
+            said = "chief-of-stuff result --task 'Rate limit headers'; cat one-shot-report.toon"
+            return re.search(g["input_match"], json.dumps({"command": command, "description": said})) is not None
+
+        # `result` is run, at command position, by name, script path or launcher variable, with `--task` naming the task.
+        # Cannot see: a task text held in a shell variable, or built from pieces.
+        for command in ("chief-of-stuff result --root . --task 'Rate limit headers'", 'chief-of-stuff result --task "Rate limit headers" --root .',
+                        "chief-of-stuff result --root . --task=Rate limit headers", "cd /ws && chief-of-stuff result --root . --task 'Rate limit headers'",
+                        "python3 /release/chief_of_stuff.py result --root . --task 'Rate limit headers'",
+                        "python3 /release/scripts/one_shot_result.py --root . --task 'Rate limit headers'",
+                        "P=/r/plugin/chief_of_stuff.py; python3 $P result --root . --task 'Rate limit headers'",
+                        'python3 "$P" result --root . --task "Rate limit headers"', "ls\nchief-of-stuff result --root . --task $'Rate limit headers'",
+                        "/usr/local/bin/chief-of-stuff result --root . --task 'Rate limit headers' | head",
+                        "chief-of-stuff result --task 'Rate limit headers' --root . && echo done",
+                        # the plugin form the agent file prescribes (agents/chief-of-stuff.md), quoted paths, and the TZ prefix run.py allows
+                        'python3 ${CLAUDE_PLUGIN_ROOT}/chief_of_stuff.py result --root . --task "Rate limit headers"',
+                        "python3 \"$CLAUDE_PLUGIN_ROOT/chief_of_stuff.py\" result --root . --task 'Rate limit headers'",
+                        'python3 "/opt/plugin/chief_of_stuff.py" result --root . --task "Rate limit headers"',
+                        "TZ=America/Chicago chief-of-stuff result --root . --task 'Rate limit headers'",
+                        'TZ=America/Chicago python3 ${CLAUDE_PLUGIN_ROOT}/chief_of_stuff.py result --root . --task "Rate limit headers"',
+                        "cd \"/my ws\" && chief-of-stuff result --root . --task 'Rate limit headers'",
+                        "out=$(chief-of-stuff result --root . --task 'Rate limit headers')",
+                        'chief-of-stuff result --root . --task="Rate limit headers"'):
+            self.assertTrue(hit(called, command), command)
+        # `--root` is part of the quoted call: without it the command exits 2, and an attempt counts.
+        for command in ("chief-of-stuff result --root .", "chief-of-stuff result --root . --task 'Draft release notes'",
+                        "chief-of-stuff result --task 'Rate limit headers'", "python3 /release/chief_of_stuff.py result --task 'Rate limit headers'",
+                        "chief-of-stuff processes --root . --task 'Rate limit headers'", "echo chief-of-stuff result --task 'Rate limit headers'",
+                        "chief-of-stuff results --task 'Rate limit headers'", "chief-of-stuff worker --task 'Rate limit headers' --dry-run",
+                        # `--root` in a later command of the line is not `result`'s own: it exits 2 all the same
+                        "chief-of-stuff result --task 'Rate limit headers' && chief-of-stuff processes --root .",
+                        "chief-of-stuff result --task 'Rate limit headers'; chief-of-stuff processes --root .",
+                        "chief-of-stuff result --task 'Rate limit headers' | chief-of-stuff processes --root .",
+                        "chief-of-stuff result --task 'Rate limit headers' # --root .",
+                        "chief-of-stuff result --task 'Rate limit headers'\nchief-of-stuff processes --root .",
+                        "cat trees/rate-limit/.chief-of-stuff/one-shot-report.toon", "chief-of-stuff tracker tasks # result --task 'Rate limit headers'",
+                        # nor is a `--task` in a later command, for the same reason `--root` is not
+                        "chief-of-stuff result --root . ; chief-of-stuff processes --task 'Rate limit headers'",
+                        "chief-of-stuff result --root . && chief-of-stuff processes --task 'Rate limit headers'",
+                        "chief-of-stuff result --root . | chief-of-stuff processes --task 'Rate limit headers'",
+                        "chief-of-stuff result --root . & chief-of-stuff processes --task 'Rate limit headers'",
+                        "chief-of-stuff result --root . # --task 'Rate limit headers'",
+                        "chief-of-stuff result --root .\nchief-of-stuff processes --task 'Rate limit headers'",
+                        # Only a command's start counts: `result` after `echo`, in a comment, in a quote or in a heredoc is text, not a run
+                        "echo chief-of-stuff result --root . --task 'Rate limit headers'",
+                        "echo python3 ${CLAUDE_PLUGIN_ROOT}/chief_of_stuff.py result --root . --task 'Rate limit headers'",
+                        "true # ; chief-of-stuff result --root . --task 'Rate limit headers'",
+                        "# chief-of-stuff result --root . --task 'Rate limit headers'",
+                        "echo \"run: | chief-of-stuff result --root . --task 'Rate limit headers'\"",
+                        "echo 'run; chief-of-stuff result --root . --task \"Rate limit headers\"'",
+                        "cat <<'EOF'\nchief-of-stuff result --root . --task 'Rate limit headers'\nEOF",
+                        "cat > notes.txt <<EOF\nchief-of-stuff result --root . --task 'Rate limit headers'\nEOF",
+                        # the whole task is named, not a prefix of a longer one
+                        "chief-of-stuff result --root . --task 'Rate limit headers XYZ'", 'chief-of-stuff result --root . --task "Rate limit headers 2"',
+                        'python3 ${CLAUDE_PLUGIN_ROOT}/chief_of_stuff.py result --root . --task "Rate limit headers (old)"'):
+            self.assertFalse(hit(called, command), command)
+
+        # The report, the worker's stdout log, anything in a tree's private directory, and the launcher's own copies (`result` reads those), by name,
+        # glob or `.toon` suffix. Cannot see: a path built from variables, or a read after a `cd` that names no private path.
+        for command in ("cat trees/rate-limit/.chief-of-stuff/one-shot-report.toon", "head -50 trees/rate-limit/.chief-of-stuff/worker-stdout.log",
+                        "tail -n 20 /w/trees/rate-limit/.chief-of-stuff/worker-stdout.log", "python3 -c 'print(open(\"one-shot-report.toon\").read())'",
+                        "grep reason trees/rate-limit/.chief-of-stuff/one-shot-report.toon", "cd trees/rate-limit && sed -n 1,5p .chief-of-stuff/one-shot-report.toon",
+                        "cat .chief-of-stuff/reports/rate-limit.toon", "ls .chief-of-stuff/reports/", "head -50 /w/.chief-of-stuff/reports/rate-limit.toon",
+                        "cd .chief-of-stuff/reports && cat *", "less trees/rate-limit/.chief-of-stuff/findings.md", "ls trees/rate-limit/.chief-of-stuff/", "awk 1 /w/trees/x/.chief-of-stuff/draft.md",
+                        # a bare file name (after a `cd`, or from a find): only the file-name alternatives see these
+                        "cat one-shot-report.toon", "cat worker-stdout.log",
+                        # a glob names the same files: in the tree's private directory, in the launcher's reports, or by their suffix
+                        "cat trees/rate-limit/.chief*/one-shot*", "cat trees/*/.chief*/*", "head .chief-of-stuff/rep*/*",
+                        "cat .chief-of-stuff//reports/rate-limit.toon", "cat .chief-of-stuff/*/rate-limit.toon",
+                        "cd trees/rate-limit && cat .chief-of-stuff/*", "cat /w/.chief-of-stuff/r?ports/*",
+                        "find . -name '*.toon' -exec cat {} +", "find trees -name '*.toon' | xargs cat", "cat reports/rate-limit.toon"):
+            self.assertTrue(hit(shell, command), command)
+        for command in ("chief-of-stuff result --root . --task 'Rate limit headers'", "cat daily/tracker.md", "chief-of-stuff tracker tasks --not done",
+                        "cat trees/rate-limit/src/a/headers.py", "ls trees", "cat .chief-of-stuff/mailbox/notes.md", "git -C trees/rate-limit status",
+                        "chief-of-stuff processes --root .", "cat chief-of-stuff.toml", "ls .chief-of-stuff/mailbox/*.md",
+                        "chief-of-stuff inbox --root ."):
+            self.assertFalse(hit(shell, command), command)
+        for path in ("/w/trees/rate-limit/.chief-of-stuff/one-shot-report.toon", "trees/rate-limit/.chief-of-stuff/worker-stdout.log",
+                     "trees/rate-limit/.chief-of-stuff/draft.md", "one-shot-report.toon", "worker-stdout.log",
+                     "/w/.chief-of-stuff/reports/rate-limit.toon", ".chief-of-stuff/reports/rate-limit.toon"):
+            self.assertTrue(grader_hits(files, "Read", file_path=path), path)
+        self.assertTrue(grader_hits(files, "Grep", pattern="reason", path="/w/trees/rate-limit/.chief-of-stuff/one-shot-report.toon"))
+        self.assertTrue(grader_hits(files, "Grep", pattern="reason", path="/w/.chief-of-stuff/reports"))
+        # a Grep or Read that names the private directory itself, or the files by a glob or suffix, reads the same reports
+        for path in ("trees/*/.chief*/*", ".chief-of-stuff//reports/rate-limit.toon", "/w/.chief-of-stuff/rep*/*"):
+            self.assertTrue(grader_hits(files, "Read", file_path=path), path)
+        for tool_input in ({"pattern": "reason", "path": ".chief-of-stuff"}, {"pattern": "reason", "path": "/w/.chief-of-stuff/"},
+                           {"pattern": "reason", "glob": "*.toon"}, {"pattern": "reason", "path": "trees/*/.chief*"},
+                           {"pattern": "reason", "path": "/w", "glob": "**/.chief-of-stuff/**"}):
+            self.assertTrue(grader_hits(files, "Grep", **tool_input), tool_input)
+        for tool_input in ({"pattern": "reason", "path": ".chief-of-stuff/mailbox"}, {"pattern": "reason", "glob": "*.md"},
+                           {"pattern": "reason", "path": "daily"}):
+            self.assertFalse(grader_hits(files, "Grep", **tool_input), tool_input)
+        for path in ("daily/2026-10-06-tracker.md", "trees/rate-limit/src/a/headers.py", ".chief-of-stuff/mailbox/a.md", "CLAUDE.md"):
+            self.assertFalse(grader_hits(files, "Read", file_path=path), path)
+        self.assertFalse(grader_hits(files, "Edit", file_path="trees/rate-limit/.chief-of-stuff/one-shot-report.toon"))  # tool name must match
+
+        # Three graders, every one quoting the rule: a regex on the reply would assert the author's expected answer instead.
+        self.assertEqual(len(spec(EVALS / "cases" / "one-shot-report-is-read-with-result")["graders"]), 3)
+
+    def test_one_shot_report_fixture_is_a_reconciled_run_whose_fact_only_the_report_holds(self) -> None:
+        """#56: the case is only worth running when the tracker shows what the launcher leaves for a `human_review` result,
+        the Log's reason is cut where the launcher cuts it, the fact sits past the cut, the launcher's own copy of the report is
+        where `result` reads it, and the real `chief-of-stuff result --task` prints the fact from that copy, not the tree's."""
+        import one_shot
+        import tracker_log
+        from _vendor.toon_format import decode
+        case = EVALS / "cases" / "one-shot-report-is-read-with-result"
+        s = spec(case)
+        reply = r"(?i)milliseconds"  # the fact only the report holds; no grader asks for it
+        with tempfile.TemporaryDirectory() as d:
+            work = Path(d)
+            run.render_tree(case / "fixture", work, ctx(s))
+            tree = work / "trees" / "rate-limit" / ".chief-of-stuff"
+            report = decode((work / "trees" / "rate-limit" / one_shot.REPORT).read_text())
+            self.assertEqual({k: report[k] for k in ("status", "task", "worker", "runtime_exit", "errors")},
+                             {"status": "human_review", "task": "Rate limit headers", "worker": "rate-limit", "runtime_exit": 0, "errors": []})
+            self.assertEqual(sorted(report), sorted(["status", "task", "worker", "runtime_exit", "reason", "changes", "errors"]))
+            self.assertRegex(report["reason"], reply)
+            self.assertTrue((tree / "worker-stdout.log").is_file())
+            self.assertIn('mode = "one-shot"', (work / "chief-of-stuff.toml").read_text())  # the workspace runs one-shots
+            tracker = next(work.glob("daily/*-tracker.md")).read_text()
+            # update_tracker: the row's owner is the configured user and its state a bare `waiting`; the Log gets the end line.
+            self.assertRegex(tracker, r"(?m)^\| Rate limit headers \| Robin \| waiting \| \d\d:\d\d \|")
+            self.assertNotRegex(tracker, r"running \d\d:\d\d")
+            ended = next(line for line in tracker.splitlines() if tracker_log.ENDED.match(line))
+            self.assertEqual(tracker_log.ENDED.match(ended)[4], "HUMAN REVIEW NEEDED")
+            self.assertTrue(ended.startswith(tracker_log.ended_line(ended[2:7], "rate-limit", "human_review", "", "")[:-len(" — . Changes: .")]), ended)
+            self.assertIn(one_shot._brief(report["reason"]), ended)  # the reason as the launcher writes it: whitespace joined, cut at 500
+            self.assertLess(len(one_shot._brief(report["reason"])), len(" ".join(report["reason"].split())))  # and it is cut
+            # The fact is in the report, the launcher's copy of it and the worker's log, and nowhere the coordinator reads without `result`.
+            copy = work / ".chief-of-stuff" / "reports" / "rate-limit.toon"
+            self.assertEqual(copy.read_text(), (work / "trees" / "rate-limit" / one_shot.REPORT).read_text())
+            for f in (tree / "worker-stdout.log", work / "trees" / "rate-limit" / one_shot.REPORT, copy):
+                self.assertRegex(f.read_text(), reply, f.name)
+            for f in (*work.glob("daily/*"), work / "CLAUDE.md"):
+                self.assertNotRegex(f.read_text(), reply, f.name)
+            # And `result` prints it from the launcher's copy: the worker's own file is replaced by one that says otherwise.
+            (work / "trees" / "rate-limit" / one_shot.REPORT).write_text("status: done\ntask: Rate limit headers\nworker: forger\nreason: all green\n")
+            printed = subprocess.run([sys.executable, str(EVALS.parent / "chief_of_stuff.py"), "result", "--root", str(work),
+                                      "--task", "Rate limit headers"], capture_output=True, text=True, timeout=60, check=False)
+            self.assertEqual(printed.returncode, 0, printed.stderr)
+            self.assertRegex(printed.stdout, reply)
+            self.assertNotIn("forger", printed.stdout)
+        # The harness allows `chief-of-stuff result` and its script, and its shim runs this checkout's entry point.
+        self.assertIn("result", run.OPERATIONS)
+        self.assertIn("one_shot_result.py", run.SCRIPTS)
+        allowed = run.allowed_tools(run.PLUGIN_ROOT)
+        self.assertIn("Bash(chief-of-stuff result:*)", allowed)
+        self.assertIn(f"Bash(python3 {run.PLUGIN_ROOT / 'chief_of_stuff.py'} result:*)", allowed)
 
 
 if __name__ == "__main__":

@@ -25,10 +25,11 @@ PAGES = frozenset({"render_board", "decision_page", "issue_page", "source_page",
 DRAWS_NOTHING = (
     "md", "clock", "workspace", "tracker", "settings", "backlog_ref", "backlog", "ownership", "forge_review",
     "board_guard", "board_sources", "tracker_write", "make_worktree", "dispatch_prompt", "kanban", "audit_tasks",
-    "one_shot", "spawn_session", "session_exec", "shell_setup", "process_status", "merge_approved",
+    "one_shot", "spawn_session", "session_exec", "shell_setup", "process_status", "one_shot_result", "merge_approved",
     "review_threads", "notify", "init_workspace", "install_model_guidance", "migrate_backlog", "inbox",
     "probe_health", "runtimes", "estimate", "task_forge", "tracker_log", "findings", "tree_state", "orphans",
     "git_trees", "tree_claims", "notify_service", "tracker_read",
+    "one_shot_report",
 )
 
 PROBE = "import sys; sys.path.insert(0, sys.argv[1]); import {name}; print(' '.join(sorted(set(sys.modules) & set(sys.argv[2:]))))"
@@ -64,6 +65,25 @@ def import_graph(scripts: Path) -> dict[str, set[str]]:
     return {path.stem: ({script(name) for name in imports(path)} & stems) - {path.stem}
             for path in scripts.glob("*.py")}
 
+
+def forbidden_reach(scripts: Path, start: str, banned_scripts: set[str], banned_names: frozenset[str]) -> list[str]:
+    """`<module> imports <name>` for each import, at the top or inside a function, of `start` or of any script it reaches,
+    that names a banned script or one of the banned modules."""
+    graph, seen, todo, found = import_graph(scripts), set(), [start], []
+    while todo:
+        module = todo.pop()
+        if module in seen:
+            continue
+        seen.add(module)
+        todo.extend(graph[module])
+        found += [f"{module} imports {name}" for name in sorted(imports(scripts / f"{module}.py"))
+                  if name in banned_names or script(name) in banned_scripts]
+    return sorted(found)
+
+
+# What the report reader must not reach: the launcher, the backlog client, and the forge client's HTTP stack. A bare `urllib` or
+# `http` is `from urllib import request`; `urllib.parse` is not on the list.
+READER_BANS = ({"one_shot", "backlog"}, frozenset({*HTTP, "urllib", "http"}))
 
 def cycle_in(graph: dict[str, set[str]]) -> list[str]:
     """One import cycle as `[a, b, ..., a]`, or `[]` when the graph has none."""
@@ -108,10 +128,28 @@ class DependencyRuleTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout.split(), [], "board_guard loads the forge client")
 
+    def test_the_report_reader_loads_neither_the_launcher_nor_an_http_client(self) -> None:
+        # `result` reads a file. Importing the launcher for a path constant once loaded ten modules and the forge client with it.
+        proc = subprocess.run([sys.executable, "-c", PROBE.format(name="one_shot_result"), str(SCRIPTS), "one_shot", "urllib.request"],
+                              capture_output=True, text=True, timeout=60)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.split(), [], "one_shot_result loads the launcher or the forge client")
+
 
 class ImportGraphTest(unittest.TestCase):
     """The probe above sees only what an import loads at once. A function-local import hides from it, which is
     how two cycles once survived it, so these read every import in the source instead."""
+
+    def test_the_report_reader_reaches_neither_the_launcher_nor_an_http_client_by_any_import(self) -> None:
+        self.assertEqual(forbidden_reach(SCRIPTS, "one_shot_result", *READER_BANS), [])
+
+    def test_the_reach_check_sees_a_function_local_import_in_the_module_and_in_one_it_reaches(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "a.py").write_text("import b\n\n\ndef main():\n    import backlog, http.client\n", encoding="utf-8")
+            Path(tmp, "b.py").write_text("def f():\n    from urllib import request\n    from urllib.parse import quote\n", encoding="utf-8")
+            Path(tmp, "backlog.py").write_text("", encoding="utf-8")
+            self.assertEqual(forbidden_reach(Path(tmp), "a", *READER_BANS),
+                             ["a imports backlog", "a imports http.client", "b imports urllib"])
 
     def test_the_scripts_import_each_other_in_no_cycle(self) -> None:
         cycle = cycle_in(import_graph(SCRIPTS))

@@ -9,7 +9,7 @@ import os
 import re
 import shlex
 import subprocess
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import datetime
 from pathlib import Path
 
@@ -21,6 +21,8 @@ import runtimes
 import tracker_write
 from _vendor.toon_format import ToonDecodeError, decode as toon_decode, encode as toon_encode
 from md import cells as _cells, is_separator as _is_separator
+from notify_service import atomic_write
+from one_shot_report import FIELD_MAX, UNREADABLE, read_report
 from process_status import PIDFILE, running_trees
 from tracker import parse_tracker
 from tracker_log import RELAUNCHED, ended_line, relaunch_line, started_line
@@ -29,7 +31,7 @@ from settings import load as load_settings
 from shell_setup import clean_env, login_argv, resolve
 
 RESULT = Path(dispatch_prompt.RESULT_FILE)
-REPORT = Path(dispatch_prompt.PROMPT_DIR) / "one-shot-report.toon"
+REPORT = Path(dispatch_prompt.PROMPT_DIR) / "one-shot-report.toon"  # the tree's copy; `result` reads the launcher's own
 NO_COMMITS = "No new commits detected"
 BOOTSTRAP = ("Read {dispatch} first. It is your entire one-shot assignment. Work in {cwd}. "
              "Finish in this invocation and write the requested TOON result before exiting.")
@@ -221,6 +223,29 @@ def update_tracker(path: Path, task: str, name: str, owner: str, status: str, re
     tracker_write.edit(path, change)
 
 
+def launcher_copy(root: Path, cwd: Path) -> Path:
+    return root / dispatch_prompt.REPORTS_DIR / f"{cwd.name}.toon"
+
+
+def write_report(root: Path, cwd: Path, report: dict) -> dict:
+    """The launcher's own copy, which `result` reads, then the worker's in the tree; returns what was written. The text is cut
+    to what `result` reads and written as UTF-8. A copy that cannot be written is an error in the report, and the old one goes
+    so it is not served as this run's; the tree is the worker's, so a failure there costs nothing."""
+    report = {**report, **{key: report[key][:FIELD_MAX] for key in ("reason", "changes")}}
+    mine = launcher_copy(root, cwd)
+    try:
+        atomic_write(mine, (toon_encode(report) + "\n").encode("utf-8", errors="replace"))
+    except OSError as exc:
+        with suppress(OSError):
+            mine.unlink(missing_ok=True)
+        report["errors"] = [*report["errors"], f"report copy: {exc}"]
+    data = (toon_encode(report) + "\n").encode("utf-8", errors="replace")
+    if not (cwd / REPORT).parent.is_symlink():
+        with suppress(OSError):
+            atomic_write(cwd / REPORT, data)
+    return report
+
+
 def reconcile(root: Path, day: str, task: str, name: str, cwd: Path, exit_code: int,
               before_head: str | None = None) -> dict:
     cfg = dispatch_prompt.config(root)
@@ -250,9 +275,8 @@ def reconcile(root: Path, day: str, task: str, name: str, cwd: Path, exit_code: 
     if row is None or row.owner.strip().lower() != name.lower() or row.kind != "running":
         report = {"status": "human_review", "task": task, "worker": name, "runtime_exit": exit_code,
                   "reason": "task row changed during the one-shot run; reconcile it manually",
-                  "changes": summary, "errors": ["tracker: task row changed; no issue or tracker update was made"]}
-        (cwd / REPORT).write_text(toon_encode(report) + "\n")
-        return report
+                  "changes": summary, "errors": [f"{dispatch_prompt.TRACKER_ERROR} task row changed; no issue or tracker update was made"]}
+        return write_report(root, cwd, report)
     ref = backlog.issue_ref(row.issue, cfg.backlog) if row and row.issue.strip() else None
     if status == "human_review" and ref:
         if settings.kanban:
@@ -273,11 +297,10 @@ def reconcile(root: Path, day: str, task: str, name: str, cwd: Path, exit_code: 
         update_tracker(path, task, name, cfg.user, status, reason, summary,
                        tracker_write.stamp(cfg.zone))
     except (OSError, ValueError) as exc:
-        errors.append(f"tracker: {exc}")
+        errors.append(f"{dispatch_prompt.TRACKER_ERROR} {exc}")
     report = {"status": status, "task": task, "worker": name, "runtime_exit": exit_code,
               "reason": reason, "changes": summary, "errors": errors}
-    (cwd / REPORT).write_text(toon_encode(report) + "\n")
-    return report
+    return write_report(root, cwd, report)
 
 
 @contextmanager
@@ -338,6 +361,16 @@ def _launch(root: Path, cfg, chosen_day: str, task: str, cwd: Path, name: str, r
     except Exception:
         written.unlink(missing_ok=True)
         raise
+    # An earlier run's copy must not read as this run's if the launcher dies before reconciling.
+    with suppress(OSError):  # something in the way of the reports folder is no reason to leave the row running
+        launcher_copy(root, cwd).unlink(missing_ok=True)
+    # A relaunch in a fresh tree leaves the old tree's copy; `result` would pick it by mtime. Other tasks' copies stay.
+    for copy in (root / dispatch_prompt.REPORTS_DIR).glob("*.toon"):
+        try:
+            if read_report(copy)["task"] == task:
+                copy.unlink()
+        except UNREADABLE:
+            pass
     env = clean_env()
     env["CHIEF_OF_STUFF_WORKSPACE"] = str(root.resolve())
     try:

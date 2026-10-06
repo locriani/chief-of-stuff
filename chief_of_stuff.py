@@ -29,6 +29,7 @@ COMMANDS = {
     "worker": "scripts/spawn_session.py",
     "audit": "scripts/audit_tasks.py",
     "processes": "scripts/process_status.py",
+    "result": "scripts/one_shot_result.py",
     "board": "scripts/render_board.py",
     "inbox": "scripts/inbox.py",
     "backlog": "scripts/backlog.py",
