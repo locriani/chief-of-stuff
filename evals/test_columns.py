@@ -3,7 +3,6 @@ render_board adapts lanes and tasks to it."""
 
 from __future__ import annotations
 
-import inspect
 import re
 import sys
 import unittest
@@ -77,7 +76,8 @@ class Render(unittest.TestCase):
     def test_render_takes_the_columns_and_a_limit_and_draws_no_footer_strip(self) -> None:
         # #350: NO LANE is gone from the user's model, so `render(cols, limit=LIMIT)` has no `footer` parameter
         # and no `columns-foot` markup (a column count and card count are all its `<figure>` carries).
-        self.assertEqual(list(inspect.signature(columns.render).parameters), ["cols", "limit"])
+        with self.assertRaises(TypeError):
+            columns.render([col("implement", 1)], footer="x")
         self.assertNotIn("columns-foot", columns.render([col("implement", 1)]))
 
     def test_text_is_escaped(self) -> None:

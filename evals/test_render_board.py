@@ -1286,6 +1286,15 @@ class DecisionDeadlineTest(unittest.TestCase):
             with self.subTest(kept=kept):
                 self.assertTrue(kept in rules, f"the agent file lost {kept!r}")
 
+    def test_agent_rules_say_a_task_with_no_lane_or_stage_has_no_card_in_build(self) -> None:
+        # #350: BUILD draws a card only for a task with a lane and a stage, so the agent file must answer "why is X not on the
+        # board" for a task with no tree. The Tasks `lane`/`stage` sentence must read exactly:
+        #   "A task with no tree (a decision, a relay, a console action) leaves both cells blank and draws no card in BUILD."
+        # (the header, the tiles and the Flow charts still count it; the sentence need not say so).
+        rules = (Path(__file__).resolve().parents[1] / "agents/chief-of-stuff.md").read_text()
+        required = "leaves both cells blank and draws no card in BUILD"
+        self.assertTrue(required in rules, f"the agent file does not say {required!r}")
+
     def test_agent_rules_do_not_say_the_board_draws_an_arrow_to_the_waiting_on_who(self) -> None:
         # Sessions are gone (#259), so the board draws no arrow. The `waiting on` bullet keeps its order (who first, then why)
         # and loses the clause "The who is what the board draws an arrow to".

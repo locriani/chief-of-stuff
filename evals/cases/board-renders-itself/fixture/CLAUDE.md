@@ -7,6 +7,7 @@
 - Daily log template: none
 - Tracker: `daily/<date>-tracker.md` (sections: Tasks, Decisions, File ownership, Log)
 - Timezone: {{tz}}
+- Settings: `cos.toml`
 - Calendars: none
 - Deadlines: none
 - Board: self-hosted; URL http://127.0.0.1:{{pages_port}}/; dir `pages/`
