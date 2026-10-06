@@ -9,6 +9,7 @@ real `one_shot.reconcile`. The file is still read defensively: bounded, as a reg
 from __future__ import annotations
 
 import ast
+import json
 import os
 import shutil
 import subprocess
@@ -36,6 +37,9 @@ FIELDS = ["task", "worker", "worktree", "status", "reconciled"]  # a row of the 
 SKIPPED = "one-shot reports skipped: {n} could not be read"
 LIMIT = 1 << 20  # the most a report may be: spelled out here, so a change of the cap is a change of this test
 SITES = (("the normal one", False), ("the task row changed one", True))  # the launcher's two writes of a report
+# `reconcile` run in a child whose locale encoding is not UTF-8: what `open()` uses when no encoding is named.
+LOCALE_DRIVER = ("import sys; sys.path.insert(0, sys.argv[1]); import one_shot; from datetime import datetime, timezone; from pathlib import Path; "
+                 "one_shot.reconcile(Path(sys.argv[2]), datetime.now(timezone.utc).date().isoformat(), 'Rate limit headers', 'rate-limit', Path(sys.argv[3]), 0)")
 
 
 def report(task: str = "Rate limit headers", **over) -> dict:
@@ -98,9 +102,9 @@ class ResultTests(unittest.TestCase):
         path.write_text(toon_encode(data) + "\n")
         return path
 
-    def reconcile(self, tree: str, item: str = "Rate limit headers", *, changed: bool = False, exit_code: int = 0) -> dict:
-        """The launcher's own `reconcile` for a run of `item` in `tree`, after its own `record_launch`; `changed` is the
-        row taken from the worker meanwhile. Returns the report it returns."""
+    def launched(self, tree: str, item: str = "Rate limit headers", *, changed: bool = False, result: dict | None = None) -> Path:
+        """The tree `tree` after the launcher's `record_launch` for `item`; `changed` is the row taken from the worker meanwhile,
+        `result` what the worker wrote (as JSON, which any text survives)."""
         self.tracker(*TASKS)  # open again, as a relaunch finds it
         cwd = self.root / "trees" / tree
         (cwd / ".chief-of-stuff").mkdir(parents=True, exist_ok=True)
@@ -108,7 +112,19 @@ class ResultTests(unittest.TestCase):
         one_shot.record_launch(path, item, "rate-limit", one_shot._tree_note(self.root, cwd), "codex", "gpt-5.1-codex", "09:00")
         if changed:
             path.write_text(path.read_text().replace("| rate-limit | running 09:00 |", "| someone | running 09:00 |", 1))
+        if result is not None:
+            (cwd / one_shot.RESULT).write_text(json.dumps(result))
+        return cwd
+
+    def reconcile(self, tree: str, item: str = "Rate limit headers", *, changed: bool = False, exit_code: int = 0,
+                  result: dict | None = None) -> dict:
+        """The launcher's own `reconcile` for a run of `item` in `tree`, after its own `record_launch`. Returns the report it returns."""
+        cwd = self.launched(tree, item, changed=changed, result=result)
         return one_shot.reconcile(self.root, datetime.now(timezone.utc).date().isoformat(), item, "rate-limit", cwd, exit_code)
+
+    def tracker_row(self, item: str = "Rate limit headers") -> str:
+        return next(line for line in self.tracker_path().read_text().splitlines() if line.startswith(f"| Rate limit | {item} |")
+                    or line.startswith(f"|  | {item} |"))
 
     def result(self, *args: str) -> subprocess.CompletedProcess:
         return subprocess.run([sys.executable, str(ROOT / "chief_of_stuff.py"), "result", "--root", str(self.root), *args],
@@ -243,6 +259,89 @@ class ResultTests(unittest.TestCase):
         private.chmod(0o500)
         self.addCleanup(private.chmod, 0o700)
         self.kept_after_a_failed_write("rate-limit")
+
+    # A failed write of the launcher's own copy is not a crash: the tracker is already updated, the tree's copy is still tried,
+    # and the older copy is not left to be served as this run's.
+
+    def test_a_launchers_copy_that_cannot_be_written_does_not_escape_reconcile_or_cost_the_tracker_and_the_tree_copy(self):
+        real = os.replace
+
+        def refuse(src, dst, *args, **kwargs):
+            if Path(dst).parent == self.reports:
+                raise PermissionError(13, "Permission denied", str(dst))
+            return real(src, dst, *args, **kwargs)
+
+        old = self.plant("rate-limit", report(reason="an older run"))
+        with mock.patch("os.replace", side_effect=refuse):
+            try:
+                written = self.reconcile("rate-limit")
+            except OSError as exc:
+                self.fail(f"a failed write of the launcher's copy escaped reconcile: {exc!r}")
+        self.assertIn("waiting", self.tracker_row(), "the tracker row is updated though the copy was not written")
+        self.assertEqual(toon_decode((self.root / "trees" / "rate-limit" / one_shot.REPORT).read_text()), written)
+        self.assertNotEqual(written["reason"], "an older run")
+        done = self.result("--task", "Rate limit headers")
+        self.assertNotIn("an older run", done.stdout, "the older copy was served as this run's")
+        self.assertFalse(old.exists() and toon_decode(old.read_text())["reason"] == "an older run", "the older copy survives as current")
+
+    @unittest.skipIf(os.geteuid() == 0, "root writes into any directory")
+    def test_an_unwritable_reports_directory_does_not_escape_reconcile_or_cost_the_tracker_and_the_tree_copy(self):
+        self.reports.mkdir(parents=True)
+        self.reports.chmod(0o500)
+        self.addCleanup(self.reports.chmod, 0o700)
+        try:
+            written = self.reconcile("rate-limit")
+        except OSError as exc:
+            self.fail(f"an unwritable reports directory escaped reconcile: {exc!r}")
+        self.assertIn("waiting", self.tracker_row())
+        self.assertEqual(toon_decode((self.root / "trees" / "rate-limit" / one_shot.REPORT).read_text()), written)
+
+    # What a worker writes is the launcher's to bound and to encode: its copy stays readable by `result`.
+
+    def test_a_worker_result_over_the_cap_is_cut_so_the_report_stays_readable(self):
+        big = "x" * LIMIT
+        self.reconcile("rate-limit", result={"status": "human_review", "reason": big, "changes": big})
+        self.assertLessEqual((self.reports / "rate-limit.toon").stat().st_size, LIMIT, "the copy is past what `result` reads")
+        done = self.one("--task", "Rate limit headers")
+        self.only_skipped_none()
+        self.assertEqual((done["task"], done["status"]), ("Rate limit headers", "human_review"))
+        self.assertTrue(done["reason"].startswith("xxx"), "the start of the worker's reason is kept")
+        self.assertLess(len(done["reason"]) + len(done["changes"]), LIMIT)
+
+    def only_skipped_none(self) -> None:
+        self.assertEqual(self.stderr, "", "a report was skipped as unreadable")
+
+    def test_a_lone_surrogate_in_a_worker_result_does_not_crash_reconcile_and_leaves_a_readable_copy(self):
+        try:
+            self.reconcile("rate-limit", result={"status": "human_review", "reason": "x\ud800 end", "changes": "c"})
+        except ValueError as exc:
+            self.fail(f"a lone surrogate in the worker's result crashed reconcile: {exc!r}")
+        copy = self.reports / "rate-limit.toon"
+        toon_decode(copy.read_bytes().decode("utf-8"))  # strict UTF-8
+        done = self.one("--task", "Rate limit headers")
+        self.only_skipped_none()
+        self.assertTrue(done["reason"].startswith("x"), done["reason"])
+
+    def locale_reconcile(self, reason: str) -> None:
+        """`reconcile` in a child under an ISO-8859-1 locale, with a worker result holding `reason`."""
+        env = {**os.environ, "LC_ALL": "en_US.ISO8859-1", "LANG": "en_US.ISO8859-1", "PYTHONUTF8": "0"}
+        env.pop("PYTHONIOENCODING", None)
+        probe = subprocess.run([sys.executable, "-c", "import locale; print(locale.getencoding())"], env=env, capture_output=True,
+                               text=True, timeout=WAIT, check=False)
+        if probe.stdout.strip().lower().replace("-", "").replace("_", "") not in ("iso88591", "latin1"):
+            self.skipTest(f"no ISO-8859-1 locale here (the child's is {probe.stdout.strip()!r})")
+        cwd = self.launched("rate-limit", result={"status": "human_review", "reason": reason, "changes": "c"})
+        done = subprocess.run([sys.executable, "-c", LOCALE_DRIVER, str(ROOT / "scripts"), str(self.root), str(cwd)], env=env,
+                              capture_output=True, text=True, timeout=WAIT, check=False)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+    def test_the_launchers_copy_is_utf8_whatever_the_locale_encoding(self):
+        for reason in ("caf\u00e9 fix", "the 429 path \u2192 Retry-After"):  # the first is encodable in ISO-8859-1 (written, then unreadable as UTF-8); the second is not
+            with self.subTest(reason):
+                shutil.rmtree(self.root / ".chief-of-stuff", ignore_errors=True)
+                self.locale_reconcile(reason)
+                self.assertEqual(self.one("--task", "Rate limit headers")["reason"], reason)
+                self.only_skipped_none()
 
     def test_a_link_planted_at_the_launchers_copy_is_replaced_not_followed(self):
         victim = self.root / "victim.txt"
@@ -423,6 +522,12 @@ class ResultTests(unittest.TestCase):
             self.plant(stem, report(item))
         self.assertEqual(self.refused("--task", "Dup"), "no one-shot report for task 'Dup'")
         self.assertEqual(self.one("--task", "Same")["worktree"], "three")
+
+    def test_a_name_that_is_an_empty_item_on_another_day_still_finds_the_task(self):
+        self.tracker(("Alpha", "Item A"))
+        self.tracker(("Alpha", ""), days_ago=1)  # the same name, held by an empty item yesterday
+        self.plant("alpha", report("Item A"))
+        self.assertEqual(self.one("--task", "Alpha")["worktree"], "alpha")
 
     def test_a_tracker_that_cannot_be_read_leaves_no_names_says_nothing_and_an_exact_item_still_works(self):
         self.plant("rate-limit")

@@ -262,6 +262,76 @@ class RunTest(unittest.TestCase):
         self.assertEqual(seen, [["junk.toon", "other.toon"]],
                          "the task's copy in another tree is gone; other tasks' copies and unreadable files stay")
 
+    def left_by_a_cleanup_that_cannot_run(self, plant) -> None:
+        """#56: something in the way of the launcher's reports folder. A launch may refuse or go on, but never leave the row
+        `running` with no worker started, nor a dispatch behind that makes the retry refuse the tree."""
+        plant()
+        fake = self._fake('status: done\nreason: r\nchanges: c\n', write_partial=False)
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                self._run(fake)
+        except Exception:  # a refusal is allowed, if it leaves nothing behind
+            pass
+        row = next(line for line in self.tracker.read_text().splitlines() if line.startswith("| Security audit"))
+        self.assertNotIn("running", row, "the row is left running")
+        if not (self.root / "during.md").exists():  # the fake agent never ran
+            self.assertFalse((self.tree / ".chief-of-stuff/dispatch.md").exists(), "a refused launch left its dispatch behind")
+
+    def test_a_directory_where_the_trees_copy_belongs_does_not_leave_a_running_row_with_no_worker(self):
+        reports = self.root / dispatch_prompt.REPORTS_DIR
+        self.left_by_a_cleanup_that_cannot_run(lambda: (reports / "worker.toon").mkdir(parents=True))
+
+    def test_a_file_where_the_reports_folder_belongs_does_not_leave_a_running_row_with_no_worker(self):
+        reports = self.root / dispatch_prompt.REPORTS_DIR
+
+        def plant() -> None:
+            reports.parent.mkdir(parents=True)
+            reports.write_text("in the way\n")
+
+        self.left_by_a_cleanup_that_cannot_run(plant)
+
+    def test_a_refused_launch_keeps_the_previous_report_copy(self):
+        copy = self.root / dispatch_prompt.REPORTS_DIR / "worker.toon"
+        copy.parent.mkdir(parents=True)
+        copy.write_text(toon_encode({"status": "done", "task": "Security audit", "worker": "earlier", "runtime_exit": 0,
+                                     "reason": "r", "changes": "c", "errors": []}) + "\n")
+        before = copy.read_bytes()
+        self.tracker.write_text(TRACKER.replace("| Security audit | `src/a/` |", "| Security audit | `src/a/` | note |"))
+        with self.assertRaisesRegex(ValueError, "two-cell"):
+            self._run(self._fake('status: done\nreason: r\nchanges: c\n', write_partial=False))
+        self.assertEqual(copy.read_bytes(), before)
+
+    def copy_of_a_run_that_never_got_a_result(self, exit_code: int, agent: str, *, timeout: bool = False) -> None:
+        """The launcher's copy of a run whose worker could not start (127) or timed out (124): human review, with the exit code."""
+        real_run = subprocess.run
+
+        def run(argv, *args, **kwargs):
+            if timeout and argv[0] == agent:
+                raise subprocess.TimeoutExpired(argv, 1)
+            return real_run(argv, *args, **kwargs)
+
+        with mock.patch.object(one_shot, "resolve", return_value=agent), \
+             mock.patch.object(one_shot, "login_argv", side_effect=lambda argv: argv), \
+             mock.patch.object(one_shot.subprocess, "run", side_effect=run), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(one_shot.run(root=self.root, day="2026-09-18", task="Security audit", cwd=self.tree, name="worker01",
+                                          runtime="codex", agent_type=None, model="", effort="", dry_run=False), 1)
+        copy = self.root / dispatch_prompt.REPORTS_DIR / "worker.toon"
+        report = toon_decode(copy.read_text())
+        self.assertEqual((report["status"], report["task"], report["runtime_exit"]), ("human_review", "Security audit", exit_code))
+        self.assertEqual(sorted(p.name for p in copy.parent.iterdir()), ["worker.toon"], "a temporary file was left beside the copy")
+
+    def test_a_worker_that_cannot_start_still_leaves_a_report_copy(self):
+        self.copy_of_a_run_that_never_got_a_result(127, str(self.root / "no-such-agent"))
+
+    def test_a_worker_that_times_out_still_leaves_a_report_copy(self):
+        self.copy_of_a_run_that_never_got_a_result(124, str(self._fake(None)), timeout=True)
+
+    def test_a_launch_with_no_reports_folder_leaves_this_runs_copy_there(self):
+        reports = self.root / dispatch_prompt.REPORTS_DIR
+        self.assertFalse(reports.exists())
+        self.assertEqual(self._run(self._fake('status: done\nreason: r\nchanges: c\n', write_partial=False)), 0)
+        self.assertEqual(toon_decode((reports / "worker.toon").read_text())["status"], "done")
+
     def test_the_log_line_names_the_effort_the_worker_ran_at(self):
         # #52: the Log is the durable record of what ran; it had the model and never the effort.
         fake = self._fake('status: done\nreason: done\nchanges: checked\n', write_partial=False)
