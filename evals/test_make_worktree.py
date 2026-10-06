@@ -9,6 +9,7 @@ Repos are real. `git worktree add` against a fake proves nothing.
 
 import contextlib
 import io
+import os
 import subprocess
 import sys
 import tempfile
@@ -141,7 +142,10 @@ class CloneCase(unittest.TestCase):
         return mw.build(**args)
 
     def run_main(self, *extra: str) -> tuple[int, str, str]:
-        argv = ["--type", "implementer", "--name", "wt-new", "--branch", "feat/new", "--root", str(self.root), "--clone", str(self.clone), *extra]
+        return self.invoke("--clone", str(self.clone), *extra)
+
+    def invoke(self, *tail: str) -> tuple[int, str, str]:
+        argv = ["--type", "implementer", "--name", "wt-new", "--branch", "feat/new", "--root", str(self.root), *tail]
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = mw.main(argv)
@@ -601,6 +605,123 @@ class ArgvTest(unittest.TestCase):
     def test_positionals_are_separated_from_options(self):
         """A branch or path that starts with a dash must not become a flag."""
         self.assertIn('"--"', (Path(mw.__file__)).read_text())
+
+
+class SettingsCloneTest(CloneCase):
+    """#54: `--clone` is required. A name in the settings' `[repos]` table is that entry's path, relative to the workspace root;
+    any other value is a path, as without `[repos]`. Settings that cannot be read refuse, whatever `--clone` is."""
+
+    def settings(self, toml: str, line: str = "- Settings: `chief-of-stuff.toml`\n"):
+        (self.root / "CLAUDE.md").write_text(CLAUDE + line)
+        (self.root / "chief-of-stuff.toml").write_text(toml)
+
+    def another_clone(self, base: Path, name: str) -> Path:
+        """A second real repository with its own origin, under `base`."""
+        return make_repo.build(base, {"clone": name, "origin": f"{name}.git", "trees": "trees", "worktrees": []})
+
+    def assert_cut_from(self, clone: Path):
+        common = Path(make_repo.git(["rev-parse", "--path-format=absolute", "--git-common-dir"], self.tree)).resolve()
+        self.assertEqual(common, (clone / ".git").resolve(), "the tree belongs to the repository asked for")
+
+    def assert_refused_with_nothing_made(self, code: int, out: str, err: str):
+        self.assertEqual((code, out), (1, ""))
+        self.assertTrue(err.startswith("refused:"), err)
+        self.assertFalse(self.tree.exists())
+        self.assertEqual(self.branches(), "")
+
+    def chdir(self, path: Path):
+        before = os.getcwd()
+        os.chdir(path)
+        self.addCleanup(os.chdir, before)
+
+    def test_clone_is_required(self):
+        self.settings('[repos]\nalder = "repo"\n')
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
+            self.invoke()
+        self.assertEqual(raised.exception.code, 2)
+        self.assertFalse(self.tree.exists())
+
+    def test_a_name_is_cut_from_its_own_entry_relative_to_the_workspace_root(self):
+        birch = self.another_clone(self.root, "birch-checkout")
+        self.settings('[repos]\nalder = "repo"\nbirch = "birch-checkout"\n')  # the one asked for is not the first
+        code, out, err = self.invoke("--clone", "birch")
+        self.assertEqual((code, err), (0, ""))
+        self.assert_cut_from(birch)
+        self.assertEqual(out, f"worktree {self.tree.resolve()} on feat/new off origin/main {rev(self.tree)[:7]} for a implementer\n")
+
+    def test_a_value_that_is_no_name_is_a_path_relative_to_the_current_directory(self):
+        (self.root / "work").mkdir()
+        mine = self.another_clone(self.root / "work", "mine")  # the root has no `mine`
+        self.settings('[repos]\nalder = "repo"\n')
+        self.chdir(self.root / "work")
+        code, out, err = self.invoke("--clone", "mine")
+        self.assertEqual((code, err), (0, ""))
+        self.assert_cut_from(mine)
+
+    def test_a_name_wins_over_a_directory_of_the_same_name_in_the_current_directory(self):
+        other = self.another_clone(self.root, "other")
+        self.settings('[repos]\nrepo = "other"\n')  # `repo` is also a directory under the root
+        self.chdir(self.root)
+        code, out, err = self.invoke("--clone", "repo")
+        self.assertEqual((code, err), (0, ""))
+        self.assert_cut_from(other)
+
+    def test_the_file_the_settings_line_names_is_the_one_read(self):
+        self.another_clone(self.root, "decoy")
+        self.settings('[repos]\nalder = "decoy"\n')  # what a hardcoded `chief-of-stuff.toml` would read
+        (self.root / "team").mkdir()
+        (self.root / "team" / "prefs.toml").write_text('[repos]\nalder = "repo"\n')
+        (self.root / "CLAUDE.md").write_text(CLAUDE + "- Settings: `team/prefs.toml`\n")
+        code, out, err = self.invoke("--clone", "alder")
+        self.assertEqual(code, 0, err)
+        self.assert_cut_from(self.clone)
+
+    def test_a_settings_line_with_no_file_is_no_entries_and_the_value_is_a_path(self):
+        self.settings("")
+        (self.root / "chief-of-stuff.toml").unlink()
+        code, out, err = self.run_main()
+        self.assertEqual((code, err), (0, ""))
+        self.assert_cut_from(self.clone)
+
+    def test_settings_that_cannot_be_used_refuse_with_their_error_for_a_name_and_for_a_path(self):
+        self.chdir(self.root)  # `repo` is a name and a directory here: neither may stand in for the entry that cannot be read
+        for how, write, about in (("malformed", lambda: self.settings("not toml ["), "chief-of-stuff.toml"),
+                                  ("not UTF-8", lambda: (self.settings(""), (self.root / "chief-of-stuff.toml").write_bytes(b"\xff\xfe[repos]\n")),
+                                   "chief-of-stuff.toml"),
+                                  ("a bad entry", lambda: self.settings("[repos]\nrepo = 3\n"), "[repos] repo must be a path")):
+            write()
+            for given in ("repo", str(self.clone)):
+                with self.subTest(how=how, given=given):
+                    code, out, err = self.invoke("--clone", given)
+                    self.assert_refused_with_nothing_made(code, out, err)
+                    self.assertIn(about, err)
+
+    def test_settings_that_cannot_be_read_refuse_rather_than_raise(self):
+        if os.geteuid() == 0:
+            self.skipTest("root reads a mode-000 file; the unreadable case cannot be made")
+        self.settings('[repos]\nalder = "repo"\n')
+        path = self.root / "chief-of-stuff.toml"
+        path.chmod(0)
+        self.addCleanup(path.chmod, 0o600)
+        code, out, err = self.invoke("--clone", "alder")
+        self.assert_refused_with_nothing_made(code, out, err)
+        self.assertIn("chief-of-stuff.toml", err)
+
+    def test_a_clone_that_is_not_a_directory_is_refused_naming_it(self):
+        self.settings('[repos]\nalder = "no-such-clone"\n')
+        for how, given, named in (("an entry", "alder", "no-such-clone"), ("a path", str(self.root / "gone"), "gone")):
+            with self.subTest(how):
+                code, out, err = self.invoke("--clone", given)
+                self.assert_refused_with_nothing_made(code, out, err)
+                self.assertIn(named, err)
+                self.assertIn("not a directory", err)
+                self.assertNotIn("branch name", err, "the branch is fine; the repository is what is missing")
+
+    def test_an_empty_clone_is_refused(self):
+        self.settings('[repos]\nalder = "repo"\n')
+        code, out, err = self.invoke("--clone", "")
+        self.assert_refused_with_nothing_made(code, out, err)
+        self.assertIn("empty", err)
 
 
 if __name__ == "__main__":

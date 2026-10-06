@@ -1,0 +1,43 @@
+{
+  "tz": "America/Chicago",
+  "repo": {
+    "clone": "birch-checkout",
+    "origin": "birch-origin.git",
+    "trees": "trees",
+    "worktrees": [],
+    "files": {
+      "src/b/upload.py": "def upload(request):\n    path = request.get('path')\n    return open(path, 'wb')\n",
+      "src/b/__init__.py": "",
+      "notes/.keep": ""
+    }
+  },
+  "description": "#54: the settings name TWO repositories in `[repos]` (`alder`, `birch`) and the ready task is the birch project's, so the coordinator passes the project's name as `--clone birch`: not a path and not the other name. Two graders read the call and one reads the tree it cut. The tree grader alone cannot tell a name from a path, since `--clone birch-checkout` cuts the same tree; the call graders do. The harness builds one repository, so only `birch-checkout` is one: `alder-checkout` is a plain directory the fixture carries, and the wrong name fails on that too. The prompt asks for a dry-run worker launch so no worker process starts.",
+  "prompt": "Start the birch security audit. For this isolated test, use --dry-run for the worker launch and do not start a real worker process.",
+  "graders": [
+    {
+      "name": "a worktree call passes the project's name",
+      "rule": "`<repo>` is the repository's checkout directory; when the settings' `[repos]` table names that repository, pass the name instead.",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:make_worktree\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worktree)\\b(?:[^\"\\;&|]|\\\\[^nr])*?--clone(?:\\s+|=)\\\\?[\"']?birch(?![\\w./-])",
+      "min": 1
+    },
+    {
+      "name": "no worktree call passes any other clone value",
+      "rule": "`<repo>` is the repository's checkout directory; when the settings' `[repos]` table names that repository, pass the name instead.",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:make_worktree\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worktree)\\b(?:[^\"\\;&|]|\\\\[^nr])*?--clone(?:\\s+|=)(?!\\s)(?!\\\\?[\"']?birch(?![\\w./-]))",
+      "max": 0
+    },
+    {
+      "name": "the tree that was cut belongs to the project's repository",
+      "rule": "`<repo>` is the repository's checkout directory; when the settings' `[repos]` table names that repository, pass the name instead.",
+      "type": "file_matches",
+      "glob": "trees/*/.git",
+      "pattern": "^gitdir: .*/birch-checkout/\\.git/worktrees/"
+    }
+  ],
+  "max_turns": 22,
+  "timeout_seconds": 600
+}

@@ -20,7 +20,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import git_trees  # noqa: E402
 from md import section as _section  # noqa: E402
-from workspace import worktrees_dir  # noqa: E402
+from settings import SettingsError, load as load_settings  # noqa: E402
+from workspace import settings_path, worktrees_dir  # noqa: E402
 
 AGENT = re.compile(r"^\s*(?:[-*]\s*)?Agent:\s*(\S+)\s+(\S+)\s*$", re.MULTILINE)
 LIFETIMES = ("task", "standing")
@@ -127,6 +128,8 @@ def build(root: Path, clone: Path, trees: str, name: str, branch: str, agent_typ
     """Check everything that came out of a file, then make the tree. A refusal creates no worktree or branch (a fetch may
     already have moved origin/main)."""
     check_type((root / "CLAUDE.md").read_text() if (root / "CLAUDE.md").is_file() else "", agent_type)
+    if not clone.is_dir():
+        raise RefusedError(f"{clone} is not a directory; --clone names a [repos] entry or the repository's path")
     check_branch(branch, clone)
     path = resolve(root, trees, name)
     with clone_lock(clone):
@@ -149,6 +152,16 @@ def line(made: Made) -> str:
     return f"worktree {made.path} on {made.branch} off {made.base} {made.sha} for a {made.agent_type}"
 
 
+def pick_clone(root: Path, given: str) -> Path:
+    """The repository to cut from (#54): a `given` naming a `[repos]` entry is that entry's path, relative to `root`;
+    any other `given` is a path as it stands. Settings that cannot be read refuse, whatever `given` is."""
+    try:
+        repos = load_settings(root, settings_path((root / "CLAUDE.md").read_text())).repos
+    except (OSError, SettingsError) as exc:
+        raise RefusedError(str(exc)) from None
+    return root / repos[given] if given in repos else Path(given)  # an absolute value replaces the root
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--type", dest="agent_type", required=True, help="an agent type from the Coordinator block")
@@ -156,7 +169,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--branch", required=True, help="the new branch, cut from origin/main unless --from-local")
     ap.add_argument("--from-local", action="store_true", help="cut from local main, skipping the fetch of origin/main")
     ap.add_argument("--root", default=".", help="workspace root holding CLAUDE.md")
-    ap.add_argument("--clone", required=True, help="the repository the worktree belongs to")
+    ap.add_argument("--clone", required=True, help="the repository the worktree belongs to: a name from [repos] in the workspace settings, or the repository's path")
     args = ap.parse_args(argv)
 
     root = Path(args.root)
@@ -164,7 +177,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"make_worktree: no CLAUDE.md at {root}", file=sys.stderr)
         return 2
     try:
-        made = build(root, Path(args.clone), worktrees_dir((root / "CLAUDE.md").read_text()), args.name, args.branch, args.agent_type, args.from_local)
+        if args.clone == "":
+            raise RefusedError("--clone is empty; name a [repos] entry or the repository's path")
+        clone = pick_clone(root, args.clone)
+        made = build(root, clone, worktrees_dir((root / "CLAUDE.md").read_text()), args.name, args.branch, args.agent_type, args.from_local)
     except RefusedError as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 1

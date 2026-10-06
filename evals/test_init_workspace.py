@@ -54,6 +54,21 @@ class InitWorkspaceTest(unittest.TestCase):
                             (self.root / "chief-of-stuff.toml").read_text().splitlines() if line.startswith("# "))
         self.assertIn("implement", _models(tomllib.loads(example)["models"]))
 
+    def test_the_settings_carry_a_commented_repos_table_that_loads_once_uncommented(self):
+        # #54: a new workspace is told where the repositories `worktree` cuts from go, and has none until one is named.
+        self.assertEqual(self.run_init()[0], 0)
+        path = self.root / "chief-of-stuff.toml"
+        lines = path.read_text().splitlines()
+        self.assertIn("# [repos]", lines)
+        self.assertEqual(load_settings(self.root, "chief-of-stuff.toml").repos, {})
+        start = lines.index("# [repos]")
+        end = start + 1
+        while end < len(lines) and lines[end].startswith("# "):
+            end += 1
+        lines[start:end] = [line.removeprefix("# ") for line in lines[start:end]]
+        path.write_text("\n".join(lines) + "\n")
+        self.assertEqual(len(load_settings(self.root, "chief-of-stuff.toml").repos), 1)
+
     def test_existing_claude_content_is_preserved_and_a_second_init_refuses(self):
         claude = self.root / "CLAUDE.md"
         claude.write_text("# Existing rules\n\nKeep this.\n")
