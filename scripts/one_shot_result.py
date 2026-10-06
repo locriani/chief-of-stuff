@@ -32,6 +32,9 @@ def read_report(path: Path) -> dict:
     return data
 
 
+UNREADABLE = (OSError, ValueError, ToonDecodeError, RecursionError, UnicodeDecodeError)  # what a bad report file raises
+
+
 def clean(value: object) -> object:
     """A value with control characters (but newlines and tabs) removed; a mapping is not the launcher's shape."""
     if isinstance(value, str):
@@ -50,16 +53,16 @@ def main(argv: list[str] | None = None) -> int:
     for path in sorted((args.root / REPORTS_DIR).glob("*.toon")):
         try:
             runs.append((path.stat().st_mtime, path.stem, read_report(path)))
-        except (OSError, ValueError, ToonDecodeError, RecursionError, UnicodeDecodeError):
+        except UNREADABLE:
             skipped += 1
     if skipped:
         print(f"one-shot reports skipped: {skipped} could not be read", file=sys.stderr)
 
     if args.task is not None:
         task = args.task.strip()
-        items = {t.name.strip(): t.item.strip() for text in tracker_texts(args.root, warn=False)
-                 for t in parse_tracker(text).tasks if t.name.strip()}
-        found = [r for r in runs if r[2]["task"] in (task, items.get(task))]
+        items = {t.item.strip() for text in tracker_texts(args.root, warn=False)
+                 for t in parse_tracker(text).tasks if task and t.name.strip() == task}  # a name two rows share maps to nothing
+        found = [r for r in runs if r[2]["task"] == task] or [r for r in runs if len(items) == 1 and r[2]["task"] in items]
         if not found:
             print(f"no one-shot report for task '{task}'", file=sys.stderr)
             return 1

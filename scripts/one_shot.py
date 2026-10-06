@@ -22,6 +22,7 @@ import runtimes
 import tracker_write
 from _vendor.toon_format import ToonDecodeError, decode as toon_decode, encode as toon_encode
 from md import cells as _cells, is_separator as _is_separator
+from one_shot_result import UNREADABLE, read_report
 from process_status import PIDFILE, running_trees
 from tracker import parse_tracker
 from tracker_log import RELAUNCHED, ended_line, relaunch_line, started_line
@@ -369,6 +370,13 @@ def _launch(root: Path, cfg, chosen_day: str, task: str, cwd: Path, name: str, r
         raise
     # An earlier run's copy must not read as this run's if the launcher dies before reconciling.
     launcher_copy(root, cwd).unlink(missing_ok=True)
+    # A relaunch in a fresh tree leaves the old tree's copy; `result` would pick it by mtime. Other tasks' copies stay.
+    for copy in (root / dispatch_prompt.REPORTS_DIR).glob("*.toon"):
+        try:
+            if read_report(copy)["task"] == task:
+                copy.unlink()
+        except UNREADABLE:
+            pass
     env = clean_env()
     env["CHIEF_OF_STUFF_WORKSPACE"] = str(root.resolve())
     try:
