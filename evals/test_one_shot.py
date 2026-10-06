@@ -439,6 +439,7 @@ class RunTest(unittest.TestCase):
         self.tracker.write_text(TRACKER.replace("| unassigned | open |", "| worker01 | running 09:00 |"))
         before = one_shot.git_head(self.tree)
         (self.tree / ".chief-of-stuff").mkdir(exist_ok=True)
+        (self.tree / ".chief-of-stuff" / ".gitignore").write_text("*\n")  # as the launcher leaves it
         (self.tree / one_shot.RESULT).write_text('status: done\nreason: reviewed\nchanges: none\n')
         (self.tree / "partial.txt").write_text("partial work")
         subprocess.run(["git", "-C", str(self.tree), "add", "partial.txt"], check=True)
@@ -448,7 +449,9 @@ class RunTest(unittest.TestCase):
 
     def test_reconcile_holds_a_commit_when_it_is_told_the_task_is_read_only(self):
         # The tracker's cell says `src/a/`; what reconcile is told wins.
-        self.assertEqual(self._reconcile_a_commit(read_only=True)["status"], "human_review")
+        report = self._reconcile_a_commit(read_only=True)
+        self.assertEqual(report["status"], "human_review")
+        self.assertTrue(report["reason"].startswith("read-only task left changes:"), report["reason"])
 
     def test_reconcile_does_not_read_the_tracker_for_the_rule(self):
         self.tracker.write_text(TRACKER.replace("`src/a/`", "none; read-only review of the importer"))
