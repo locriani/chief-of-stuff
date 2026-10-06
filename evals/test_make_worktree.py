@@ -603,5 +603,87 @@ class ArgvTest(unittest.TestCase):
         self.assertIn('"--"', (Path(mw.__file__)).read_text())
 
 
+class SettingsCloneTest(CloneCase):
+    """#54: `[workers] clone` in the workspace's settings is the repository `--clone` names when it is omitted."""
+
+    def settings(self, toml: str, line: str = "- Settings: `chief-of-stuff.toml`\n"):
+        (self.root / "CLAUDE.md").write_text(CLAUDE + line)
+        (self.root / "chief-of-stuff.toml").write_text(toml)
+
+    def run_without_clone(self) -> tuple[int, str, str]:
+        """main with no `--clone`; argparse's exit comes back as a code, so a flag that is still required fails by assertion."""
+        argv = ["--type", "implementer", "--name", "wt-new", "--branch", "feat/new", "--root", str(self.root)]
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                code = mw.main(argv)
+            except SystemExit as exit:
+                code = exit.code
+        return code, out.getvalue(), err.getvalue()
+
+    def assert_refused_with_nothing_made(self, code: int, out: str, err: str):
+        self.assertEqual((code, out), (1, ""))
+        self.assertTrue(err.startswith("refused:"), err)
+        self.assertFalse(self.tree.exists())
+        self.assertEqual(self.branches(), "")
+
+    def test_an_omitted_clone_comes_from_the_settings_relative_to_the_workspace_root(self):
+        self.settings('[workers]\nclone = "repo"\n')
+        code, out, err = self.run_without_clone()
+        self.assertEqual(code, 0, err)
+        common = make_repo.git(["rev-parse", "--path-format=absolute", "--git-common-dir"], self.tree)
+        self.assertEqual(Path(common).resolve(), (self.clone / ".git").resolve(), "the tree belongs to the clone the settings name")
+        self.assertEqual(out, f"worktree {self.tree.resolve()} on feat/new off origin/main {rev(self.tree)[:7]} for a implementer\n")
+
+    def test_an_omitted_clone_may_be_an_absolute_path(self):
+        self.settings(f'[workers]\nclone = "{self.clone}"\n')
+        code, out, err = self.run_without_clone()
+        self.assertEqual(code, 0, err)
+        self.assertTrue((self.tree / ".git").exists())
+
+    def test_stderr_says_which_settings_entry_it_used_on_one_line_and_stdout_stays_the_report(self):
+        self.settings('[workers]\nclone = "repo"\n')
+        code, out, err = self.run_without_clone()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(err.splitlines()), 1, err)
+        self.assertIn("[workers] clone", err)
+        self.assertIn("repo", err)
+        self.assertNotIn("[workers] clone", out, "stdout is the line the next call reads")
+
+    def test_a_given_clone_is_used_whatever_the_settings_say(self):
+        for toml in ('[workers]\nclone = "elsewhere"\n', '[workers]\nclone = 3\n', "not toml ["):
+            with self.subTest(toml=toml):
+                self.settings(toml)
+                code, out, err = self.run_main()
+                self.assertEqual(code, 0, err)
+                self.assertEqual(err, "", "nothing came from the settings, so nothing says so")
+                make_repo.git(["worktree", "remove", "--force", str(self.tree)], self.clone)
+                make_repo.git(["branch", "-D", "feat/new"], self.clone)
+
+    def test_an_omitted_clone_the_settings_do_not_name_is_refused_naming_both_ways_to_give_it(self):
+        for name, toml, line in (
+            ("no Settings line", "", ""),
+            ("a Settings line with no file", None, "- Settings: `chief-of-stuff.toml`\n"),
+            ("no [workers] table", '[pages]\nworkers = 2\n', "- Settings: `chief-of-stuff.toml`\n"),
+            ("no clone key", '[workers]\nmode = "one-shot"\n', "- Settings: `chief-of-stuff.toml`\n"),
+        ):
+            with self.subTest(name):
+                self.settings(toml or "", line)
+                if toml is None:
+                    (self.root / "chief-of-stuff.toml").unlink()
+                code, out, err = self.run_without_clone()
+                self.assert_refused_with_nothing_made(code, out, err)
+                self.assertIn("--clone", err)
+                self.assertIn("[workers] clone", err)
+
+    def test_invalid_settings_with_no_clone_given_are_a_refusal_not_a_traceback(self):
+        for toml, about in (('[workers]\nclone = 3\n', "[workers] clone must be a path"), ('[workers]\nclone = " "\n', "[workers] clone must be a path"), ("not toml [", "chief-of-stuff.toml")):
+            with self.subTest(toml=toml):
+                self.settings(toml)
+                code, out, err = self.run_without_clone()
+                self.assert_refused_with_nothing_made(code, out, err)
+                self.assertIn(about, err)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -125,6 +125,18 @@ class SettingsTest(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(st.SettingsError):
                 st.load(self.root, self.write(f'[workers]\nmode = {value}\n'))
 
+    def test_worker_clone_is_absent_or_the_path_the_file_names(self):
+        # #54: the repository `chief-of-stuff worktree` cuts from when `--clone` is omitted; a relative path is
+        # relative to the workspace root, which the caller resolves.
+        self.assertIsNone(st.load(self.root, None).workers.clone)
+        self.assertIsNone(st.load(self.root, self.write('[workers]\nmode = "one-shot"\n')).workers.clone)
+        self.assertEqual(st.load(self.root, self.write('[workers]\nclone = "checkout"\n')).workers.clone, "checkout")
+
+    def test_worker_clone_that_is_blank_or_not_a_string_is_refused_naming_the_key(self):
+        for bad in ('""', '"  "', "3", "true", '["checkout"]', "{}"):
+            with self.subTest(bad=bad), self.assertRaisesRegex(st.SettingsError, r"\[workers\] clone must be a path"):
+                st.load(self.root, self.write(f"[workers]\nclone = {bad}\n"))
+
     def test_a_wrong_value_in_a_file_that_parses_is_a_settings_error_naming_its_table_and_key(self):
         # #47, Codex on PR #283: `gates = [["a"]]` raised TypeError from `set()` and `health` printed a traceback.
         # Rule: "the loader answers every wrong-typed value in a settings file with SettingsError naming the
