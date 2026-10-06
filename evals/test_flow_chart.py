@@ -418,7 +418,7 @@ class BoardTest(unittest.TestCase):
     def test_flow_sits_after_build_and_the_panels(self):
         html = rb.render(TODAY_TRACKER, self.cfg(), NOW, lanes=LANES, tracker_day=TODAY, kanban=KANBAN,
                          stage_log=[(YESTERDAY, YESTERDAY_TRACKER)])
-        build, panels, flow = html.index("<h2>Lanes</h2>"), html.index('class="panels"'), html.index("<h2>Flow · 24 hours</h2>")
+        build, panels, flow = html.index("<h2>Build</h2>"), html.index('class="panels"'), html.index("<h2>Flow · 24 hours</h2>")
         self.assertLess(build, panels)
         self.assertLess(panels, flow)
         self.assertIn('title="implement Fri 22:00–Sat 01:00', html)
@@ -440,11 +440,8 @@ class BoardTest(unittest.TestCase):
         self.assertNotIn(">approved", html[html.index("Flow · 24 hours"):])
 
     def test_no_stage_line_no_flow_and_no_chart_css(self):
-        """The board's own 24 HOURS strip (day_strip) reuses gantt.py and always renders (#242), and
-        gantt.py's own BASE_CSS already defines `.gantt-legend` — so neither is unique to the Flow
-        chart any more. `.gantt-legend .gantt-forecast:not([data-cat])` is flow_chart.css()'s own
-        addition on top of gantt.css() (see flow_chart.css), so its absence is what "no Flow chart
-        CSS" actually means now."""
+        """Without a stage line the board draws no Flow chart and none of flow_chart.css():
+        `.gantt-legend .gantt-forecast:not([data-cat])` is its own addition on top of gantt.css()."""
         plain = TODAY_TRACKER.split("- 00:30")[0]
         html = rb.render(plain, self.cfg(), NOW, lanes=LANES, tracker_day=TODAY, kanban=KANBAN)
         self.assertNotIn("Flow ·", html)
@@ -492,9 +489,7 @@ WAITING_TRACKER = """# Tracker
 
 def gantt_row(html: str, name: str) -> str:
     """The rendered `<div class="gantt-row">` for the Flow row named `name`, first match across both
-    Flow charts (24 hours, 7 days). The board's own day_strip section (#242) reuses gantt.py too and
-    sits earlier in the page with its own row for the same task name, so the search starts after the
-    first Flow heading rather than from the top of the page."""
+    Flow charts (24 hours, 7 days); the search starts at the first Flow heading."""
     flow_start = html.index("Flow · 24 hours")
     return next(r for r in re.findall(r'<div class="gantt-row">.*?</div>', html[flow_start:])
                 if f'<span class="gantt-name">{name}</span>' in r)
