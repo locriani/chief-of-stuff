@@ -156,7 +156,7 @@ class GitLabTest(unittest.TestCase):
             got = bs.refresh(root, NOW, call=call)
         # Every call goes to the host's GraphQL with the Backlog token; an open change adds one for its jobs and threads.
         self.assertEqual({(m, u, t) for m, u, t, _ in calls}, {("POST", "https://labs.example.test/api/graphql", "tok")})
-        self.assertIn('mergeRequests(iids: ["54"])', calls[0][3]["query"])
+        self.assertTrue(any('mergeRequests(iids: ["54"])' in c[3]["query"] for c in calls))
         change = got.changes["!54"]
         self.assertEqual((change.state, change.pipeline, change.approved, change.approvals, change.files, change.issues),
                          ("open", "pending", True, 1, ("src/search.py",), ("#115",)))
@@ -177,7 +177,7 @@ class GitLabTest(unittest.TestCase):
 
         with mock.patch.dict(os.environ, {"CHIEF_OF_STUFF_GITLAB_TOKEN": "tok"}):
             got = bs.refresh(root, NOW, call=call)
-        self.assertIn("diffHeadSha", calls[0]["query"])
+        self.assertTrue(any("diffHeadSha" in c["query"] for c in calls))
         self.assertEqual(got.changes["!54"].head, HEAD)
         self.assertEqual(bs.load(root / "pages").changes["!54"].head, HEAD)
 
@@ -307,8 +307,7 @@ class GitLabStageTwoTest(unittest.TestCase):
         self.refresh()
         main = [q for q in self.queries if "discussions" not in q and "jobs" not in q]
         detail = [q for q in self.queries if "discussions" in q or "jobs" in q]
-        self.assertEqual(len(main), 1)
-        self.assertIn("merged:", main[0])
+        self.assertEqual(sum("merged:" in q for q in main), 1)  # one query per connection; the merged page is one of them
         self.assertEqual(len(detail), 1)
         self.assertNotIn("merged:", detail[0])
         self.assertIn('mergeRequests(iids: ["54"])', detail[0])
@@ -423,17 +422,22 @@ def gl_mr(iid, merged_at=None):
             "diffHeadSha": HEAD}
 
 
+def refresh_rows(rows, gitlab):
+    """bs.refresh of a GitLab workspace whose tracker names one task per (issue, merge request) row."""
+    root = workspace("GitLab issues; host https://labs.example.test; project team/app")
+    head = TRACKER.split("| Rate limit |", 1)[0]
+    (root / "daily" / f"{DAY}-tracker.md").write_text(
+        head + "".join(f"| Task {k} | Item {k} | Robin | waiting | 01:00 |  | S | {issue} | {mr} |\n"
+                       for k, (issue, mr) in enumerate(rows)))
+    with mock.patch.dict(os.environ, {"CHIEF_OF_STUFF_GITLAB_TOKEN": "tok"}):
+        return bs.refresh(root, NOW, call=gitlab)
+
+
 class GitLabPastOnePageTest(unittest.TestCase):
     """GitLab answers at most 100 nodes a connection page; the board wants every issue and change the tracker names."""
 
     def refresh(self, rows, gitlab):
-        root = workspace("GitLab issues; host https://labs.example.test; project team/app")
-        head = TRACKER.split("| Rate limit |", 1)[0]
-        (root / "daily" / f"{DAY}-tracker.md").write_text(
-            head + "".join(f"| Task {k} | Item {k} | Robin | waiting | 01:00 |  | S | {issue} | {mr} |\n"
-                           for k, (issue, mr) in enumerate(rows)))
-        with mock.patch.dict(os.environ, {"CHIEF_OF_STUFF_GITLAB_TOKEN": "tok"}):
-            got = bs.refresh(root, NOW, call=gitlab)
+        got = refresh_rows(rows, gitlab)
         self.assertEqual(got.errors, {})
         return got
 
@@ -454,6 +458,88 @@ class GitLabPastOnePageTest(unittest.TestCase):
         got = self.refresh([("#1001", "")], FakeGitLab(issues=[gl_issue(1001)], mrs=merged))
         self.assertEqual(len(got.changes), 130)
         self.assertEqual(sorted(got.changes), sorted(f"!{n}" for n in range(3001, 3131)))
+
+
+# GitLab refuses a query whose complexity passes 250 ("Query has complexity of 281, which exceeds max complexity of
+# 250"). Its weights are private to its schema, so the model is calibrated on that report: every selected field
+# costs GL_FIELD_COST and a connection's page size does not (the live query asked for the most, 100, and reached
+# 281 from about 59 fields: 4.8 each, rounded to 5). A body's fields are the names left once string literals,
+# argument lists and aliases are taken out of it.
+GL_CAP, GL_FIELD_COST = 250, 5
+
+
+def gl_cost(query: str) -> int:
+    bare = re.sub(r"\([^)]*\)", " ", re.sub(r'"[^"]*"', '""', query))
+    return GL_FIELD_COST * (len(re.findall(r"\w+", re.sub(r"\w+\s*:", " ", bare))) - 1)  # less the word `query`
+
+
+def gl_connections(query: str) -> list[str]:
+    """The top-level connections a body asks for: issues, named (merge requests by iid), merged, or detail (named, with jobs)."""
+    return [kind if kind == "issues" else "merged" if re.match(r"\s*state\s*:\s*merged", args)
+            else "detail" if "discussions" in query else "named"
+            for kind, args in re.findall(r"\b(issues|mergeRequests)\s*\(([^)]*)\)", query)]
+
+
+class FailingGitLab(FakeGitLab):
+    """FakeGitLab that answers any query asking for the `fail` connection (issues, named, merged) with an error:
+    a transport error, or a GraphQL error body with no data."""
+
+    def __init__(self, fail, transport, **kw):
+        super().__init__(**kw)
+        self.fail, self.transport = fail, transport
+
+    def __call__(self, method, url, token, timeout, payload=None):
+        if self.fail in gl_connections(payload["query"]):
+            self.queries.append(payload["query"])
+            return (None, {}, "HTTP 500") if self.transport else ({"errors": [{"message": "Query has complexity of 281"}]}, {}, "")
+        return super().__call__(method, url, token, timeout, payload)
+
+
+class GitLabOneQueryPerConnectionTest(unittest.TestCase):
+    """#341: issues, named merge requests and the merged page go in a query each, so none passes the cap."""
+
+    ROWS = [(f"#{n}", f"!{n + 1000}") for n in range(1, 101)]  # a hundred named issues, a hundred named merge requests
+    MERGED = [gl_mr(n, f"{DAY}T06:{n % 60:02d}:00+00:00") for n in range(3001, 3131)]  # and two merged pages
+
+    def gitlab(self, cls=FakeGitLab, *args):
+        return cls(*args, issues=[gl_issue(n) for n in range(1, 101)], mrs=[gl_mr(n) for n in range(1001, 1101)] + self.MERGED)
+
+    def test_each_connection_has_its_own_post(self):
+        fake = self.gitlab()
+        refresh_rows(self.ROWS, fake)
+        asked = [gl_connections(q) for q in fake.queries]
+        self.assertTrue(all(len(a) == 1 for a in asked), asked)
+        self.assertTrue({"issues", "named", "merged"} <= {a[0] for a in asked}, asked)
+
+    def test_every_post_is_under_the_complexity_cap(self):
+        fake = self.gitlab()
+        refresh_rows(self.ROWS, fake)
+        self.assertEqual([c for c in map(gl_cost, fake.queries) if c > GL_CAP], [])
+
+    def test_the_assembled_board_is_the_same(self):
+        open_mr = {**gl_mr(1001), "headPipeline": {"status": "RUNNING", "jobs": {"nodes": [{"name": "unit-tests", "status": "SUCCESS", "duration": 4}]}},
+                   "discussions": {"nodes": [{"resolvable": True, "resolved": False, "notes": {"nodes": [
+                       {"author": {"username": "reviewer-a"}, "body": "Rename", "createdAt": "2026-09-26T06:30:00Z", "url": "u"}]}}]}}
+        merged = self.MERGED[0]
+        got = refresh_rows([("#1", "!1001"), ("#2", "")], FakeGitLab(issues=[gl_issue(1), gl_issue(2)], mrs=[open_mr, merged]))
+        self.assertEqual(got.errors, {})
+        self.assertEqual(sorted(got.issues), ["#1", "#2"])
+        self.assertEqual(got.issues["#1"], bs.Issue("#1", gl_issue(1)["webUrl"], "Issue 1", "open", (), "", None))
+        jobs, threads = bs._gl_detail(open_mr)
+        self.assertEqual(got.changes["!1001"], replace(bs._gl_change(open_mr, "robin"), jobs=jobs, threads=threads))
+        self.assertEqual(([j.name for j in jobs], [t.body for t in threads]), (["unit-tests"], ["Rename"]))
+        self.assertEqual(got.changes["!3001"], bs._gl_change(merged, "robin"))  # a merged change asks for no jobs or threads
+        self.assertEqual(sorted(got.changes), ["!1001", "!3001"])
+
+    def test_one_failing_connection_hides_no_other_connections_cards(self):
+        issues = {f"#{n}" for n in range(1, 101)}
+        named, merged = {f"!{n}" for n in range(1001, 1101)}, {f"!{n}" for n in range(3001, 3131)}
+        for fail, lost in (("issues", (issues, set(), set())), ("named", (set(), named, set())), ("merged", (set(), set(), merged))):
+            for transport in (True, False):
+                with self.subTest(fail=fail, transport=transport):
+                    got = refresh_rows(self.ROWS, self.gitlab(FailingGitLab, fail, transport))
+                    self.assertEqual((len(got.issues), len(got.changes)), (len(issues - lost[0]), len((named | merged) - lost[1] - lost[2])))
+                    self.assertTrue(got.errors.get("kanban") and got.errors.get("merge requests"), got.errors)
 
 
 class FakePulls:
