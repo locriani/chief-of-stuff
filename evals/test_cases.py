@@ -586,6 +586,73 @@ class CaseLintTest(unittest.TestCase):
             with self.subTest(gitdir=gitdir):
                 self.assertEqual(re.search(belongs["pattern"], gitdir, re.MULTILINE) is not None, owned)
 
+    def test_disjoint_one_shot_graders_quote_the_agent_file(self) -> None:
+        """#365 review R9: every grader that judges a launch quotes a sentence the agent file carries. The launch sentence is the
+        background one (its exact text is in test_dispatch_prompt's one-shot lint)."""
+        agent_text = (EVALS.parent / "agents" / "chief-of-stuff.md").read_text()
+        report, export, single, limits, handler, rows = spec(EVALS / "cases" / "one-shot-disjoint-tasks-launch-together")["graders"][:6]
+        for g in (report, export, single, limits, handler, rows):
+            self.assertIn(g["rule"], agent_text, g["name"])
+        # The graders that count launches quote the BACKGROUND sentence (one call each, background, no chain, no pipe); the one that
+        # holds back an overlapping task quotes LAUNCH. Both are pinned verbatim in test_dispatch_prompt's one-shot lint.
+        self.assertEqual({g["rule"] for g in (report, export, single)}, {report["rule"]})
+        self.assertEqual(report["rule"], "Give each launch its own Bash call with `run_in_background: true`; never chain launches with `;` or `&&`, "
+                                          "never pipe a launch, and never start one without the flag. "
+                                          "Add no `| head`, `| tail` or `| cut` to a launch: its whole output is read from the notification's output file.")
+        self.assertIn("overlap no running task", limits["rule"])
+        self.assertIn("launch the earlier row first and the other when it returns", limits["rule"])
+
+    def test_disjoint_one_shot_launch_graders_match_a_background_launch_and_nothing_else(self) -> None:
+        """#365 review R1-R3: what the graders count. `worker --check` and a `--dry-run` after `;` are not launches, a launch is one
+        simple command run in the background (the harness records `run_in_background` in the call's input), and a running or
+        overlapping task is graded by any launch of it, foreground or not. Cannot see: a loop over a shell variable."""
+        report, export, single, limits, handler, rows = spec(EVALS / "cases" / "one-shot-disjoint-tasks-launch-together")["graders"][:6]
+        self.assertEqual([(g["type"], g["tool"], g.get("min"), g.get("max")) for g in (report, export, single, limits, handler)],
+                         [("tool_used", "Bash", 1, None)] * 2 + [("tool_used", "Bash", None, 0)] * 3)
+        said = "chief-of-stuff worker --task 'Fix report writer' --dry-run"  # the model's prose about a call decides nothing
+
+        def hit(g: dict, command: str, background: bool = True) -> bool:
+            return grader_hits(g, "Bash", command=command, description=said, run_in_background=background)
+
+        def first(g: dict, command: str) -> bool:  # `run_in_background` ahead of the command, as a model may order the keys
+            return bool(re.search(g["input_match"], json.dumps({"run_in_background": True, "command": command})))
+
+        for g, name in ((report, "Fix report writer"), (export, "Fix export header")):
+            for command in (f"chief-of-stuff worker --root . --task '{name}' --dry-run", f'chief-of-stuff worker --task "{name}" --dry-run',
+                            f"python3 /r/chief_of_stuff.py worker --dry-run --task={name}",
+                            f"python3 /r/scripts/spawn_session.py --task '{name}' --dry-run",
+                            f"chief-of-stuff worker --task '{name}' --dry-run 2>&1",  # a redirect is no pipe
+                            f"chief-of-stuff worker --task '{name}' --dry-run > /dev/null 2>&1",
+                            f"cd /ws && chief-of-stuff worker --root . --task '{name}' --dry-run --one-shot\n"):
+                self.assertTrue(hit(g, command), command)
+            self.assertTrue(first(g, f"chief-of-stuff worker --task '{name}' --dry-run"))
+            for label, command, background in (
+                    ("a foreground launch", f"chief-of-stuff worker --task '{name}' --dry-run", False),
+                    ("a check", f"chief-of-stuff worker --check --root . --task '{name}' --one-shot", True),
+                    ("a check with a dry run", f"chief-of-stuff worker --check --task '{name}' --one-shot --dry-run", True),
+                    ("a check after the task", f"chief-of-stuff worker --task '{name}' --check --dry-run", True),
+                    ("a dry run after a semicolon", f"chief-of-stuff worker --task '{name}'; echo --dry-run", True),
+                    ("a piped launch", f"chief-of-stuff worker --one-shot --dry-run --task '{name}' 2>&1 | tail -8", True),
+                    ("a launch piped with stderr", f"chief-of-stuff worker --task '{name}' --dry-run |& tail -3", True),
+                    ("a launch piped to tee", f"chief-of-stuff worker --dry-run --task '{name}' | tee log.txt", True),                    ("a dry run on the next line", f"chief-of-stuff worker --task '{name}'\nchief-of-stuff worker --task 'Other' --dry-run", True),
+                    ("another task", "chief-of-stuff worker --task 'Fix upload handler' --dry-run", True),
+                    ("a mention", f"echo chief-of-stuff worker; cat tracker.md # --task '{name}' --dry-run", True),
+                    ("a worktree call", "chief-of-stuff worktree --name fix-it --branch b", True)):
+                self.assertFalse(hit(g, command, background), f"{label} for {name}")
+        # The running task and the one that overlaps it: any launch counts, a check does not (R1).
+        for g, name in ((limits, "Add upload limits"), (handler, "Fix upload handler")):
+            for command, background in ((f"chief-of-stuff worker --task '{name}' --dry-run", True), (f"chief-of-stuff worker --task '{name}' --dry-run", False),
+                                        (f"chief-of-stuff worker --task '{name}'", True), (f'chief-of-stuff worker --one-shot --task "{name}" --cwd t', False)):
+                self.assertTrue(hit(g, command, background), command)
+            for command in (f"chief-of-stuff worker --check --root . --task '{name}' --one-shot", f"chief-of-stuff worker --task '{name}' --one-shot --check",
+                            f"chief-of-stuff worker --check --task '{name}' --one-shot --dry-run"):
+                self.assertFalse(hit(g, command), command)
+        # One call launches one task: two `--task` arguments in one command that is not a check.
+        self.assertTrue(hit(single, "chief-of-stuff worker --task 'Fix report writer' --dry-run; chief-of-stuff worker --task 'Fix export header' --dry-run"))
+        self.assertFalse(hit(single, "chief-of-stuff worker --task 'Fix report writer' --dry-run"))
+        self.assertFalse(hit(single, "chief-of-stuff worker --check --task 'Fix report writer' --one-shot; chief-of-stuff worker --check --task 'Fix export header' --one-shot"))
+        self.assertFalse(hit(single, "chief-of-stuff worker --task 'Fix report writer' --dry-run; chief-of-stuff log --root . 'launched Fix report writer and Fix export header'"))
+
     def test_one_shot_in_flight_graders_enforce_sentences_the_agent_carries(self) -> None:
         """#53: a running one-shot is neither launched again (the readiness sentence) nor looked up with `ps`/`pgrep`, and is looked up with
         `processes`: both of those are the helper sentence, which sends liveness to the helper instead of `ps`/`pgrep`. Every grader quotes a

@@ -22,6 +22,7 @@ import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+import one_shot  # noqa: E402
 import spawn_session as ss  # noqa: E402
 
 CLAUDE = """# Workspace
@@ -1148,6 +1149,51 @@ class CheckTest(unittest.TestCase):
         tracker = TRACKER.replace("Security audit | unassigned", f"{self.STANDING} | unassigned"
                                   ).replace("| Security audit | `src/a/` |", f"| {self.STANDING} | `src/d/` |")
         return self.workspace(tracker, claude=self.BACKLOG)
+
+    def overlapping(self, other_state: str = "running 08:30", other_paths: str = "`src/a/upload.py`; worktree `trees/export` (feat/export)") -> str:
+        return TRACKER.replace("| Security audit | unassigned | open | 09:00 |  | Checklist: Security audit of the upload handler |\n",
+                               "| Security audit | unassigned | open | 09:00 |  | Checklist: Security audit of the upload handler |\n"
+                               f"| Export header | worker07 | {other_state} | 08:00 |  | Export |\n"
+                               ).replace("| Security audit | `src/a/` |\n", f"| Security audit | `src/a/` |\n| Export header | {other_paths} |\n")
+
+    def test_one_shot_check_reports_the_launchers_overlap_refusal_and_starts_nothing(self):
+        # #365 review R10: `--check --one-shot` refuses a row whose paths overlap a running row, with the text the launcher's
+        # own refusal carries (one rule, read once), so the coordinator learns before it launches. Nothing is written.
+        root = self.workspace(self.overlapping())
+        copy = root / "copy-tracker.md"
+        copy.write_text((root / "daily/2026-09-18-tracker.md").read_text())
+        with self.assertRaises(ValueError) as launcher:
+            one_shot.record_launch(copy, "Security audit", "worker01", "worktree `t` (b)", "claude", "", "10:00")
+        self.assertIn("Export header", str(launcher.exception))
+        self.assertIn("overlap", str(launcher.exception))
+        code, out, err = self.check(root, "--one-shot")
+        self.assertEqual((code, out), (1, ""))
+        self.assertEqual(err.strip(), f"refused: {launcher.exception}")
+
+    def test_one_shot_check_names_the_running_task_by_its_name_not_its_whole_item(self):
+        # #365 review: the same refusal as the launcher's, naming the running row by its `name` cell.
+        prompt = "Cap uploads at 25 MB across the form and the API. " * 8
+        tracker = TRACKER.replace(
+            "| item | owner | state | since | due | checklist |\n|---|---|---|---|---|---|\n"
+            "| Security audit | unassigned | open | 09:00 |  | Checklist: Security audit of the upload handler |\n",
+            "| name | item | owner | state | since | due | size | checklist |\n|---|---|---|---|---|---|---|---|\n"
+            f"| upload | {prompt} | worker07 | running 08:30 | 08:00 |  | M | Cap |\n"
+            "| audit | Security audit | unassigned | open | 09:00 |  | S | Inspect |\n"
+        ).replace("| Security audit | `src/a/` |\n", "| audit | `src/a/` |\n| upload | `src/a/upload.py`; worktree `trees/up` (feat/up) |\n")
+        root = self.workspace(tracker)
+        code, out, err = self.check(root, "--one-shot")
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("'upload'", err)
+        self.assertNotIn("Cap uploads", err)
+
+    def test_one_shot_check_passes_when_nothing_running_overlaps(self):
+        for label, state, paths in (("another path", "running 08:30", "`src/b/`"), ("read-only", "running 08:30", "none; read-only review of `src/a/`"),
+                                    ("ready only", "open", "`src/a/`"), ("not running", "waiting", "`src/a/`")):
+            with self.subTest(label):
+                root = self.workspace(self.overlapping(state, paths))
+                code, out, err = self.check(root, "--one-shot")
+                self.assertEqual((code, err), (0, ""))
+                self.assertTrue(out.startswith("# One-shot assignment"), out[:80])
 
     def test_a_standing_row_is_valid_only_when_check_is_given_its_name(self):
         """#61 review: `name` never reached compose, so a standing placeholder in a workspace with a backlog was refused

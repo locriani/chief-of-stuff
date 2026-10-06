@@ -670,6 +670,56 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         self.assertNotIn("The same explicit user approval for launching a new worker applies", dispatch)
         self.assertIn("dispatch ready `unassigned` tasks automatically", self._section("Check"))
 
+    SERIAL = re.compile(r"(?i)\bone at a time\b|\bsequential(?:ly)?\b|\bone by one\b|\bone after another\b|\bin the foreground\b|\bin turn\b|\bserial(?:ly|ize)?\b")
+
+    def _one_shot_paragraph(self, text):
+        return next(p for p in text.split("\n") if p.startswith('If `[workers] mode = "one-shot"`'))
+
+    def test_one_shot_tasks_with_no_shared_path_launch_together_in_the_background(self):
+        # #365, the user: "I literally intend for you to be a COORDINATOR of PARALLEL work, so why serialize?" The review (R8) found two
+        # Bash calls in one Claude Code message run one after the other, and a foreground launch blocks up to its 60-minute limit
+        # against Bash's 10-minute cap, so "in the same turn" alone serializes. Each of these sentences must stand verbatim in the
+        # one-shot paragraph (the line that starts `If `[workers] mode = "one-shot"``), and the eval graders quote the first.
+        #
+        #   LAUNCH   "Launch every ready one-shot task whose File ownership paths overlap no running task at once, in the same turn, each as its own launcher call started in the background (Bash `run_in_background: true`); a read-only task overlaps nothing; when two ready tasks overlap each other, launch the earlier row first and the other when it returns."
+        #   BACKGROUND "Give each launch its own Bash call with `run_in_background: true`; never chain launches with `;` or `&&`, never pipe a launch, and never start one without the flag."
+        #   NOPIPE   "Add no `| head`, `| tail` or `| cut` to a launch: its whole output is read from the notification's output file." (the eval graders quote BACKGROUND and NOPIPE together, as the file has them: NOPIPE straight after BACKGROUND)
+        #   NOTIFY   "A background launch's completion notification only says the launch ended: name the task in its Bash description, and on the notification read that task's report with `chief-of-stuff result --root . --task <task>`, then reconcile it, sync the issue's Kanban state and report that task before using its result."
+        #   DECIDE   "Overlap is decided by `chief-of-stuff worker --check --root . --task <name> --one-shot` and by the launcher's own refusal, which compares File ownership with every running row (`scripts/ownership.py`), not by eye; run overlapping tasks one after the other."
+        #   REFUSAL  "A launcher refusal for overlap, or for the concurrency cap (`max_concurrency` under `[workers]`), is not a blocker: leave the task `open` and launch it when a running task returns."
+        #   FAILURE  "When one launch fails mid-batch the others keep running; do not retry a held or failed task without resolving its blocker."
+        #   PLACE    "Do not dispatch a standing placeholder this way; a launcher call starts exactly one task."
+        # And stay: "Write none of these yourself, before or during the run; it changes the row again when it returns."
+        # Gone: "Run tasks sequentially in the foreground", "more than one task this way", "before selecting the next ready task".
+        paragraph = self._one_shot_paragraph(self.content)
+        for required in (
+            "Launch every ready one-shot task whose File ownership paths overlap no running task at once, in the same turn, each as its own launcher call started in the background (Bash `run_in_background: true`); a read-only task overlaps nothing; when two ready tasks overlap each other, launch the earlier row first and the other when it returns.",
+            "Give each launch its own Bash call with `run_in_background: true`; never chain launches with `;` or `&&`, never pipe a launch, and never start one without the flag.",
+            "Add no `| head`, `| tail` or `| cut` to a launch: its whole output is read from the notification's output file.",
+            "A background launch's completion notification only says the launch ended: name the task in its Bash description, and on the notification read that task's report with `chief-of-stuff result --root . --task <task>`, then reconcile it, sync the issue's Kanban state and report that task before using its result.",
+            "Overlap is decided by `chief-of-stuff worker --check --root . --task <name> --one-shot` and by the launcher's own refusal, which compares File ownership with every running row (`scripts/ownership.py`), not by eye; run overlapping tasks one after the other.",
+            "A launcher refusal for overlap, or for the concurrency cap (`max_concurrency` under `[workers]`), is not a blocker: leave the task `open` and launch it when a running task returns.",
+            "When one launch fails mid-batch the others keep running; do not retry a held or failed task without resolving its blocker.",
+            "Do not dispatch a standing placeholder this way; a launcher call starts exactly one task.",
+            "Write none of these yourself, before or during the run; it changes the row again when it returns.",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, paragraph)
+        for gone in ("Run tasks sequentially in the foreground", "more than one task this way", "before selecting the next ready task"):
+            self.assertNotIn(gone, paragraph)
+        self.assertEqual(self.SERIAL.findall(paragraph), [], "the one-shot paragraph serializes launches")
+
+    def test_a_sentence_that_serializes_one_shot_launches_fails_the_lint(self):
+        # #365 review R6: presence checks alone pass a file that says both. Appending any of these to the real paragraph must trip the lint.
+        paragraph = self._one_shot_paragraph(self.content)
+        for contradiction in ("Run one-shot tasks one at a time.", "Launch tasks sequentially.", "Run them one by one.",
+                              "Run each launcher call in the foreground.", "Start the next task after another returns, in turn.",
+                              "One after another, launch the tasks."):
+            with self.subTest(contradiction=contradiction):
+                mutated = self.content.replace(paragraph, paragraph + " " + contradiction)
+                self.assertNotEqual(mutated, self.content)
+                self.assertNotEqual(self.SERIAL.findall(self._one_shot_paragraph(mutated)), [])
+
     def test_resume_step_2_task_state_uses_waiting_or_orphaned_not_stopped(self):
         self.assertIn("stops update task state to `waiting` or `orphaned`", self.content)
         self.assertNotIn("stops update task state to `stopped` or `orphaned`", self.content)

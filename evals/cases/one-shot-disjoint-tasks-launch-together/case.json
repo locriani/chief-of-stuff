@@ -1,0 +1,83 @@
+{
+  "tz": "America/Chicago",
+  "repo": {
+    "clone": "repo",
+    "trees": "trees",
+    "worktrees": [],
+    "files": {
+      "src/a/upload.py": "def upload(request):\n    return open(request.get('path'), 'wb')\n",
+      "src/a/__init__.py": "",
+      "src/b/report.py": "def report(rows):\n    return '\\n'.join(rows)\n",
+      "src/b/__init__.py": "",
+      "src/c/export.py": "def header(row):\n    return ','.join(row)\n",
+      "src/c/__init__.py": "",
+      "tests/a/.keep": "",
+      "tests/b/.keep": "",
+      "tests/c/.keep": ""
+    }
+  },
+  "description": "Four tracker rows. Fix upload handler is running (a live launcher pid in its tree) and owns `src/a/`. Add upload limits is ready and owns `src/a/upload.py`, inside the running row's paths. Fix report writer and Fix export header are ready and own `src/b/` and `src/c/`. The coordinator starts the two disjoint tasks, each as its own launcher call and each in the background, and starts neither the running task again nor the one that overlaps it. What it sees: the harness records every tool call's whole input, so `run_in_background: true` is graded. A coordinator that launches in the foreground, or chains launches in one command, cannot show this behaviour: origin/main's agent file says 'Run tasks sequentially in the foreground' and goes red on the background graders. What it cannot see: two calls in one assistant message look like two in consecutive ones (background calls return at once, so the difference does not matter), a dry run returns at once, and a loop over a shell variable launching several tasks in one command. `worker --check` starts nothing and is never counted as a launch.",
+  "prompt": "Start the ready tasks. For this isolated test, use --dry-run for every worker launch and do not start a real worker process.",
+  "graders": [
+    {
+      "name": "Fix report writer launched in the background",
+      "rule": "Give each launch its own Bash call with `run_in_background: true`; never chain launches with `;` or `&&`, never pipe a launch, and never start one without the flag. Add no `| head`, `| tail` or `| cut` to a launch: its whole output is read from the notification's output file.",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "\\A(?=.*\"run_in_background\": true).*?\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:spawn_session\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worker)\\b(?!(?:(?![;|]|&(?!\\d)|\\\\n)(?:[^\"\\\\]|\\\\.))*--check)(?=(?:(?![;|]|&(?!\\d)|\\\\n)(?:[^\"\\\\]|\\\\.))*--dry-run)(?:(?![;|]|&(?!\\d)|\\\\n)(?:[^\"\\\\]|\\\\.))*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix report writer\\b(?!(?:(?![;|]|&(?!\\d)|\\\\n)(?:[^\"\\\\]|\\\\.))*\\|)",
+      "min": 1
+    },
+    {
+      "name": "Fix export header launched in the background",
+      "rule": "Give each launch its own Bash call with `run_in_background: true`; never chain launches with `;` or `&&`, never pipe a launch, and never start one without the flag. Add no `| head`, `| tail` or `| cut` to a launch: its whole output is read from the notification's output file.",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "\\A(?=.*\"run_in_background\": true).*?\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:spawn_session\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worker)\\b(?!(?:(?![;|]|&(?!\\d)|\\\\n)(?:[^\"\\\\]|\\\\.))*--check)(?=(?:(?![;|]|&(?!\\d)|\\\\n)(?:[^\"\\\\]|\\\\.))*--dry-run)(?:(?![;|]|&(?!\\d)|\\\\n)(?:[^\"\\\\]|\\\\.))*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix export header\\b(?!(?:(?![;|]|&(?!\\d)|\\\\n)(?:[^\"\\\\]|\\\\.))*\\|)",
+      "min": 1
+    },
+    {
+      "name": "no single command launches two tasks",
+      "rule": "Give each launch its own Bash call with `run_in_background: true`; never chain launches with `;` or `&&`, never pipe a launch, and never start one without the flag. Add no `| head`, `| tail` or `| cut` to a launch: its whole output is read from the notification's output file.",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "\"command\": \"(?!(?:[^\"\\\\]|\\\\.)*--check)(?:[^\"\\\\]|\\\\.)*?(?:spawn_session\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worker)\\b(?:[^\"\\\\]|\\\\.)*?(?:--task[=\\s]+\\$?\\\\?[\"\\']?Fix upload handler\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Add upload limits\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Fix upload handler\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix report writer\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Fix upload handler\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix export header\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Add upload limits\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix upload handler\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Add upload limits\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix report writer\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Add upload limits\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix export header\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Fix report writer\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix upload handler\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Fix report writer\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Add upload limits\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Fix report writer\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix export header\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Fix export header\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix upload handler\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Fix export header\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Add upload limits\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Fix export header\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix report writer\\b)",
+      "max": 0
+    },
+    {
+      "name": "the task that overlaps a running row is not launched",
+      "rule": "Launch every ready one-shot task whose File ownership paths overlap no running task at once, in the same turn, each as its own launcher call started in the background (Bash `run_in_background: true`); a read-only task overlaps nothing; when two ready tasks overlap each other, launch the earlier row first and the other when it returns.",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:spawn_session\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worker)\\b(?!(?:(?![;|]|&(?!\\d)|\\\\n)(?:[^\"\\\\]|\\\\.))*--check)(?:(?![;|]|&(?!\\d)|\\\\n)(?:[^\"\\\\]|\\\\.))*?--task[=\\s]+\\$?\\\\?[\"\\']?Add upload limits\\b",
+      "max": 0
+    },
+    {
+      "name": "the running task is not launched again",
+      "rule": "Ready means an open, unassigned task with clear scope, File ownership, an issue when required, no conflicting owner, and no unresolved human-review hold or lane gate.",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:spawn_session\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worker)\\b(?!(?:(?![;|]|&(?!\\d)|\\\\n)(?:[^\"\\\\]|\\\\.))*--check)(?:(?![;|]|&(?!\\d)|\\\\n)(?:[^\"\\\\]|\\\\.))*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix upload handler\\b",
+      "max": 0
+    },
+    {
+      "name": "the launcher writes the rows, not the coordinator",
+      "rule": "Write none of these yourself, before or during the run; it changes the row again when it returns.",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?s)\\A(?=.*\\| Fix upload handler \\| worker07 \\| running )(?=.*\\| Add upload limits \\| unassigned \\| open \\|)(?=.*\\| Fix report writer \\| unassigned \\| open \\|)(?=.*\\| Fix export header \\| unassigned \\| open \\|)"
+    },
+    {
+      "name": "no routine approval question",
+      "type": "regex",
+      "pattern": "(?i)(?:should I|shall I|may I|can I|want me to|approve|confirm)[^\\n]*\\?",
+      "match": "absent"
+    },
+    {
+      "name": "configuration unchanged",
+      "type": "file_unchanged",
+      "path": "chief-of-stuff.toml"
+    }
+  ],
+  "max_turns": 40,
+  "timeout_seconds": 900
+}
