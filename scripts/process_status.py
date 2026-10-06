@@ -24,8 +24,8 @@ from workspace import ConfigError, read_config, worktrees_dir
 
 # `<launcher pid> <task>` while a one-shot runs in this tree; the count behind `[workers] max_concurrency`.
 PIDFILE = Path(".chief-of-stuff") / "one-shot.pid"
-# The pid file and the tree's name are a worker's to write, so `processes` prints neither raw: a task only when a tracker
-# holds it, at most this many characters; a tree name only when it is `[A-Za-z0-9._-]`. The readers below return them raw.
+# The pid file and the tree's name are a worker's to write, so neither is printed raw: `processes` shows a task only when a
+# tracker holds it, at most this many characters; it and `result` show a tree name only when it is `[A-Za-z0-9._-]`. The readers below return them raw.
 TASK_MAX = 200
 TREE_NAME = re.compile(r"[A-Za-z0-9._-]+")
 

@@ -638,7 +638,16 @@ class CaseLintTest(unittest.TestCase):
                         "P=/r/plugin/chief_of_stuff.py; python3 $P result --root . --task 'Rate limit headers'",
                         'python3 "$P" result --root . --task "Rate limit headers"', "ls\nchief-of-stuff result --root . --task $'Rate limit headers'",
                         "/usr/local/bin/chief-of-stuff result --root . --task 'Rate limit headers' | head",
-                        "chief-of-stuff result --task 'Rate limit headers' --root . && echo done"):
+                        "chief-of-stuff result --task 'Rate limit headers' --root . && echo done",
+                        # the plugin form the agent file prescribes (agents/chief-of-stuff.md), quoted paths, and the TZ prefix run.py allows
+                        'python3 ${CLAUDE_PLUGIN_ROOT}/chief_of_stuff.py result --root . --task "Rate limit headers"',
+                        "python3 \"$CLAUDE_PLUGIN_ROOT/chief_of_stuff.py\" result --root . --task 'Rate limit headers'",
+                        'python3 "/opt/plugin/chief_of_stuff.py" result --root . --task "Rate limit headers"',
+                        "TZ=America/Chicago chief-of-stuff result --root . --task 'Rate limit headers'",
+                        'TZ=America/Chicago python3 ${CLAUDE_PLUGIN_ROOT}/chief_of_stuff.py result --root . --task "Rate limit headers"',
+                        "cd \"/my ws\" && chief-of-stuff result --root . --task 'Rate limit headers'",
+                        "out=$(chief-of-stuff result --root . --task 'Rate limit headers')",
+                        'chief-of-stuff result --root . --task="Rate limit headers"'):
             self.assertTrue(hit(called, command), command)
         # `--root` is part of the quoted call: without it the command exits 2, and an attempt counts.
         for command in ("chief-of-stuff result --root .", "chief-of-stuff result --root . --task 'Draft release notes'",
@@ -658,22 +667,40 @@ class CaseLintTest(unittest.TestCase):
                         "chief-of-stuff result --root . | chief-of-stuff processes --task 'Rate limit headers'",
                         "chief-of-stuff result --root . & chief-of-stuff processes --task 'Rate limit headers'",
                         "chief-of-stuff result --root . # --task 'Rate limit headers'",
-                        "chief-of-stuff result --root .\nchief-of-stuff processes --task 'Rate limit headers'"):
+                        "chief-of-stuff result --root .\nchief-of-stuff processes --task 'Rate limit headers'",
+                        # Only a command's start counts: `result` after `echo`, in a comment, in a quote or in a heredoc is text, not a run
+                        "echo chief-of-stuff result --root . --task 'Rate limit headers'",
+                        "echo python3 ${CLAUDE_PLUGIN_ROOT}/chief_of_stuff.py result --root . --task 'Rate limit headers'",
+                        "true # ; chief-of-stuff result --root . --task 'Rate limit headers'",
+                        "# chief-of-stuff result --root . --task 'Rate limit headers'",
+                        "echo \"run: | chief-of-stuff result --root . --task 'Rate limit headers'\"",
+                        "echo 'run; chief-of-stuff result --root . --task \"Rate limit headers\"'",
+                        "cat <<'EOF'\nchief-of-stuff result --root . --task 'Rate limit headers'\nEOF",
+                        "cat > notes.txt <<EOF\nchief-of-stuff result --root . --task 'Rate limit headers'\nEOF",
+                        # the whole task is named, not a prefix of a longer one
+                        "chief-of-stuff result --root . --task 'Rate limit headers XYZ'", 'chief-of-stuff result --root . --task "Rate limit headers 2"',
+                        'python3 ${CLAUDE_PLUGIN_ROOT}/chief_of_stuff.py result --root . --task "Rate limit headers (old)"'):
             self.assertFalse(hit(called, command), command)
 
-        # The report, the worker's stdout log, anything in a tree's private directory, and the launcher's own copies (`result` reads those). Cannot see: a glob after a `cd`
-        # (`cd trees/rate-limit && cat .chief-of-stuff/*`), or a path built from variables.
+        # The report, the worker's stdout log, anything in a tree's private directory, and the launcher's own copies (`result` reads those), by name,
+        # glob or `.toon` suffix. Cannot see: a path built from variables, or a read after a `cd` that names no private path.
         for command in ("cat trees/rate-limit/.chief-of-stuff/one-shot-report.toon", "head -50 trees/rate-limit/.chief-of-stuff/worker-stdout.log",
                         "tail -n 20 /w/trees/rate-limit/.chief-of-stuff/worker-stdout.log", "python3 -c 'print(open(\"one-shot-report.toon\").read())'",
                         "grep reason trees/rate-limit/.chief-of-stuff/one-shot-report.toon", "cd trees/rate-limit && sed -n 1,5p .chief-of-stuff/one-shot-report.toon",
                         "cat .chief-of-stuff/reports/rate-limit.toon", "ls .chief-of-stuff/reports/", "head -50 /w/.chief-of-stuff/reports/rate-limit.toon",
                         "cd .chief-of-stuff/reports && cat *", "less trees/rate-limit/.chief-of-stuff/findings.md", "ls trees/rate-limit/.chief-of-stuff/", "awk 1 /w/trees/x/.chief-of-stuff/draft.md",
                         # a bare file name (after a `cd`, or from a find): only the file-name alternatives see these
-                        "cat one-shot-report.toon", "cat worker-stdout.log"):
+                        "cat one-shot-report.toon", "cat worker-stdout.log",
+                        # a glob names the same files: in the tree's private directory, in the launcher's reports, or by their suffix
+                        "cat trees/rate-limit/.chief*/one-shot*", "cat trees/*/.chief*/*", "head .chief-of-stuff/rep*/*",
+                        "cat .chief-of-stuff//reports/rate-limit.toon", "cat .chief-of-stuff/*/rate-limit.toon",
+                        "cd trees/rate-limit && cat .chief-of-stuff/*", "cat /w/.chief-of-stuff/r?ports/*",
+                        "find . -name '*.toon' -exec cat {} +", "find trees -name '*.toon' | xargs cat", "cat reports/rate-limit.toon"):
             self.assertTrue(hit(shell, command), command)
         for command in ("chief-of-stuff result --root . --task 'Rate limit headers'", "cat daily/tracker.md", "chief-of-stuff tracker tasks --not done",
                         "cat trees/rate-limit/src/a/headers.py", "ls trees", "cat .chief-of-stuff/mailbox/notes.md", "git -C trees/rate-limit status",
-                        "chief-of-stuff processes --root ."):
+                        "chief-of-stuff processes --root .", "cat chief-of-stuff.toml", "ls .chief-of-stuff/mailbox/*.md",
+                        "chief-of-stuff inbox --root ."):
             self.assertFalse(hit(shell, command), command)
         for path in ("/w/trees/rate-limit/.chief-of-stuff/one-shot-report.toon", "trees/rate-limit/.chief-of-stuff/worker-stdout.log",
                      "trees/rate-limit/.chief-of-stuff/draft.md", "one-shot-report.toon", "worker-stdout.log",
@@ -681,6 +708,16 @@ class CaseLintTest(unittest.TestCase):
             self.assertTrue(grader_hits(files, "Read", file_path=path), path)
         self.assertTrue(grader_hits(files, "Grep", pattern="reason", path="/w/trees/rate-limit/.chief-of-stuff/one-shot-report.toon"))
         self.assertTrue(grader_hits(files, "Grep", pattern="reason", path="/w/.chief-of-stuff/reports"))
+        # a Grep or Read that names the private directory itself, or the files by a glob or suffix, reads the same reports
+        for path in ("trees/*/.chief*/*", ".chief-of-stuff//reports/rate-limit.toon", "/w/.chief-of-stuff/rep*/*"):
+            self.assertTrue(grader_hits(files, "Read", file_path=path), path)
+        for tool_input in ({"pattern": "reason", "path": ".chief-of-stuff"}, {"pattern": "reason", "path": "/w/.chief-of-stuff/"},
+                           {"pattern": "reason", "glob": "*.toon"}, {"pattern": "reason", "path": "trees/*/.chief*"},
+                           {"pattern": "reason", "path": "/w", "glob": "**/.chief-of-stuff/**"}):
+            self.assertTrue(grader_hits(files, "Grep", **tool_input), tool_input)
+        for tool_input in ({"pattern": "reason", "path": ".chief-of-stuff/mailbox"}, {"pattern": "reason", "glob": "*.md"},
+                           {"pattern": "reason", "path": "daily"}):
+            self.assertFalse(grader_hits(files, "Grep", **tool_input), tool_input)
         for path in ("daily/2026-10-06-tracker.md", "trees/rate-limit/src/a/headers.py", ".chief-of-stuff/mailbox/a.md", "CLAUDE.md"):
             self.assertFalse(grader_hits(files, "Read", file_path=path), path)
         self.assertFalse(grader_hits(files, "Edit", file_path="trees/rate-limit/.chief-of-stuff/one-shot-report.toon"))  # tool name must match

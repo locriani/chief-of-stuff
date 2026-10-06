@@ -12,28 +12,11 @@ import argparse
 import sys
 from pathlib import Path
 
-from _vendor.toon_format import ToonDecodeError, decode as toon_decode, encode as toon_encode
+from _vendor.toon_format import encode as toon_encode
 from dispatch_prompt import CONTROL, REPORT_KEYS, REPORTS_DIR, TRACKER_ERROR
-from git_trees import read_regular
+from one_shot_report import UNREADABLE, read_report
 from process_status import shown_tree, tracker_texts
 from tracker import parse_tracker
-
-LIMIT = 1 << 20  # a report is a few lines; the cap bounds what a runaway writer could leave
-
-
-def read_report(path: Path) -> dict:
-    """The report at `path`, or ValueError when it is a link, too big, not TOON, or not the launcher's shape."""
-    raw = read_regular(path, LIMIT + 1, nofollow=True)
-    if raw is None or len(raw) > LIMIT:
-        raise ValueError("not a report")
-    data = toon_decode(raw.decode())
-    if not (isinstance(data, dict) and all(isinstance(data.get(k), str) for k in ("task", "worker", "status"))):
-        raise ValueError("not a report")
-    return data
-
-
-UNREADABLE = (OSError, ValueError, ToonDecodeError, RecursionError, UnicodeDecodeError)  # what a bad report file raises
-
 
 def clean(value: object) -> object:
     """A value with control characters (but newlines and tabs) removed; a mapping is not the launcher's shape."""
@@ -61,7 +44,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.task is not None:
         task = args.task.strip()
         items = {t.item.strip() for text in tracker_texts(args.root, warn=False)
-                 for t in parse_tracker(text).tasks if task and t.name.strip() == task}  # a name two rows share maps to nothing
+                 for t in parse_tracker(text).tasks if task and t.name.strip() == task} - {""}  # a name two rows share maps to nothing
         found = [r for r in runs if r[2]["task"] == task] or [r for r in runs if len(items) == 1 and r[2]["task"] in items]
         if not found:
             print(f"no one-shot report for task '{task}'", file=sys.stderr)
