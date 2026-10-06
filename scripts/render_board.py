@@ -156,8 +156,8 @@ def merged_today(sources: board_sources.Sources, now: datetime) -> list[board_so
 
 
 def build_columns(tasks: list[Task], lanes: dict | None, kanban: Kanban | None = None,
-                  sources: board_sources.Sources = board_sources.EMPTY, now: datetime | None = None) -> tuple[list[columns.Column], columns.Column]:
-    """The Build board: a column per lane stage, a card per task at it, and the tasks with no lane in the footer.
+                  sources: board_sources.Sources = board_sources.EMPTY, now: datetime | None = None) -> list[columns.Column]:
+    """The Build board: a column per lane stage, a card per task at it.
     Sources add each card's changes and marks, and a `main` column of the changes merged today."""
     lanes = lanes or {}
     gates = {g for lane in lanes.values() for g in lane.gates}
@@ -208,7 +208,7 @@ def build_columns(tasks: list[Task], lanes: dict | None, kanban: Kanban | None =
             cols.append(columns.Column("main", cards))
         else:
             cols[at] = replace(cols[at], cards=cols[at].cards + cards)
-    return cols, columns.Column("no lane", tuple(card(t) for t in tasks if not (t.lane.strip() and t.stage.strip())))
+    return cols
 
 
 def _plural(n: int, word: str) -> str:
@@ -314,13 +314,12 @@ def render(tracker_text: str, cfg: Config, now: datetime, lanes: dict | None = N
 
     issues = sum(1 for t in tasks if t.issue.strip())
     changes = sum(1 for c in sources.changes.values() if c.state == "open")
-    no_lane_count = sum(1 for t in tasks if not t.standing and not (t.lane.strip() and t.stage.strip()))
     workers = worker_names(sources)
     # A task's stage for drift/hold purposes, computed once, keyed by the task: every nameless task shares the blank name.
     stages = {t: effective_stage(t, sources, lanes or {}) for t in tasks}
-    build_cols, no_lane = build_columns(tasks, lanes, kanban, sources, now)
+    build_cols = build_columns(tasks, lanes, kanban, sources, now)
     build_html = (f'<section id="flow"><h2>Build</h2>\n<div class="meta">{_plural(issues, "issue")} · {_plural(changes, "merge request")}</div>\n'
-                  f'{columns.render(build_cols, no_lane if no_lane.cards else None)}</section>\n')
+                  f'{columns.render(build_cols)}</section>\n')
     flow_moves = [m for day, text in [*(stage_log or []), (tracker_day or today, tracker_text)]
                   for m in tracker_log.moves(text, day, zone)]
     known = [t for _, text in stage_log or [] for t in parse_tracker(text).tasks] + tasks
@@ -344,7 +343,7 @@ def render(tracker_text: str, cfg: Config, now: datetime, lanes: dict | None = N
     pending = decisions or []
     meta = [f"rendered {now:%H:%M} {now:%Z}", f"tracker {(tracker_at or now).astimezone(zone):%H:%M}",
             *(f"{k} {sources.fetched[k].astimezone(zone):%H:%M}" for k in ("kanban", "merge requests", "workers") if k in sources.fetched),
-            _tasks(len(tasks)), f"{no_lane_count} in no lane"]
+            _tasks(len(tasks))]
     head = panels.Header(f"Board · {now.strftime('%a %d %b')}", tuple(meta), now, nearest.name, nearest.at,
                          tuple(f"{k}: {why}" for k, why in sources.errors.items()))
     # BLOCKED counts the ON HOLD cards (Flow.dc.html v22), by the flag that draws them.
