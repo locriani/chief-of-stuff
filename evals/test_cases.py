@@ -35,6 +35,14 @@ VERIFIED = re.compile(r"^- Verified \d{2}:\d{2}:")
 SESSION_KEYS = {"ref", "name", "state", "started_hours_ago", "started_minutes_ago"}
 
 
+REPOS_RULE = "The repository is a name from the settings' `[repos]` table, passed as `--clone <name>`; omit `--clone` when the table has one entry."
+
+
+def grader_hits(g: dict, tool: str, **tool_input) -> bool:
+    """Whether a tool_use grader's `tool` and `input_match` fire on a call, as run.py matches them."""
+    return bool(re.fullmatch(g["tool"], tool) and re.search(g["input_match"], json.dumps(tool_input)))
+
+
 def spec(case: Path) -> dict:
     return json.loads((case / "case.json").read_text())
 
@@ -446,47 +454,99 @@ class CaseLintTest(unittest.TestCase):
                     self.assertIn("verified", rb.resume_fields(rb.parse_resume(text)), f"{case.name}: {f.name}: Verified parsed but not drawn")
 
     def test_worktree_clone_graders_enforce_a_sentence_the_agent_carries(self) -> None:
-        """#54: the graders quote the one sentence that sends the coordinator to the settings for the repository. Two read the call
-        (a `worktree` call, one with `--clone` in it) and one reads the tree the call cut. The issue's other clause, that no runtime
-        config or git is read to find the repository, has no agent sentence and so no grader here."""
-        rule = "The repository is the settings' `[workers] clone`; pass `--clone <repo>` only when the user names a different repository."
+        """#54: the graders quote the one sentence that sends the coordinator to the settings' `[repos]` table for the repository. Two
+        read the call (a `worktree` call, one with `--clone` in it) and one reads the tree the call cut. With one entry the call omits
+        `--clone`. The issue's other clause, that no runtime config or git is read to find the repository, has no agent sentence and
+        so no grader here."""
         agent_text = (EVALS.parent / "agents" / "chief-of-stuff.md").read_text()
         case = EVALS / "cases" / "worktree-clone-comes-from-settings"
         s = spec(case)
         self.assertNotIn("golden", s)
         cut, clone, belongs = s["graders"]
         for g in (cut, clone, belongs):
-            self.assertEqual(g["rule"], rule, g["name"])
+            self.assertEqual(g["rule"], REPOS_RULE, g["name"])
             self.assertIn(g["rule"], agent_text, g["name"])
         self.assertEqual([(g["type"], g.get("min"), g.get("max")) for g in (cut, clone)], [("tool_used", 1, None), ("tool_used", None, 0)])
         self.assertEqual(belongs["type"], "file_matches")
         # The agent file's call carries no `--clone`; the sentence is how the flag is still allowed.
         command = next(l for l in agent_text.splitlines() if l.startswith("chief-of-stuff worktree"))
         self.assertNotIn("--clone", command)
-        # The fixture names the clone the case builds, through the file its `Settings:` line names.
-        self.assertEqual(s["repo"]["clone"], "alder-checkout")
+        # The fixture's one `[repos]` entry names the clone the case builds, through the file its `Settings:` line names.
         fixture = case / "fixture"
         named = settings_path((fixture / "CLAUDE.md").read_text())
         self.assertEqual(named, "chief-of-stuff.toml")
-        self.assertEqual(load_settings(fixture, named).workers.clone, s["repo"]["clone"])
-
-        def hits(g: dict, tool: str, **tool_input) -> bool:
-            return bool(re.fullmatch(g["tool"], tool) and re.search(g["input_match"], json.dumps(tool_input)))
+        self.assertEqual(load_settings(fixture, named).repos, {"alder": s["repo"]["clone"]})
+        self.assertEqual(s["repo"]["clone"], "alder-checkout")
 
         worktree = "chief-of-stuff worktree --type implementer --name audit --branch feat/audit --root ."
         for command, cuts, carries in (
             (worktree, True, False),
-            (f"{worktree} --clone alder-checkout", True, True),
+            (f"{worktree} --clone alder", True, True),
             (f'python3 "$PLUGIN/scripts/make_worktree.py" --type implementer --name a --branch b --root . --clone x', True, True),
             (f"{worktree} && chief-of-stuff worker --type implementer --cwd trees/audit --clone-not-a-flag-here", True, False),
             ("chief-of-stuff worker --type implementer --cwd trees/audit --task 'Security audit'", False, False),
         ):
             with self.subTest(command=command):
-                self.assertEqual(hits(cut, "Bash", command=command), cuts)
-                self.assertEqual(hits(clone, "Bash", command=command), carries)
+                self.assertEqual(grader_hits(cut, "Bash", command=command), cuts)
+                self.assertEqual(grader_hits(clone, "Bash", command=command), carries)
         # A tree's `.git` file names the repository it was cut from: the settings' clone, not a sibling that shares its prefix.
         for gitdir, owned in (("gitdir: /ws/alder-checkout/.git/worktrees/audit", True), ("gitdir: /ws/repo/.git/worktrees/audit", False),
                               ("gitdir: /ws/alder-checkout-old/.git/worktrees/audit", False), ("gitdir: /ws/x/alder-checkout/.git/worktrees/a", True)):
+            with self.subTest(gitdir=gitdir):
+                self.assertEqual(re.search(belongs["pattern"], gitdir, re.MULTILINE) is not None, owned)
+
+    def test_worktree_clone_name_graders_enforce_the_same_sentence_over_two_repositories(self) -> None:
+        """#54: the settings name two repositories and the ready task is one project's, so the call must carry that project's name as
+        `--clone <name>`: not the other name, not a path to either checkout. The harness builds one clone, so the other `[repos]` entry
+        points at a plain directory the fixture carries."""
+        agent_text = (EVALS.parent / "agents" / "chief-of-stuff.md").read_text()
+        case = EVALS / "cases" / "worktree-clone-is-a-repos-name"
+        s = spec(case)
+        self.assertNotIn("golden", s)
+        cut, names, other, belongs = s["graders"]
+        for g in (cut, names, other, belongs):
+            self.assertEqual(g["rule"], REPOS_RULE, g["name"])
+            self.assertIn(g["rule"], agent_text, g["name"])
+        self.assertEqual([(g["type"], g.get("min"), g.get("max")) for g in (cut, names, other)],
+                         [("tool_used", 1, None), ("tool_used", 1, None), ("tool_used", None, 0)])
+        self.assertEqual(belongs["type"], "file_matches")
+        fixture = case / "fixture"
+        repos = load_settings(fixture, settings_path((fixture / "CLAUDE.md").read_text())).repos
+        self.assertEqual(repos, {"alder": "alder-checkout", "birch": "birch-checkout"})
+        self.assertEqual(s["repo"]["clone"], repos["birch"], "the repository the harness builds is the task's")
+        self.assertTrue((fixture / repos["alder"]).is_dir(), "the other entry names a directory, not nothing")
+        self.assertFalse((fixture / repos["alder"] / ".git").exists())
+        # The task is plainly the birch project's, in the places a coordinator reads.
+        tracker = next((fixture / "daily").glob("*-tracker.md")).read_text()
+        self.assertIn("birch", s["prompt"].lower())
+        self.assertRegex(tracker, r"(?m)^\| Birch security audit \|")
+        self.assertRegex(tracker, r"(?m)^- Birch security audit: .*birch")
+        self.assertNotIn("alder", tracker.lower())
+
+        worktree = "chief-of-stuff worktree --type implementer --name audit --branch feat/audit --root ."
+        for command, named, wrong in (
+            (worktree, False, False),
+            (f"{worktree} --clone birch", True, False),
+            (f"{worktree} --clone=birch", True, False),
+            (f'{worktree} --clone "birch"', True, False),
+            (f"{worktree} --clone 'birch'", True, False),
+            (f"{worktree} --clone birch && chief-of-stuff worker --type implementer --cwd trees/audit", True, False),
+            (f'python3 "$PLUGIN/scripts/make_worktree.py" --type implementer --name a --branch b --root . --clone birch', True, False),
+            (f"{worktree} --clone birch-checkout", False, True),
+            (f"{worktree} --clone ./birch-checkout", False, True),
+            (f"{worktree} --clone birchwood", False, False),
+            (f"{worktree} --clone alder", False, True),
+            (f"{worktree} --clone alder-checkout", False, True),
+            (f"{worktree} --clone birch --from-local && ls alder-checkout", True, False),
+            (f"{worktree} && chief-of-stuff worker --type implementer --cwd trees/audit --clone birch", False, False),
+            ("chief-of-stuff worker --type implementer --cwd alder", False, False),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(grader_hits(names, "Bash", command=command), named)
+                self.assertEqual(grader_hits(other, "Bash", command=command), wrong)
+        # The gitdir names the task's repository, not the other entry's and not a sibling that shares its prefix.
+        for gitdir, owned in (("gitdir: /ws/birch-checkout/.git/worktrees/audit", True), ("gitdir: /ws/alder-checkout/.git/worktrees/audit", False),
+                              ("gitdir: /ws/birch-checkout-old/.git/worktrees/audit", False)):
             with self.subTest(gitdir=gitdir):
                 self.assertEqual(re.search(belongs["pattern"], gitdir, re.MULTILINE) is not None, owned)
 
