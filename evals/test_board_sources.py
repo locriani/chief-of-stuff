@@ -12,7 +12,7 @@ import time
 import unittest
 from contextlib import redirect_stdout
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest import mock
 from zoneinfo import ZoneInfo
@@ -177,7 +177,10 @@ class GitLabTest(unittest.TestCase):
 
         with mock.patch.dict(os.environ, {"CHIEF_OF_STUFF_GITLAB_TOKEN": "tok"}):
             got = bs.refresh(root, NOW, call=call)
-        self.assertTrue(any("diffHeadSha" in c["query"] for c in calls))
+        # The jobs-and-threads query runs for open changes only, so a merged change keeps its head from these two.
+        by_kind = {gl_connections(c["query"])[0]: c["query"] for c in calls}
+        self.assertIn("diffHeadSha", by_kind["named"])
+        self.assertIn("diffHeadSha", by_kind["merged"])
         self.assertEqual(got.changes["!54"].head, HEAD)
         self.assertEqual(bs.load(root / "pages").changes["!54"].head, HEAD)
 
@@ -422,15 +425,23 @@ def gl_mr(iid, merged_at=None):
             "diffHeadSha": HEAD}
 
 
-def refresh_rows(rows, gitlab):
-    """bs.refresh of a GitLab workspace whose tracker names one task per (issue, merge request) row."""
+def gitlab_workspace(rows):
+    """A GitLab workspace whose tracker names one task per (issue, merge request) row."""
     root = workspace("GitLab issues; host https://labs.example.test; project team/app")
     head = TRACKER.split("| Rate limit |", 1)[0]
     (root / "daily" / f"{DAY}-tracker.md").write_text(
         head + "".join(f"| Task {k} | Item {k} | Robin | waiting | 01:00 |  | S | {issue} | {mr} |\n"
                        for k, (issue, mr) in enumerate(rows)))
+    return root
+
+
+def refresh_gitlab(root, now, gitlab):
     with mock.patch.dict(os.environ, {"CHIEF_OF_STUFF_GITLAB_TOKEN": "tok"}):
-        return bs.refresh(root, NOW, call=gitlab)
+        return bs.refresh(root, now, call=gitlab)
+
+
+def refresh_rows(rows, gitlab):
+    return refresh_gitlab(gitlab_workspace(rows), NOW, gitlab)
 
 
 class GitLabPastOnePageTest(unittest.TestCase):
@@ -461,16 +472,55 @@ class GitLabPastOnePageTest(unittest.TestCase):
 
 
 # GitLab refuses a query whose complexity passes 250 ("Query has complexity of 281, which exceeds max complexity of
-# 250"). Its weights are private to its schema, so the model is calibrated on that report: every selected field
-# costs GL_FIELD_COST and a connection's page size does not (the live query asked for the most, 100, and reached
-# 281 from about 59 fields: 4.8 each, rounded to 5). A body's fields are the names left once string literals,
-# argument lists and aliases are taken out of it.
-GL_CAP, GL_FIELD_COST = 250, 5
+# 250"). gl_score() is GitLab's rule as its source states it (Types::BaseField#field_resolver_complexity and
+# Resolvers::BaseResolver.complexity_multiplier), with the per-field weights fitted to what gitlab.com's
+# `queryComplexity { score }` answered for these bodies on 2026-10-06 (FROZEN below, each to the point):
+#   a leaf field                      1, GL_LEAF where GitLab charges more
+#   an object field, and `nodes`      1 + its children
+#   a connection (a field with a `nodes` child)
+#                                     int((its children + 1, and 1 more directly under the project) * (1 + page * m))
+#                                     page = min(first, 100), and 100 when no `first:` is given; m = 0.05 when the
+#                                     connection takes an `iids:` list, else 0.01; GL_FLAT connections are not scaled
+#   the project                       1
+GL_CAP = 250
+GL_LEAF = {"mergedAt": 5, "approved": 2, "diffHeadSha": 2, "mergeableDiscussionsState": 2, "detailedMergeStatus": 2}
+GL_FLAT = {"approvedBy", "discussions"}
 
 
-def gl_cost(query: str) -> int:
-    bare = re.sub(r"\([^)]*\)", " ", re.sub(r'"[^"]*"', '""', query))
-    return GL_FIELD_COST * (len(re.findall(r"\w+", re.sub(r"\w+\s*:", " ", bare))) - 1)  # less the word `query`
+def gl_score(query: str) -> int:
+    args = []
+    text = re.sub(r"\(([^)]*)\)", lambda m: f" ARGS{args.append(m[1]) or len(args) - 1} ", query)
+    toks, at = re.findall(r"ARGS\d+|\w+|[{}:]", text), [2]  # past `query {`
+
+    def fields():
+        out = []
+        while toks[at[0]] != "}":
+            name, arg, kids = toks[at[0]], "", None
+            at[0] += 1
+            if toks[at[0]] == ":":  # an alias: the field is the name after it
+                name, at[0] = toks[at[0] + 1], at[0] + 2
+            if toks[at[0]].startswith("ARGS"):
+                arg, at[0] = args[int(toks[at[0]][4:])], at[0] + 1
+            if toks[at[0]] == "{":
+                at[0] += 1
+                kids = fields()
+            out.append((name, arg, kids))
+        at[0] += 1
+        return out
+
+    def cost(name, arg, kids, top):
+        if kids is None:
+            return GL_LEAF.get(name, 1)
+        inner = sum(cost(*k, False) for k in kids)
+        if name == "nodes":
+            return 1 + inner
+        if any(k[0] == "nodes" for k in kids):
+            first = re.search(r"first\s*:\s*(\d+)", arg)
+            page = 0 if name in GL_FLAT else min(int(first[1]) if first else 100, 100)
+            return int((inner + 1 + top) * (1 + page * (0.05 if "iids" in arg else 0.01)))
+        return 1 + inner + (name == "diffStats")
+
+    return sum(1 + sum(cost(*k, True) for k in project[2]) for project in fields())
 
 
 def gl_connections(query: str) -> list[str]:
@@ -480,19 +530,97 @@ def gl_connections(query: str) -> list[str]:
             for kind, args in re.findall(r"\b(issues|mergeRequests)\s*\(([^)]*)\)", query)]
 
 
-class FailingGitLab(FakeGitLab):
-    """FakeGitLab that answers any query asking for the `fail` connection (issues, named, merged) with an error:
-    a transport error, or a GraphQL error body with no data."""
+TRANSPORT, NO_DATA, BESIDE = "transport", "no data", "beside data"
+ERR = "Query has complexity of 281"
 
-    def __init__(self, fail, transport, **kw):
-        super().__init__(**kw)
-        self.fail, self.transport = fail, transport
+
+class SelectingGitLab(FakeGitLab):
+    """FakeGitLab that answers only the fields a body names, as GitLab does."""
 
     def __call__(self, method, url, token, timeout, payload=None):
-        if self.fail in gl_connections(payload["query"]):
-            self.queries.append(payload["query"])
-            return (None, {}, "HTTP 500") if self.transport else ({"errors": [{"message": "Query has complexity of 281"}]}, {}, "")
-        return super().__call__(method, url, token, timeout, payload)
+        body, headers, err = super().__call__(method, url, token, timeout, payload)
+        asked = set(re.findall(r"\w+", payload["query"]))
+        for project in body["data"].values():
+            for connection in (project or {}).values():
+                connection["nodes"] = [{k: v for k, v in n.items() if k in asked} for n in connection["nodes"]]
+        return body, headers, err
+
+
+class FailingGitLab(FakeGitLab):
+    """FakeGitLab that answers a body asking for the `fail` connection (issues, named, merged, detail) with an error
+    in `mode`: a transport error, a GraphQL error body with no data, or GraphQL errors beside the data. Every body
+    it was sent, the failing one too, is in `queries`."""
+
+    def __init__(self, fail, mode, **kw):
+        super().__init__(**kw)
+        self.fail, self.mode = fail, mode
+
+    def __call__(self, method, url, token, timeout, payload=None):
+        if self.fail not in gl_connections(payload["query"]):
+            return super().__call__(method, url, token, timeout, payload)
+        if self.mode == BESIDE:
+            body, headers, err = super().__call__(method, url, token, timeout, payload)
+            return {**body, "errors": [{"message": ERR}]}, headers, err
+        self.queries.append(payload["query"])
+        return (None, {}, "HTTP 500") if self.mode == TRANSPORT else ({"errors": [{"message": ERR}]}, {}, "")
+
+
+class DownGitLab(FakeGitLab):
+    """A host that answers nothing: every body fails as a transport error, or as an error body with no data."""
+
+    def __init__(self, mode, **kw):
+        super().__init__(**kw)
+        self.mode = mode
+
+    def __call__(self, method, url, token, timeout, payload=None):
+        self.queries.append(payload["query"])
+        return (None, {}, "HTTP 502") if self.mode == TRANSPORT else ({"errors": [{"message": ERR}]}, {}, "")
+
+
+# The board's selections as of #341's fix, frozen, with what gitlab.com answered for a body made of each (its probe's
+# own 3 taken off): the scorer is tested against them, and the bodies main sent in one query are rebuilt from them.
+FROZEN_ISSUE = "iid webUrl title state description labels { nodes { title } } closedAt"
+FROZEN_CHANGE = ("iid webUrl title state draft mergedAt targetBranch description approved conflicts "
+                 "approvedBy { nodes { username } } headPipeline { status } diffStats { path additions deletions } diffHeadSha")
+FROZEN_DETAIL = ("iid headPipeline { jobs { nodes { name status duration } } } discussions { nodes { resolvable resolved "
+                 "notes(first: 1) { nodes { author { username } body createdAt url } } } }")
+FROZEN_IIDS = json.dumps([str(n) for n in range(1, 101)])
+FROZEN_ISSUES = f"issues(iids: {FROZEN_IIDS}) {{ nodes {{ {FROZEN_ISSUE} }} }}"
+FROZEN_NAMED = f"mergeRequests(iids: {FROZEN_IIDS}) {{ nodes {{ {{CHANGE}} }} }}"
+FROZEN_MERGED = ('merged: mergeRequests(state: merged, mergedAfter: "2026-09-26T00:00:00-05:00") '
+                 f"{{ nodes {{ {FROZEN_CHANGE} }} pageInfo {{ hasNextPage endCursor }} }}")
+
+
+def frozen_body(*fields):
+    return 'query { p0: project(fullPath: "team/app") { ' + " ".join(fields) + " } }"
+
+
+def frozen_named(extra=""):
+    return FROZEN_NAMED.replace("{CHANGE}", FROZEN_CHANGE + extra)
+
+
+FROZEN = {"issues": (frozen_body(FROZEN_ISSUES), 91), "named": (frozen_body(frozen_named()), 181),
+          "merged": (frozen_body(FROZEN_MERGED), 67),
+          "detail": (frozen_body(f"mergeRequests(iids: {FROZEN_IIDS}) {{ nodes {{ {FROZEN_DETAIL} }} }}"), 157),
+          "main's one query": (frozen_body(FROZEN_ISSUES, frozen_named(), FROZEN_MERGED), 337)}
+
+
+class GitLabComplexityModelTest(unittest.TestCase):
+    """The scorer the next tests rely on is GitLab's, not a figure the board's author picked."""
+
+    def test_the_scorer_gives_the_scores_gitlab_answered(self):
+        self.assertEqual({k: gl_score(q) for k, (q, _) in FROZEN.items()}, {k: score for k, (_, score) in FROZEN.items()})
+
+    def test_the_query_main_sent_was_over_the_cap(self):
+        # GitLab answered 340 (337 and its probe's 3) from gitlab.com's 200 limit, and the live board 281 of 250.
+        self.assertGreater(gl_score(FROZEN["main's one query"][0]), GL_CAP)
+
+    def test_a_named_body_with_eleven_more_fields_is_over_the_cap(self):
+        # The model must not pass what GitLab rejects: 11 more merge request fields (nine at 1, two at 2) took gitlab.com's
+        # answer to 262, so 259 here.
+        extra = " createdAt updatedAt reference sourceBranch squashOnMerge userNotesCount upvotes downvotes commitCount " \
+                "mergeableDiscussionsState detailedMergeStatus"
+        self.assertGreater(gl_score(frozen_body(frozen_named(extra))), GL_CAP)
 
 
 class GitLabOneQueryPerConnectionTest(unittest.TestCase):
@@ -509,12 +637,34 @@ class GitLabOneQueryPerConnectionTest(unittest.TestCase):
         refresh_rows(self.ROWS, fake)
         asked = [gl_connections(q) for q in fake.queries]
         self.assertTrue(all(len(a) == 1 for a in asked), asked)
-        self.assertTrue({"issues", "named", "merged"} <= {a[0] for a in asked}, asked)
+        self.assertTrue({"issues", "named", "merged", "detail"} <= {a[0] for a in asked}, asked)
 
     def test_every_post_is_under_the_complexity_cap(self):
         fake = self.gitlab()
         refresh_rows(self.ROWS, fake)
-        self.assertEqual([c for c in map(gl_cost, fake.queries) if c > GL_CAP], [])
+        self.assertEqual({(tuple(gl_connections(q)), gl_score(q)) for q in fake.queries if gl_score(q) > GL_CAP}, set())
+
+    def test_every_iids_connection_asks_for_exactly_its_chunk(self):
+        # With no `first:` GitLab prices a connection at 100 nodes whatever it names: a named body scored 184 for 1 iid
+        # or 100, and 35 with `first: 1`.
+        for count, chunks in ((1, [1]), (7, [7]), (100, [100]), (150, [100, 50])):
+            with self.subTest(iids=count):
+                fake = FakeGitLab(issues=[gl_issue(n) for n in range(1, count + 1)], mrs=[gl_mr(n) for n in range(1001, 1001 + count)])
+                refresh_rows([(f"#{n}", f"!{n + 1000}") for n in range(1, count + 1)], fake)
+                asked = [(gl_connections(q)[0], len(re.findall(r'"\d+"', m[1])), (re.search(r"first\s*:\s*(\d+)", m[1]) or [0, None])[1])
+                         for q in fake.queries for m in re.finditer(r"\(([^)]*iids[^)]*)\)", q)]
+                self.assertEqual([a for a in asked if a[2] is None or int(a[2]) != a[1]], [])
+                self.assertEqual([a[1] for a in asked if a[0] == "named"], chunks)
+
+    def test_a_merged_change_keeps_its_head_commit(self):
+        # The jobs-and-threads query runs for open changes only: a merged change's head comes from the merged body.
+        merged = gl_mr(3001, f"{DAY}T06:00:00+00:00")
+        fake = SelectingGitLab(issues=[gl_issue(1)], mrs=[gl_mr(1001), merged])
+        got = refresh_rows([("#1", "!1001")], fake)
+        by_kind = {gl_connections(q)[0]: q for q in fake.queries}
+        self.assertIn("diffHeadSha", by_kind["named"])
+        self.assertIn("diffHeadSha", by_kind["merged"])
+        self.assertEqual((got.changes["!1001"].head, got.changes["!3001"].head), (HEAD, HEAD))
 
     def test_the_assembled_board_is_the_same(self):
         open_mr = {**gl_mr(1001), "headPipeline": {"status": "RUNNING", "jobs": {"nodes": [{"name": "unit-tests", "status": "SUCCESS", "duration": 4}]}},
@@ -531,15 +681,97 @@ class GitLabOneQueryPerConnectionTest(unittest.TestCase):
         self.assertEqual(got.changes["!3001"], bs._gl_change(merged, "robin"))  # a merged change asks for no jobs or threads
         self.assertEqual(sorted(got.changes), ["!1001", "!3001"])
 
-    def test_one_failing_connection_hides_no_other_connections_cards(self):
-        issues = {f"#{n}" for n in range(1, 101)}
-        named, merged = {f"!{n}" for n in range(1001, 1101)}, {f"!{n}" for n in range(3001, 3131)}
-        for fail, lost in (("issues", (issues, set(), set())), ("named", (set(), named, set())), ("merged", (set(), set(), merged))):
-            for transport in (True, False):
-                with self.subTest(fail=fail, transport=transport):
-                    got = refresh_rows(self.ROWS, self.gitlab(FailingGitLab, fail, transport))
-                    self.assertEqual((len(got.issues), len(got.changes)), (len(issues - lost[0]), len((named | merged) - lost[1] - lost[2])))
-                    self.assertTrue(got.errors.get("kanban") and got.errors.get("merge requests"), got.errors)
+
+class GitLabPanelsTest(unittest.TestCase):
+    """A refresh after a good one. The kanban panel is the issues, the merge requests panel is the changes (named, merged
+    and their jobs and threads); each keeps its last good cards and fetched time when its own connection fails, and
+    carries only its own error."""
+
+    LATER = NOW + timedelta(minutes=5)
+    CONNECTIONS = ["issues", "named", "merged", "detail"]
+    PANEL = {"issues": "kanban", "named": "merge requests", "merged": "merge requests", "detail": "merge requests"}
+    UNIT = {"headPipeline": {"status": "RUNNING", "jobs": {"nodes": [{"name": "unit-tests", "status": "SUCCESS", "duration": 4}]}},
+            "discussions": {"nodes": []}}
+
+    def fake(self, cls=FakeGitLab, *args, title="Issue 1"):
+        return cls(*args, issues=[{**gl_issue(1), "title": title}, gl_issue(2)],
+                   mrs=[{**gl_mr(1001), **self.UNIT, "title": title}, gl_mr(1002), gl_mr(3001, f"{DAY}T06:00:00+00:00")])
+
+    def setUp(self):
+        self.root = gitlab_workspace([("#1", "!1001"), ("#2", "!1002")])
+        self.first = refresh_gitlab(self.root, NOW, self.fake())
+        self.assertEqual((self.first.errors, sorted(self.first.changes)), ({}, ["!1001", "!1002", "!3001"]))
+        self.assertEqual([j.name for j in self.first.changes["!1001"].jobs], ["unit-tests"])
+
+    def again(self, cls=FakeGitLab, *args):
+        """A refresh five minutes on, with issue 1 and merge request 1001 renamed: what a panel that updated shows."""
+        fake = self.fake(cls, *args, title="Renamed")
+        got = refresh_gitlab(self.root, self.LATER, fake)
+        self.assertEqual(bs.load(self.root / "pages"), got)
+        return got, fake
+
+    def kinds(self, fake):
+        return [gl_connections(q)[0] for q in fake.queries]
+
+    def test_a_failed_connection_leaves_its_panel_as_it_was_and_the_other_fresh(self):
+        for fail in ("issues", "named", "merged"):
+            with self.subTest(fail=fail):
+                stale = self.PANEL[fail]
+                fresh = "kanban" if stale == "merge requests" else "merge requests"
+                got, _ = self.again(FailingGitLab, fail, NO_DATA)
+                self.assertEqual((got.fetched[stale], got.fetched[fresh]), (NOW, self.LATER), f"{fail} fails: (stale panel, fresh panel) fetched")
+                self.assertEqual(set(got.errors), {stale})
+                self.assertIn("complexity", got.errors[stale])
+                if stale == "kanban":
+                    self.assertEqual((got.issues, got.changes["!1001"].title), (self.first.issues, "Renamed"))
+                else:
+                    self.assertEqual((got.changes, got.issues["#1"].title), (self.first.changes, "Renamed"))
+
+    def test_every_connection_failing_keeps_the_last_good_cache(self):
+        for mode in (TRANSPORT, NO_DATA):
+            with self.subTest(mode=mode):
+                got, fake = self.again(DownGitLab, mode)
+                self.assertEqual((got.issues, got.changes), (self.first.issues, self.first.changes))
+                self.assertEqual((got.fetched["kanban"], got.fetched["merge requests"], got.fetched["workers"]), (NOW, NOW, self.LATER))
+                self.assertEqual(set(got.errors), {"kanban", "merge requests"})
+                self.assertTrue(all(got.errors[p] in ("HTTP 502", ERR) for p in ("kanban", "merge requests")), got.errors)
+
+    def test_graphql_errors_beside_data_keep_the_cards_and_name_their_panel(self):
+        for fail in self.CONNECTIONS:
+            with self.subTest(fail=fail):
+                got, _ = self.again(FailingGitLab, fail, BESIDE)
+                self.assertEqual(set(got.errors), {self.PANEL[fail]})
+                self.assertIn("complexity", got.errors[self.PANEL[fail]])
+                self.assertEqual((got.issues["#1"].title, got.changes["!1001"].title), ("Renamed", "Renamed"))
+                self.assertEqual(sorted(got.changes), ["!1001", "!1002", "!3001"])
+                self.assertEqual((got.fetched["kanban"], got.fetched["merge requests"]), (self.LATER, self.LATER))
+
+    def test_a_failed_detail_request_leaves_the_open_changes_without_jobs_or_threads(self):
+        for mode in (TRANSPORT, NO_DATA):
+            with self.subTest(mode=mode):
+                got, _ = self.again(FailingGitLab, "detail", mode)
+                self.assertEqual(sorted(got.changes), ["!1001", "!1002", "!3001"])
+                self.assertEqual([(c.state, c.jobs, c.threads) for c in map(got.changes.get, ("!1001", "!1002"))], [("open", (), ())] * 2)
+                self.assertEqual((got.issues["#1"].title, got.changes["!1001"].title), ("Renamed", "Renamed"))
+                self.assertEqual(set(got.errors), {"merge requests"})
+                self.assertEqual((got.fetched["kanban"], got.fetched["merge requests"]), (self.LATER, self.LATER))
+
+    def test_the_requests_are_issues_named_merged_then_detail(self):
+        self.assertEqual(self.kinds(self.again()[1]), self.CONNECTIONS)
+
+    def test_a_graphql_error_on_one_connection_does_not_stop_the_others(self):
+        for fail in self.CONNECTIONS:
+            for mode in (NO_DATA, BESIDE):
+                with self.subTest(fail=fail, mode=mode):
+                    asked = [k for k in self.CONNECTIONS if not (fail == "named" and mode == NO_DATA and k == "detail")]  # no open change to detail
+                    self.assertEqual(self.kinds(self.again(FailingGitLab, fail, mode)[1]), asked)
+
+    def test_after_a_transport_error_no_further_request_is_sent(self):
+        # A host that is down costs one timeout, not one for each request left.
+        for sent, fail in enumerate(self.CONNECTIONS, 1):
+            with self.subTest(fail=fail):
+                self.assertEqual(self.kinds(self.again(FailingGitLab, fail, TRANSPORT)[1]), self.CONNECTIONS[:sent])
+        self.assertEqual(self.kinds(self.again(DownGitLab, TRANSPORT)[1]), ["issues"])
 
 
 class FakePulls:
