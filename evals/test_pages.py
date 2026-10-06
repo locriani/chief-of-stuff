@@ -1,6 +1,7 @@
 """pages.py: the workspace's pages, served from this Mac (Zach, 2026-09-24 14:07: "we should host our own
 webserver and ensure they are set up as part of the agent's boot loop")."""
 
+import email.utils
 import http.client
 import json
 import http.server
@@ -69,14 +70,16 @@ class ServeTest(unittest.TestCase):
 
     def test_root_serves_the_newest_board(self):
         # The tab stays on `/`, so its reload poll sees the next day's board, not only today's file.
-        self.assertEqual((get(self.port, "/").status, get(self.port, "/").body), (200, b"<p>2026-09-24-board.html</p>"))
+        self.assertEqual(get(self.port, "/").status, 200)
+        self.assertTrue(get(self.port, "/").body.startswith(b"<p>2026-09-24-board.html</p>"))
         self.assertEqual(get(self.port, "/", method="HEAD").status, 200)
         (self.dir / "2026-09-25-board.html").write_text("<p>next</p>")
-        self.assertEqual(get(self.port, "/").body, b"<p>next</p>")
+        self.assertTrue(get(self.port, "/").body.startswith(b"<p>next</p>"))
 
     def test_a_page_is_served_uncached_and_names_the_server(self):
         resp = get(self.port, "/arch-review.html")
-        self.assertEqual((resp.status, resp.body), (200, b"<p>arch-review.html</p>"))
+        self.assertEqual(resp.status, 200)
+        self.assertTrue(resp.body.startswith(b"<p>arch-review.html</p>"))  # then the shared reload check (#330)
         self.assertEqual(resp.getheader("Cache-Control"), "no-cache")
         self.assertTrue(resp.getheader("Server").startswith(pg.SERVER))
 
@@ -102,6 +105,83 @@ class ServeTest(unittest.TestCase):
 
     def test_dotfiles_are_not_served(self):
         self.assertEqual(get(self.port, "/.pid").status, 404)
+
+
+def snippet() -> str:
+    """The shared reload check. Imported here, not at the top, so only the tests of it are red while it is missing."""
+    import page_reload
+    return page_reload.SNIPPET
+
+
+class ReloadSnippetTest(unittest.TestCase):
+    """Every page the server serves carries one shared reload check, injected at serve time (#330: "I'd like loaded
+    pages to auto-refresh if the underlying page is changed by an agent").
+    ponytail: the snippet's behaviour is pinned by text only; no eval here runs JS (no browser or node harness), so a
+    stub-DOM run of the focused / typed-input / reload branches is the ceiling to add if one appears."""
+
+    ROUTES = {"/": "2026-09-24-board.html", "/workers": "workers.html", "/decisions": "decisions.html",
+              "/decisions/cache-ttl": "decision-cache-ttl.html", "/issues/7": "issue-7.html",
+              "/issues/7/source": "issue-7-source.html", "/arch-review.html": "arch-review.html"}
+    MTIME = 1_800_000_000
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        for name in self.ROUTES.values():
+            (self.dir / name).write_text(f"<!doctype html><body><p>{name}</p></body>")
+            os.utime(self.dir / name, (self.MTIME, self.MTIME))
+        (self.dir / "decision-cache-ttl.json").write_text("{}")
+        (self.dir / "notes.txt").write_bytes(b"plain notes, no markup\n")
+        (self.dir / "data.json").write_bytes(b'{"a": "</body>"}')
+        self.server = pg.make_server(self.dir, 0)
+        self.port = self.server.server_address[1]
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+
+    def test_every_page_kind_carries_the_snippet_once_before_the_last_body_end(self):
+        snip = snippet().encode()
+        for path in self.ROUTES:
+            with self.subTest(path=path):
+                body = get(self.port, path).body
+                self.assertEqual(body.count(snip), 1)
+                self.assertLess(body.index(snip), body.rindex(b"</body>"))
+                self.assertIn(f"<p>{self.ROUTES[path]}</p>".encode(), body)
+
+    def test_head_matches_get_and_keeps_the_files_time(self):
+        # The snippet's poll is a HEAD: a different length or time than GET's would make every poll a "change".
+        for path in self.ROUTES:
+            with self.subTest(path=path):
+                got, head = get(self.port, path), get(self.port, path, method="HEAD")
+                self.assertEqual(head.getheader("Content-Length"), str(len(got.body)))
+                self.assertEqual(head.body, b"")
+                self.assertEqual(head.getheader("Last-Modified"), got.getheader("Last-Modified"))
+                self.assertEqual(got.getheader("Last-Modified"), email.utils.formatdate(self.MTIME, usegmt=True))
+
+    def test_a_page_without_a_body_end_gets_it_appended_and_the_last_one_is_where_it_goes(self):
+        snip = snippet().encode()
+        (self.dir / "arch-review.html").write_text("<p>no body</p>")
+        body = get(self.port, "/arch-review.html").body
+        self.assertEqual((body.count(snip), body.startswith(b"<p>no body</p>"), body.endswith(snip)), (1, True, True))
+        (self.dir / "arch-review.html").write_text('<body><script>var s="</body>"</script></body>')
+        body = get(self.port, "/arch-review.html").body
+        self.assertEqual((body.count(snip), body.index(snip) > body.index(b'"</body>"'), body.endswith(b"</body>")), (1, True, True))
+
+    def test_a_file_that_is_not_html_is_served_unchanged(self):
+        for name, data in (("notes.txt", b"plain notes, no markup\n"), ("data.json", b'{"a": "</body>"}')):
+            with self.subTest(name=name):
+                resp = get(self.port, f"/{name}")
+                self.assertEqual(resp.body, data)
+                self.assertEqual(get(self.port, f"/{name}", method="HEAD").getheader("Content-Length"), str(len(data)))
+
+    def test_the_snippet_polls_with_head_and_asks_before_it_reloads_over_typing(self):
+        snip = snippet()
+        self.assertTrue(snip.lstrip().startswith("<script") and snip.rstrip().endswith("</script>"))
+        for needle in ("location.protocol==='http:'", "HEAD", "no-store", "location.pathname", "visibilitychange",
+                       "document.lastModified", "Last-Modified", "defaultValue", "activeElement", "page-changed", "location.reload"):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, "".join(snip.replace('"', "'").split()))  # quotes and spacing are the author's
+        for blocking in ("alert(", "confirm(", "prompt("):
+            self.assertNotIn(blocking, snip)
 
 
 class EnsureTest(unittest.TestCase):
@@ -269,6 +349,34 @@ class RenderOnRequestTest(unittest.TestCase):
         self.assertIn(b"Security audit", resp.body)
         self.assertIn(b"not re-rendered", resp.body)
         self.assertIn(b'role="alert"', resp.body)
+
+    def test_a_rendered_page_carries_the_snippet_once_and_its_file_does_not(self):
+        # Injected at serve time, so a page rendered by an older release gets it too; the board's own poll is gone.
+        (self.pages / "decision-cache-ttl.json").write_text(
+            '{"headline": "Cache TTL", "ask": "Keep 5 minutes?", "options": [{"key": "A", "title": "Keep", '
+            '"text": "no change"}, {"key": "B", "title": "Drop", "text": "slower"}], "recommended": "A", "why": "fine", "default": "A at 17:00"}')
+        snip = snippet()
+        for path, name in (("/", f"{self.day}-board.html"), ("/decisions", "decisions.html"),
+                           ("/decisions/cache-ttl", "decision-cache-ttl.html")):
+            with self.subTest(path=path):
+                page = get(self.port, path).body.decode()
+                self.assertEqual(page.count(snip), 1)
+                self.assertEqual(page.count("fetch(location.pathname"), 1)
+                on_disk = (self.pages / name).read_text()
+                self.assertNotIn(snip, on_disk)
+                self.assertNotIn("fetch(location.pathname", on_disk)
+
+    def test_the_banner_variant_carries_the_snippet_once(self):
+        get(self.port, "/")
+        (self.root / "cos.toml").write_text("[lanes\n")
+        snip = snippet()
+        got, head = get(self.port, "/"), get(self.port, "/", method="HEAD")
+        self.assertIn(b"not re-rendered", got.body)
+        body = got.body.decode()
+        self.assertEqual(body.count(snip), 1)
+        self.assertLess(body.index(snip), body.rindex("</body>"))
+        self.assertEqual(head.getheader("Content-Length"), str(len(got.body)))
+        self.assertEqual(head.getheader("Last-Modified"), got.getheader("Last-Modified"))
 
     def test_a_decision_page_renders_from_its_json(self):
         (self.pages / "decision-cache-ttl.json").write_text(
