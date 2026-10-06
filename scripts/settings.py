@@ -83,8 +83,6 @@ class Workers:
     mode: str = "interactive"
     # #100: one-shots running at once across every session in the workspace; None is no cap.
     max_concurrency: int | None = None
-    # #54: the repository `chief-of-stuff worktree` cuts from when `--clone` is omitted; relative to the workspace root.
-    clone: str | None = None
 
 
 @dataclass(frozen=True)
@@ -148,6 +146,8 @@ class Settings:
     # #111: task class -> rotation; the first entry is the suggested model, the rest the fallback order.
     models: dict[str, tuple[ModelEntry, ...]] = field(default_factory=dict)
     graph: Graph | None = None
+    # #54: repository name -> path (relative to the workspace root) that `chief-of-stuff worktree --clone <name>` cuts from.
+    repos: dict[str, str] = field(default_factory=dict)
 
 
 def _entry(where: str, text) -> ModelEntry:
@@ -209,11 +209,16 @@ def _workers(table) -> Workers:
     cap = table.get("max_concurrency")
     if cap is not None and (type(cap) is not int or cap < 1):
         raise SettingsError("[workers] max_concurrency must be a positive whole number")
-    clone = table.get("clone")
-    if clone is not None and (not isinstance(clone, str) or not clone.strip() or "\0" in clone):
-        raise SettingsError("[workers] clone must be a path")
-    clone = clone and clone.strip()
-    return Workers(launcher=launcher, mode=mode, max_concurrency=cap, clone=clone)
+    return Workers(launcher=launcher, mode=mode, max_concurrency=cap)
+
+
+def _repos(table) -> dict[str, str]:
+    if not isinstance(table, dict):
+        raise SettingsError("[repos] must be a table")
+    for name, path in table.items():
+        if not isinstance(path, str) or not path.strip() or "\0" in path:
+            raise SettingsError(f"[repos] {name} must be a path")
+    return {name: path.strip() for name, path in table.items()}
 
 
 def _pages(table) -> Pages:
@@ -366,14 +371,15 @@ def load(root: Path, settings_path: str | None) -> Settings:
     models = _models(data["models"]) if "models" in data else {}
     graph = _graph(data["graph"]) if "graph" in data else None
     pages = _pages(data["pages"]) if "pages" in data else Pages()
+    repos = _repos(data["repos"]) if "repos" in data else {}
     budgets = data.get("budgets", {})
     if not isinstance(budgets, dict) or not set(budgets) <= {"S", "M", "L", "XL"}:
         raise SettingsError(f"{settings_path}: [budgets] is a table of S, M, L, XL")
     budgets = {size: _offset(v, f"[budgets] {size}") for size, v in budgets.items()}
     table = data.get("notify")
     if table is None:
-        return Settings(lanes=lanes, budgets=budgets, kanban=kanban, workflow=workflow, workers=workers, pages=pages, models=models, graph=graph)
+        return Settings(lanes=lanes, budgets=budgets, kanban=kanban, workflow=workflow, workers=workers, pages=pages, models=models, graph=graph, repos=repos)
     if not isinstance(table, dict):
         raise SettingsError(f"{settings_path}: [notify] is not a table")
     return Settings(notify=_notify(table, Path(root)), lanes=lanes, budgets=budgets,
-                    kanban=kanban, workflow=workflow, workers=workers, pages=pages, models=models, graph=graph)
+                    kanban=kanban, workflow=workflow, workers=workers, pages=pages, models=models, graph=graph, repos=repos)

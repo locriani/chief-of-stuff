@@ -73,7 +73,7 @@ def coordinator_block(*, user: str, timezone: str, daily_dir: str, worktrees: st
 
 
 def settings_text(launcher: str, mode: str = "interactive") -> str:
-    text = f'[notify]\nadapter = "off"\n\n[workers]\nlauncher = "{launcher}"\nmode = "{mode}"\n# clone = "<repo>"  # #54: what `worktree` cuts from without --clone\n'
+    text = f'[notify]\nadapter = "off"\n\n[workers]\nlauncher = "{launcher}"\nmode = "{mode}"\n\n# [repos]\n# alder = "<path>"  # #54: name -> path, relative to the workspace root; `worktree --clone alder`\n'
     # #111: uncomment to pick models from the TOML; without [models], chief-of-stuff-models.md applies.
     text += ('\n# [models.deep]\n# rotation = ["claude:opus@high", "codex:<model-id>@high"]\n'
              '# [models.implement]\n# rotation = ["claude:sonnet@medium", "codex:<model-id>@medium"]\n'
