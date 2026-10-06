@@ -210,8 +210,9 @@ def _workers(table) -> Workers:
     if cap is not None and (type(cap) is not int or cap < 1):
         raise SettingsError("[workers] max_concurrency must be a positive whole number")
     clone = table.get("clone")
-    if clone is not None and (not isinstance(clone, str) or not clone.strip()):
+    if clone is not None and (not isinstance(clone, str) or not clone.strip() or "\0" in clone):
         raise SettingsError("[workers] clone must be a path")
+    clone = clone and clone.strip()
     return Workers(launcher=launcher, mode=mode, max_concurrency=cap, clone=clone)
 
 
@@ -353,7 +354,7 @@ def load(root: Path, settings_path: str | None) -> Settings:
         return Settings()
     try:
         data = tomllib.loads(path.read_text())
-    except tomllib.TOMLDecodeError as e:
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as e:
         raise SettingsError(f"{settings_path}: {e}") from None
     lanes = data.get("lanes", {})
     if not isinstance(lanes, dict):

@@ -128,6 +128,8 @@ def build(root: Path, clone: Path, trees: str, name: str, branch: str, agent_typ
     """Check everything that came out of a file, then make the tree. A refusal creates no worktree or branch (a fetch may
     already have moved origin/main)."""
     check_type((root / "CLAUDE.md").read_text() if (root / "CLAUDE.md").is_file() else "", agent_type)
+    if not clone.is_dir():
+        raise RefusedError(f"{clone} is not a directory; --clone or [workers] clone must name the repository")
     check_branch(branch, clone)
     path = resolve(root, trees, name)
     with clone_lock(clone):
@@ -169,7 +171,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--branch", required=True, help="the new branch, cut from origin/main unless --from-local")
     ap.add_argument("--from-local", action="store_true", help="cut from local main, skipping the fetch of origin/main")
     ap.add_argument("--root", default=".", help="workspace root holding CLAUDE.md")
-    ap.add_argument("--clone", help="the repository the worktree belongs to; default: [workers] clone in the workspace settings")
+    ap.add_argument("--clone", help="the repository the worktree belongs to, relative to the current directory; default: [workers] clone in the workspace settings, relative to the workspace root")
     args = ap.parse_args(argv)
 
     root = Path(args.root)
@@ -177,7 +179,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"make_worktree: no CLAUDE.md at {root}", file=sys.stderr)
         return 2
     try:
-        clone = Path(args.clone) if args.clone else settings_clone(root)
+        if args.clone == "":
+            raise RefusedError("--clone is empty; name the repository or leave it out for [workers] clone")
+        clone = Path(args.clone) if args.clone is not None else settings_clone(root)
         made = build(root, clone, worktrees_dir((root / "CLAUDE.md").read_text()), args.name, args.branch, args.agent_type, args.from_local)
     except RefusedError as exc:
         print(f"refused: {exc}", file=sys.stderr)
