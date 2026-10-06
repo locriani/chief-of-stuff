@@ -67,7 +67,7 @@ PAGE_LOCKS_GUARD = threading.Lock()
 RENDERED_AT: dict[str, tuple[int, int | None]] = {}
 
 
-def page_lock(path: Path) -> threading.Lock:
+def page_lock(path: Path | str) -> threading.Lock:
     """The lock one page's renders and its answer saves take, so neither overlaps another of the same page."""
     with PAGE_LOCKS_GUARD:
         return PAGE_LOCKS.setdefault(str(path), threading.Lock())
@@ -116,6 +116,17 @@ def fresh(root: Path, pages_dir: Path, name: str, slots=contextlib.nullcontext()
     import render_board
     import source_page
     import workers_page
+    # Defence in depth, shaped for CodeQL's py/path-injection: `name` is a plain page file name whose resolved path sits
+    # directly in pages_dir, and everything after uses the checked path (and the name taken from it), not the raw one.
+    if not RENDERED.fullmatch(name):
+        return ""
+    base = os.path.realpath(pages_dir)
+    checked = os.path.realpath(os.path.join(base, name))
+    if not checked.startswith(base + os.sep):
+        return ""
+    target = Path(checked)
+    name = target.name
+    key = str(pages_dir / name)  # what the handler's page_lock and RENDERED_AT use, so the locks and records agree
     try:
         cfg = read_config(root)
         today = datetime.now(cfg.zone).date().isoformat()
@@ -132,11 +143,10 @@ def fresh(root: Path, pages_dir: Path, name: str, slots=contextlib.nullcontext()
             day = name[:10]
             if not (root / cfg.tracker_path(day)).is_file():
                 return ""
-        target = pages_dir / name
-        with page_lock(target):  # checked under the lock: a request that waited finds the page already rendered
+        with page_lock(key):  # checked under the lock: a request that waited finds the page already rendered
             newest = max(RENDERER_MTIME_NS, max((p.stat().st_mtime_ns for p in _sources(root, cfg, pages_dir, day) if p.is_file()), default=0))
             mtime = target.stat().st_mtime_ns if target.is_file() else 0
-            record = RENDERED_AT.get(str(target))
+            record = RENDERED_AT.get(key)
             rendered = record[0] if record and record[1] in (mtime, None) else mtime
             if rendered >= newest and name != "workers.html":
                 return ""
@@ -152,7 +162,7 @@ def fresh(root: Path, pages_dir: Path, name: str, slots=contextlib.nullcontext()
                     issue_page.write(root, pages_dir, int(name[len("issue-"):-5]))
                 else:
                     render_board.write(root, day)
-            RENDERED_AT[str(target)] = started, target.stat().st_mtime_ns if target.is_file() else 0  # only after a render that did not raise
+            RENDERED_AT[key] = started, target.stat().st_mtime_ns if target.is_file() else 0  # only after a render that did not raise
         return ""
     except Exception as e:  # any renderer failure: the server keeps serving the last good page
         return f"{type(e).__name__}: {e}"
