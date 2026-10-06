@@ -35,7 +35,7 @@ VERIFIED = re.compile(r"^- Verified \d{2}:\d{2}:")
 SESSION_KEYS = {"ref", "name", "state", "started_hours_ago", "started_minutes_ago"}
 
 
-REPOS_RULE = "The repository is a name from the settings' `[repos]` table, passed as `--clone <name>`; with no such table, pass the repository's path."
+REPOS_RULE = "`<repo>` is the repository's name in the settings' `[repos]` table when the table names it, otherwise its path."
 
 
 def grader_hits(g: dict, tool: str, **tool_input) -> bool:
@@ -455,7 +455,7 @@ class CaseLintTest(unittest.TestCase):
 
     def test_worktree_clone_name_graders_enforce_a_sentence_the_agent_carries(self) -> None:
         """#54: the settings name two repositories and the ready task is one project's, so the worktree call must carry that project's
-        name as `--clone <name>`. Two graders read the call (the name is passed; no other `--clone` value is) and one reads the tree it cut."""
+        name as `--clone <repo>`. Two graders read the call (the name is passed; no other `--clone` value is) and one reads the tree it cut."""
         agent_text = (EVALS.parent / "agents" / "chief-of-stuff.md").read_text()
         case = EVALS / "cases" / "worktree-clone-is-a-repos-name"
         s = spec(case)
@@ -469,7 +469,7 @@ class CaseLintTest(unittest.TestCase):
         self.assertEqual((belongs["type"], belongs["glob"], belongs["pattern"]), ("file_matches", "trees/*/.git", r"^gitdir: .*/birch-checkout/\.git/worktrees/"))
         self.assertNotIn("match", belongs, "an absent match inverts the grader")
         command = next(l for l in agent_text.splitlines() if l.startswith("chief-of-stuff worktree"))
-        self.assertIn("--clone <name>", command)
+        self.assertEqual(command, "chief-of-stuff worktree --type <type> --name <tree> --branch <branch> --root . --clone <repo>")
         fixture = case / "fixture"
         repos = load_settings(fixture, settings_path((fixture / "CLAUDE.md").read_text())).repos
         self.assertEqual(repos, {"alder": "alder-checkout", "birch": "birch-checkout"})
