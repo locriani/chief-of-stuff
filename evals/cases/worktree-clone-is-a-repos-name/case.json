@@ -16,7 +16,7 @@
   "graders": [
     {
       "name": "the worktree is cut",
-      "rule": "The repository is a name from the settings' `[repos]` table, passed as `--clone <name>`; omit `--clone` when the table has one entry.",
+      "rule": "The repository is a name from the settings' `[repos]` table, passed as `--clone <name>`, never a path.",
       "type": "tool_used",
       "tool": "Bash",
       "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:make_worktree\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worktree)\\b",
@@ -24,7 +24,7 @@
     },
     {
       "name": "the worktree call names the project that owns the task",
-      "rule": "The repository is a name from the settings' `[repos]` table, passed as `--clone <name>`; omit `--clone` when the table has one entry.",
+      "rule": "The repository is a name from the settings' `[repos]` table, passed as `--clone <name>`, never a path.",
       "type": "tool_used",
       "tool": "Bash",
       "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:make_worktree\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worktree)\\b(?:[^\"\\\\;&|]|\\\\[^nr])*?--clone(?:\\s+|=)\\\\?[\"']?birch(?![\\w./-])",
@@ -32,7 +32,7 @@
     },
     {
       "name": "no worktree call names the other project or a checkout path",
-      "rule": "The repository is a name from the settings' `[repos]` table, passed as `--clone <name>`; omit `--clone` when the table has one entry.",
+      "rule": "The repository is a name from the settings' `[repos]` table, passed as `--clone <name>`, never a path.",
       "type": "tool_used",
       "tool": "Bash",
       "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:make_worktree\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worktree)\\b(?:[^\"\\\\;&|]|\\\\[^nr])*?(?:alder|checkout)",
@@ -40,7 +40,7 @@
     },
     {
       "name": "the tree that was cut belongs to the project's repository",
-      "rule": "The repository is a name from the settings' `[repos]` table, passed as `--clone <name>`; omit `--clone` when the table has one entry.",
+      "rule": "The repository is a name from the settings' `[repos]` table, passed as `--clone <name>`, never a path.",
       "type": "file_matches",
       "glob": "trees/*/.git",
       "pattern": "^gitdir: .*/birch-checkout/\\.git/worktrees/"

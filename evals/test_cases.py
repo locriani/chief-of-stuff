@@ -35,7 +35,7 @@ VERIFIED = re.compile(r"^- Verified \d{2}:\d{2}:")
 SESSION_KEYS = {"ref", "name", "state", "started_hours_ago", "started_minutes_ago"}
 
 
-REPOS_RULE = "The repository is a name from the settings' `[repos]` table, passed as `--clone <name>`; omit `--clone` when the table has one entry."
+REPOS_RULE = "The repository is a name from the settings' `[repos]` table, passed as `--clone <name>`, never a path."
 
 
 def grader_hits(g: dict, tool: str, **tool_input) -> bool:
@@ -455,8 +455,8 @@ class CaseLintTest(unittest.TestCase):
 
     def test_worktree_clone_graders_enforce_a_sentence_the_agent_carries(self) -> None:
         """#54: the graders quote the one sentence that sends the coordinator to the settings' `[repos]` table for the repository. Two
-        read the call (a `worktree` call, one with `--clone` in it) and one reads the tree the call cut. With one entry the call omits
-        `--clone`. The issue's other clause, that no runtime config or git is read to find the repository, has no agent sentence and
+        read the call (a `worktree` call, one with `--clone` that is not the bare name) and one reads the tree the call cut. With one entry the call
+        may omit `--clone` (the tool defaults to it) or pass the name. The issue's other clause, that no runtime config or git is read to find the repository, has no agent sentence and
         so no grader here."""
         agent_text = (EVALS.parent / "agents" / "chief-of-stuff.md").read_text()
         case = EVALS / "cases" / "worktree-clone-comes-from-settings"
@@ -468,9 +468,9 @@ class CaseLintTest(unittest.TestCase):
             self.assertIn(g["rule"], agent_text, g["name"])
         self.assertEqual([(g["type"], g.get("min"), g.get("max")) for g in (cut, clone)], [("tool_used", 1, None), ("tool_used", None, 0)])
         self.assertEqual(belongs["type"], "file_matches")
-        # The agent file's call carries no `--clone`; the sentence is how the flag is still allowed.
+        # The agent file's call carries `--clone <name>`: the rule is uniform, one entry or many.
         command = next(l for l in agent_text.splitlines() if l.startswith("chief-of-stuff worktree"))
-        self.assertNotIn("--clone", command)
+        self.assertIn("--clone <name>", command)
         # The fixture's one `[repos]` entry names the clone the case builds, through the file its `Settings:` line names.
         fixture = case / "fixture"
         named = settings_path((fixture / "CLAUDE.md").read_text())
@@ -479,16 +479,25 @@ class CaseLintTest(unittest.TestCase):
         self.assertEqual(s["repo"]["clone"], "alder-checkout")
 
         worktree = "chief-of-stuff worktree --type implementer --name audit --branch feat/audit --root ."
-        for command, cuts, carries in (
+        for command, cuts, wrong in (
             (worktree, True, False),
-            (f"{worktree} --clone alder", True, True),
+            (f"{worktree} --clone alder", True, False),
+            (f"{worktree} --clone=alder", True, False),
+            (f'{worktree} --clone "alder"', True, False),
+            (f"{worktree} --clone 'alder'", True, False),
+            (f"{worktree} --clone  alder && chief-of-stuff worker --type implementer --cwd trees/audit", True, False),
+            (f"{worktree} --clone alder-checkout", True, True),
+            (f"{worktree} --clone ./alder-checkout", True, True),
+            (f"{worktree} --clone /abs/alder-checkout", True, True),
+            (f"{worktree} --clone alder/", True, True),
+            (f"{worktree} --clone=alder-checkout", True, True),
             (f'python3 "$PLUGIN/scripts/make_worktree.py" --type implementer --name a --branch b --root . --clone x', True, True),
             (f"{worktree} && chief-of-stuff worker --type implementer --cwd trees/audit --clone-not-a-flag-here", True, False),
             ("chief-of-stuff worker --type implementer --cwd trees/audit --task 'Security audit'", False, False),
         ):
             with self.subTest(command=command):
                 self.assertEqual(grader_hits(cut, "Bash", command=command), cuts)
-                self.assertEqual(grader_hits(clone, "Bash", command=command), carries)
+                self.assertEqual(grader_hits(clone, "Bash", command=command), wrong)
         # A tree's `.git` file names the repository it was cut from: the settings' clone, not a sibling that shares its prefix.
         for gitdir, owned in (("gitdir: /ws/alder-checkout/.git/worktrees/audit", True), ("gitdir: /ws/repo/.git/worktrees/audit", False),
                               ("gitdir: /ws/alder-checkout-old/.git/worktrees/audit", False), ("gitdir: /ws/x/alder-checkout/.git/worktrees/a", True)):
