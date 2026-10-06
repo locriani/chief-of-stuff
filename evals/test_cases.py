@@ -651,7 +651,14 @@ class CaseLintTest(unittest.TestCase):
                         "chief-of-stuff result --task 'Rate limit headers' | chief-of-stuff processes --root .",
                         "chief-of-stuff result --task 'Rate limit headers' # --root .",
                         "chief-of-stuff result --task 'Rate limit headers'\nchief-of-stuff processes --root .",
-                        "cat trees/rate-limit/.chief-of-stuff/one-shot-report.toon", "chief-of-stuff tracker tasks # result --task 'Rate limit headers'"):
+                        "cat trees/rate-limit/.chief-of-stuff/one-shot-report.toon", "chief-of-stuff tracker tasks # result --task 'Rate limit headers'",
+                        # nor is a `--task` in a later command, for the same reason `--root` is not
+                        "chief-of-stuff result --root . ; chief-of-stuff processes --task 'Rate limit headers'",
+                        "chief-of-stuff result --root . && chief-of-stuff processes --task 'Rate limit headers'",
+                        "chief-of-stuff result --root . | chief-of-stuff processes --task 'Rate limit headers'",
+                        "chief-of-stuff result --root . & chief-of-stuff processes --task 'Rate limit headers'",
+                        "chief-of-stuff result --root . # --task 'Rate limit headers'",
+                        "chief-of-stuff result --root .\nchief-of-stuff processes --task 'Rate limit headers'"):
             self.assertFalse(hit(called, command), command)
 
         # The report, the worker's stdout log, anything in a tree's private directory, and the launcher's own copies (`result` reads those). Cannot see: a glob after a `cd`

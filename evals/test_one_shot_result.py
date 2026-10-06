@@ -185,6 +185,63 @@ class ResultTests(unittest.TestCase):
                 (self.root / "trees" / "rate-limit" / one_shot.REPORT).unlink()
                 self.assertEqual(self.one("--task", "Rate limit headers"), {**written, "worktree": "rate-limit"})
 
+    # The launcher's writes follow no link, and a failed write in the tree never costs its own copy.
+
+    def test_a_link_planted_at_the_in_tree_report_is_not_followed(self):
+        other = self.plant("other", report("Search pagination", reason="not this run"))
+        with tempfile.TemporaryDirectory() as outside:
+            victim = Path(outside) / "victim.txt"
+            victim.write_text("keep me\n")
+            for tree, target in (("rate-limit", other), ("search", victim)):  # another tree's copy; a file outside the workspace
+                with self.subTest(tree):
+                    before = target.read_bytes()
+                    link = self.root / "trees" / tree / one_shot.REPORT
+                    link.parent.mkdir(parents=True)
+                    link.symlink_to(target)
+                    written = self.reconcile(tree)
+                    self.assertEqual(target.read_bytes(), before, "the launcher wrote through the link")
+                    self.assertEqual(toon_decode((self.reports / f"{tree}.toon").read_text()), written)
+
+    def kept_after_a_failed_write(self, tree: str) -> None:
+        """The launcher's copy holds this run's report, not the older one planted, though the write in `tree` failed."""
+        copy = self.plant(tree, report(reason="an older run"))
+        try:
+            written = self.reconcile(tree)
+        except OSError as exc:
+            self.fail(f"a failed write in the tree escaped reconcile: {exc!r}")
+        self.assertEqual(toon_decode(copy.read_text()), written)
+        self.assertNotEqual(written["reason"], "an older run")
+
+    def test_a_report_path_in_the_tree_that_is_a_directory_does_not_cost_the_launchers_copy(self):
+        (self.root / "trees" / "rate-limit" / one_shot.REPORT).mkdir(parents=True)
+        self.kept_after_a_failed_write("rate-limit")
+
+    @unittest.skipIf(os.geteuid() == 0, "root writes into any directory")
+    def test_an_unwritable_private_directory_in_the_tree_does_not_cost_the_launchers_copy(self):
+        private = self.root / "trees" / "rate-limit" / ".chief-of-stuff"
+        private.mkdir(parents=True)
+        private.chmod(0o500)
+        self.addCleanup(private.chmod, 0o700)
+        self.kept_after_a_failed_write("rate-limit")
+
+    def test_a_link_planted_at_the_launchers_copy_is_replaced_not_followed(self):
+        victim = self.root / "victim.txt"
+        victim.write_text("keep me\n")
+        self.reports.mkdir(parents=True)
+        (self.reports / "rate-limit.toon").symlink_to(victim)
+        written = self.reconcile("rate-limit")
+        self.assertEqual(victim.read_text(), "keep me\n", "the launcher wrote through the link")
+        copy = self.reports / "rate-limit.toon"
+        self.assertTrue(copy.is_file() and not copy.is_symlink())
+        self.assertEqual(toon_decode(copy.read_text()), written)
+
+    def test_a_tree_name_with_a_character_outside_the_safe_set_prints_an_empty_worktree(self):
+        self.plant("esc\x1b[2Jtree", report("Rate limit headers"))
+        self.plant("has space", report("Search pagination"))
+        self.assertEqual({r["task"]: r["worktree"] for r in self.rows()}, {"Rate limit headers": "", "Search pagination": ""})
+        for task in ("Rate limit headers", "Search pagination"):
+            self.assertEqual(self.one("--task", task)["worktree"], "", task)
+
     # `result` reads the launcher's copies and nothing under a worktree.
 
     def test_a_report_only_a_tree_holds_is_neither_listed_nor_selectable(self):

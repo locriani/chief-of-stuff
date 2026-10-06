@@ -16,11 +16,12 @@ from types import SimpleNamespace
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+import dispatch_prompt  # noqa: E402
 import one_shot  # noqa: E402
 import process_status  # noqa: E402
 import spawn_session  # noqa: E402
 import shell_setup  # noqa: E402
-from _vendor.toon_format import decode as toon_decode  # noqa: E402
+from _vendor.toon_format import decode as toon_decode, encode as toon_encode  # noqa: E402
 
 
 CLAUDE = """# Workspace
@@ -219,6 +220,27 @@ class RunTest(unittest.TestCase):
         self.assertRegex(during, r"(?m)^- \d\d:\d\d one-shot worker01 started: codex, worktree `worker`, "
                                  r"task Security audit$")
         self.assertIn(f"worktree `worker` ({branch})", self.tracker.read_text())
+
+    def test_a_launch_removes_the_trees_previous_report_copy_before_the_worker_runs(self):
+        # #56: `result` reads only the launcher's copy, so a copy left by an earlier run in this tree reads as this run's
+        # until it is reconciled; a run that never reconciles (the launcher killed) must leave no report, not an old one.
+        copy = self.root / dispatch_prompt.REPORTS_DIR / "worker.toon"
+        copy.parent.mkdir(parents=True)
+        copy.write_text(toon_encode({"status": "done", "task": "Security audit", "worker": "earlier", "runtime_exit": 0,
+                                     "reason": "r", "changes": "c", "errors": []}) + "\n")
+        seen = []
+
+        def reconcile(*args, **kwargs):
+            seen.append(copy.exists())
+            return {"status": "done", "errors": []}
+
+        fake = self._fake('status: done\nreason: r\nchanges: c\n', write_partial=False)
+        with mock.patch.object(one_shot, "reconcile", side_effect=reconcile), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self._run(fake), 0)
+        self.assertEqual(seen, [False], "the old copy is gone once the launch is recorded, before the run is reconciled")
+        done = subprocess.run([sys.executable, str(Path(one_shot.__file__).resolve().parents[1] / "chief_of_stuff.py"), "result",
+                               "--root", str(self.root), "--task", "Security audit"], capture_output=True, text=True, check=False)
+        self.assertEqual((done.returncode, done.stdout), (1, ""), done.stderr)
 
     def test_the_log_line_names_the_effort_the_worker_ran_at(self):
         # #52: the Log is the durable record of what ran; it had the model and never the effort.
