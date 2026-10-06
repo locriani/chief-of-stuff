@@ -1030,6 +1030,43 @@ class ConcurrentRenderTest(_Renders, unittest.TestCase):
         self.assertEqual(json.loads((self.pages / "decision-cache-ttl.json").read_text())["answer"]["key"], "B")
 
 
+class FreshRefusesAForeignNameTest(_PagesFixture, unittest.TestCase):
+    """`fresh` takes a name from the URL. CodeQL (#330): a name that is not a plain page file name in pages_dir must
+    return "" before any stat, lock or render, whatever its caller checked."""
+
+    NAMES = ("../evil.html", "sub/x.html", "/abs.html", "x/../../evil.html", ".hidden.html", "decision-../../x.html",
+             "issue-1/../../evil.html", "workers.html/../../evil.html", "issue-7\0.html")
+
+    def snapshot(self):
+        return {str(p): (p.stat().st_mtime_ns, p.read_bytes() if p.is_file() else None)
+                for base in (self.root, self.pages, self.root.parent) for p in [base, *sorted(base.glob("*"))] if p.exists()
+                and not p.name.startswith(("tmp", "claude"))}
+
+    def spy_on_writers(self):
+        import decision_page, issue_page, render_board, source_page, workers_page
+        called = []
+        for module in (decision_page, issue_page, render_board, source_page, workers_page):
+            patch = mock.patch.object(module, "write", lambda *a, _n=module.__name__, **k: called.append(_n))
+            patch.start()
+            self.addCleanup(patch.stop)
+        return called
+
+    def test_a_name_outside_pages_dir_is_refused_before_it_touches_anything(self):
+        (self.root / "evil.html").write_text("sentinel")
+        before, called = self.snapshot(), self.spy_on_writers()
+        for name in self.NAMES:
+            with self.subTest(name=name):
+                self.assertEqual(pg.fresh(self.root, self.pages, name), "")
+                self.assertEqual(self.snapshot(), before)
+                self.assertEqual(called, [])
+                self.assertFalse((self.root.parent / "evil.html").exists())
+
+    def test_a_real_page_name_still_renders(self):
+        called = self.spy_on_writers()
+        self.assertEqual(pg.fresh(self.root, self.pages, "workers.html"), "")
+        self.assertEqual(called, ["workers_page"])
+
+
 class ConfiguredWorkersTest(_Renders, unittest.TestCase):
     SETTINGS = "[pages]\nworkers = 2\n"
 
