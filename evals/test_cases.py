@@ -444,17 +444,16 @@ class CaseLintTest(unittest.TestCase):
                     self.assertIn("verified", rb.resume_fields(rb.parse_resume(text)), f"{case.name}: {f.name}: Verified parsed but not drawn")
 
     def test_one_shot_in_flight_graders_enforce_sentences_the_agent_carries(self) -> None:
-        """#53: a running one-shot is neither launched again (the readiness sentence) nor looked up with `ps`/`pgrep` (the helper
-        sentence), and is looked up with `processes` (the sentence that names it) and not reported stopped (the helper sentence
-        again: it bars marking an `unverified` worker gone). Every grader quotes a sentence the agent file carries. No agent sentence says `processes` also
-        answers for one-shot runs: the one that names it speaks of registered workers."""
+        """#53: a running one-shot is neither launched again (the readiness sentence) nor looked up with `ps`/`pgrep`, and is looked up with
+        `processes`: both of those are the helper sentence, which sends liveness to the helper instead of `ps`/`pgrep`. Every grader quotes a
+        sentence the agent file carries. No agent sentence says `processes` also answers for one-shot runs; what it lists is
+        pinned by test_process_status.py, and a reply that says the run stopped is not graded."""
         agent_text = (EVALS.parent / "agents" / "chief-of-stuff.md").read_text()
-        launch, asks, listing, stopped = spec(EVALS / "cases" / "one-shot-in-flight-is-checked-with-processes")["graders"]
+        launch, asks, listing = spec(EVALS / "cases" / "one-shot-in-flight-is-checked-with-processes")["graders"]
         self.assertIn("Ready means an open, unassigned task", launch["rule"])
-        self.assertIn("For registered workers, check process state with `chief-of-stuff processes", asks["rule"])
-        self.assertIn("Use this helper instead of ad hoc `ps` or `pgrep` calls", listing["rule"])
-        self.assertIn("do not mark an `unverified` worker gone", stopped["rule"])
-        for g in (launch, asks, listing, stopped):
+        helper = "Use this helper instead of ad hoc `ps` or `pgrep` calls, and do not mark an `unverified` worker gone."
+        self.assertEqual((asks["rule"], listing["rule"]), (helper, helper))
+        for g in (launch, asks, listing):
             self.assertIn(g["rule"], agent_text, g["name"])
         self.assertEqual([(g["type"], g["tool"], g["max"]) for g in (launch, listing)], [("tool_used", "Bash", 0)] * 2)
         self.assertEqual((asks["type"], asks["tool"], asks["min"], "max" in asks), ("tool_used", "Bash", 1, False))
@@ -507,14 +506,6 @@ class CaseLintTest(unittest.TestCase):
                         "cat notes/chief-of-stuff processes.md", "chief-of-stuff processes-old", "ls # chief-of-stuff processes"):
             self.assertFalse(hit(asks, command), command)
 
-        # The reply does not say the run stopped.
-        for reply in ("It is still running (pid 1, one-shot).", "Rate limit headers: status running, one-shot.", "The one-shot was running when I checked.",
-                      "Yes, but I cannot confirm it: the process check lists it as `running`.", "Registered as running, but pid 1 is odd.",
-                      "It is still running. If the tree is still missing or the worker has exited by then, I'll flag it."):
-            self.assertNotRegex(reply, stopped["pattern"], reply)
-        for reply in ("It has finished.", "That one-shot is gone.", "It has stopped.", "It is no longer running.", "It is not running.", "Checked.\nThe worker has exited."):
-            self.assertRegex(reply, stopped["pattern"], reply)
-
     def test_one_shot_in_flight_fixture_is_a_run_the_launcher_wrote_and_processes_lists(self) -> None:
         """#53: the case is only worth running when `processes` really prints the one-shot. Rendered the way the harness
         renders it, the harness's own pid (`{{live_pid}}`, alive for the whole run) and the pid file's task come back as the one-shot row, and the tracker's
@@ -531,9 +522,10 @@ class CaseLintTest(unittest.TestCase):
             with contextlib.redirect_stdout(out):
                 self.assertEqual(process_status.main(["--root", str(work)]), 0)
             from _vendor.toon_format import decode
-            rows = decode(out.getvalue())
-            self.assertEqual([(r["pid"], r["task"], Path(r["worktree"]).name, r["status"], r["kind"]) for r in rows],
-                             [(os.getpid(), "Rate limit headers", "rate-limit", "running", "one-shot")])
+            printed = decode(out.getvalue())
+            self.assertIsInstance(printed, dict, out.getvalue())  # the `one_shot` block alone: no registered worker here
+            self.assertEqual(printed["one_shot"],
+                             [{"pid": os.getpid(), "task": "Rate limit headers", "worktree": "rate-limit", "status": "running"}])
             tracker = next(work.glob("daily/*-tracker.md")).read_text()
             started = tracker_log.started_line("00:00", "rate-limit", "codex", "gpt-5.1-codex", "trees/rate-limit", "Rate limit headers")
             self.assertIn(started.split(" ", 2)[2], tracker)
