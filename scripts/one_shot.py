@@ -251,16 +251,8 @@ def write_report(root: Path, cwd: Path, report: dict) -> None:
         pass
 
 
-def _read_only(path: Path, task: str) -> bool:
-    """The task's File ownership cell, read as compose reads it; a row that is gone is not read-only."""
-    try:
-        return ownership.read_only(dispatch_prompt._owns(path.read_text(), task, str(path)))
-    except dispatch_prompt.RefusedError:
-        return False
-
-
 def reconcile(root: Path, day: str, task: str, name: str, cwd: Path, exit_code: int,
-              before_head: str | None = None) -> dict:
+              before_head: str | None = None, read_only: bool = False) -> dict:
     cfg = dispatch_prompt.config(root)
     settings = load_settings(root, cfg.settings_path)
     status, reason, changes = worker_result(cwd / RESULT, exit_code)
@@ -271,10 +263,10 @@ def reconcile(root: Path, day: str, task: str, name: str, cwd: Path, exit_code: 
     end = root / cfg.tracker_path(datetime.now(cfg.zone).date().isoformat())
     if end.exists() and any(row.item.strip() == task for row in parse_tracker(end.read_text()).tasks):
         path = end
-    if status in ("done", "relaunch") and (actual or commits != NO_COMMITS) and _read_only(path, task):
+    if status == "done" and read_only and (actual or commits != NO_COMMITS):
         # A task that owns nothing changed something: whatever the worker wrote, someone looks (#57).
-        status = "human_review"
-        reason = "read-only task left changes: " + "\n".join(x for x in (actual, commits) if x and x != NO_COMMITS)
+        left = "\n".join(x for x in (actual, commits) if x and x != NO_COMMITS)
+        status, reason = "human_review", f"read-only task left changes: {left}; worker said: {reason}"
     if status == "done" and actual:
         status = "human_review"
         reason = f"worker reported completion but the worktree is not clean: {actual}"
@@ -374,6 +366,9 @@ def _launch(root: Path, cfg, chosen_day: str, task: str, cwd: Path, name: str, r
     written = dispatch_prompt.write_dispatch(cwd, body)
     logs = cwd / dispatch_prompt.PROMPT_DIR
     before_head = git_head(cwd)
+    # Decided here, from the cell the assignment was composed from, before the worker or the launch note can touch it.
+    text = (root / cfg.tracker_path(chosen_day)).read_text()
+    cell = ownership.cell(text, dispatch_prompt.task_keys(task, dispatch_prompt.task_name(text, task)))
     try:
         record_launch(root / cfg.tracker_path(chosen_day), task, name, tree, runtime, model,
                       tracker_write.stamp(cfg.zone), effort)
@@ -404,6 +399,7 @@ def _launch(root: Path, cfg, chosen_day: str, task: str, cwd: Path, name: str, r
     except OSError as exc:
         (logs / "worker-stderr.log").write_text(f"Could not start worker: {exc}\n")
         exit_code = 127
-    report = reconcile(root, chosen_day, task, name, cwd, exit_code, before_head)
+    report = reconcile(root, chosen_day, task, name, cwd, exit_code, before_head,
+                       read_only=cell is not None and ownership.read_only(cell))
     print(toon_encode(report))
     return 0 if report["status"] == "done" and not report["errors"] else 1

@@ -15,7 +15,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from backlog_ref import file_with, issue_ref  # noqa: E402
-from md import section as _section  # noqa: E402
 from tracker import parse_tracker, short_name  # noqa: E402
 from workspace import ConfigError, read_config  # noqa: E402
 from settings import SettingsError, Workflow, load as load_settings  # noqa: E402
@@ -215,8 +214,8 @@ COMMITS = ("Commits: Commit small and often on your own branch — uncommitted w
            "The merge is the user's alone: you never merge a pull request.")
 
 
-# A read-only task is told so in place of its delivery rule; the launcher holds it to that (#57).
-READ_ONLY = "Do not edit, commit, push or open a pull request: this task is read-only. Put what you found in the result."
+# A read-only task is told so in place of its delivery rule; the launcher only checks afterwards that it left no commit or changed file (#57).
+READ_ONLY = "Do not edit, commit, push, merge or open a pull request: this task is read-only. Put what you found in the result."
 
 
 def commit_rule(workflow: Workflow, root: Path) -> str:
@@ -289,9 +288,9 @@ def _owns(text: str, item: str, relative: str) -> str:
     """Find task-owned paths by Tasks name, full item, colon prefix, or board short name."""
     head = item.split(": ", 1)[0].strip()
     keys = task_keys(item, task_name(text, item))
-    for row in ownership.parse("\n".join(_section(text, ownership.HEADING))):
-        if row.context in keys:
-            return _clean("the File ownership row", row.paths)
+    paths = ownership.cell(text, keys)
+    if paths is not None:
+        return _clean("the File ownership row", paths)
     raise RefusedError(
         f"no File ownership row for {head!r} in {relative}; write the paths the task owns before "
         "proposing it, so the user reads them before saying yes")
@@ -352,6 +351,9 @@ def compose(root: Path, day: str | None, task: str, worktree: Path | None = None
         if rows[0].kind != "open" or rows[0].standing_for(name):
             raise RefusedError("one-shot dispatch needs an open, non-standing task")
         result = worktree / RESULT_FILE
+        delivery = ("Commit the finished change on this worktree's branch and open a pull request when tests pass; do not merge."
+                    if workflow.delivery == "pull-request" else
+                    "Commit the finished change on this worktree's branch; do not push or merge without existing authorization.")
         lines = [
             "# One-shot assignment",
             f"You are {name or 'a worker'} in a single, noninteractive {runtime} run. Complete only this task, then exit.",
@@ -370,10 +372,7 @@ def compose(root: Path, day: str | None, task: str, worktree: Path | None = None
             f"Tracker: {(root / relative).resolve()}",
             f"Owns: {owns}" + ("" if read_only else ". Edit only these paths and task-local files in this worktree."),
             "Read the workspace rules and the issue if present. Implement the task, verify it, and make the changes this task permits in this one run.",
-            (READ_ONLY if read_only else
-             "Commit the finished change on this worktree's branch and open a pull request when tests pass; do not merge."
-             if workflow.delivery == "pull-request" else
-             "Commit the finished change on this worktree's branch; do not push or merge without existing authorization."),
+            READ_ONLY if read_only else delivery,
             "Do not edit the tracker or issue labels yourself; the launcher reconciles them after you exit.",
             f"Before exiting, write a TOON object to {result} with exactly three string fields:",
             'status: done', 'reason: "what was completed, or why human review is required"',
