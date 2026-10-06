@@ -1018,7 +1018,7 @@ class ReviewerRoutingTest(unittest.TestCase):
 class ReadOnlyAssignmentTest(unittest.TestCase):
     """#57: a task whose File ownership cell starts with `none` is read-only; a worker told to commit did, and opened a PR."""
 
-    SENTENCE = "Do not edit, commit, push or open a pull request: this task is read-only. Put what you found in the result."
+    SENTENCE = "Do not edit, commit, push, merge or open a pull request: this task is read-only. Put what you found in the result."
     ONE_SHOT_COMMITS = ("Commit the finished change on this worktree's branch and open a pull request when tests pass; do not merge.",
                         "Commit the finished change on this worktree's branch; do not push or merge without existing authorization.")
 
@@ -1033,6 +1033,7 @@ class ReadOnlyAssignmentTest(unittest.TestCase):
         for delivery in ("pull-request", "branch"):
             with self.subTest(delivery=delivery):
                 body = self.body("none; read-only review of the importer", one_shot=True, delivery=delivery)
+                self.assertIn("\n" + self.SENTENCE + "\n", body)
                 for sentence in self.ONE_SHOT_COMMITS:
                     self.assertNotIn(sentence, body)
 
@@ -1043,10 +1044,12 @@ class ReadOnlyAssignmentTest(unittest.TestCase):
         self.assertNotIn("Edit only", owns)
 
     def test_a_one_shot_that_owns_paths_keeps_its_lines(self):
-        body = self.body("`src/a/`", one_shot=True)
-        self.assertIn("Owns: `src/a/`. Edit only these paths and task-local files in this worktree.", body)
-        self.assertIn(self.ONE_SHOT_COMMITS[0], body)
-        self.assertNotIn(self.SENTENCE, body)
+        for delivery, commit in zip(("pull-request", "branch"), self.ONE_SHOT_COMMITS):
+            with self.subTest(delivery=delivery):
+                body = self.body("`src/a/`", one_shot=True, delivery=delivery)
+                self.assertIn("Owns: `src/a/`. Edit only these paths and task-local files in this worktree.", body)
+                self.assertIn(commit, body)
+                self.assertNotIn(self.SENTENCE, body)
 
     def test_a_read_only_interactive_task_is_told_so_and_not_to_commit(self):
         for cell in ("none; read-only review", "none"):
