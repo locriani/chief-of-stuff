@@ -1170,6 +1170,22 @@ class CheckTest(unittest.TestCase):
         self.assertEqual((code, out), (1, ""))
         self.assertEqual(err.strip(), f"refused: {launcher.exception}")
 
+    def test_one_shot_check_names_the_running_task_by_its_name_not_its_whole_item(self):
+        # #365 review: the same refusal as the launcher's, naming the running row by its `name` cell.
+        prompt = "Cap uploads at 25 MB across the form and the API. " * 8
+        tracker = TRACKER.replace(
+            "| item | owner | state | since | due | checklist |\n|---|---|---|---|---|---|\n"
+            "| Security audit | unassigned | open | 09:00 |  | Checklist: Security audit of the upload handler |\n",
+            "| name | item | owner | state | since | due | size | checklist |\n|---|---|---|---|---|---|---|---|\n"
+            f"| upload | {prompt} | worker07 | running 08:30 | 08:00 |  | M | Cap |\n"
+            "| audit | Security audit | unassigned | open | 09:00 |  | S | Inspect |\n"
+        ).replace("| Security audit | `src/a/` |\n", "| audit | `src/a/` |\n| upload | `src/a/upload.py`; worktree `trees/up` (feat/up) |\n")
+        root = self.workspace(tracker)
+        code, out, err = self.check(root, "--one-shot")
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("'upload'", err)
+        self.assertNotIn("Cap uploads", err)
+
     def test_one_shot_check_passes_when_nothing_running_overlaps(self):
         for label, state, paths in (("another path", "running 08:30", "`src/b/`"), ("read-only", "running 08:30", "none; read-only review of `src/a/`"),
                                     ("ready only", "open", "`src/a/`"), ("not running", "waiting", "`src/a/`")):

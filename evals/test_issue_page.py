@@ -537,7 +537,7 @@ WORK_TODAY = f"""# Tracker
 | context | paths |
 |---|---|
 | Upload size limit | `src/upload/` |
-| Review round 1 | `src/upload/review/` |
+| Review round 1 | none; read-only review of `src/upload/` |
 
 ## Log
 
@@ -550,7 +550,8 @@ REOPEN = ("| Robin | waiting |", "| unassigned | open |")
 def work_trackers() -> list:
     """impl-w1 is launched three times on "Upload size limit": 20:05–21:35 and 22:00–23:35 yesterday at implement,
     00:20–01:10 today at review. rev-w2 is launched once on "Review round 1" at review, 00:40, still running at NOW
-    (02:10), so it overlaps impl-w1's 00:20–01:10.
+    (02:10), so it overlaps impl-w1's 00:20–01:10 in time. The review owns nothing (read-only), so the launcher, which refuses
+    a launch whose File ownership overlaps a running row's, lets it start while impl-w1 runs.
     Workers: impl-w1 1h30m + 1h35m + 0h50m = 3h55m; rev-w2 1h30m; header 5h25m · 2 sessions.
     Flow: worked (the union) 1h30m + 1h35m + 00:20→02:10 1h50m = 4h55m; elapsed 20:05 yesterday → 02:10 = 6h05m;
     waiting 1h10m. Summing without the union would give 5h25m."""

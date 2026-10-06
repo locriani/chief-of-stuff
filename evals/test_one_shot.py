@@ -720,6 +720,25 @@ class RunTest(unittest.TestCase):
             one_shot.record_launch(self.tracker, "Security audit", "worker01", "worktree `w` (b)", "codex", "", "10:00")
         self.assertEqual(self.tracker.read_text(), before)
 
+    def test_the_refusal_names_the_running_task_by_its_name_not_its_whole_item(self):
+        # #365 review: a task's item can be a 400-character prompt; the refusal is read in CI output and by the coordinator.
+        # It names the running row by its Tasks `name` cell, and falls back to the item only when the name is blank.
+        prompt = "Cap uploads at 25 MB across the form and the API. " * 8
+        for name, shown in (("upload", "'upload'"), ("", repr(prompt.strip()))):
+            with self.subTest(name=name):
+                self.tracker.write_text(
+                    "# Tracker\n\n## Tasks\n\n| name | item | owner | state | since | due | size | checklist |\n|---|---|---|---|---|---|---|---|\n"
+                    f"| {name} | {prompt} | worker07 | running 08:30 | 08:00 | | M | Cap |\n"
+                    "| audit | Security audit | unassigned | open | 09:00 | | S | Inspect |\n\n"
+                    "## File ownership\n\n| context | paths |\n|---|---|\n"
+                    f"| {name or prompt.strip()} | `src/a/`; worktree `trees/up` (feat/up) |\n| audit | `src/a/upload.py` |\n\n## Log\n\n- 09:00 opened\n")
+                with self.assertRaises(ValueError) as refused:
+                    one_shot.record_launch(self.tracker, "Security audit", "worker01", "worktree `w` (b)", "codex", "", "10:00")
+                self.assertIn(shown, str(refused.exception))
+                if name:
+                    self.assertNotIn("Cap uploads", str(refused.exception))
+                    self.assertLess(len(str(refused.exception)), 200)
+
     def test_a_launch_that_overlaps_nothing_running_starts(self):
         self._overlap_tracker("`src/a/`", "`src/b/`")
         self.assertEqual(self._run(self._fake('status: done\nreason: r\nchanges: c\n', write_partial=False)), 0)
