@@ -642,6 +642,18 @@ def run_main(*extra):
             capture_output=True, text=True, timeout=30)
 
 
+class HelpTest(unittest.TestCase):
+    def test_help_lists_each_allowed_effort(self):
+        """#61 second review: `--help` names every value `--effort` accepts (`ss.EFFORTS`, its non-empty ones)."""
+        out = subprocess.run([sys.executable, str(Path(ss.__file__)), "--help"], capture_output=True, text=True, timeout=30)
+        self.assertEqual(out.returncode, 0)
+        text = " ".join(out.stdout.split())
+        start = text.rindex("--effort EFFORT")  # the option's own entry, after the usage line
+        block = text[start:text.index("--dry-run", start)]
+        for effort in filter(None, ss.EFFORTS):
+            self.assertRegex(block, rf"\b{effort}\b", effort)
+
+
 class TaskFlagTest(unittest.TestCase):
     """#33, "everything, code included": the flag is `--task`, and `--lane` is gone."""
 

@@ -861,6 +861,39 @@ class CaseLintTest(unittest.TestCase):
                      "Retry budget lacks a File ownership row, so it is not ready.", "File ownership: no row for it yet, so it is refused."):
             self.assertTrue(passes(text), text)
 
+    def test_worker_check_reply_grader_ties_ready_to_the_row_checked(self) -> None:
+        """#61 second review: the grader quotes "when it prints `refused: <why>`, tell the user that refusal". A "no" or
+        "without" that sits up to 60 characters before "File ownership" but negates something else ("no blockers",
+        "no issues with", "without changes") is not the refusal, so a reply that calls the task ready must fail."""
+        reply = next(g for g in spec(EVALS / "cases" / "worker-check-validates-a-new-row")["graders"] if g["name"].startswith("the reply tells"))
+
+        def passes(text: str) -> bool:
+            return re.search(reply["pattern"], text, re.MULTILINE) is not None
+
+        for text in ("It has no blockers; File ownership is set, so it is ready.", "Yes, ready. No issues with File ownership.",
+                     "Without changes needed: File ownership covers src/b/. Ready."):
+            self.assertFalse(passes(text), text)
+        for text in ("Not ready. refused: no File ownership row for 'Retry budget' in daily/x-tracker.md",
+                     "Retry budget lacks a File ownership row, so it is not ready.", "File ownership: no row for it yet, so it is refused."):
+            self.assertTrue(passes(text), text)
+
+    def test_worker_check_reply_catches_plain_proposals_after_a_refusal(self) -> None:
+        """#61 second review: "when it prints `refused: <why>`, tell the user that refusal and do not propose the task."
+        A plain offer to dispatch the refused task, with no modal verb and no fence, is still a proposal; a reply that
+        restates the refusal and says it will not be dispatched is not."""
+        grader = next(g for g in spec(EVALS / "cases" / "worker-check-validates-a-new-row")["graders"] if "propose" in g["name"])
+
+        def proposes(text: str) -> bool:
+            return re.search(grader["pattern"], text, re.MULTILINE) is not None
+
+        refusal = "The File ownership row is missing for Retry budget, so it is not ready."
+        for text in (refusal + " Dispatch it anyway?", refusal + " Proposed dispatch: Retry budget -> impl07, owns src/b/. Approve?",
+                     refusal + " Reply yes to dispatch it now.", refusal + " Say yes and I'll launch a worker for it."):
+            self.assertTrue(proposes(text), text)
+        for text in (refusal + " It will not be dispatched until the row exists.",
+                     refusal + " I will not dispatch Retry budget until the File ownership row is added."):
+            self.assertFalse(proposes(text), text)
+
     def test_worker_check_reply_must_not_propose_the_refused_task(self) -> None:
         """#61 review: "when it prints `refused: <why>`, tell the user that refusal and do not propose the task." A reply
         that tells the refusal and then also offers the dispatch (a fenced prompt, or asks to launch) fails; one that tells
