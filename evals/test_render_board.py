@@ -1264,6 +1264,27 @@ class DecisionDeadlineTest(unittest.TestCase):
             with self.subTest(phrase=phrase):
                 self.assertFalse(phrase in rules, f"the agent file still says {phrase!r}")
 
+    def test_agent_rules_say_a_blank_due_means_a_derived_forecast(self) -> None:
+        # With `due` blank and an owner, the board derives an end (render_board.py, estimate.py) and the Flow chart draws the
+        # remaining stages as forecast bars; only an unowned task gets none. The Tasks bullet must carry this sentence:
+        #   "a blank `due` leaves the board to derive an end from the owner's queue and draw the remaining stages as forecast"
+        # The clauses "it stays blank until a person fills it" and "you never fill it in to make the board look complete" stay.
+        rules = (Path(__file__).resolve().parents[1] / "agents/chief-of-stuff.md").read_text()
+        self.assertFalse("blank means no estimate" in rules, "the agent file still says a blank `due` means no estimate")
+        required = "a blank `due` leaves the board to derive an end from the owner's queue and draw the remaining stages as forecast"
+        self.assertTrue(required in rules, f"the agent file does not say {required!r}")
+        for kept in ("it stays blank until a person fills it", "you never fill it in to make the board look complete"):
+            with self.subTest(kept=kept):
+                self.assertTrue(kept in rules, f"the agent file lost {kept!r}")
+
+    def test_agent_rules_do_not_say_the_board_draws_an_arrow_to_the_waiting_on_who(self) -> None:
+        # Sessions are gone (#259), so the board draws no arrow. The `waiting on` bullet keeps its order (who first, then why)
+        # and loses the clause "The who is what the board draws an arrow to".
+        rules = (Path(__file__).resolve().parents[1] / "agents/chief-of-stuff.md").read_text()
+        self.assertFalse("The who is what the board draws an arrow to" in rules, "the agent file still says the board draws an arrow to the who")
+        kept = "`waiting on` names who first, then why"
+        self.assertTrue(kept in rules, f"the agent file lost {kept!r}")
+
 
 # --- the tracer bullet ----------------------------------------------------------------------------
 # One task threaded through every layer: written with a `name`, parsed, and labelled by that name
