@@ -215,7 +215,7 @@ COMMITS = ("Commits: Commit small and often on your own branch — uncommitted w
 
 
 # A read-only task is told so in place of its delivery rule; the launcher only checks afterwards that it left no commit or changed file (#57).
-READ_ONLY = "Do not edit, commit, push, merge or open a pull request: this task is read-only. Put what you found in the result."
+READ_ONLY = "Do not edit, commit, push, merge or open a pull request: this task is read-only. Write what you found in your result or report, and nothing else."
 
 
 def commit_rule(workflow: Workflow, root: Path) -> str:
