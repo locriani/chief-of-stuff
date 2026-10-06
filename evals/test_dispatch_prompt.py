@@ -681,8 +681,9 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         # against Bash's 10-minute cap, so "in the same turn" alone serializes. Each of these sentences must stand verbatim in the
         # one-shot paragraph (the line that starts `If `[workers] mode = "one-shot"``), and the eval graders quote the first.
         #
-        #   LAUNCH   "Launch every ready one-shot task whose File ownership paths overlap no other running or ready task at once, in the same turn, each as its own launcher call started in the background (Bash `run_in_background: true`); a read-only task overlaps nothing."
-        #   NOTIFY   "A background launch's completion notification is its report: reconcile it, sync the issue's Kanban state and report that task as it returns, before using its result."
+        #   LAUNCH   "Launch every ready one-shot task whose File ownership paths overlap no running task at once, in the same turn, each as its own launcher call started in the background (Bash `run_in_background: true`); a read-only task overlaps nothing; when two ready tasks overlap each other, launch the earlier row first and the other when it returns."
+        #   BACKGROUND "Give each launch its own Bash call with `run_in_background: true`; never chain launches with `;` or `&&`, never pipe a launch, and never start one without the flag."
+        #   NOTIFY   "A background launch's completion notification only says the launch ended: name the task in its Bash description, and on the notification read that task's report with `chief-of-stuff result --root . --task <task>`, then reconcile it, sync the issue's Kanban state and report that task before using its result."
         #   DECIDE   "Overlap is decided by `chief-of-stuff worker --check --root . --task <name> --one-shot` and by the launcher's own refusal, which compares File ownership with every running row (`scripts/ownership.py`), not by eye; run overlapping tasks one after the other."
         #   REFUSAL  "A launcher refusal for overlap, or for the concurrency cap (`max_concurrency` under `[workers]`), is not a blocker: leave the task `open` and launch it when a running task returns."
         #   FAILURE  "When one launch fails mid-batch the others keep running; do not retry a held or failed task without resolving its blocker."
@@ -691,8 +692,9 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         # Gone: "Run tasks sequentially in the foreground", "more than one task this way", "before selecting the next ready task".
         paragraph = self._one_shot_paragraph(self.content)
         for required in (
-            "Launch every ready one-shot task whose File ownership paths overlap no other running or ready task at once, in the same turn, each as its own launcher call started in the background (Bash `run_in_background: true`); a read-only task overlaps nothing.",
-            "A background launch's completion notification is its report: reconcile it, sync the issue's Kanban state and report that task as it returns, before using its result.",
+            "Launch every ready one-shot task whose File ownership paths overlap no running task at once, in the same turn, each as its own launcher call started in the background (Bash `run_in_background: true`); a read-only task overlaps nothing; when two ready tasks overlap each other, launch the earlier row first and the other when it returns.",
+            "Give each launch its own Bash call with `run_in_background: true`; never chain launches with `;` or `&&`, never pipe a launch, and never start one without the flag.",
+            "A background launch's completion notification only says the launch ended: name the task in its Bash description, and on the notification read that task's report with `chief-of-stuff result --root . --task <task>`, then reconcile it, sync the issue's Kanban state and report that task before using its result.",
             "Overlap is decided by `chief-of-stuff worker --check --root . --task <name> --one-shot` and by the launcher's own refusal, which compares File ownership with every running row (`scripts/ownership.py`), not by eye; run overlapping tasks one after the other.",
             "A launcher refusal for overlap, or for the concurrency cap (`max_concurrency` under `[workers]`), is not a blocker: leave the task `open` and launch it when a running task returns.",
             "When one launch fails mid-batch the others keep running; do not retry a held or failed task without resolving its blocker.",

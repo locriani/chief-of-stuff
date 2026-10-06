@@ -71,6 +71,22 @@ class OverlapTest(unittest.TestCase):
                 self.assertIs(ownership.overlaps("`src/a/`", quiet), False)
                 self.assertIs(ownership.overlaps(quiet, quiet), False)
 
+    def test_a_cell_that_owns_the_whole_repo_overlaps_every_other_cell_that_owns_anything(self):
+        # #365 verify R32: `.` and `./` name the repository root, which contains every path; read today as no path at all, so two tasks
+        # could share a tree. Both directions, with the launcher's suffix and prose as for any cell.
+        for whole in ("`.`", "`./`", ".", "./", "`./` (the whole repository)", "`src/b/`, `.`", "`.`; worktree `trees/all` (feat/all)"):
+            for other in ("`src/a/`", "`src/a/upload.py`", "src/a/", "`notes/x.md`, `src/b/`", "`.`", "`./`"):
+                for first, second in ((whole, other), (other, whole)):
+                    with self.subTest(first=first, second=second):
+                        self.assertIs(ownership.overlaps(first, second), True)
+
+    def test_a_whole_repo_cell_still_overlaps_nothing_that_owns_nothing(self):
+        for quiet in ("none", "None; read-only review of `src/a/`", "", "   "):
+            for whole in ("`.`", "`./`"):
+                with self.subTest(quiet=quiet, whole=whole):
+                    self.assertIs(ownership.overlaps(whole, quiet), False)
+                    self.assertIs(ownership.overlaps(quiet, whole), False)
+
     def test_a_cell_overlaps_a_copy_of_itself(self):
         # The launcher excludes the row being launched by key, not by this test: a task is never compared with itself.
         self.assertIs(ownership.overlaps("`src/a/`", "`src/a/`"), True)

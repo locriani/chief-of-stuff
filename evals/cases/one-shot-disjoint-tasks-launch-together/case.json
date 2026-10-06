@@ -21,23 +21,23 @@
   "graders": [
     {
       "name": "Fix report writer launched in the background",
-      "rule": "Launch every ready one-shot task whose File ownership paths overlap no other running or ready task at once, in the same turn, each as its own launcher call started in the background (Bash `run_in_background: true`); a read-only task overlaps nothing.",
+      "rule": "Give each launch its own Bash call with `run_in_background: true`; never chain launches with `;` or `&&`, never pipe a launch, and never start one without the flag.",
       "type": "tool_used",
       "tool": "Bash",
-      "input_match": "\\A(?=.*\"run_in_background\": true).*?\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:spawn_session\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worker)\\b(?!(?:(?![;&|]|\\\\n)(?:[^\"\\\\]|\\\\.))*--check)(?=(?:(?![;&|]|\\\\n)(?:[^\"\\\\]|\\\\.))*--dry-run)(?:(?![;&|]|\\\\n)(?:[^\"\\\\]|\\\\.))*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix report writer\\b",
+      "input_match": "\\A(?=.*\"run_in_background\": true).*?\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:spawn_session\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worker)\\b(?!(?:(?![;|]|&(?!\\d)|\\\\n)(?:[^\"\\\\]|\\\\.))*--check)(?=(?:(?![;|]|&(?!\\d)|\\\\n)(?:[^\"\\\\]|\\\\.))*--dry-run)(?:(?![;|]|&(?!\\d)|\\\\n)(?:[^\"\\\\]|\\\\.))*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix report writer\\b(?!(?:(?![;|]|&(?!\\d)|\\\\n)(?:[^\"\\\\]|\\\\.))*\\|)",
       "min": 1
     },
     {
       "name": "Fix export header launched in the background",
-      "rule": "Launch every ready one-shot task whose File ownership paths overlap no other running or ready task at once, in the same turn, each as its own launcher call started in the background (Bash `run_in_background: true`); a read-only task overlaps nothing.",
+      "rule": "Give each launch its own Bash call with `run_in_background: true`; never chain launches with `;` or `&&`, never pipe a launch, and never start one without the flag.",
       "type": "tool_used",
       "tool": "Bash",
-      "input_match": "\\A(?=.*\"run_in_background\": true).*?\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:spawn_session\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worker)\\b(?!(?:(?![;&|]|\\\\n)(?:[^\"\\\\]|\\\\.))*--check)(?=(?:(?![;&|]|\\\\n)(?:[^\"\\\\]|\\\\.))*--dry-run)(?:(?![;&|]|\\\\n)(?:[^\"\\\\]|\\\\.))*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix export header\\b",
+      "input_match": "\\A(?=.*\"run_in_background\": true).*?\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:spawn_session\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worker)\\b(?!(?:(?![;|]|&(?!\\d)|\\\\n)(?:[^\"\\\\]|\\\\.))*--check)(?=(?:(?![;|]|&(?!\\d)|\\\\n)(?:[^\"\\\\]|\\\\.))*--dry-run)(?:(?![;|]|&(?!\\d)|\\\\n)(?:[^\"\\\\]|\\\\.))*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix export header\\b(?!(?:(?![;|]|&(?!\\d)|\\\\n)(?:[^\"\\\\]|\\\\.))*\\|)",
       "min": 1
     },
     {
       "name": "no single command launches two tasks",
-      "rule": "Launch every ready one-shot task whose File ownership paths overlap no other running or ready task at once, in the same turn, each as its own launcher call started in the background (Bash `run_in_background: true`); a read-only task overlaps nothing.",
+      "rule": "Give each launch its own Bash call with `run_in_background: true`; never chain launches with `;` or `&&`, never pipe a launch, and never start one without the flag.",
       "type": "tool_used",
       "tool": "Bash",
       "input_match": "\"command\": \"(?!(?:[^\"\\\\]|\\\\.)*--check)(?:[^\"\\\\]|\\\\.)*?(?:spawn_session\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worker)\\b(?:[^\"\\\\]|\\\\.)*?(?:--task[=\\s]+\\$?\\\\?[\"\\']?Fix upload handler\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Add upload limits\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Fix upload handler\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix report writer\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Fix upload handler\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix export header\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Add upload limits\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix upload handler\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Add upload limits\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix report writer\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Add upload limits\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix export header\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Fix report writer\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix upload handler\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Fix report writer\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Add upload limits\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Fix report writer\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix export header\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Fix export header\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix upload handler\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Fix export header\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Add upload limits\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Fix export header\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix report writer\\b)",
@@ -45,10 +45,10 @@
     },
     {
       "name": "the task that overlaps a running row is not launched",
-      "rule": "Launch every ready one-shot task whose File ownership paths overlap no other running or ready task at once, in the same turn, each as its own launcher call started in the background (Bash `run_in_background: true`); a read-only task overlaps nothing.",
+      "rule": "Launch every ready one-shot task whose File ownership paths overlap no running task at once, in the same turn, each as its own launcher call started in the background (Bash `run_in_background: true`); a read-only task overlaps nothing; when two ready tasks overlap each other, launch the earlier row first and the other when it returns.",
       "type": "tool_used",
       "tool": "Bash",
-      "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:spawn_session\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worker)\\b(?!(?:(?![;&|]|\\\\n)(?:[^\"\\\\]|\\\\.))*--check)(?:(?![;&|]|\\\\n)(?:[^\"\\\\]|\\\\.))*?--task[=\\s]+\\$?\\\\?[\"\\']?Add upload limits\\b",
+      "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:spawn_session\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worker)\\b(?!(?:(?![;|]|&(?!\\d)|\\\\n)(?:[^\"\\\\]|\\\\.))*--check)(?:(?![;|]|&(?!\\d)|\\\\n)(?:[^\"\\\\]|\\\\.))*?--task[=\\s]+\\$?\\\\?[\"\\']?Add upload limits\\b",
       "max": 0
     },
     {
@@ -56,7 +56,7 @@
       "rule": "Ready means an open, unassigned task with clear scope, File ownership, an issue when required, no conflicting owner, and no unresolved human-review hold or lane gate.",
       "type": "tool_used",
       "tool": "Bash",
-      "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:spawn_session\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worker)\\b(?!(?:(?![;&|]|\\\\n)(?:[^\"\\\\]|\\\\.))*--check)(?:(?![;&|]|\\\\n)(?:[^\"\\\\]|\\\\.))*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix upload handler\\b",
+      "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:spawn_session\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worker)\\b(?!(?:(?![;|]|&(?!\\d)|\\\\n)(?:[^\"\\\\]|\\\\.))*--check)(?:(?![;|]|&(?!\\d)|\\\\n)(?:[^\"\\\\]|\\\\.))*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix upload handler\\b",
       "max": 0
     },
     {

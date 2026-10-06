@@ -729,6 +729,26 @@ class RunTest(unittest.TestCase):
         self._overlap_tracker("none; read-only review of `src/a/`", "`src/a/`")
         self.assertEqual(self._run(self._fake('status: done\nreason: r\nchanges: c\n', write_partial=False)), 0)
 
+    def test_a_running_whole_repo_row_refuses_every_launch_that_owns_a_path(self):
+        # #365 verify R32: `.` is the repository root, so it overlaps `src/a/` and the reverse.
+        for whole in ("`.`", "`./`"):
+            with self.subTest(running=whole):
+                self._overlap_tracker("`src/a/`", whole)
+                before = self.tracker.read_text()
+                with self.assertRaisesRegex(ValueError, r"(?s)overlap.*Export header|Export header.*overlap"):
+                    self._run(self._fake('status: done\nreason: r\nchanges: c\n'))
+                self.assertEqual(self.tracker.read_text(), before)
+                self.assertFalse((self.root / "during.md").exists(), "the worker started")
+
+    def test_a_whole_repo_launch_is_refused_while_any_row_runs_and_a_read_only_one_is_not(self):
+        self._overlap_tracker("`.`", "`src/b/`")
+        before = self.tracker.read_text()
+        with self.assertRaisesRegex(ValueError, "overlap"):
+            one_shot.record_launch(self.tracker, "Security audit", "worker01", "worktree `w` (b)", "codex", "", "10:00")
+        self.assertEqual(self.tracker.read_text(), before)
+        self._overlap_tracker("none; read-only review of `.`", "`.`")
+        self.assertEqual(self._run(self._fake('status: done\nreason: r\nchanges: c\n', write_partial=False)), 0)
+
     def test_a_read_only_running_row_blocks_nothing(self):
         self._overlap_tracker("`src/a/`", "none; read-only review of `src/a/`")
         self.assertEqual(self._run(self._fake('status: done\nreason: r\nchanges: c\n', write_partial=False)), 0)

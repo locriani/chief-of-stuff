@@ -593,8 +593,13 @@ class CaseLintTest(unittest.TestCase):
         report, export, single, limits, handler, rows = spec(EVALS / "cases" / "one-shot-disjoint-tasks-launch-together")["graders"][:6]
         for g in (report, export, single, limits, handler, rows):
             self.assertIn(g["rule"], agent_text, g["name"])
-        self.assertEqual({g["rule"] for g in (report, export, single, limits)}, {report["rule"]})
-        self.assertIn("started in the background (Bash `run_in_background: true`)", report["rule"])
+        # The graders that count launches quote the BACKGROUND sentence (one call each, background, no chain, no pipe); the one that
+        # holds back an overlapping task quotes LAUNCH. Both are pinned verbatim in test_dispatch_prompt's one-shot lint.
+        self.assertEqual({g["rule"] for g in (report, export, single)}, {report["rule"]})
+        self.assertEqual(report["rule"], "Give each launch its own Bash call with `run_in_background: true`; never chain launches with `;` or `&&`, "
+                                          "never pipe a launch, and never start one without the flag.")
+        self.assertIn("overlap no running task", limits["rule"])
+        self.assertIn("launch the earlier row first and the other when it returns", limits["rule"])
 
     def test_disjoint_one_shot_launch_graders_match_a_background_launch_and_nothing_else(self) -> None:
         """#365 review R1-R3: what the graders count. `worker --check` and a `--dry-run` after `;` are not launches, a launch is one
@@ -615,6 +620,8 @@ class CaseLintTest(unittest.TestCase):
             for command in (f"chief-of-stuff worker --root . --task '{name}' --dry-run", f'chief-of-stuff worker --task "{name}" --dry-run',
                             f"python3 /r/chief_of_stuff.py worker --dry-run --task={name}",
                             f"python3 /r/scripts/spawn_session.py --task '{name}' --dry-run",
+                            f"chief-of-stuff worker --task '{name}' --dry-run 2>&1",  # a redirect is no pipe
+                            f"chief-of-stuff worker --task '{name}' --dry-run > /dev/null 2>&1",
                             f"cd /ws && chief-of-stuff worker --root . --task '{name}' --dry-run --one-shot\n"):
                 self.assertTrue(hit(g, command), command)
             self.assertTrue(first(g, f"chief-of-stuff worker --task '{name}' --dry-run"))
@@ -624,7 +631,9 @@ class CaseLintTest(unittest.TestCase):
                     ("a check with a dry run", f"chief-of-stuff worker --check --task '{name}' --one-shot --dry-run", True),
                     ("a check after the task", f"chief-of-stuff worker --task '{name}' --check --dry-run", True),
                     ("a dry run after a semicolon", f"chief-of-stuff worker --task '{name}'; echo --dry-run", True),
-                    ("a dry run on the next line", f"chief-of-stuff worker --task '{name}'\nchief-of-stuff worker --task 'Other' --dry-run", True),
+                    ("a piped launch", f"chief-of-stuff worker --one-shot --dry-run --task '{name}' 2>&1 | tail -8", True),
+                    ("a launch piped with stderr", f"chief-of-stuff worker --task '{name}' --dry-run |& tail -3", True),
+                    ("a launch piped to tee", f"chief-of-stuff worker --dry-run --task '{name}' | tee log.txt", True),                    ("a dry run on the next line", f"chief-of-stuff worker --task '{name}'\nchief-of-stuff worker --task 'Other' --dry-run", True),
                     ("another task", "chief-of-stuff worker --task 'Fix upload handler' --dry-run", True),
                     ("a mention", f"echo chief-of-stuff worker; cat tracker.md # --task '{name}' --dry-run", True),
                     ("a worktree call", "chief-of-stuff worktree --name fix-it --branch b", True)):
