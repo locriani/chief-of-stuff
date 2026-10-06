@@ -9,6 +9,3 @@ rotation = ["claude:haiku@high", "claude:opus@low", "claude:sonnet@medium"]
 
 [models.review]
 rotation = ["claude:opus@high"]
-
-[repos]
-repo = "repo"

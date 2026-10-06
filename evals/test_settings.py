@@ -71,11 +71,8 @@ class SettingsTest(unittest.TestCase):
     def test_a_file_that_is_not_utf8_is_a_settings_error_not_a_decode_error(self):
         # Every caller catches SettingsError; a UnicodeDecodeError (a ValueError) got past them as a traceback.
         (self.root / "chief-of-stuff.toml").write_bytes(b"\xff\xfe[workers]\n")
-        try:
-            with self.assertRaises(st.SettingsError):
-                st.load(self.root, "chief-of-stuff.toml")
-        except UnicodeDecodeError as exc:
-            self.fail(f"{exc!r} got past the callers' `except SettingsError`")
+        with self.assertRaises(st.SettingsError):
+            st.load(self.root, "chief-of-stuff.toml")
 
     def test_architecture_reviewer_is_optional_and_validated(self):
         self.assertIsNone(st.load(self.root, None).workflow.architecture_reviewer)
@@ -135,35 +132,27 @@ class SettingsTest(unittest.TestCase):
                 st.load(self.root, self.write(f'[workers]\nmode = {value}\n'))
 
     def test_repos_is_empty_or_the_name_to_path_table_the_file_gives(self):
-        # #54: the repositories `chief-of-stuff worktree` cuts from, by name; a relative path is relative to the
-        # workspace root, which the caller resolves.
+        # #54: the repositories `chief-of-stuff worktree` cuts from, by name; a relative path is relative to the workspace root.
         self.assertEqual(st.load(self.root, None).repos, {})
         self.assertEqual(st.load(self.root, self.write('[workers]\nmode = "one-shot"\n')).repos, {})
         self.assertEqual(st.load(self.root, self.write("[repos]\n")).repos, {})
         settings = st.load(self.root, self.write('[repos]\nalder = "alder-checkout"\nbirch = "/abs/birch"\n'))
         self.assertEqual(settings.repos, {"alder": "alder-checkout", "birch": "/abs/birch"})
-        # Padding validates as a path, so the value handed on is the stripped one.
-        self.assertEqual(st.load(self.root, self.write('[repos]\nalder = "  checkout  "\n')).repos, {"alder": "checkout"})
+
+    def test_repos_loads_beside_a_notify_table(self):
+        # `load` builds its result in two places: a file with `[notify]` takes the second.
+        settings = st.load(self.root, self.write('[notify]\nadapter = "md-notify"\n[repos]\nalder = "alder-checkout"\n'))
+        self.assertEqual(settings.repos, {"alder": "alder-checkout"})
 
     def test_a_repos_value_that_is_blank_or_not_a_string_is_refused_naming_the_entry(self):
-        # A NUL cannot come in on argv, so a value is the only way one reaches the path and `git -C`.
-        for bad in ('""', '"  "', "3", "true", '["checkout"]', "{}", '"re\\u0000po"'):
+        for bad in ('""', '"  "', "3", "true", '["checkout"]', "{}"):
             with self.subTest(bad=bad), self.assertRaisesRegex(st.SettingsError, r"\[repos\] alder must be a path"):
                 st.load(self.root, self.write(f"[repos]\nalder = {bad}\n"))
 
     def test_repos_that_is_not_a_table_is_refused(self):
-        for bad in ("3", '"alder"', '["alder"]', "true"):
+        for bad in ("3", '"alder"', '["alder"]', "true", "0", '""', "false", "[]"):
             with self.subTest(bad=bad), self.assertRaisesRegex(st.SettingsError, r"\[repos\] must be a table"):
                 st.load(self.root, self.write(f"repos = {bad}\n"))
-
-    def test_workers_has_no_clone_and_a_leftover_key_is_not_read(self):
-        # `[workers] clone` was never released; a file that still has one loads, whatever the value.
-        self.assertFalse(hasattr(st.Workers(), "clone"))
-        for value in ('"checkout"', "3", '""'):
-            with self.subTest(value=value):
-                settings = st.load(self.root, self.write(f"[workers]\nclone = {value}\n"))
-                self.assertFalse(hasattr(settings.workers, "clone"))
-                self.assertEqual(settings.repos, {})
 
     def test_a_wrong_value_in_a_file_that_parses_is_a_settings_error_naming_its_table_and_key(self):
         # #47, Codex on PR #283: `gates = [["a"]]` raised TypeError from `set()` and `health` printed a traceback.

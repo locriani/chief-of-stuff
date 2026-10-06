@@ -1,5 +1,0 @@
-[workers]
-mode = "one-shot"
-
-[repos]
-alder = "alder-checkout"

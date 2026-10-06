@@ -1,5 +1,2 @@
 [workers]
 mode = "one-shot"
-
-[repos]
-repo = "repo"

@@ -60,7 +60,6 @@ class InitWorkspaceTest(unittest.TestCase):
         path = self.root / "chief-of-stuff.toml"
         lines = path.read_text().splitlines()
         self.assertIn("# [repos]", lines)
-        self.assertFalse([line for line in lines if line.startswith("# clone = ")], "the key `[workers] clone` is gone")
         self.assertEqual(load_settings(self.root, "chief-of-stuff.toml").repos, {})
         start = lines.index("# [repos]")
         end = start + 1
