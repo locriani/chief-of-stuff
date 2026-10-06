@@ -1,11 +1,13 @@
 """pages.py: the workspace's pages, served from this Mac (Zach, 2026-09-24 14:07: "we should host our own
 webserver and ensure they are set up as part of the agent's boot loop")."""
 
+import collections
 import email.utils
 import http.client
 import json
 import http.server
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -183,26 +185,52 @@ class ReloadSnippetTest(unittest.TestCase):
         for blocking in ("alert(", "confirm(", "prompt("):
             self.assertNotIn(blocking, snip)
 
-
-    def test_the_snippet_has_no_protocol_guard_because_only_the_server_injects_it(self):
-        # A page opened from disk never carries the snippet (it is injected at serve time), so the guard cannot be false.
-        self.assertNotIn("location.protocol", snippet())
+    @staticmethod
+    def code() -> tuple[str, str]:
+        """The snippet's code without its comments, as written and with quotes unified and spacing dropped."""
+        code = re.sub(r"//[^\n]*|/\*.*?\*/", "", snippet(), flags=re.S)
+        return code, "".join(code.replace('"', "'").split())
 
     def test_the_snippet_guards_every_kind_of_user_state_a_reload_would_lose(self):
         # A reload drops a picked radio or checkbox, a chosen option and edited rich text, as it drops typed text.
-        flat = "".join(snippet().replace('"', "'").split())
+        _, flat = self.code()
         self.assertRegex(flat, r"\.checked!==?\w+\.defaultChecked")
         self.assertRegex(flat, r"\.selected!==?\w+\.defaultSelected")
-        self.assertIn("contenteditable", flat.lower())  # `[contenteditable]` or `isContentEditable`
+        for word in ("defaultChecked", "defaultSelected", "defaultValue", "tagName", "INPUT", "TEXTAREA", "SELECT"):
+            with self.subTest(word=word):
+                self.assertRegex(flat, rf"\b{word}\b")  # `SELECTX` is not SELECT
+        self.assertIn("isContentEditable", flat)  # in code, not only in a comment
+        self.assertNotRegex(flat, r"false&&|&&false|\b0&&|&&0\b")  # a guard that can never be true guards nothing
+
+    def test_the_snippet_counts_only_form_controls_as_unsaved_input(self):
+        # R13: the source page's Unified/Split radios sit outside any form; picking Split is not input a reload loses.
+        _, flat = self.code()
+        selectors = re.findall(r"some\('([^']*)'", flat)
+        self.assertTrue(selectors, "found no `some('selector', ...)` dirty check")
+        scoped = all("form" in part for sel in selectors for part in sel.split(","))
+        self.assertTrue(scoped or "closest('form')" in flat, f"dirty checks reach controls outside a form: {selectors}")
+
+    def test_the_source_pages_layout_radios_are_outside_any_form(self):
+        # The premise of the test above: no form wraps them, so a form-scoped check never counts them.
+        import source_page
+        self.assertIn('type="radio"', source_page.LAYOUT)
+        self.assertNotIn("<form", source_page.LAYOUT)
+        self.assertNotIn("<form", Path(source_page.__file__).read_text())
+
+    def test_the_snippet_does_not_take_an_epoch_last_modified_for_an_absent_one(self):
+        # R16: Date.parse of a missing header is NaN; 0 is a real time, and a page stamped 0 must still reload.
+        _, flat = self.code()
+        self.assertIn("isNaN(", flat)
+        self.assertNotRegex(flat, r"\bt&&")
 
     def test_the_snippet_listens_for_visibilitychange_without_replacing_the_pages_own_handler(self):
         flat = "".join(snippet().replace('"', "'").split())
         self.assertIn("addEventListener('visibilitychange'", flat)
-        self.assertNotIn("onvisibilitychange=", flat)
 
     def test_inject_matches_the_body_end_in_any_case(self):
         import page_reload
-        snip = page_reload.SNIPPET.encode()
+        snip = page_reload.ENCODED  # the bytes inject() writes
+        self.assertEqual(snip, page_reload.SNIPPET.encode())
         for end in (b"</BODY>", b"</Body>"):
             with self.subTest(end=end):
                 out = page_reload.inject(b"<BODY><p>x</p>" + end + b"</HTML>")
@@ -220,6 +248,26 @@ class ReloadSnippetTest(unittest.TestCase):
             for method in ("GET", "HEAD"):
                 with self.subTest(path=path, method=method):
                     self.assertEqual(get(self.port, path, method=method).status, 404)
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "no mkfifo")
+    def test_a_fifo_named_like_a_page_is_404_and_never_blocks_a_handler(self):
+        # R5: a FIFO is not a regular file; opening one for read waits for a writer, which a request must never do.
+        os.mkfifo(self.dir / "pipe.html")
+        for method in ("GET", "HEAD"):
+            with self.subTest(method=method):
+                self.assertEqual(get(self.port, "/pipe.html", method=method).status, 404)  # a hang is the client's 5 s timeout
+
+    def test_the_html_suffix_is_judged_on_the_path_the_file_is_served_from(self):
+        # R18: a query or fragment ends the path; `.html` after it does not make notes.txt a page.
+        for path in ("/notes.txt?.html", "/notes.txt#.html"):
+            for method in ("GET", "HEAD"):
+                with self.subTest(path=path, method=method):
+                    resp = get(self.port, path, method=method)
+                    self.assertEqual(resp.status, 200)
+                    self.assertTrue(resp.getheader("Content-Type").startswith("text/plain"), resp.getheader("Content-Type"))
+                    self.assertEqual(resp.getheader("Content-Length"), str(len(b"plain notes, no markup\n")))
+                    if method == "GET":
+                        self.assertEqual(resp.body, b"plain notes, no markup\n")
 
     def test_a_page_that_vanishes_after_the_file_check_is_404_not_a_blank_page_stamped_1970(self):
         real = Path.read_bytes
@@ -510,13 +558,11 @@ DECISION = ('{"headline": "Cache TTL", "ask": "Keep 5 minutes?", "options": [{"k
             '"text": "no change"}, {"key": "B", "title": "Drop", "text": "slower"}], "recommended": "A", "why": "fine", "default": "A at 17:00"}')
 
 
-class UnchangedPageKeepsItsTimeTest(unittest.TestCase):
-    """A served page's Last-Modified is its reload signal (#330): a page that shows the same thing must keep its time,
-    or an open tab reloads on every request (workers.html is re-rendered on each one) and every minute (the refresher
-    rewrites .sources.json, a source of every page). The renderers write only when the bytes differ.
-    Each renderer's clock is frozen, so a run of the real renderers with the same inputs gives the same bytes; every
-    page is backdated, which makes the next request re-render it (a source is newer) and a rewrite move its time to now."""
+class _PagesFixture:
+    """A workspace with every kind of page and the real server rendering them. `FREEZE` pins each renderer's clock at
+    12:00, so a run of the real renderers with the same inputs gives the same bytes; a test that is about the clock sets it False."""
 
+    FREEZE = True
     OLD = 1_700_000_000
     PAGES = {"/": "{day}-board.html", "/workers": "workers.html", "/decisions": "decisions.html",
              "/decisions/cache-ttl": "decision-cache-ttl.html", "/issues/7": "issue-7.html",
@@ -534,18 +580,19 @@ class UnchangedPageKeepsItsTimeTest(unittest.TestCase):
         self.pages = self.root / "pages"
         self.pages.mkdir()
         (self.pages / "decision-cache-ttl.json").write_text(DECISION)
-        fixed = datetime.now(ZoneInfo(ZONE)).replace(hour=12, minute=0, second=0, microsecond=0)
+        if self.FREEZE:
+            fixed = datetime.now(ZoneInfo(ZONE)).replace(hour=12, minute=0, second=0, microsecond=0)
 
-        class Frozen(datetime):
-            @classmethod
-            def now(cls, tz=None):
-                return fixed.astimezone(tz) if tz else fixed
+            class Frozen(datetime):
+                @classmethod
+                def now(cls, tz=None):
+                    return fixed.astimezone(tz) if tz else fixed
 
-        import decision_page, issue_page, render_board, workers_page
-        for module in (decision_page, issue_page, render_board, workers_page):
-            patch = mock.patch.object(module, "datetime", Frozen)
-            patch.start()
-            self.addCleanup(patch.stop)
+            import decision_page, issue_page, render_board, workers_page
+            for module in (decision_page, issue_page, render_board, workers_page):
+                patch = mock.patch.object(module, "datetime", Frozen)
+                patch.start()
+                self.addCleanup(patch.stop)
         self.calls, self.refreshed = [], threading.Event()
         self.server = pg.make_server(self.pages, 0, root=self.root, refresh=self.fake_refresh, every=3600)
         self.port = self.server.server_address[1]
@@ -558,6 +605,31 @@ class UnchangedPageKeepsItsTimeTest(unittest.TestCase):
 
     def file(self, route: str) -> Path:
         return self.pages / self.PAGES[route].format(day=self.day)
+
+    def count_renders(self) -> collections.Counter:
+        """Counts, by renderer module, the calls the server makes to each page renderer from now on (the real one still runs)."""
+        import decision_page, issue_page, render_board, source_page, workers_page
+        counts: collections.Counter = collections.Counter()
+        for module in (decision_page, issue_page, render_board, source_page, workers_page):
+            def spy(*args, _real=module.write, _name=module.__name__, **kwargs):
+                counts[_name] += 1
+                return _real(*args, **kwargs)
+            patch = mock.patch.object(module, "write", spy)
+            patch.start()
+            self.addCleanup(patch.stop)
+        return counts
+
+    def request_all(self, method: str = "GET", routes=None) -> dict:
+        return {route: get(self.port, route, method=method) for route in (routes or self.PAGES)}
+
+
+class UnchangedPageKeepsItsTimeTest(_PagesFixture, unittest.TestCase):
+    """A served page's Last-Modified is its reload signal (#330): a page that shows the same thing must keep its time,
+    or an open tab reloads on every request (workers.html is re-rendered on each one). The renderers write only when
+    the bytes differ. Every page is backdated, which makes the next request re-render it (a source is newer) and a
+    rewrite move its time to now.
+    Known limit: a page that carries a rendered clock (`rendered HH:MM`, the board's header) still changes its bytes,
+    so its tab still reloads once a minute; frozen at 12:00 here, the renderers cannot show that."""
 
     def render_all_then_backdate(self):
         for route in self.PAGES:
@@ -573,18 +645,6 @@ class UnchangedPageKeepsItsTimeTest(unittest.TestCase):
                 self.assertEqual(resp.status, 200)
                 self.assertEqual((self.file(route).stat().st_mtime_ns, resp.getheader("Last-Modified")),
                                  (self.OLD * 1_000_000_000, stamp))
-
-    def test_a_render_with_the_same_inputs_leaves_every_page_file_and_its_time_alone(self):
-        self.render_all_then_backdate()
-        self.assert_still_old()
-
-    def test_workers_keeps_its_time_across_two_requests_though_it_renders_on_every_one(self):
-        first = get(self.port, "/workers")
-        before = self.file("/workers").stat().st_mtime_ns
-        time.sleep(1.1)  # Last-Modified has one-second steps
-        second = get(self.port, "/workers")
-        self.assertEqual((second.getheader("Last-Modified"), self.file("/workers").stat().st_mtime_ns),
-                         (first.getheader("Last-Modified"), before))
 
     def test_a_cache_rewritten_with_identical_content_moves_no_page(self):
         # What board_sources does every 60 s: the file's time moves, its content does not.
@@ -610,6 +670,172 @@ class UnchangedPageKeepsItsTimeTest(unittest.TestCase):
         for route in ("/decisions/cache-ttl", "/decisions"):
             with self.subTest(route=route):
                 self.assertNotEqual(get(self.port, route).getheader("Last-Modified"), email.utils.formatdate(self.OLD, usegmt=True))
+
+
+class RenderStampTest(_PagesFixture, unittest.TestCase):
+    """Whether a page needs a render is the server's own record of when it last rendered it (rendered-at, in memory).
+    Last-Modified is only when the page's bytes last changed. A source touched without a change, a POST and a render
+    error each cost at most one render and one move of Last-Modified, never a render or a new time on every poll.
+    A page with no record yet is judged by its file's time, as before."""
+
+    def settle(self):
+        time.sleep(0.05)  # a source touched now is newer than a render recorded a moment ago
+
+    def test_a_source_touched_without_a_change_renders_each_page_once_not_on_every_poll(self):
+        # R7: .sources.json is rewritten every minute; an editor save or a checkout touches a tracker the same way.
+        self.request_all()
+        counts = self.count_renders()
+        self.settle()
+        os.utime(self.pages / ".sources.json", None)
+        self.request_all()
+        once = dict(counts)
+        self.assertEqual((once.get("issue_page"), once.get("source_page")), (1, 1), once)
+        self.assertLessEqual(once.get("decision_page", 0), 1, once)
+        self.assertIn(once.get("render_board"), (1, 2), once)  # `/` and `/decisions` both come from the board's render
+        for _ in range(5):
+            self.request_all("HEAD")
+            self.request_all()
+        self.assertEqual({k: v for k, v in counts.items() if k != "workers_page"},
+                         {k: v for k, v in once.items() if k != "workers_page"}, "a render per poll after the first")
+
+    def test_an_answer_re_renders_the_pages_once_and_never_serves_a_1970_time(self):
+        # R8: the POST used to set every page's file time to 0; a page whose bytes do not change then kept it for good.
+        self.request_all()
+        before = {route: int(self.file(route).stat().st_mtime) for route in self.PAGES}
+        counts = self.count_renders()
+        self.settle()
+        self.assertEqual(post(self.port, "/decisions/cache-ttl", b"key=A").status, 303)
+        for route, resp in self.request_all().items():
+            with self.subTest(route=route):
+                stamp = email.utils.parsedate_to_datetime(resp.getheader("Last-Modified")).timestamp()
+                self.assertGreaterEqual(stamp, before[route], resp.getheader("Last-Modified"))
+        once = dict(counts)
+        self.assertEqual((once.get("issue_page"), once.get("source_page")), (1, 1), once)
+        self.assertGreaterEqual(once.get("render_board", 0), 1, once)
+        for _ in range(3):
+            for route, resp in {**self.request_all("HEAD"), **self.request_all()}.items():
+                self.assertGreaterEqual(email.utils.parsedate_to_datetime(resp.getheader("Last-Modified")).timestamp(),
+                                        before[route], route)
+        self.assertEqual({k: v for k, v in counts.items() if k != "workers_page"},
+                         {k: v for k, v in once.items() if k != "workers_page"}, "a render per poll after the answer")
+
+    def test_a_failing_render_moves_last_modified_once_going_in_and_once_coming_out(self):
+        # R10: the banner was served with the file's own time, so a tab showing it kept it after the render recovered.
+        board, cos = self.file("/"), self.root / "cos.toml"
+        get(self.port, "/")
+        os.utime(board, (self.OLD, self.OLD))
+        lm = lambda: get(self.port, "/", method="HEAD").getheader("Last-Modified")
+        good = lm()
+        self.settle()
+        cos.write_text("[lanes\n")
+        banner = [lm(), lm(), lm()]
+        self.assertIn(b"not re-rendered", get(self.port, "/").body)
+        self.assertNotEqual(banner[0], good, "entering the banner state did not move Last-Modified")
+        self.assertEqual(len(set(banner)), 1, f"staying in the banner state moved it: {banner}")
+        self.settle()
+        cos.write_text("# fixed\n")
+        back = [lm(), lm(), lm()]
+        self.assertNotIn(b"not re-rendered", get(self.port, "/").body)
+        self.assertNotEqual(back[0], banner[0], "leaving the banner state did not move Last-Modified")
+        self.assertEqual(len(set(back)), 1, f"staying out of it moved it: {back}")
+
+    def test_a_page_that_cannot_render_and_has_no_file_is_200_with_the_banner_and_the_snippet(self):
+        # R3: a 404 here would hide the error; the banner is the page.
+        import issue_page
+        self.assertFalse(self.file("/issues/7").exists())
+        with mock.patch.object(issue_page, "write", side_effect=RuntimeError("boom")):
+            got, head = get(self.port, "/issues/7"), get(self.port, "/issues/7", method="HEAD")
+        self.assertEqual((got.status, head.status), (200, 200))
+        self.assertIn(b"not re-rendered: RuntimeError: boom", got.body)
+        self.assertEqual(got.body.count(page_reload_bytes()), 1)
+        self.assertEqual(head.getheader("Content-Length"), str(len(got.body)))
+
+    def test_a_page_file_that_is_not_utf8_is_rewritten_not_wedged(self):
+        # R11: the compare reads bytes; a writer killed mid-character left a file no text read can decode.
+        for route, name in (("/issues/7", "issue-7.html"), ("/workers", "workers.html")):
+            with self.subTest(route=route):
+                (self.pages / name).write_bytes(b"<p>cut mid-char \xc2")
+                os.utime(self.pages / name, (self.OLD, self.OLD))
+                resp = get(self.port, route)
+                self.assertEqual(resp.status, 200)
+                self.assertNotIn(b"not re-rendered", resp.body)
+                self.assertIn("Security audit" if route == "/issues/7" else "<", (self.pages / name).read_bytes().decode("utf-8"))
+                self.assertNotIn(b"cut mid-char", (self.pages / name).read_bytes())
+
+    def test_a_changed_page_is_swapped_in_by_a_rename_so_no_reader_sees_it_half_written(self):
+        # R12: decisions.html is written by two renders under two locks; a truncate-then-write shows a reader a partial file.
+        import workers_page
+        target = self.pages / "workers.html"
+        target.write_text("<p>stale</p>")
+        before, replaced, real = set(os.listdir(self.pages)), [], os.replace
+
+        def spy(src, dst, *args, **kwargs):
+            replaced.append((Path(src), Path(dst)))
+            return real(src, dst, *args, **kwargs)
+
+        with mock.patch("os.replace", spy):
+            workers_page.write(self.root, self.pages)
+        self.assertNotEqual(target.read_text(), "<p>stale</p>")
+        self.assertTrue([r for r in replaced if r[1].name == target.name and r[0] != r[1] and r[0].parent == r[1].parent],
+                        f"workers.html was not replaced from a temp file beside it: {replaced}")
+        self.assertEqual(set(os.listdir(self.pages)), before, "a temp file was left behind")
+
+
+def page_reload_bytes() -> bytes:
+    import page_reload
+    return page_reload.ENCODED
+
+
+class UnfrozenBoardTest(_PagesFixture, unittest.TestCase):
+    """The renderers' real clocks. A board page that is polled must not change its bytes, or its Last-Modified, with the
+    seconds: its tab would reload on every poll. (A clock that changes each minute is the known limit.)"""
+
+    FREEZE = False
+
+    def a_minute_with_room(self):
+        """Start no later than :55, so two renders 1.1 s apart share a minute."""
+        if (second := datetime.now().second) >= 55:
+            time.sleep(61 - second)
+
+    @staticmethod
+    def first_difference(a: bytes, b: bytes) -> str:
+        i = next((i for i, (x, y) in enumerate(zip(a, b)) if x != y), min(len(a), len(b)))
+        return f"first difference at byte {i}: {a[max(0, i - 60):i + 60]!r} vs {b[max(0, i - 60):i + 60]!r}"
+
+    def test_the_board_and_decisions_files_are_the_same_bytes_at_two_different_seconds(self):
+        # R6: panels.header printed `now` to the second, so every render of an unchanged board was a changed file.
+        import render_board
+        self.a_minute_with_room()
+        names = (f"{self.day}-board.html", "decisions.html")
+        render_board.write(self.root, self.day)
+        first = {n: (self.pages / n).read_bytes() for n in names}
+        time.sleep(1.1)
+        render_board.write(self.root, self.day)
+        for n in names:
+            with self.subTest(page=n):
+                again = (self.pages / n).read_bytes()
+                self.assertTrue(first[n] == again, self.first_difference(first[n], again))
+
+    def test_polling_a_stale_decisions_page_renders_the_board_once_and_leaves_its_files_alone(self):
+        # R6: a stale decisions.html re-rendered on every HEAD, and each render of the board moved its time.
+        get(self.port, "/")
+        get(self.port, "/decisions")
+        counts = self.count_renders()
+        self.a_minute_with_room()
+        time.sleep(0.05)
+        os.utime(self.tracker, None)
+
+        def state():
+            head = get(self.port, "/decisions", method="HEAD")
+            files = [self.file("/"), self.file("/decisions")]
+            return head.getheader("Last-Modified"), [(f.read_bytes(), f.stat().st_mtime_ns) for f in files]
+
+        seen = [state()]
+        for _ in range(2):
+            time.sleep(1.1)
+            seen.append(state())
+        self.assertLessEqual(counts.get("render_board", 0), 1, dict(counts))
+        self.assertTrue(seen[1] == seen[0] and seen[2] == seen[0], "a poll moved the board's or decisions' file or time")
 
 
 class AnswerTest(unittest.TestCase):
