@@ -1,5 +1,5 @@
-"""Escaping and validation shared by the HTML-fragment charts (gantt.py, columns.py), the pages' links and tab bar,
-and the page write that keeps an unchanged page's time. It imports nothing from the plugin, so each chart lifts out with this file and no other."""
+"""Escaping and validation shared by the HTML-fragment charts (gantt.py, columns.py) and the pages' links and tab bar.
+It imports nothing from the plugin, so each chart lifts out with this file and no other."""
 
 from __future__ import annotations
 
@@ -8,17 +8,6 @@ import re
 
 KIND = re.compile(r"[a-z][a-z0-9-]*")
 COLOUR = re.compile(r"[#\w(),.%/ -]+")  # a colour, var() or border shorthand; nothing that ends a declaration or a rule
-
-
-def write_if_changed(path, text: str) -> None:
-    """Write `text` to `path` unless it already holds exactly that: an unchanged page keeps its mtime, which is the
-    Last-Modified an open tab reloads on (#330)."""
-    try:
-        if path.read_text() == text:
-            return
-    except OSError:
-        pass
-    path.write_text(text)
 
 
 def esc(text: str) -> str:

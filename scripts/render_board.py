@@ -31,7 +31,8 @@ from workspace import (Config, ConfigError, daily_trackers, read_config,  # noqa
 import board_sources  # noqa: E402
 import columns  # noqa: E402
 import decision_page  # noqa: E402
-from fragment import FONTS, TAB_CSS, tab_bar, write_if_changed  # noqa: E402
+from decision_page import write_if_changed  # noqa: E402
+from fragment import FONTS, TAB_CSS, tab_bar  # noqa: E402
 import flow_chart  # noqa: E402
 import panels  # noqa: E402
 import tracker_log  # noqa: E402
@@ -636,7 +637,8 @@ def write(root: Path, day: str | None = None) -> tuple[Path, Config, datetime, s
     if not (root / "CLAUDE.md").is_file():
         raise ConfigError(f"no CLAUDE.md at {root}")
     cfg = read_config(root)
-    now = datetime.now(cfg.zone).replace(microsecond=0)
+    # To the minute: the board's bytes then change only when something shown does, not with every render (#330).
+    now = datetime.now(cfg.zone).replace(second=0, microsecond=0)
     day = day or now.date().isoformat()
     try:
         tracker_day = date.fromisoformat(day)

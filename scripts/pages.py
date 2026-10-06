@@ -6,7 +6,7 @@ The pages are routes: `/` the board, `/workers` the running workers and today's 
 and diff. Each is rendered into its file (`<day>-board.html`, `workers.html`, `decisions.html`, `decision-<slug>.html`,
 `issue-<n>.html`, `issue-<n>-source.html`), which only the routes serve: a request for the file's own name is a 404.
 A GET re-renders a page when one of its sources (the trackers, CLAUDE.md, the settings TOML, the decision JSON,
-`.sources.json`) is newer than the file, and `/workers` on every GET (it reads the session logs too), and a thread refreshes `.sources.json` from the forge every minute. An open tab
+`.sources.json`) is newer than its last render, and `/workers` on every GET (it reads the session logs too), and a thread refreshes `.sources.json` from the forge every minute. An open tab
 reloads itself when the file changes.
 
     python3 pages.py --ensure [--root R]              # start it unless it is already serving; print status only
@@ -44,7 +44,7 @@ from datetime import datetime
 from pathlib import Path
 from stat import S_ISREG
 from html import escape
-from urllib.parse import parse_qs, quote
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 import page_reload
 from workspace import ConfigError, daily_trackers, pages_address, read_config
@@ -61,6 +61,10 @@ MAX_BODY = 16 * 1024  # a write-in is a sentence or a paragraph
 # An answer saved mid-render of another page (the board) can leave that page stale until the next forge refresh.
 PAGE_LOCKS: dict[str, threading.Lock] = {}
 PAGE_LOCKS_GUARD = threading.Lock()
+# Each page's last render by this server: (when it started, ns; the file's time after it). Apart from the file's time,
+# which is only when its bytes last changed (the Last-Modified a tab reloads on). A page with no record, or whose file
+# changed since (an older release's, an editor's), is judged by its file's time; a None file time marks it stale.
+RENDERED_AT: dict[str, tuple[int, int | None]] = {}
 
 
 def page_lock(path: Path) -> threading.Lock:
@@ -104,7 +108,7 @@ def today_board(root: Path) -> str | None:
 
 
 def fresh(root: Path, pages_dir: Path, name: str, slots=contextlib.nullcontext()) -> str:
-    """Re-render the page `name` when a source is newer than its file, inside one of `slots`. Returns the render
+    """Re-render the page `name` when a source is newer than its last render, inside one of `slots`. Returns the render
     error, or "". On an error the last good file stays where it is."""
     # The renderers are imported here, not at the top, to keep `pages.py --ensure` light.
     import decision_page
@@ -131,8 +135,12 @@ def fresh(root: Path, pages_dir: Path, name: str, slots=contextlib.nullcontext()
         target = pages_dir / name
         with page_lock(target):  # checked under the lock: a request that waited finds the page already rendered
             newest = max(RENDERER_MTIME_NS, max((p.stat().st_mtime_ns for p in _sources(root, cfg, pages_dir, day) if p.is_file()), default=0))
-            if target.is_file() and target.stat().st_mtime_ns >= newest and name != "workers.html":
+            mtime = target.stat().st_mtime_ns if target.is_file() else 0
+            record = RENDERED_AT.get(str(target))
+            rendered = record[0] if record and record[1] in (mtime, None) else mtime
+            if rendered >= newest and name != "workers.html":
                 return ""
+            started = time.time_ns()
             with slots:
                 if name == "workers.html":
                     workers_page.write(root, pages_dir)
@@ -144,6 +152,7 @@ def fresh(root: Path, pages_dir: Path, name: str, slots=contextlib.nullcontext()
                     issue_page.write(root, pages_dir, int(name[len("issue-"):-5]))
                 else:
                     render_board.write(root, day)
+            RENDERED_AT[str(target)] = started, target.stat().st_mtime_ns if target.is_file() else 0  # only after a render that did not raise
         return ""
     except Exception as e:  # any renderer failure: the server keeps serving the last good page
         return f"{type(e).__name__}: {e}"
@@ -243,13 +252,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         try:
             stat = path.stat()
             if not S_ISREG(stat.st_mode):
-                raise OSError  # a directory (the base would redirect it) is no page
+                raise OSError  # a directory, FIFO or device is not a page
             page, stamp = path.read_bytes(), stat.st_mtime
         except OSError:
             if not self.banner:  # no page, or it vanished: a 404, never a blank 200 stamped 1970
                 return self.send_error(404)
             page, stamp = b"<!doctype html>\n<meta charset=\"utf-8\">\n<body>\n</body>\n", 0
         if self.banner:
+            stamp = max(stamp - 1, 0)  # its own stable time: entering and leaving the banner each move it once, staying never does
             note = ('<p role="alert" style="margin:0;padding:6px 16px;background:#c9533a;color:#fff;'
                     f'font:14px/1.4 system-ui,sans-serif">not re-rendered: {escape(self.banner)}</p>').encode()
             page = re.sub(rb"<body[^>]*>", lambda m: m[0] + note, page, count=1) if b"<body" in page else note + page
@@ -263,7 +273,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(page)
 
     def _is_html(self) -> bool:
-        return bool(self.banner) or self.path.split("?")[0].lower().endswith(".html")
+        return bool(self.banner) or unquote(urlsplit(self.path).path).lower().endswith(".html")
 
     def do_GET(self):
         if self._allowed():
@@ -304,11 +314,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             tmp.write_text(json.dumps(d, indent=2, ensure_ascii=False) + "\n")
             os.replace(tmp, source)
             # The file's time is when it was asked (decision_page.Context.asked), so it keeps it; the pages it
-            # outdates are marked stale instead, and the next GET renders them.
+            # outdates are marked stale instead (their render record cleared), and the next GET renders them.
             os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns))
             for page in Path(self.directory).iterdir():
                 if RENDERED.fullmatch(page.name):
-                    os.utime(page, (0, 0))
+                    RENDERED_AT[str(page)] = 0, None
         self.send_response(303)
         self.send_header("Location", "/decisions" if form.get("back") == ["/decisions"] else f"/decisions/{m[1]}")
         self.send_header("Content-Length", "0")

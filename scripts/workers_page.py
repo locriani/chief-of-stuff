@@ -14,8 +14,8 @@ from pathlib import Path
 
 import board_sources
 import panels
-from decision_page import HEAD, context, pending_count
-from fragment import tab_bar, write_if_changed
+from decision_page import HEAD, context, pending_count, write_if_changed
+from fragment import tab_bar
 from md import section as _section
 from tracker import TRAILING_NUMBER, launcher, parse_tracker
 from tracker_log import COMPLETED, ENDED, HUMAN_REVIEW, RELAUNCH, STARTED

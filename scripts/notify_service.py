@@ -31,12 +31,14 @@ class ServiceError(RuntimeError):
     pass
 
 
-def atomic_write(path: Path, data: bytes):
+def atomic_write(path: Path, data: bytes, mode: int | None = None):
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
     try:
         with os.fdopen(fd, "wb") as handle:
             handle.write(data)
+        if mode is not None:  # mkstemp makes 0600; a served page is world-readable
+            os.chmod(name, mode)
         os.replace(name, path)
     finally:
         Path(name).unlink(missing_ok=True)

@@ -17,8 +17,8 @@ from pathlib import Path
 import board_sources
 import flow_chart
 import tracker_log
-from decision_page import HEAD, _md, _section, context, pending_count, span
-from fragment import href, tab_bar, write_if_changed
+from decision_page import HEAD, _md, _section, context, pending_count, span, write_if_changed
+from fragment import href, tab_bar
 from module_graph import section as _graph
 from clock import dur as _dur
 from task_forge import forge_ends

@@ -45,9 +45,10 @@ from pathlib import Path
 import board_sources
 from backlog_ref import Backlog, BacklogError, GitHubBacklog, backlog_from_config
 from clock import leading
-from fragment import FONTS, TAB_CSS, href, tab_bar, write_if_changed
+from fragment import FONTS, TAB_CSS, href, tab_bar
 from md import section as md_section
 from module_graph import section as _graph
+from notify_service import atomic_write
 from settings import Graph, SettingsError, load as load_settings
 from tracker import decision_rows, parse_tracker
 from workspace import ConfigError, daily_trackers, pages_address, read_config
@@ -58,6 +59,18 @@ NODE = {"deployed": "n", "inflight": "n-inflight", "designed": "n-designed", "ex
 EDGE = {"deployed": "e", "inflight": "e-inflight", "designed": "e-designed"}
 CHIPS = (("deployed", "DEPLOYED"), ("inflight", "IN FLIGHT"), ("designed", "DESIGNED"), ("hot", "WAITING ON THIS"),
          ("external", "EXTERNAL"))
+
+
+def write_if_changed(path: Path, text: str) -> None:
+    """Write `text` to `path` unless it already holds exactly those bytes: an unchanged page keeps its mtime, which is
+    its Last-Modified (#330). A changed one is swapped in by a rename, so a reader never sees it half written."""
+    data = text.encode()
+    try:
+        if path.read_bytes() == data:
+            return
+    except OSError:
+        pass
+    atomic_write(path, data, 0o644)
 
 
 class DecisionError(ValueError):

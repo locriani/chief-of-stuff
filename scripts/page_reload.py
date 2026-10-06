@@ -1,7 +1,7 @@
 """The reload check every served page carries (injected by pages.py at serve time, not written into the file).
 
 It polls the file's Last-Modified with a HEAD every 5 s and when the tab is shown again (a hidden tab's timers are
-throttled). A change reloads the page, except while the user is typing: then it shows one notice with a button.
+throttled). A change reloads the page, except while the user has unsaved input in a form (typing, a picked option): then it shows one notice with a button.
 """
 
 SNIPPET = """<script>
@@ -10,8 +10,8 @@ SNIPPET = """<script>
   function some(sel,f){return Array.prototype.some.call(document.querySelectorAll(sel),f);}
   function typing(){var a=document.activeElement;
     return a&&(/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)||a.isContentEditable)||
-      some('input,textarea',function(e){return e.value!==e.defaultValue||e.checked!==e.defaultChecked;})||
-      some('option',function(o){return o.selected!==o.defaultSelected;});}
+      some('form input,form textarea',function(e){return e.value!==e.defaultValue||e.checked!==e.defaultChecked;})||
+      some('form option',function(o){return o.selected!==o.defaultSelected;});}
   function notice(){
     if(document.getElementById('page-changed'))return;
     var n=document.createElement('div');n.id='page-changed';n.setAttribute('role','status');
@@ -23,7 +23,7 @@ SNIPPET = """<script>
   function poll(){
     fetch(location.pathname,{method:'HEAD',cache:'no-store'}).then(function(r){
       var t=Date.parse(r.headers.get('Last-Modified'));
-      if(t&&t!==seen){if(typing())notice();else location.reload();}
+      if(!isNaN(t)&&t!==seen){if(typing())notice();else location.reload();}
     }).catch(function(){});
   }
   setInterval(poll,5000);document.addEventListener('visibilitychange',poll);
