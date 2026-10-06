@@ -1338,8 +1338,8 @@ class WorkflowStepAuditTest(unittest.TestCase):
         ])
         self.assertEqual(gh.calls, [], "a workflow row is never looked up on the forge")
 
-    def test_a_workflow_row_is_never_reported_closed_or_open_under_done(self):
-        # The audit must not read `workflow` as an issue: nothing to be closed, and a done row needs no `backlog --close`.
+    def test_a_workflow_row_is_never_reported_in_any_state(self):
+        # Open, waiting and done alike: no issue fault of any kind is reported for a workflow row.
         tmp, root = issue_workspace(tracker=self.TRACKER)
         self.addCleanup(tmp.cleanup)
         report = al.audit(root, "2026-09-17", gh=FakeGh(LIVE))
@@ -1347,6 +1347,26 @@ class WorkflowStepAuditTest(unittest.TestCase):
         for name in ("Open step", "Waiting step", "Done step"):
             with self.subTest(name=name):
                 self.assertNotIn(f"issue: {name}", text)
+
+
+    def test_the_token_is_exactly_workflow_once_its_whitespace_is_stripped(self):
+        # #366 review R1: only the exact word exempts. Any other casing, punctuation, plural or extra word is not an issue.
+        table = "\n".join(f"| {n} | Item {n} | robin | open | 09:00 |  | S | {cell} | c |" for n, cell in (
+            ("Padded", "  workflow  "), ("Capital", "Workflow"), ("Upper", "WORKFLOW"), ("Dotted", "workflow."),
+            ("Plural", "workflows"), ("Phrase", "my workflow")))
+        tracker = self.TRACKER.split("| Open step")[0] + table + "\n\n## Log\n\n- 09:00 opened the day\n"
+        tmp, root = issue_workspace(tracker=tracker)
+        self.addCleanup(tmp.cleanup)
+        gh = FakeGh(LIVE)
+        report = al.audit(root, "2026-09-17", gh=gh)
+        self.assertEqual([str(f) for f in report.issues], [
+            'issue: Capital — "Workflow" is not an issue reference',
+            'issue: Upper — "WORKFLOW" is not an issue reference',
+            'issue: Dotted — "workflow." is not an issue reference',
+            'issue: Plural — "workflows" is not an issue reference',
+            'issue: Phrase — "my workflow" is not an issue reference',
+        ])
+        self.assertEqual(gh.calls, [], "the padded workflow row is never looked up on the forge")
 
 
 class IssueClosesAtLaneEndTest(unittest.TestCase):

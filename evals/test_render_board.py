@@ -1273,6 +1273,31 @@ class DecisionDeadlineTest(unittest.TestCase):
             with self.subTest(required=required):
                 self.assertTrue(required in rules, f"the agent file does not say {required!r}")
 
+    def test_agent_rules_carry_the_workflow_exception_wherever_they_ask_for_an_issue(self) -> None:
+        # #366 review R10, R11, R12: three sentences still ask for an issue, or a sync of one, with no exception for a workflow row.
+        # The agent file must say, each in the line that holds the anchor named here:
+        #   Dispatch (anchor "file its issue where the block names a `Backlog:`"):
+        #     "unless it is a workflow step, which takes the token `workflow`"
+        #   Open the day, carry-over (anchor "4. Carry over:"), replacing "every carried task with no issue gets one filed now":
+        #     "every carried task with no issue, other than a workflow step, gets one filed now"
+        #   Pipeline kanban sync (anchor "sync its one issue with"):
+        #     "a `workflow` row has no issue and takes no sync"
+        #   Tasks bullet, one sentence, whole:
+        #     "A review you are asked to do is a workflow step with its own `workflow` row; a review stage on a task is a change of state on that task's own issue."
+        rules = (Path(__file__).resolve().parents[1] / "agents/chief-of-stuff.md").read_text()
+        for anchor, required in (
+            ("file its issue where the block names a `Backlog:`", "unless it is a workflow step, which takes the token `workflow`"),
+            ("4. Carry over:", "every carried task with no issue, other than a workflow step, gets one filed now"),
+            ("sync its one issue with", "a `workflow` row has no issue and takes no sync"),
+        ):
+            with self.subTest(anchor=anchor):
+                lines = [line for line in rules.splitlines() if anchor in line]
+                self.assertEqual(len(lines), 1, f"the agent file has no single line holding {anchor!r}")
+                self.assertIn(required, lines[0], f"the line holding {anchor!r} does not say {required!r}")
+        required = ("A review you are asked to do is a workflow step with its own `workflow` row; "
+                    "a review stage on a task is a change of state on that task's own issue.")
+        self.assertIn(required, rules, f"the agent file does not say {required!r}")
+
     def test_agent_rules_do_not_describe_the_board_views_that_were_removed(self) -> None:
         # #259 removed the Sessions tree, the day bar, the Tasks table and the `est.` label from the board. The agent file
         # still carries these sentences (Tasks bullet and `## Board`), each describing a view the board no longer draws:
@@ -1849,6 +1874,33 @@ class LaneColumnsTest(unittest.TestCase):
         self.assertNotIn("<table", plain.split('<section id="flow">')[1].split('<div class="panels">')[0])
         self.assertNotIn('class="columns-card', plain)  # the bare word is also in the page's CSS
 
+
+
+    def test_the_build_line_counts_issues_not_workflow_rows(self) -> None:
+        # #366 review R9: a `workflow` issue cell is no issue, so three open tasks, one with #9 and two with the token, are one issue.
+        tracker = TRACKER_LANED.replace("| Robin | open | 09:00 | 17:00 | S | build | triage |  |", "| Robin | open | 09:00 | 17:00 | S | build | triage | workflow |"
+                                        ).replace("| Robin | open | 09:00 | 17:00 | S |  |  |  |", "| Robin | open | 09:00 | 17:00 | S |  |  | workflow |")
+        self.assertEqual([t.issue for t in rb.parse_tracker(tracker).tasks], ["#9", "workflow", "workflow"])
+        cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
+        html = rb.render(tracker, cfg, NOW, lanes=self.LANES)
+        self.assertIn('<div class="meta">1 issue · 0 merge requests</div>', html)
+        self.assertNotRegex(html, r'href="[^"]*workflow')
+        self.assertNotIn("#workflow", html)
+
+
+class WorkflowTokenTest(unittest.TestCase):
+    """#366 review R15: the token is tracker-row vocabulary, so `Task` answers it once and audit_tasks, dispatch_prompt,
+    render_board's issue count and the launcher ask the row instead of comparing the raw string."""
+
+    @staticmethod
+    def row(issue: str) -> tr.Task:
+        return tr.Task(item="Review it", owner="unassigned", state="open", since="09:00", due="", checklist="c", issue=issue)
+
+    def test_workflow_is_true_only_for_the_exact_token_once_whitespace_is_stripped(self) -> None:
+        for cell in ("workflow", " workflow ", "workflow\t"):
+            self.assertIs(self.row(cell).workflow, True, repr(cell))
+        for cell in ("", "Workflow", "WORKFLOW", "workflow.", "workflows", "my workflow", "#14", "o/backlog#14"):
+            self.assertIs(self.row(cell).workflow, False, repr(cell))
 
 
 class DensityTest(unittest.TestCase):

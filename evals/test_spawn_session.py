@@ -1178,6 +1178,24 @@ class CheckTest(unittest.TestCase):
         self.assertEqual((code, err), (0, ""))
         self.assertEqual(out.strip(), self.composed(root).strip())
 
+    def test_check_takes_the_token_exactly_workflow_once_its_whitespace_is_stripped(self):
+        """#366 review R1: `--check` agrees with compose on every spelling: ` workflow ` passes, the others are refused."""
+        base = TRACKER.replace(
+            "| item | owner | state | since | due | checklist |\n|---|---|---|---|---|---|\n"
+            "| Security audit | unassigned | open | 09:00 |  | Checklist: Security audit of the upload handler |",
+            "| name | item | owner | state | since | due | size | issue | checklist |\n|---|---|---|---|---|---|---|---|---|\n"
+            "| Audit | Security audit | unassigned | open | 09:00 |  | S | {} | Checklist: Security audit of the upload handler |")
+        root = self.workspace(base.format("  workflow  "), claude=self.BACKLOG)
+        code, out, err = self.check(root)
+        self.assertEqual((code, err), (0, ""))
+        for cell in ("Workflow", "WORKFLOW", "workflow.", "workflows", "my workflow"):
+            with self.subTest(cell=cell):
+                root = self.workspace(base.format(cell), claude=self.BACKLOG)
+                want = self.refusal(root)
+                self.assertIn("not an issue reference", want)
+                code, out, err = self.check(root)
+                self.assertEqual((code, out, err.strip()), (1, "", want))
+
     def test_check_refuses_a_name_that_is_not_a_session_name(self):
         root = self.workspace()
         want = self.refusal(root, name="bad name!")

@@ -867,6 +867,18 @@ class IssueDispatchTest(unittest.TestCase):
         self.assertIn("(via", str(e.exception))
         self.assertNotIn("issue", str(e.exception))
 
+    def test_the_token_is_exactly_workflow_once_its_whitespace_is_stripped(self):
+        # #366 review R1: ` workflow ` is exempt; any other casing, punctuation, plural or extra word is refused as a non-issue cell.
+        body = dp.compose(self.workflow_workspace(self.WORKFLOW.replace("| workflow |", "|  workflow  |")),
+                          "2026-09-18", "Review the open merge request")
+        self.assertIn("Review the open merge request", body)
+        for cell in ("Workflow", "WORKFLOW", "workflow.", "workflows", "my workflow"):
+            with self.subTest(cell=cell):
+                root = self.workflow_workspace(self.WORKFLOW.replace("| workflow |", f"| {cell} |"))
+                with self.assertRaises(dp.RefusedError) as e:
+                    dp.compose(root, "2026-09-18", "Review the open merge request")
+                self.assertIn(f'has "{cell}" in its issue column, which is not an issue reference', str(e.exception))
+
     # The tracker rule: "A standing session's placeholder is not a task and takes no issue".
     def test_a_standing_placeholder_launched_as_its_own_session_needs_no_issue(self):
         tmp, root = workspace(ISSUE_TRACKER, ISSUE_CLAUDE)

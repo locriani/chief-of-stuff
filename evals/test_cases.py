@@ -309,6 +309,61 @@ class CaseLintTest(unittest.TestCase):
             self.assertEqual(g["rule"], rule, g["name"])
             self.assertIn(g["rule"], agent_text, g["name"])
 
+    def test_workflow_step_graders_catch_what_they_enforce(self) -> None:
+        """#366 review R3/R4: the graders of the review case are applied to sample commands and tracker rows. Positives are
+        commands that file an issue and rows that are right; negatives are reads and rows that are wrong."""
+        rule = ("A workflow step — a review, or anything the pipeline itself performs — takes no issue: "
+                "write `workflow` in its `issue` cell.")
+        row_g, filed_g, number_g = spec(EVALS / "cases" / "review-step-takes-the-workflow-token")["graders"][:3]
+        for g in (row_g, filed_g, number_g):
+            self.assertEqual(g["rule"], rule, g["name"])
+        said = "chief-of-stuff backlog --list"
+
+        def filed(command: str) -> bool:
+            # The description is the model's prose about the call; only the command field counts.
+            return re.search(filed_g["input_match"], json.dumps({"command": command, "description": said})) is not None
+
+        for command in ('chief-of-stuff backlog --create --title "Review MR 14"', "backlog --create --title x",
+                        "chief-of-stuff backlog --config CLAUDE.md --create --title x",
+                        'python3 scripts/backlog.py --body "x" --create --title y',
+                        'backlog.py --body "x" --create', "gh issue create --title x", "gh issue  create --title x",
+                        "gh -R o/backlog issue create --title x", "gh api repos/o/backlog/issues",
+                        "gh api repos/o/backlog/issues -f title=x", "glab issue create --title x",
+                        "cd ws && glab issue create -t x", 'echo "$C" > /dev/null; chief-of-stuff backlog --create --title x'):
+            self.assertTrue(filed(command), command)
+        for command in ("chief-of-stuff backlog --list", "backlog --config CLAUDE.md --list", "gh issue view 3", "gh issue list",
+                        "glab issue view 3", "gh api repos/o/backlog/issues/3", "gh pr view 14", "gh pr create --title x",
+                        "git log --oneline"):
+            self.assertFalse(filed(command), command)
+        # The description names the call and decides nothing.
+        self.assertIsNone(re.search(filed_g["input_match"], json.dumps(
+            {"command": "ls", "description": "chief-of-stuff backlog --create; gh issue create"})))
+
+        def row(name: str, issue: str, item: str = "Look over the change") -> str:
+            return f"| {name} | {item} | unassigned | open | 09:00 |  | S | build | pr | {issue} | Checklist: look |"
+
+        def tracker(line: str) -> str:
+            return f"## Tasks\n\n| name | item | owner |\n|---|---|---|\n| Cut the release | Cut it | robin | open |\n{line}\n\n## Log\n"
+
+        def has(g: dict, line: str) -> bool:
+            return re.search(g["pattern"], tracker(line), re.MULTILINE) is not None
+
+        for line in (row("Review MR 14", "workflow"), row("Reviewing MR 14", "workflow"), row("Merge request 14", "workflow"),
+                     row("MR check", "workflow", "Go over merge request 14 on o/app"), row("Review of the change", "workflow"),
+                     row("Review MR 14", " workflow  ")):
+            self.assertTrue(has(row_g, line), line)
+        for line in (row("Review MR 14", "Workflow"), row("Review MR 14", "WORKFLOW"), row("Review MR 14", "workflow."),
+                     row("Review MR 14", "workflows"), row("Review MR 14", "my workflow"), row("Review MR 14", "#14"),
+                     row("Review MR 14", ""), row("Cut the release notes", "workflow")):
+            self.assertFalse(has(row_g, line), line)
+        self.assertEqual(number_g.get("match"), "absent")
+        for issue in ("#14", "#7", "o/backlog#14", "o/app#9", "https://github.com/o/backlog/issues/14"):
+            for name in ("Review MR 14", "Reviewing MR 14", "Merge request 14"):
+                self.assertTrue(has(number_g, row(name, issue)), (name, issue))
+        for line in (row("Review MR 14", "workflow"), row("Reviewing MR 14", "workflow"), row("Cut the release", "#9"),
+                     row("Review MR 14", "")):
+            self.assertFalse(has(number_g, line), line)
+
     def test_effort_graders_enforce_a_sentence_the_agent_carries(self) -> None:
         """#52: every grader of the effort case quotes the one sentence the agent file carries."""
         rule = ("Launch an entry as `--runtime <runtime> --model <model-id>`, plus `--effort <effort>` when the entry has one, "
