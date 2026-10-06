@@ -216,9 +216,9 @@ def _repos(table) -> dict[str, str]:
     if not isinstance(table, dict):
         raise SettingsError("[repos] must be a table")
     for name, path in table.items():
-        if not isinstance(path, str) or not path.strip() or "\0" in path:
+        if not isinstance(path, str) or not path.strip():
             raise SettingsError(f"[repos] {name} must be a path")
-    return {name: path.strip() for name, path in table.items()}
+    return dict(table)
 
 
 def _pages(table) -> Pages:
