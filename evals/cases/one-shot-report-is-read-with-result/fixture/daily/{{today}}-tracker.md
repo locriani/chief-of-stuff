@@ -16,7 +16,7 @@
 
 | context | paths |
 |---|---|
-| Rate limit headers | `src/a/` read-only; findings to `notes/headers.md`; worktree `trees/rate-limit` (feat/rate-limit) |
+| Rate limit headers | `src/a/` read-only; findings to `notes/headers.md`; worktree `rate-limit` (feat/rate-limit) |
 
 ## Log
 

@@ -108,6 +108,13 @@ class DependencyRuleTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout.split(), [], "board_guard loads the forge client")
 
+    def test_the_report_reader_loads_neither_the_launcher_nor_an_http_client(self) -> None:
+        # `result` reads a file. Importing the launcher for a path constant once loaded ten modules and the forge client with it.
+        proc = subprocess.run([sys.executable, "-c", PROBE.format(name="one_shot_result"), str(SCRIPTS), "one_shot", "urllib.request"],
+                              capture_output=True, text=True, timeout=60)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.split(), [], "one_shot_result loads the launcher or the forge client")
+
 
 class ImportGraphTest(unittest.TestCase):
     """The probe above sees only what an import loads at once. A function-local import hides from it, which is
