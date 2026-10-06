@@ -22,6 +22,7 @@ import estimate  # noqa: E402
 import md  # noqa: E402
 import render_board as rb  # noqa: E402
 from workspace import parse_coordinator  # noqa: E402
+from test_board_flow_design import outline  # noqa: E402
 import tracker as tr  # noqa: E402
 from backlog import Backlog, GitHubBacklog  # noqa: E402
 import settings as st  # noqa: E402
@@ -1247,10 +1248,26 @@ class DecisionDeadlineTest(unittest.TestCase):
         self.assertIn("deadline: <name> YYYY-MM-DD HH:MM", rules)
         self.assertIn("deadline: <name> HH:MM", rules)
 
+    def test_agent_rules_do_not_describe_the_board_views_that_were_removed(self) -> None:
+        # #259 removed the Sessions tree, the day bar, the Tasks table and the `est.` label from the board. The agent file
+        # still carries these sentences (Tasks bullet and `## Board`), each describing a view the board no longer draws:
+        stale = (
+            "The board draws `## Sessions` as a tree",                       # a Sessions tree section
+            "the only thing the board draws on a bar and in a table",        # the day bar and the table
+            "labels it `est.`",                                              # the `est.` label, Tasks bullet
+            "labelled `est. M ~1h20m`",                                      # the `est.` label, Board section
+            "`est. i/N → <deadline>`",                                       # the `est.` label before any task has closed
+            'open to the deadline labelled "no estimate"',                   # the bar drawn open to the deadline
+        )
+        rules = (Path(__file__).resolve().parents[1] / "agents/chief-of-stuff.md").read_text()
+        for phrase in stale:
+            with self.subTest(phrase=phrase):
+                self.assertFalse(phrase in rules, f"the agent file still says {phrase!r}")
+
 
 # --- the tracer bullet ----------------------------------------------------------------------------
-# One task threaded through every layer: written with a `name`, parsed, labelled by that name,
-# placed on a rolling 24h axis, inside a deadline swimlane under its owner, on a reordered page.
+# One task threaded through every layer: written with a `name`, parsed, and labelled by that name
+# (the 24h axis and the swimlanes it was once placed on are gone, #259).
 
 TRACKER_NAMED = """# Tracker 2026-09-16
 
@@ -1301,8 +1318,8 @@ class TracerTest(unittest.TestCase):
 
 
 # --- stage 0: render/model layer -----------------------------------------------------------------
-# The render layer that lands the tracer bullet: section order, 24h rolling axis, swimlanes
-# grouped by governing deadline, bar labels = task.label only, DUE NEXT and BLOCKED thin.
+# The render layer that lands the tracer bullet: section order (the Flow design's sections only, #259),
+# task labels = task.label only. The 24h axis, the swimlanes and the DUE NEXT / BLOCKED sections are removed.
 
 TRACER_TRACKER = """# Tracker 2026-09-16
 
@@ -1348,9 +1365,13 @@ class SectionOrderTest(unittest.TestCase):
         at = [self.html.index(mark) for mark in self.ORDER]
         self.assertEqual(at, sorted(at))
 
-    def test_the_removed_sections_are_not_drawn(self) -> None:
-        for gone in ("Due next", "Blocked", "Sessions", "24 hours", "Lanes"):
-            self.assertNotIn(f"<h2>{gone}</h2>", self.html)
+    def test_the_headings_and_section_ids_are_exactly_the_designs(self) -> None:
+        # An allow-list, not a list of the removed names: any renamed or extra <h2>, id or section fails.
+        # This tracker has no stage history, so the two Flow charts are not drawn (test_board_flow_design.py pins them).
+        h2, ids, sections = outline(self.html)
+        self.assertEqual(h2, ["Build"])
+        self.assertEqual(ids, ["flow", "merge", "decisions", "workers"])
+        self.assertEqual(sections, 4)
 
 
 class InlineMarksTest(unittest.TestCase):

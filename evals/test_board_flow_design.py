@@ -47,6 +47,17 @@ def page() -> str:
     return html.split("</style>", 1)[1]
 
 
+def outline(body: str) -> tuple[list[str], list[str], int]:
+    """What the page draws as sections: every <h2> text, every id, and the count of top-level <section>s.
+
+    The column sections (`columns-col`) are BUILD's own parts, not sections of the board, so they are not counted.
+    """
+    h2 = [re.sub(r"<[^>]+>", "", t).strip() for t in re.findall(r"<h2\b[^>]*>(.*?)</h2>", body, re.S)]
+    ids = re.findall(r'\sid="([^"]*)"', body)
+    sections = [a for a in re.findall(r"<section\b([^>]*)>", body) if "columns-col" not in a]
+    return h2, ids, len(sections)
+
+
 def at(body: str, mark: str | re.Pattern) -> int:
     """Where `mark` first stands in `body`; a missing section is a failure that names it, not a ValueError."""
     m = re.search(mark, body, re.I) if isinstance(mark, str) else mark.search(body)
@@ -87,6 +98,14 @@ class FlowDesign(Board):
     def test_the_panels_are_merge_order_decisions_and_workers(self) -> None:
         titles = re.findall(r'<h3 class="panels-title">(?:<a [^>]*>)?([^<]+)', self.body)
         self.assertEqual(titles, ["MERGE ORDER", "DECISIONS", "WORKERS"])
+
+    def test_the_headings_and_section_ids_are_exactly_the_artboards(self) -> None:
+        # An allow-list: a renamed or extra section ("Due soon", `id="due_next"`, "Sessions · 1") fails, not just the old names.
+        # The tab bar has no <h2>; BUILD is `#flow`; the three panels are `h3`s with their own ids.
+        h2, ids, sections = outline(self.body)
+        self.assertEqual(h2, ["Build", "Flow · 24 hours", "Flow · 7 days"])
+        self.assertEqual(ids, ["flow", "merge", "decisions", "workers"])
+        self.assertEqual(sections, 4)
 
     def test_no_section_the_artboard_lacks_is_drawn(self) -> None:
         for mark in REMOVED:
