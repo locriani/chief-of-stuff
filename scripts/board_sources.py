@@ -284,61 +284,67 @@ def _gl_change(m: dict, approver: str) -> Change:
 
 
 def gitlab(home: backlog.Backlog, wanted: dict[str, set[int]], mrs: set[int], since: datetime, approver: str, call):
-    """(issues, changes, error) from the host's /api/graphql, with the Backlog's token: one POST per connection (a project's issues,
+    """(issues, changes, errors) from the host's /api/graphql, with the Backlog's token: one POST per connection (a project's issues,
     the named merge requests, the merged page), each under GitLab's complexity cap, then one for open changes' jobs and threads.
     A connection answers at most GL_PAGE nodes, so past that it goes again for the next GL_PAGE iids or the next merged page.
-    A POST that fails costs only its own cards: the rest are kept and the first error is returned; None, None when every one failed."""
+    `errors` maps a panel ("kanban": the issues; "merge requests": the rest) to its first error. A panel whose issues or changes
+    failed is None, so the board keeps its last good cards; a failed jobs-and-threads request keeps the changes without them.
+    A transport error stops every request after it; a GraphQL error does not."""
     secret = backlog.token(home)
     if not secret:
-        return None, None, home.missing_token
-    host, errors, issues, changes = backlog.home_of(home)[0], [], {}, {}
-    answered = False
+        return None, None, {"kanban": home.missing_token, "merge requests": home.missing_token}
+    host, errors, lost, down = backlog.home_of(home)[0], {}, set(), []
+    issues, changes = {}, {}
 
-    def ask(project: str, fields: str) -> list | dict | None:
-        nonlocal answered
-        body, _, err = call("POST", f"{home.host.rstrip('/')}/api/graphql", secret, backlog.TIMEOUT,
-                            {"query": f"query {{ p0: project(fullPath: {json.dumps(project)}) {{ {fields} }} }}"})
+    def ask(project: str, fields: str, panel: str, lose: bool = True) -> dict | None:
+        if down:
+            body, err = None, down[0]
+        else:
+            body, _, err = call("POST", f"{home.host.rstrip('/')}/api/graphql", secret, backlog.TIMEOUT,
+                                {"query": f"query {{ p0: project(fullPath: {json.dumps(project)}) {{ {fields} }} }}"})
+            down.extend([err] if err else [])
         if err or not isinstance(body, dict) or not isinstance(body.get("data"), dict):
-            errors.append(err or _graphql_errors(body if isinstance(body, dict) else {}) or "GitLab did not answer")
+            errors.setdefault(panel, err or _graphql_errors(body if isinstance(body, dict) else {}) or "GitLab did not answer")
+            if lose:
+                lost.add(panel)
             return None
-        answered = True
         if message := _graphql_errors(body):
-            errors.append(message)
+            errors.setdefault(panel, message)
         return body["data"].get("p0") or {}
 
-    def pages(project: str, name: str, iids: list[int], body: str):
+    def pages(project: str, name: str, iids: list[int], body: str, panel: str, lose: bool = True):
         for start in range(0, len(iids), GL_PAGE):
-            got = ask(project, f"{name}(iids: {json.dumps([str(n) for n in iids[start:start + GL_PAGE]])}) {{ nodes {{ {body} }} }}")
+            chunk = iids[start:start + GL_PAGE]
+            got = ask(project, f"{name}(iids: {json.dumps([str(n) for n in chunk])}, first: {len(chunk)}) {{ nodes {{ {body} }} }}", panel, lose)
             if got is None:
                 return
             yield from (got.get(name) or {}).get("nodes") or []
 
     for project in sorted(set(wanted) | {home.project}):
-        for node in pages(project, "issues", sorted(wanted.get(project) or ()), GL_ISSUE):
+        for node in pages(project, "issues", sorted(wanted.get(project) or ()), GL_ISSUE, "kanban"):
             key = backlog.IssueRef(project, int(node["iid"]), host).label(home)
             issues[key] = Issue(key, node["webUrl"], node["title"], {"opened": "open"}.get(node["state"], node["state"]),
                                 tuple(x["title"] for x in (node.get("labels") or {}).get("nodes") or []),
                                 node.get("description") or "", _when(node.get("closedAt")))
-    for node in pages(home.project, "mergeRequests", sorted(mrs), GL_CHANGE):
+    for node in pages(home.project, "mergeRequests", sorted(mrs), GL_CHANGE, "merge requests"):
         changes.setdefault(f"!{node['iid']}", _gl_change(node, approver))
     cursor = ""  # the merged page to ask for next, None once the last one is in
     while cursor is not None:
         after = f", after: {json.dumps(cursor)}" if cursor else ""
         got = ask(home.project, f"merged: mergeRequests(state: merged, mergedAfter: {json.dumps(since.isoformat())}{after}) "
-                                f"{{ nodes {{ {GL_CHANGE} }} pageInfo {{ hasNextPage endCursor }} }}")
+                                f"{{ nodes {{ {GL_CHANGE} }} pageInfo {{ hasNextPage endCursor }} }}", "merge requests")
         if got is None:
             break
         for node in (got.get("merged") or {}).get("nodes") or []:
             changes.setdefault(f"!{node['iid']}", _gl_change(node, approver))  # a named change wins over the same one here
         info = (got.get("merged") or {}).get("pageInfo") or {}
         cursor = info.get("endCursor") if info.get("hasNextPage") else None
-    if not answered:
-        return None, None, errors[0]
-    for node in pages(home.project, "mergeRequests", sorted(int(k[1:]) for k, c in changes.items() if c.state == "open"), GL_DETAIL):
-        if (key := f"!{node['iid']}") in changes:  # the board still renders a change without its jobs and threads
+    for node in pages(home.project, "mergeRequests", sorted(int(k[1:]) for k, c in changes.items() if c.state == "open"),
+                      GL_DETAIL, "merge requests", lose=False):
+        if (key := f"!{node['iid']}") in changes:
             jobs, threads = _gl_detail(node)
             changes[key] = replace(changes[key], jobs=jobs, threads=threads)
-    return issues, changes, errors[0] if errors else ""
+    return (None if "kanban" in lost else issues), (None if "merge requests" in lost else changes), errors
 
 
 def change_ref(home, number) -> str:
@@ -402,10 +408,11 @@ def change_states(home, numbers, gh, call) -> tuple[dict[str, ChangeState], str]
 
 
 def forge(root: Path, cfg: Config, tracker: Tracker, since: datetime, gh, call):
-    """What the tracker's tasks name, from the Backlog's forge: (issues, changes, error)."""
+    """What the tracker's tasks name, from the Backlog's forge: (issues, changes, errors), each side None when it failed,
+    `errors` mapping a panel ("kanban", "merge requests") to its error."""
     home = cfg.backlog
     if home is None:
-        return {}, {}, ""
+        return {}, {}, {}
     try:
         approver = load_settings(root, cfg.settings_path).workflow.approver
     except SettingsError:
@@ -423,7 +430,8 @@ def forge(root: Path, cfg: Config, tracker: Tracker, since: datetime, gh, call):
     if github_home:
         if changes:
             wanted.setdefault(home.repo, set()).update(changes)
-        return github(home, wanted, since, approver, gh)
+        issues, found, error = github(home, wanted, since, approver, gh)
+        return issues, found, {"kanban": error, "merge requests": error} if error else {}
     return gitlab(home, wanted, changes, since, approver, call)
 
 
@@ -483,22 +491,24 @@ def refresh(root: Path, now: datetime, gh=backlog.run_gh, call=backlog._call) ->
     day = local.date()
     pages = pages_dir(root, cfg, day.isoformat())
     prev = load(pages)
-    fetched, errors = dict(prev.fetched), {}
+    fetched = dict(prev.fetched)
     try:
         text = (root / cfg.tracker_path(day.isoformat())).read_text()
     except OSError:
         text = ""
     tracker = parse_tracker(text)
     try:
-        issues, changes, error = forge(root, cfg, tracker, datetime.combine(day, time(0), cfg.zone), gh, call)
+        issues, changes, errors = forge(root, cfg, tracker, datetime.combine(day, time(0), cfg.zone), gh, call)
     except Exception as e:  # a forge answer shaped unlike its schema; the page still renders
-        issues, changes, error = None, None, f"{type(e).__name__}: {e}"
-    if error:
-        errors["kanban"] = errors["merge requests"] = error
+        issues, changes, errors = None, None, dict.fromkeys(("kanban", "merge requests"), f"{type(e).__name__}: {e}")
     if issues is None:
-        issues, changes = prev.issues, prev.changes
+        issues = prev.issues
     elif cfg.backlog is not None:
-        fetched["kanban"] = fetched["merge requests"] = now
+        fetched["kanban"] = now
+    if changes is None:
+        changes = prev.changes
+    elif cfg.backlog is not None:
+        fetched["merge requests"] = now
     try:
         found = workers(root, cfg, tracker, text, day)
         fetched["workers"] = now
