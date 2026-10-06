@@ -232,7 +232,7 @@ def main(argv_in: list[str] | None = None) -> int:
                     help="terminal launcher; default: [workers] launcher in workspace settings, then ghostty")
     ap.add_argument("--model", default="", help="model id; required for agy")
     ap.add_argument("--effort", default="",
-                    help="not supported for " + ", ".join(r.name for r in runtimes.RUNTIMES if not r.takes_effort))
+                    help="one of " + ", ".join(e for e in EFFORTS if e) + "; not supported for " + ", ".join(r.name for r in runtimes.RUNTIMES if not r.takes_effort))
     ap.add_argument("--dry-run", action="store_true", help="print the argv and start nothing")
     ap.add_argument("--check", action="store_true",
                     help="print the assignment the task row composes, or the refusal; checks the Tasks and File ownership rows only: "

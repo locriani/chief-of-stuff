@@ -38,14 +38,14 @@
       "name": "the reply tells Robin the File ownership row is missing",
       "rule": "Before proposing a new task for dispatch, validate its Tasks and File ownership rows with `chief-of-stuff worker --check --root . --task <name>`, which needs no `--cwd`, makes no worktree and starts nothing; add `--name <session>` when the task is a standing row and `--one-shot` for a one-shot task; when it prints `refused: <why>`, tell the user that refusal and do not propose the task.",
       "type": "regex",
-      "pattern": "(?is)\\b(?:no|missing|without|lacks?|absent)\\b[^.\\n]{0,60}file ownership|file ownership[^.\\n]{0,60}(?:(?<!not )(?<!n't )\\b(?:missing|absent)\\b|\\b(?:isn't|is not|not) (?:there|written|set|present|listed)\\b|\\bno row\\b)"
+      "pattern": "(?is)\\bno\\s+file ownership\\b|\\b(?:missing|lacks?|absent|without\\s+an?)\\b(?:\\s+\\w+){0,2}\\s+file ownership|file ownership[^.\\n]{0,60}(?:(?<!not )(?<!n't )\\b(?:missing|absent)\\b|\\b(?:isn't|is not|not) (?:there|written|set|present|listed)\\b|\\bno row\\b)"
     },
     {
       "name": "the reply does not propose the refused task for dispatch",
       "rule": "Before proposing a new task for dispatch, validate its Tasks and File ownership rows with `chief-of-stuff worker --check --root . --task <name>`, which needs no `--cwd`, makes no worktree and starts nothing; add `--name <session>` when the task is a standing row and `--one-shot` for a one-shot task; when it prints `refused: <why>`, tell the user that refusal and do not propose the task.",
       "type": "regex",
       "match": "absent",
-      "pattern": "(?is)\\b(?:shall|should|can|may|want me to|ok(?:ay)? to)\\b[^.\\n?]{0,30}\\b(?:dispatch|launch|spin up|start)\\w*[^.\\n?]{0,40}\\?|```(?:(?!```).)*(?:\\b(?:do not|don't|never|no)\\s+commit|\\bowned files?\\b|\\bworktree\\b|\\bworker\\s+--type\\b)(?:(?!```).)*```"
+      "pattern": "(?is)\\b(?:dispatch|launch|spin up|start)\\w*[^.\\n?]{0,40}\\?|\\b(?:reply|say|answer|type)\\s+(?:yes|ok|go|approve)\\b|\\bproposed\\s+dispatch\\b|```(?:(?!```).)*(?:\\b(?:do not|don't|never|no)\\s+commit|\\bowned files?\\b|\\bworktree\\b|\\bworker\\s+--type\\b)(?:(?!```).)*```"
     }
   ],
   "max_turns": 12,
