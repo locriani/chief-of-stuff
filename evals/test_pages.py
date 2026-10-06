@@ -176,12 +176,63 @@ class ReloadSnippetTest(unittest.TestCase):
     def test_the_snippet_polls_with_head_and_asks_before_it_reloads_over_typing(self):
         snip = snippet()
         self.assertTrue(snip.lstrip().startswith("<script") and snip.rstrip().endswith("</script>"))
-        for needle in ("location.protocol==='http:'", "HEAD", "no-store", "location.pathname", "visibilitychange",
+        for needle in ("HEAD", "no-store", "location.pathname", "visibilitychange",
                        "document.lastModified", "Last-Modified", "defaultValue", "activeElement", "page-changed", "location.reload"):
             with self.subTest(needle=needle):
                 self.assertIn(needle, "".join(snip.replace('"', "'").split()))  # quotes and spacing are the author's
         for blocking in ("alert(", "confirm(", "prompt("):
             self.assertNotIn(blocking, snip)
+
+
+    def test_the_snippet_has_no_protocol_guard_because_only_the_server_injects_it(self):
+        # A page opened from disk never carries the snippet (it is injected at serve time), so the guard cannot be false.
+        self.assertNotIn("location.protocol", snippet())
+
+    def test_the_snippet_guards_every_kind_of_user_state_a_reload_would_lose(self):
+        # A reload drops a picked radio or checkbox, a chosen option and edited rich text, as it drops typed text.
+        flat = "".join(snippet().replace('"', "'").split())
+        self.assertRegex(flat, r"\.checked!==?\w+\.defaultChecked")
+        self.assertRegex(flat, r"\.selected!==?\w+\.defaultSelected")
+        self.assertIn("contenteditable", flat.lower())  # `[contenteditable]` or `isContentEditable`
+
+    def test_the_snippet_listens_for_visibilitychange_without_replacing_the_pages_own_handler(self):
+        flat = "".join(snippet().replace('"', "'").split())
+        self.assertIn("addEventListener('visibilitychange'", flat)
+        self.assertNotIn("onvisibilitychange=", flat)
+
+    def test_inject_matches_the_body_end_in_any_case(self):
+        import page_reload
+        snip = page_reload.SNIPPET.encode()
+        for end in (b"</BODY>", b"</Body>"):
+            with self.subTest(end=end):
+                out = page_reload.inject(b"<BODY><p>x</p>" + end + b"</HTML>")
+                self.assertEqual((out.count(snip), out.index(snip) < out.rindex(end), out.endswith(end + b"</HTML>")), (1, True, True))
+
+    def test_an_upper_case_html_suffix_is_injected_like_html(self):
+        snip = snippet().encode()
+        (self.dir / "LOUD.HTML").write_text("<body><p>loud</p></body>")
+        body = get(self.port, "/LOUD.HTML").body
+        self.assertEqual((body.count(snip), b"<p>loud</p>" in body), (1, True))
+
+    def test_an_html_that_does_not_exist_or_is_not_a_file_is_404_for_get_and_head(self):
+        (self.dir / "folder.html").mkdir()
+        for path in ("/nope.html", "/folder.html"):
+            for method in ("GET", "HEAD"):
+                with self.subTest(path=path, method=method):
+                    self.assertEqual(get(self.port, path, method=method).status, 404)
+
+    def test_a_page_that_vanishes_after_the_file_check_is_404_not_a_blank_page_stamped_1970(self):
+        real = Path.read_bytes
+
+        def vanish(path):
+            if path.name == "arch-review.html":
+                raise FileNotFoundError(path)
+            return real(path)
+
+        with mock.patch.object(Path, "read_bytes", vanish):
+            resp = get(self.port, "/arch-review.html")
+        self.assertEqual(resp.status, 404)
+        self.assertNotIn("1970", resp.getheader("Last-Modified") or "")
 
 
 class EnsureTest(unittest.TestCase):
@@ -440,6 +491,125 @@ class RenderOnRequestTest(unittest.TestCase):
                 break
             time.sleep(0.05)
         self.assertEqual(len(self.calls), 2)
+
+
+ISSUE_TRACKER = """# Tracker {day}
+
+## Tasks
+
+| name | item | owner | state | since | due | size | lane | stage | issue | checklist |
+|---|---|---|---|---|---|---|---|---|---|---|
+| {task} | {task} | Robin | running 09:00 | {day} |  | M | build | implement | #7 | c |
+
+## Log
+
+- 09:00 opened the day
+- 09:00 stage: {task} → implement
+"""
+DECISION = ('{"headline": "Cache TTL", "ask": "Keep 5 minutes?", "options": [{"key": "A", "title": "Keep", '
+            '"text": "no change"}, {"key": "B", "title": "Drop", "text": "slower"}], "recommended": "A", "why": "fine", "default": "A at 17:00"}')
+
+
+class UnchangedPageKeepsItsTimeTest(unittest.TestCase):
+    """A served page's Last-Modified is its reload signal (#330): a page that shows the same thing must keep its time,
+    or an open tab reloads on every request (workers.html is re-rendered on each one) and every minute (the refresher
+    rewrites .sources.json, a source of every page). The renderers write only when the bytes differ.
+    Each renderer's clock is frozen, so a run of the real renderers with the same inputs gives the same bytes; every
+    page is backdated, which makes the next request re-render it (a source is newer) and a rewrite move its time to now."""
+
+    OLD = 1_700_000_000
+    PAGES = {"/": "{day}-board.html", "/workers": "workers.html", "/decisions": "decisions.html",
+             "/decisions/cache-ttl": "decision-cache-ttl.html", "/issues/7": "issue-7.html",
+             "/issues/7/source": "issue-7-source.html"}
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.day = datetime.now(ZoneInfo(ZONE)).date().isoformat()
+        (self.root / "CLAUDE.md").write_text(
+            "## Coordinator\n- User: Robin\n- Daily log dir: `daily/`\n- Tracker: `daily/<date>-tracker.md`\n"
+            f"- Timezone: {ZONE}\n- Board: self-hosted; URL http://127.0.0.1:8765/; dir `pages/`\n- Settings: `cos.toml`\n")
+        (self.root / "daily").mkdir()
+        self.tracker = self.root / "daily" / f"{self.day}-tracker.md"
+        self.tracker.write_text(ISSUE_TRACKER.format(day=self.day, task="Security audit"))
+        self.pages = self.root / "pages"
+        self.pages.mkdir()
+        (self.pages / "decision-cache-ttl.json").write_text(DECISION)
+        fixed = datetime.now(ZoneInfo(ZONE)).replace(hour=12, minute=0, second=0, microsecond=0)
+
+        class Frozen(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fixed.astimezone(tz) if tz else fixed
+
+        import decision_page, issue_page, render_board, workers_page
+        for module in (decision_page, issue_page, render_board, workers_page):
+            patch = mock.patch.object(module, "datetime", Frozen)
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.calls, self.refreshed = [], threading.Event()
+        self.server = pg.make_server(self.pages, 0, root=self.root, refresh=self.fake_refresh, every=3600)
+        self.port = self.server.server_address[1]
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        self.assertTrue(self.refreshed.wait(10))  # the first refresh writes .sources.json: a source a test must not race
+
+    fake_refresh = RenderOnRequestTest.fake_refresh
+
+    def file(self, route: str) -> Path:
+        return self.pages / self.PAGES[route].format(day=self.day)
+
+    def render_all_then_backdate(self):
+        for route in self.PAGES:
+            self.assertEqual(get(self.port, route).status, 200, route)
+            os.utime(self.file(route), (self.OLD, self.OLD))
+        # decision_page writes decision-cache-ttl.html and decisions.html with the board; they were backdated too.
+
+    def assert_still_old(self):
+        stamp = email.utils.formatdate(self.OLD, usegmt=True)
+        for route in self.PAGES:
+            with self.subTest(route=route):
+                resp = get(self.port, route)
+                self.assertEqual(resp.status, 200)
+                self.assertEqual((self.file(route).stat().st_mtime_ns, resp.getheader("Last-Modified")),
+                                 (self.OLD * 1_000_000_000, stamp))
+
+    def test_a_render_with_the_same_inputs_leaves_every_page_file_and_its_time_alone(self):
+        self.render_all_then_backdate()
+        self.assert_still_old()
+
+    def test_workers_keeps_its_time_across_two_requests_though_it_renders_on_every_one(self):
+        first = get(self.port, "/workers")
+        before = self.file("/workers").stat().st_mtime_ns
+        time.sleep(1.1)  # Last-Modified has one-second steps
+        second = get(self.port, "/workers")
+        self.assertEqual((second.getheader("Last-Modified"), self.file("/workers").stat().st_mtime_ns),
+                         (first.getheader("Last-Modified"), before))
+
+    def test_a_cache_rewritten_with_identical_content_moves_no_page(self):
+        # What board_sources does every 60 s: the file's time moves, its content does not.
+        self.render_all_then_backdate()
+        cache = self.pages / ".sources.json"
+        cache.write_text(cache.read_text())
+        self.assertGreater(cache.stat().st_mtime, self.OLD)
+        self.assert_still_old()
+
+    def test_a_changed_tracker_moves_the_pages_it_shows(self):
+        self.render_all_then_backdate()
+        self.tracker.write_text(ISSUE_TRACKER.format(day=self.day, task="Draft release notes"))
+        for route in ("/", "/issues/7"):
+            with self.subTest(route=route):
+                resp = get(self.port, route)
+                self.assertIn(b"Draft release notes", resp.body)
+                self.assertNotEqual(resp.getheader("Last-Modified"), email.utils.formatdate(self.OLD, usegmt=True))
+
+    def test_a_new_decision_answer_moves_its_page(self):
+        self.render_all_then_backdate()
+        resp = post(self.port, "/decisions/cache-ttl", b"key=A")
+        self.assertIn(resp.status, (200, 204, 303))
+        for route in ("/decisions/cache-ttl", "/decisions"):
+            with self.subTest(route=route):
+                self.assertNotEqual(get(self.port, route).getheader("Last-Modified"), email.utils.formatdate(self.OLD, usegmt=True))
 
 
 class AnswerTest(unittest.TestCase):

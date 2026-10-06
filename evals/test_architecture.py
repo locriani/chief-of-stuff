@@ -9,6 +9,7 @@ PreToolUse hook loaded the board, the page server and the forge cache to read on
 from __future__ import annotations
 
 import ast
+import re
 import subprocess
 import sys
 import tempfile
@@ -19,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
 
 PAGES = frozenset({"render_board", "decision_page", "issue_page", "source_page", "workers_page", "pages",
-                   "flow_chart", "gantt", "panels", "columns", "fragment", "module_graph"})
+                   "flow_chart", "gantt", "panels", "columns", "fragment", "module_graph", "page_reload"})
 
 # Every script module that draws nothing. A new one belongs here unless it renders a page.
 DRAWS_NOTHING = (
@@ -29,7 +30,7 @@ DRAWS_NOTHING = (
     "review_threads", "notify", "init_workspace", "install_model_guidance", "migrate_backlog", "inbox",
     "probe_health", "runtimes", "estimate", "task_forge", "tracker_log", "findings", "tree_state", "orphans",
     "git_trees", "tree_claims", "notify_service", "tracker_read",
-    "one_shot_report", "page_reload",
+    "one_shot_report",
 )
 
 PROBE = "import sys; sys.path.insert(0, sys.argv[1]); import {name}; print(' '.join(sorted(set(sys.modules) & set(sys.argv[2:]))))"
@@ -113,6 +114,11 @@ class DependencyRuleTest(unittest.TestCase):
     def test_every_script_is_classified(self) -> None:
         scripts = {p.stem for p in SCRIPTS.glob("*.py")}
         self.assertEqual(sorted(scripts - PAGES - set(DRAWS_NOTHING)), [])
+
+    def test_a_module_that_emits_markup_is_a_page_module(self) -> None:
+        # page_reload holds a <script> that draws a notice; listed as drawing nothing, its probe passes for want of imports.
+        drawing = [n for n in DRAWS_NOTHING if re.search(r"<(script|div|p|body)\b", (SCRIPTS / f"{n}.py").read_text(encoding="utf-8"))]
+        self.assertEqual(drawing, [])
 
     def test_a_module_that_draws_nothing_imports_no_page(self) -> None:
         for name in DRAWS_NOTHING:
