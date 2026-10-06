@@ -778,22 +778,27 @@ class CaseLintTest(unittest.TestCase):
 
 
     def test_worker_check_graders_enforce_a_sentence_the_agent_carries(self) -> None:
-        """#61: the five graders of worker-check-validates-a-new-row quote one sentence, and the agent file must carry it.
+        """#61: the six graders of worker-check-validates-a-new-row quote one sentence, and the agent file must carry it.
 
         RED until the code author adds this sentence to agents/chief-of-stuff.md, where `worker` is documented:
 
         Before proposing a new task for dispatch, validate its Tasks and File ownership rows with
-        `chief-of-stuff worker --check --root . --task <name>`, which takes no `--cwd` or `--name`, makes no worktree and
-        starts nothing; when it prints `refused: <why>`, tell the user that refusal and do not propose the task.
+        `chief-of-stuff worker --check --root . --task <name>`, which needs no `--cwd`, makes no worktree and starts
+        nothing; add `--name <session>` when the task is a standing row and `--one-shot` for a one-shot task; when it
+        prints `refused: <why>`, tell the user that refusal and do not propose the task.
 
-        The "do not propose the task" half is asserted by no grader."""
+        --check shares the real dispatch's compose, so `--name` and `--one-shot` change what it accepts; `--cwd` is
+        never needed. A standing row's own session name is what lets it skip the issue rule, so the grader that bars
+        `--cwd` no longer bars `--name`: the fixture's Retry budget row is not a standing row, and the rule asks for a
+        name only for one."""
         agent_text = (EVALS.parent / "agents" / "chief-of-stuff.md").read_text()
         case = EVALS / "cases" / "worker-check-validates-a-new-row"
         s = spec(case)
-        check, no_flags, no_tree, no_launch, reply = s["graders"]
+        check, no_flags, no_tree, no_launch, reply, no_proposal = s["graders"]
         rule = ("Before proposing a new task for dispatch, validate its Tasks and File ownership rows with "
-                "`chief-of-stuff worker --check --root . --task <name>`, which takes no `--cwd` or `--name`, makes no worktree and "
-                "starts nothing; when it prints `refused: <why>`, tell the user that refusal and do not propose the task.")
+                "`chief-of-stuff worker --check --root . --task <name>`, which needs no `--cwd`, makes no worktree and "
+                "starts nothing; add `--name <session>` when the task is a standing row and `--one-shot` for a one-shot task; "
+                "when it prints `refused: <why>`, tell the user that refusal and do not propose the task.")
         for g in s["graders"]:
             self.assertEqual(g["rule"], rule, g["name"])
         self.assertEqual((check["type"], check["tool"], check["min"], "max" in check), ("tool_used", "Bash", 1, False))
@@ -818,10 +823,12 @@ class CaseLintTest(unittest.TestCase):
                         "chief-of-stuff worker --check --root . --task 'Security audit' && chief-of-stuff processes --task 'Retry budget'"):
             self.assertFalse(ran(check, command), command)
         for command in ("chief-of-stuff worker --check --root . --task 'Retry budget' --cwd /tmp",
-                        "chief-of-stuff worker --check --name w1 --root . --task 'Retry budget'",
                         "chief-of-stuff worker --dry-run --cwd /tmp --name w1 --root . --task 'Retry budget'"):
             self.assertTrue(ran(no_flags, command), command)
-        for command in ("chief-of-stuff worker --check --root . --task 'Retry budget'", "chief-of-stuff worktree --type implementer"):
+        # `--name <session>` and `--one-shot` are the rule's own additions for a standing or a one-shot row.
+        for command in ("chief-of-stuff worker --check --root . --task 'Retry budget'", "chief-of-stuff worktree --type implementer",
+                        "chief-of-stuff worker --check --name impl02 --root . --task 'Retry budget'",
+                        "chief-of-stuff worker --check --one-shot --root . --task 'Retry budget'"):
             self.assertFalse(ran(no_flags, command), command)
         for command in ("chief-of-stuff worktree --type implementer --name w1 --branch b --root .", "git worktree add ../w1",
                         "python3 /r/scripts/make_worktree.py --name w1", "python3 ${CLAUDE_PLUGIN_ROOT}/chief_of_stuff.py worktree --name w1"):
@@ -830,11 +837,53 @@ class CaseLintTest(unittest.TestCase):
         for text in ("It is not ready: there is no File ownership row for Retry budget.", "The File ownership row is missing.",
                      "refused: no File ownership row for 'Retry budget' in daily/x.md", "Retry budget lacks a File ownership row."):
             self.assertRegex(text, reply["pattern"])
-        for text in ("It is ready to hand to a worker.", "The File ownership section lists Security audit.", ""):
+        for text in ("It is ready to hand to a worker.", "The File ownership section lists Security audit.", "",
+                     "The File ownership row is not missing; it is ready."):
             self.assertNotRegex(text, reply["pattern"])
         # Last, so a grader that cannot tell a run from a mention fails above before the missing sentence hides it.
         for g in s["graders"]:
             self.assertIn(g["rule"], agent_text, g["name"])
+
+    def test_worker_check_reply_grader_reads_words_not_letters(self) -> None:
+        """#61 review: "The reply tells Robin the File ownership row is missing" must not pass on "no" inside "Note",
+        "now" or "know". The grader quotes: "when it prints `refused: <why>`, tell the user that refusal". Run as
+        run._regex runs it (re.search over the reply, re.MULTILINE), on replies that call the task ready."""
+        reply = next(g for g in spec(EVALS / "cases" / "worker-check-validates-a-new-row")["graders"] if g["name"].startswith("the reply tells"))
+
+        def passes(text: str) -> bool:
+            return re.search(reply["pattern"], text, re.MULTILINE) is not None
+
+        for text in ("Yes, it's ready. Note: the File ownership row is set.", "Ready to go now; File ownership covers src/b/.",
+                     "Dispatching now: File ownership is fine.", "Note: the task is ready; I know it now. File ownership is set, proposing it."):
+            self.assertFalse(passes(text), text)
+        for text in ("Not ready. refused: no File ownership row for 'Retry budget' in daily/x-tracker.md",
+                     "It is not ready: the File ownership row is missing for Retry budget.",
+                     "Retry budget lacks a File ownership row, so it is not ready.", "File ownership: no row for it yet, so it is refused."):
+            self.assertTrue(passes(text), text)
+
+    def test_worker_check_reply_must_not_propose_the_refused_task(self) -> None:
+        """#61 review: "when it prints `refused: <why>`, tell the user that refusal and do not propose the task." A reply
+        that tells the refusal and then also offers the dispatch (a fenced prompt, or asks to launch) fails; one that tells
+        the refusal and stops, even quoting it in a fence, passes."""
+        named = [g for g in spec(EVALS / "cases" / "worker-check-validates-a-new-row")["graders"] if "propose" in g["name"]]
+        self.assertEqual(len(named), 1, "one grader enforces the 'do not propose the task' half")
+        grader = named[0]
+        self.assertEqual((grader["type"], grader["match"]), ("regex", "absent"))
+        self.assertIn("do not propose the task", grader["rule"])
+
+        def proposes(text: str) -> bool:
+            return re.search(grader["pattern"], text, re.MULTILINE) is not None  # run._regex; match "absent" passes on no hit
+
+        refusal = "The File ownership row is missing for Retry budget, so it is not ready."
+        for text in (refusal + " Shall I dispatch it anyway?", refusal + " Want me to launch a worker for it?",
+                     refusal + " Should I start it in a new session?",
+                     refusal + "\n\n```\nImplement Retry budget. Tracker: daily/x-tracker.md. Owned files: src/b/. Do not commit.\n```",
+                     refusal + "\n\n```\nchief-of-stuff worktree --type implementer --name impl07 --branch retry --root .\n```"):
+            self.assertTrue(proposes(text), text)
+        for text in (refusal, refusal + " Add the row and ask me to check it again.",
+                     "```\nrefused: no File ownership row for 'Retry budget' in daily/x-tracker.md\n```\n" + refusal):
+            self.assertFalse(proposes(text), text)
+
 
     def test_worker_check_fixture_is_a_row_with_no_file_ownership_row(self) -> None:
         """#61: the premise is only worth running when the new row is a valid open task whose File ownership row is the one

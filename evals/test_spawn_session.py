@@ -1004,11 +1004,11 @@ class CheckTest(unittest.TestCase):
     `worker` needs --cwd and --name, so the row was checked against an unrelated tree.
     """
 
-    def workspace(self, tracker: str = TRACKER, toml: str | None = None) -> Path:
+    def workspace(self, tracker: str = TRACKER, toml: str | None = None, claude: str = CLAUDE) -> Path:
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         root = Path(tmp.name)
-        (root / "CLAUDE.md").write_text(CLAUDE + ("- Settings: `chief-of-stuff.toml`\n" if toml else ""))
+        (root / "CLAUDE.md").write_text(claude + ("- Settings: `chief-of-stuff.toml`\n" if toml else ""))
         if toml:
             (root / "chief-of-stuff.toml").write_text(toml)
         (root / "daily").mkdir()
@@ -1036,8 +1036,14 @@ class CheckTest(unittest.TestCase):
         self.assertEqual(self.snapshot(root), before, "--check changed the workspace")
         return code, out.getvalue(), err.getvalue()
 
-    def composed(self, root: Path, task: str = "Security audit") -> str:
-        return ss.dispatch_prompt.compose(root, "2026-09-18", task)
+    def composed(self, root: Path, task: str = "Security audit", **kw) -> str:
+        return ss.dispatch_prompt.compose(root, "2026-09-18", task, **kw)
+
+    def refusal(self, root: Path, task: str = "Security audit", **kw) -> str:
+        """What `check` must print for a row the real dispatch refuses: compose's own text, never a copy of it."""
+        with self.assertRaises(ss.dispatch_prompt.RefusedError) as expected:
+            self.composed(root, task, **kw)
+        return f"refused: {expected.exception}"
 
     def test_a_complete_row_prints_the_assignment_with_no_cwd_and_no_name(self):
         root = self.workspace()
@@ -1074,21 +1080,103 @@ class CheckTest(unittest.TestCase):
         self.assertIn("No such task", err)
 
     def test_check_never_needs_a_tree_in_a_one_shot_workspace(self):
+        """Superseded: it pinned the interactive assignment for a one-shot workspace. A one-shot workspace dispatches
+        one-shot, so `--check` prints the one-shot assignment and still needs no tree."""
         root = self.workspace(toml='[workers]\nmode = "one-shot"\n')
         code, out, err = self.check(root)
         self.assertEqual((code, err), (0, ""))
-        self.assertEqual(out.strip(), self.composed(root).strip())
+        self.assertTrue(out.startswith("# One-shot assignment"), out[:80])
+        self.assertIn("src/a/", out)
 
-    def test_check_wins_over_one_shot_interactive_and_dry_run(self):
-        """Pinned: --check validates and prints the assignment; it does not launch, preview or run once."""
+    def test_check_ignores_interactive_and_dry_run_in_an_interactive_workspace(self):
+        """Pinned: --check prints the assignment; it does not preview ("would run") or launch. Replaces
+        test_check_wins_over_one_shot_interactive_and_dry_run, whose --one-shot case pinned a false pass (see below)."""
         root = self.workspace(toml='[workers]\nmode = "interactive"\n')
         want = self.composed(root).strip()
-        for flags in (["--one-shot"], ["--interactive"], ["--dry-run"], ["--one-shot", "--dry-run"]):
+        for flags in (["--interactive"], ["--dry-run"], ["--interactive", "--launcher", "tmux"]):
             with self.subTest(flags=flags):
                 code, out, err = self.check(root, *flags)
                 self.assertEqual((code, err), (0, ""))
                 self.assertEqual(out.strip(), want)
                 self.assertNotIn("would run", out)
+
+    def test_one_shot_check_refuses_what_the_one_shot_dispatch_refuses(self):
+        """#61 review: `emit(root, date, task)` always composed the interactive form, so a row the one-shot dispatch
+        refuses (here: not open) passed. The same row passes without --one-shot, as the interactive dispatch accepts it."""
+        root = self.workspace(TRACKER.replace("| unassigned | open |", "| unassigned | waiting |"))
+        want = self.refusal(root, one_shot=True, worktree=Path("/x"), name="w1")
+        for flags in (["--one-shot"], ["--one-shot", "--dry-run"]):
+            with self.subTest(flags=flags):
+                code, out, err = self.check(root, *flags)
+                self.assertEqual((code, out, err.strip()), (1, "", want))
+        code, out, err = self.check(root)
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out.strip(), self.composed(root).strip())
+
+    def test_a_one_shot_workspace_check_refuses_that_row_unless_interactive(self):
+        root = self.workspace(TRACKER.replace("| unassigned | open |", "| unassigned | waiting |"), toml='[workers]\nmode = "one-shot"\n')
+        want = self.refusal(root, one_shot=True, worktree=Path("/x"), name="w1")
+        code, out, err = self.check(root)
+        self.assertEqual((code, out, err.strip()), (1, "", want))
+        code, out, err = self.check(root, "--interactive")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out.strip(), self.composed(root).strip())
+
+    def test_one_shot_check_of_a_complete_row_prints_the_one_shot_assignment(self):
+        root = self.workspace()
+        code, out, err = self.check(root, "--one-shot", "--dry-run")
+        self.assertEqual((code, err), (0, ""))
+        self.assertTrue(out.startswith("# One-shot assignment"), out[:80])
+        self.assertNotIn("would run", out)
+
+    STANDING = "impl02: standing implementer. Wait idle for the next item."
+    BACKLOG = CLAUDE + "- Backlog: GitHub issues; repo https://github.com/o/backlog (private)\n"
+
+    def standing_workspace(self) -> Path:
+        tracker = TRACKER.replace("Security audit | unassigned", f"{self.STANDING} | unassigned"
+                                  ).replace("| Security audit | `src/a/` |", f"| {self.STANDING} | `src/d/` |")
+        return self.workspace(tracker, claude=self.BACKLOG)
+
+    def test_a_standing_row_is_valid_only_when_check_is_given_its_name(self):
+        """#61 review: `name` never reached compose, so a standing placeholder in a workspace with a backlog was refused
+        for naming no issue, and the agent rule then forbade proposing it."""
+        root = self.standing_workspace()
+        code, out, err = self.check(root, "--name", "impl02", task=self.STANDING)
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out.strip(), self.composed(root, self.STANDING, name="impl02").strip())
+        want = self.refusal(root, self.STANDING)
+        self.assertIn("names no issue", want)
+        code, out, err = self.check(root, task=self.STANDING)
+        self.assertEqual((code, out, err.strip()), (1, "", want))
+        want = self.refusal(root, self.STANDING, name="impl03")
+        code, out, err = self.check(root, "--name", "impl03", task=self.STANDING)
+        self.assertEqual((code, out, err.strip()), (1, "", want))
+
+    def test_check_refuses_a_name_that_is_not_a_session_name(self):
+        root = self.workspace()
+        want = self.refusal(root, name="bad name!")
+        code, out, err = self.check(root, "--name", "bad name!")
+        self.assertEqual((code, out, err.strip()), (1, "", want))
+
+    def test_launch_only_flags_neither_refuse_nor_change_a_check(self):
+        """#61 review: --model/--effort/--class validation ran before the check branch, so `--check --runtime agy` said
+        "--model needs a model id". --check composes the Tasks and File ownership rows; these flags are no part of that."""
+        root = self.workspace()
+        want = self.composed(root).strip()
+        for flags in (["--runtime", "agy"], ["--runtime", "codex", "--model", "not a model!"], ["--model", "bad model!"],
+                      ["--runtime", "agy", "--effort", "high"], ["--effort", "bogus"], ["--class", "nope"],
+                      ["--coordinator", "x y z"], ["--timeout-minutes", "0"]):
+            with self.subTest(flags=flags):
+                code, out, err = self.check(root, *flags)
+                self.assertEqual((code, err), (0, ""))
+                self.assertEqual(out.strip(), want)
+
+    def test_the_check_help_says_it_checks_the_rows_only(self):
+        with contextlib.redirect_stdout(io.StringIO()) as out, self.assertRaises(SystemExit):
+            ss.main(["--help"])
+        text = " ".join(out.getvalue().split())
+        self.assertIn("checks the Tasks and File ownership rows only", text)
+        self.assertNotIn("wins over every launch flag", text)
 
     def test_without_check_cwd_and_name_are_still_required(self):
         for args in (["--task", "Security audit"], ["--task", "Security audit", "--cwd", "/tmp"],
