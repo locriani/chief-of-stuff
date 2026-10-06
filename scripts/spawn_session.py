@@ -204,6 +204,16 @@ def launch_env(parent: dict[str, str] | None = None) -> dict[str, str]:
     return {k: v for k, v in source.items() if k in KEEP and not k.upper().startswith("CLAUDE")}
 
 
+EFFORTS = ("", "low", "medium", "high", "xhigh", "max")
+CHECK_TREE = Path("<worktree>")  # --check makes no tree; the one-shot assignment still names one
+
+
+def assignment(args, one_shot: bool, worktree: Path | None) -> str:
+    """The assignment a dispatch composes from its flags: one path for a launch and for --check."""
+    return dispatch_prompt.compose(Path(args.root), args.date, args.task, worktree=worktree, coordinator=args.coordinator,
+                                   name=args.title, runtime=args.runtime, one_shot=one_shot)
+
+
 def main(argv_in: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--type", dest="agent_type", help="an agent type from the Coordinator block; omitted runs the default agent")
@@ -221,12 +231,13 @@ def main(argv_in: list[str] | None = None) -> int:
     ap.add_argument("--launcher", choices=("ghostty", "tmux"),
                     help="terminal launcher; default: [workers] launcher in workspace settings, then ghostty")
     ap.add_argument("--model", default="", help="model id; required for agy")
-    ap.add_argument("--effort", default="", choices=("", "low", "medium", "high", "xhigh", "max"),
+    ap.add_argument("--effort", default="",
                     help="not supported for " + ", ".join(r.name for r in runtimes.RUNTIMES if not r.takes_effort))
     ap.add_argument("--dry-run", action="store_true", help="print the argv and start nothing")
     ap.add_argument("--check", action="store_true",
-                    help="print the assignment the task row composes, or the refusal; needs no --cwd or --name, "
-                         "makes no worktree, starts nothing and writes nothing; wins over every launch flag")
+                    help="print the assignment the task row composes, or the refusal; checks the Tasks and File ownership rows only: "
+                         "needs no --cwd, makes no worktree, starts nothing and writes nothing; "
+                         "--name checks a standing row, --one-shot a one-shot task; other launch flags are ignored")
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--one-shot", action="store_true",
                       help="run this task once; [workers] mode = one-shot already makes this the default")
@@ -236,13 +247,30 @@ def main(argv_in: list[str] | None = None) -> int:
     ap.add_argument("--timeout-minutes", type=int, default=60,
                     help="one-shot run limit before human review (default: 60)")
     args = ap.parse_args(argv_in)
-    if not args.check:
-        for flag, value in (("--cwd", args.cwd), ("--name", args.title)):
-            if not value:
-                ap.error(f"the following arguments are required: {flag}")
+    missing = [flag for flag, value in (("--cwd", args.cwd), ("--name", args.title)) if not value]
+    if missing and not args.check:
+        ap.error("the following arguments are required: " + ", ".join(missing))
     try:
         config = dispatch_prompt.config(Path(args.root))
         settings = load_settings(Path(args.root), config.settings_path)
+        args.task = dispatch_prompt.resolve_task(Path(args.root), args.date, args.task)
+    except (dispatch_prompt.RefusedError, SettingsError, OSError) as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 1
+    worker_settings = settings.workers
+    one_shot = args.one_shot or (worker_settings.mode == "one-shot" and not args.interactive)
+    if args.check:
+        # The launch-only flags below (--runtime, --model, --effort, --class, --coordinator) are no part of the rows.
+        args.coordinator, args.runtime = None, "claude"
+        try:
+            sys.stdout.write(assignment(args, one_shot, Path(args.cwd) if args.cwd else CHECK_TREE if one_shot else None))
+        except dispatch_prompt.RefusedError as exc:
+            print(f"refused: {exc}", file=sys.stderr)
+            return 1
+        return 0
+    if args.effort not in EFFORTS:
+        ap.error(f"argument --effort: invalid choice: {args.effort!r} (choose from {', '.join(map(repr, EFFORTS))})")
+    try:
         if args.model_class and not (args.model or args.runtime):
             # #111: explicit flags always win; otherwise the class's first entry, effort included.
             if args.model_class not in settings.models:
@@ -250,10 +278,9 @@ def main(argv_in: list[str] | None = None) -> int:
             entry = settings.models[args.model_class][0]
             args.runtime, args.model = entry.runtime, entry.model
             args.effort = args.effort or entry.effort or ""  # an entry's own effort was checked at load
-    except (dispatch_prompt.RefusedError, SettingsError, OSError) as exc:
+    except SettingsError as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 1
-    worker_settings = settings.workers
     args.runtime = args.runtime or "claude"
     runtime = runtimes.get(args.runtime)
     if (args.model or runtime.needs_model) and not MODEL.fullmatch(args.model):
@@ -263,16 +290,7 @@ def main(argv_in: list[str] | None = None) -> int:
         print(f"refused: --effort is not supported for {runtime.name}", file=sys.stderr)
         return 1
     # Compose and launch must use the same absolute cwd.
-    args.cwd = os.path.abspath(args.cwd) if args.cwd else None
-
-    one_shot = args.one_shot or (worker_settings.mode == "one-shot" and not args.interactive)
-    try:
-        args.task = dispatch_prompt.resolve_task(Path(args.root), args.date, args.task)
-    except dispatch_prompt.RefusedError as exc:
-        print(f"refused: {exc}", file=sys.stderr)
-        return 1
-    if args.check:
-        return dispatch_prompt.emit(Path(args.root), args.date, args.task)
+    args.cwd = os.path.abspath(args.cwd)
 
     if one_shot:
         if args.timeout_minutes < 1:
@@ -295,9 +313,7 @@ def main(argv_in: list[str] | None = None) -> int:
 
     override = os.environ.get(ENV)
     try:
-        body = dispatch_prompt.compose(Path(args.root), args.date, args.task,
-                                      worktree=Path(args.cwd), coordinator=args.coordinator, name=args.title,
-                                      runtime=args.runtime)
+        body = assignment(args, False, Path(args.cwd))
         selected = args.launcher or worker_settings.launcher
         # The eval harness uses the argv override.
         worker = dict(cwd=args.cwd, agent_type=args.agent_type, title=args.title, runtime=args.runtime,
