@@ -371,13 +371,15 @@ def start_old_server(pages: Path, port: int) -> subprocess.Popen:
 
 
 ZONE = "America/Chicago"
+# BUILD draws a task only with a lane and a stage (#350), so the row has both and the settings name the lane.
+LANES = '[lanes]\nbuild = { stages = ["implement", "review", "merge"], gates = ["merge"] }\n'
 TRACKER = """# Tracker {day}
 
 ## Tasks
 
-| item | owner | state | since | due | checklist |
-|---|---|---|---|---|---|
-| {task} | Robin | open | 09:00 |  | Checklist: {task} |
+| name | item | owner | state | since | due | size | lane | stage | issue | checklist |
+|---|---|---|---|---|---|---|---|---|---|---|
+| {task} | {task} | Robin | open | 09:00 |  | S | build | implement |  | Checklist: {task} |
 
 ## Decisions
 
@@ -406,8 +408,7 @@ class RenderOnRequestTest(unittest.TestCase):
         self.tracker.write_text(TRACKER.format(day=self.day, task="Security audit"))
         self.pages = self.root / "pages"
         self.pages.mkdir()
-        if getattr(self, "SETTINGS", ""):
-            (self.root / "cos.toml").write_text(self.SETTINGS)
+        (self.root / "cos.toml").write_text(getattr(self, "SETTINGS", LANES))
         self.calls, self.refreshed = [], threading.Event()
         self.server = pg.make_server(self.pages, 0, root=self.root, refresh=self.fake_refresh, every=3600)
         self.port = self.server.server_address[1]
