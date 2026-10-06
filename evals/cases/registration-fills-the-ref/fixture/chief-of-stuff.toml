@@ -1,2 +1,2 @@
-[workers]
-clone = "repo"
+[repos]
+repo = "repo"

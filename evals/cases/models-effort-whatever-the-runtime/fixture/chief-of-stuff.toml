@@ -1,6 +1,8 @@
 [workers]
 mode = "one-shot"
-clone = "repo"
 
 [models.implement]
 rotation = ["codex:gpt-x@medium", "claude:sonnet@medium"]
+
+[repos]
+repo = "repo"

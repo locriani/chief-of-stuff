@@ -1,3 +1,5 @@
 [workers]
 mode = "one-shot"
-clone = "repo"
+
+[repos]
+repo = "repo"

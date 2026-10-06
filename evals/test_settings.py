@@ -134,20 +134,36 @@ class SettingsTest(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(st.SettingsError):
                 st.load(self.root, self.write(f'[workers]\nmode = {value}\n'))
 
-    def test_worker_clone_is_absent_or_the_path_the_file_names(self):
-        # #54: the repository `chief-of-stuff worktree` cuts from when `--clone` is omitted; a relative path is
-        # relative to the workspace root, which the caller resolves.
-        self.assertIsNone(st.load(self.root, None).workers.clone)
-        self.assertIsNone(st.load(self.root, self.write('[workers]\nmode = "one-shot"\n')).workers.clone)
-        self.assertEqual(st.load(self.root, self.write('[workers]\nclone = "checkout"\n')).workers.clone, "checkout")
+    def test_repos_is_empty_or_the_name_to_path_table_the_file_gives(self):
+        # #54: the repositories `chief-of-stuff worktree` cuts from, by name; a relative path is relative to the
+        # workspace root, which the caller resolves.
+        self.assertEqual(st.load(self.root, None).repos, {})
+        self.assertEqual(st.load(self.root, self.write('[workers]\nmode = "one-shot"\n')).repos, {})
+        self.assertEqual(st.load(self.root, self.write("[repos]\n")).repos, {})
+        settings = st.load(self.root, self.write('[repos]\nalder = "alder-checkout"\nbirch = "/abs/birch"\n'))
+        self.assertEqual(settings.repos, {"alder": "alder-checkout", "birch": "/abs/birch"})
         # Padding validates as a path, so the value handed on is the stripped one.
-        self.assertEqual(st.load(self.root, self.write('[workers]\nclone = "  checkout  "\n')).workers.clone, "checkout")
+        self.assertEqual(st.load(self.root, self.write('[repos]\nalder = "  checkout  "\n')).repos, {"alder": "checkout"})
 
-    def test_worker_clone_that_is_blank_or_not_a_string_is_refused_naming_the_key(self):
+    def test_a_repos_value_that_is_blank_or_not_a_string_is_refused_naming_the_entry(self):
         # A NUL cannot come in on argv, so a value is the only way one reaches the path and `git -C`.
         for bad in ('""', '"  "', "3", "true", '["checkout"]', "{}", '"re\\u0000po"'):
-            with self.subTest(bad=bad), self.assertRaisesRegex(st.SettingsError, r"\[workers\] clone must be a path"):
-                st.load(self.root, self.write(f"[workers]\nclone = {bad}\n"))
+            with self.subTest(bad=bad), self.assertRaisesRegex(st.SettingsError, r"\[repos\] alder must be a path"):
+                st.load(self.root, self.write(f"[repos]\nalder = {bad}\n"))
+
+    def test_repos_that_is_not_a_table_is_refused(self):
+        for bad in ("3", '"alder"', '["alder"]', "true"):
+            with self.subTest(bad=bad), self.assertRaisesRegex(st.SettingsError, r"\[repos\] must be a table"):
+                st.load(self.root, self.write(f"repos = {bad}\n"))
+
+    def test_workers_has_no_clone_and_a_leftover_key_is_not_read(self):
+        # `[workers] clone` was never released; a file that still has one loads, whatever the value.
+        self.assertFalse(hasattr(st.Workers(), "clone"))
+        for value in ('"checkout"', "3", '""'):
+            with self.subTest(value=value):
+                settings = st.load(self.root, self.write(f"[workers]\nclone = {value}\n"))
+                self.assertFalse(hasattr(settings.workers, "clone"))
+                self.assertEqual(settings.repos, {})
 
     def test_a_wrong_value_in_a_file_that_parses_is_a_settings_error_naming_its_table_and_key(self):
         # #47, Codex on PR #283: `gates = [["a"]]` raised TypeError from `set()` and `health` printed a traceback.

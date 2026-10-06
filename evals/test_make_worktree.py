@@ -615,7 +615,8 @@ class ArgvTest(unittest.TestCase):
 
 
 class SettingsCloneTest(CloneCase):
-    """#54: `[workers] clone` in the workspace's settings is the repository `--clone` names when it is omitted."""
+    """#54: `--clone` names a repository in the settings' `[repos]` table; with one entry it may be omitted. A path that is no
+    entry's name is a path, whatever state the settings are in."""
 
     def settings(self, toml: str, line: str = "- Settings: `chief-of-stuff.toml`\n", name: str = "chief-of-stuff.toml"):
         (self.root / "CLAUDE.md").write_text(CLAUDE + line)
@@ -628,72 +629,143 @@ class SettingsCloneTest(CloneCase):
     def common_dir(self) -> Path:
         return Path(make_repo.git(["rev-parse", "--path-format=absolute", "--git-common-dir"], self.tree)).resolve()
 
+    def assert_cut_from(self, clone: Path):
+        self.assertEqual(self.common_dir(), (clone / ".git").resolve(), "the tree belongs to the repository the entry names")
+
     def assert_refused_with_nothing_made(self, code: int, out: str, err: str):
         self.assertEqual((code, out), (1, ""))
         self.assertTrue(err.splitlines()[-1].startswith("refused:"), err)  # a settings notice may come first
         self.assertFalse(self.tree.exists())
         self.assertEqual(self.branches(), "")
 
-    def test_an_omitted_clone_comes_from_the_settings_relative_to_the_workspace_root(self):
-        self.settings('[workers]\nclone = "repo"\n')
-        code, out, err = self.invoke()
+    def remove_tree(self, clone: Path | None = None):
+        clone = clone or self.clone
+        make_repo.git(["worktree", "remove", "--force", str(self.tree)], clone)
+        make_repo.git(["branch", "-D", "feat/new"], clone)
+
+    def chdir(self, path: Path):
+        before = os.getcwd()
+        os.chdir(path)
+        self.addCleanup(os.chdir, before)
+
+    def test_a_name_in_repos_is_cut_from_its_path_relative_to_the_workspace_root(self):
+        self.another_clone(self.root, "birch-checkout")
+        self.settings('[repos]\nalder = "repo"\nbirch = "birch-checkout"\n')
+        code, out, err = self.invoke("--clone", "alder")
         self.assertEqual(code, 0, err)
-        self.assertEqual(self.common_dir(), (self.clone / ".git").resolve(), "the tree belongs to the clone the settings name")
+        self.assert_cut_from(self.clone)
         self.assertEqual(out, f"worktree {self.tree.resolve()} on feat/new off origin/main {rev(self.tree)[:7]} for a implementer\n")
 
-    def test_an_absolute_clone_outside_the_workspace_is_used_as_given(self):
+    def test_an_absolute_entry_outside_the_workspace_is_used_as_given(self):
         with tempfile.TemporaryDirectory() as elsewhere:
             outside = self.another_clone(Path(elsewhere), "ext")
-            self.settings(f'[workers]\nclone = "{outside}"\n')
-            code, out, err = self.invoke()
+            self.settings(f'[repos]\next = "{outside}"\n')
+            code, out, err = self.invoke("--clone", "ext")
             self.assertEqual(code, 0, err)
-            self.assertEqual(self.common_dir(), (outside / ".git").resolve())
+            self.assert_cut_from(outside)
 
     def test_the_file_the_settings_line_names_is_the_one_read(self):
         self.another_clone(self.root, "decoy")
-        self.settings('[workers]\nclone = "decoy"\n')  # what a hardcoded `chief-of-stuff.toml` would read
+        self.settings('[repos]\nalder = "decoy"\n')  # what a hardcoded `chief-of-stuff.toml` would read
         (self.root / "team").mkdir()
-        (self.root / "team" / "prefs.toml").write_text('[workers]\nclone = "repo"\n')
+        (self.root / "team" / "prefs.toml").write_text('[repos]\nalder = "repo"\n')
         (self.root / "CLAUDE.md").write_text(CLAUDE + "- Settings: `team/prefs.toml`\n")
+        code, out, err = self.invoke("--clone", "alder")
+        self.assertEqual(code, 0, err)
+        self.assert_cut_from(self.clone)
+
+    def test_a_padded_entry_is_used_stripped(self):
+        self.settings('[repos]\nalder = "  repo  "\n')
+        code, out, err = self.invoke("--clone", "alder")
+        self.assertEqual(code, 0, err)
+        self.assert_cut_from(self.clone)
+
+    def test_a_name_wins_over_a_directory_of_the_same_name_in_the_current_directory(self):
+        self.another_clone(self.root, "other")
+        self.settings('[repos]\nrepo = "other"\n')  # `repo` is also a directory under the root
+        self.chdir(self.root)
+        code, out, err = self.invoke("--clone", "repo")
+        self.assertEqual(code, 0, err)
+        self.assert_cut_from(self.root / "other")
+
+    def test_one_entry_is_used_when_clone_is_omitted(self):
+        self.settings('[repos]\nalder = "repo"\n')
         code, out, err = self.invoke()
         self.assertEqual(code, 0, err)
-        self.assertEqual(self.common_dir(), (self.clone / ".git").resolve())
+        self.assert_cut_from(self.clone)
+        self.assertEqual(out, f"worktree {self.tree.resolve()} on feat/new off origin/main {rev(self.tree)[:7]} for a implementer\n")
 
-    def test_a_padded_value_is_used_stripped(self):
-        self.settings('[workers]\nclone = "  repo  "\n')
-        code, out, err = self.invoke()
+    def test_stderr_says_which_entry_it_used_on_one_line_and_stdout_stays_the_report(self):
+        alder = self.another_clone(self.root, "alder-checkout")
+        self.settings('[repos]\nalder = "alder-checkout"\n')
+        for how, tail in (("a name", ("--clone", "alder")), ("the only entry", ())):
+            with self.subTest(how):
+                code, out, err = self.invoke(*tail)
+                self.assertEqual(code, 0, err)
+                self.assertEqual(len(err.splitlines()), 1, err)
+                self.assertIn("[repos] alder", err)
+                self.assertIn("alder-checkout", err, "the notice carries the configured path, not a description of it")
+                self.assertNotIn("[repos]", out, "stdout is the line the next call reads")
+                self.remove_tree(alder)
+
+    def test_a_name_is_looked_up_in_the_table_and_a_path_is_not(self):
+        # A path is not a name, so the table does not touch it: no notice, and the repository is the one the flag names.
+        self.another_clone(self.root, "other")
+        self.settings('[repos]\nalder = "other"\n')
+        code, out, err = self.run_main()
         self.assertEqual(code, 0, err)
-        self.assertEqual(self.common_dir(), (self.clone / ".git").resolve())
+        self.assertEqual(err, "", "nothing came from the settings, so nothing says so")
+        self.assert_cut_from(self.clone)
 
-    def test_stderr_says_which_settings_entry_it_used_on_one_line_and_stdout_stays_the_report(self):
-        self.another_clone(self.root, "alder-checkout")
-        self.settings('[workers]\nclone = "alder-checkout"\n')
-        code, out, err = self.invoke()
+    def test_an_unknown_name_is_a_path_relative_to_the_current_directory(self):
+        self.settings('[repos]\nalder = "elsewhere"\n')
+        self.chdir(self.root)
+        code, out, err = self.invoke("--clone", "repo")
         self.assertEqual(code, 0, err)
-        self.assertEqual(len(err.splitlines()), 1, err)
-        self.assertIn("[workers] clone", err)
-        self.assertIn("alder-checkout", err, "the notice carries the configured value, not a description of it")
-        self.assertNotIn("[workers] clone", out, "stdout is the line the next call reads")
+        self.assertEqual(err, "")
+        self.assert_cut_from(self.clone)
 
-    def test_a_given_clone_is_used_whatever_the_settings_say(self):
+    def test_a_given_path_works_whatever_state_the_settings_are_in(self):
         self.another_clone(self.root, "other")  # a valid, existing repository the settings could win with
-        for toml in ('[workers]\nclone = "elsewhere"\n', '[workers]\nclone = "other"\n', '[workers]\nclone = 3\n', "not toml [",
-                     '[workers]\nclone = ""\n'):
+        for toml in ('[repos]\nalder = "elsewhere"\n', '[repos]\nalder = "other"\n', '[repos]\nalder = 3\n', "not toml [",
+                     '[repos]\nalder = ""\n', '[repos]\nalder = "re\\u0000po"\n', "repos = 3\n", '[workers]\nclone = "other"\n'):
             with self.subTest(toml=toml):
                 self.settings(toml)
                 code, out, err = self.run_main()
                 self.assertEqual(code, 0, err)
                 self.assertEqual(err, "", "nothing came from the settings, so nothing says so")
-                self.assertEqual(self.common_dir(), (self.clone / ".git").resolve(), "the flag's repository, not the settings'")
-                make_repo.git(["worktree", "remove", "--force", str(self.tree)], self.clone)
-                make_repo.git(["branch", "-D", "feat/new"], self.clone)
+                self.assert_cut_from(self.clone)
+                self.remove_tree()
+        # No settings file, no `Settings:` line, a file that is not UTF-8.
+        self.settings("")
+        (self.root / "chief-of-stuff.toml").unlink()
+        (self.root / "CLAUDE.md").write_text(CLAUDE)
+        for prepare in (lambda: None, lambda: (self.root / "CLAUDE.md").write_text(CLAUDE + "- Settings: `chief-of-stuff.toml`\n"),
+                        lambda: (self.root / "chief-of-stuff.toml").write_bytes(b"\xff\xfe[repos]\n")):
+            prepare()
+            code, out, err = self.run_main()
+            self.assertEqual(code, 0, err)
+            self.assertEqual(err, "")
+            self.remove_tree()
 
-    def test_an_omitted_clone_the_settings_do_not_name_is_refused_naming_both_ways_to_give_it(self):
+    def test_a_given_path_works_when_the_settings_cannot_be_read(self):
+        if os.geteuid() == 0:
+            self.skipTest("root reads a mode-000 file; the unreadable case cannot be made")
+        self.settings('[repos]\nalder = "repo"\n')
+        path = self.root / "chief-of-stuff.toml"
+        path.chmod(0)
+        self.addCleanup(path.chmod, 0o600)
+        code, out, err = self.run_main()
+        self.assertEqual(code, 0, err)
+        self.assert_cut_from(self.clone)
+
+    def test_no_entries_with_clone_omitted_is_refused_naming_the_flag_and_the_table(self):
         for name, toml, line in (
             ("no Settings line", "", ""),
             ("a Settings line with no file", None, "- Settings: `chief-of-stuff.toml`\n"),
-            ("no [workers] table", '[pages]\nworkers = 2\n', "- Settings: `chief-of-stuff.toml`\n"),
-            ("no clone key", '[workers]\nmode = "one-shot"\n', "- Settings: `chief-of-stuff.toml`\n"),
+            ("no [repos] table", '[workers]\nmode = "one-shot"\n', "- Settings: `chief-of-stuff.toml`\n"),
+            ("an empty [repos] table", "[repos]\n", "- Settings: `chief-of-stuff.toml`\n"),
+            ("a leftover [workers] clone", '[workers]\nclone = "repo"\n', "- Settings: `chief-of-stuff.toml`\n"),
         ):
             with self.subTest(name):
                 self.settings(toml or "", line)
@@ -701,22 +773,33 @@ class SettingsCloneTest(CloneCase):
                     (self.root / "chief-of-stuff.toml").unlink()
                 code, out, err = self.invoke()
                 self.assert_refused_with_nothing_made(code, out, err)
-                self.assertIn("pass --clone <repo>", err)
-                self.assertIn("set [workers] clone", err)
+                self.assertIn("--clone", err)
+                self.assertIn("[repos]", err)
 
-    def test_invalid_settings_with_no_clone_given_are_a_refusal_not_a_traceback(self):
-        for toml, about in (('[workers]\nclone = 3\n', "[workers] clone must be a path"), ('[workers]\nclone = " "\n', "[workers] clone must be a path"),
-                            ('[workers]\nclone = "re\\u0000po"\n', "[workers] clone must be a path"), ("not toml [", "chief-of-stuff.toml")):
+    def test_several_entries_with_clone_omitted_is_refused_listing_the_names_sorted(self):
+        self.another_clone(self.root, "alder-checkout")
+        self.settings('[repos]\nbirch = "repo"\nalder = "alder-checkout"\ncedar = "repo"\n')
+        code, out, err = self.invoke()
+        self.assert_refused_with_nothing_made(code, out, err)
+        self.assertIn("--clone <name>", err)
+        names = [err.index(name) for name in ("alder", "birch", "cedar")]
+        self.assertEqual(names, sorted(names), f"the names are listed sorted: {err}")
+        self.assertNotIn("alder-checkout", err, "the names, not the paths they stand for")
+
+    def test_invalid_settings_with_clone_omitted_are_a_refusal_not_a_traceback(self):
+        for toml, about in (('[repos]\nalder = 3\n', "[repos] alder must be a path"), ('[repos]\nalder = " "\n', "[repos] alder must be a path"),
+                            ('[repos]\nalder = "re\\u0000po"\n', "[repos] alder must be a path"), ("repos = 3\n", "[repos] must be a table"),
+                            ("not toml [", "chief-of-stuff.toml")):
             with self.subTest(toml=toml):
                 self.settings(toml)
                 code, out, err = self.invoke()
                 self.assert_refused_with_nothing_made(code, out, err)
                 self.assertIn(about, err)
 
-    def test_settings_that_cannot_be_read_are_a_refusal_not_a_traceback(self):
+    def test_settings_that_cannot_be_read_with_clone_omitted_are_a_refusal_not_a_traceback(self):
         if os.geteuid() == 0:
             self.skipTest("root reads a mode-000 file; the unreadable case cannot be made")
-        self.settings('[workers]\nclone = "repo"\n')
+        self.settings('[repos]\nalder = "repo"\n')
         path = self.root / "chief-of-stuff.toml"
         path.chmod(0)
         self.addCleanup(path.chmod, 0o600)
@@ -724,17 +807,18 @@ class SettingsCloneTest(CloneCase):
         self.assert_refused_with_nothing_made(code, out, err)
         self.assertIn("cannot be read", err)
 
-    def test_settings_that_are_not_utf8_are_a_refusal_not_a_traceback(self):
+    def test_settings_that_are_not_utf8_with_clone_omitted_are_a_refusal_not_a_traceback(self):
         self.settings("")
-        (self.root / "chief-of-stuff.toml").write_bytes(b"\xff\xfe[workers]\n")
+        (self.root / "chief-of-stuff.toml").write_bytes(b"\xff\xfe[repos]\n")
         code, out, err = self.invoke()
         self.assert_refused_with_nothing_made(code, out, err)
 
-    def test_a_clone_that_is_not_a_directory_is_refused_naming_it_for_the_settings_and_the_flag(self):
-        self.settings('[workers]\nclone = "no-such-clone"\n')
+    def test_a_clone_that_is_not_a_directory_is_refused_naming_it_for_every_route(self):
+        self.settings('[repos]\nalder = "no-such-clone"\n')
         (self.root / "a-file").write_text("not a repository\n")
-        for how, tail, named in (("the settings", (), "no-such-clone"), ("--clone", ("--clone", str(self.root / "gone")), "gone"),
-                                 ("--clone at a file", ("--clone", str(self.root / "a-file")), "a-file")):
+        for how, tail, named in (("the only entry", (), "no-such-clone"), ("a name", ("--clone", "alder"), "no-such-clone"),
+                                 ("a path", ("--clone", str(self.root / "gone")), "gone"),
+                                 ("a path at a file", ("--clone", str(self.root / "a-file")), "a-file")):
             with self.subTest(how):
                 code, out, err = self.invoke(*tail)
                 self.assert_refused_with_nothing_made(code, out, err)
@@ -742,8 +826,8 @@ class SettingsCloneTest(CloneCase):
                 self.assertIn("not a directory", err)
                 self.assertNotIn("branch name", err, "the branch is fine; the repository is what is missing")
 
-    def test_an_empty_clone_is_refused_rather_than_falling_back_to_the_settings(self):
-        self.settings('[workers]\nclone = "repo"\n')
+    def test_an_empty_clone_is_refused_rather_than_falling_back_to_the_only_entry(self):
+        self.settings('[repos]\nalder = "repo"\n')
         code, out, err = self.invoke("--clone", "")
         self.assert_refused_with_nothing_made(code, out, err)
         self.assertIn("empty", err)
