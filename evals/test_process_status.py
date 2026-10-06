@@ -82,10 +82,7 @@ def blocks(text: str) -> tuple[list[dict], list[dict]]:
     at = next((i for i, line in enumerate(lines) if line.startswith("one_shot")), len(lines))
     head, tail = "\n".join(lines[:at]).strip(), "\n".join(lines[at:]).strip()
     rows, runs = (toon_decode(head) if head not in ("", "[]") else []), (toon_decode(tail)["one_shot"] if tail else [])
-    # Until the rows print as a block of their own: one-shot rows still in the first block, marked `kind`, are read as the
-    # block, so a test about a task or a tree name fails on that and the shape tests alone fail on the shape.
-    marked = [{k: v for k, v in row.items() if k != "kind"} for row in rows if row.get("kind") == "one-shot"]
-    return [row for row in rows if row.get("kind") != "one-shot"], runs or marked
+    return rows, runs
 
 
 class OneShotRunsTests(unittest.TestCase):
