@@ -21,7 +21,7 @@
   "graders": [
     {
       "name": "Fix report writer launched in the background",
-      "rule": "Give each launch its own Bash call with `run_in_background: true`; never chain launches with `;` or `&&`, never pipe a launch, and never start one without the flag.",
+      "rule": "Give each launch its own Bash call with `run_in_background: true`; never chain launches with `;` or `&&`, never pipe a launch, and never start one without the flag. Add no `| head`, `| tail` or `| cut` to a launch: its whole output is read from the notification's output file.",
       "type": "tool_used",
       "tool": "Bash",
       "input_match": "\\A(?=.*\"run_in_background\": true).*?\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:spawn_session\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worker)\\b(?!(?:(?![;|]|&(?!\\d)|\\\\n)(?:[^\"\\\\]|\\\\.))*--check)(?=(?:(?![;|]|&(?!\\d)|\\\\n)(?:[^\"\\\\]|\\\\.))*--dry-run)(?:(?![;|]|&(?!\\d)|\\\\n)(?:[^\"\\\\]|\\\\.))*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix report writer\\b(?!(?:(?![;|]|&(?!\\d)|\\\\n)(?:[^\"\\\\]|\\\\.))*\\|)",
@@ -29,7 +29,7 @@
     },
     {
       "name": "Fix export header launched in the background",
-      "rule": "Give each launch its own Bash call with `run_in_background: true`; never chain launches with `;` or `&&`, never pipe a launch, and never start one without the flag.",
+      "rule": "Give each launch its own Bash call with `run_in_background: true`; never chain launches with `;` or `&&`, never pipe a launch, and never start one without the flag. Add no `| head`, `| tail` or `| cut` to a launch: its whole output is read from the notification's output file.",
       "type": "tool_used",
       "tool": "Bash",
       "input_match": "\\A(?=.*\"run_in_background\": true).*?\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:spawn_session\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worker)\\b(?!(?:(?![;|]|&(?!\\d)|\\\\n)(?:[^\"\\\\]|\\\\.))*--check)(?=(?:(?![;|]|&(?!\\d)|\\\\n)(?:[^\"\\\\]|\\\\.))*--dry-run)(?:(?![;|]|&(?!\\d)|\\\\n)(?:[^\"\\\\]|\\\\.))*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix export header\\b(?!(?:(?![;|]|&(?!\\d)|\\\\n)(?:[^\"\\\\]|\\\\.))*\\|)",
@@ -37,7 +37,7 @@
     },
     {
       "name": "no single command launches two tasks",
-      "rule": "Give each launch its own Bash call with `run_in_background: true`; never chain launches with `;` or `&&`, never pipe a launch, and never start one without the flag.",
+      "rule": "Give each launch its own Bash call with `run_in_background: true`; never chain launches with `;` or `&&`, never pipe a launch, and never start one without the flag. Add no `| head`, `| tail` or `| cut` to a launch: its whole output is read from the notification's output file.",
       "type": "tool_used",
       "tool": "Bash",
       "input_match": "\"command\": \"(?!(?:[^\"\\\\]|\\\\.)*--check)(?:[^\"\\\\]|\\\\.)*?(?:spawn_session\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worker)\\b(?:[^\"\\\\]|\\\\.)*?(?:--task[=\\s]+\\$?\\\\?[\"\\']?Fix upload handler\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Add upload limits\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Fix upload handler\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix report writer\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Fix upload handler\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix export header\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Add upload limits\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix upload handler\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Add upload limits\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix report writer\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Add upload limits\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix export header\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Fix report writer\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix upload handler\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Fix report writer\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Add upload limits\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Fix report writer\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix export header\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Fix export header\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix upload handler\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Fix export header\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Add upload limits\\b|--task[=\\s]+\\$?\\\\?[\"\\']?Fix export header\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"\\']?Fix report writer\\b)",

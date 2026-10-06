@@ -597,7 +597,8 @@ class CaseLintTest(unittest.TestCase):
         # holds back an overlapping task quotes LAUNCH. Both are pinned verbatim in test_dispatch_prompt's one-shot lint.
         self.assertEqual({g["rule"] for g in (report, export, single)}, {report["rule"]})
         self.assertEqual(report["rule"], "Give each launch its own Bash call with `run_in_background: true`; never chain launches with `;` or `&&`, "
-                                          "never pipe a launch, and never start one without the flag.")
+                                          "never pipe a launch, and never start one without the flag. "
+                                          "Add no `| head`, `| tail` or `| cut` to a launch: its whole output is read from the notification's output file.")
         self.assertIn("overlap no running task", limits["rule"])
         self.assertIn("launch the earlier row first and the other when it returns", limits["rule"])
 
