@@ -27,6 +27,7 @@ PIDFILE = Path(".chief-of-stuff") / "one-shot.pid"
 # The pid file and the tree's name are a worker's to write, so `processes` prints neither raw: a task only when a tracker
 # holds it, at most this many characters; a tree name only when it is `[A-Za-z0-9._-]`. The readers below return them raw.
 TASK_MAX = 200
+TREE_NAME = re.compile(r"[A-Za-z0-9._-]+")
 
 
 def registrations(root: Path) -> dict[int, dict[str, str]]:
@@ -160,7 +161,7 @@ def main(argv: list[str] | None = None) -> int:
             print("one-shot tasks not shown: the tracker could not be read", file=sys.stderr)
             known = set()
         rows += [{"pid": pid, "task": task[:TASK_MAX] if task in known else "",
-                  "worktree": tree.name if re.fullmatch(r"[A-Za-z0-9._-]+", tree.name) else "", "status": "running",
+                  "worktree": tree.name if TREE_NAME.fullmatch(tree.name) else "", "status": "running",
                   "kind": "one-shot"} for tree, pid, task in runs]
     print(toon_encode(rows) if rows else "[]")
     return 0
