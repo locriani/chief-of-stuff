@@ -96,14 +96,6 @@ def parse_resume(text: str) -> dict[str, str]:
 RESUME_STRIP = ("as of", "in flight", "next", "waiting on", "re-arm", "verified")
 
 
-def _clip(value: str, cap: int) -> str:
-    """Cut on a word boundary and say so. A clipped line that does not admit it is just a wrong line."""
-    if len(value) <= cap:
-        return value
-    head = value[:cap].rsplit(" ", 1)[0].rstrip(" ,;·—–-")
-    return f"{head or value[:cap]} …"
-
-
 def resume_fields(block: dict[str, str]) -> list[str]:
     """The fields that will be drawn, in reading order. The renderer and the summary line share it.
 
