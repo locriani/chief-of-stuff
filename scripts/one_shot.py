@@ -9,6 +9,7 @@ import os
 import re
 import shlex
 import subprocess
+import tempfile
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -221,13 +222,30 @@ def update_tracker(path: Path, task: str, name: str, owner: str, status: str, re
     tracker_write.edit(path, change)
 
 
+def launcher_copy(root: Path, cwd: Path) -> Path:
+    return root / dispatch_prompt.REPORTS_DIR / f"{cwd.name}.toon"
+
+
+def _replace_into(path: Path, text: str) -> None:
+    """Write beside `path` and rename over it: a link planted at `path` is replaced, never followed."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(text)
+        os.replace(name, path)
+    finally:
+        Path(name).unlink(missing_ok=True)
+
+
 def write_report(root: Path, cwd: Path, report: dict) -> None:
-    """The report in the tree, for the worker's record, and the launcher's own copy that `result` reads."""
+    """The launcher's own copy, which `result` reads, then the worker's in the tree; the tree is the worker's, so a failure there costs nothing."""
     text = toon_encode(report) + "\n"
-    copy = root / dispatch_prompt.REPORTS_DIR / f"{cwd.name}.toon"
-    copy.parent.mkdir(parents=True, exist_ok=True)
-    for path in (cwd / REPORT, copy):
-        path.write_text(text)
+    _replace_into(launcher_copy(root, cwd), text)
+    try:
+        _replace_into(cwd / REPORT, text)
+    except OSError:
+        pass
 
 
 def reconcile(root: Path, day: str, task: str, name: str, cwd: Path, exit_code: int,
@@ -347,6 +365,8 @@ def _launch(root: Path, cfg, chosen_day: str, task: str, cwd: Path, name: str, r
     except Exception:
         written.unlink(missing_ok=True)
         raise
+    # An earlier run's copy must not read as this run's if the launcher dies before reconciling.
+    launcher_copy(root, cwd).unlink(missing_ok=True)
     env = clean_env()
     env["CHIEF_OF_STUFF_WORKSPACE"] = str(root.resolve())
     try:
