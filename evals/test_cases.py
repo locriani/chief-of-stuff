@@ -586,6 +586,41 @@ class CaseLintTest(unittest.TestCase):
             with self.subTest(gitdir=gitdir):
                 self.assertEqual(re.search(belongs["pattern"], gitdir, re.MULTILINE) is not None, owned)
 
+    def test_disjoint_one_shot_graders_enforce_the_launch_together_sentence(self) -> None:
+        """#365: the three launch graders quote the one sentence the agent file must carry (see
+        test_agent_rules_launch_non_overlapping_one_shot_tasks_together for its exact text), and the fourth quotes the
+        sentence that already stands. The harness flattens tool calls, so the case cannot tell two launches in one assistant
+        message from two in consecutive ones, and a dry run returns at once, so it cannot show a launch not waiting on a
+        running worker. It shows the launch of both disjoint tasks in one run, and the overlapping one held back."""
+        agent_text = (EVALS.parent / "agents" / "chief-of-stuff.md").read_text()
+        alpha, beta, follow_up, rows = spec(EVALS / "cases" / "one-shot-disjoint-tasks-launch-together")["graders"][:4]
+        rule = ("Launch every ready one-shot task whose File ownership paths overlap no other running or ready task at once, "
+                "in the same turn, each as its own launcher call; a read-only task overlaps nothing; run overlapping tasks one after the other.")
+        for g in (alpha, beta, follow_up):
+            self.assertEqual(g["rule"], rule, g["name"])
+        for g in (alpha, beta, follow_up, rows):
+            self.assertIn(g["rule"], agent_text, g["name"])
+        self.assertEqual([(g["type"], g["tool"], g.get("min"), g.get("max")) for g in (alpha, beta, follow_up)],
+                         [("tool_used", "Bash", 1, None), ("tool_used", "Bash", 1, None), ("tool_used", "Bash", None, 0)])
+
+        def hit(g: dict, command: str) -> bool:
+            said = "chief-of-stuff worker --task 'Alpha fix' --dry-run; Beta fix; Alpha follow-up"  # the model's prose decides nothing
+            return re.search(g["input_match"], json.dumps({"command": command, "description": said})) is not None
+
+        # A launch names its task after `--task`, quoted either way, and `--dry-run` as the prompt asks.
+        # Cannot see: a task text held in a shell variable, or built from pieces.
+        for g, task in ((alpha, "Alpha fix"), (beta, "Beta fix")):
+            for command in (f"chief-of-stuff worker --root . --task '{task}' --dry-run", f'chief-of-stuff worker --task "{task}" --dry-run',
+                            f"python3 /r/chief_of_stuff.py worker --dry-run --task={task}", f"python3 /r/scripts/spawn_session.py --task '{task}' --dry-run"):
+                self.assertTrue(hit(g, command), command)
+            for command in (f"chief-of-stuff worker --task '{task}'", "chief-of-stuff worker --task 'Alpha follow-up' --dry-run",
+                            f"chief-of-stuff worktree --name x; echo {task}", f"cat daily/tracker.md # --task '{task}' --dry-run"):
+                self.assertFalse(hit(g, command), command)
+        self.assertFalse(hit(alpha, "chief-of-stuff worker --task 'Beta fix' --dry-run"))
+        for command in ("chief-of-stuff worker --task 'Alpha follow-up'", 'chief-of-stuff worker --task "Alpha follow-up" --dry-run'):
+            self.assertTrue(hit(follow_up, command), command)
+        self.assertFalse(hit(follow_up, "chief-of-stuff worker --task 'Alpha fix' --dry-run"))
+
     def test_one_shot_in_flight_graders_enforce_sentences_the_agent_carries(self) -> None:
         """#53: a running one-shot is neither launched again (the readiness sentence) nor looked up with `ps`/`pgrep`, and is looked up with
         `processes`: both of those are the helper sentence, which sends liveness to the helper instead of `ps`/`pgrep`. Every grader quotes a

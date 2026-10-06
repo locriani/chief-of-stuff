@@ -1,0 +1,64 @@
+{
+  "tz": "America/Chicago",
+  "repo": {
+    "clone": "repo",
+    "trees": "trees",
+    "worktrees": [],
+    "files": {
+      "src/a/upload.py": "def upload(request):\n    return open(request.get('path'), 'wb')\n",
+      "src/a/__init__.py": "",
+      "src/b/report.py": "def report(rows):\n    return '\\n'.join(rows)\n",
+      "src/b/__init__.py": "",
+      "tests/a/.keep": "",
+      "tests/b/.keep": ""
+    }
+  },
+  "description": "Three ready one-shot tasks: Alpha fix and Beta fix own disjoint paths, Alpha follow-up owns a file inside Alpha fix's. The coordinator launches both disjoint tasks in this one turn, each as its own launcher call, and holds the overlapping one back until Alpha fix has returned. Observable: the launcher calls the agent issues, with --dry-run. Not observable: the harness flattens tool calls, so it cannot tell two calls in one assistant message from two in consecutive ones, and a dry run returns at once, so it cannot show the agent not waiting on a running worker. What it can show is that the agent, which today launches one task and stops, now launches both disjoint tasks in one run and still holds the overlapping one.",
+  "prompt": "Start the ready tasks. For this isolated test, use --dry-run for every worker launch and do not start a real worker process.",
+  "graders": [
+    {
+      "name": "Alpha fix launched",
+      "rule": "Launch every ready one-shot task whose File ownership paths overlap no other running or ready task at once, in the same turn, each as its own launcher call; a read-only task overlaps nothing; run overlapping tasks one after the other.",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:spawn_session\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worker)\\b(?=(?:[^\"\\\\]|\\\\.)*--dry-run)(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"']?Alpha fix\\b",
+      "min": 1
+    },
+    {
+      "name": "Beta fix launched too, without waiting for Alpha fix to return",
+      "rule": "Launch every ready one-shot task whose File ownership paths overlap no other running or ready task at once, in the same turn, each as its own launcher call; a read-only task overlaps nothing; run overlapping tasks one after the other.",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:spawn_session\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worker)\\b(?=(?:[^\"\\\\]|\\\\.)*--dry-run)(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"']?Beta fix\\b",
+      "min": 1
+    },
+    {
+      "name": "the overlapping task is not started while Alpha fix runs",
+      "rule": "Launch every ready one-shot task whose File ownership paths overlap no other running or ready task at once, in the same turn, each as its own launcher call; a read-only task overlaps nothing; run overlapping tasks one after the other.",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:spawn_session\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worker)\\b(?:[^\"\\\\]|\\\\.)*?--task[=\\s]+\\$?\\\\?[\"']?Alpha follow-up\\b",
+      "max": 0
+    },
+    {
+      "name": "the launcher writes the rows, not the coordinator",
+      "rule": "Write none of these yourself, before or during the run; it changes the row again when it returns.",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?s)\\A(?=.*\\| Alpha fix \\| unassigned \\| open \\|)(?=.*\\| Beta fix \\| unassigned \\| open \\|)(?=.*\\| Alpha follow-up \\| unassigned \\| open \\|)"
+    },
+    {
+      "name": "no routine approval question",
+      "type": "regex",
+      "pattern": "(?i)(?:should I|shall I|may I|can I|want me to|approve|confirm)[^\\n]*\\?",
+      "match": "absent"
+    },
+    {
+      "name": "configuration unchanged",
+      "type": "file_unchanged",
+      "path": "chief-of-stuff.toml"
+    }
+  ],
+  "max_turns": 40,
+  "timeout_seconds": 900
+}

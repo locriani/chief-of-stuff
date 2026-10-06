@@ -1257,6 +1257,27 @@ class DecisionDeadlineTest(unittest.TestCase):
         self.assertIn("deadline: <name> YYYY-MM-DD HH:MM", rules)
         self.assertIn("deadline: <name> HH:MM", rules)
 
+    def test_agent_rules_launch_non_overlapping_one_shot_tasks_together(self) -> None:
+        # #365, the user: "I literally intend for you to be a COORDINATOR of PARALLEL work, so why serialize?" In the one-shot
+        # paragraph, replace "Run tasks sequentially in the foreground and do not retry a held or failed task without resolving
+        # its blocker." and "Reconcile the report, sync the issue's Kanban state and report progress before selecting the next
+        # ready task." with these two sentences, each exactly:
+        #   "Launch every ready one-shot task whose File ownership paths overlap no other running or ready task at once, in the same turn, each as its own launcher call; a read-only task overlaps nothing; run overlapping tasks one after the other."
+        #   "Reconcile, sync the issue's Kanban state and report each task as it returns, before using its result; do not retry a held or failed task without resolving its blocker."
+        # and replace "Do not dispatch a standing placeholder or more than one task this way." with
+        #   "Do not dispatch a standing placeholder this way; a launcher call starts exactly one task."
+        rules = (Path(__file__).resolve().parents[1] / "agents/chief-of-stuff.md").read_text()
+        self.assertNotIn("Run tasks sequentially in the foreground", rules)
+        self.assertNotIn("more than one task this way", rules)
+        self.assertNotIn("before selecting the next ready task", rules)
+        for required in (
+            "Launch every ready one-shot task whose File ownership paths overlap no other running or ready task at once, in the same turn, each as its own launcher call; a read-only task overlaps nothing; run overlapping tasks one after the other.",
+            "Reconcile, sync the issue's Kanban state and report each task as it returns, before using its result; do not retry a held or failed task without resolving its blocker.",
+            "Do not dispatch a standing placeholder this way; a launcher call starts exactly one task.",
+        ):
+            with self.subTest(required=required):
+                self.assertTrue(required in rules, f"the agent file does not say {required!r}")
+
     def test_agent_rules_say_a_workflow_step_and_a_state_change_take_no_issue(self) -> None:
         # #362, the user's rule: "you are NOT to file new issues for things that are part of the workflow (e.g. reviewing a mr)"
         # and "my rule about not creating issues to track moving issues between states". The Tasks `issue` sentences must carry,

@@ -836,5 +836,112 @@ class RunTest(unittest.TestCase):
         self.assertEqual(got, one_shot.backlog.GitHubBacklog("team/app"))
 
 
+# #365: several launches at once. Each launch is its own process, so these start real processes that wait at a gate (a file)
+# and go together, instead of threads in one interpreter that share its import lock.
+LAUNCHERS = 6
+SCRIPTS = str(Path(__file__).resolve().parents[1] / "scripts")
+
+
+def _tracker_for(n: int) -> str:
+    rows = "".join(f"| Task {i} | unassigned | open | 09:00 | | Inspect {i} |\n" for i in range(n))
+    owned = "".join(f"| Task {i} | `src/m{i}/` |\n" for i in range(n))
+    return ("# Tracker\n\n## Tasks\n\n| item | owner | state | since | due | checklist |\n|---|---|---|---|---|---|\n" + rows +
+            "\n## File ownership\n\n| context | paths |\n|---|---|\n" + owned + "\n## Log\n\n- 09:00 opened\n")
+
+
+def _gate(path: Path, seconds: float = 30) -> str:
+    """Python run in each child: wait until `path` exists, so the children start their writes together."""
+    return (f"import time, pathlib\nend = time.monotonic() + {seconds}\n"
+            f"while not pathlib.Path({str(path)!r}).exists():\n    assert time.monotonic() < end, 'gate never opened'\n    time.sleep(0.001)\n")
+
+
+def _start_together(codes: list[str], gate: Path) -> list[subprocess.Popen]:
+    procs = [subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for code in codes]
+    time.sleep(0.5)  # every child is started and spinning at the gate
+    gate.write_text("go")
+    return procs
+
+
+class ConcurrentLaunchTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        (self.root / "daily").mkdir()
+        (self.root / "trees").mkdir()
+        self.gate = self.root / "go"
+
+    def _finish(self, procs: list[subprocess.Popen]) -> list[tuple[int, str]]:
+        done = []
+        for p in procs:
+            _, err = p.communicate(timeout=60)
+            done.append((p.returncode, err))
+        return done
+
+    def test_simultaneous_launches_lose_no_row_no_worktree_and_no_started_line(self):
+        # The guard issue #365 asks for: the launcher's tracker writes (started line, owner and state, File ownership worktree)
+        # from six launches at the same instant on one tracker. Green when written: the writes share one lock; this keeps them so.
+        tracker = self.root / "daily/2026-09-18-tracker.md"
+        tracker.write_text(_tracker_for(LAUNCHERS))
+        codes = [_gate(self.gate) + f"import sys\nfrom pathlib import Path\nsys.path.insert(0, {SCRIPTS!r})\nimport one_shot\n"
+                 f"one_shot.record_launch(Path({str(tracker)!r}), 'Task {i}', 'worker{i}', "
+                 f"'worktree `tree{i}` (branch{i})', 'codex', 'm{i}', '10:0{i}')\n" for i in range(LAUNCHERS)]
+        results = self._finish(_start_together(codes, self.gate))
+        self.assertEqual([code for code, _ in results], [0] * LAUNCHERS, [err for _, err in results])
+        text = tracker.read_text()
+        for i in range(LAUNCHERS):
+            with self.subTest(task=i):
+                self.assertIn(f"| Task {i} | worker{i} | running 10:0{i} |", text)
+                self.assertIn(f"| Task {i} | `src/m{i}/`; worktree `tree{i}` (branch{i}) |\n", text)
+                started = one_shot.started_line(f"10:0{i}", f"worker{i}", "codex", f"m{i}", f"worktree `tree{i}` (branch{i})", f"Task {i}")
+                self.assertEqual(text.count(started + "\n"), 1, started)
+        self.assertEqual(len(re.findall(r"(?m)^- 10:0\d one-shot worker\d started: ", text)), LAUNCHERS)
+        self.assertEqual(text.count("\n## Log\n"), 1)
+        self.assertNotIn("unassigned", text)
+        self.assertEqual(list((self.root / "daily").glob(".*")), [], "a temporary tracker copy was left behind")
+
+    def test_a_slot_cap_holds_when_launches_claim_at_once(self):
+        # `slot` claims under a lock on the Worktrees dir: with a cap of 3, six simultaneous launches get exactly 3 slots and
+        # three refusals, never more. Winners hold their slot until all six have answered.
+        trees, cap = self.root / "trees", 3
+        answered = self.root / "answered"
+        answered.mkdir()
+        codes = []
+        for i in range(LAUNCHERS):
+            tree = trees / f"w{i}"
+            tree.mkdir()
+            codes.append(_gate(self.gate) + f"import sys, time\nfrom pathlib import Path\nsys.path.insert(0, {SCRIPTS!r})\nimport one_shot\n"
+                         f"answered = Path({str(answered)!r})\n"
+                         f"def wait():\n    end = time.monotonic() + 30\n"
+                         f"    while len(list(answered.iterdir())) < {LAUNCHERS}:\n        assert time.monotonic() < end\n        time.sleep(0.001)\n"
+                         f"try:\n    with one_shot.slot(Path({str(trees)!r}), Path({str(tree)!r}), 'Task {i}', {cap}):\n"
+                         f"        (answered / 'in{i}').write_text('')\n        wait()\n"
+                         f"except ValueError:\n    (answered / 'refused{i}').write_text('')\n    sys.exit(3)\n")
+        results = self._finish(_start_together(codes, self.gate))
+        self.assertEqual(sorted(code for code, _ in results), [0] * cap + [3] * (LAUNCHERS - cap), [err for _, err in results])
+
+    def test_simultaneous_launches_each_get_a_slot_of_their_own(self):
+        # With room for all six, each claims its own tree's pid file at once: six distinct slots, six distinct pids.
+        trees = self.root / "trees"
+        held = self.root / "held"
+        held.mkdir()
+        codes = []
+        for i in range(LAUNCHERS):
+            tree = trees / f"w{i}"
+            tree.mkdir()
+            codes.append(_gate(self.gate) + f"import sys, time\nfrom pathlib import Path\nsys.path.insert(0, {SCRIPTS!r})\nimport one_shot\n"
+                         f"held = Path({str(held)!r})\ntree = Path({str(tree)!r})\n"
+                         f"with one_shot.slot(Path({str(trees)!r}), tree, 'Task {i}', {LAUNCHERS}):\n"
+                         f"    (held / 'w{i}').write_text((tree / one_shot.PIDFILE).read_text())\n"
+                         f"    end = time.monotonic() + 30\n"
+                         f"    while len(list(held.iterdir())) < {LAUNCHERS}:\n        assert time.monotonic() < end\n        time.sleep(0.001)\n")
+        results = self._finish(_start_together(codes, self.gate))
+        self.assertEqual([code for code, _ in results], [0] * LAUNCHERS, [err for _, err in results])
+        claims = {f.name: f.read_text().split(maxsplit=1) for f in held.iterdir()}
+        self.assertEqual(sorted(claims), [f"w{i}" for i in range(LAUNCHERS)])
+        self.assertEqual(len({pid for pid, _ in claims.values()}), LAUNCHERS)
+        self.assertEqual({name: task.strip() for name, (_, task) in claims.items()}, {f"w{i}": f"Task {i}" for i in range(LAUNCHERS)})
+
+
 if __name__ == "__main__":
     unittest.main()
