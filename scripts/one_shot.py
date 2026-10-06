@@ -29,7 +29,7 @@ from settings import load as load_settings
 from shell_setup import clean_env, login_argv, resolve
 
 RESULT = Path(dispatch_prompt.RESULT_FILE)
-REPORT = Path(dispatch_prompt.PROMPT_DIR) / "one-shot-report.toon"
+REPORT = Path(dispatch_prompt.REPORT_FILE)
 NO_COMMITS = "No new commits detected"
 BOOTSTRAP = ("Read {dispatch} first. It is your entire one-shot assignment. Work in {cwd}. "
              "Finish in this invocation and write the requested TOON result before exiting.")
@@ -250,7 +250,7 @@ def reconcile(root: Path, day: str, task: str, name: str, cwd: Path, exit_code: 
     if row is None or row.owner.strip().lower() != name.lower() or row.kind != "running":
         report = {"status": "human_review", "task": task, "worker": name, "runtime_exit": exit_code,
                   "reason": "task row changed during the one-shot run; reconcile it manually",
-                  "changes": summary, "errors": ["tracker: task row changed; no issue or tracker update was made"]}
+                  "changes": summary, "errors": [f"{dispatch_prompt.TRACKER_ERROR} task row changed; no issue or tracker update was made"]}
         (cwd / REPORT).write_text(toon_encode(report) + "\n")
         return report
     ref = backlog.issue_ref(row.issue, cfg.backlog) if row and row.issue.strip() else None
@@ -273,7 +273,7 @@ def reconcile(root: Path, day: str, task: str, name: str, cwd: Path, exit_code: 
         update_tracker(path, task, name, cfg.user, status, reason, summary,
                        tracker_write.stamp(cfg.zone))
     except (OSError, ValueError) as exc:
-        errors.append(f"tracker: {exc}")
+        errors.append(f"{dispatch_prompt.TRACKER_ERROR} {exc}")
     report = {"status": status, "task": task, "worker": name, "runtime_exit": exit_code,
               "reason": reason, "changes": summary, "errors": errors}
     (cwd / REPORT).write_text(toon_encode(report) + "\n")

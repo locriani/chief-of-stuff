@@ -55,6 +55,9 @@ STOP_FILE = f"{PROMPT_DIR}/stop.md"
 DISPATCH_FILE = f"{PROMPT_DIR}/dispatch.md"
 # A one-shot worker's last word; the launcher reconciles the row from it.
 RESULT_FILE = f"{PROMPT_DIR}/worker-result.toon"
+# What the launcher leaves for the coordinator, and the prefix of its error for a tracker it could not update.
+REPORT_FILE = f"{PROMPT_DIR}/one-shot-report.toon"
+TRACKER_ERROR = "tracker:"
 # Use the installed inbox script, not a workspace path.
 INBOX_SCRIPT = Path(__file__).resolve().parent / "inbox.py"
 # Antigravity uses the mailbox for session messages.

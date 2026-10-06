@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+from collections.abc import Container
 from datetime import datetime, timedelta
 
 import runtimes
@@ -83,20 +84,35 @@ def one_shot_runs(trees: Path) -> list[tuple[Path, int, str]]:
     return found
 
 
-def known_tasks(root: Path) -> set[str]:
-    """The item and the name of each row in the Tasks table of today's and yesterday's tracker (a run can outlive
-    midnight); empty when neither file exists. Raises OSError, ConfigError, ValueError or KeyError when the config, the
-    zone or a file that is there cannot be read."""
-    cfg = read_config(root)
-    today = datetime.now(cfg.zone).date()
-    tasks: set[str] = set()
-    for day in (today, today - timedelta(days=1)):
-        try:
-            text = (root / cfg.tracker_path(day.isoformat())).read_text()
-        except FileNotFoundError:
-            continue
-        tasks |= {s.strip() for t in parse_tracker(text).tasks for s in (t.item, t.name)}
-    return tasks
+def tracker_texts(root: Path) -> list[str]:
+    """Today's and yesterday's tracker (a run can outlive midnight), each one that exists. When the config, the zone or a
+    file that is there cannot be read: one stderr line, and none."""
+    try:
+        cfg = read_config(root)
+        today = datetime.now(cfg.zone).date()
+        texts = []
+        for day in (today, today - timedelta(days=1)):
+            try:
+                texts.append((root / cfg.tracker_path(day.isoformat())).read_text())
+            except FileNotFoundError:
+                continue
+        return texts
+    except (OSError, ConfigError, ValueError, KeyError):
+        print("one-shot tasks not shown: the tracker could not be read", file=sys.stderr)
+        return []
+
+
+def known_tasks(texts: list[str]) -> set[str]:
+    """The item and the name of each row in the Tasks table of these trackers: what a worker's task may be printed as."""
+    return {s.strip() for text in texts for t in parse_tracker(text).tasks for s in (t.item, t.name)} - {""}
+
+
+def shown_task(task: str, known: Container[str]) -> str:
+    return task[:TASK_MAX] if task in known else ""
+
+
+def shown_tree(name: str) -> str:
+    return name if TREE_NAME.fullmatch(name) else ""
 
 
 def running_trees(trees: Path) -> dict[Path, str]:
@@ -155,13 +171,8 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, UnicodeDecodeError):  # no CLAUDE.md, or one that cannot be decoded: no trees dir to look in
             print("one-shot runs not checked: CLAUDE.md could not be read", file=sys.stderr)
             runs = []
-        try:
-            known = known_tasks(args.root) if runs else set()  # printed: a task only when a tracker holds it
-        except (OSError, ConfigError, ValueError, KeyError):
-            print("one-shot tasks not shown: the tracker could not be read", file=sys.stderr)
-            known = set()
-        rows += [{"pid": pid, "task": task[:TASK_MAX] if task in known else "",
-                  "worktree": tree.name if TREE_NAME.fullmatch(tree.name) else "", "status": "running",
+        known = known_tasks(tracker_texts(args.root)) if runs else set()  # printed: a task only when a tracker holds it
+        rows += [{"pid": pid, "task": shown_task(task, known), "worktree": shown_tree(tree.name), "status": "running",
                   "kind": "one-shot"} for tree, pid, task in runs]
     print(toon_encode(rows) if rows else "[]")
     return 0
