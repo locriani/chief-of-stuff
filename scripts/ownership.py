@@ -53,15 +53,15 @@ def read_only(paths: str) -> bool:
 
 def _paths(cell: str) -> list[str]:
     """The paths a cell owns: its backticked tokens, or its comma-separated words when it has none; the launcher's
-    `; worktree ...` suffix is no part of it, and a read-only cell owns none. Segment-wise: no `./`, no trailing `/`."""
+    `; worktree ...` suffix is no part of it, and a read-only cell owns none. Segment-wise: no `./`, no trailing `/`; `.` is the whole repository."""
     cell = cell.split("; worktree", 1)[0]
     if read_only(cell):
         return []
     tokens = re.findall(r"`([^`]+)`", cell) or cell.split(",")
-    return [p for p in (t.strip().removeprefix("./").rstrip("/") for t in tokens) if p]
+    return [p for p in (t.strip().rstrip("/").removeprefix("./") for t in tokens) if p]
 
 
 def overlaps(a: str, b: str) -> bool:
-    """One path of `a` equals, contains or is contained in one of `b` (`src/a/` and `src/a/x.py` do; `src/a` and `src/ab` do not).
+    """One path of `a` equals, contains or is contained in one of `b` (`src/a/` and `src/a/x.py` do; `src/a` and `src/ab` do not); `.` contains every path.
     ponytail: a glob character is read as part of the name, so `src/*.py` overlaps only a path spelled that way; match globs when a tracker writes them."""
-    return any(x == y or x.startswith(y + "/") or y.startswith(x + "/") for x in _paths(a) for y in _paths(b))
+    return any("." in (x, y) or x == y or x.startswith(y + "/") or y.startswith(x + "/") for x in _paths(a) for y in _paths(b))
