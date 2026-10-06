@@ -213,7 +213,7 @@ class Build(unittest.TestCase):
 
     def test_an_open_or_undrafted_change_still_draws_at_its_own_stage(self) -> None:
         # The Cut the release task's change (!48) is open, not merged: no forge answer yet, so it stays put.
-        cols, _ = self.cols()
+        cols = self.cols()
         card = card_named(cols, "Cut the release")
         self.assertEqual(next(col.name for col in cols if card in col.cards), "review")
 

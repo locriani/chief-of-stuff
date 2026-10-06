@@ -4,10 +4,10 @@ Coordinator: coordinator. Board: board-known.
 
 ## Tasks
 
-| item | owner | state | since | due | checklist |
-|---|---|---|---|---|---|
-| Security audit | coordinator | open | 09:00 |  | Checklist: Security audit of the upload endpoint |
-| Draft release notes | Robin | open | 09:00 |  | Checklist: Draft release notes |
+| name | item | owner | state | since | due | size | lane | stage | issue | checklist |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Security audit | Security audit | coordinator | open | 09:00 |  | S | build | review |  | Checklist: Security audit of the upload endpoint |
+| Draft release notes | Draft release notes | Robin | open | 09:00 |  | S | build | implement |  | Checklist: Draft release notes |
 
 ## Decisions
 

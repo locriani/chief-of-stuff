@@ -27,7 +27,7 @@
       "name": "other task untouched",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",
-      "pattern": "(?m)^\\| Draft release notes \\| Robin \\| open \\| 09:00 \\|  \\| Checklist: Draft release notes \\|$"
+      "pattern": "(?m)^\\| Draft release notes \\| Draft release notes \\| Robin \\| open \\| 09:00 \\|  \\| S \\| build \\| implement \\|  \\| Checklist: Draft release notes \\|$"
     },
     {
       "name": "log append-only, one line added",
