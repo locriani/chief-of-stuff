@@ -83,6 +83,8 @@ class Workers:
     mode: str = "interactive"
     # #100: one-shots running at once across every session in the workspace; None is no cap.
     max_concurrency: int | None = None
+    # #54: the repository `chief-of-stuff worktree` cuts from when `--clone` is omitted; relative to the workspace root.
+    clone: str | None = None
 
 
 @dataclass(frozen=True)
@@ -207,7 +209,10 @@ def _workers(table) -> Workers:
     cap = table.get("max_concurrency")
     if cap is not None and (type(cap) is not int or cap < 1):
         raise SettingsError("[workers] max_concurrency must be a positive whole number")
-    return Workers(launcher=launcher, mode=mode, max_concurrency=cap)
+    clone = table.get("clone")
+    if clone is not None and (not isinstance(clone, str) or not clone.strip()):
+        raise SettingsError("[workers] clone must be a path")
+    return Workers(launcher=launcher, mode=mode, max_concurrency=cap, clone=clone)
 
 
 def _pages(table) -> Pages:
