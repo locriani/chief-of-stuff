@@ -21,7 +21,7 @@ from md import cells as _cells, is_separator as _is_separator, section as _secti
 from tracker import clip_name, parse_tracker  # noqa: E402
 from workspace import ConfigError, parse_coordinator, read_config, worktrees_dir  # noqa: E402
 from dispatch_prompt import PROMPT_DIR, STOP_FILE  # noqa: E402
-from backlog import CLOSED, GITHUB, WORKFLOW, Backlog, BacklogError, GitHubBacklog, file_with, home_of, issue_ref, issue_states  # noqa: E402
+from backlog import CLOSED, GITHUB, Backlog, BacklogError, GitHubBacklog, file_with, home_of, issue_ref, issue_states  # noqa: E402
 import backlog  # noqa: E402
 from settings import Kanban, SettingsError, load as load_settings  # noqa: E402
 import board_sources  # noqa: E402
@@ -152,11 +152,9 @@ def issue_faults(tasks, home: Backlog | GitHubBacklog, gh=None, lanes: dict | No
     refs = {}
     faults: list[IssueFault] = []
     for task in tasks:
-        if task.standing:
+        if task.standing or task.workflow:
             continue
         cell = task.issue.strip()
-        if cell == WORKFLOW:
-            continue
         ref = issue_ref(cell, home) if cell else None
         name = clip_name(task.label)
         if not cell:
