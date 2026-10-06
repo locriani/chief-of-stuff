@@ -10,6 +10,7 @@ import re
 from dataclasses import dataclass
 from datetime import date, datetime
 
+from backlog_ref import WORKFLOW
 from clock import DATE, HHMM, RAN, hhmm as _hhmm
 from md import cells as _cells, is_separator as _is_separator, section as _section, split_row as _split_row, unmark as _unmark
 from workspace import Config
@@ -73,6 +74,11 @@ class Task:
             return parts[1]
         m = RAN.match(parts[1])
         return m.group(2) if m else None
+
+    @property
+    def workflow(self) -> bool:
+        """A step the pipeline performs: its issue cell holds the token, so it has no issue to file or look up."""
+        return self.issue.strip() == WORKFLOW
 
     @property
     def standing(self) -> bool:
@@ -447,7 +453,7 @@ def launcher(tasks):
             items[item] = (i, t)
         if name := t.name.strip():
             names[name + ":"] = (i, t)  # a launch text naming its task before ":" (#204)
-        if issue := t.issue.strip():
+        if (issue := t.issue.strip()) and not t.workflow:
             if REF.fullmatch(issue):
                 refs[issue] = (i, t)
             else:

@@ -22,7 +22,7 @@ from urllib.parse import urlencode, urlsplit
 # The `Backlog:` line's model lives in backlog_ref.py, which loads no HTTP client. It is imported here as well,
 # so `backlog.Backlog`, `backlog.issue_ref` and the rest still name it.
 from backlog_ref import (  # noqa: F401
-    GITHUB, Backlog, BacklogError, GitHubBacklog, IssueRef, backlog_from_config, file_with, home_of, issue_ref,
+    GITHUB, WORKFLOW, Backlog, BacklogError, GitHubBacklog, IssueRef, backlog_from_config, file_with, home_of, issue_ref,
     parse_backlog, parse_issue_arg,
 )
 

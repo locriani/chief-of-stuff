@@ -312,7 +312,7 @@ def render(tracker_text: str, cfg: Config, now: datetime, lanes: dict | None = N
     unowned = [task for task in active if task.kind == "orphaned"]
     running = [task for task in active if task.kind == "running"]
 
-    issues = sum(1 for t in tasks if t.issue.strip())
+    issues = sum(1 for t in tasks if t.issue.strip() and not t.workflow)
     changes = sum(1 for c in sources.changes.values() if c.state == "open")
     workers = worker_names(sources)
     # A task's stage for drift/hold purposes, computed once, keyed by the task: every nameless task shares the blank name.

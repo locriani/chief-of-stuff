@@ -152,7 +152,7 @@ def issue_faults(tasks, home: Backlog | GitHubBacklog, gh=None, lanes: dict | No
     refs = {}
     faults: list[IssueFault] = []
     for task in tasks:
-        if task.standing:
+        if task.standing or task.workflow:
             continue
         cell = task.issue.strip()
         ref = issue_ref(cell, home) if cell else None

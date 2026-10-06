@@ -1305,6 +1305,70 @@ class IssueAuditTest(unittest.TestCase):
         self.assertEqual(gh.calls, [])
 
 
+class WorkflowStepAuditTest(unittest.TestCase):
+    """#362, the user's rule: "you are NOT to file new issues for things that are part of the workflow (e.g. reviewing a mr)".
+    An `issue` cell of exactly `workflow` marks a step the pipeline performs: no issue fault in any state. A blank cell and
+    any other text that is not an issue still fault."""
+
+    TRACKER = """# Tracker 2026-09-17
+
+## Tasks
+
+| name | item | owner | state | since | due | size | issue | checklist |
+|---|---|---|---|---|---|---|---|---|
+| Open step | Review the open merge request | robin | open | 09:00 |  | S | workflow | c |
+| Waiting step | Review the second merge request | robin | waiting | 09:00 |  | S | workflow | c |
+| Done step | Review the third merge request | robin | done 09:00–10:00 | 09:00 |  | S | workflow | c |
+| Blank | Unfiled task | robin | open | 09:00 |  | S |  | c |
+| Prose | Garbled task | robin | open | 09:00 |  | S | review it | c |
+
+## Log
+
+- 09:00 opened the day
+"""
+
+    def test_only_a_blank_or_a_non_issue_cell_faults(self):
+        tmp, root = issue_workspace(tracker=self.TRACKER)
+        self.addCleanup(tmp.cleanup)
+        gh = FakeGh(LIVE)
+        report = al.audit(root, "2026-09-17", gh=gh)
+        self.assertEqual([str(f) for f in report.issues], [
+            "issue: Blank — no issue; file it with chief-of-stuff backlog --create",
+            'issue: Prose — "review it" is not an issue reference',
+        ])
+        self.assertEqual(gh.calls, [], "a workflow row is never looked up on the forge")
+
+    def test_a_workflow_row_is_never_reported_in_any_state(self):
+        # Open, waiting and done alike: no issue fault of any kind is reported for a workflow row.
+        tmp, root = issue_workspace(tracker=self.TRACKER)
+        self.addCleanup(tmp.cleanup)
+        report = al.audit(root, "2026-09-17", gh=FakeGh(LIVE))
+        text = "\n".join(report.lines)
+        for name in ("Open step", "Waiting step", "Done step"):
+            with self.subTest(name=name):
+                self.assertNotIn(f"issue: {name}", text)
+
+
+    def test_the_token_is_exactly_workflow_once_its_whitespace_is_stripped(self):
+        # #366 review R1: only the exact word exempts. Any other casing, punctuation, plural or extra word is not an issue.
+        table = "\n".join(f"| {n} | Item {n} | robin | open | 09:00 |  | S | {cell} | c |" for n, cell in (
+            ("Padded", "  workflow  "), ("Capital", "Workflow"), ("Upper", "WORKFLOW"), ("Dotted", "workflow."),
+            ("Plural", "workflows"), ("Phrase", "my workflow")))
+        tracker = self.TRACKER.split("| Open step")[0] + table + "\n\n## Log\n\n- 09:00 opened the day\n"
+        tmp, root = issue_workspace(tracker=tracker)
+        self.addCleanup(tmp.cleanup)
+        gh = FakeGh(LIVE)
+        report = al.audit(root, "2026-09-17", gh=gh)
+        self.assertEqual([str(f) for f in report.issues], [
+            'issue: Capital — "Workflow" is not an issue reference',
+            'issue: Upper — "WORKFLOW" is not an issue reference',
+            'issue: Dotted — "workflow." is not an issue reference',
+            'issue: Plural — "workflows" is not an issue reference',
+            'issue: Phrase — "my workflow" is not an issue reference',
+        ])
+        self.assertEqual(gh.calls, [], "the padded workflow row is never looked up on the forge")
+
+
 class IssueClosesAtLaneEndTest(unittest.TestCase):
     """A done row mid-lane is one stage of its issue's work; the issue closes when its card reaches the lane's end."""
 

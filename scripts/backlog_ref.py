@@ -174,6 +174,7 @@ class IssueRef:
         return f"#{self.number}" if at_home else f"{self.repo}#{self.number}"
 
 
+WORKFLOW = "workflow"  # an `issue` cell naming a step the pipeline performs: no issue, never looked up
 _REF_SHORT = re.compile(r"^([\w.-]+/[\w.-]+)?#(\d+)$")
 _REF_URL = re.compile(r"^https://github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)/?$")
 _REF_GITLAB = re.compile(r"^https://([\w.-]+)/((?:[\w.-]+/)+[\w.-]+)/-/(?:issues|work_items)/(\d+)/?$")

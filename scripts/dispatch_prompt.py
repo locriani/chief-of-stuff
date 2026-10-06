@@ -326,8 +326,8 @@ def compose(root: Path, day: str | None, task: str, worktree: Path | None = None
         if not cell:
             raise RefusedError(
                 f"task {rows[0].item.strip()!r} names no issue; file one with {file_with(cfg.backlog)} and write its number in the issue column")
-        issue = issue_ref(cell, cfg.backlog)
-        if not issue:
+        issue = None if rows[0].workflow else issue_ref(cell, cfg.backlog)
+        if not issue and not rows[0].workflow:
             raise RefusedError(f'task {rows[0].item.strip()!r} has "{_clean("the issue cell", cell)}" in its issue column, which is not an issue reference')
     # Workers read the tracker from a different cwd, so its path must be absolute.
     item = _clean("the Tasks item", rows[0].item.strip())

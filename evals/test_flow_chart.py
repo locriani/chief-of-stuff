@@ -807,6 +807,38 @@ class LaunchNamesItsRowTest(unittest.TestCase):
         self.assertEqual(task.item, "Confirm the deploy is clean")
 
 
+WORKFLOW_ROWS_TRACKER = """# Tracker
+
+## Tasks
+
+| name | item | owner | state | since | due | size | lane | stage | issue | checklist |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Fix the parser | Patch the parser | w1 | running 00:10 | 2026-09-26 |  | S | build | triage | #8 | c |
+| Review MR 14 | Look over the change | w2 | running 00:20 | 2026-09-26 |  | S | build | review | workflow | c |
+| Review MR 15 | Look over the other change | w3 | running 00:30 | 2026-09-26 |  | S | build | review | workflow | c |
+"""
+
+
+class LaunchSkipsWorkflowRowsTest(unittest.TestCase):
+    """#366 review R7: `workflow` in an issue cell is a token, not a search pattern: a launch text that holds the word
+    binds to no workflow row, however late that row is in the tracker."""
+
+    def test_a_launch_that_mentions_the_word_workflow_binds_to_no_workflow_row(self):
+        tasks = rb.parse_tracker(WORKFLOW_ROWS_TRACKER).tasks
+        for text in ("Repair the CI workflow file", "Update workflows.md", "Document the release workflow"):
+            with self.subTest(text=text):
+                task, name = fc.launch_row(text, tasks)
+                self.assertIsNone(task)
+                self.assertEqual(name, text)
+
+    def test_a_launch_naming_a_real_issue_still_binds_to_its_row_not_a_later_workflow_row(self):
+        tasks = rb.parse_tracker(WORKFLOW_ROWS_TRACKER).tasks
+        for text in ("Fix #8 in the workflow config", "Fix #8: patch the parser"):
+            with self.subTest(text=text):
+                task, _ = fc.launch_row(text, tasks)
+                self.assertEqual(task.issue, "#8")
+
+
 class ManyLaunchesTest(unittest.TestCase):
     """A board over a tracker with hundreds of launches maps each to its row within seconds (#184)."""
 
