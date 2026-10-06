@@ -1,0 +1,43 @@
+{
+  "tz": "America/Chicago",
+  "repo": {
+    "clone": "alder-checkout",
+    "trees": "trees",
+    "worktrees": [],
+    "files": {
+      "src/a/upload.py": "def upload(request):\n    path = request.get('path')\n    return open(path, 'wb')\n",
+      "src/a/__init__.py": "",
+      "notes/.keep": ""
+    }
+  },
+  "description": "#54: the workspace's settings name the clone (`[workers] clone`, a directory no task or tracker line mentions). A routine one-shot dispatch cuts its worktree without `--clone`, and the coordinator reads no runtime config and runs no git to find the repository. The prompt asks for a dry-run worker launch so no worker process starts.",
+  "prompt": "Start the security audit. For this isolated test, use --dry-run for the worker launch and do not start a real worker process.",
+  "graders": [
+    {
+      "name": "the worktree is cut",
+      "rule": "The repository is the settings' `[workers] clone`; pass `--clone <repo>` only when the user names a different repository.",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:make_worktree\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worktree)\\b",
+      "min": 1
+    },
+    {
+      "name": "the worktree call carries no --clone",
+      "rule": "The repository is the settings' `[workers] clone`; pass `--clone <repo>` only when the user names a different repository.",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:make_worktree\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worktree)\\b(?:[^\"\\\\;&|]|\\\\[^nr])*?--clone\\b",
+      "max": 0
+    },
+    {
+      "name": "the repository is not looked up in git or a runtime config",
+      "rule": "The repository is the settings' `[workers] clone`; pass `--clone <repo>` only when the user names a different repository.",
+      "type": "tool_used",
+      "tool": "Bash|Read|Grep|Glob",
+      "input_match": "(?<![\\w./-])git\\s(?:[^\"\\\\;&|]|\\\\[^nr])*?(?:rev-parse|--git-common-dir)|\\.codex|\\.cursor|\\.claude\\.json|config\\.toml",
+      "max": 0
+    }
+  ],
+  "max_turns": 22,
+  "timeout_seconds": 600
+}

@@ -443,6 +443,55 @@ class CaseLintTest(unittest.TestCase):
                 if lines:
                     self.assertIn("verified", rb.resume_fields(rb.parse_resume(text)), f"{case.name}: {f.name}: Verified parsed but not drawn")
 
+    def test_worktree_clone_graders_enforce_a_sentence_the_agent_carries(self) -> None:
+        """#54: all three graders quote the one sentence that sends the coordinator to the settings for the repository, and each
+        one reads the call, not the reply: a `worktree` call, one with `--clone` in it, and a git or runtime-config lookup."""
+        rule = "The repository is the settings' `[workers] clone`; pass `--clone <repo>` only when the user names a different repository."
+        agent_text = (EVALS.parent / "agents" / "chief-of-stuff.md").read_text()
+        s = spec(EVALS / "cases" / "worktree-clone-comes-from-settings")
+        self.assertNotIn("golden", s)
+        self.assertEqual(s["repo"]["clone"], "alder-checkout")
+        self.assertIn("alder-checkout", (EVALS / "cases" / "worktree-clone-comes-from-settings" / "fixture" / "chief-of-stuff.toml").read_text())
+        cut, clone, lookup = s["graders"]
+        for g in (cut, clone, lookup):
+            self.assertEqual(g["rule"], rule, g["name"])
+            self.assertIn(g["rule"], agent_text, g["name"])
+        self.assertEqual([(g["type"], g.get("min"), g.get("max")) for g in (cut, clone, lookup)],
+                         [("tool_used", 1, None), ("tool_used", None, 0), ("tool_used", None, 0)])
+
+        def hits(g: dict, tool: str, **tool_input) -> bool:
+            return bool(re.fullmatch(g["tool"], tool) and re.search(g["input_match"], json.dumps(tool_input)))
+
+        worktree = "chief-of-stuff worktree --type implementer --name audit --branch feat/audit --root ."
+        for command, cuts, carries in (
+            (worktree, True, False),
+            (f"{worktree} --clone alder-checkout", True, True),
+            (f'python3 "$PLUGIN/scripts/make_worktree.py" --type implementer --name a --branch b --root . --clone x', True, True),
+            (f"{worktree} && chief-of-stuff worker --type implementer --cwd trees/audit --clone-not-a-flag-here", True, False),
+            ("chief-of-stuff worker --type implementer --cwd trees/audit --task 'Security audit'", False, False),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(hits(cut, "Bash", command=command), cuts)
+                self.assertEqual(hits(clone, "Bash", command=command), carries)
+        for tool, tool_input in (
+            ("Bash", {"command": "git -C alder-checkout rev-parse --git-common-dir"}),
+            ("Bash", {"command": "cd trees/old && git rev-parse --path-format=absolute --git-common-dir"}),
+            ("Read", {"file_path": "/home/robin/.codex/config.toml"}),
+            ("Grep", {"pattern": "clone", "path": "/home/robin/.cursor"}),
+            ("Read", {"file_path": "/home/robin/.claude.json"}),
+            ("Bash", {"command": "cat ~/.codex/config.toml"}),
+        ):
+            with self.subTest(tool=tool, tool_input=tool_input):
+                self.assertTrue(hits(lookup, tool, **tool_input))
+        for tool, tool_input in (
+            ("Read", {"file_path": "chief-of-stuff.toml"}),
+            ("Read", {"file_path": "daily/2026-01-02-tracker.md"}),
+            ("Bash", {"command": f"{worktree}"}),
+            ("Bash", {"command": "chief-of-stuff worker --type implementer --cwd trees/audit --task 'Security audit' --dry-run"}),
+        ):
+            with self.subTest(tool=tool, tool_input=tool_input):
+                self.assertFalse(hits(lookup, tool, **tool_input))
+
     def test_one_shot_in_flight_graders_enforce_sentences_the_agent_carries(self) -> None:
         """#53: a running one-shot is neither launched again (the readiness sentence) nor looked up with `ps`/`pgrep`, and is looked up with
         `processes`: both of those are the helper sentence, which sends liveness to the helper instead of `ps`/`pgrep`. Every grader quotes a

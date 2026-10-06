@@ -1,0 +1,3 @@
+[workers]
+mode = "one-shot"
+clone = "alder-checkout"
