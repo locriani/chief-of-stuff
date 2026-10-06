@@ -31,6 +31,7 @@ from workspace import (Config, ConfigError, daily_trackers, read_config,  # noqa
 import board_sources  # noqa: E402
 import columns  # noqa: E402
 import decision_page  # noqa: E402
+from decision_page import write_if_changed  # noqa: E402
 from fragment import FONTS, TAB_CSS, tab_bar  # noqa: E402
 import flow_chart  # noqa: E402
 import panels  # noqa: E402
@@ -604,6 +605,7 @@ h2+.meta{{display:inline-block}}
 .session-row{{display:flex;gap:12px;align-items:baseline;font-size:13px;padding:2px 0}}.session-name{{font-weight:500}}.session-state{{color:var(--muted);font-size:12px}}.session-doing{{color:var(--muted);font-size:12px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
 @media (max-width:420px){{body{{padding:12px 12px 36px}}}}
 </style>
+<body>
 <div class="board" data-rendered-at="{_iso(now)}" data-tz="{_esc(cfg.tz)}" data-deadline="{_iso(nearest.at)}" data-deadline-name="{_esc(nearest.name)}">
 {tab_bar("Board", sum(d is not None for _, d, _, _ in pending))}<div class="header">{panels.header(head)}</div>
 {panels.tiles(tiles)}
@@ -620,15 +622,9 @@ h2+.meta{{display:inline-block}}
     root.querySelector('.panels-left').textContent=sign+Math.floor(s/3600)+'h'+pad(Math.floor(s/60)%60)+'m'+pad(s%60)+'s';
   }}
   tick();setInterval(tick,1000);
-  // Served by pages.py: reload when the file behind this address changes (a re-render, or a new day's board).
-  // A hidden tab's timers are throttled, so coming back to the tab checks at once.
-  if(location.protocol==='http:'){{var seen=Date.parse(document.lastModified);var poll=function(){{
-    fetch(location.pathname,{{method:'HEAD',cache:'no-store'}}).then(function(r){{
-      var t=Date.parse(r.headers.get('Last-Modified'));if(t&&t!==seen)location.reload();
-    }}).catch(function(){{}});
-  }};setInterval(poll,5000);document.onvisibilitychange=poll;}}
 }})();
 </script>
+</body>
 """
 
 
@@ -641,7 +637,8 @@ def write(root: Path, day: str | None = None) -> tuple[Path, Config, datetime, s
     if not (root / "CLAUDE.md").is_file():
         raise ConfigError(f"no CLAUDE.md at {root}")
     cfg = read_config(root)
-    now = datetime.now(cfg.zone).replace(microsecond=0)
+    # To the minute: the board's bytes then change only when something shown does, not with every render (#330).
+    now = datetime.now(cfg.zone).replace(second=0, microsecond=0)
     day = day or now.date().isoformat()
     try:
         tracker_day = date.fromisoformat(day)
@@ -670,7 +667,7 @@ def write(root: Path, day: str | None = None) -> tuple[Path, Config, datetime, s
                   sources=board_sources.load(out.parent), answered=len(decision_rows(tracker_text)),
                   tracker_at=datetime.fromtimestamp(tracker.stat().st_mtime, cfg.zone), stage_log=stage_log,
                   slots=settings.workers.max_concurrency or 1, log_text=log_text)
-    out.write_text(page)
+    write_if_changed(out, page)
     return out, cfg, now, tracker_text, req_texts
 
 

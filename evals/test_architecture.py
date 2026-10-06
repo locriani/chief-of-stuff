@@ -9,6 +9,7 @@ PreToolUse hook loaded the board, the page server and the forge cache to read on
 from __future__ import annotations
 
 import ast
+import re
 import subprocess
 import sys
 import tempfile
@@ -19,7 +20,10 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
 
 PAGES = frozenset({"render_board", "decision_page", "issue_page", "source_page", "workers_page", "pages",
-                   "flow_chart", "gantt", "panels", "columns", "fragment", "module_graph"})
+                   "flow_chart", "gantt", "panels", "columns", "fragment", "module_graph", "page_reload"})
+
+# The leaf page modules: each imports at most fragment (the shared escaping), so a chart or the reload check lifts out with it.
+LEAVES = ("fragment", "gantt", "columns", "panels", "page_reload")
 
 # Every script module that draws nothing. A new one belongs here unless it renders a page.
 DRAWS_NOTHING = (
@@ -114,6 +118,11 @@ class DependencyRuleTest(unittest.TestCase):
         scripts = {p.stem for p in SCRIPTS.glob("*.py")}
         self.assertEqual(sorted(scripts - PAGES - set(DRAWS_NOTHING)), [])
 
+    def test_a_module_that_emits_markup_is_a_page_module(self) -> None:
+        # page_reload holds a <script> that draws a notice; listed as drawing nothing, its probe passes for want of imports.
+        drawing = [n for n in DRAWS_NOTHING if re.search(r"<(script|div|p|body)\b", (SCRIPTS / f"{n}.py").read_text(encoding="utf-8"))]
+        self.assertEqual(drawing, [])
+
     def test_a_module_that_draws_nothing_imports_no_page(self) -> None:
         for name in DRAWS_NOTHING:
             with self.subTest(module=name):
@@ -121,6 +130,19 @@ class DependencyRuleTest(unittest.TestCase):
                                       capture_output=True, text=True, timeout=60)
                 self.assertEqual(proc.returncode, 0, proc.stderr)
                 self.assertEqual(proc.stdout.split(), [], f"{name} loads page modules")
+
+    def test_a_leaf_page_module_imports_nothing_but_the_shared_fragment(self) -> None:
+        # page_reload moved into PAGES, which only says it draws; this says what it may reach. Any import, at the top or in a function.
+        graph = import_graph(SCRIPTS)
+        for name in LEAVES:
+            with self.subTest(module=name):
+                self.assertEqual(sorted(graph[name] - {"fragment"}), [], f"{name} imports a plugin module beyond fragment")
+
+    def test_the_leaf_check_sees_an_import_in_a_leaf(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "leaf.py").write_text("def f():\n    import backlog\n", encoding="utf-8")
+            Path(tmp, "backlog.py").write_text("", encoding="utf-8")
+            self.assertEqual(sorted(import_graph(Path(tmp))["leaf"] - {"fragment"}), ["backlog"])
 
     def test_the_hook_loads_no_http_client(self) -> None:
         proc = subprocess.run([sys.executable, "-c", PROBE.format(name="board_guard"), str(SCRIPTS), *HTTP],

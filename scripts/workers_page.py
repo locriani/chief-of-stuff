@@ -14,7 +14,7 @@ from pathlib import Path
 
 import board_sources
 import panels
-from decision_page import HEAD, context, pending_count
+from decision_page import HEAD, context, pending_count, write_if_changed
 from fragment import tab_bar
 from md import section as _section
 from tracker import TRAILING_NUMBER, launcher, parse_tracker
@@ -118,5 +118,5 @@ def write(root: Path, pages_dir: Path) -> Path:
                   root / worktrees_dir(claude_md), load_settings(root, cfg.settings_path).workers.max_concurrency,
                   pending_count(pages_dir, context(root, now.date().isoformat())))
     out = pages_dir / "workers.html"
-    out.write_text(page)
+    write_if_changed(out, page)
     return out

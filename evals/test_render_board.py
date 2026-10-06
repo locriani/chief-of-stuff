@@ -581,10 +581,12 @@ class CliTest(unittest.TestCase):
             out = rb.main(["--date", "2026-09-16", "--root", str(root)])
         self.assertEqual(out, root / "pages" / "2026-09-16-board.html")
         page = out.read_text()
-        self.assertIn("Last-Modified", page)
-        # The baseline is the served page itself, so a render between load and the first poll still reloads.
-        self.assertIn("document.lastModified", page)
-        self.assertIn("visibilitychange", page)
+        # The reload check is injected by pages.py at serve time (one shared snippet, #330), not rendered into the file.
+        for poll in ("fetch(location.pathname", "Last-Modified", "document.lastModified", "visibilitychange"):
+            self.assertNotIn(poll, page)
+        # The serve-time injection lands before the last `</body>`; a board without one is served with the snippet appended.
+        self.assertIn("<body", page)
+        self.assertIn("</body>", page)
         self.assertFalse((root / "pages" / ".pid").exists())
         self.assertNotIn("http://127.0.0.1", buf.getvalue())
 

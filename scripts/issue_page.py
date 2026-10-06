@@ -17,7 +17,7 @@ from pathlib import Path
 import board_sources
 import flow_chart
 import tracker_log
-from decision_page import HEAD, _md, _section, context, pending_count, span
+from decision_page import HEAD, _md, _section, context, pending_count, span, write_if_changed
 from fragment import href, tab_bar
 from module_graph import section as _graph
 from clock import dur as _dur
@@ -309,7 +309,7 @@ def put(out: Path, page: str | None) -> Path | None:
         out.unlink(missing_ok=True)
         return None
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(page)
+    write_if_changed(out, page)
     return out
 
 
