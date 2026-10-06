@@ -35,7 +35,7 @@ VERIFIED = re.compile(r"^- Verified \d{2}:\d{2}:")
 SESSION_KEYS = {"ref", "name", "state", "started_hours_ago", "started_minutes_ago"}
 
 
-REPOS_RULE = "`<repo>` is the repository's name in the settings' `[repos]` table when the table names it, otherwise its path."
+REPOS_RULE = "`<repo>` is the repository's checkout directory; when the settings' `[repos]` table names that repository, pass the name instead."
 
 
 def grader_hits(g: dict, tool: str, **tool_input) -> bool:

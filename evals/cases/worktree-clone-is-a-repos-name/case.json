@@ -16,7 +16,7 @@
   "graders": [
     {
       "name": "a worktree call passes the project's name",
-      "rule": "`<repo>` is the repository's name in the settings' `[repos]` table when the table names it, otherwise its path.",
+      "rule": "`<repo>` is the repository's checkout directory; when the settings' `[repos]` table names that repository, pass the name instead.",
       "type": "tool_used",
       "tool": "Bash",
       "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:make_worktree\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worktree)\\b(?:[^\"\\;&|]|\\\\[^nr])*?--clone(?:\\s+|=)\\\\?[\"']?birch(?![\\w./-])",
@@ -24,7 +24,7 @@
     },
     {
       "name": "no worktree call passes any other clone value",
-      "rule": "`<repo>` is the repository's name in the settings' `[repos]` table when the table names it, otherwise its path.",
+      "rule": "`<repo>` is the repository's checkout directory; when the settings' `[repos]` table names that repository, pass the name instead.",
       "type": "tool_used",
       "tool": "Bash",
       "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:make_worktree\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worktree)\\b(?:[^\"\\;&|]|\\\\[^nr])*?--clone(?:\\s+|=)(?!\\s)(?!\\\\?[\"']?birch(?![\\w./-]))",
@@ -32,7 +32,7 @@
     },
     {
       "name": "the tree that was cut belongs to the project's repository",
-      "rule": "`<repo>` is the repository's name in the settings' `[repos]` table when the table names it, otherwise its path.",
+      "rule": "`<repo>` is the repository's checkout directory; when the settings' `[repos]` table names that repository, pass the name instead.",
       "type": "file_matches",
       "glob": "trees/*/.git",
       "pattern": "^gitdir: .*/birch-checkout/\\.git/worktrees/"
