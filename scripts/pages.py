@@ -45,6 +45,7 @@ from pathlib import Path
 from html import escape
 from urllib.parse import parse_qs, quote
 
+import page_reload
 from workspace import ConfigError, daily_trackers, pages_address, read_config
 
 SERVER = "chief-of-stuff-pages"
@@ -234,8 +235,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if stale:
             refresher.wake.set()
 
-    def _send_with_banner(self, body: bool):
-        """The last good page, with one line saying the render failed. Never a blank 500."""
+    def _send_html(self, body: bool):
+        """An HTML page with the shared reload check; with the banner set, the last good page plus one line saying the
+        render failed (never a blank 500). HEAD's length is GET's, and Last-Modified stays the file's own."""
         path = Path(self.translate_path(self.path))
         try:
             page, stamp = path.read_bytes(), path.stat().st_mtime
@@ -243,7 +245,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             page, stamp = b"<!doctype html>\n<meta charset=\"utf-8\">\n<body>\n</body>\n", 0
         note = ('<p role="alert" style="margin:0;padding:6px 16px;background:#c9533a;color:#fff;'
                 f'font:14px/1.4 system-ui,sans-serif">not re-rendered: {escape(self.banner)}</p>').encode()
-        page = re.sub(rb"<body[^>]*>", lambda m: m[0] + note, page, count=1) if b"<body" in page else note + page
+        if self.banner:
+            page = re.sub(rb"<body[^>]*>", lambda m: m[0] + note, page, count=1) if b"<body" in page else note + page
+        page = page_reload.inject(page)
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(page)))
@@ -252,9 +256,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if body:
             self.wfile.write(page)
 
+    def _is_html(self) -> bool:
+        path = Path(self.translate_path(self.path))
+        return bool(self.banner) or (path.suffix.lower() == ".html" and path.is_file())
+
     def do_GET(self):
         if self._allowed():
-            self._send_with_banner(True) if self.banner else super().do_GET()
+            self._send_html(True) if self._is_html() else super().do_GET()
 
     def do_POST(self):
         """Save the user's answer beside the decision. Only this machine's own pages may post: the Host and, when a
@@ -303,7 +311,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_HEAD(self):
         if self._allowed():
-            self._send_with_banner(False) if self.banner else super().do_HEAD()
+            self._send_html(False) if self._is_html() else super().do_HEAD()
 
     def list_directory(self, path):
         # The stdlib listing, without dotfiles (the pid file is the server's) or rendered pages (routes, not files).
