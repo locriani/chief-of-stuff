@@ -409,6 +409,21 @@ class ResultTests(unittest.TestCase):
         self.plant("export", report("Export header"))
         self.assertEqual(self.one("--task", "export")["worktree"], "export")
 
+    def test_a_report_whose_task_is_exactly_what_was_typed_wins_over_the_tasks_name_mapping(self):
+        self.tracker(("Beta", "Alpha work"), ("B", "Beta"))  # "Beta" is one row's name and another row's item
+        self.plant("alpha", report("Alpha work", worker="alpha"), mtime=1_700_020_000)  # newer, reached only through the name
+        self.plant("beta", report("Beta", worker="beta"), mtime=1_700_000_000)
+        done = self.one("--task", "Beta")
+        self.assertEqual({k: done[k] for k in ("task", "worker", "worktree")}, {"task": "Beta", "worker": "beta", "worktree": "beta"})
+
+    def test_a_name_two_tasks_rows_share_maps_to_nothing_but_one_item_named_twice_still_resolves(self):
+        self.tracker(("Dup", "Item one"), ("Dup", "Item two"), ("Same", "Item three"))
+        self.tracker(("Same", "Item three"), days_ago=1)  # the same row on both days is one item, not two
+        for stem, item in (("one", "Item one"), ("two", "Item two"), ("three", "Item three")):
+            self.plant(stem, report(item))
+        self.assertEqual(self.refused("--task", "Dup"), "no one-shot report for task 'Dup'")
+        self.assertEqual(self.one("--task", "Same")["worktree"], "three")
+
     def test_a_tracker_that_cannot_be_read_leaves_no_names_says_nothing_and_an_exact_item_still_works(self):
         self.plant("rate-limit")
         for old in (self.root / "daily").glob("*-tracker.md"):

@@ -242,6 +242,26 @@ class RunTest(unittest.TestCase):
                                "--root", str(self.root), "--task", "Security audit"], capture_output=True, text=True, check=False)
         self.assertEqual((done.returncode, done.stdout), (1, ""), done.stderr)
 
+    def test_a_launch_removes_every_copy_of_the_tasks_old_reports_whatever_tree_they_are_named_for(self):
+        # #56: a relaunch in a fresh tree leaves the first tree's copy; `result` would pick it by mtime if the run never reconciles.
+        reports = self.root / dispatch_prompt.REPORTS_DIR
+        reports.mkdir(parents=True)
+        base = {"status": "done", "worker": "earlier", "runtime_exit": 0, "reason": "r", "changes": "c", "errors": []}
+        for stem, task in (("old-tree", "Security audit"), ("other", "Search pagination")):
+            (reports / f"{stem}.toon").write_text(toon_encode({**base, "task": task}) + "\n")
+        (reports / "junk.toon").write_text("not a report: [\n")
+        seen = []
+
+        def reconcile(*args, **kwargs):
+            seen.append(sorted(p.name for p in reports.glob("*.toon")))
+            return {"status": "done", "errors": []}
+
+        fake = self._fake('status: done\nreason: r\nchanges: c\n', write_partial=False)
+        with mock.patch.object(one_shot, "reconcile", side_effect=reconcile), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self._run(fake), 0)
+        self.assertEqual(seen, [["junk.toon", "other.toon"]],
+                         "the task's copy in another tree is gone; other tasks' copies and unreadable files stay")
+
     def test_the_log_line_names_the_effort_the_worker_ran_at(self):
         # #52: the Log is the durable record of what ran; it had the model and never the effort.
         fake = self._fake('status: done\nreason: done\nchanges: checked\n', write_partial=False)
