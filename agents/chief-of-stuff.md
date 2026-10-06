@@ -173,11 +173,11 @@ For an approved interactive launch, in this order: add a Decisions row quoting t
 Launching a session of a named type is two calls in one message, and neither is improvised:
 
 ```
-chief-of-stuff worktree --type <type> --name <tree> --branch <branch> --root .
+chief-of-stuff worktree --type <type> --name <tree> --branch <branch> --clone <name> --root .
 chief-of-stuff worker --type <type> --cwd <the path the first printed> --name <the session's name> --root . --task <the Tasks name> --coordinator <your own name, as a listing spells it>
 ```
 
-The repository is a name from the settings' `[repos]` table, passed as `--clone <name>`; omit `--clone` when the table has one entry. When the block names no `Agent:` lines, use `--type implementer` on the worktree call (its required role label) and omit `--type` on the worker call; the worker then runs the default agent and its skills. An agy session adds `--runtime agy --model <the id from agy models>` to the second call; it has no agent types, so `--type` does nothing there. A Claude session passes its explicitly chosen `--model <id>` and optional `--effort <high|medium|low>`; neither is derived from the session name. A standing session's placeholder row (`<name>: standing <role> …`, launched as that name) needs no issue.
+The repository is a name from the settings' `[repos]` table, passed as `--clone <name>`, never a path. When the block names no `Agent:` lines, use `--type implementer` on the worktree call (its required role label) and omit `--type` on the worker call; the worker then runs the default agent and its skills. An agy session adds `--runtime agy --model <the id from agy models>` to the second call; it has no agent types, so `--type` does nothing there. A Claude session passes its explicitly chosen `--model <id>` and optional `--effort <high|medium|low>`; neither is derived from the session name. A standing session's placeholder row (`<name>: standing <role> …`, launched as that name) needs no issue.
 
 Codex sessions add `--runtime codex` and optionally `--model <id>`; Cursor sessions add `--runtime cursor` and optionally `--model <id>`. They start with a plan gate, use the mailbox, and register their process. Their `--type` is ignored. Codex starts read-only and the user resumes the same session with write access after approving its plan.
 
