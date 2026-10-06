@@ -17,6 +17,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import one_shot  # noqa: E402
+import process_status  # noqa: E402
 import spawn_session  # noqa: E402
 import shell_setup  # noqa: E402
 from _vendor.toon_format import decode as toon_decode  # noqa: E402
@@ -457,6 +458,11 @@ class RunTest(unittest.TestCase):
             self.assertIn("max_concurrency is 3", message)
             self.assertIn("chief-of-stuff processes", message)
 
+    def test_the_refusal_names_the_workspace_to_list_them_in_not_the_current_directory(self):
+        message = self._refusal_for(evil="Rate limit headers")
+        self.assertIn("chief-of-stuff processes --root <workspace>", message)
+        self.assertNotIn("--root .", message)
+
     def test_a_launcher_that_has_exited_holds_no_slot(self):
         self._cap(1)
         gone = subprocess.Popen([sys.executable, "-c", "pass"])
@@ -472,7 +478,7 @@ class RunTest(unittest.TestCase):
             "sys.exit(", f"Path({str(probe)!r}).write_text((root / 'one-shot.pid').read_text())\nsys.exit(", 1))
         self.assertEqual(self._run(fake), 0)
         self.assertEqual(probe.read_text(), f"{os.getpid()} Security audit\n")
-        self.assertEqual(one_shot.running_workers(self.root / "trees"), [])
+        self.assertEqual(process_status.running_trees(self.root / "trees"), {})
 
     def test_dry_run_writes_nothing(self):
         fake = self._fake('status: done\nreason: done\nchanges: changed\n')

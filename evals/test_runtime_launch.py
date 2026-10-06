@@ -222,6 +222,27 @@ class CoordinatorLaunchTest(unittest.TestCase):
             self.assertIn("worker impl01 process is pid_reused", start.check_once(self.root, release))
         self.assertEqual(Path(run.call_args_list[2].args[0][1]).name, "process_status.py")
 
+    def test_watcher_reads_what_processes_prints_for_a_live_one_shot_run_with_and_without_a_registered_worker(self):
+        # The real `processes` output, not a canned one: the watcher decodes it as one list of rows.
+        release = start.install(ROOT, self.install_dir)
+        pidfile = self.root / "trees" / "rate-limit" / ".chief-of-stuff" / "one-shot.pid"
+        pidfile.parent.mkdir(parents=True)
+        pidfile.write_text(f"{os.getpid()} Rate limit headers\n")  # this process: alive for the whole test
+        for what, register in (("one-shot alone", False), ("with a registered worker", True)):
+            with self.subTest(what):
+                if register:
+                    session_exec.register(self.root / ".chief-of-stuff" / "sessions" / "worker.json", runtime="cursor",
+                                          name="impl01", worktree="/tmp/impl01-tree", pid=os.getpid())
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out), mock.patch.object(
+                        process_status.subprocess, "run", return_value=mock.Mock(returncode=0, stdout=f" {os.getpid()} /bin/agent\n")):
+                    self.assertEqual(process_status.main(["--root", str(self.root)]), 0)
+                outputs = [mock.Mock(returncode=0, stdout="[]"),
+                           mock.Mock(returncode=0, stdout="tasks=1 trees=0 orphaned=0 stopped=0\n"),
+                           mock.Mock(returncode=0, stdout=out.getvalue())]
+                with mock.patch.object(start.subprocess, "run", side_effect=outputs):
+                    self.assertNotIn("could not be parsed", start.check_once(self.root, release))
+
     def test_cursor_launch_with_fake_cli(self):
         bin_dir = Path(self.tmp.name) / "bin"
         bin_dir.mkdir()

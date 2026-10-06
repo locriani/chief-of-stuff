@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Check worker PIDs in one call without exposing their command lines.
 
-With no PIDs, check every registered worker and list every live one-shot run. PIDs can be space or comma separated.
+With no PIDs, check every registered worker and list every live one-shot run after them in the same list, each row marked `kind: one-shot`.
+PIDs can be space or comma separated.
 """
 
 from __future__ import annotations
@@ -10,20 +11,21 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import runtimes
 from _vendor.toon_format import encode as toon_encode
-from git_trees import clean, read_regular
+from git_trees import read_regular
 from tracker import parse_tracker
-from workspace import read_config, worktrees_dir
+from workspace import ConfigError, read_config, worktrees_dir
 
 # `<launcher pid> <task>` while a one-shot runs in this tree; the count behind `[workers] max_concurrency`.
 PIDFILE = Path(".chief-of-stuff") / "one-shot.pid"
-# The pid file and the tree's name are a worker's to write, so `processes` prints neither raw: a task only when the
-# tracker holds it, a tree name escaped, each at most this many characters. The readers below return them raw.
+# The pid file and the tree's name are a worker's to write, so `processes` prints neither raw: a task only when a tracker
+# holds it, at most this many characters; a tree name only when it is `[A-Za-z0-9._-]`. The readers below return them raw.
 TASK_MAX = 200
 
 
@@ -73,7 +75,7 @@ def one_shot_runs(trees: Path) -> list[tuple[Path, int, str]]:
         try:
             data = read_regular(f, 8 * TASK_MAX, nofollow=True)
             pid, _, task = ((data or b"").decode(errors="replace").splitlines() or [""])[0].partition(" ")
-            if data is not None and pid.isascii() and pid.isdecimal() and int(pid) > 0 and process_exists(int(pid)):
+            if pid.isascii() and pid.isdecimal() and int(pid) > 0 and process_exists(int(pid)):
                 found.append((f.parent.parent, int(pid), task.strip() or f.parent.parent.name))
         except OSError:
             continue
@@ -81,23 +83,24 @@ def one_shot_runs(trees: Path) -> list[tuple[Path, int, str]]:
 
 
 def known_tasks(root: Path) -> set[str]:
-    """The item and the name of each row in today's Tasks table; empty when the workspace names no tracker, has none for
-    today, or holds one that cannot be parsed."""
-    try:
-        cfg = read_config(root)
-        text = (root / cfg.tracker_path(datetime.now(cfg.zone).date().isoformat())).read_text()
-        return {s.strip() for t in parse_tracker(text).tasks for s in (t.item, t.name)}
-    except Exception:  # no config, no file, a bad zone or table: no known tasks, and the rows still list
-        return set()
+    """The item and the name of each row in the Tasks table of today's and yesterday's tracker (a run can outlive
+    midnight); empty when neither file exists. Raises OSError, ConfigError, ValueError or KeyError when the config, the
+    zone or a file that is there cannot be read."""
+    cfg = read_config(root)
+    today = datetime.now(cfg.zone).date()
+    tasks: set[str] = set()
+    for day in (today, today - timedelta(days=1)):
+        try:
+            text = (root / cfg.tracker_path(day.isoformat())).read_text()
+        except FileNotFoundError:
+            continue
+        tasks |= {s.strip() for t in parse_tracker(text).tasks for s in (t.item, t.name)}
+    return tasks
 
 
 def running_trees(trees: Path) -> dict[Path, str]:
     """Each worktree whose one-shot launcher is alive, and its task."""
     return {tree: task for tree, _, task in one_shot_runs(trees)}
-
-
-def running_workers(trees: Path) -> list[str]:
-    return list(running_trees(trees).values())
 
 
 def check(root: Path, pids: list[int]) -> list[dict[str, str | int]]:
@@ -149,10 +152,16 @@ def main(argv: list[str] | None = None) -> int:
         try:
             runs = one_shot_runs(args.root / worktrees_dir((args.root / "CLAUDE.md").read_text()))
         except (OSError, UnicodeDecodeError):  # no CLAUDE.md, or one that cannot be decoded: no trees dir to look in
+            print("one-shot runs not checked: CLAUDE.md could not be read", file=sys.stderr)
             runs = []
-        known = known_tasks(args.root)  # printed: a task only when the tracker holds it, a tree name escaped
-        rows += [{"pid": pid, "task": task[:TASK_MAX] if task in known else "", "worktree": clean(tree.name)[:TASK_MAX],
-                  "status": "running", "kind": "one-shot"} for tree, pid, task in runs]
+        try:
+            known = known_tasks(args.root) if runs else set()  # printed: a task only when a tracker holds it
+        except (OSError, ConfigError, ValueError, KeyError):
+            print("one-shot tasks not shown: the tracker could not be read", file=sys.stderr)
+            known = set()
+        rows += [{"pid": pid, "task": task[:TASK_MAX] if task in known else "",
+                  "worktree": tree.name if re.fullmatch(r"[A-Za-z0-9._-]+", tree.name) else "", "status": "running",
+                  "kind": "one-shot"} for tree, pid, task in runs]
     print(toon_encode(rows) if rows else "[]")
     return 0
 
