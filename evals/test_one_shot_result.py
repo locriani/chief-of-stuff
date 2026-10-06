@@ -296,6 +296,28 @@ class ResultTests(unittest.TestCase):
         self.assertIn("waiting", self.tracker_row())
         self.assertEqual(toon_decode((self.root / "trees" / "rate-limit" / one_shot.REPORT).read_text()), written)
 
+    def test_the_launchers_copy_is_written_before_the_tree_is_touched_so_a_failure_there_of_any_kind_cannot_cost_it(self):
+        cwd = self.root / "trees" / "rate-limit"
+        real = one_shot.atomic_write
+
+        def write(path, data):
+            if cwd in path.parents:
+                raise RuntimeError("not an OSError")
+            return real(path, data)
+
+        with mock.patch.object(one_shot, "atomic_write", side_effect=write):
+            with self.assertRaises(RuntimeError):  # the tree write only forgives an OSError; the order is what keeps the copy
+                one_shot.write_report(self.root, cwd, report())
+        self.assertEqual(toon_decode((self.reports / "rate-limit.toon").read_text())["task"], "Rate limit headers")
+
+    def test_a_write_that_fails_leaves_no_temporary_file_beside_either_copy(self):
+        cwd = self.root / "trees" / "rate-limit"
+        with mock.patch("os.replace", side_effect=PermissionError(13, "Permission denied")):
+            written = one_shot.write_report(self.root, cwd, report())
+        self.assertTrue(written["errors"], "the failed copy is an error in the report")
+        for folder in (self.reports, cwd / ".chief-of-stuff"):
+            self.assertEqual(sorted(p.name for p in folder.iterdir()), [], f"left behind in {folder}")
+
     # What a worker writes is the launcher's to bound and to encode: its copy stays readable by `result`.
 
     def test_a_worker_result_over_the_cap_is_cut_so_the_report_stays_readable(self):
@@ -502,6 +524,11 @@ class ResultTests(unittest.TestCase):
                 self.assertEqual(self.one("--task", typed)["worktree"], "rate-limit")
         self.assertEqual(self.one("--task", "Search pagination")["worktree"], "search")
         self.assertEqual(self.refused("--task", "Rate limit"), "no one-shot report for task 'Rate limit'")  # no longer anyone's name
+
+    def test_a_task_typed_is_matched_to_names_only_not_to_another_rows_item(self):
+        self.tracker(("", "X"), ("X", "Y"))  # "X" is one row's item and another row's name
+        self.plant("y", report("Y"))
+        self.assertEqual(self.one("--task", "X")["worktree"], "y")
 
     def test_a_name_only_yesterdays_tracker_holds_finds_the_report(self):
         self.tracker(("export", "Export header"), days_ago=1)

@@ -262,6 +262,56 @@ class RunTest(unittest.TestCase):
         self.assertEqual(seen, [["junk.toon", "other.toon"]],
                          "the task's copy in another tree is gone; other tasks' copies and unreadable files stay")
 
+    def reports_when_the_worker_runs(self, plant) -> list[str]:
+        """The reports folder as `reconcile` finds it, after `plant(reports)` and a launch that went through."""
+        reports = self.root / dispatch_prompt.REPORTS_DIR
+        reports.mkdir(parents=True)
+        plant(reports)
+        seen = []
+
+        def reconcile(*args, **kwargs):
+            seen.append(sorted(p.name for p in reports.iterdir()))
+            return {"status": "done", "errors": []}
+
+        fake = self._fake('status: done\nreason: r\nchanges: c\n', write_partial=False)
+        with mock.patch.object(one_shot, "reconcile", side_effect=reconcile), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self._run(fake), 0)
+        self.assertTrue((self.root / "during.md").exists(), "the worker did not start")
+        return seen[0]
+
+    def test_a_launch_removes_the_trees_old_copy_though_it_holds_another_task(self):
+        # The tree's own file name is the launcher's to replace, whatever it holds; elsewhere only the same task's copy goes.
+        other = toon_encode({"status": "done", "task": "Search pagination", "worker": "w", "runtime_exit": 0,
+                             "reason": "r", "changes": "c", "errors": []}) + "\n"
+        self.assertEqual(self.reports_when_the_worker_runs(lambda reports: (reports / "worker.toon").write_text(other)), [])
+
+    def test_a_launch_removes_the_trees_old_copy_though_it_cannot_be_read(self):
+        self.assertEqual(self.reports_when_the_worker_runs(lambda reports: (reports / "worker.toon").write_text("not a report: [\n")), [])
+
+    def test_a_refused_launch_keeps_the_trees_copy_and_every_other_copy_whatever_task_they_hold(self):
+        reports = self.root / dispatch_prompt.REPORTS_DIR
+        reports.mkdir(parents=True)
+        base = {"status": "done", "worker": "earlier", "runtime_exit": 0, "reason": "r", "changes": "c", "errors": []}
+        for stem, task in (("worker", "Search pagination"), ("old-tree", "Security audit"), ("other", "Search pagination")):
+            (reports / f"{stem}.toon").write_text(toon_encode({**base, "task": task}) + "\n")
+        before = {p.name: p.read_bytes() for p in reports.iterdir()}
+        with mock.patch.object(one_shot, "record_launch", side_effect=ValueError("refused")), \
+             self.assertRaisesRegex(ValueError, "refused"):
+            self._run(self._fake('status: done\nreason: r\nchanges: c\n', write_partial=False))
+        self.assertEqual({p.name: p.read_bytes() for p in reports.iterdir()}, before)
+
+    def test_a_reports_folder_holding_what_no_report_is_does_not_stop_the_launch_or_the_worker(self):
+        # Each of these fails to read as a report in a different way (a link, a FIFO, a directory, too deep, not UTF-8).
+        def plant(reports: Path) -> None:
+            (reports / "dangling.toon").symlink_to(reports / "nowhere")
+            os.mkfifo(reports / "fifo.toon")
+            (reports / "x.toon").mkdir()
+            (reports / "deep.toon").write_text("".join("  " * i + f"k{i}:\n" for i in range(1010)) + "  " * 1010 + "x: 1\n")
+            (reports / "bytes.toon").write_bytes(b"\xff\xfe\x00status: done\n")
+
+        self.assertEqual(self.reports_when_the_worker_runs(plant),
+                         ["bytes.toon", "dangling.toon", "deep.toon", "fifo.toon", "x.toon"])
+
     def left_by_a_cleanup_that_cannot_run(self, plant) -> None:
         """#56: something in the way of the launcher's reports folder. A launch may refuse or go on, but never leave the row
         `running` with no worker started, nor a dispatch behind that makes the retry refuse the tree."""
