@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Check worker PIDs in one call without exposing their command lines.
 
-With no PIDs, check every registered worker and list every live one-shot run as a block of its own after them. PIDs can be
-space or comma separated.
+With no PIDs, check every registered worker and list every live one-shot run after them in the same list, each row marked `kind: one-shot`.
+PIDs can be space or comma separated.
 """
 
 from __future__ import annotations
@@ -148,7 +148,6 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         ap.error(str(exc))
     rows: list[dict[str, str | int]] = check(args.root, pids)
-    one_shots: list[dict[str, str | int]] = []
     if not pids:
         try:
             runs = one_shot_runs(args.root / worktrees_dir((args.root / "CLAUDE.md").read_text()))
@@ -160,11 +159,10 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, ConfigError, ValueError, KeyError):
             print("one-shot tasks not shown: the tracker could not be read", file=sys.stderr)
             known = set()
-        one_shots = [{"pid": pid, "task": task[:TASK_MAX] if task in known else "",
-                      "worktree": tree.name if re.fullmatch(r"[A-Za-z0-9._-]+", tree.name) else "", "status": "running"}
-                     for tree, pid, task in runs]
-    blocks = ([toon_encode(rows)] if rows else []) + ([toon_encode({"one_shot": one_shots})] if one_shots else [])
-    print("\n".join(blocks) or "[]")
+        rows += [{"pid": pid, "task": task[:TASK_MAX] if task in known else "",
+                  "worktree": tree.name if re.fullmatch(r"[A-Za-z0-9._-]+", tree.name) else "", "status": "running",
+                  "kind": "one-shot"} for tree, pid, task in runs]
+    print(toon_encode(rows) if rows else "[]")
     return 0
 
 
