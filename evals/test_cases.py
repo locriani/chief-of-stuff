@@ -523,9 +523,9 @@ class CaseLintTest(unittest.TestCase):
                 self.assertEqual(process_status.main(["--root", str(work)]), 0)
             from _vendor.toon_format import decode
             printed = decode(out.getvalue())
-            self.assertIsInstance(printed, dict, out.getvalue())  # the `one_shot` block alone: no registered worker here
-            self.assertEqual(printed["one_shot"],
-                             [{"pid": os.getpid(), "task": "Rate limit headers", "worktree": "rate-limit", "status": "running"}])
+            self.assertIsInstance(printed, list, out.getvalue())  # one list: no registered worker here, so the one-shot row alone
+            self.assertEqual(printed, [{"pid": os.getpid(), "task": "Rate limit headers", "worktree": "rate-limit",
+                                        "status": "running", "kind": "one-shot"}])
             tracker = next(work.glob("daily/*-tracker.md")).read_text()
             started = tracker_log.started_line("00:00", "rate-limit", "codex", "gpt-5.1-codex", "trees/rate-limit", "Rate limit headers")
             self.assertIn(started.split(" ", 2)[2], tracker)
