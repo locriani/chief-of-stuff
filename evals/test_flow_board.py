@@ -401,10 +401,11 @@ class Page(unittest.TestCase):
         self.assertIn("second:'2-digit'", script)
         self.assertIn("+'s'", script)
 
-    def test_lane_table_shows_task_names(self) -> None:
-        # The lane table shows each task's name; the columns board is gone.
-        self.assertIn('<table class="lane-table"', self.body)
-        self.assertIn("Cut the release", self.body)
+    def test_the_build_columns_show_task_names(self) -> None:
+        # BUILD is the stage columns (#259), each task a card named by its link.
+        self.assertIn('<figure class="columns"', self.body)
+        self.assertRegex(self.body, r'class="columns-card-name"[^>]*>Cut the release<')
+        self.assertNotIn("<table", self.body)
         self.assertNotIn('href="#"', self.body)
 
     def test_the_page_fits_a_phone(self) -> None:

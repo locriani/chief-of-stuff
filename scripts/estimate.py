@@ -1,11 +1,11 @@
 """The board's planning model: the deadline that governs a task, where each owner's queue lands by it, and the mean
-time closed tasks of each size took. It draws nothing; render_board draws the 24 HOURS strip and the Flow forecast
+time closed tasks of each size took. It draws nothing; render_board draws the Flow forecast
 from it and prints its counts in the summary line.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 
 from clock import DATE, done_clock as _done_clock, dur as _dur, hhmm as _hhmm
@@ -31,7 +31,6 @@ class Bar:
     label: str | None
     est: "Estimate | None" = None
     size: str = ""
-    deadline: str = ""
 
 
 def nearest_deadline(cfg: Config, now: datetime) -> Deadline:
@@ -114,7 +113,7 @@ def _owner_key(owner: str) -> str:
 
 
 def horizon(cfg: Config, now: datetime) -> tuple[datetime, str]:
-    """The nearest governing deadline still ahead, or midnight once none is (the day strip's own rule)."""
+    """The nearest governing deadline still ahead, or midnight once none is."""
     d = governing_deadline(cfg, now)
     if d.at > now and d.name != "end of day":
         return d.at, d.name
@@ -216,13 +215,6 @@ def task_end(task: Task, cfg: Config, now: datetime, start: datetime, est: dict[
     return governing_deadline(cfg, now).at, "deadline", NO_ESTIMATE
 
 
-def _deadline_for(task: Task, bar: Bar, cfg: Config, now: datetime) -> Deadline:
-    for d in cfg.deadlines:
-        if d.name.lower() == task.due.strip().lower() or (bar.end_src != "due" and d.at == bar.end):
-            return d
-    return governing_deadline(cfg, now)
-
-
 def day_bar(task: Task, cfg: Config, now: datetime, est: dict[str, Estimate] | None = None) -> Bar:
     today, zone = now.date(), cfg.zone
     day_start = datetime.combine(today, time(0, 0), tzinfo=zone)
@@ -233,22 +225,4 @@ def day_bar(task: Task, cfg: Config, now: datetime, est: dict[str, Estimate] | N
     else:
         start, start_src = day_start, "carried"
     end, end_src, label = task_end(task, cfg, now, start, est)
-    bar = Bar(task.item, task.owner, task.label, task.kind, start, end, start_src, end_src, label, est.get(task.item) if est and end_src == "derived" else None, task.size.strip().upper())
-    return replace(bar, deadline=_deadline_for(task, bar, cfg, now).name)
-
-
-def swimlanes(bars: list[Bar], cfg: Config, now: datetime) -> list[tuple[str, list[Bar]]]:
-    """Group bars by their governing deadline, each group headed by the deadline name.
-
-    A bar's `deadline` field names its group; reuse `_deadline_for()` via the `deadline` already
-    written onto the Bar by `day_bar()`. Groups are ordered by deadline time (nearest first),
-    and bars within each group by owner then start time.
-    """
-    groups: dict[str, list[Bar]] = {}
-    for bar in bars:
-        groups.setdefault(bar.deadline, []).append(bar)
-    # Order groups by deadline time, nearest first; end of day last.
-    dl_times = {d.name: d.at for d in cfg.deadlines}
-    eod = governing_deadline(cfg, now).at
-    order = sorted(groups, key=lambda name: dl_times.get(name, eod))
-    return [(name, sorted(groups[name], key=lambda b: (b.owner, b.start))) for name in order]
+    return Bar(task.item, task.owner, task.label, task.kind, start, end, start_src, end_src, label, est.get(task.item) if est and end_src == "derived" else None, task.size.strip().upper())
