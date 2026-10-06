@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from backlog_ref import file_with, issue_ref  # noqa: E402
+from backlog_ref import WORKFLOW, file_with, issue_ref  # noqa: E402
 from tracker import parse_tracker, short_name  # noqa: E402
 from workspace import ConfigError, read_config  # noqa: E402
 from settings import SettingsError, Workflow, load as load_settings  # noqa: E402
@@ -326,8 +326,8 @@ def compose(root: Path, day: str | None, task: str, worktree: Path | None = None
         if not cell:
             raise RefusedError(
                 f"task {rows[0].item.strip()!r} names no issue; file one with {file_with(cfg.backlog)} and write its number in the issue column")
-        issue = issue_ref(cell, cfg.backlog)
-        if not issue:
+        issue = None if cell == WORKFLOW else issue_ref(cell, cfg.backlog)
+        if not issue and cell != WORKFLOW:
             raise RefusedError(f'task {rows[0].item.strip()!r} has "{_clean("the issue cell", cell)}" in its issue column, which is not an issue reference')
     # Workers read the tracker from a different cwd, so its path must be absolute.
     item = _clean("the Tasks item", rows[0].item.strip())
