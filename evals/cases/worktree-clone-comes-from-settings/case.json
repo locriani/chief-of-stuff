@@ -10,7 +10,7 @@
       "notes/.keep": ""
     }
   },
-  "description": "#54: the workspace's settings name the clone (`[workers] clone`, a directory no task or tracker line mentions). A routine one-shot dispatch cuts its worktree without `--clone`, and the coordinator reads no runtime config and runs no git to find the repository. The prompt asks for a dry-run worker launch so no worker process starts.",
+  "description": "#54: the workspace's settings name the clone (`[workers] clone`, a directory no task or tracker line mentions). A routine one-shot dispatch cuts its worktree without `--clone`, and the tree that is cut belongs to that clone. The issue's clause that the coordinator reads no runtime config and runs no git to find the repository is not covered by this case: no agent sentence states it, so no grader can enforce one. The prompt asks for a dry-run worker launch so no worker process starts.",
   "prompt": "Start the security audit. For this isolated test, use --dry-run for the worker launch and do not start a real worker process.",
   "graders": [
     {
@@ -30,12 +30,11 @@
       "max": 0
     },
     {
-      "name": "the repository is not looked up in git or a runtime config",
+      "name": "the tree that was cut belongs to the settings' clone",
       "rule": "The repository is the settings' `[workers] clone`; pass `--clone <repo>` only when the user names a different repository.",
-      "type": "tool_used",
-      "tool": "Bash|Read|Grep|Glob",
-      "input_match": "(?<![\\w./-])git\\s(?:[^\"\\\\;&|]|\\\\[^nr])*?(?:rev-parse|--git-common-dir)|\\.codex|\\.cursor|\\.claude\\.json|config\\.toml",
-      "max": 0
+      "type": "file_matches",
+      "glob": "trees/*/.git",
+      "pattern": "^gitdir: .*/alder-checkout/\\.git/worktrees/"
     }
   ],
   "max_turns": 22,

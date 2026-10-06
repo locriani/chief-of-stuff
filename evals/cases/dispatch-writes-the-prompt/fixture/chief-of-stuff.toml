@@ -1,3 +1,2 @@
 [workers]
-mode = "one-shot"
 clone = "repo"

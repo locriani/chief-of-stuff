@@ -23,6 +23,8 @@ sys.path.insert(0, str(EVALS.parent / "scripts"))
 import audit_tasks  # noqa: E402
 import run  # noqa: E402
 import render_board as rb  # noqa: E402
+from settings import load as load_settings  # noqa: E402
+from workspace import settings_path  # noqa: E402
 
 CASES = sorted(p for p in (EVALS / "cases").iterdir() if (p / "case.json").exists())
 SESSIONS_HEADER = "| ref | name | state | doing | waiting on | free at | constraints | children | last reply |"
@@ -444,20 +446,29 @@ class CaseLintTest(unittest.TestCase):
                     self.assertIn("verified", rb.resume_fields(rb.parse_resume(text)), f"{case.name}: {f.name}: Verified parsed but not drawn")
 
     def test_worktree_clone_graders_enforce_a_sentence_the_agent_carries(self) -> None:
-        """#54: all three graders quote the one sentence that sends the coordinator to the settings for the repository, and each
-        one reads the call, not the reply: a `worktree` call, one with `--clone` in it, and a git or runtime-config lookup."""
+        """#54: the graders quote the one sentence that sends the coordinator to the settings for the repository. Two read the call
+        (a `worktree` call, one with `--clone` in it) and one reads the tree the call cut. The issue's other clause, that no runtime
+        config or git is read to find the repository, has no agent sentence and so no grader here."""
         rule = "The repository is the settings' `[workers] clone`; pass `--clone <repo>` only when the user names a different repository."
         agent_text = (EVALS.parent / "agents" / "chief-of-stuff.md").read_text()
-        s = spec(EVALS / "cases" / "worktree-clone-comes-from-settings")
+        case = EVALS / "cases" / "worktree-clone-comes-from-settings"
+        s = spec(case)
         self.assertNotIn("golden", s)
-        self.assertEqual(s["repo"]["clone"], "alder-checkout")
-        self.assertIn("alder-checkout", (EVALS / "cases" / "worktree-clone-comes-from-settings" / "fixture" / "chief-of-stuff.toml").read_text())
-        cut, clone, lookup = s["graders"]
-        for g in (cut, clone, lookup):
+        cut, clone, belongs = s["graders"]
+        for g in (cut, clone, belongs):
             self.assertEqual(g["rule"], rule, g["name"])
             self.assertIn(g["rule"], agent_text, g["name"])
-        self.assertEqual([(g["type"], g.get("min"), g.get("max")) for g in (cut, clone, lookup)],
-                         [("tool_used", 1, None), ("tool_used", None, 0), ("tool_used", None, 0)])
+        self.assertEqual([(g["type"], g.get("min"), g.get("max")) for g in (cut, clone)], [("tool_used", 1, None), ("tool_used", None, 0)])
+        self.assertEqual(belongs["type"], "file_matches")
+        # The agent file's call carries no `--clone`; the sentence is how the flag is still allowed.
+        command = next(l for l in agent_text.splitlines() if l.startswith("chief-of-stuff worktree"))
+        self.assertNotIn("--clone", command)
+        # The fixture names the clone the case builds, through the file its `Settings:` line names.
+        self.assertEqual(s["repo"]["clone"], "alder-checkout")
+        fixture = case / "fixture"
+        named = settings_path((fixture / "CLAUDE.md").read_text())
+        self.assertEqual(named, "chief-of-stuff.toml")
+        self.assertEqual(load_settings(fixture, named).workers.clone, s["repo"]["clone"])
 
         def hits(g: dict, tool: str, **tool_input) -> bool:
             return bool(re.fullmatch(g["tool"], tool) and re.search(g["input_match"], json.dumps(tool_input)))
@@ -473,24 +484,11 @@ class CaseLintTest(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(hits(cut, "Bash", command=command), cuts)
                 self.assertEqual(hits(clone, "Bash", command=command), carries)
-        for tool, tool_input in (
-            ("Bash", {"command": "git -C alder-checkout rev-parse --git-common-dir"}),
-            ("Bash", {"command": "cd trees/old && git rev-parse --path-format=absolute --git-common-dir"}),
-            ("Read", {"file_path": "/home/robin/.codex/config.toml"}),
-            ("Grep", {"pattern": "clone", "path": "/home/robin/.cursor"}),
-            ("Read", {"file_path": "/home/robin/.claude.json"}),
-            ("Bash", {"command": "cat ~/.codex/config.toml"}),
-        ):
-            with self.subTest(tool=tool, tool_input=tool_input):
-                self.assertTrue(hits(lookup, tool, **tool_input))
-        for tool, tool_input in (
-            ("Read", {"file_path": "chief-of-stuff.toml"}),
-            ("Read", {"file_path": "daily/2026-01-02-tracker.md"}),
-            ("Bash", {"command": f"{worktree}"}),
-            ("Bash", {"command": "chief-of-stuff worker --type implementer --cwd trees/audit --task 'Security audit' --dry-run"}),
-        ):
-            with self.subTest(tool=tool, tool_input=tool_input):
-                self.assertFalse(hits(lookup, tool, **tool_input))
+        # A tree's `.git` file names the repository it was cut from: the settings' clone, not a sibling that shares its prefix.
+        for gitdir, owned in (("gitdir: /ws/alder-checkout/.git/worktrees/audit", True), ("gitdir: /ws/repo/.git/worktrees/audit", False),
+                              ("gitdir: /ws/alder-checkout-old/.git/worktrees/audit", False), ("gitdir: /ws/x/alder-checkout/.git/worktrees/a", True)):
+            with self.subTest(gitdir=gitdir):
+                self.assertEqual(re.search(belongs["pattern"], gitdir, re.MULTILINE) is not None, owned)
 
     def test_one_shot_in_flight_graders_enforce_sentences_the_agent_carries(self) -> None:
         """#53: a running one-shot is neither launched again (the readiness sentence) nor looked up with `ps`/`pgrep`, and is looked up with

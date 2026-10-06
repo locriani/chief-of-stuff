@@ -1,5 +1,6 @@
 [workers]
 mode = "one-shot"
+clone = "repo"
 
 [models.deep]
 rotation = ["claude:opus@high", "claude:sonnet@high"]
