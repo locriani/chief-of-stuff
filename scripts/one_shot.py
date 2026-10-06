@@ -251,21 +251,33 @@ def write_report(root: Path, cwd: Path, report: dict) -> None:
         pass
 
 
+def _read_only(path: Path, task: str) -> bool:
+    """The task's File ownership cell, read as compose reads it; a row that is gone is not read-only."""
+    try:
+        return ownership.read_only(dispatch_prompt._owns(path.read_text(), task, str(path)))
+    except dispatch_prompt.RefusedError:
+        return False
+
+
 def reconcile(root: Path, day: str, task: str, name: str, cwd: Path, exit_code: int,
               before_head: str | None = None) -> dict:
     cfg = dispatch_prompt.config(root)
     settings = load_settings(root, cfg.settings_path)
     status, reason, changes = worker_result(cwd / RESULT, exit_code)
     actual = changed_files(cwd)
-    if status == "done" and actual:
-        status = "human_review"
-        reason = f"worker reported completion but the worktree is not clean: {actual}"
     commits = committed_changes(cwd, before_head)
     # The result lands on the day the run ends, falling back to the launch day's (#93).
     path = root / cfg.tracker_path(day)
     end = root / cfg.tracker_path(datetime.now(cfg.zone).date().isoformat())
     if end.exists() and any(row.item.strip() == task for row in parse_tracker(end.read_text()).tasks):
         path = end
+    if status in ("done", "relaunch") and (actual or commits != NO_COMMITS) and _read_only(path, task):
+        # A task that owns nothing changed something: whatever the worker wrote, someone looks (#57).
+        status = "human_review"
+        reason = "read-only task left changes: " + "\n".join(x for x in (actual, commits) if x and x != NO_COMMITS)
+    if status == "done" and actual:
+        status = "human_review"
+        reason = f"worker reported completion but the worktree is not clean: {actual}"
     if status == "relaunch":
         # A relaunch is for a run that changed nothing, once: anything else is someone's to look at.
         if actual or commits != NO_COMMITS:

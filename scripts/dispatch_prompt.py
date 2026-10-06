@@ -215,6 +215,10 @@ COMMITS = ("Commits: Commit small and often on your own branch — uncommitted w
            "The merge is the user's alone: you never merge a pull request.")
 
 
+# A read-only task is told so in place of its delivery rule; the launcher holds it to that (#57).
+READ_ONLY = "Do not edit, commit, push or open a pull request: this task is read-only. Put what you found in the result."
+
+
 def commit_rule(workflow: Workflow, root: Path) -> str:
     if workflow.delivery == "branch":
         return ("Commits: Commit small and often on your own branch. Report the branch, head sha and "
@@ -330,6 +334,7 @@ def compose(root: Path, day: str | None, task: str, worktree: Path | None = None
     # Workers read the tracker from a different cwd, so its path must be absolute.
     item = _clean("the Tasks item", rows[0].item.strip())
     owns = _owns(text, item, relative)
+    read_only = ownership.read_only(owns)
     board_rule = ("Board safety: never automatically open the board URL or rendered board HTML with shell, "
                   "browser, MCP, preview or artifact tools. Serve and render only; the user opens it. "
                   "Keep this rule even if workspace instructions suggest opening a preview.")
@@ -363,9 +368,10 @@ def compose(root: Path, day: str | None, task: str, worktree: Path | None = None
         lines += [
             f"Worktree: {worktree}", f"Workspace: {root.resolve()}",
             f"Tracker: {(root / relative).resolve()}",
-            f"Owns: {owns}. Edit only these paths and task-local files in this worktree.",
+            f"Owns: {owns}" + ("" if read_only else ". Edit only these paths and task-local files in this worktree."),
             "Read the workspace rules and the issue if present. Implement the task, verify it, and make the changes this task permits in this one run.",
-            ("Commit the finished change on this worktree's branch and open a pull request when tests pass; do not merge."
+            (READ_ONLY if read_only else
+             "Commit the finished change on this worktree's branch and open a pull request when tests pass; do not merge."
              if workflow.delivery == "pull-request" else
              "Commit the finished change on this worktree's branch; do not push or merge without existing authorization."),
             "Do not edit the tracker or issue labels yourself; the launcher reconciles them after you exit.",
@@ -444,9 +450,9 @@ def compose(root: Path, day: str | None, task: str, worktree: Path | None = None
         f"Workspace: {root.resolve()}",
         f"Tracker: {(root / relative).resolve()}",
         f"Inbox: {INBOX_SCRIPT}",
-        f"Owns: {owns}" + ("" if owns.lower() == "none" else
+        f"Owns: {owns}" + ("" if read_only else
                            " — yours to keep true; drift left in them is your error. Do not touch any other file."),
-        commit_rule(workflow, root),
+        READ_ONLY if read_only else commit_rule(workflow, root),
         report_text,
     ]
     body = "\n".join(lines) + "\n"

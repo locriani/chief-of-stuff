@@ -8,11 +8,13 @@ accepted was refused at launch (#74).
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from md import cells as _cells, is_separator as _is_separator
 
 HEADING = "## File ownership"
+_NONE = re.compile(r"none\b", re.I)
 
 
 @dataclass(frozen=True)
@@ -37,3 +39,8 @@ def parse(text: str) -> list[Row]:
             continue
         rows.append(Row(cells[0], cells[1]))
     return rows
+
+
+def read_only(paths: str) -> bool:
+    """A task whose paths cell starts with the word `none` owns nothing, so it changes nothing (#57)."""
+    return bool(_NONE.match(paths.strip()))
