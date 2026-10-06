@@ -175,6 +175,7 @@ def record_launch(path: Path, task: str, name: str, tree: str, runtime: str, mod
     def change(text: str) -> str:
         lines = text.splitlines(keepends=True)
         i = _task_line(lines, task)
+        dispatch_prompt.refuse_overlap(text, task)  # under the lock, so two launches that share a path cannot both pass
         lines[i] = _set_owner_state(lines[i], re.compile(r"\|\s*unassigned\s*\|\s*open\s*\|", re.I),
                                     f"| {name} | running {at} |", "task owner/state is not an unassigned open row")
         keys = dispatch_prompt.task_keys(task, dispatch_prompt.task_name(text, task))

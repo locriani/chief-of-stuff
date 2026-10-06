@@ -295,6 +295,15 @@ def _owns(text: str, item: str, relative: str) -> str:
         "proposing it, so the user reads them before saying yes")
 
 
+def refuse_overlap(text: str, item: str) -> None:
+    """Refuse `item` when its File ownership overlaps that of a running Tasks row: the launcher's refusal and `worker --check`."""
+    mine = ownership.cell(text, task_keys(item, task_name(text, item)))
+    for row in parse_tracker(text).tasks:
+        theirs = ownership.cell(text, task_keys(row.item, row.name)) if row.kind == "running" and row.item.strip() != item.strip() else None
+        if mine and theirs and ownership.overlaps(mine, theirs):
+            raise RefusedError(f"File ownership overlaps the running task {row.item.strip()!r}; leave this task open and launch it when that one returns")
+
+
 def compose(root: Path, day: str | None, task: str, worktree: Path | None = None,
             coordinator: str | None = None, name: str | None = None, runtime: str = "claude",
             one_shot: bool = False) -> str:
@@ -349,6 +358,7 @@ def compose(root: Path, day: str | None, task: str, worktree: Path | None = None
             raise RefusedError("one-shot dispatch needs a worktree")
         if rows[0].kind != "open" or rows[0].standing_for(name):
             raise RefusedError("one-shot dispatch needs an open, non-standing task")
+        refuse_overlap(text, item)
         result = worktree / RESULT_FILE
         delivery = ("Commit the finished change on this worktree's branch and open a pull request when tests pass; do not merge."
                     if workflow.delivery == "pull-request" else
