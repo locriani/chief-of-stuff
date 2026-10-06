@@ -608,5 +608,108 @@ class CaseLintTest(unittest.TestCase):
             self.assertRegex(tracker, r"(?m)^\| Rate limit headers \| rate-limit \| running \d\d:\d\d \|")
 
 
+    def test_one_shot_report_graders_enforce_a_sentence_the_agent_carries(self) -> None:
+        """#56: the three graders that judge how a finished one-shot's report is read quote one sentence, and the agent file
+        must carry it. The reply grader quotes nothing: it asks for the fact only the report holds."""
+        agent_text = (EVALS.parent / "agents" / "chief-of-stuff.md").read_text()
+        called, shell, files, reply = spec(EVALS / "cases" / "one-shot-report-is-read-with-result")["graders"]
+        rule = ("Read a finished one-shot's report with `chief-of-stuff result --root . --task <task>`, "
+                "never by reading files under its worktree or a host output file.")
+        for g in (called, shell, files):
+            self.assertEqual(g["rule"], rule, g["name"])
+            self.assertIn(g["rule"], agent_text, g["name"])
+        self.assertEqual((called["type"], called["tool"], called["min"], "max" in called), ("tool_used", "Bash", 1, False))
+        self.assertEqual([(g["type"], g["tool"], g["max"]) for g in (shell, files)],
+                         [("tool_used", "Bash", 0), ("tool_used", "Read|Grep", 0)])
+        self.assertEqual((reply["type"], "rule" in reply), ("regex", False))
+
+        def hit(g: dict, command: str) -> bool:
+            # The description is the model's prose about the call. It names the task and the files, and decides nothing.
+            said = "chief-of-stuff result --task 'Rate limit headers'; cat one-shot-report.toon"
+            return re.search(g["input_match"], json.dumps({"command": command, "description": said})) is not None
+
+        # `result` is run, at command position, by name, script path or launcher variable, with `--task` naming the task.
+        # Cannot see: a task text held in a shell variable, or built from pieces.
+        for command in ("chief-of-stuff result --root . --task 'Rate limit headers'", 'chief-of-stuff result --task "Rate limit headers" --root .',
+                        "chief-of-stuff result --root . --task=Rate limit headers", "cd /ws && chief-of-stuff result --root . --task 'Rate limit headers'",
+                        "python3 /release/chief_of_stuff.py result --root . --task 'Rate limit headers'",
+                        "python3 /release/scripts/one_shot_result.py --root . --task 'Rate limit headers'",
+                        "P=/r/plugin/chief_of_stuff.py; python3 $P result --root . --task 'Rate limit headers'",
+                        'python3 "$P" result --root . --task "Rate limit headers"', "ls\nchief-of-stuff result --task $'Rate limit headers'",
+                        "/usr/local/bin/chief-of-stuff result --root . --task 'Rate limit headers' | head"):
+            self.assertTrue(hit(called, command), command)
+        for command in ("chief-of-stuff result --root .", "chief-of-stuff result --root . --task 'Draft release notes'",
+                        "chief-of-stuff processes --root . --task 'Rate limit headers'", "echo chief-of-stuff result --task 'Rate limit headers'",
+                        "chief-of-stuff results --task 'Rate limit headers'", "chief-of-stuff worker --task 'Rate limit headers' --dry-run",
+                        "cat trees/rate-limit/.chief-of-stuff/one-shot-report.toon", "chief-of-stuff tracker tasks # result --task 'Rate limit headers'"):
+            self.assertFalse(hit(called, command), command)
+
+        # The report, the worker's stdout log and anything in a tree's private directory. Cannot see: a glob after a `cd`
+        # (`cd trees/rate-limit && cat .chief-of-stuff/*`), or a path built from variables.
+        for command in ("cat trees/rate-limit/.chief-of-stuff/one-shot-report.toon", "head -50 trees/rate-limit/.chief-of-stuff/worker-stdout.log",
+                        "tail -n 20 /w/trees/rate-limit/.chief-of-stuff/worker-stdout.log", "python3 -c 'print(open(\"one-shot-report.toon\").read())'",
+                        "grep reason trees/rate-limit/.chief-of-stuff/one-shot-report.toon", "cd trees/rate-limit && sed -n 1,5p .chief-of-stuff/one-shot-report.toon",
+                        "less trees/rate-limit/.chief-of-stuff/findings.md", "ls trees/rate-limit/.chief-of-stuff/", "awk 1 /w/trees/x/.chief-of-stuff/draft.md"):
+            self.assertTrue(hit(shell, command), command)
+        for command in ("chief-of-stuff result --root . --task 'Rate limit headers'", "cat daily/tracker.md", "chief-of-stuff tracker tasks --not done",
+                        "cat trees/rate-limit/src/a/headers.py", "ls trees", "cat .chief-of-stuff/mailbox/notes.md", "git -C trees/rate-limit status",
+                        "chief-of-stuff processes --root ."):
+            self.assertFalse(hit(shell, command), command)
+        for path in ("/w/trees/rate-limit/.chief-of-stuff/one-shot-report.toon", "trees/rate-limit/.chief-of-stuff/worker-stdout.log",
+                     "trees/rate-limit/.chief-of-stuff/draft.md"):
+            self.assertTrue(grader_hits(files, "Read", file_path=path), path)
+        self.assertTrue(grader_hits(files, "Grep", pattern="reason", path="/w/trees/rate-limit/.chief-of-stuff/one-shot-report.toon"))
+        for path in ("daily/2026-10-06-tracker.md", "trees/rate-limit/src/a/headers.py", ".chief-of-stuff/mailbox/a.md", "CLAUDE.md"):
+            self.assertFalse(grader_hits(files, "Read", file_path=path), path)
+        self.assertFalse(grader_hits(files, "Edit", file_path="trees/rate-limit/.chief-of-stuff/one-shot-report.toon"))  # tool name must match
+
+        # The reply carries the fact the report holds: the unit of the Retry-After value. Not a stopped-for-review reply alone.
+        for text in ("Retry-After is sent in milliseconds.", "It reports 1500 for a 1.5 s wait.", "Retry-After is in Milliseconds"):
+            self.assertTrue(re.search(reply["pattern"], text), text)
+        for text in ("It needs review.", "The worker stopped before the 429 path.", "Retry-After is wrong", "x15000y"):
+            self.assertFalse(re.search(reply["pattern"], text), text)
+
+    def test_one_shot_report_fixture_is_a_reconciled_run_whose_fact_only_the_report_holds(self) -> None:
+        """#56: the case is only worth running when the tracker shows what the launcher leaves for a `human_review` result,
+        the Log's reason is cut where the launcher cuts it, the fact sits past the cut, and `result` can run in the case."""
+        import one_shot
+        import tracker_log
+        from _vendor.toon_format import decode
+        case = EVALS / "cases" / "one-shot-report-is-read-with-result"
+        s = spec(case)
+        reply = graders(s)[-1]["pattern"]
+        with tempfile.TemporaryDirectory() as d:
+            work = Path(d)
+            run.render_tree(case / "fixture", work, ctx(s))
+            tree = work / "trees" / "rate-limit" / ".chief-of-stuff"
+            report = decode((work / "trees" / "rate-limit" / one_shot.REPORT).read_text())
+            self.assertEqual({k: report[k] for k in ("status", "task", "worker", "runtime_exit", "errors")},
+                             {"status": "human_review", "task": "Rate limit headers", "worker": "rate-limit", "runtime_exit": 0, "errors": []})
+            self.assertEqual(sorted(report), sorted(["status", "task", "worker", "runtime_exit", "reason", "changes", "errors"]))
+            self.assertRegex(report["reason"], reply)
+            self.assertTrue((tree / "worker-stdout.log").is_file())
+            tracker = next(work.glob("daily/*-tracker.md")).read_text()
+            # update_tracker: the row's owner is the configured user and its state a bare `waiting`; the Log gets the end line.
+            self.assertRegex(tracker, r"(?m)^\| Rate limit headers \| Robin \| waiting \| \d\d:\d\d \|")
+            self.assertNotRegex(tracker, r"running \d\d:\d\d")
+            ended = next(line for line in tracker.splitlines() if tracker_log.ENDED.match(line))
+            self.assertEqual(tracker_log.ENDED.match(ended)[4], "HUMAN REVIEW NEEDED")
+            self.assertTrue(ended.startswith(tracker_log.ended_line(ended[2:7], "rate-limit", "human_review", "", "")[:-len(" — . Changes: .")]), ended)
+            self.assertIn(one_shot._brief(report["reason"]), ended)  # the reason as the launcher writes it: whitespace joined, cut at 500
+            self.assertLess(len(one_shot._brief(report["reason"])), len(" ".join(report["reason"].split())))  # and it is cut
+            self.assertIn("`trees/rate-limit` (feat/rate-limit)", tracker)  # File ownership names the tree
+            # The fact is in the report and the worker's log, and nowhere the coordinator reads without `result`.
+            for f in (tree / "worker-stdout.log", work / "trees" / "rate-limit" / one_shot.REPORT):
+                self.assertRegex(f.read_text(), reply, f.name)
+            for f in (*work.glob("daily/*"), work / "CLAUDE.md"):
+                self.assertNotRegex(f.read_text(), reply, f.name)
+        # The harness allows `chief-of-stuff result` and its script, and its shim runs this checkout's entry point.
+        self.assertIn("result", run.OPERATIONS)
+        self.assertIn("one_shot_result.py", run.SCRIPTS)
+        allowed = run.allowed_tools(run.PLUGIN_ROOT)
+        self.assertIn("Bash(chief-of-stuff result:*)", allowed)
+        self.assertIn(f"Bash(python3 {run.PLUGIN_ROOT / 'chief_of_stuff.py'} result:*)", allowed)
+
+
 if __name__ == "__main__":
     unittest.main()
