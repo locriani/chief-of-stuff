@@ -486,10 +486,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--name", default=None, help="the name the session is started with, e.g. impl07")
     args = ap.parse_args(argv)
 
-    root = Path(args.root)
-    worktree = Path(args.worktree) if args.worktree else None
+    return emit(Path(args.root), args.day, args.task, worktree=Path(args.worktree) if args.worktree else None,
+                coordinator=args.coordinator, name=args.name)
+
+
+def emit(root: Path, day: str | None, task: str, **kw) -> int:
+    """Print the composed assignment (exit 0), or `refused: <why>` on stderr (exit 1)."""
     try:
-        body = compose(root, args.day, args.task, worktree=worktree, coordinator=args.coordinator, name=args.name)
+        body = compose(root, day, task, **kw)
     except RefusedError as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 1

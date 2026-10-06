@@ -207,8 +207,8 @@ def launch_env(parent: dict[str, str] | None = None) -> dict[str, str]:
 def main(argv_in: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--type", dest="agent_type", help="an agent type from the Coordinator block; omitted runs the default agent")
-    ap.add_argument("--cwd", required=True, help="the worktree the session starts in")
-    ap.add_argument("--name", "--title", dest="title", required=True,
+    ap.add_argument("--cwd", help="the worktree the session starts in")
+    ap.add_argument("--name", "--title", dest="title",
                     help="the session's name, e.g. impl07; the listing, the prompt box and the tab all show it")
     ap.add_argument("--task", required=True, help="the Tasks row this dispatch owns, by its item or its name; the assignment is read back from it")
     ap.add_argument("--root", default=".", help="workspace root holding CLAUDE.md")
@@ -224,6 +224,9 @@ def main(argv_in: list[str] | None = None) -> int:
     ap.add_argument("--effort", default="", choices=("", "low", "medium", "high", "xhigh", "max"),
                     help="not supported for " + ", ".join(r.name for r in runtimes.RUNTIMES if not r.takes_effort))
     ap.add_argument("--dry-run", action="store_true", help="print the argv and start nothing")
+    ap.add_argument("--check", action="store_true",
+                    help="print the assignment the task row composes, or the refusal; needs no --cwd or --name, "
+                         "makes no worktree, starts nothing and writes nothing; wins over every launch flag")
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--one-shot", action="store_true",
                       help="run this task once; [workers] mode = one-shot already makes this the default")
@@ -233,6 +236,10 @@ def main(argv_in: list[str] | None = None) -> int:
     ap.add_argument("--timeout-minutes", type=int, default=60,
                     help="one-shot run limit before human review (default: 60)")
     args = ap.parse_args(argv_in)
+    if not args.check:
+        for flag, value in (("--cwd", args.cwd), ("--name", args.title)):
+            if not value:
+                ap.error(f"the following arguments are required: {flag}")
     try:
         config = dispatch_prompt.config(Path(args.root))
         settings = load_settings(Path(args.root), config.settings_path)
@@ -256,7 +263,7 @@ def main(argv_in: list[str] | None = None) -> int:
         print(f"refused: --effort is not supported for {runtime.name}", file=sys.stderr)
         return 1
     # Compose and launch must use the same absolute cwd.
-    args.cwd = os.path.abspath(args.cwd)
+    args.cwd = os.path.abspath(args.cwd) if args.cwd else None
 
     one_shot = args.one_shot or (worker_settings.mode == "one-shot" and not args.interactive)
     try:
@@ -264,6 +271,8 @@ def main(argv_in: list[str] | None = None) -> int:
     except dispatch_prompt.RefusedError as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 1
+    if args.check:
+        return dispatch_prompt.emit(Path(args.root), args.date, args.task)
 
     if one_shot:
         if args.timeout_minutes < 1:
