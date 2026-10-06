@@ -289,8 +289,8 @@ def slot(trees: Path, cwd: Path, task: str, cap: int | None):
         fcntl.flock(lock, fcntl.LOCK_EX)
         busy = running_workers(trees)
         if cap is not None and len(busy) >= cap:
-            raise ValueError(f"{len(busy)} one-shot workers running ({', '.join(busy)}); "
-                             f"[workers] max_concurrency is {cap}")
+            raise ValueError(f"{len(busy)} one-shot workers running; [workers] max_concurrency is {cap} "
+                             "(list them: chief-of-stuff processes --root .)")
         (cwd / PIDFILE).parent.mkdir(exist_ok=True)
         (cwd / PIDFILE).write_text(f"{os.getpid()} {task}\n")
     finally:

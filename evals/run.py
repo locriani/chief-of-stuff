@@ -195,6 +195,8 @@ def context(tz: str, now: datetime) -> dict[str, str]:
         "now_iso": local.replace(second=0, microsecond=0).isoformat(),
         # Fixtures cannot hold a real `.git/`; a file under `{{dotgit}}/` renders as one.
         "dotgit": ".git",
+        # A pid that is alive for the whole run: the harness's own, which outlives every runtime it launches.
+        "live_pid": str(os.getpid()),
         # The Board line's port: its own per run, so a case's pages server never answers another case.
         "pages_port": str(_free_port()),
     }

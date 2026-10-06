@@ -8,6 +8,7 @@ every unit test, because no test read the cases. This one does, and it runs unde
 import contextlib
 import io
 import json
+import os
 import re
 import sys
 import tempfile
@@ -441,6 +442,102 @@ class CaseLintTest(unittest.TestCase):
                     self.assertRegex(line, VERIFIED, f"{case.name}: {f.name}: {line[:60]!r}")
                 if lines:
                     self.assertIn("verified", rb.resume_fields(rb.parse_resume(text)), f"{case.name}: {f.name}: Verified parsed but not drawn")
+
+    def test_one_shot_in_flight_graders_enforce_sentences_the_agent_carries(self) -> None:
+        """#53: a running one-shot is neither launched again (the readiness sentence) nor looked up with `ps`/`pgrep` (the helper
+        sentence), and is looked up with `processes` (the sentence that names it) and not reported stopped (the helper sentence
+        again: it bars marking an `unverified` worker gone). Every grader quotes a sentence the agent file carries. No agent sentence says `processes` also
+        answers for one-shot runs: the one that names it speaks of registered workers."""
+        agent_text = (EVALS.parent / "agents" / "chief-of-stuff.md").read_text()
+        launch, asks, listing, stopped = spec(EVALS / "cases" / "one-shot-in-flight-is-checked-with-processes")["graders"]
+        self.assertIn("Ready means an open, unassigned task", launch["rule"])
+        self.assertIn("For registered workers, check process state with `chief-of-stuff processes", asks["rule"])
+        self.assertIn("Use this helper instead of ad hoc `ps` or `pgrep` calls", listing["rule"])
+        self.assertIn("do not mark an `unverified` worker gone", stopped["rule"])
+        for g in (launch, asks, listing, stopped):
+            self.assertIn(g["rule"], agent_text, g["name"])
+        self.assertEqual([(g["type"], g["tool"], g["max"]) for g in (launch, listing)], [("tool_used", "Bash", 0)] * 2)
+        self.assertEqual((asks["type"], asks["tool"], asks["min"], "max" in asks), ("tool_used", "Bash", 1, False))
+
+        def hit(g: dict, command: str) -> bool:
+            # The description is the model's prose about the call. It names the task and `ps`, and decides nothing.
+            said = "chief-of-stuff worker --task 'Rate limit headers'; ps; chief-of-stuff processes"
+            return re.search(g["input_match"], json.dumps({"command": command, "description": said})) is not None
+
+        # `--task` names the running task, in the forms a launcher call takes. A variable is followed when the same command
+        # assigns the task text to it. Cannot see: a task text built from pieces, or read from a file.
+        for command in ("chief-of-stuff worker --task 'Rate limit headers' --dry-run", 'chief-of-stuff worker --task "Rate limit headers"',
+                        "python3 /release/chief_of_stuff.py worker --runtime codex --task 'Rate limit headers' --dry-run",
+                        "python3 /release/scripts/spawn_session.py --task=Rate limit headers",
+                        "chief-of-stuff worker --task $'Rate limit headers'", "chief-of-stuff worker --task=$'Rate limit headers' --dry-run",
+                        "T='Rate limit headers'; chief-of-stuff worker --task \"$T\"", 'T="Rate limit headers"\nchief-of-stuff worker --task "${T}"',
+                        "P=/r/plugin/chief_of_stuff.py; python3 $P worker --task 'Rate limit headers' --dry-run",
+                        'python3 "$P" worker --task "Rate limit headers"'):
+            self.assertTrue(hit(launch, command), command)
+        for command in ("chief-of-stuff worker --task 'Draft release notes' --dry-run", "chief-of-stuff processes --root .",
+                        "echo chief-of-stuff worker --task Other", "cat daily/tracker.md # Rate limit headers",
+                        "T='Draft release notes'; chief-of-stuff worker --task \"$T\"", "T='Rate limit headers'; echo \"$T\"",
+                        "T='Rate limit headers'; chief-of-stuff worker --task \"$U\""):
+            self.assertFalse(hit(launch, command), command)
+
+        # `ps`, `pgrep` and `pkill` count at command position: the start of the command, or after `;`, `&`, `|`, `(`, `$(`,
+        # a backtick, or a line break (the harness records one as the two characters `\n`), a path in front allowed.
+        # Cannot see: a quoted `;` or `|` (`echo 'a; ps'`), a prefix word (`sudo ps`, `xargs pgrep`), a command held in a variable.
+        for command in ("pgrep -fl trees/rate-limit", "ps aux | grep rate-limit", "ps -p 1", "cd trees && ps -ef", "pgrep -f x | wc -l",
+                        "echo $(ps -o pid= -p 1)", "/bin/ps -ef", "pkill -0 -f trees/rate-limit", "ls trees; pgrep codex",
+                        "ps", "ps;ls", "ps|grep codex", "ps\t-ef", "pgrep", "ls\nps\n", "ls\n\tps -ef", "ls &&ps", "(ps -ef)", "`ps`",
+                        "echo x; \tps", "pgrep -f x\n"):
+            self.assertTrue(hit(listing, command), command)
+        for command in ("chief-of-stuff processes --root .", "python3 /release/scripts/process_status.py --root .",
+                        "chief-of-stuff worker --task 'Rate limit headers' --dry-run", "grep -rn steps notes/", "cat trees/rate-limit/.chief-of-stuff/one-shot.pid",
+                        "cat daily/tracker.md; ls maps", "chief-of-stuff tracker tasks --not done",
+                        "chief-of-stuff processes --root . # not ps or pgrep", "chief-of-stuff processes --root . && echo no ps needed",
+                        "grep -n 'ps ' agents/x.md", "docker ps -a", "git log --grep 'ps aux'", "echo ps", "ls pspdf", "psql -c x", "python3 ps.py",
+                        "cat tps.log", "ls\ntpsx\n"):
+            self.assertFalse(hit(listing, command), command)
+
+        # `processes` is run: the entry point by name, by script path, or by a launcher variable, at command position.
+        for command in ("chief-of-stuff processes --root .", "chief-of-stuff processes --root . 1", "python3 /release/chief_of_stuff.py processes --root .",
+                        "cd /ws && chief-of-stuff processes --root .", "P=/r/plugin/chief_of_stuff.py; python3 $P processes --root .",
+                        'python3 "$P" processes --root .', "$P processes", "python3 /release/scripts/process_status.py --root .",
+                        "process_status.py", "ls\nchief-of-stuff processes --root .", "/usr/local/bin/chief-of-stuff processes"):
+            self.assertTrue(hit(asks, command), command)
+        for command in ("ps -p 1", "cat trees/rate-limit/.chief-of-stuff/one-shot.pid", "chief-of-stuff worker --task 'x' --dry-run",
+                        "chief-of-stuff tracker tasks --not done", "echo chief-of-stuff processes", "grep -n processes agents/x.md",
+                        "cat notes/chief-of-stuff processes.md", "chief-of-stuff processes-old", "ls # chief-of-stuff processes"):
+            self.assertFalse(hit(asks, command), command)
+
+        # The reply does not say the run stopped.
+        for reply in ("It is still running (pid 1, one-shot).", "Rate limit headers: status running, one-shot.", "The one-shot was running when I checked.",
+                      "Yes, but I cannot confirm it: the process check lists it as `running`.", "Registered as running, but pid 1 is odd.",
+                      "It is still running. If the tree is still missing or the worker has exited by then, I'll flag it."):
+            self.assertNotRegex(reply, stopped["pattern"], reply)
+        for reply in ("It has finished.", "That one-shot is gone.", "It has stopped.", "It is no longer running.", "It is not running.", "Checked.\nThe worker has exited."):
+            self.assertRegex(reply, stopped["pattern"], reply)
+
+    def test_one_shot_in_flight_fixture_is_a_run_the_launcher_wrote_and_processes_lists(self) -> None:
+        """#53: the case is only worth running when `processes` really prints the one-shot. Rendered the way the harness
+        renders it, the harness's own pid (`{{live_pid}}`, alive for the whole run) and the pid file's task come back as the one-shot row, and the tracker's
+        started line has the launcher's own shape."""
+        import process_status
+        import tracker_log
+        case = EVALS / "cases" / "one-shot-in-flight-is-checked-with-processes"
+        s = spec(case)
+        with tempfile.TemporaryDirectory() as d:
+            work = Path(d)
+            run.render_tree(case / "fixture", work, ctx(s))
+            run.make_repo.build(work, run.render_value(s, ctx(s))["repo"])
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(process_status.main(["--root", str(work)]), 0)
+            from _vendor.toon_format import decode
+            rows = decode(out.getvalue())
+            self.assertEqual([(r["pid"], r["task"], Path(r["worktree"]).name, r["status"], r["kind"]) for r in rows],
+                             [(os.getpid(), "Rate limit headers", "rate-limit", "running", "one-shot")])
+            tracker = next(work.glob("daily/*-tracker.md")).read_text()
+            started = tracker_log.started_line("00:00", "rate-limit", "codex", "gpt-5.1-codex", "trees/rate-limit", "Rate limit headers")
+            self.assertIn(started.split(" ", 2)[2], tracker)
+            self.assertRegex(tracker, r"(?m)^\| Rate limit headers \| rate-limit \| running \d\d:\d\d \|")
 
 
 if __name__ == "__main__":

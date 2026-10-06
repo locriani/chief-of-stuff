@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check worker PIDs in one call without exposing their command lines.
 
-With no PIDs, check every registered worker. PIDs can be space or comma separated.
+With no PIDs, check every registered worker and list every live one-shot run. PIDs can be space or comma separated.
 """
 
 from __future__ import annotations
@@ -12,12 +12,19 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from datetime import datetime
 
 import runtimes
 from _vendor.toon_format import encode as toon_encode
+from git_trees import clean, read_regular
+from tracker import parse_tracker
+from workspace import read_config, worktrees_dir
 
 # `<launcher pid> <task>` while a one-shot runs in this tree; the count behind `[workers] max_concurrency`.
 PIDFILE = Path(".chief-of-stuff") / "one-shot.pid"
+# The pid file and the tree's name are a worker's to write, so `processes` prints neither raw: a task only when the
+# tracker holds it, a tree name escaped, each at most this many characters. The readers below return them raw.
+TASK_MAX = 200
 
 
 def registrations(root: Path) -> dict[int, dict[str, str]]:
@@ -51,22 +58,42 @@ def process_exists(pid: int) -> bool:
         return True
     except PermissionError:
         return True
-    except ProcessLookupError:
+    except (ProcessLookupError, OverflowError):  # OverflowError: a pid too large for the OS is no process
         return False
 
 
-def running_trees(trees: Path) -> dict[Path, str]:
-    """Each worktree whose one-shot launcher is alive, and its task. A launcher that died, or a restart that
-    killed it, holds no slot. ponytail: pid reuse can count a dead launcher; add the process start time if it bites."""
-    found = {}
+def one_shot_runs(trees: Path) -> list[tuple[Path, int, str]]:
+    """(worktree, launcher pid, task) for each one-shot whose launcher is alive; the one reader of the pid files. The file
+    is untrusted: opened without blocking or following a symlink, a regular file only, a bounded read, a pid of ASCII
+    digits. The task is RAW, the first line as written (the board joins on it) or the tree's name when empty: print it only
+    through `main`. A launcher that died, or a restart that killed it, holds no slot. ponytail: pid reuse can count a dead
+    launcher; add the process start time if it bites."""
+    found = []
     for f in sorted(trees.glob(f"*/{PIDFILE}")):
         try:
-            pid, _, task = f.read_text().partition(" ")
-            if process_exists(int(pid)):
-                found[f.parent.parent] = task.strip() or f.parent.parent.name
-        except (OSError, ValueError):
+            data = read_regular(f, 8 * TASK_MAX, nofollow=True)
+            pid, _, task = ((data or b"").decode(errors="replace").splitlines() or [""])[0].partition(" ")
+            if data is not None and pid.isascii() and pid.isdecimal() and int(pid) > 0 and process_exists(int(pid)):
+                found.append((f.parent.parent, int(pid), task.strip() or f.parent.parent.name))
+        except OSError:
             continue
     return found
+
+
+def known_tasks(root: Path) -> set[str]:
+    """The item and the name of each row in today's Tasks table; empty when the workspace names no tracker, has none for
+    today, or holds one that cannot be parsed."""
+    try:
+        cfg = read_config(root)
+        text = (root / cfg.tracker_path(datetime.now(cfg.zone).date().isoformat())).read_text()
+        return {s.strip() for t in parse_tracker(text).tasks for s in (t.item, t.name)}
+    except Exception:  # no config, no file, a bad zone or table: no known tasks, and the rows still list
+        return set()
+
+
+def running_trees(trees: Path) -> dict[Path, str]:
+    """Each worktree whose one-shot launcher is alive, and its task."""
+    return {tree: task for tree, _, task in one_shot_runs(trees)}
 
 
 def running_workers(trees: Path) -> list[str]:
@@ -111,13 +138,21 @@ def check(root: Path, pids: list[int]) -> list[dict[str, str | int]]:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--root", type=Path, required=True, help="workspace containing the worker registry")
-    ap.add_argument("pids", nargs="*", help="PIDs, separated by spaces or commas; omit for all workers")
+    ap.add_argument("pids", nargs="*", help="PIDs, separated by spaces or commas; omit for all workers and one-shot runs")
     args = ap.parse_args(argv)
     try:
         pids = parse_pids(args.pids)
     except ValueError as exc:
         ap.error(str(exc))
-    rows = check(args.root, pids)
+    rows: list[dict[str, str | int]] = check(args.root, pids)
+    if not pids:
+        try:
+            runs = one_shot_runs(args.root / worktrees_dir((args.root / "CLAUDE.md").read_text()))
+        except (OSError, UnicodeDecodeError):  # no CLAUDE.md, or one that cannot be decoded: no trees dir to look in
+            runs = []
+        known = known_tasks(args.root)  # printed: a task only when the tracker holds it, a tree name escaped
+        rows += [{"pid": pid, "task": task[:TASK_MAX] if task in known else "", "worktree": clean(tree.name)[:TASK_MAX],
+                  "status": "running", "kind": "one-shot"} for tree, pid, task in runs]
     print(toon_encode(rows) if rows else "[]")
     return 0
 

@@ -180,6 +180,17 @@ def _has_grafts(tree: Path) -> bool | None:
     return stat.S_ISREG(info.st_mode) and info.st_size > 0
 
 
+def read_regular(path: Path, limit: int, nofollow: bool = False) -> bytes | None:
+    """At most `limit` bytes of `path`, or None when it is not a regular file (decided on the opened one, so a swap after
+    the open cannot matter). For a file a worker can write: `O_NONBLOCK`, so opening a FIFO cannot block; `nofollow` refuses
+    a symlink (an `OSError`, as is any open or read that fails)."""
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | (os.O_NOFOLLOW if nofollow else 0))
+    try:
+        return os.read(fd, limit) if stat.S_ISREG(os.fstat(fd).st_mode) else None
+    finally:
+        os.close(fd)
+
+
 def _pruned_common(tree: Path) -> Path | None:
     """The repository (`<common>`) of a pruned worktree, else None. `tree` is pruned when its `.git` is a regular file (decided on the
     opened one) of at most 4096 bytes whose content is `gitdir: <path>` (that exact prefix, as git requires) with
@@ -189,14 +200,8 @@ def _pruned_common(tree: Path) -> Path | None:
     `<common>` is itself the git directory git uses there (rule A) is not asked here: `check_sha` asks git, once, and follows the
     redirect once (rule B)."""
     try:
-        fd = os.open(tree / ".git", os.O_RDONLY | os.O_NONBLOCK)  # O_NONBLOCK: opening a FIFO must not block
-        try:
-            if not stat.S_ISREG(os.fstat(fd).st_mode):  # decided on the opened file, so a swap after the open cannot matter
-                return None
-            data = os.read(fd, 4097)  # one past the bound: content beyond it is never ignored
-        finally:
-            os.close(fd)
-        if len(data) > 4096:
+        data = read_regular(tree / ".git", 4097)  # one past the bound: content beyond it is never ignored
+        if data is None or len(data) > 4096:
             return None
         line = data.decode()
         path = line.removeprefix("gitdir: ").rstrip("\r\n")

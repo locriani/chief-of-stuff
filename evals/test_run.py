@@ -449,6 +449,11 @@ class RenderTest(unittest.TestCase):
         ctx = run.context("America/Chicago", datetime(2026, 9, 16, 16, 0, tzinfo=CT))
         self.assertEqual(run.render("emr-fork/{{dotgit}}/HEAD", ctx), "emr-fork/.git/HEAD")
 
+    def test_live_pid_token_renders_the_harness_pid(self) -> None:
+        # A fixture cannot hold a live pid of its own; the harness's process outlives every run it makes.
+        ctx = run.context("America/Chicago", datetime(2026, 9, 16, 16, 0, tzinfo=CT))
+        self.assertEqual(run.render("{{live_pid}} Rate limit headers", ctx), f"{os.getpid()} Rate limit headers")
+
     def test_context_dates(self) -> None:
         ctx = run.context("America/Chicago", at(0, 30))
         self.assertEqual(ctx["today"], "2026-09-16")
