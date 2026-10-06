@@ -156,7 +156,7 @@ class GitLabTest(unittest.TestCase):
             got = bs.refresh(root, NOW, call=call)
         # Every call goes to the host's GraphQL with the Backlog token; an open change adds one for its jobs and threads.
         self.assertEqual({(m, u, t) for m, u, t, _ in calls}, {("POST", "https://labs.example.test/api/graphql", "tok")})
-        self.assertTrue(any('mergeRequests(iids: ["54"])' in c[3]["query"] for c in calls))
+        self.assertTrue(any('mergeRequests(iids: ["54"]' in c[3]["query"] for c in calls))
         change = got.changes["!54"]
         self.assertEqual((change.state, change.pipeline, change.approved, change.approvals, change.files, change.issues),
                          ("open", "pending", True, 1, ("src/search.py",), ("#115",)))
@@ -313,7 +313,7 @@ class GitLabStageTwoTest(unittest.TestCase):
         self.assertEqual(sum("merged:" in q for q in main), 1)  # one query per connection; the merged page is one of them
         self.assertEqual(len(detail), 1)
         self.assertNotIn("merged:", detail[0])
-        self.assertIn('mergeRequests(iids: ["54"])', detail[0])
+        self.assertIn('mergeRequests(iids: ["54"]', detail[0])  # the argument list may go on, with `first:`
 
     def test_the_board_asks_for_no_squash_commit(self):
         # #45: GitLab's MergeRequest has no `squashCommitSha`, so a query naming it fails outright.
@@ -718,6 +718,7 @@ class GitLabPanelsTest(unittest.TestCase):
             with self.subTest(fail=fail):
                 stale = self.PANEL[fail]
                 fresh = "kanban" if stale == "merge requests" else "merge requests"
+                self.setUp()  # each case starts from its own workspace and good cache
                 got, _ = self.again(FailingGitLab, fail, NO_DATA)
                 self.assertEqual((got.fetched[stale], got.fetched[fresh]), (NOW, self.LATER), f"{fail} fails: (stale panel, fresh panel) fetched")
                 self.assertEqual(set(got.errors), {stale})
