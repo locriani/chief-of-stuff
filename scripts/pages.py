@@ -42,6 +42,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime
 from pathlib import Path
+from stat import S_ISREG
 from html import escape
 from urllib.parse import parse_qs, quote
 
@@ -240,12 +241,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         render failed (never a blank 500). HEAD's length is GET's, and Last-Modified stays the file's own."""
         path = Path(self.translate_path(self.path))
         try:
-            page, stamp = path.read_bytes(), path.stat().st_mtime
+            stat = path.stat()
+            if not S_ISREG(stat.st_mode):
+                raise OSError  # a directory (the base would redirect it) is no page
+            page, stamp = path.read_bytes(), stat.st_mtime
         except OSError:
+            if not self.banner:  # no page, or it vanished: a 404, never a blank 200 stamped 1970
+                return self.send_error(404)
             page, stamp = b"<!doctype html>\n<meta charset=\"utf-8\">\n<body>\n</body>\n", 0
-        note = ('<p role="alert" style="margin:0;padding:6px 16px;background:#c9533a;color:#fff;'
-                f'font:14px/1.4 system-ui,sans-serif">not re-rendered: {escape(self.banner)}</p>').encode()
         if self.banner:
+            note = ('<p role="alert" style="margin:0;padding:6px 16px;background:#c9533a;color:#fff;'
+                    f'font:14px/1.4 system-ui,sans-serif">not re-rendered: {escape(self.banner)}</p>').encode()
             page = re.sub(rb"<body[^>]*>", lambda m: m[0] + note, page, count=1) if b"<body" in page else note + page
         page = page_reload.inject(page)
         self.send_response(200)
@@ -257,8 +263,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(page)
 
     def _is_html(self) -> bool:
-        path = Path(self.translate_path(self.path))
-        return bool(self.banner) or (path.suffix.lower() == ".html" and path.is_file())
+        return bool(self.banner) or self.path.split("?")[0].lower().endswith(".html")
 
     def do_GET(self):
         if self._allowed():

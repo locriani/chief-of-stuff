@@ -6,10 +6,12 @@ throttled). A change reloads the page, except while the user is typing: then it 
 
 SNIPPET = """<script>
 (function(){
-  if(location.protocol==='http:'){
   var seen=Date.parse(document.lastModified);
-  function typing(){return document.activeElement&&/^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName)||
-    Array.prototype.some.call(document.querySelectorAll('input,textarea'),function(e){return e.value!==e.defaultValue;});}
+  function some(sel,f){return Array.prototype.some.call(document.querySelectorAll(sel),f);}
+  function typing(){var a=document.activeElement;
+    return a&&(/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)||a.isContentEditable)||
+      some('input,textarea',function(e){return e.value!==e.defaultValue||e.checked!==e.defaultChecked;})||
+      some('option',function(o){return o.selected!==o.defaultSelected;});}
   function notice(){
     if(document.getElementById('page-changed'))return;
     var n=document.createElement('div');n.id='page-changed';n.setAttribute('role','status');
@@ -24,13 +26,16 @@ SNIPPET = """<script>
       if(t&&t!==seen){if(typing())notice();else location.reload();}
     }).catch(function(){});
   }
-  setInterval(poll,5000);document.onvisibilitychange=poll;}
+  setInterval(poll,5000);document.addEventListener('visibilitychange',poll);
 })();
 </script>
 """
 
 
+ENCODED = SNIPPET.encode()
+
+
 def inject(page: bytes) -> bytes:
     """`page` with SNIPPET before its last `</body>`, or appended when it has none."""
     at = page.lower().rfind(b"</body>")
-    return page + SNIPPET.encode() if at < 0 else page[:at] + SNIPPET.encode() + page[at:]
+    return page + ENCODED if at < 0 else page[:at] + ENCODED + page[at:]

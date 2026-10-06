@@ -31,7 +31,7 @@ from workspace import (Config, ConfigError, daily_trackers, read_config,  # noqa
 import board_sources  # noqa: E402
 import columns  # noqa: E402
 import decision_page  # noqa: E402
-from fragment import FONTS, TAB_CSS, tab_bar  # noqa: E402
+from fragment import FONTS, TAB_CSS, tab_bar, write_if_changed  # noqa: E402
 import flow_chart  # noqa: E402
 import panels  # noqa: E402
 import tracker_log  # noqa: E402
@@ -665,7 +665,7 @@ def write(root: Path, day: str | None = None) -> tuple[Path, Config, datetime, s
                   sources=board_sources.load(out.parent), answered=len(decision_rows(tracker_text)),
                   tracker_at=datetime.fromtimestamp(tracker.stat().st_mtime, cfg.zone), stage_log=stage_log,
                   slots=settings.workers.max_concurrency or 1, log_text=log_text)
-    out.write_text(page)
+    write_if_changed(out, page)
     return out, cfg, now, tracker_text, req_texts
 
 

@@ -45,7 +45,7 @@ from pathlib import Path
 import board_sources
 from backlog_ref import Backlog, BacklogError, GitHubBacklog, backlog_from_config
 from clock import leading
-from fragment import FONTS, TAB_CSS, href, tab_bar
+from fragment import FONTS, TAB_CSS, href, tab_bar, write_if_changed
 from md import section as md_section
 from module_graph import section as _graph
 from settings import Graph, SettingsError, load as load_settings
@@ -490,7 +490,7 @@ def write(root: Path, pages_dir: Path, name: str, day: str, source: Path | None 
                   pending_count(pages_dir, ctx))
     pages_dir.mkdir(parents=True, exist_ok=True)
     out = pages_dir / f"decision-{name}.html"
-    out.write_text(page)
+    write_if_changed(out, page)
     return out
 
 
@@ -753,9 +753,9 @@ def write_all(pages_dir: Path, ctx: Context, day: str, root: Path | None = None)
                           source.stat().st_mtime, count)
         except BAD:
             continue
-        source.with_suffix(".html").write_text(page)
+        write_if_changed(source.with_suffix(".html"), page)
     html, pending = index(pages_dir, ctx, day, pending)
-    (pages_dir / "decisions.html").write_text(html)
+    write_if_changed(pages_dir / "decisions.html", html)
     return pending
 
 

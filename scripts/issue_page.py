@@ -18,7 +18,7 @@ import board_sources
 import flow_chart
 import tracker_log
 from decision_page import HEAD, _md, _section, context, pending_count, span
-from fragment import href, tab_bar
+from fragment import href, tab_bar, write_if_changed
 from module_graph import section as _graph
 from clock import dur as _dur
 from task_forge import forge_ends
@@ -309,7 +309,7 @@ def put(out: Path, page: str | None) -> Path | None:
         out.unlink(missing_ok=True)
         return None
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(page)
+    write_if_changed(out, page)
     return out
 
 
