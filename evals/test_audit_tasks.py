@@ -1305,6 +1305,50 @@ class IssueAuditTest(unittest.TestCase):
         self.assertEqual(gh.calls, [])
 
 
+class WorkflowStepAuditTest(unittest.TestCase):
+    """#362, the user's rule: "you are NOT to file new issues for things that are part of the workflow (e.g. reviewing a mr)".
+    An `issue` cell of exactly `workflow` marks a step the pipeline performs: no issue fault in any state. A blank cell and
+    any other text that is not an issue still fault."""
+
+    TRACKER = """# Tracker 2026-09-17
+
+## Tasks
+
+| name | item | owner | state | since | due | size | issue | checklist |
+|---|---|---|---|---|---|---|---|---|
+| Open step | Review the open merge request | robin | open | 09:00 |  | S | workflow | c |
+| Waiting step | Review the second merge request | robin | waiting | 09:00 |  | S | workflow | c |
+| Done step | Review the third merge request | robin | done 09:00–10:00 | 09:00 |  | S | workflow | c |
+| Blank | Unfiled task | robin | open | 09:00 |  | S |  | c |
+| Prose | Garbled task | robin | open | 09:00 |  | S | review it | c |
+
+## Log
+
+- 09:00 opened the day
+"""
+
+    def test_only_a_blank_or_a_non_issue_cell_faults(self):
+        tmp, root = issue_workspace(tracker=self.TRACKER)
+        self.addCleanup(tmp.cleanup)
+        gh = FakeGh(LIVE)
+        report = al.audit(root, "2026-09-17", gh=gh)
+        self.assertEqual([str(f) for f in report.issues], [
+            "issue: Blank — no issue; file it with chief-of-stuff backlog --create",
+            'issue: Prose — "review it" is not an issue reference',
+        ])
+        self.assertEqual(gh.calls, [], "a workflow row is never looked up on the forge")
+
+    def test_a_workflow_row_is_never_reported_closed_or_open_under_done(self):
+        # The audit must not read `workflow` as an issue: nothing to be closed, and a done row needs no `backlog --close`.
+        tmp, root = issue_workspace(tracker=self.TRACKER)
+        self.addCleanup(tmp.cleanup)
+        report = al.audit(root, "2026-09-17", gh=FakeGh(LIVE))
+        text = "\n".join(report.lines)
+        for name in ("Open step", "Waiting step", "Done step"):
+            with self.subTest(name=name):
+                self.assertNotIn(f"issue: {name}", text)
+
+
 class IssueClosesAtLaneEndTest(unittest.TestCase):
     """A done row mid-lane is one stage of its issue's work; the issue closes when its card reaches the lane's end."""
 

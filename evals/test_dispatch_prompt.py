@@ -831,6 +831,42 @@ class IssueDispatchTest(unittest.TestCase):
             dp.compose(root, "2026-09-18", "Garbled task")
         self.assertIn('"soon"', str(e.exception))
 
+    # #362, the user's rule: "you are NOT to file new issues for things that are part of the workflow (e.g. reviewing a mr)".
+    # A Tasks row whose issue cell is exactly `workflow` is a workflow step: the no-issue refusal does not apply to it.
+    WORKFLOW = "| Review | Review the open merge request | unassigned | open | 09:00 |  | S | workflow | Checklist: review |\n"
+
+    def workflow_workspace(self, row: str | None = None, owns: bool = True):
+        text = ISSUE_TRACKER.replace("| impl02 —", (row or self.WORKFLOW) + "| impl02 —")
+        if owns:
+            text = text.replace("| impl02: standing implementer. Wait idle for the next item. | `src/d/` |",
+                                "| Review the open merge request | `src/e/` |\n| impl02: standing implementer. Wait idle for the next item. | `src/d/` |")
+        tmp, root = workspace(text, ISSUE_CLAUDE)
+        self.addCleanup(tmp.cleanup)
+        return root
+
+    def test_a_workflow_row_is_not_refused_for_naming_no_issue(self):
+        body = dp.compose(self.workflow_workspace(), "2026-09-18", "Review the open merge request")
+        self.assertIn("Review the open merge request", body)
+        self.assertNotIn("Issue: ", body)
+
+    def test_a_workflow_row_still_needs_its_file_ownership_row(self):
+        with self.assertRaises(dp.RefusedError) as e:
+            dp.compose(self.workflow_workspace(owns=False), "2026-09-18", "Review the open merge request")
+        self.assertIn("no File ownership row", str(e.exception))
+
+    def test_a_workflow_row_that_is_owned_is_still_refused(self):
+        root = self.workflow_workspace(self.WORKFLOW.replace("| unassigned |", "| robin |"))
+        with self.assertRaises(dp.RefusedError) as e:
+            dp.compose(root, "2026-09-18", "Review the open merge request")
+        self.assertIn("already robin's", str(e.exception))
+
+    def test_a_workflow_row_still_refuses_session_origin_text(self):
+        root = self.workflow_workspace(self.WORKFLOW.replace("merge request |", "merge request (via 4821-audit) |"))
+        with self.assertRaises(dp.RefusedError) as e:
+            dp.compose(root, "2026-09-18", "Review the open merge request (via 4821-audit)")
+        self.assertIn("(via", str(e.exception))
+        self.assertNotIn("issue", str(e.exception))
+
     # The tracker rule: "A standing session's placeholder is not a task and takes no issue".
     def test_a_standing_placeholder_launched_as_its_own_session_needs_no_issue(self):
         tmp, root = workspace(ISSUE_TRACKER, ISSUE_CLAUDE)

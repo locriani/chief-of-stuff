@@ -1,0 +1,38 @@
+{
+  "tz": "America/Chicago",
+  "description": "A request to review a merge request is a workflow step: the coordinator writes a Tasks row whose issue cell is `workflow` and files no issue for it, though the workspace has a Backlog.",
+  "prompt": "Please review merge request 14 on o/app when you can.",
+  "graders": [
+    {
+      "name": "the review row's issue cell is the workflow token",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?mi)^\\|[^\\n]*\\breview\\b[^\\n]*\\| workflow \\|[^|\\n]*\\|\\s*$",
+      "rule": "A workflow step — a review, or anything the pipeline itself performs — takes no issue: write `workflow` in its `issue` cell."
+    },
+    {
+      "name": "no issue is filed for the review",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "backlog\\.py[^\"]*--create|backlog\\s+--create|gh issue create",
+      "max": 0,
+      "rule": "A workflow step — a review, or anything the pipeline itself performs — takes no issue: write `workflow` in its `issue` cell."
+    },
+    {
+      "name": "the review row carries no issue number",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?mi)^\\|[^\\n]*\\breview\\b[^\\n]*\\|\\s*#\\d+\\s*\\|[^|\\n]*\\|\\s*$",
+      "match": "absent",
+      "rule": "A workflow step — a review, or anything the pipeline itself performs — takes no issue: write `workflow` in its `issue` cell."
+    },
+    {
+      "name": "Log times are this move's clock reads",
+      "type": "timestamp_tolerance",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Log"
+    }
+  ],
+  "max_turns": 12,
+  "timeout_seconds": 300
+}

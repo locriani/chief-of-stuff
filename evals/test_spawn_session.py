@@ -1164,6 +1164,20 @@ class CheckTest(unittest.TestCase):
         code, out, err = self.check(root, "--name", "impl03", task=self.STANDING)
         self.assertEqual((code, out, err.strip()), (1, "", want))
 
+    def test_check_passes_a_workflow_row_in_a_workspace_with_a_backlog(self):
+        """#362: an `issue` cell of exactly `workflow` marks a step the pipeline performs; `--check` agrees with compose
+        that it names no issue and is not refused for it."""
+        tracker = TRACKER.replace(
+            "| item | owner | state | since | due | checklist |\n|---|---|---|---|---|---|\n"
+            "| Security audit | unassigned | open | 09:00 |  | Checklist: Security audit of the upload handler |",
+            "| name | item | owner | state | since | due | size | issue | checklist |\n|---|---|---|---|---|---|---|---|---|\n"
+            "| Audit | Security audit | unassigned | open | 09:00 |  | S | workflow | Checklist: Security audit of the upload handler |")
+        self.assertIn("| workflow |", tracker)
+        root = self.workspace(tracker, claude=self.BACKLOG)
+        code, out, err = self.check(root)
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out.strip(), self.composed(root).strip())
+
     def test_check_refuses_a_name_that_is_not_a_session_name(self):
         root = self.workspace()
         want = self.refusal(root, name="bad name!")

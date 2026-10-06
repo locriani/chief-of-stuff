@@ -1257,6 +1257,22 @@ class DecisionDeadlineTest(unittest.TestCase):
         self.assertIn("deadline: <name> YYYY-MM-DD HH:MM", rules)
         self.assertIn("deadline: <name> HH:MM", rules)
 
+    def test_agent_rules_say_a_workflow_step_and_a_state_change_take_no_issue(self) -> None:
+        # #362, the user's rule: "you are NOT to file new issues for things that are part of the workflow (e.g. reviewing a mr)"
+        # and "my rule about not creating issues to track moving issues between states". The Tasks `issue` sentences must carry,
+        # each exactly (the audit and the dispatch check read the token `workflow`):
+        #   "A workflow step \u2014 a review, or anything the pipeline itself performs \u2014 takes no issue: write `workflow` in its `issue` cell."
+        #   "A change of state \u2014 a kanban stage, a hold label, a review or merge step \u2014 is recorded on the issue it concerns, in the stage column and the Log, never as a new issue."
+        # "A standing session's placeholder is not a task and takes no issue" stays.
+        rules = (Path(__file__).resolve().parents[1] / "agents/chief-of-stuff.md").read_text()
+        for required in (
+            "A workflow step \u2014 a review, or anything the pipeline itself performs \u2014 takes no issue: write `workflow` in its `issue` cell.",
+            "A change of state \u2014 a kanban stage, a hold label, a review or merge step \u2014 is recorded on the issue it concerns, in the stage column and the Log, never as a new issue.",
+            "A standing session's placeholder is not a task and takes no issue",
+        ):
+            with self.subTest(required=required):
+                self.assertTrue(required in rules, f"the agent file does not say {required!r}")
+
     def test_agent_rules_do_not_describe_the_board_views_that_were_removed(self) -> None:
         # #259 removed the Sessions tree, the day bar, the Tasks table and the `est.` label from the board. The agent file
         # still carries these sentences (Tasks bullet and `## Board`), each describing a view the board no longer draws:

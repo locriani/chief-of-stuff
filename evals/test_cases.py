@@ -298,6 +298,17 @@ class CaseLintTest(unittest.TestCase):
             self.assertEqual(g["rule"], rule, g["name"])
             self.assertIn(g["rule"], agent_text, g["name"])
 
+    def test_workflow_step_graders_enforce_a_sentence_the_agent_carries(self) -> None:
+        """#362: every rule-bearing grader of the review case quotes the one sentence the agent file carries."""
+        rule = ("A workflow step — a review, or anything the pipeline itself performs — takes no issue: "
+                "write `workflow` in its `issue` cell.")
+        agent_text = (EVALS.parent / "agents" / "chief-of-stuff.md").read_text()
+        graders = spec(EVALS / "cases" / "review-step-takes-the-workflow-token")["graders"]
+        self.assertEqual([g["type"] for g in graders], ["file_matches", "tool_used", "file_matches", "timestamp_tolerance"])
+        for g in graders[:3]:
+            self.assertEqual(g["rule"], rule, g["name"])
+            self.assertIn(g["rule"], agent_text, g["name"])
+
     def test_effort_graders_enforce_a_sentence_the_agent_carries(self) -> None:
         """#52: every grader of the effort case quotes the one sentence the agent file carries."""
         rule = ("Launch an entry as `--runtime <runtime> --model <model-id>`, plus `--effort <effort>` when the entry has one, "
