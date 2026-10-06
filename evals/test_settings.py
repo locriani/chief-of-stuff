@@ -68,6 +68,15 @@ class SettingsTest(unittest.TestCase):
         with self.assertRaises(st.SettingsError):
             st.load(self.root, self.write("[notify\n"))
 
+    def test_a_file_that_is_not_utf8_is_a_settings_error_not_a_decode_error(self):
+        # Every caller catches SettingsError; a UnicodeDecodeError (a ValueError) got past them as a traceback.
+        (self.root / "chief-of-stuff.toml").write_bytes(b"\xff\xfe[workers]\n")
+        try:
+            with self.assertRaises(st.SettingsError):
+                st.load(self.root, "chief-of-stuff.toml")
+        except UnicodeDecodeError as exc:
+            self.fail(f"{exc!r} got past the callers' `except SettingsError`")
+
     def test_architecture_reviewer_is_optional_and_validated(self):
         self.assertIsNone(st.load(self.root, None).workflow.architecture_reviewer)
         settings = st.load(self.root, self.write('[workflow]\narchitecture_reviewer = "architecture-01"\n'))
@@ -131,9 +140,12 @@ class SettingsTest(unittest.TestCase):
         self.assertIsNone(st.load(self.root, None).workers.clone)
         self.assertIsNone(st.load(self.root, self.write('[workers]\nmode = "one-shot"\n')).workers.clone)
         self.assertEqual(st.load(self.root, self.write('[workers]\nclone = "checkout"\n')).workers.clone, "checkout")
+        # Padding validates as a path, so the value handed on is the stripped one.
+        self.assertEqual(st.load(self.root, self.write('[workers]\nclone = "  checkout  "\n')).workers.clone, "checkout")
 
     def test_worker_clone_that_is_blank_or_not_a_string_is_refused_naming_the_key(self):
-        for bad in ('""', '"  "', "3", "true", '["checkout"]', "{}"):
+        # A NUL cannot come in on argv, so a value is the only way one reaches the path and `git -C`.
+        for bad in ('""', '"  "', "3", "true", '["checkout"]', "{}", '"re\\u0000po"'):
             with self.subTest(bad=bad), self.assertRaisesRegex(st.SettingsError, r"\[workers\] clone must be a path"):
                 st.load(self.root, self.write(f"[workers]\nclone = {bad}\n"))
 

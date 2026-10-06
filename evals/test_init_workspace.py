@@ -54,6 +54,16 @@ class InitWorkspaceTest(unittest.TestCase):
                             (self.root / "chief-of-stuff.toml").read_text().splitlines() if line.startswith("# "))
         self.assertIn("implement", _models(tomllib.loads(example)["models"]))
 
+    def test_the_settings_carry_a_commented_clone_under_workers_that_loads_once_uncommented(self):
+        # #54: a new workspace is told where the repository `worktree` cuts from goes, and off until it is named.
+        self.assertEqual(self.run_init()[0], 0)
+        path = self.root / "chief-of-stuff.toml"
+        workers = path.read_text().split("[workers]\n", 1)[1].split("\n\n", 1)[0].splitlines()
+        self.assertTrue(any(line.startswith("# clone = ") for line in workers), workers)
+        self.assertIsNone(load_settings(self.root, "chief-of-stuff.toml").workers.clone)
+        path.write_text(path.read_text().replace("# clone = ", "clone = ", 1))
+        self.assertTrue(load_settings(self.root, "chief-of-stuff.toml").workers.clone)
+
     def test_existing_claude_content_is_preserved_and_a_second_init_refuses(self):
         claude = self.root / "CLAUDE.md"
         claude.write_text("# Existing rules\n\nKeep this.\n")
