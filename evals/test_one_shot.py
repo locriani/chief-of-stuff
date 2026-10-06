@@ -175,7 +175,7 @@ class RunTest(unittest.TestCase):
                         "user.email=test@example.test", "commit", "--allow-empty", "-qm", "initial"], check=True)
 
     def _fake(self, result: str | None, exit_code: int = 0, write_partial: bool = True,
-              commit_partial: bool = False) -> Path:
+              commit_partial: bool = False, during: str = "") -> Path:
         path = self.root / "fake-agent"
         path.write_text(f"#!{sys.executable}\nfrom pathlib import Path\nimport sys\n"
                         + "root = Path.cwd() / '.chief-of-stuff'\n"
@@ -185,6 +185,7 @@ class RunTest(unittest.TestCase):
                         + ("import subprocess\nsubprocess.run(['git', 'add', 'partial.txt'], check=True)\n"
                            "subprocess.run(['git', '-c', 'user.name=Test', '-c', 'user.email=test@example.test', "
                            "'commit', '-qm', 'partial'], check=True)\n" if commit_partial else "")
+                        + during
                         + (f"(root / 'worker-result.toon').write_text({result!r})\n" if result is not None else "")
                         + f"sys.exit({exit_code})\n")
         path.chmod(0o755)
@@ -468,6 +469,123 @@ class RunTest(unittest.TestCase):
         self.assertEqual(self._run(fake), 1)
         self.assertIn("worktree is not clean", self.tracker.read_text())
         self.assertIn("partial.txt", self.tracker.read_text())
+
+    def _read_only(self) -> None:
+        """The task owns nothing: its File ownership cell says `none`, as a launch then appends the tree to it."""
+        self.tracker.write_text(TRACKER.replace("`src/a/`", "none; read-only review of the importer"))
+
+    def _read_only_report(self, fake: Path) -> dict:
+        self._run(fake)
+        return toon_decode((self.tree / one_shot.REPORT).read_text())
+
+    def test_a_read_only_task_that_left_a_commit_needs_review_whatever_the_worker_wrote(self):
+        # #57: a worker told to review committed and opened a PR, and the run was reported done.
+        self._read_only()
+        report = self._read_only_report(self._fake('status: done\nreason: reviewed\nchanges: none\n', commit_partial=True))
+        self.assertEqual(report["status"], "human_review")
+        self.assertTrue(report["reason"].startswith("read-only task left changes:"), report["reason"])
+        self.assertIn("partial.txt", report["reason"])
+        tracker = self.tracker.read_text()
+        self.assertIn("| Security audit | Robin | waiting |", tracker)
+        self.assertIn("HUMAN REVIEW NEEDED", tracker)
+
+    def test_a_read_only_task_that_left_an_uncommitted_file_needs_review_whatever_the_worker_wrote(self):
+        self._read_only()
+        report = self._read_only_report(self._fake('status: done\nreason: reviewed\nchanges: none\n'))
+        self.assertEqual(report["status"], "human_review")
+        self.assertTrue(report["reason"].startswith("read-only task left changes:"), report["reason"])
+        self.assertIn("partial.txt", report["reason"])
+        self.assertIn("HUMAN REVIEW NEEDED", self.tracker.read_text())
+
+    def _rewrites_the_tracker(self, edit: str) -> str:
+        """Worker code that edits the launch day's tracker, as a worker with write access to the workspace could."""
+        return f"t = Path({str(self.tracker)!r})\nt.write_text({edit})\n"
+
+    def test_a_read_only_task_stays_read_only_when_the_worker_rewrites_its_ownership_cell(self):
+        # #57 review: the rule is decided at launch; a cell the worker edited to `src/` does not lift it.
+        self._read_only()
+        fake = self._fake('status: done\nreason: reviewed\nchanges: none\n', commit_partial=True,
+                          during=self._rewrites_the_tracker("t.read_text().replace('none; read-only review of the importer', 'src/')"))
+        report = self._read_only_report(fake)
+        self.assertEqual(report["status"], "human_review")
+        self.assertTrue(report["reason"].startswith("read-only task left changes:"), report["reason"])
+
+    def test_a_read_only_task_stays_read_only_when_the_worker_deletes_its_ownership_row(self):
+        self._read_only()
+        fake = self._fake('status: done\nreason: reviewed\nchanges: none\n', commit_partial=True,
+                          during=self._rewrites_the_tracker("'\\n'.join(l for l in t.read_text().split('\\n') if 'none; read-only' not in l)"))
+        report = self._read_only_report(fake)
+        self.assertEqual(report["status"], "human_review")
+        self.assertTrue(report["reason"].startswith("read-only task left changes:"), report["reason"])
+
+    def test_a_read_only_task_stays_read_only_when_the_end_days_tracker_has_no_read_only_cell(self):
+        # The run ends on another day; the launch day's cell decided, not the end day's (#93).
+        self._read_only()
+        self._rolled_over()
+        fake = self._fake('status: done\nreason: reviewed\nchanges: none\n', commit_partial=True)
+        self._run_past_midnight(fake)
+        report = toon_decode((self.tree / one_shot.REPORT).read_text())
+        self.assertEqual(report["status"], "human_review")
+        self.assertTrue(report["reason"].startswith("read-only task left changes:"), report["reason"])
+
+    def test_a_read_only_task_whose_worker_asked_for_review_keeps_its_own_reason(self):
+        self._read_only()
+        report = self._read_only_report(self._fake('status: human_review\nreason: blocked on creds\nchanges: none\n',
+                                                   commit_partial=True))
+        self.assertEqual((report["status"], report["reason"]), ("human_review", "blocked on creds"))
+
+    def test_the_override_keeps_the_workers_own_reason_after_the_paths(self):
+        # The worker was told to put what it found in the result, and the reason is where it went.
+        self._read_only()
+        report = self._read_only_report(self._fake('status: done\nreason: found two races in the importer\nchanges: none\n',
+                                                   commit_partial=True))
+        self.assertTrue(report["reason"].startswith("read-only task left changes:"), report["reason"])
+        self.assertIn("partial.txt", report["reason"])
+        self.assertTrue(report["reason"].endswith("; worker said: found two races in the importer"), report["reason"])
+
+    def test_an_uncommitted_file_alone_does_not_say_there_were_no_commits(self):
+        self._read_only()
+        report = self._read_only_report(self._fake('status: done\nreason: reviewed\nchanges: none\n'))
+        self.assertNotIn(one_shot.NO_COMMITS, report["reason"])
+
+    def test_a_read_only_relaunch_with_changes_keeps_the_relaunch_wording(self):
+        self._read_only()
+        report = self._read_only_report(self._fake('status: relaunch\nreason: base moved\nchanges: none\n'))
+        self.assertEqual(report["status"], "human_review")
+        self.assertTrue(report["reason"].startswith("worker asked to be relaunched but left changes: base moved"), report["reason"])
+
+    def _reconcile_a_commit(self, **kwargs) -> dict:
+        """A running row, one commit since the launch, and a worker that reported done."""
+        self.tracker.write_text(TRACKER.replace("| unassigned | open |", "| worker01 | running 09:00 |"))
+        before = one_shot.git_head(self.tree)
+        (self.tree / ".chief-of-stuff").mkdir(exist_ok=True)
+        (self.tree / ".chief-of-stuff" / ".gitignore").write_text("*\n")  # as the launcher leaves it
+        (self.tree / one_shot.RESULT).write_text('status: done\nreason: reviewed\nchanges: none\n')
+        (self.tree / "partial.txt").write_text("partial work")
+        subprocess.run(["git", "-C", str(self.tree), "add", "partial.txt"], check=True)
+        subprocess.run(["git", "-C", str(self.tree), "-c", "user.name=Test", "-c", "user.email=test@example.test",
+                        "commit", "-qm", "partial"], check=True)
+        return one_shot.reconcile(self.root, "2026-09-18", "Security audit", "worker01", self.tree, 0, before, **kwargs)
+
+    def test_reconcile_holds_a_commit_when_it_is_told_the_task_is_read_only(self):
+        # The tracker's cell says `src/a/`; what reconcile is told wins.
+        report = self._reconcile_a_commit(read_only=True)
+        self.assertEqual(report["status"], "human_review")
+        self.assertTrue(report["reason"].startswith("read-only task left changes:"), report["reason"])
+
+    def test_reconcile_does_not_read_the_tracker_for_the_rule(self):
+        self.tracker.write_text(TRACKER.replace("`src/a/`", "none; read-only review of the importer"))
+        self.assertEqual(self._reconcile_a_commit()["status"], "done")
+
+    def test_a_read_only_task_that_changed_only_the_private_directory_stays_done(self):
+        self._read_only()
+        report = self._read_only_report(self._fake('status: done\nreason: reviewed\nchanges: none\n', write_partial=False))
+        self.assertEqual(report["status"], "done")
+        self.assertIn("| Security audit | Robin | waiting |", self.tracker.read_text())
+
+    def test_a_task_that_owns_paths_may_commit_and_stays_done(self):
+        report = self._read_only_report(self._fake('status: done\nreason: fixed\nchanges: partial.txt\n', commit_partial=True))
+        self.assertEqual(report["status"], "done")
 
     def test_relaunch_leaves_the_task_ready_and_the_user_out_of_it(self):
         # A stop a fresh run fixes is the coordinator's to relaunch, not the user's to review (#68).

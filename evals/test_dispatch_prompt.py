@@ -1015,6 +1015,52 @@ class ReviewerRoutingTest(unittest.TestCase):
         self.assertNotIn("--reply", dp.compose(root, "2026-09-18", "Security audit"))
 
 
+class ReadOnlyAssignmentTest(unittest.TestCase):
+    """#57: a task whose File ownership cell starts with `none` is read-only; a worker told to commit did, and opened a PR."""
+
+    SENTENCE = "Do not edit, commit, push, merge or open a pull request: this task is read-only. Write what you found in your result or report, and nothing else."
+    ONE_SHOT_COMMITS = ("Commit the finished change on this worktree's branch and open a pull request when tests pass; do not merge.",
+                        "Commit the finished change on this worktree's branch; do not push or merge without existing authorization.")
+
+    def body(self, cell: str, *, one_shot: bool, delivery: str = "pull-request") -> str:
+        tmp, root = workspace(TRACKER.replace("`src/a/`, `notes/audit.md`", cell),
+                              CLAUDE + "- Settings: `cos.toml`\n")
+        self.addCleanup(tmp.cleanup)
+        (root / "cos.toml").write_text(f'[workflow]\ndelivery = "{delivery}"\n')
+        return dp.compose(root, "2026-09-18", "Security audit", worktree=root / "tree", one_shot=one_shot)
+
+    def test_a_read_only_one_shot_is_not_told_to_commit_or_open_a_pull_request(self):
+        for delivery in ("pull-request", "branch"):
+            with self.subTest(delivery=delivery):
+                body = self.body("none; read-only review of the importer", one_shot=True, delivery=delivery)
+                self.assertIn("\n" + self.SENTENCE + "\n", body)
+                for sentence in self.ONE_SHOT_COMMITS:
+                    self.assertNotIn(sentence, body)
+
+    def test_a_read_only_one_shot_is_told_so_and_is_not_told_to_edit_paths(self):
+        body = self.body("none; read-only review of the importer", one_shot=True)
+        self.assertIn("\n" + self.SENTENCE + "\n", body)
+        owns = next(line for line in body.splitlines() if line.startswith("Owns:"))
+        self.assertNotIn("Edit only", owns)
+
+    def test_a_one_shot_that_owns_paths_keeps_its_lines(self):
+        for delivery, commit in zip(("pull-request", "branch"), self.ONE_SHOT_COMMITS):
+            with self.subTest(delivery=delivery):
+                body = self.body("`src/a/`", one_shot=True, delivery=delivery)
+                self.assertIn("Owns: `src/a/`. Edit only these paths and task-local files in this worktree.", body)
+                self.assertIn(commit, body)
+                self.assertNotIn(self.SENTENCE, body)
+
+    def test_a_read_only_interactive_task_is_told_so_and_not_to_commit(self):
+        for cell in ("none; read-only review", "none"):
+            for delivery in ("pull-request", "branch"):
+                with self.subTest(cell=cell, delivery=delivery):
+                    body = self.body(cell, one_shot=False, delivery=delivery)
+                    self.assertIn(self.SENTENCE, body)
+                    self.assertNotIn("Commit small and often", body)
+                    self.assertNotIn("Do not touch any other file", body)
+
+
 class AgyRuntimeTest(unittest.TestCase):
     """An agy session cannot list sessions or message one: the mailbox is its only channel."""
 

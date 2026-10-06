@@ -8,11 +8,13 @@ accepted was refused at launch (#74).
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
-from md import cells as _cells, is_separator as _is_separator
+from md import cells as _cells, is_separator as _is_separator, section as _section
 
 HEADING = "## File ownership"
+_NONE = re.compile(r"none(?![\w./-])", re.I)
 
 
 @dataclass(frozen=True)
@@ -37,3 +39,13 @@ def parse(text: str) -> list[Row]:
             continue
         rows.append(Row(cells[0], cells[1]))
     return rows
+
+
+def cell(text: str, keys: set[str]) -> str | None:
+    """The paths of the first File ownership row in the tracker `text` keyed on one of `keys`, or None."""
+    return next((row.paths for row in parse("\n".join(_section(text, HEADING))) if row.context in keys), None)
+
+
+def read_only(paths: str) -> bool:
+    """A cell that starts with the word `none`, not the start of a path, owns nothing, so it changes nothing (#57)."""
+    return bool(_NONE.match(paths.strip()))

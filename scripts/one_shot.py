@@ -247,20 +247,24 @@ def write_report(root: Path, cwd: Path, report: dict) -> dict:
 
 
 def reconcile(root: Path, day: str, task: str, name: str, cwd: Path, exit_code: int,
-              before_head: str | None = None) -> dict:
+              before_head: str | None = None, read_only: bool = False) -> dict:
     cfg = dispatch_prompt.config(root)
     settings = load_settings(root, cfg.settings_path)
     status, reason, changes = worker_result(cwd / RESULT, exit_code)
     actual = changed_files(cwd)
-    if status == "done" and actual:
-        status = "human_review"
-        reason = f"worker reported completion but the worktree is not clean: {actual}"
     commits = committed_changes(cwd, before_head)
     # The result lands on the day the run ends, falling back to the launch day's (#93).
     path = root / cfg.tracker_path(day)
     end = root / cfg.tracker_path(datetime.now(cfg.zone).date().isoformat())
     if end.exists() and any(row.item.strip() == task for row in parse_tracker(end.read_text()).tasks):
         path = end
+    if status == "done" and read_only and (actual or commits != NO_COMMITS):
+        # A task that owns nothing changed something: whatever the worker wrote, someone looks (#57).
+        left = "\n".join(x for x in (actual, commits) if x and x != NO_COMMITS)
+        status, reason = "human_review", f"read-only task left changes: {left}; worker said: {reason}"
+    if status == "done" and actual:
+        status = "human_review"
+        reason = f"worker reported completion but the worktree is not clean: {actual}"
     if status == "relaunch":
         # A relaunch is for a run that changed nothing, once: anything else is someone's to look at.
         if actual or commits != NO_COMMITS:
@@ -386,6 +390,7 @@ def _launch(root: Path, cfg, chosen_day: str, task: str, cwd: Path, name: str, r
     except OSError as exc:
         (logs / "worker-stderr.log").write_text(f"Could not start worker: {exc}\n")
         exit_code = 127
-    report = reconcile(root, chosen_day, task, name, cwd, exit_code, before_head)
+    report = reconcile(root, chosen_day, task, name, cwd, exit_code, before_head,
+                       read_only=dispatch_prompt.READ_ONLY in body.splitlines())  # held to what it was told
     print(toon_encode(report))
     return 0 if report["status"] == "done" and not report["errors"] else 1
