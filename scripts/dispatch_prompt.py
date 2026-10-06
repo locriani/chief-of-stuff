@@ -301,7 +301,7 @@ def refuse_overlap(text: str, item: str) -> None:
     for row in parse_tracker(text).tasks:
         theirs = ownership.cell(text, task_keys(row.item, row.name)) if row.kind == "running" and row.item.strip() != item.strip() else None
         if mine and theirs and ownership.overlaps(mine, theirs):
-            raise RefusedError(f"File ownership overlaps the running task {row.item.strip()!r}; leave this task open and launch it when that one returns")
+            raise RefusedError(f"File ownership overlaps the running task {(row.name.strip() or row.item.strip())!r}; leave this task open and launch it when that one returns")
 
 
 def compose(root: Path, day: str | None, task: str, worktree: Path | None = None,
