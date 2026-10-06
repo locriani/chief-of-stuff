@@ -56,7 +56,10 @@ Set the workspace worker mode in TOML:
 [workers]
 mode = "one-shot" # or "interactive" (the default)
 launcher = "ghostty" # used for interactive workers
+clone = "repo" # what `chief-of-stuff worktree` cuts from when `--clone` is omitted; relative to the workspace root
 ```
+
+`chief-of-stuff worktree` cuts from `[workers] clone` when `--clone` is omitted, says so on stderr, and refuses when neither is given.
 
 After the user approves an interactive dispatch, `chief-of-stuff worker` starts a separate worktree terminal with `--runtime claude|agy|codex|cursor`. Claude remains the default. Ghostty tabs are the default launcher. Set `[workers] launcher = "tmux"` in the workspace TOML named by the `Settings:` line, or pass `--launcher tmux`, to open a new window in an existing tmux session. A launch refuses a missing tmux executable or tmux server. `--launcher ghostty` overrides the setting for one dispatch. The assignment is written to the worktree before the terminal opens; each worker reads it through a fixed bootstrap prompt. Claude uses native session messaging. Other workers register and report through the workspace file mailbox, using their assigned name and worktree. A launcher wrapper loads the configured interactive login shell for every worker and records non-Claude worker processes under `.chief-of-stuff/sessions/`; `chief-of-stuff processes --root /path/to/workspace` checks all registered workers in one batch and lists each live one-shot run (its launcher PID, its task when today's or yesterday's tracker holds it, and its tree's directory name) as rows after the workers in the same list, marked `kind: one-shot`, and prints TOON. Pass space- or comma-separated PIDs to check a specific batch, including unregistered processes. `gone` means the PID is absent, `pid_reused` means a registered PID now belongs to another process, and `unverified` means the process exists but its identity could not be checked.
 
