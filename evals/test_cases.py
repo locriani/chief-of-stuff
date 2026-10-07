@@ -80,6 +80,22 @@ class CaseLintTest(unittest.TestCase):
             command = entry + ' --task "Security audit" --runtime claude --dry-run'
             self.assertRegex(json.dumps({"command": command}), pattern)
 
+    def test_check_before_ask_accepts_grep_of_the_daily_record(self) -> None:
+        s = spec(EVALS / "cases" / "check-before-ask")
+        c = ctx(s)
+        g = next(g for g in s["graders"] if g["name"] == "reads the recorded answer before replying")
+        g = dict(g, input_match=run.render(g["input_match"], c))
+        for path in ("/w/daily", "/w/daily/", "daily", "daily/",
+                     f"/w/daily/{c['today']}.md", f"/w/daily/{c['today']}-tracker.md"):
+            with self.subTest(path=path):
+                self.assertTrue(grader_hits(g, "Grep", pattern="release note", path=path))
+        for path in ("/w/notes/", "/w/notdaily", "/w/daily/archive",
+                     f"/w/daily/{c['yesterday']}.md"):
+            with self.subTest(path=path):
+                self.assertFalse(grader_hits(g, "Grep", pattern="release note", path=path))
+        self.assertTrue(grader_hits(g, "Read", file_path=f"/w/daily/{c['today']}-tracker.md"))
+        self.assertTrue(grader_hits(g, "Bash", command="chief-of-stuff tracker section Decisions --root ."))
+
     # #391 (review of PR 398, R9/R30): every regex a triage case's grader carries is pinned by a text it must accept and a text it must
     # reject, so a pattern that can never match, or always matches, fails here. The texts are the replies and sends real runs wrote, and
     # the wrong ones the review found: a hand-over in other verbs, a plan waiver in other words, the opposite status, quote forms.
