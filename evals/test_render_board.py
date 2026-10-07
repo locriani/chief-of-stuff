@@ -1834,7 +1834,7 @@ class FlowRefReviewTest(unittest.TestCase):
         for url in self.CHANGE_URLS:
             with self.subTest(url=url):
                 flow = self.flow("workflow", f"Review {url} and check diagnostics")
-                self.assertEqual(set(re.findall(r'class="gantt-ref">([^<]*)<', flow)), {"!51"})
+                self.assertEqual(set(re.findall(r'class="gantt-ref"[^>]*>([^<]*)<', flow)), {"!51"})
 
     def test_issue_key_and_issue_url_flow_refs_still_link_to_the_issue_page(self) -> None:
         for ref in ("group/project#7", "https://forge.example/group/project/-/issues/7",
@@ -1842,6 +1842,46 @@ class FlowRefReviewTest(unittest.TestCase):
             with self.subTest(ref=ref):
                 flow = self.flow(ref, "Build the parser")
                 self.assertEqual(set(re.findall(r'href="(/issues/[^"]*)"', flow)), {"/issues/7"})
+
+    def test_forge_issue_url_flow_labels_show_only_the_issue_number(self) -> None:
+        # #459: display is #N, independent of the full key used to merge passes.
+        for url in ("https://forge.example/group/project/-/issues/7",
+                    "https://github.com/group/project/issues/7"):
+            with self.subTest(url=url):
+                flow = self.flow(url, "Build the parser")
+                self.assertEqual(re.findall(r'class="gantt-ref"[^>]*>([^<]*)<', flow), ["#7", "#7"])
+
+    def test_forge_issue_url_flow_ref_titles_keep_the_full_url(self) -> None:
+        # #459 decision: the short label's title retains the tracker cell's full URL.
+        for url in ("https://forge.example/group/project/-/issues/7",
+                    "https://github.com/group/project/issues/7"):
+            with self.subTest(url=url):
+                flow = self.flow(url, "Build the parser")
+                refs = re.findall(r'<a\b([^>]*\bclass="gantt-ref"[^>]*)>', flow)
+                self.assertEqual(len(refs), 2)
+                for attrs in refs:
+                    self.assertIn(f'title="{url}"', attrs)
+
+    def test_bare_issue_flow_labels_and_task_page_links_stay_unchanged(self) -> None:
+        flow = self.flow("#7", "Build the parser")
+        refs = re.findall(r'<a\b([^>]*\bclass="gantt-ref"[^>]*)>([^<]*)</a>', flow)
+        self.assertEqual(len(refs), 2)
+        for attrs, label in refs:
+            self.assertEqual(label, "#7")
+            self.assertIn('href="/issues/7"', attrs)
+
+    def test_markdown_issue_flow_ref_titles_escape_quotes_and_angle_brackets(self) -> None:
+        # PR 469 R1: the issue cell's markdown label must not become HTML attributes.
+        url = "https://forge.example/group/project/-/issues/7"
+        issue = f'[x" onmouseover="alert(1)<b>]({url})'
+        flow = self.flow(issue, "Build the parser")
+        rows = re.findall(r'<div class="gantt-row">[^\n]+', flow)
+        self.assertEqual(len(rows), 2)
+        for row in rows:
+            self.assertIn(f'title="[x&quot; onmouseover=&quot;alert(1)&lt;b&gt;]({url})"', row)
+            # Checking the entire row covers every attribute, including malformed ones.
+            self.assertNotIn('" onmouseover=', row)
+            self.assertNotIn("<b>", row)
 
 
 class SettingsLineTest(unittest.TestCase):
