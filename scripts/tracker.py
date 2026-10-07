@@ -426,6 +426,14 @@ UNASSIGNED = re.compile(r"(?i)^unassigned$")
 TRAILING_NUMBER = re.compile(r"(\d+)\s*$")
 
 
+def issue_number(cell: str) -> int | None:
+    """An issue URL or issue key's number, including bare #N and canonical host/project#N keys."""
+    if ref := issue_ref(cell, None, any_host=True):
+        return ref.number
+    key, marker, number = cell.strip().rpartition("#")
+    return int(number) if marker and number.isdecimal() and "://" not in key else None
+
+
 def issue_key(cell: str, home: Backlog | GitHubBacklog | None = None) -> str:
     """The key a board source files an issue under (`IssueRef.label`, as board_sources writes it), from an issue cell:
     `#118`, `group/app#118` or the issue's URL. A cell that names no issue, or a bare `#N` with no `home`, keeps `#N`."""
@@ -438,7 +446,8 @@ def issue_key(cell: str, home: Backlog | GitHubBacklog | None = None) -> str:
 def change_keys(text: str, home: Backlog | GitHubBacklog | None = None) -> tuple[str, str]:
     """(issue key, change URL) from one change and its own issue clause; ambiguous references give empty strings.
     A bare issue resolves in the change's project, using the shared issue-reference parser."""
-    # ponytail: first change reference only, prose-derived; forge-sourced relationships replace omitted or stale clauses.
+    # ponytail: keyed only when the text names exactly one distinct change; URLs with suffixes (/files, #note),
+    # bare !N or #N references, and stacked reviews naming two changes stay unkeyed.
     changes = {}
     for m in re.finditer(r"https://[^\s`<>()]+", text):
         url = m[0].rstrip(".,;:")

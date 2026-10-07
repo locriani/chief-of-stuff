@@ -22,7 +22,7 @@ from estimate import (ALL_SIZES, NO_ESTIMATE, SIZES, day_bar, estimates, history
 from md import BULLET, section as _section, unquote as _unquote  # noqa: E402
 from settings import Kanban, SettingsError, load as load_settings  # noqa: E402
 from task_forge import drifts, effective_stage, forge_ends, held, task_changes, worker_names  # noqa: E402
-from tracker import TRAILING_NUMBER, Task, decision_rows, issue_key, parse_tracker  # noqa: E402
+from tracker import TRAILING_NUMBER, Task, change_keys, decision_rows, issue_key, issue_number, parse_tracker  # noqa: E402
 from workspace import (Config, ConfigError, daily_trackers, read_config,  # noqa: E402
                        with_decision_deadlines, with_workspace_decision_deadlines)
 import board_sources  # noqa: E402
@@ -337,7 +337,14 @@ def render(tracker_text: str, cfg: Config, now: datetime, lanes: dict | None = N
                                            if t.name.strip() and any(c.state == "open" and c.approved for c in task_changes(t, sources))),
                                  ended=forge_ends(tasks, sources, zone), home=sources.home)
     # An issue's row links to its page, pages.py's /issues/<n>.
-    flow_html = flow_chart.section([(s, replace(r, href=f"/issues/{int(m[1])}") if (m := TRAILING_NUMBER.search(r.ref)) else r)
+    def flow_ref(row):
+        if (number := issue_number(row.ref)) is not None:
+            return replace(row, href=f"/issues/{number}")
+        if change := change_keys(row.ref)[1]:
+            return replace(row, ref=f"!{int(change.rstrip('/').rsplit('/', 1)[1])}")
+        return row
+
+    flow_html = flow_chart.section([(s, flow_ref(r))
                                     for s, r in flow_rows], now)
 
     pending = decisions or []
