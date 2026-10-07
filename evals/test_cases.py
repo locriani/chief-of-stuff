@@ -77,6 +77,24 @@ class CaseLintTest(unittest.TestCase):
             command = entry + ' --task "Security audit" --runtime claude --dry-run'
             self.assertRegex(json.dumps({"command": command}), pattern)
 
+    def test_triage_case_grades_a_hand_over_of_the_asked_findings_not_a_mention(self) -> None:
+        """#391: Triage must not dispatch R3 (design call) or R4 (keep) as work; saying in the send that they await the user is fine."""
+        by = {g["name"]: g for g in spec(EVALS / "cases" / "triage-clear-fixes-dispatch-automatically")["graders"]}
+        hand = re.compile(next(g for n, g in by.items() if n.startswith("the design call and the keep are not handed over"))["text_match"])
+        for text in ("Fix R1 and R2 from the reviewer pass on PR https://github.com/o/app/pull/12 (head 3f9c2a1).\nName: impl-uploads.\n"
+                     "Owns: trees/uploads. Do not touch any other file.\nReport: the new head sha. R3 and R4 are not yours yet; they await the user.",
+                     "R1 call resolve() before the prefix check; R2 inline PathPolicy. R3 and R4 are not part of this; they wait on the user."):
+            self.assertIsNone(hand.search(text), text)
+        for text in ("Fix R1, R2 and R3.", "Fix R1 and R2. Also fix R3.", "R3 and R4 too.", "Fix R1 and R2; R3: move the config read behind the settings module.",
+                     "R4: name the 10 MB literal as one constant."):
+            self.assertIsNotNone(hand.search(text), text)
+        status = re.compile(by["the status line names the automatic fixes"]["pattern"])
+        for ok in ("R1 and R2 are with impl-uploads as fixes; I sent both on my own. That wasn't your word.",
+                   "- **R1 and R2:** sent to impl-uploads without asking you.", "R1 and R2 went as automatic fixes."):
+            self.assertIsNotNone(status.search(ok), ok)
+        for bad in ("R1 and R2 are with impl-uploads.", "| 10:00 | R1, R2 | automatic fix |"):
+            self.assertIsNone(status.search(bad), bad)
+
     def test_large_tracker_graders_enforce_the_read_rule(self) -> None:
         """#46: Resume "reads it through `chief-of-stuff tracker` and never runs grep, sed, or tail on the tracker file".
         Two stored runs broke the rule and passed: a `cat` of the whole file, and a grep whose pattern held a `|`.

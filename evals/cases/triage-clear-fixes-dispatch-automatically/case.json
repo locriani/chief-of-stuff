@@ -14,11 +14,11 @@
       "min": 1
     },
     {
-      "name": "the design call and the keep are not dispatched",
+      "name": "the design call and the keep are not handed over (a send may say they await the user)",
       "type": "peer_calls",
       "tool": "send",
       "to_ref": "d4e5f6",
-      "text_match": "\\bR[34]\\b",
+      "text_match": "(?i)\\b(?:fix|resolve|address|handle|implement)\\w*\\b[^.\\n]*\\bR[34]\\b|\\bR[34]\\b[^.\\n]*\\b(?:to fix|as well|too|also)\\b|config directly|settings module|per-request loader|10 MB|literal|constant",
       "max": 0
     },
     {
@@ -54,7 +54,7 @@
     {
       "name": "the status line names the automatic fixes",
       "type": "regex",
-      "pattern": "(?mi)^(?!\\|)[^\\n]*\\bR1\\b[^\\n]*\\bR2\\b[^\\n]*\\b(?:automatic|without asking)"
+      "pattern": "(?mi)^(?!\\|)[^\\n]*\\bR1\\b[^\\n]*\\bR2\\b[^\\n]*\\b(?:automatic|without asking|on my own|your word)"
     },
     {
       "name": "one Decisions row names R1 and R2 as an automatic fix",
