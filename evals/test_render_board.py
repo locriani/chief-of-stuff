@@ -1834,7 +1834,7 @@ class FlowRefReviewTest(unittest.TestCase):
         for url in self.CHANGE_URLS:
             with self.subTest(url=url):
                 flow = self.flow("workflow", f"Review {url} and check diagnostics")
-                self.assertEqual(set(re.findall(r'class="gantt-ref">([^<]*)<', flow)), {"!51"})
+                self.assertEqual(set(re.findall(r'class="gantt-ref"[^>]*>([^<]*)<', flow)), {"!51"})
 
     def test_issue_key_and_issue_url_flow_refs_still_link_to_the_issue_page(self) -> None:
         for ref in ("group/project#7", "https://forge.example/group/project/-/issues/7",
