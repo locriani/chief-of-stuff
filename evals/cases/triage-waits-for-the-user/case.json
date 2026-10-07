@@ -55,7 +55,7 @@
       "name": "no Log line records an automatic fix",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",
-      "pattern": "(?mi)^- [0-9:]+ [^\\n]*\\bautomatic",
+      "pattern": "(?mi)^- [0-9:]+ (?=[^\\n]*\\bR[1-4]\\b)(?=[^\\n]*\\b(?:sent|dispatched)\\b)[^\\n]*(?<!not an )(?<!not )(?<!no )\\bautomatic",
       "match": "absent"
     },
     {

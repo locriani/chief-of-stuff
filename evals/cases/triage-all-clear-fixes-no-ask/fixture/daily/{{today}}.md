@@ -2,4 +2,4 @@
 
 ## Checklist
 
-- [ ] Upload path check
+- [ ] Upload handler cleanup

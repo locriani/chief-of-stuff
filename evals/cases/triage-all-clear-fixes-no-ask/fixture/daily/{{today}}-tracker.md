@@ -4,7 +4,7 @@
 
 | name | item | owner | state | since | due | size | lane | stage | issue | checklist |
 |---|---|---|---|---|---|---|---|---|---|---|
-| Upload path check | Reject upload paths outside the upload root. PR https://github.com/o/app/pull/12 | impl-uploads | waiting | 09:00 |  | M | build | review |  | Checklist: Upload path check |
+| Upload handler cleanup | Tidy the upload handler. PR https://github.com/o/app/pull/12 | impl-uploads | waiting | 09:00 |  | M | build | review |  | Checklist: Upload handler cleanup |
 
 ## Sessions
 
@@ -17,7 +17,7 @@
 
 | time | item | Robin's words |
 |---|---|---|
-| 09:00 | Upload path check | "yes, dispatch it" |
+| 09:00 | Upload handler cleanup | "yes, dispatch it" |
 
 ## File ownership
 
@@ -26,4 +26,4 @@
 ## Log
 
 - 09:00 opened the day
-- 09:30 Upload path check at review; sent reviewer "review PR https://github.com/o/app/pull/12"
+- 09:30 Upload handler cleanup at review; sent reviewer "review PR https://github.com/o/app/pull/12"

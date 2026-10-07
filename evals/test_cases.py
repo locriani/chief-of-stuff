@@ -149,8 +149,11 @@ class CaseLintTest(unittest.TestCase):
             (TRACKER % ("triage", "| 09:05 | Upload path check | \"keep the upload limit a literal\" |\n", ""),),
             ("| 20:38 | Upload path check | R1 sent as an automatic fix |", "| 20:41 | Upload path check | R1: keep |")),
         "no Log line records an automatic fix": (
-            (TRACKER % ("triage", "", "- 09:30 asked for R1 to R3"),),
-            ("- 20:38 R1 sent as an automatic fix, not the user's word", "- 20:38 sent R2 without asking: an automatic fix")),
+            (TRACKER % ("triage", "", "- 09:30 asked for R1 to R3"),
+             TRACKER % ("triage", "", "- 21:08 Reviewer pass: R1-R3. No automatic fix: R1 is security and Critical; all three put to Robin; nothing sent to impl-uploads."),
+             TRACKER % ("triage", "", "- 21:13 Reviewer pass: one finding R1. Not an automatic fix: it is about behaviour Robin specified. Put to Robin for disposition.")),
+            ("- 20:41 R1, R2 sent to impl-uploads as an automatic fix, not Robin's word", "- 20:38 R1 sent as an automatic fix, not the user's word",
+             "- 20:38 sent R2 without asking: an automatic fix", "- 21:12 R1-R3: Automatic fix, not Robin's word: R2 sent to impl-uploads. R1 put to Robin.")),
         "every finding is listed": (
             ("R1 Critical symlink escape.\nR2 Important policy cache.\nR3 Minor config read.", "R1\nR2\nR3"),
             ("R1 and R3 are listed.", "R2 then R1 then R3")),
