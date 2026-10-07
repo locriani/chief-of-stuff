@@ -1,6 +1,7 @@
 """One-shot workers exit once and leave a reviewable task outcome."""
 
 import contextlib
+import importlib.util
 import io
 import json
 import multiprocessing
@@ -1820,13 +1821,100 @@ class TreeReadEnvTest(unittest.TestCase):
             self.assertEqual(env.get("GIT_NO_REPLACE_OBJECTS"), "1")
             self.assertEqual(env.get("PATH"), os.environ["PATH"])
 
+    def read_envs(self, launcher=one_shot) -> list[dict]:
+        """The env each of the four post-run git reads is given."""
+        before = launcher.git_head(self.tree)
+        (self.tree / "g.txt").write_text("b\n")
+        self.git("add", "g.txt")
+        self.git("commit", "-q", "-m", "second")
+        calls = [lambda: launcher.changed_files(self.tree), lambda: launcher.git_head(self.tree),
+                 lambda: launcher.committed_changes(self.tree, before), lambda: launcher._tree_note(self.root, self.tree)]
+        envs = [env for call in calls for env in self.spied(call)]
+        self.assertGreaterEqual(len(envs), len(calls))
+        return envs
+
+    def imported_one_shot(self):
+        """A fresh copy of the launcher module, imported under the current environment (as a launcher started from a hook is)."""
+        spec = importlib.util.spec_from_file_location("one_shot_fresh", Path(one_shot.__file__))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
     def test_the_read_env_is_the_launchers_plus_the_pin(self):
-        env = one_shot.GIT_READ_ENV
-        self.assertEqual(env["GIT_NO_REPLACE_OBJECTS"], "1")
-        self.assertEqual((env["PATH"], env["HOME"]), (os.environ["PATH"], os.environ["HOME"]))
-        self.assertEqual(set(env), set(os.environ) | {"GIT_NO_REPLACE_OBJECTS"})
-        for key in set(env) - {"GIT_NO_REPLACE_OBJECTS"}:
-            self.assertEqual(os.environ[key], env[key], key)
+        # The launcher's whole environment, less its repository-selecting variables (#446), plus the pin.
+        # GIT_TERMINAL_PROMPT is pinned by test_the_read_env_never_prompts_and_keeps_the_launchers_home.
+        expected = {k: v for k, v in os.environ.items() if k not in git_trees.REPO_VARS} | {"GIT_NO_REPLACE_OBJECTS": "1"}
+        for env in self.read_envs():
+            self.assertEqual({k: v for k, v in env.items() if k != "GIT_TERMINAL_PROMPT"}, expected)
+
+    def test_the_read_env_never_prompts_and_keeps_the_launchers_home(self):
+        for env in self.read_envs():
+            self.assertEqual(env.get("GIT_TERMINAL_PROMPT"), "0")
+            self.assertEqual(env.get("GIT_NO_REPLACE_OBJECTS"), "1")
+            self.assertEqual((env.get("PATH"), env.get("HOME")), (os.environ["PATH"], os.environ["HOME"]))
+
+    def test_no_read_env_carries_a_repository_selecting_variable(self):
+        with mock.patch.dict(os.environ, {name: "/nowhere" for name in git_trees.REPO_VARS}):
+            envs = self.read_envs(self.imported_one_shot())
+        for env in envs:
+            for name in git_trees.REPO_VARS:
+                self.assertNotIn(name, env, name)
+
+    def test_the_read_env_is_built_per_call_not_at_import(self):
+        with mock.patch.dict(os.environ, {"CHIEF_TEST_MARKER": "after-import"}):
+            envs = self.read_envs()
+        for env in envs:
+            self.assertEqual(env.get("CHIEF_TEST_MARKER"), "after-import")
+
+    def other_repo(self) -> Path:
+        """Another real repository, with its own commit and branch and an untracked file."""
+        other = self.root / "other"
+        other.mkdir()
+        run = lambda *a: subprocess.run(["git", "-C", str(other), *a], env=self.ENV, capture_output=True, text=True, check=True)
+        run("init", "-q", "--initial-branch=elsewhere")
+        (other / "o.txt").write_text("o\n")
+        run("add", "o.txt")
+        run("commit", "-q", "-m", "other commit")
+        (other / "other.txt").write_text("x\n")
+        return other
+
+    def pointed_at(self, other: Path) -> dict:
+        return {"GIT_DIR": str(other / ".git"), "GIT_WORK_TREE": str(other)}
+
+    def test_the_control_other_repository_shows_through_the_launchers_environment(self):
+        # Without the fix the variables win over cwd: a read in the worker tree reports the other repository.
+        other = self.other_repo()
+        with mock.patch.dict(os.environ, self.pointed_at(other)):
+            seen = subprocess.run(["git", "status", "--short"], cwd=self.tree, capture_output=True, text=True, check=True,
+                                  env={**os.environ, "GIT_NO_REPLACE_OBJECTS": "1"}).stdout
+        self.assertIn("other.txt", seen)
+
+    def test_changed_files_reports_the_worker_tree_not_another_repository(self):
+        other = self.other_repo()
+        (self.tree / "mine.txt").write_text("m\n")
+        with mock.patch.dict(os.environ, self.pointed_at(other)):
+            seen = self.imported_one_shot().changed_files(self.tree)
+        self.assertEqual(seen, "?? mine.txt")
+
+    def test_git_head_reports_the_worker_tree_not_another_repository(self):
+        other = self.other_repo()
+        with mock.patch.dict(os.environ, self.pointed_at(other)):
+            seen = self.imported_one_shot().git_head(self.tree)
+        self.assertEqual(seen, self.git("rev-parse", "HEAD"))
+
+    def test_the_tree_note_and_the_commit_log_read_the_worker_tree_not_another_repository(self):
+        other = self.other_repo()
+        before = self.git("rev-parse", "HEAD")
+        (self.tree / "g.txt").write_text("b\n")
+        self.git("add", "g.txt")
+        self.git("commit", "-q", "-m", "second")
+        with mock.patch.dict(os.environ, self.pointed_at(other)):
+            launcher = self.imported_one_shot()
+            note = launcher._tree_note(self.root, self.tree)
+            log = launcher.committed_changes(self.tree, before)
+        self.assertTrue(note.endswith("(main)"), note)
+        self.assertIn("second", log)
+        self.assertNotIn("other commit", log)
 
     def test_changed_files_ignores_replace_refs(self):
         self.assertReadsIgnoringReplaceRefs(lambda: one_shot.changed_files(self.tree))

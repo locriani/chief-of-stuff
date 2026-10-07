@@ -41,7 +41,7 @@ def audit_env() -> dict[str, str]:
 
 
 def user_env() -> dict[str, str]:
-    """The caller's own environment, for calls that run the user's own hooks and need the user's credentials; never for reading a worker-writable tree."""
+    """The caller's own environment minus the repository-selecting variables, for calls that run the user's own hooks, need the user's credentials, or read a tree with the user's own config. It is the user's config, not a worker's: a read that must trust no home config uses audit_env."""
     return {**{k: v for k, v in os.environ.items() if k not in REPO_VARS}, "GIT_TERMINAL_PROMPT": "0"}
 
 
