@@ -58,7 +58,6 @@ METACHARACTERS = re.compile(r"[;&|`$<>\n]")
 PLACEHOLDER = re.compile(r"\{(\w+)\}")
 FIELDS = ("cwd", "title", "type", "dispatch", "model", "effort", "root")
 HERDR_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9:_-]{0,63}")
-HERDR_READY_TIMEOUT_MS = 30_000
 
 
 class RefusedError(ValueError):
@@ -172,31 +171,22 @@ def tmux_command(*, tmux: Path | None, **worker) -> list[str]:
             "-n", worker.get("title") or worker["runtime"], *tokens]
 
 
-def herdr_name(title: str) -> str:
-    """Require one unchanged identity for the assignment, registry and herdr agent."""
-    if not isinstance(title, str) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", title):
-        raise RefusedError("herdr agent name must match [a-z][a-z0-9_-]{0,31}; choose a valid --name verbatim")
-    return title
-
-
 def herdr_commands(*, herdr: Path | None, session: str, **worker) -> tuple[list[str], list[str]]:
-    """Create a tab, then start exact worker argv in its JSON root pane."""
+    """Create a tab, then run the shared worker wrapper through its root pane's shell."""
     if herdr is None:
         raise RefusedError("herdr launcher is configured but herdr is unavailable on PATH")
     if not HERDR_NAME.fullmatch(session):
         raise RefusedError("[workers] herdr_session must match [a-z0-9][a-z0-9_-]{0,31}")
     title = worker.get("title")
-    name = herdr_name(title)
     prefix = [str(herdr), "--session", session]
     return ([*prefix, "tab", "create", "--cwd", os.path.abspath(worker["cwd"]),
              "--label", title, "--no-focus"],
-            [*prefix, "agent", "start", name, "--kind", worker["runtime"],
-             "--pane", "<root-pane>", "--timeout", str(HERDR_READY_TIMEOUT_MS),
-             "--", *runtime_tokens(**worker)])
+            [*prefix, "pane", "run", "<root-pane>",
+             *[shlex.quote(token) for token in runtime_tokens(**worker)]])
 
 
-def launch_herdr(create: list[str], start: list[str]) -> None:
-    """Treat CLI output as data; close the created tab if the agent cannot start."""
+def launch_herdr(create: list[str], pane_run: list[str]) -> None:
+    """Treat CLI output as data; close the created tab if the pane command fails."""
     env = {k: v for k, v in launch_env().items() if not k.upper().startswith("HERDR_")}
 
     def run(command: list[str], action: str, *, timeout: float = 30):
@@ -228,9 +218,9 @@ def launch_herdr(create: list[str], start: list[str]) -> None:
         pane = pane.get("pane_id") if isinstance(pane, dict) else None
         if not isinstance(pane, str) or not HERDR_TOKEN.fullmatch(pane):
             raise RefusedError("herdr tab create JSON has no valid root pane id")
-        command = list(start)
-        command[command.index("--pane") + 1] = pane
-        run(command, "agent start", timeout=HERDR_READY_TIMEOUT_MS / 1000 + 5)
+        command = list(pane_run)
+        command[5] = pane
+        run(command, "pane run")
     except Exception:
         try:
             run([*create[:3], "tab", "close", tab], "tab close")
@@ -383,8 +373,7 @@ def main(argv_in: list[str] | None = None) -> int:
     override = os.environ.get(ENV)
     try:
         selected = args.launcher or worker_settings.launcher
-        body = assignment(args, False, Path(args.cwd),
-                          name=herdr_name(args.title) if selected == "herdr" and not override else args.title)
+        body = assignment(args, False, Path(args.cwd))
         # The eval harness uses the argv override.
         worker = dict(cwd=args.cwd, agent_type=args.agent_type, title=args.title, runtime=args.runtime,
                       model=args.model, effort=args.effort, workspace=args.root)
@@ -398,7 +387,7 @@ def main(argv_in: list[str] | None = None) -> int:
                                    **worker)
             script = None
         elif selected == "herdr":
-            command, agent_command = herdr_commands(
+            command, pane_command = herdr_commands(
                 herdr=Path(p) if (p := resolve("herdr")) else None,
                 session=worker_settings.herdr_session,
                 binary=Path(p) if (p := resolve(runtime.binary)) else None, **worker)
@@ -415,7 +404,7 @@ def main(argv_in: list[str] | None = None) -> int:
         # Keep each argv token intact if the preview is copied into a shell.
         print("would run: " + " ".join(shlex.quote(t) for t in command))
         if not override and selected == "herdr":
-            print("would run: " + " ".join(shlex.quote(t) for t in agent_command))
+            print("would run: " + " ".join(shlex.quote(t) for t in pane_command))
         if script:
             print("would ask Ghostty for a tab:")
             print(script.rstrip())
@@ -441,7 +430,7 @@ def main(argv_in: list[str] | None = None) -> int:
                 return 1
             where = "a new tmux window"
         elif selected == "herdr":
-            launch_herdr(command, agent_command)
+            launch_herdr(command, pane_command)
             where = f"a new herdr tab in session {worker_settings.herdr_session}"
         else:
             # Pass AppleScript on stdin to avoid another quoting layer.
