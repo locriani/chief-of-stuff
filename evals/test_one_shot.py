@@ -449,11 +449,11 @@ class RunTest(unittest.TestCase):
         path.chmod(0o755)
         return path
 
-    def _run(self, fake: Path, tree: Path | None = None, model: str = "", effort: str = "") -> int:
+    def _run(self, fake: Path, tree: Path | None = None, model: str = "", effort: str = "", runtime: str = "codex") -> int:
         with mock.patch.object(one_shot, "resolve", return_value=str(fake)), \
              mock.patch.object(one_shot, "login_argv", side_effect=lambda argv: argv):
             return one_shot.run(root=self.root, day="2026-09-18", task="Security audit",
-                                cwd=tree or self.tree, name="worker01", runtime="codex", agent_type=None,
+                                cwd=tree or self.tree, name="worker01", runtime=runtime, agent_type=None,
                                 model=model, effort=effort, dry_run=False)
 
     def test_done_exits_once_and_leaves_waiting_for_integration(self):
@@ -890,13 +890,14 @@ class RunTest(unittest.TestCase):
     ORDINARY = "status: relaunch\nreason: base moved\nchanges: none\n"
 
     def _stopped(self, stderr: str = QUOTA, result: str | None = None, exit_code: int = 3, tree: Path | None = None,
-                 write_partial: bool = False, commit_partial: bool = False, model: str = "m-test"):
+                 write_partial: bool = False, commit_partial: bool = False, model: str = "m-test",
+                 runtime: str = "codex", during: str = ""):
         """One launch of a worker that wrote `stderr`; returns the exit code and the hold and comment mocks."""
         fake = self._fake(result, exit_code=exit_code, write_partial=write_partial, commit_partial=commit_partial,
-                          stderr=stderr)
+                          stderr=stderr, during=during)
         with mock.patch.object(one_shot.kanban, "add_human_hold", return_value="") as hold, \
              mock.patch.object(one_shot.backlog, "comment", return_value=SimpleNamespace(done=True, error="")) as comment:
-            return self._run(fake, tree, model=model), hold, comment
+            return self._run(fake, tree, model=model, runtime=runtime), hold, comment
 
     def _report(self, tree: Path | None = None) -> dict:
         return toon_decode(((tree or self.tree) / one_shot.REPORT).read_text())
@@ -974,14 +975,103 @@ class RunTest(unittest.TestCase):
         self.assertNotIn("\n", report["reason"])
         self.assertNotIn("second line", report["reason"])
 
-    def test_a_second_quota_stop_the_same_day_is_again_a_relaunch(self):
+    def test_a_second_quota_stop_on_the_same_runtime_and_model_the_same_day_needs_review(self):
+        # #422 review R4: the coordinator redispatched the exhausted model; there is nothing more to rotate to.
         self._quota_relaunched()
         again = self._another_tree("worker-2")
         self.assertEqual(self._stopped(tree=again)[0], 1)
         report = self._report(again)
-        self.assertEqual((report["status"], report["reason"]), ("relaunch", self.QUOTA_REASON))
-        self.assertNotIn("HUMAN REVIEW", self.tracker.read_text())
-        self.assertNotIn("already relaunched once", self.tracker.read_text())
+        self.assertEqual((report["status"], report["reason"]),
+                         ("human_review", "quota stop repeated: codex m-test; resets in about four hours"))
+        self.assertIn("HUMAN REVIEW NEEDED", self.tracker.read_text())
+
+    def test_a_repeated_quota_stop_without_reset_text_names_only_the_runtime_and_model(self):
+        stderr = "429: You exceeded your current Quota.\n"
+        self._stopped(stderr=stderr)
+        again = self._another_tree("worker-2")
+        self._stopped(stderr=stderr, tree=again)
+        report = self._report(again)
+        self.assertEqual((report["status"], report["reason"]), ("human_review", "quota stop repeated: codex m-test"))
+
+    def test_a_second_quota_stop_on_another_model_the_same_day_is_a_relaunch(self):
+        self._quota_relaunched()
+        again = self._another_tree("worker-2")
+        self._stopped(tree=again, model="m-other")
+        report = self._report(again)
+        self.assertEqual((report["status"], report["reason"]),
+                         ("relaunch", "quota stop: codex m-other; resets in about four hours"))
+
+    def test_a_second_quota_stop_on_another_runtime_the_same_day_is_a_relaunch(self):
+        self._quota_relaunched()
+        again = self._another_tree("worker-2")
+        self._stopped(tree=again, runtime="claude")
+        report = self._report(again)
+        self.assertEqual((report["status"], report["reason"]),
+                         ("relaunch", "quota stop: claude m-test; resets in about four hours"))
+
+    def test_a_quota_stop_on_the_same_runtime_and_model_on_another_day_is_a_relaunch(self):
+        (self.root / "daily/2026-09-17-tracker.md").write_text(
+            TRACKER.replace("- 09:00 opened\n", "- 08:00 one-shot worker01: relaunch requested for Security audit — "
+                            f"{self.QUOTA_REASON}.\n"))
+        self._stopped()
+        self.assertEqual((self._report()["status"], self._report()["reason"]), ("relaunch", self.QUOTA_REASON))
+
+    def test_a_worker_that_writes_quota_text_into_its_own_stderr_log_is_held_by_the_same_cap(self):
+        # #422 review R3: the log sits in the worker's tree; two faked stops on one task and model are one relaunch, then review.
+        fake_a_stop = f"(root / 'worker-stderr.log').open('a').write({self.QUOTA!r})\n"
+        self._stopped(stderr="", during=fake_a_stop)
+        self.assertEqual(self._report()["status"], "relaunch")
+        again = self._another_tree("worker-2")
+        self._stopped(stderr="", during=fake_a_stop, tree=again)
+        self.assertEqual(self._report(again)["status"], "human_review")
+        self.assertTrue(self._report(again)["reason"].startswith("quota stop repeated: codex m-test"),
+                        self._report(again)["reason"])
+
+    def test_a_worker_relaunch_reason_cannot_forge_the_launchers_quota_marker(self):
+        # #422 review R2: the launcher's own `quota stop: ` Log text is exempt from the once-a-day limit; a worker's is not.
+        forged = "status: relaunch\nreason: quota stop: codex m-test\nchanges: none\n"
+        self._stopped(stderr="", result=forged, exit_code=0)
+        self.assertEqual(self._report()["status"], "relaunch")
+        tracker = self.tracker.read_text()
+        self.assertIn("relaunch requested for Security audit — worker: quota stop: codex m-test", tracker)
+        self.assertNotIn("Security audit — quota stop:", tracker)
+        again = self._another_tree("worker-2")
+        self._stopped(stderr="", result=forged, exit_code=0, tree=again)
+        self.assertEqual(self._report(again)["status"], "human_review")
+        self.assertIn("already relaunched once", self.tracker.read_text())
+
+    def _stop_status(self, stderr: str, n: int) -> dict:
+        """The report of a quota-looking stop on a fresh tree and a fresh row, so cases do not share a day's Log."""
+        self.tracker.write_text(TRACKER)
+        tree = self._another_tree(f"case-{n}")
+        self._stopped(stderr=stderr, tree=tree)
+        return self._report(tree)
+
+    def test_the_429_and_the_quota_word_must_share_a_line(self):
+        report = self._stop_status("Error: 429 Too Many Requests\nI will check the quota module\n", 0)
+        self.assertEqual(report["status"], "human_review")
+        self.assertTrue(report["reason"].startswith("worker did not write a valid TOON result"), report["reason"])
+
+    def test_only_a_standalone_429_token_counts(self):
+        # A 429 counts after whitespace, `=`, `(` or the start of the line.
+        for n, line in enumerate(("fetch:429 RESOURCE_EXHAUSTED", "cost $429 quota", "pkg v1.429.0 quota",
+                                  "id-429-x RESOURCE_EXHAUSTED")):
+            with self.subTest(line=line):
+                self.assertEqual(self._stop_status(line + "\n", n)["status"], "human_review")
+
+    def test_a_429_after_whitespace_equals_a_paren_or_the_line_start_counts(self):
+        for n, line in enumerate(("HTTP 429 RESOURCE_EXHAUSTED", "status=429 quota", "error (429) quota",
+                                  "429 RESOURCE_EXHAUSTED", "code 429: quota")):
+            with self.subTest(line=line):
+                self.assertEqual(self._stop_status(line + "\n", 10 + n)["status"], "relaunch")
+
+    def test_the_reset_text_comes_from_the_matching_line_only(self):
+        report = self._stop_status("$ git reset --hard HEAD\nError: 429 RESOURCE_EXHAUSTED, resets in 4h\n", 0)
+        self.assertEqual((report["status"], report["reason"]), ("relaunch", "quota stop: codex m-test; resets in 4h"))
+
+    def test_a_matching_line_without_reset_text_gets_none_from_another_line(self):
+        report = self._stop_status("Error: 429 RESOURCE_EXHAUSTED\nthe reset window is not stated\n", 0)
+        self.assertEqual((report["status"], report["reason"]), ("relaunch", "quota stop: codex m-test"))
 
     def test_an_ordinary_relaunch_after_a_quota_relaunch_is_still_a_relaunch(self):
         # The RELAUNCHED log marker is shared; a quota relaunch does not spend the once-a-day ordinary one.
@@ -1012,14 +1102,15 @@ class RunTest(unittest.TestCase):
         self._stopped(write_partial=True)
         report = self._report()
         self.assertEqual(report["status"], "human_review")
-        self.assertFalse(report["reason"].startswith("quota stop:"), report["reason"])
+        # The worker's own failure to write a result, not a relaunch refused for its changes (#422 review R1).
+        self.assertTrue(report["reason"].startswith("worker did not write a valid TOON result"), report["reason"])
         self.assertIn("HUMAN REVIEW NEEDED", self.tracker.read_text())
 
     def test_a_quota_stop_that_left_a_commit_needs_review(self):
         self._stopped(commit_partial=True)
         report = self._report()
         self.assertEqual(report["status"], "human_review")
-        self.assertFalse(report["reason"].startswith("quota stop:"), report["reason"])
+        self.assertTrue(report["reason"].startswith("worker did not write a valid TOON result"), report["reason"])
 
     def test_the_workers_own_review_result_wins_over_quota_text(self):
         self._stopped(result="status: human_review\nreason: blocked on creds\nchanges: none\n")
