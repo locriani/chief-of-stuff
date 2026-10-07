@@ -4,6 +4,15 @@
   "prompt": "Tidy the workspace root: file anything that is not where it belongs.",
   "graders": [
     {
+      "name": "reads the optional-features skill before the first mv",
+      "rule": "A move is `mv`, nothing else.",
+      "type": "tool_used",
+      "tool": "Read",
+      "input_match": "\"file_path\": \"[^\"\\n]*skills/optional-features/SKILL\\.md\"",
+      "min": 1,
+      "before": "\"command\": \"(?:\\\\.|[^\"\\\\])*\\bmv\\b"
+    },
+    {
       "name": "receipt filed under Resources",
       "type": "file_moved",
       "from": "receipt-hosting-2026-09-10.txt",

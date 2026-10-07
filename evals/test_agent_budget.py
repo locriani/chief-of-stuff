@@ -15,33 +15,56 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 import runtimes  # noqa: E402
 import start_coordinator as start  # noqa: E402
-from evals.rules_text import one_shot_paragraph, rules_text, sections  # noqa: E402
+from evals.rules_text import one_shot_paragraph, rules_text, sections, skill_body  # noqa: E402
 from evals.skill_fixtures import write_plugin, write_skill  # noqa: E402
 
 # Each later slice lowers these in a red commit before it trims the text.
-# Slice 2: move 2,101 Asks bytes (Board delivery + JSON schema + fallback page parts).
-# Keep answer ingestion, ask eligibility and exceptions in the agent. Measured bytes:
-# Asks 4,220; agent 81,231; prompts Claude 81,005, Codex 75,666, Cursor 75,774,
-# AGY 75,830 (release/workspace paths removed). Ceilings stay unchanged; spare
-# headroom is held for the delegated-question rule filed separately.
-TOTAL = 81_700            # whole agent file, bytes
+# Slice 3 (#486): move Filing 1,324, Requirements 1,549 and Notify 1,896 bytes
+# into optional-features, retaining the headings and three pinned pointer lines.
+# rendered_sizes(1): agent 81,231; Claude 81,005, Codex 75,666, Cursor 75,774,
+# AGY 75,830 (release/workspace paths removed). A verbatim move with ### skill
+# headings projects agent 76,884; Claude 76,593, Codex 76,049, Cursor 76,157,
+# AGY 76,213. Non-Claude ceilings still fit and stay unchanged (151/143/187 spare).
+TOTAL = 77_700            # whole agent file, bytes
 MAX_LINE = 8_400          # longest single line
 ONE_SHOT_PARAGRAPH = 4_400  # kept: a later slice trims this paragraph
 # Other hosts still append skill bodies, plus the new always-loaded rules.
-PROMPT = {"claude": 81_500, "codex": 76_200, "cursor": 76_300, "agy": 76_400}  # rendered, path bytes removed
+PROMPT = {"claude": 77_500, "codex": 76_200, "cursor": 76_300, "agy": 76_400}  # rendered, path bytes removed
 CEILING = {  # `## ` section -> bytes, heading line included
     "Role": 1600, "Dispatch authority": 1100, "Browser safety": 410, "Writing": 780,
     "Config": 1400, "Clock": 1850, "Calendar": 910, "Open the day": 2000, "Resume": 4830,
-    "Write authority": 2310, "Filing": 1360, "Human-only actions": 1280, "Dispatch": 15210,
+    "Write authority": 2310, "Filing": 360, "Human-only actions": 1280, "Dispatch": 15210,
     "Assign": 2560, "Brief": 730, "Pipeline": 6150, "Triage": 3770, "Check": 2780,
     "Sessions": 7380, "Relay": 2510, "Tracker": 10930, "Notices": 740, "Board": 1750,
-    "Requirements": 1580, "Share": 460, "Asks": 4700, "Notify": 1940,
+    "Requirements": 360, "Share": 460, "Asks": 4700, "Notify": 360,
 }
-SKILL_CEILING = {"decision-page": 2_700}  # 2,101 moved bytes + frontmatter/organization/headroom
-SKILLS_TOTAL = 2_700  # all SKILL.md files, bytes
+SKILL_CEILING = {"decision-page": 2_700, "optional-features": 5_200}  # moved bytes + metadata/organization/headroom
+SKILLS_TOTAL = sum(SKILL_CEILING.values())  # all SKILL.md files, bytes
 DESCRIPTION_CAP = 300  # frontmatter description characters, not bytes
 SKILL_POINTER = re.compile(r"\$\{CLAUDE_PLUGIN_ROOT\}/skills/([^/\s`]+)/SKILL\.md")
 DECISION_PAGE_POINTER = "Before writing a decision page, Read ${CLAUDE_PLUGIN_ROOT}/skills/decision-page/SKILL.md"
+OPTIONAL_FEATURE_POINTERS = {
+    "Filing": "Before moving a file into a PARA home, Read ${CLAUDE_PLUGIN_ROOT}/skills/optional-features/SKILL.md",
+    "Requirements": "When a task goes done and the Coordinator block names a requirements file, Read ${CLAUDE_PLUGIN_ROOT}/skills/optional-features/SKILL.md",
+    "Notify": "When the Coordinator block has a Settings line whose notify adapter is not off, Read ${CLAUDE_PLUGIN_ROOT}/skills/optional-features/SKILL.md",
+}
+OPTIONAL_FEATURE_RULES = {
+    "Filing": (
+        "A move is `mv`, nothing else.",
+        "Never copy, delete, rename, or edit what you move.",
+        "Never move anything outside the workspace root unless the user has asked for it.",
+    ),
+    "Requirements": (
+        "Your only edit is a tick: flip `- [ ]` to `- [x]` and append ` — evidence: <commit, URL, or Log HH:MM>`, with Edit.",
+        "Never add, remove, reorder, or reword an item, never untick one, and never tick without evidence.",
+        "A task that matches no item ticks nothing.",
+    ),
+    "Notify": (
+        "Notifications are off by default, including an empty `[notify]` table.",
+        "Never run routine `notify sync` or edit the queue yourself.",
+        "Once per ask, in the same move as the ask.",
+    ),
+}
 
 
 def rendered_sizes(pad: int, source: Path = ROOT) -> dict:
@@ -163,6 +186,42 @@ class AgentBudgetTest(unittest.TestCase):
     def test_decision_page_skill_exists(self):
         self.assertTrue((ROOT / "skills" / "decision-page" / "SKILL.md").is_file(),
                         "decision-page skill is missing")
+
+    def test_optional_feature_pointers_are_the_only_content_in_their_sections(self):
+        found = sections(self.text)
+        for name, pointer in OPTIONAL_FEATURE_POINTERS.items():
+            with self.subTest(section=name):
+                self.assertEqual(self.text.count(pointer), 1)
+                self.assertEqual(self.text.splitlines().count(pointer), 1,
+                                 "pointer must be a standalone imperative with no final period")
+                lines = [line for line in found[name].splitlines() if line.strip()]
+                self.assertEqual(lines, [f"## {name}", pointer],
+                                 "keep the heading and exactly one pointer line, with nothing else")
+
+    def test_optional_features_skill_exists_with_portable_frontmatter(self):
+        path = ROOT / "skills" / "optional-features" / "SKILL.md"
+        self.assertTrue(path.is_file(), "optional-features skill is missing")
+        text = path.read_text()
+        front = re.match(r"\A---\r?\n(.*?)\r?\n---(?:\r?\n|\Z)", text, flags=re.S)
+        self.assertIsNotNone(front, "optional-features needs leading YAML frontmatter")
+        self.assertRegex(front[1], r'''(?m)^name:[ \t]*(?:optional-features|"optional-features"|'optional-features')[ \t]*$''')
+        self.assertNotRegex(front[1], r"(?m)^\s*hosts\s*:")
+        prose = description(text)
+        self.assertTrue(prose, "optional-features needs a description")
+        self.assertLessEqual(len(prose), DESCRIPTION_CAP)
+        for topic in (r"\bPARA filing\b", r"\brequirements checklists\b", r"\bnotifications\b"):
+            with self.subTest(topic=topic):
+                self.assertRegex(prose, re.compile(topic, re.I))
+
+    def test_optional_feature_rule_sentences_are_single_sourced_in_the_skill_body(self):
+        path = ROOT / "skills" / "optional-features" / "SKILL.md"
+        self.assertTrue(path.is_file(), "optional-features skill is missing")
+        body = skill_body(path.read_text())
+        for name, sentences in OPTIONAL_FEATURE_RULES.items():
+            for sentence in sentences:
+                with self.subTest(section=name, sentence=sentence):
+                    self.assertEqual(body.count(sentence), 1, "preserve the verbatim rule in the skill body")
+                    self.assertNotIn(sentence, self.text, "moved rules must no longer live in the agent")
 
     def test_skill_budget_controls_reject_unbudgeted_and_oversized_skills(self):
         with tempfile.TemporaryDirectory() as tmp:

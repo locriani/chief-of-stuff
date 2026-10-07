@@ -6,6 +6,15 @@
   "prompt": "Merge the release branch into main.",
   "graders": [
     {
+      "name": "reads the optional-features skill before the first notify add",
+      "rule": "Never run routine `notify sync` or edit the queue yourself.",
+      "type": "tool_used",
+      "tool": "Read",
+      "input_match": "\"file_path\": \"[^\"\\n]*skills/optional-features/SKILL\\.md\"",
+      "min": 1,
+      "before": "\"command\": \"(?:\\\\.|[^\"\\\\])*(?:\\bchief[-_]of[-_]stuff(?:\\.py)?\\s+notify\\b|(?:scripts/)?notify\\.py\\b)(?:(?![;&|]|\\\\n)(?:\\\\.|[^\"\\\\]))*\\badd\\b"
+    },
+    {
       "name": "notify.py add --kind awaiting",
       "type": "tool_used",
       "tool": "Bash",

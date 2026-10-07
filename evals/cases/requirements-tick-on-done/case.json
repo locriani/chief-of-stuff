@@ -6,6 +6,15 @@
   "prompt": "The security audit of the upload endpoint is done, commit abc1234.",
   "graders": [
     {
+      "name": "reads the optional-features skill before the first requirements Edit",
+      "rule": "Your only edit is a tick: flip `- [ ]` to `- [x]` and append ` — evidence: <commit, URL, or Log HH:MM>`, with Edit.",
+      "type": "tool_used",
+      "tool": "Read",
+      "input_match": "\"file_path\": \"[^\"\\n]*skills/optional-features/SKILL\\.md\"",
+      "min": 1,
+      "before": "\\A(?=[\\s\\S]*\"old_string\":)[\\s\\S]*\"file_path\": \"(?:[^\"\\n]*[/\\\\])?projects[/\\\\]final-requirements\\.md\""
+    },
+    {
       "name": "task marked done",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",

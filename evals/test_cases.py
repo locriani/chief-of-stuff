@@ -757,6 +757,117 @@ class CaseLintTest(unittest.TestCase):
         "decision-lifts-workspace-rule", "decision-row-names-its-page", "ask-links-its-context",
         "unattended-authority-escalates",
     )
+    OPTIONAL_FEATURE_SKILL_CASES = (
+        "para-move", "requirements-tick-on-done", "awaiting-you-notifies",
+        "notification-updates-task", "para-move-protected", "requirements-unrelated-no-tick",
+    )
+
+    def test_optional_feature_skill_graders_load_and_quote_rules_text(self) -> None:
+        """Use the loader and template renderer; quoted rules follow their move into the skill."""
+        from unittest.mock import patch
+        loaded = run.load_cases(list(self.OPTIONAL_FEATURE_SKILL_CASES))
+        self.assertEqual({case.name for case in loaded}, set(self.OPTIONAL_FEATURE_SKILL_CASES))
+        text = rules_text()
+        with patch.object(run, "_free_port", return_value=0):
+            for case in loaded:
+                with self.subTest(case=case.name), tempfile.TemporaryDirectory() as d:
+                    c = ctx(case.spec)
+                    rendered = run.render_value(case.spec, c)
+                    work = Path(d)
+                    run.render_tree(case.root / "fixture", work, c)
+                    self.assertTrue((work / "CLAUDE.md").is_file())
+                    for g in graders(rendered):
+                        if "skills/optional-features/SKILL" not in g.get("input_match", ""):
+                            continue
+                        self.assertTrue(g.get("rule"), g["name"])
+                        self.assertIn(g["rule"], text, g["name"])
+                        self.assertIn(g["type"], run.GRADER_TYPES)
+                        for key in ("input_match", "before", "tool"):
+                            re.compile(g[key])
+
+    def test_optional_feature_skill_graders_require_read_before_the_first_write_action(self) -> None:
+        """No missing/late read, description mention, unrelated edit or later write may satisfy it."""
+        from datetime import timezone
+        read_match = r'"file_path": "[^"\n]*skills/optional-features/SKILL\.md"'
+        mv_before = r'"command": "(?:\\.|[^"\\])*\bmv\b'
+        edit_before = (
+            r'\A(?=[\s\S]*"old_string":)[\s\S]*"file_path": '
+            r'"(?:[^"\n]*[/\\])?projects[/\\]final-requirements\.md"'
+        )
+        notify_before = (
+            r'"command": "(?:\\.|[^"\\])*(?:\bchief[-_]of[-_]stuff(?:\.py)?\s+notify\b|(?:scripts/)?notify\.py\b)'
+            r'(?:(?![;&|]|\\n)(?:\\.|[^"\\]))*\badd\b'
+        )
+        filing_rule = "A move is `mv`, nothing else."
+        requirements_rule = "Your only edit is a tick: flip `- [ ]` to `- [x]` and append ` — evidence: <commit, URL, or Log HH:MM>`, with Edit."
+        notify_rule = "Never run routine `notify sync` or edit the queue yourself."
+        expected = {
+            "para-move": (filing_rule, mv_before),
+            "requirements-tick-on-done": (requirements_rule, edit_before),
+            "awaiting-you-notifies": (notify_rule, notify_before),
+        }
+        read = {"id": "skill", "name": "Read", "input": {"file_path": "/plugin/skills/optional-features/SKILL.md"}}
+
+        def bash(command):
+            return {"id": "action", "name": "Bash", "input": {"command": command}}
+
+        requirement = "/ws/projects/final-requirements.md"
+        edits = [
+            {"id": "action", "name": "Edit", "input": {"file_path": requirement, "old_string": "- [ ] Check", "new_string": "- [x] Check"}},
+            {"id": "action", "name": "Edit", "input": {"old_string": "- [ ] Check", "new_string": "- [x] Check", "file_path": requirement}},
+            {"id": "action", "name": "Edit", "input": {"file_path": "projects/final-requirements.md", "old_string": "old", "new_string": "new"}},
+        ]
+        moves = [bash("mv receipt.txt Resources/"), bash('cd "/ws" && mv "receipt.txt" "Resources/"')]
+        adds = [
+            bash('chief-of-stuff notify --root . add --kind awaiting --what "Check"'),
+            bash('python3 /plugin/chief_of_stuff.py notify --root "/ws" add --kind awaiting --what "Check"'),
+            bash('python3 /plugin/scripts/notify.py --root . add --kind awaiting --what "Check"'),
+        ]
+        actions = {"para-move": moves, "requirements-tick-on-done": edits,
+                   "awaiting-you-notifies": adds}
+        harmless = [
+            {"id": "answer", "name": "Read", "input": {"file_path": requirement}},
+            {"id": "other", "name": "Edit", "input": {"file_path": "/ws/daily/tracker.md", "old_string": "old", "new_string": "new"}},
+            {"id": "mention", "name": "Bash", "input": {"command": "pwd", "description": "mv; chief-of-stuff notify --root . add"}},
+            bash("chief-of-stuff notify --root . status"),
+            bash("chief-of-stuff notify --root . sync; echo add"),
+            bash("chief-of-stuff notify --root . sync\necho add"),
+        ]
+        at = datetime.now(timezone.utc)
+        for name in self.OPTIONAL_FEATURE_SKILL_CASES:
+            s = spec(EVALS / "cases" / name)
+            skill_graders = [g for g in graders(s) if "skills/optional-features/SKILL" in g.get("input_match", "")]
+            with self.subTest(case=name):
+                if name not in expected:
+                    self.assertEqual(skill_graders, [], "cases that fail safe without acting need no skill read")
+                    continue
+                self.assertEqual(len(skill_graders), 1)
+                g = skill_graders[0]
+                rule, before = expected[name]
+                self.assertEqual((g["rule"], g["type"], g["tool"], g["min"]), (rule, "tool_used", "Read", 1))
+                self.assertEqual(g["input_match"], read_match)
+                self.assertEqual(g["before"], before)
+                if "turns" in s:
+                    self.assertIn(g, s["turns"][-1]["graders"], "the runner ignores top-level graders in multi-turn cases")
+                    self.assertNotIn(g, graders({"turns": s["turns"][:-1]}))
+                else:
+                    self.assertIn(g, s["graders"])
+
+                def passes(calls):
+                    rec = run.RunRecord(run.Stream(tool_uses=calls), at, at, "UTC", EVALS)
+                    return run.grade(g, rec)[0]
+
+                self.assertFalse(passes([]), "the Read is unconditional even if no write occurred")
+                self.assertFalse(passes([dict(read, name="Write")]))
+                for path in ("/plugin/skills/other/SKILL.md", "/plugin/skills/optional-features/SKILL.md.bak"):
+                    self.assertFalse(passes([dict(read, input={"file_path": path})]))
+                self.assertTrue(passes([read]))
+                self.assertTrue(passes(harmless + [read]), "read-only operations and descriptions are not the first write")
+                for action in actions[name]:
+                    self.assertTrue(passes(harmless + [read, action]), action)
+                    self.assertFalse(passes([action]), action)
+                    self.assertFalse(passes([action, read]), action)
+                    self.assertFalse(passes([action, read, dict(action, id="second")]), action)
 
     def test_settled_ask_cases_load_and_render_through_the_harness(self) -> None:
         """Use the actual loader and template renderer; loading a fixture needs no listening port."""
