@@ -132,7 +132,10 @@ def prompt(runtime: str, release: Path, root: Path) -> str:
         for path in sorted((release / "skills").glob("*/SKILL.md")):
             text = path.read_text()
             front = re.match(r"\A---\r?\n(.*?)\r?\n---(?:\r?\n|\Z)", text, flags=re.S)
-            if front and re.search(r"(?m)^hosts:[ \t]*claude[ \t]*$", front[1]):
+            hosts = [line for line in front[1].splitlines() if line.lstrip().startswith("hosts:")] if front else []
+            if any(line != "hosts: claude" for line in hosts):
+                raise Refused(f"Skill {path.parent.name}: unsupported hosts line")
+            if hosts:
                 continue
             body = (text[front.end():] if front else text).strip()
             body = body.replace("${CLAUDE_PLUGIN_ROOT}", str(release))
