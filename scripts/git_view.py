@@ -1,8 +1,9 @@
 """Read worker-written git data through private, launcher-authored metadata.
 
-Callers supply the audit environment; only allowlisted GIT_* settings survive. Refs and objects remain untrusted data;
-config, hooks, grafts and shallow boundaries never enter the view. This module
-does not serve writes or inspect submodules.
+Only allowlisted caller environment settings survive; the module pins config isolation.
+Refs and objects remain untrusted data; config, hooks, grafts and shallow boundaries
+never enter the view. Workers must not be able to write metadata outside their tree.
+This module does not serve writes or inspect submodules.
 """
 
 from __future__ import annotations
@@ -108,9 +109,57 @@ _BOOL_KEYS = ("core.filemode", "core.ignorecase", "core.precomposeunicode", "cor
 _INDEX_LIMIT = 512 * 1024 * 1024
 _OBJECT_ONLY = frozenset(("branch", "cat-file", "for-each-ref", "log", "ls-files", "ls-tree",
                           "merge-base", "rev-list", "rev-parse", "show", "symbolic-ref"))
-_READ_ONLY_COMMANDS = _OBJECT_ONLY | {"check-ref-format", "diff", "status"}
-_SAFE_GIT_ENV = frozenset(("GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS", "GIT_NO_REPLACE_OBJECTS",
-                          "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM"))
+# Exact option spellings, restricted operand count, required read option.
+# A named operand group consumes a separate option value, not a revision/path.
+_READ_OPTIONS = {
+    "status": (r"--(?:porcelain|short)", None, None),
+    "rev-parse": (r"--(?:abbrev-ref|absolute-git-dir|git-common-dir|is-shallow-repository|quiet|short|show-toplevel|verify)"
+                  r"|-q|--path-format=(?:absolute|relative)|--disambiguate=[0-9a-f]{1,64}"
+                  r"|--git-path=.+|(?P<operand>--git-path)", None, None),
+    "log": (r"--format=.+|--(?:no-color|no-ext-diff|no-textconv|stat)|-1", None, None),
+    "merge-base": (r"--is-ancestor", None, None),
+    "diff": (r"--(?:name-only|no-color|no-ext-diff|no-renames|no-textconv|numstat|stat)", None, None),
+    "show": (r"--format=.+|--stat", None, None),
+    "for-each-ref": (r"--format=.+|(?P<operand>--format)", None, None),
+    "ls-files": (r"--stage|-z", None, None),
+    "ls-tree": (r"-r", None, None),
+    "cat-file": (r"--batch-check|-[ept]", None, None),
+    "rev-list": (r"--(?:count|left-right)", None, None),
+    "branch": (r"--show-current", 0, "--show-current"),
+    "symbolic-ref": (r"--short|-q", 1, None),
+    "check-ref-format": (r"--branch", None, None),
+}
+_SAFE_CALLER_ENV = frozenset(("PATH", "HOME", "GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS",
+                             "GIT_NO_REPLACE_OBJECTS"))
+
+
+def _check_args(args: list[str]) -> None:
+    if not args or args[0] not in _READ_OPTIONS:
+        raise Unviewable("command is not an allowed read")
+    if any(arg.startswith(("--git-dir", "--work-tree", "--output", "--submodule", "--ignore-submodules"))
+           for arg in args):
+        raise Unviewable("repository, output and submodule options are not allowed")
+    pattern, count, required = _READ_OPTIONS[args[0]]
+    operands = 0
+    options = set()
+    separated = False
+    tokens = iter(args[1:])
+    for arg in tokens:
+        if arg == "--" and not separated:
+            separated = True
+        elif separated or not arg.startswith("-"):
+            operands += 1
+        else:
+            match = re.fullmatch(pattern, arg)
+            if match is None:
+                raise Unviewable("option is not an allowed read")
+            options.add(arg)
+            if match.groupdict().get("operand"):
+                value = next(tokens, None)
+                if not value or value.startswith("-"):
+                    raise Unviewable("option value is missing")
+    if (count is not None and operands != count) or (required is not None and required not in options):
+        raise Unviewable("arguments are not an allowed read form")
 
 
 def _head(layout: Layout) -> tuple[bytes, str | None]:
@@ -196,6 +245,8 @@ def _copy_index(source: Path, target: Path) -> None:
                 if remaining < 0:
                     raise Unviewable("index is too large")
                 dst.write(chunk)
+        # Keep Git's racy-index content checks tied to the original timestamp.
+        os.utime(target, ns=(info.st_atime_ns, info.st_mtime_ns))
 
 
 def _base(layout: Layout, base: Path | None) -> Path:
@@ -229,7 +280,8 @@ def _base(layout: Layout, base: Path | None) -> Path:
 
 @contextmanager
 def _opened(path: Path, env: dict[str, str], base: Path | None, deadline: float) -> Iterator[View]:
-    env = {key: value for key, value in env.items() if not key.startswith("GIT_") or key in _SAFE_GIT_ENV}
+    env = {key: value for key, value in env.items() if key in _SAFE_CALLER_ENV}
+    env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull, GIT_CONFIG_NOSYSTEM="1")
     layout = locate(path)
     if (layout.common / "reftable").exists():
         raise Unviewable("reftable ref storage")
@@ -282,10 +334,7 @@ def opened(path: Path, env: dict[str, str], base: Path | None = None) -> Iterato
 def run(args: list[str], path: Path, *, env: dict[str, str], timeout: int = 15,
         base: Path | None = None) -> subprocess.CompletedProcess[str]:
     """Build, read and remove a view within one subprocess time budget."""
-    if not args or args[0].startswith("-") or args[0] not in _READ_ONLY_COMMANDS:
-        raise Unviewable("command is not an allowed read")
-    if any(arg.startswith(("--git-dir", "--work-tree", "--output")) for arg in args):
-        raise Unviewable("repository and output options are not allowed")
+    _check_args(args)
     command = args[0]
     deadline = time.monotonic() + timeout
     with _opened(path, env, base, deadline) as view:
