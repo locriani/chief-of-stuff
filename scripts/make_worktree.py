@@ -25,7 +25,6 @@ from workspace import settings_path, worktrees_dir  # noqa: E402
 
 AGENT = re.compile(r"^\s*(?:[-*]\s*)?Agent:\s*(\S+)\s+(\S+)\s*$", re.MULTILINE)
 LIFETIMES = ("task", "standing")
-GIT_ENV = {"GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0"}
 GIT_TIMEOUT = 30
 
 
@@ -50,7 +49,7 @@ def git(args: list[str], cwd: Path) -> tuple[int, str]:
             capture_output=True,
             text=True,
             timeout=GIT_TIMEOUT,
-            env={**GIT_ENV, "PATH": "/usr/bin:/bin:/usr/local/bin", "HOME": str(cwd)},
+            env=git_trees.audit_env(),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return 1, f"{type(exc).__name__}: {exc}"
