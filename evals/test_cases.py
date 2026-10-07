@@ -25,7 +25,7 @@ import audit_tasks  # noqa: E402
 import run  # noqa: E402
 import render_board as rb  # noqa: E402
 from settings import load as load_settings  # noqa: E402
-from test_dispatch_prompt import SILENT_CHECK_RULE  # noqa: E402
+from test_dispatch_prompt import SILENT_CHECK_RULE, sections  # noqa: E402
 from workspace import settings_path  # noqa: E402
 
 CASES = sorted(p for p in (EVALS / "cases").iterdir() if (p / "case.json").exists())
@@ -484,7 +484,7 @@ class CaseLintTest(unittest.TestCase):
     def test_silent_check_graders_enforce_sentences_the_agent_carries(self) -> None:
         """#454: every rule-bearing grader of the two check cases quotes one sentence the agent file carries, and the
         regex that grades a silent reply takes an empty reply or exactly `.` and nothing else."""
-        agent_text = (EVALS.parent / "agents" / "chief-of-stuff.md").read_text()
+        check = sections((EVALS.parent / "agents" / "chief-of-stuff.md").read_text())["Check"]
         silent, changed = (spec(EVALS / "cases" / c) for c in ("silent-check-says-nothing", "changed-check-says-only-the-change"))
         quiet = [g for s in (silent, changed) for t in s["turns"] for g in t["graders"] if g.get("rule") == SILENT_CHECK_RULE[0]]
         self.assertEqual(len(quiet), 3, "two quiet checks in the first case, one in the second")
@@ -492,8 +492,9 @@ class CaseLintTest(unittest.TestCase):
             for turn in s["turns"]:
                 for g in turn["graders"]:
                     if "rule" in g:
-                        self.assertIn(g["rule"], SILENT_CHECK_RULE, g["name"])
-                        self.assertIn(g["rule"], agent_text, g["name"])
+                        with self.subTest(grader=g["name"], rule=g["rule"]):
+                            self.assertIn(g["rule"], SILENT_CHECK_RULE, g["name"])
+                            self.assertIn(g["rule"], check, g["name"])
         for g in quiet:
             for reply, silent_reply in (("", True), (".", True), (" .\n", True), ("\n", True), ("Nothing new.", False),
                                         ("Quiet. Still waiting on Robin for the release notes owner.", False), ("..", False),

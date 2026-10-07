@@ -25,7 +25,7 @@ import runtimes  # noqa: E402
 import spawn_session as spawn  # noqa: E402
 from evals.test_spawn_session import CLAUDE, TRACKER  # noqa: E402
 import evals.test_one_shot as one_shot_tests  # noqa: E402 (module-qualified: its tests are not re-collected here)
-from evals.test_dispatch_prompt import SILENT_CHECK_RULE  # noqa: E402
+from evals.test_dispatch_prompt import SILENT_CHECK_RULE, sections  # noqa: E402
 import git_trees  # noqa: E402
 import one_shot  # noqa: E402
 
@@ -110,14 +110,14 @@ class CoordinatorLaunchTest(unittest.TestCase):
                 self.assertIn("chief-of-stuff kanban --root", rendered)
         self.assertEqual(start.WATCH_INTERVAL, 5 * 60)
 
-    def test_every_hosts_prompt_tells_a_quiet_check_to_write_no_reply_text(self):
+    def test_every_hosts_prompt_tells_a_quiet_check_to_emit_a_dot(self):
         # #454: start_coordinator.prompt() replaces the Check section on every host but Claude, so the rule must reach them there.
         release = start.install(ROOT, self.install_dir)
         for runtime in runtimes.NAMES:
-            rendered = start.prompt(runtime, release, self.root)
+            check = sections(start.prompt(runtime, release, self.root))["Check"]
             for sentence in SILENT_CHECK_RULE:
                 with self.subTest(runtime=runtime, sentence=sentence):
-                    self.assertIn(sentence, rendered)
+                    self.assertIn(sentence, check)
 
     def test_host_adapters_preserve_automatic_one_shot_dispatch(self):
         release = start.install(ROOT, self.install_dir)

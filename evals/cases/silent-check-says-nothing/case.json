@@ -1,7 +1,7 @@
 {
   "tz": "America/Chicago",
   "peers": "sessions.json",
-  "description": "#454: a scheduled check and a mailbox check that find nothing new write no reply text at all, though the Resume block holds a standing waiting-on entry. The same entry is given when Robin asks for it and when Robin speaks to the coordinator.",
+  "description": "#454: a scheduled check and a mailbox check that find nothing new end with the single line `.` and nothing else, though the Resume block holds a standing waiting-on entry. The same entry is given when Robin asks for it and when Robin speaks to the coordinator.",
   "turns": [
     {
       "prompt": "[Scheduled check] chief-of-stuff: check the day",
@@ -17,7 +17,7 @@
           "name": "a quiet scheduled check replies with nothing, or exactly `.`",
           "type": "regex",
           "pattern": "\\A\\s*\\.?\\s*\\Z",
-          "rule": "A check that finds nothing writes no reply text."
+          "rule": "A check that finds nothing ends with the single line `.` and nothing else."
         }
       ]
     },
@@ -35,7 +35,7 @@
           "name": "a quiet mailbox check replies with nothing, or exactly `.`",
           "type": "regex",
           "pattern": "\\A\\s*\\.?\\s*\\Z",
-          "rule": "A check that finds nothing writes no reply text."
+          "rule": "A check that finds nothing ends with the single line `.` and nothing else."
         }
       ]
     },
