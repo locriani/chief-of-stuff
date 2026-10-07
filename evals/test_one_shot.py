@@ -1728,6 +1728,158 @@ class RunTest(unittest.TestCase):
         got = self._commented_with("GitLab; host https://github.com; project team/app", "#7")
         self.assertEqual(got, one_shot.backlog.GitHubBacklog("team/app"))
 
+    # #427: a codex worker holds a git grant, so the git control files are recorded before its run and put back, with
+    # no git call in between, after it. The hostile config sets `core.fsmonitor`, which the launcher's first `git status`
+    # would run: a marker file in the scratch dir shows whether anything ran.
+    GIT_HELD = "git control files changed during the run and were restored: "
+
+    def _linked_tree(self) -> Path:
+        return CommandTest._repo_with_linked_tree(self, self.root / "linked")[1]
+
+    def _git_dirs(self, tree: Path) -> tuple[Path, Path]:
+        """The common dir and the tree's own gitdir."""
+        out = [Path(subprocess.run(["git", "-C", str(tree), "rev-parse", "--path-format=absolute", flag],
+                                   capture_output=True, text=True, check=True).stdout.strip()).resolve()
+               for flag in ("--git-common-dir", "--absolute-git-dir")]
+        return out[0], out[1]
+
+    def _rewrites_git_control(self, tree: Path, marker: Path, commondir: bool = False) -> str:
+        """Worker code that rewrites the common config, adds a hook and, in a linked tree, points `commondir` away."""
+        common, gitdir = self._git_dirs(tree)
+        lines = [f"with open({str(common / 'config')!r}, 'a') as f:",
+                 f"    f.write('[core]\\n\\tfsmonitor = touch {marker} #\\n')",
+                 f"Path({str(common / 'hooks' / 'evil')!r}).write_text('#!/bin/sh\\ntouch {marker}\\n')"]
+        if commondir:
+            evil = tree / ".evil"
+            lines += [f"Path({str(evil)!r}).mkdir()",
+                      f"Path({str(evil / 'config')!r}).write_text('[core]\\n\\tfsmonitor = touch {marker} #\\n')",
+                      f"Path({str(gitdir / 'commondir')!r}).write_text({str(evil)!r} + '\\n')"]
+        return "\n".join(lines) + "\n"
+
+    def _control_files(self, tree: Path) -> dict[Path, bytes]:
+        common, gitdir = self._git_dirs(tree)
+        return {p: p.read_bytes() for p in (common / "config", gitdir / "commondir", gitdir / "gitdir") if p.is_file()}
+
+    def _assert_held_and_restored(self, tree: Path, names: str, before: dict[Path, bytes], marker: Path) -> dict:
+        report = self._report(tree)
+        self.assertEqual(report["status"], "human_review")
+        self.assertEqual(report["reason"], self.GIT_HELD + names)
+        self.assertEqual(self._control_files(tree), before)
+        self.assertFalse((self._git_dirs(tree)[0] / "hooks" / "evil").exists())
+        self.assertFalse(marker.exists(), "the launcher ran what the worker wrote into git's control files")
+        return report
+
+    def test_a_codex_worker_that_rewrites_a_clones_git_control_files_is_held_and_they_are_restored(self):
+        marker, before = self.root / "ran", self._control_files(self.tree)
+        fake = self._fake('status: done\nreason: all good\nchanges: none\n', write_partial=False,
+                          during=self._rewrites_git_control(self.tree, marker))
+        self.assertEqual(self._run(fake), 1)  # held, even though the worker said done
+        self._assert_held_and_restored(self.tree, "config, hooks/evil", before, marker)
+        self.assertIn("| Security audit | Robin | waiting |", self.tracker.read_text())
+
+    def test_a_codex_worker_that_rewrites_a_linked_trees_git_control_files_is_held_and_they_are_restored(self):
+        tree = self._linked_tree()
+        marker, before = self.root / "ran", self._control_files(tree)
+        fake = self._fake('status: done\nreason: all good\nchanges: none\n', write_partial=False,
+                          during=self._rewrites_git_control(tree, marker, commondir=True))
+        self.assertEqual(self._run(fake, tree), 1)
+        self._assert_held_and_restored(tree, "commondir, config, hooks/evil", before, marker)
+
+    def test_the_hold_is_the_launchers_own_reason_whatever_the_worker_said_or_how_it_ended(self):
+        quota = "Error: code 429 RESOURCE_EXHAUSTED: individual quota reached\n"
+        ended = {"a quota stop with no result": dict(stderr=quota, result=None, exit_code=3),
+                 "a worker's own hold": dict(stderr="", result="status: human_review\nreason: blocked on creds\nchanges: none\n", exit_code=0),
+                 "a relaunch request": dict(stderr="", result=self.ORDINARY, exit_code=0),
+                 "a failed exit": dict(stderr="", result='status: done\nreason: ok\nchanges: none\n', exit_code=2)}
+        for i, (name, how) in enumerate(ended.items()):
+            with self.subTest(ended=name):
+                tree, marker = self._another_tree(f"held-{i}"), self.root / f"ran-{i}"
+                self.tracker.write_text(TRACKER)
+                before = self._control_files(tree)
+                self._stopped(tree=tree, during=self._rewrites_git_control(tree, marker), **how)
+                report = self._assert_held_and_restored(tree, "config, hooks/evil", before, marker)
+                self.assertNotIn("blocked", report["reason"])
+                self.assertIn("| Security audit | Robin | waiting |", self.tracker.read_text())
+
+    def test_a_timed_out_codex_worker_that_rewrote_git_control_files_is_held_and_they_are_restored(self):
+        marker, before = self.root / "ran", self._control_files(self.tree)
+        fake = self._fake(None, write_partial=False, during=self._rewrites_git_control(self.tree, marker))
+        real_run = subprocess.run
+
+        def run(argv, *a, **kw):
+            if argv[0] == str(fake):  # the worker runs to its end, then the launcher's clock runs out
+                real_run(argv, *a, **{**kw, "timeout": None})
+                raise subprocess.TimeoutExpired(argv, 1)
+            return real_run(argv, *a, **kw)
+
+        with mock.patch.object(one_shot.subprocess, "run", side_effect=run):
+            self.assertEqual(self._run(fake), 1)
+        self._assert_held_and_restored(self.tree, "config, hooks/evil", before, marker)
+
+    def test_a_benign_upstream_config_write_does_not_hold_a_codex_run(self):
+        # What `git push -u` writes.
+        writes = "".join(f"subprocess.run(['git', 'config', 'branch.topic.{key}', {value!r}], check=True)\n"
+                         for key, value in (("remote", "origin"), ("merge", "refs/heads/topic"),
+                                            ("rebase", "true"), ("pushremote", "origin")))
+        fake = self._fake('status: done\nreason: pushed\nchanges: none\n', write_partial=False,
+                          during="import subprocess\n" + writes)
+        self.assertEqual(self._run(fake), 0)
+        report = self._report()
+        self.assertEqual(report["status"], "done")
+        self.assertNotIn("git control", report["reason"])
+        self.assertIn('[branch "topic"]', (self.tree / ".git" / "config").read_text())
+
+    def test_a_codex_run_records_the_git_control_files_before_the_worker_starts_and_verifies_after_it(self):
+        import git_control
+        real_snapshot, real_verify = git_control.snapshot, git_control.verify_and_restore
+        seen, started = [], self.root / "during.md"  # the fake worker's first act writes this
+
+        def snapshot(cwd):
+            self.assertFalse(started.exists(), "snapshot ran after the worker started")
+            seen.append(real_snapshot(cwd))
+            return seen[-1]
+
+        def verify(snap):
+            self.assertTrue(started.exists(), "verify ran before the worker finished")
+            return real_verify(snap)
+
+        fake = self._fake('status: done\nreason: ok\nchanges: none\n', write_partial=False)
+        with mock.patch.object(git_control, "snapshot", side_effect=snapshot) as snap, \
+             mock.patch.object(git_control, "verify_and_restore", side_effect=verify) as check:
+            self.assertEqual(self._run(fake), 0)
+        snap.assert_called_once_with(self.tree)
+        self.assertIsNotNone(seen[0])
+        check.assert_called_once()
+        self.assertIs(check.call_args.args[0], seen[0])
+
+    def test_without_a_snapshot_a_codex_run_launches_with_no_git_grant_and_verifies_nothing(self):
+        import git_control
+        argv_file = self.root / "argv.json"
+        argv = lambda: json.loads(argv_file.read_text())  # noqa: E731
+        record = f"import json\nPath({str(argv_file)!r}).write_text(json.dumps(sys.argv))\n"
+        fake = self._fake('status: done\nreason: ok\nchanges: none\n', write_partial=False, during=record)
+        self.assertEqual(self._run(fake), 0)
+        self.assertIn("--add-dir", argv())  # with a snapshot, the grant is there
+        self.tracker.write_text(TRACKER)
+        with mock.patch.object(git_control, "snapshot", return_value=None), \
+             mock.patch.object(git_control, "verify_and_restore") as check:
+            self.assertEqual(self._run(fake, self._another_tree("no-grant")), 0)  # a dispatch gets a tree of its own
+        self.assertNotIn("--add-dir", argv())  # the grant is dropped whole: neither the common dir nor the own gitdir
+        self.assertIn("exec", argv())  # and it is still a codex run
+        check.assert_not_called()
+
+    def test_only_codex_runs_are_snapshotted_and_verified(self):
+        import git_control
+        for runtime in ("claude", "cursor", "agy"):
+            with self.subTest(runtime=runtime):
+                self.tracker.write_text(TRACKER)
+                fake = self._fake('status: done\nreason: ok\nchanges: none\n', write_partial=False)
+                with mock.patch.object(git_control, "snapshot") as snap, \
+                     mock.patch.object(git_control, "verify_and_restore") as check:
+                    self.assertEqual(self._run(fake, self._another_tree(f"other-{runtime}"), runtime=runtime), 0)
+                snap.assert_not_called()
+                check.assert_not_called()
+
 
 # #365: several launches at once. Each launch is its own process: spawned children wait at one Barrier and go together, the
 # way test_inbox_adversarial.py starts its writers. The child functions are module level so a spawned child can import them.
