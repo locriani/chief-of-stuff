@@ -734,8 +734,10 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         # Zach, 2026-09-24 14:07: "we should host our own webserver and ensure they are set up as part of the agent's boot loop."
         ensure = "chief-of-stuff pages --ensure"
         for move in ("## Open the day", "## Resume", "## Check"):
-            section = self.content.split(move, 1)[1].split("\n## ", 1)[0]
-            self.assertIn(ensure, section, move)
+            # Split on the heading line: "## Resume" alone first matches the "`## Resume` block" in Open the day.
+            section = self.content.split(f"\n{move}\n", 1)[1]
+            self.assertTrue(section.startswith("\n"), move)
+            self.assertIn(ensure, section.split("\n## ", 1)[0], move)
         board = self.content.split("## Board", 1)[1].split("\n## ", 1)[0]
         self.assertIn("<url>/all", board)
         for gone in ("publish tool", "`url` argument", "`open` action", "Board: <url>"):
