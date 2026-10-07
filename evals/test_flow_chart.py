@@ -669,6 +669,28 @@ class IssueRowTest(unittest.TestCase):
         self.assertEqual(len([r for _, r in got if r.ref == "#307"]), 1)
         fc.section(got, NOW)
 
+    def test_a_finished_group_with_no_segment_in_any_row_merges_without_raising(self):
+        # #406: nothing in the group has a segment, so there is no last move to finish on; the board must still build.
+        for status in ("merged", "closed", "done"):
+            with self.subTest(status=status):
+                rows_ = [("running", gantt.Row("#406", "First", "first note", ())),
+                         (status, gantt.Row("#406", "Second", "second note", ()))]
+                got = fc._merge_issues(rows_)
+                self.assertEqual(len(got), 1)
+                got_status, row = got[0]
+                # name from the first row by position; status and note from the last
+                self.assertEqual((got_status, row.name, row.note, row.segments), (status, "First", "second note", ()))
+
+    def test_a_finished_group_clips_segments_to_the_finishing_rows_own_end(self):
+        # Guard for #406's fix: with a winning row that has segments, behaviour is unchanged.
+        seg = lambda a, b: gantt.Segment(at(TODAY, a), at(TODAY, b), "implement", "done")  # noqa: E731
+        first, overrun, last = seg("00:10", "00:30"), seg("00:35", "02:00"), seg("00:50", "01:00")
+        rows_ = [("running", gantt.Row("#406", "Early", "", (first, overrun))),
+                 ("merged", gantt.Row("#406", "Late", "", (last,)))]
+        (status, row), = fc._merge_issues(rows_)
+        self.assertEqual((status, row.name), ("merged", "Early"))
+        self.assertEqual(row.segments, (first, replace(overrun, end=last.end), last))
+
     def test_tasks_without_an_issue_keep_a_row_each(self):
         names = [r.name for _, r in self.built() if not r.ref]
         self.assertEqual(sorted(names), ["Tidy config", "Trim cache"])
