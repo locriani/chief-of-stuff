@@ -19,22 +19,29 @@ from evals.rules_text import one_shot_paragraph, rules_text, sections  # noqa: E
 from evals.skill_fixtures import write_plugin, write_skill  # noqa: E402
 
 # Each later slice lowers these in a red commit before it trims the text.
-TOTAL = 82_800            # whole agent file, bytes
+# Slice 2: move 2,101 Asks bytes (Board delivery + JSON schema + fallback page parts).
+# Keep answer ingestion, ask eligibility and exceptions in the agent. Measured bytes:
+# Asks 4,220; agent 81,231; prompts Claude 81,005, Codex 75,666, Cursor 75,774,
+# AGY 75,830 (release/workspace paths removed). Ceilings stay unchanged; spare
+# headroom is held for the delegated-question rule filed separately.
+TOTAL = 81_700            # whole agent file, bytes
 MAX_LINE = 8_400          # longest single line
-ONE_SHOT_PARAGRAPH = 4_400  # kept: slice 2 trims this paragraph
-PROMPT = {"claude": 82_600, "codex": 75_000, "cursor": 75_100, "agy": 75_200}  # rendered, path bytes removed
+ONE_SHOT_PARAGRAPH = 4_400  # kept: a later slice trims this paragraph
+# Other hosts still append skill bodies, plus the new always-loaded rules.
+PROMPT = {"claude": 81_500, "codex": 76_200, "cursor": 76_300, "agy": 76_400}  # rendered, path bytes removed
 CEILING = {  # `## ` section -> bytes, heading line included
     "Role": 1600, "Dispatch authority": 1100, "Browser safety": 410, "Writing": 780,
     "Config": 1400, "Clock": 1850, "Calendar": 910, "Open the day": 2000, "Resume": 4830,
     "Write authority": 2310, "Filing": 1360, "Human-only actions": 1280, "Dispatch": 15210,
     "Assign": 2560, "Brief": 730, "Pipeline": 6150, "Triage": 3770, "Check": 2780,
     "Sessions": 7380, "Relay": 2510, "Tracker": 10930, "Notices": 740, "Board": 1750,
-    "Requirements": 1580, "Share": 460, "Asks": 5740, "Notify": 1940,
+    "Requirements": 1580, "Share": 460, "Asks": 4700, "Notify": 1940,
 }
-SKILL_CEILING = {}  # skill directory name -> whole SKILL.md bytes; later slices add explicit budgets
-SKILLS_TOTAL = 0  # all SKILL.md files, bytes; no skills ship in this slice
+SKILL_CEILING = {"decision-page": 2_700}  # 2,101 moved bytes + frontmatter/organization/headroom
+SKILLS_TOTAL = 2_700  # all SKILL.md files, bytes
 DESCRIPTION_CAP = 300  # frontmatter description characters, not bytes
 SKILL_POINTER = re.compile(r"\$\{CLAUDE_PLUGIN_ROOT\}/skills/([^/\s`]+)/SKILL\.md")
+DECISION_PAGE_POINTER = "Before writing a decision page, Read ${CLAUDE_PLUGIN_ROOT}/skills/decision-page/SKILL.md"
 
 
 def rendered_sizes(pad: int, source: Path = ROOT) -> dict:
@@ -147,6 +154,15 @@ class AgentBudgetTest(unittest.TestCase):
 
     def test_every_agent_skill_pointer_names_an_existing_skill(self):
         assert_skill_pointers(self, ROOT)
+
+    def test_decision_page_pointer_occurs_exactly_once_at_the_point_of_use(self):
+        self.assertEqual(self.text.count(DECISION_PAGE_POINTER), 1)
+        self.assertIn(DECISION_PAGE_POINTER, self.text.splitlines(), "pointer must be a one-line imperative")
+        self.assertIn(DECISION_PAGE_POINTER, sections(self.text)["Asks"])
+
+    def test_decision_page_skill_exists(self):
+        self.assertTrue((ROOT / "skills" / "decision-page" / "SKILL.md").is_file(),
+                        "decision-page skill is missing")
 
     def test_skill_budget_controls_reject_unbudgeted_and_oversized_skills(self):
         with tempfile.TemporaryDirectory() as tmp:
