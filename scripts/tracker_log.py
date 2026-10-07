@@ -52,7 +52,7 @@ def ended_line(at: str, name: str, status: str, reason: str, changes: str) -> st
 
 def relaunch_line(at: str, name: str, task: str, reason: str) -> str:
     """The launcher's line when worker `name` asks for `task` to run again; `reason` comes already on one line."""
-    return f"- {at} one-shot {name}{RELAUNCHED.format(task=task)}{reason}{"" if reason.endswith(".") else "."}"
+    return f"- {at} one-shot {name}{RELAUNCHED.format(task=task)}{reason}{'' if reason.endswith('.') else '.'}"
 
 
 @dataclass(frozen=True)
