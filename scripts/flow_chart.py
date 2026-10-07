@@ -6,7 +6,8 @@ window, and an open task with an estimated end draws its remaining stages ahead 
 its lane's first stage with no move yet is queued: forecast only, after the running forecasts, in worker slots.
 Rows that share a tracker issue (a review loop's build/Review/Fix/Verify passes) merge into one row.
 Until a task's first `stage:` move, it moves on the one-shot launcher's lines: started → implement, completed → pr,
-HUMAN REVIEW NEEDED → review. A done task's last segment ends at its done time, not now.
+HUMAN REVIEW NEEDED → review. A relaunch request ends its worker's bar without starting another stage.
+A done task's last segment ends at its done time, not now.
 """
 
 from __future__ import annotations
@@ -136,7 +137,8 @@ def build(log: list[Move], tasks, lanes: dict, held: set[str], ends: dict[str, d
         # in progress — and the hold bar alone carries it from now through the window.
         segs = [gantt.Segment(m.at, e, m.stage, "done", owner(key, m.at, task))
                 for m, nxt in zip(mine, mine[1:] + [None])
-                if m.stage not in terminal and (nxt is not None or not is_held) and (e := nxt.at if nxt else stop) > m.at]
+                if m.stage not in terminal and m.stage != "relaunch"
+                and (nxt is not None or not is_held) and (e := nxt.at if nxt else stop) > m.at]
         if finish:
             at, word = finish
             segs = [replace(g, end=min(g.end, at)) for g in segs if g.start < at]
