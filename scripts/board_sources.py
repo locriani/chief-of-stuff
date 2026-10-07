@@ -506,8 +506,9 @@ def refresh(root: Path, now: datetime, gh=backlog.run_gh, call=backlog._call) ->
         issues, changes, errors = forge(root, cfg, tracker, datetime.combine(day, time(0), cfg.zone), gh, call)
     except Exception as e:  # a forge answer shaped unlike its schema; the page still renders
         issues, changes, errors = None, None, dict.fromkeys(("kanban", "merge requests"), f"{type(e).__name__}: {e}")
+    home = cfg.backlog
     if issues is None:
-        issues = prev.issues
+        issues, home = prev.issues, prev.home  # the home follows the issues: their keys were written under it
     elif cfg.backlog is not None:
         fetched["kanban"] = now
     if changes is None:
@@ -519,7 +520,7 @@ def refresh(root: Path, now: datetime, gh=backlog.run_gh, call=backlog._call) ->
         fetched["workers"] = now
     except Exception as e:  # a registry or ps that cannot be read
         found, errors["workers"] = prev.workers, f"{type(e).__name__}: {e}"
-    got = Sources(fetched, issues, changes, found, errors, cfg.backlog)
+    got = Sources(fetched, issues, changes, found, errors, home)
     try:
         _write(pages / CACHE, got)
     except OSError as e:
