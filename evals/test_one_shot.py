@@ -432,7 +432,7 @@ class RunTest(unittest.TestCase):
                         "user.email=test@example.test", "commit", "--allow-empty", "-qm", "initial"], check=True)
 
     def _fake(self, result: str | None, exit_code: int = 0, write_partial: bool = True,
-              commit_partial: bool = False, during: str = "") -> Path:
+              commit_partial: bool = False, during: str = "", stderr: str = "") -> Path:
         path = self.root / "fake-agent"
         path.write_text(f"#!{sys.executable}\nfrom pathlib import Path\nimport sys\n"
                         + "root = Path.cwd() / '.chief-of-stuff'\n"
@@ -443,6 +443,7 @@ class RunTest(unittest.TestCase):
                            "subprocess.run(['git', '-c', 'user.name=Test', '-c', 'user.email=test@example.test', "
                            "'commit', '-qm', 'partial'], check=True)\n" if commit_partial else "")
                         + during
+                        + (f"sys.stderr.write({stderr!r})\n" if stderr else "")
                         + (f"(root / 'worker-result.toon').write_text({result!r})\n" if result is not None else "")
                         + f"sys.exit({exit_code})\n")
         path.chmod(0o755)
@@ -882,6 +883,168 @@ class RunTest(unittest.TestCase):
         tracker = self.tracker.read_text()
         self.assertIn("| Security audit | Robin | waiting |", tracker)
         self.assertIn("already relaunched once", tracker)
+
+    # #422: an agy worker that hit its individual quota exits 3 with no result and no changes. That is not a review hold.
+    QUOTA = "Error: code 429 RESOURCE_EXHAUSTED: individual quota reached, resets in about four hours\n"
+    QUOTA_REASON = "quota stop: codex m-test; resets in about four hours"
+    ORDINARY = "status: relaunch\nreason: base moved\nchanges: none\n"
+
+    def _stopped(self, stderr: str = QUOTA, result: str | None = None, exit_code: int = 3, tree: Path | None = None,
+                 write_partial: bool = False, commit_partial: bool = False, model: str = "m-test"):
+        """One launch of a worker that wrote `stderr`; returns the exit code and the hold and comment mocks."""
+        fake = self._fake(result, exit_code=exit_code, write_partial=write_partial, commit_partial=commit_partial,
+                          stderr=stderr)
+        with mock.patch.object(one_shot.kanban, "add_human_hold", return_value="") as hold, \
+             mock.patch.object(one_shot.backlog, "comment", return_value=SimpleNamespace(done=True, error="")) as comment:
+            return self._run(fake, tree, model=model), hold, comment
+
+    def _report(self, tree: Path | None = None) -> dict:
+        return toon_decode(((tree or self.tree) / one_shot.REPORT).read_text())
+
+    def _quota_relaunched(self) -> None:
+        """A first quota stop, which must leave the row ready for the launch the test goes on to make."""
+        self._stopped()
+        self.assertEqual(self._report()["status"], "relaunch")
+
+    def _another_tree(self, name: str) -> Path:
+        again = self.root / "trees" / name
+        subprocess.run(["git", "clone", "-q", str(self.tree), str(again)], check=True)
+        return again
+
+    def _with_an_issue_and_kanban(self) -> None:
+        """The workspace a human_review outcome labels through: the row has an issue and [kanban] is configured."""
+        (self.root / "CLAUDE.md").write_text(CLAUDE +
+            "- Settings: `chief-of-stuff.toml`\n"
+            "- Backlog: GitHub issues; repo https://github.com/team/repo (private)\n")
+        (self.root / "chief-of-stuff.toml").write_text(
+            '[kanban]\nstages = ["00 - PLAN", "03 - BUILD"]\n'
+            'human_review_label = "!! - HUMAN REVIEW REQUIRED"\n'
+            '[kanban.map]\nimplement = 1\n')
+        self.tracker.write_text(
+            "## Tasks\n"
+            "| name | item | owner | state | since | due | size | lane | stage | issue | checklist |\n"
+            "|---|---|---|---|---|---|---|---|---|---|---|\n"
+            "| Security audit | Security audit | unassigned | open | 09:00 | | M | build | implement | #7 | Inspect |\n"
+            "\n## File ownership\n| context | paths |\n|---|---|\n| Security audit | `src/a/` |\n")
+
+    def test_a_quota_stop_is_a_relaunch_with_the_runtime_model_and_reset_text(self):
+        code, _, _ = self._stopped()
+        self.assertEqual(code, 1)
+        report = self._report()
+        self.assertEqual((report["status"], report["reason"]), ("relaunch", self.QUOTA_REASON))
+
+    def test_a_quota_stop_leaves_the_task_ready_and_logs_the_relaunch_line(self):
+        self._stopped()
+        tracker = self.tracker.read_text()
+        self.assertIn("| Security audit | unassigned | open |", tracker)
+        self.assertIn(f"one-shot worker01: relaunch requested for Security audit — {self.QUOTA_REASON}.", tracker)
+        self.assertNotIn("HUMAN REVIEW", tracker)
+
+    def test_a_quota_stop_puts_no_hold_label_and_no_comment_on_the_issue(self):
+        self._with_an_issue_and_kanban()
+        _, hold, comment = self._stopped()
+        hold.assert_not_called()
+        comment.assert_not_called()
+        self.assertEqual(self._report()["status"], "relaunch")
+
+    def test_the_hold_label_guard_sees_a_review_outcome_in_the_same_workspace(self):
+        # The control for the test above: this workspace does label a human_review.
+        self._with_an_issue_and_kanban()
+        _, hold, _ = self._stopped(result="status: human_review\nreason: unclear policy\nchanges: none\n")
+        hold.assert_called_once()
+
+    def test_a_quota_stop_needs_resource_exhausted_in_any_case_with_the_429(self):
+        self._stopped(stderr="429 resource_exhausted\n")
+        report = self._report()
+        self.assertEqual(report["status"], "relaunch")
+        self.assertTrue(report["reason"].startswith("quota stop: codex m-test"), report["reason"])
+
+    def test_a_quota_stop_without_reset_text_has_none_in_its_reason(self):
+        self._stopped(stderr="429: You exceeded your current Quota.\n")
+        report = self._report()
+        self.assertEqual((report["status"], report["reason"]), ("relaunch", "quota stop: codex m-test"))
+
+    def test_the_reset_text_is_one_line_cut_to_eighty_characters(self):
+        self._stopped(stderr="429 quota reached, resets " + "tomorrow " * 30 + "\nsecond line\n")
+        report = self._report()
+        reset = report["reason"].removeprefix("quota stop: codex m-test; ")
+        self.assertEqual(report["status"], "relaunch")
+        self.assertTrue(reset.startswith("resets tomorrow"), report["reason"])
+        self.assertLessEqual(len(reset), 80)
+        self.assertNotIn("\n", report["reason"])
+        self.assertNotIn("second line", report["reason"])
+
+    def test_a_second_quota_stop_the_same_day_is_again_a_relaunch(self):
+        self._quota_relaunched()
+        again = self._another_tree("worker-2")
+        self.assertEqual(self._stopped(tree=again)[0], 1)
+        report = self._report(again)
+        self.assertEqual((report["status"], report["reason"]), ("relaunch", self.QUOTA_REASON))
+        self.assertNotIn("HUMAN REVIEW", self.tracker.read_text())
+        self.assertNotIn("already relaunched once", self.tracker.read_text())
+
+    def test_an_ordinary_relaunch_after_a_quota_relaunch_is_still_a_relaunch(self):
+        # The RELAUNCHED log marker is shared; a quota relaunch does not spend the once-a-day ordinary one.
+        self._quota_relaunched()
+        again = self._another_tree("worker-2")
+        self._stopped(stderr="", result=self.ORDINARY, exit_code=0, tree=again)
+        report = self._report(again)
+        self.assertEqual((report["status"], report["reason"]), ("relaunch", "base moved"))
+        self.assertNotIn("HUMAN REVIEW", self.tracker.read_text())
+
+    def test_a_second_ordinary_relaunch_after_a_quota_relaunch_is_still_limited(self):
+        self._quota_relaunched()
+        self._stopped(stderr="", result=self.ORDINARY, exit_code=0, tree=self._another_tree("worker-2"))
+        third = self._another_tree("worker-3")
+        self._stopped(stderr="", result=self.ORDINARY, exit_code=0, tree=third)
+        self.assertEqual(self._report(third)["status"], "human_review")
+        self.assertIn("already relaunched once", self.tracker.read_text())
+
+    def test_a_quota_stop_after_an_ordinary_relaunch_is_a_relaunch_not_a_review(self):
+        self._stopped(stderr="", result=self.ORDINARY, exit_code=0)
+        again = self._another_tree("worker-2")
+        self._stopped(tree=again)
+        report = self._report(again)
+        self.assertEqual((report["status"], report["reason"]), ("relaunch", self.QUOTA_REASON))
+        self.assertNotIn("already relaunched once", self.tracker.read_text())
+
+    def test_a_quota_stop_that_left_uncommitted_changes_needs_review(self):
+        self._stopped(write_partial=True)
+        report = self._report()
+        self.assertEqual(report["status"], "human_review")
+        self.assertFalse(report["reason"].startswith("quota stop:"), report["reason"])
+        self.assertIn("HUMAN REVIEW NEEDED", self.tracker.read_text())
+
+    def test_a_quota_stop_that_left_a_commit_needs_review(self):
+        self._stopped(commit_partial=True)
+        report = self._report()
+        self.assertEqual(report["status"], "human_review")
+        self.assertFalse(report["reason"].startswith("quota stop:"), report["reason"])
+
+    def test_the_workers_own_review_result_wins_over_quota_text(self):
+        self._stopped(result="status: human_review\nreason: blocked on creds\nchanges: none\n")
+        report = self._report()
+        self.assertEqual(report["status"], "human_review")
+        self.assertIn("blocked on creds", report["reason"])
+        self.assertFalse(report["reason"].startswith("quota stop:"), report["reason"])
+
+    def test_a_429_that_is_not_a_quota_stop_needs_review(self):
+        self._stopped(stderr="Error: 429 Too Many Requests\n")
+        self.assertEqual(self._report()["status"], "human_review")
+        self.assertIn("HUMAN REVIEW NEEDED", self.tracker.read_text())
+
+    def test_quota_text_without_a_429_needs_review(self):
+        self._stopped(stderr="Error: billing quota page moved\n")
+        self.assertEqual(self._report()["status"], "human_review")
+
+    def test_a_missing_stderr_log_needs_review(self):
+        # reconcile reads the log the launcher wrote; with none there is nothing to call a quota stop.
+        self.tracker.write_text(TRACKER.replace("| unassigned | open |", "| worker01 | running 09:00 |"))
+        before = one_shot.git_head(self.tree)
+        (self.tree / ".chief-of-stuff").mkdir(exist_ok=True)
+        (self.tree / ".chief-of-stuff" / ".gitignore").write_text("*\n")
+        report = one_shot.reconcile(self.root, "2026-09-18", "Security audit", "worker01", self.tree, 3, before)
+        self.assertEqual(report["status"], "human_review")
 
     def test_missing_result_reports_committed_partial_work(self):
         fake = self._fake(None, commit_partial=True)
