@@ -534,17 +534,17 @@ scripts, root, clone, marks = sys.argv[1:5]
 sys.path.insert(0, scripts)
 import git_trees
 import make_worktree as mw
-real_fetch, real_git = git_trees.fetch_base, mw.git
+real_fetch, real_add = git_trees.fetch_base, mw.git_trusted
 def fetch(*a, **k):
     Path(marks, "started").touch()
     time.sleep(2)
     return real_fetch(*a, **k)
-def git(args, cwd):
-    out = real_git(args, cwd)
+def add(args, cwd):
+    out = real_add(args, cwd)
     if args[:2] == ["worktree", "add"]:
         Path(marks, "add_end").write_text(repr(time.time()))
     return out
-git_trees.fetch_base, mw.git = fetch, git
+git_trees.fetch_base, mw.git_trusted = fetch, add
 mw.build(Path(root), Path(clone), "trees", "wt-child", "feat/child", "implementer")
 """
 
@@ -559,7 +559,7 @@ class SerializedDispatchTest(CloneCase):
     def spans(self, from_local: bool) -> tuple[dict[str, tuple[float, float]], dict[str, object]]:
         """Run BUILDERS simultaneous builds; (thread -> (span start, span end), thread -> Made or the exception)."""
         events: list[tuple[str, str, float]] = []
-        real_git, real_fetch = mw.git, git_trees.fetch_base
+        real_add, real_fetch = mw.git_trusted, git_trees.fetch_base
 
         def note(kind: str):
             events.append((threading.current_thread().name, kind, time.monotonic()))
@@ -569,12 +569,12 @@ class SerializedDispatchTest(CloneCase):
             time.sleep(self.HOLD)
             return real_fetch(tree, *a, **k)
 
-        def git(args, cwd):
+        def git_trusted(args, cwd):
             adding = args[:2] == ["worktree", "add"]
             if adding and from_local:
                 note("start")
                 time.sleep(self.HOLD)
-            out = real_git(args, cwd)
+            out = real_add(args, cwd)
             if adding:
                 note("end")
             return out
@@ -589,7 +589,7 @@ class SerializedDispatchTest(CloneCase):
             except Exception as exc:  # the test reports it, whatever it is
                 results[f"b{i}"] = exc
 
-        with mock.patch.object(mw.git_trees, "fetch_base", fetch_base), mock.patch.object(mw, "git", git):
+        with mock.patch.object(mw.git_trees, "fetch_base", fetch_base), mock.patch.object(mw, "git_trusted", git_trusted):
             threads = [threading.Thread(target=dispatch, args=(i,), name=f"b{i}") for i in range(self.BUILDERS)]
             for t in threads:
                 t.start()
@@ -605,6 +605,7 @@ class SerializedDispatchTest(CloneCase):
             self.assertGreaterEqual(b_start, a_end, f"{b} began its fetch-and-add {a_end - b_start:.2f}s before {a} finished its own: {ordered}")
         refused = {w: str(r) for w, r in results.items() if not isinstance(r, mw.Made)}
         self.assertEqual(refused, {}, "no dispatch is refused by another")
+        self.assertEqual(len(spans), self.BUILDERS, "every build's span was recorded: the add went through the wrapped call")
 
     def test_threads_fetch_and_add_one_at_a_time(self):
         self.assert_serialized(from_local=False)
