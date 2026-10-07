@@ -32,7 +32,7 @@ DRAWS_NOTHING = (
     "one_shot", "spawn_session", "session_exec", "shell_setup", "process_status", "one_shot_result", "merge_approved", "merge_ready",
     "review_threads", "notify", "init_workspace", "install_model_guidance", "migrate_backlog", "inbox",
     "probe_health", "runtimes", "estimate", "task_forge", "tracker_log", "findings", "tree_state", "orphans",
-    "git_trees", "tree_claims", "notify_service", "tracker_read",
+    "git_trees", "git_view", "tree_claims", "notify_service", "tracker_read",
     "one_shot_report",
 )
 
