@@ -752,6 +752,14 @@ class CaseLintTest(unittest.TestCase):
         """
         from datetime import timezone
         pointer = "Before writing a decision page, Read ${CLAUDE_PLUGIN_ROOT}/skills/decision-page/SKILL.md"
+        page_writing_cases = {
+            "ask-links-its-context", "decision-json-carries-what-only-the-coordinator-knows",
+            "unattended-authority-escalates",
+        }
+        before = (
+            r'\A(?=[\s\S]*"(?:content|old_string)":)[\s\S]*"file_path": "[^"\n]*[/\\]decision-[^"/\\]+\.json"'
+            r'|"command": "[^"\n]*(?:chief[-_]of[-_]stuff(?:\.py)?\s+decision\b|(?:scripts/)?decision_page\.py\b)'
+        )
         read = {"id": "skill", "name": "Read", "input": {"file_path": "/plugin/skills/decision-page/SKILL.md"}}
         answer = {"id": "answer", "name": "Read", "input": {"file_path": "/ws/pages/decision-existing.json"}}
         pages = [
@@ -764,14 +772,24 @@ class CaseLintTest(unittest.TestCase):
         ]
         at = datetime.now(timezone.utc)
         for name in self.DECISION_SKILL_CASES:
-            g = next(g for g in spec(EVALS / "cases" / name)["graders"] if "before" in g)
-            self.assertEqual((g["rule"], g["tool"], g["min"]), (pointer, "Read", 1))
-
-            def passes(calls):
-                rec = run.RunRecord(run.Stream(tool_uses=calls), at, at, "UTC", EVALS)
-                return run.grade(g, rec)[0]
-
+            skill_graders = [
+                g for g in spec(EVALS / "cases" / name)["graders"]
+                if g.get("rule") == pointer or "skills/decision-page/SKILL" in g.get("input_match", "")
+            ]
             with self.subTest(case=name):
+                if name not in page_writing_cases:
+                    self.assertEqual(skill_graders, [], "cases that never write a page must not require the skill read")
+                    continue
+                self.assertEqual(len(skill_graders), 1)
+                g = skill_graders[0]
+                self.assertEqual((g["rule"], g["type"], g["tool"], g["min"]), (pointer, "tool_used", "Read", 1))
+                self.assertEqual(g["input_match"], r'"file_path": "[^"\n]*skills/decision-page/SKILL\.md"')
+                self.assertEqual(g["before"], before)
+
+                def passes(calls):
+                    rec = run.RunRecord(run.Stream(tool_uses=calls), at, at, "UTC", EVALS)
+                    return run.grade(g, rec)[0]
+
                 self.assertFalse(passes([]))
                 self.assertFalse(passes([dict(read, name="Write")]))
                 self.assertFalse(passes([dict(read, input={"file_path": "/plugin/skills/other/SKILL.md"})]))
