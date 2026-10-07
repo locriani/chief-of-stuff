@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import dataclasses
 import io
+import json
 import re
 import sys
 import tempfile
@@ -17,6 +18,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
+from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -24,6 +26,7 @@ sys.path.insert(0, str(ROOT / "evals"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import chief_of_stuff as cli  # noqa: E402
+import forge_review as fr  # noqa: E402
 import merge_approved as ma  # noqa: E402
 import merge_ready as mr  # noqa: E402
 import run  # noqa: E402
@@ -33,18 +36,33 @@ HEAD, OLD, OK = tma.HEAD, tma.OLD, tma.OK
 RED = [{"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "FAILURE"}]
 RUNNING = [{"__typename": "CheckRun", "status": "IN_PROGRESS", "conclusion": ""}]
 
-# The one line per request, as merge-ready prints it. A request with no pipeline says `pipeline none`.
+# The one line per request, as merge-ready prints it. A request with no pipeline says `pipeline none`. `unverified` and `blocked`
+# carry one clause in parentheses (#419 review): `unverified (threads cut off at 100)`, `blocked (BEHIND)`; `draft` carries none.
+# What was not read prints `unread`: the pipeline's sha (`on unread`) and the thread count (`unresolved threads unread`).
 LINE = re.compile(
-    r"^(?P<ref>[#!]\d+) (?P<verdict>ready|red|running|conflicts|findings open|stale pipeline|no pipeline)"
+    r"^(?P<ref>[#!]\d+) (?P<verdict>ready|red|running|conflicts|findings open|stale pipeline|no pipeline|draft|unverified|blocked)"
+    r"(?: \((?P<why>[^()]+)\))?"
     r" · head (?P<head>[0-9a-f]{7})"
-    r" · pipeline (?:(?P<pid>\S+) (?P<status>passed|failed|running) on (?P<psha>[0-9a-f]{7})|none)"
+    r" · pipeline (?:(?P<pid>\S+) (?P<status>passed|failed|running) on (?P<psha>[0-9a-f]{7}|unread)|none)"
     r" · conflicts (?P<conflicts>yes|no)"
-    r" · unresolved threads (?P<threads>\d+)"
+    r" · unresolved threads (?P<threads>\d+|unread)"
     r" · (?P<url>\S+)$")
 
 
-def gpr(number, checks=OK, mergeable="MERGEABLE"):
-    return tma.pr(number, [], checks=checks, mergeable=mergeable)
+class FailsAt:
+    """Answers as `inner` does, except the nth call (1-based), which answers `failure`. A fake that fails only the first call
+    never reaches the later reads (the #419 review's R1: the graphql failure was unpinned for that reason)."""
+
+    def __init__(self, inner, n, failure):
+        self.inner, self.n, self.failure, self.count = inner, n, failure, 0
+
+    def __call__(self, *args, **kwargs):
+        self.count += 1
+        return self.failure if self.count == self.n else self.inner(*args, **kwargs)
+
+
+def gpr(number, checks=OK, mergeable="MERGEABLE", draft=False, state="CLEAN"):
+    return tma.pr(number, [], checks=checks, mergeable=mergeable, draft=draft, state=state)
 
 
 # number -> (the pull request, the graphql node, the verdict)
@@ -63,6 +81,14 @@ GITHUB = {
     32: (gpr(32), tma.graphql_node(32, [False], sha=OLD), "stale pipeline"),
     33: (gpr(33, mergeable="UNKNOWN"), tma.graphql_node(33), "running"),
     34: (gpr(34), tma.graphql_node(34, [True, True]), "ready"),
+    # #419 review: a draft, a branch the forge will not merge, and threads that were cut off are never ready (R2, R5, R6)
+    35: (gpr(35, draft=True), tma.graphql_node(35), "draft"),
+    36: (gpr(36, state="BEHIND"), tma.graphql_node(36), "blocked"),
+    37: (gpr(37, RED, draft=True), tma.graphql_node(37, [False]), "draft"),
+    38: (gpr(38, state="BLOCKED"), tma.graphql_node(38, [False]), "blocked"),
+    39: (gpr(39), tma.graphql_node(39, [True] * 100, more=True), "unverified"),
+    40: (gpr(40, mergeable="CONFLICTING", draft=True), tma.graphql_node(40), "conflicts"),
+    41: (gpr(41, state="UNKNOWN"), tma.graphql_node(41), "blocked"),
 }
 
 
@@ -81,7 +107,8 @@ class GitHubReadyTest(unittest.TestCase):
         self.assertEqual((by[21].head, by[21].pipeline_id, by[21].pipeline_sha, by[21].pipeline), (HEAD, "9021", HEAD, "passed"))
         self.assertEqual((by[22].pipeline_id, by[22].pipeline), ("9022", "failed"))
         self.assertEqual((by[26].head, by[26].pipeline_sha), (HEAD, OLD), "a green pipeline on an old sha is stale")
-        self.assertEqual((by[27].pipeline, by[27].pipeline_id, by[27].pipeline_sha), ("none", "", ""))
+        # R4: the sha is the last commit's oid whenever that commit exists, even when it has no checks yet
+        self.assertEqual((by[27].pipeline, by[27].pipeline_id, by[27].pipeline_sha), ("none", "", HEAD))
 
     def test_only_unresolved_threads_count(self):
         by = {r.number: r.threads for r in mr.github_ready("o/app", github_gh())}
@@ -99,9 +126,99 @@ class GitHubReadyTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             mr.github_ready("o/app", Down())
 
+    def test_a_read_that_fails_at_any_call_raises_and_never_hands_back_a_request(self):
+        # R1(a): both Down fakes of the first version failed the first call, so the graphql failure (the second) was never reached.
+        for n in (1, 2):
+            with self.subTest(failing_call=n):
+                with self.assertRaises(RuntimeError):
+                    mr.github_ready("o/app", FailsAt(github_gh([21]), n, (1, "", "HTTP 502")))
 
-def gitlab_fake(mrs):
-    """The merge request, approvals and discussions endpoints; `mrs` maps iid to its spec."""
+    def test_a_pull_request_missing_from_the_graphql_read_is_never_ready(self):
+        # R1(b): with the node missing, `continue` dropped the request and an empty default node printed it ready.
+        gh = tma.FakeGhGraphql([GITHUB[21][0], GITHUB[22][0]], [GITHUB[22][1]], only_given=True)
+        try:
+            got = {r.number: r.verdict for r in mr.github_ready("o/app", gh)}
+        except RuntimeError:
+            return
+        self.assertNotEqual(got.get(21), "ready", got)
+        self.assertIn(21, got, "a request the forge listed must not vanish from the output")
+
+    def test_a_graphql_answer_that_carries_errors_is_a_failed_read(self):
+        class Partial(tma.FakeGhGraphql):
+            def __call__(self, args, input_text=None):
+                code, out, err = super().__call__(args, input_text)
+                if args[:2] == ["api", "graphql"]:
+                    out = json.dumps({**json.loads(out), "errors": [{"message": "RATE_LIMITED"}]})
+                return code, out, err
+        with self.assertRaises(RuntimeError):
+            mr.github_ready("o/app", Partial([GITHUB[21][0]], [GITHUB[21][1]]))
+
+    def test_threads_that_were_cut_off_at_100_are_unverified_never_ready(self):
+        # R2: reviewThreads(first: 100) with 100 resolved and more behind them read as zero unresolved.
+        by = {r.number: r for r in mr.github_ready("o/app", github_gh([34, 39]))}
+        self.assertEqual(by[39].verdict, "unverified")
+        self.assertEqual(LINE.match(mr.line(by[39], "#"))["why"], "threads cut off at 100")
+        self.assertTrue(mr.line(by[39], "#").startswith("#39 unverified (threads cut off at 100) · head "), mr.line(by[39], "#"))
+        # a full page with nothing behind it is a complete read
+        full = tma.FakeGhGraphql([GITHUB[21][0]], [tma.graphql_node(21, [True] * 100, more=False)])
+        self.assertEqual(mr.github_ready("o/app", full)[0].verdict, "ready")
+
+    def test_the_head_that_moved_between_the_two_reads_is_never_ready_even_with_no_checks_on_the_new_head(self):
+        # R4: the list says head A with passing checks; the last commit is B and has no statusCheckRollup yet. The sha was set to ""
+        # for that commit, and "" read as "never stale".
+        gh = tma.FakeGhGraphql([GITHUB[21][0]], [tma.graphql_node(21, sha=OLD, run=False)])
+        (r,) = mr.github_ready("o/app", gh)
+        self.assertEqual(r.pipeline_sha, OLD, "the sha is the last commit's oid whenever the commit exists")
+        self.assertIn(r.verdict, ("stale pipeline", "unverified"))
+        self.assertNotEqual(r.verdict, "ready")
+
+    def test_the_read_asks_for_the_cut_off_the_draft_and_the_merge_state_and_passes_owner_and_name_as_strings(self):
+        gh = github_gh([21])
+        mr.github_ready("o/app", gh)
+        listed = next(c for c in gh.calls if c[:2] == ["pr", "list"])
+        fields = listed[listed.index("--json") + 1].split(",")
+        self.assertIn("isDraft", fields)
+        self.assertIn("mergeStateStatus", fields)
+        graph = next(c for c in gh.calls if c[:2] == ["api", "graphql"])
+        query = next(a for a in graph if a.startswith("query="))
+        for word in ("pageInfo", "hasNextPage", "isDraft"):
+            self.assertIn(word, query)
+        # R12(c): -F types its value (a digits-only owner becomes a number, `@path` reads a file); -f is the string form
+        self.assertNotIn("-F", graph)
+        for pair in ("owner=o", "name=app"):
+            self.assertEqual(graph[graph.index(pair) - 1], "-f", pair)
+
+    def test_a_draft_a_blocked_branch_and_a_check_that_is_not_a_pass_are_never_ready(self):
+        by = {r.number: r.verdict for r in mr.github_ready("o/app", github_gh())}
+        self.assertEqual((by[35], by[37], by[40]), ("draft", "draft", "conflicts"))
+        self.assertEqual((by[36], by[38], by[41]), ("blocked", "blocked", "blocked"))
+        self.assertEqual(by[21], "ready", "CLEAN with a passing check stays ready")
+        for conclusion in ("STALE", ""):
+            check = [{"__typename": "CheckRun", "status": "COMPLETED", "conclusion": conclusion}]
+            with self.subTest(conclusion=conclusion):
+                (r,) = mr.github_ready("o/app", tma.FakeGhGraphql([gpr(50, check)], [tma.graphql_node(50)]))
+                self.assertNotEqual(r.verdict, "ready")
+                self.assertNotEqual(r.pipeline, "passed")
+
+    def test_the_check_conclusions_that_are_a_pass_stay_a_pass(self):
+        # R6 must not over-correct: NEUTRAL and SKIPPED are fine; STALE and an empty conclusion on a completed run are not.
+        for conclusion, want in (("SUCCESS", True), ("NEUTRAL", True), ("SKIPPED", True), ("STALE", False), ("", False),
+                                 ("FAILURE", False), ("CANCELLED", False)):
+            with self.subTest(conclusion=conclusion):
+                got = fr.github_pipeline([{"__typename": "CheckRun", "status": "COMPLETED", "conclusion": conclusion}])
+                self.assertEqual(got == "passed", want, got)
+        self.assertEqual(fr.github_pipeline([{"__typename": "CheckRun", "status": "IN_PROGRESS", "conclusion": ""}]), "running")
+
+
+ABSENT = object()  # a head_pipeline with no `sha` key at all (None is a `sha` that is null)
+
+
+def gitlab_fake(mrs, discussions_error=""):
+    """The merge request, approvals and discussions endpoints; `mrs` maps iid to its spec. Discussions are paged as GitLab
+    pages them: `page` and `per_page` select a slice, so a reader that asks once sees only the first page. `call.urls` lists the
+    discussions urls asked, in order. `discussions_error` makes that endpoint answer an error."""
+    urls = []
+
     def call(method, url, token, timeout, payload=None):
         path = url.split("/api/v4/projects/team%2Fapp", 1)[1]
         if path.startswith("/merge_requests?"):
@@ -111,12 +228,20 @@ def gitlab_fake(mrs):
         if path.endswith("/approvals"):
             return {"approved_by": []}, {}, ""
         if "/discussions" in path:
-            return m.get("discussions", []), {}, ""
+            urls.append(path)
+            if discussions_error:
+                return None, {}, discussions_error
+            query = parse_qs(urlsplit(path).query)
+            size, page = int(query.get("per_page", ["20"])[0]), int(query.get("page", ["1"])[0])
+            return m.get("discussions", [])[(page - 1) * size:page * size], {}, ""
         pipeline = m.get("pipeline", "success")
+        head = None if pipeline is None else {"id": 7000 + iid, "status": pipeline}
+        if head is not None and m.get("pipeline_sha", HEAD) is not ABSENT:
+            head["sha"] = m.get("pipeline_sha", HEAD)
         return ({"iid": iid, "title": "MR", "web_url": f"https://labs.example.test/team/app/-/merge_requests/{iid}", "sha": HEAD,
                  "has_conflicts": m.get("conflict", False), "detailed_merge_status": m.get("status", "mergeable"),
-                 "head_pipeline": None if pipeline is None else {"id": 7000 + iid, "status": pipeline, "sha": m.get("pipeline_sha", HEAD)}},
-                {}, "")
+                 "draft": m.get("draft", False), "head_pipeline": head}, {}, "")
+    call.urls = urls
     return call
 
 
@@ -135,6 +260,14 @@ GITLAB = {
     12: ({"status": "checking"}, "running"),
     13: ({"pipeline": "failed", "discussions": [thread()]}, "red"),
     14: ({"discussions": [thread(resolvable=False), thread(system=True)]}, "ready"),
+    # #419 review: a draft, a canceled pipeline, a head pipeline whose sha was not given, and a thread on the second page
+    15: ({"draft": True, "status": "draft_status"}, "draft"),
+    16: ({"pipeline_sha": ABSENT}, "unverified"),
+    17: ({"pipeline_sha": None}, "unverified"),
+    18: ({"pipeline": "canceled"}, "red"),
+    19: ({"discussions": [thread(resolved=True) for _ in range(100)] + [thread()]}, "findings open"),
+    20: ({"draft": True, "pipeline": "failed", "status": "draft_status"}, "draft"),
+    21: ({"discussions": [thread(resolved=True) for _ in range(100)]}, "ready"),
 }
 
 
@@ -158,6 +291,51 @@ class GitLabReadyTest(unittest.TestCase):
         got = self.read()
         self.assertEqual((got[5].threads, got[11].threads, got[14].threads), (0, 2, 0))
 
+    def test_discussions_are_paged_until_a_short_page(self):
+        # R3: one page of 100 read, 100 resolved discussions, an unresolved one on page 2 read as zero.
+        call = gitlab_fake({19: GITLAB[19][0]})
+        (r,) = mr.gitlab_ready(self.HOME, "team/app", "t", call)
+        self.assertEqual((r.threads, r.verdict), (1, "findings open"))
+        pages = [parse_qs(urlsplit(u).query).get("page", ["1"])[0] for u in call.urls]
+        self.assertEqual(pages, ["1", "2"], "page 2 is short (1 of 100): stop there")
+
+    def test_a_full_last_page_is_followed_by_one_more_that_comes_back_empty(self):
+        call = gitlab_fake({21: GITLAB[21][0]})
+        (r,) = mr.gitlab_ready(self.HOME, "team/app", "t", call)
+        self.assertEqual((r.threads, r.verdict), (0, "ready"))
+        self.assertEqual([parse_qs(urlsplit(u).query).get("page", ["1"])[0] for u in call.urls], ["1", "2"])
+
+    def test_a_canceled_pipeline_is_red_and_never_ready(self):
+        # R1(d): forge_review's GITLAB_PIPELINE maps canceled to failed; "canceled" mapped to "passed" survived every test.
+        (r,) = mr.gitlab_ready(self.HOME, "team/app", "t", gitlab_fake({18: GITLAB[18][0]}))
+        self.assertEqual((r.pipeline, r.verdict), ("failed", "red"))
+
+    def test_a_draft_is_a_draft_whatever_the_pipeline_says(self):
+        got = self.read([15, 20])
+        self.assertEqual((got[15].verdict, got[20].verdict), ("draft", "draft"))
+
+    def test_a_head_pipeline_with_no_sha_is_unverified_and_never_ready(self):
+        # R7: a missing or null sha read as "" and "" read as "not stale", so a pipeline on an unknown commit said ready.
+        got = self.read([16, 17])
+        for n in (16, 17):
+            with self.subTest(n=n):
+                self.assertIsNone(got[n].pipeline_sha)
+                self.assertEqual(got[n].verdict, "unverified")
+                why = LINE.match(mr.line(got[n], "!"))["why"]
+                self.assertRegex(why, r"(?i)sha")
+
+    def test_a_failed_read_at_any_call_raises(self):
+        # R1(c) and the second-call rule: the listing, the merge request, its approvals, its discussions.
+        failure = (None, {}, "HTTP 500")
+        for n in (1, 2, 3, 4):
+            with self.subTest(failing_call=n):
+                with self.assertRaises(RuntimeError):
+                    mr.gitlab_ready(self.HOME, "team/app", "t", FailsAt(gitlab_fake({5: {}}), n, failure))
+
+    def test_discussions_that_answer_an_error_are_never_zero_threads(self):
+        with self.assertRaises(RuntimeError):
+            mr.gitlab_ready(self.HOME, "team/app", "t", gitlab_fake({5: {}}, discussions_error="HTTP 500"))
+
 
 class AgreementTest(unittest.TestCase):
     """One place decides ready: merge-approved's blockers and merge-ready's verdict agree on every request merge-ready reads."""
@@ -168,16 +346,36 @@ class AgreementTest(unittest.TestCase):
         return [dataclasses.replace(r, approval="approved", approver="robin") for r in found]
 
     def test_an_approved_request_has_no_blockers_exactly_when_its_verdict_is_ready(self):
+        # `unverified` is left out: merge-approved's own read fetches no threads and no sha (they stay None) and decides on the
+        # approver's approval of the head; a request merge-ready read in full that is still unverified is not listed ready by it.
         for r in self.requests():
-            with self.subTest(number=r.number, verdict=r.verdict, blockers=r.blockers):
-                self.assertEqual(r.blockers == [], r.verdict == "ready")
+            if r.verdict != "unverified":
+                with self.subTest(number=r.number, verdict=r.verdict, blockers=r.blockers):
+                    self.assertEqual(r.blockers == [], r.verdict == "ready")
 
     def test_the_words_merge_approved_already_says_stay(self):
-        said = {"red": "pipeline failed", "running": "pipeline running", "conflicts": "conflict"}
+        said = {"red": "pipeline failed", "conflicts": "conflict"}
         for r in self.requests():
             if r.verdict in said:
                 with self.subTest(number=r.number, verdict=r.verdict):
                     self.assertIn(said[r.verdict], r.blockers)
+
+    def test_running_says_what_is_running_and_not_a_pipeline_that_is_not(self):
+        # R11: `running` is also the forge not having settled (checking, unknown); "pipeline running" is for a running pipeline.
+        for r in self.requests():
+            if r.verdict == "running":
+                with self.subTest(number=r.number):
+                    if r.pipeline == "running":
+                        self.assertIn("pipeline running", r.blockers)
+                    else:
+                        self.assertNotIn("pipeline running", r.blockers)
+                        self.assertIn(f"not mergeable: {r.mergeable}", r.blockers)
+
+    def test_a_draft_and_a_blocked_branch_have_blockers(self):
+        for r in self.requests():
+            if r.verdict in ("draft", "blocked"):
+                with self.subTest(number=r.number, verdict=r.verdict):
+                    self.assertTrue(r.blockers)
 
 
 class LineTest(unittest.TestCase):
@@ -196,6 +394,26 @@ class LineTest(unittest.TestCase):
         self.assertEqual(conflict["conflicts"], "yes")
         self.assertIn("pipeline none", mr.line(by[27], "#"))
         self.assertEqual(none["verdict"], "no pipeline")
+
+    def test_draft_blocked_and_unverified_lines(self):
+        # The pinned forms: `draft`, `blocked (<mergeStateStatus>)`, `unverified (<one clause>)`; the rest of the line is unchanged.
+        by = {r.number: r for r in mr.github_ready("o/app", github_gh())}
+        draft, behind, unknown = (mr.line(by[n], "#") for n in (35, 36, 41))
+        self.assertRegex(draft, r"^#35 draft · head aaaaaaa · pipeline 9035 passed on aaaaaaa · conflicts no · unresolved threads 0 · ")
+        self.assertRegex(behind, r"^#36 blocked \(BEHIND\) · head aaaaaaa · pipeline 9036 passed on aaaaaaa · conflicts no · ")
+        self.assertRegex(unknown, r"^#41 blocked \(UNKNOWN\) · head ")
+        self.assertIsNone(LINE.match(draft)["why"])
+        cut = mr.line(by[39], "#")
+        self.assertRegex(cut, r"^#39 unverified \(threads cut off at 100\) · head aaaaaaa · pipeline 9039 passed on aaaaaaa · "
+                              r"conflicts no · unresolved threads 0 · ")  # the 100 it read were all resolved
+
+    def test_what_was_not_read_prints_unread_never_zero_or_a_sha(self):
+        for name, kw, field in (("threads", {"threads": None}, "threads"), ("sha", {"pipeline_sha": None}, "psha")):
+            got = LINE.match(mr.line(tma.request(**kw), "#"))
+            with self.subTest(name):
+                self.assertIsNotNone(got)
+                self.assertEqual((got["verdict"], got[field]), ("unverified", "unread"))
+                self.assertRegex(got["why"], name)
 
 
 class MainTest(unittest.TestCase):
@@ -255,6 +473,56 @@ class MainTest(unittest.TestCase):
         code, out, err = self.run_main(self.workspace(), gh=Down())
         self.assertEqual((code, out), (1, ""))
         self.assertTrue(err.startswith("merge-ready:"), err)
+
+    def never_ready(self, code, out, err, ref):
+        """A read that went wrong exits 1 with nothing on stdout, or prints a line for `ref` that is not `ready`: never `ready`."""
+        if code == 1:
+            self.assertEqual(out, "")
+            self.assertTrue(err.startswith("merge-ready:"), err)
+        else:
+            line = next((l for l in out.splitlines() if l.startswith(ref + " ")), "")
+            self.assertTrue(line, f"{ref} vanished from the output: {out!r}")
+            self.assertNotEqual(LINE.match(line)["verdict"], "ready", line)
+
+    def test_a_read_that_fails_after_the_first_call_is_an_error_and_never_a_ready(self):
+        # R1(a): the fake failed the first call, so the second (graphql) was never exercised.
+        for n in (1, 2):
+            with self.subTest(failing_call=n):
+                gh = FailsAt(github_gh([21, 22]), n, (1, "", "HTTP 502"))
+                code, out, err = self.run_main(self.workspace(), gh=gh)
+                self.assertEqual((code, out), (1, ""), err)
+                self.assertTrue(err.startswith("merge-ready:"), err)
+
+    def test_a_pull_request_the_graphql_read_does_not_return_is_never_ready(self):
+        gh = tma.FakeGhGraphql([GITHUB[21][0], GITHUB[22][0]], [GITHUB[22][1]], only_given=True)
+        code, out, err = self.run_main(self.workspace(), gh=gh)
+        self.never_ready(code, out, err, "#21")
+
+    def test_a_gitlab_read_that_fails_at_any_call_is_an_error_and_never_a_ready(self):
+        for n in (1, 2, 3, 4):
+            with self.subTest(failing_call=n):
+                call = FailsAt(gitlab_fake({5: {}, 6: {}}), n, (None, {}, "HTTP 500"))
+                with mock.patch.object(ma.backlog, "token", return_value="t"):
+                    code, out, err = self.run_main(self.workspace(claude=self.GITLAB_ROOT), call=call)
+                self.assertEqual((code, out), (1, ""), err)
+
+    def test_a_gitlab_discussions_error_never_reads_as_no_findings(self):
+        call = gitlab_fake({5: {}}, discussions_error="HTTP 500")
+        with mock.patch.object(ma.backlog, "token", return_value="t"):
+            code, out, err = self.run_main(self.workspace(claude=self.GITLAB_ROOT), call=call)
+        self.never_ready(code, out, err, "!5")
+
+    def test_a_gitlab_workspace_prints_draft_unverified_and_canceled_lines(self):
+        call = gitlab_fake({n: GITLAB[n][0] for n in (15, 16, 18, 19)})
+        with mock.patch.object(ma.backlog, "token", return_value="t"):
+            code, out, err = self.run_main(self.workspace(claude=self.GITLAB_ROOT), call=call)
+        self.assertEqual(code, 0, err)
+        for line in out.splitlines():
+            self.assertRegex(line, LINE)
+        got = {l.split()[0]: LINE.match(l) for l in out.splitlines()}
+        self.assertEqual({k: m["verdict"] for k, m in got.items()},
+                         {"!15": "draft", "!16": "unverified", "!18": "red", "!19": "findings open"})
+        self.assertEqual(got["!19"]["threads"], "1")
 
     def test_a_gitlab_workspace_prints_merge_requests_with_a_bang(self):
         call = gitlab_fake({n: GITLAB[n][0] for n in (5, 6, 9, 11)})

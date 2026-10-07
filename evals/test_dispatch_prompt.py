@@ -819,7 +819,12 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         ("the word comes only from the verdict", "Never write \"mergeable\" or \"ready to merge\" for a pull or merge request except from the `ready` verdict of `chief-of-stuff merge-ready`, and quote its pipeline id and sha.", "Pipeline"),
         ("the check reports its lines", "Run `chief-of-stuff merge-ready --root .` and report its lines instead of the forge's own merge status.", "Check"),
         ("the worker merges a ready one", "With `worker`, the owning worker merges a `ready` request; `chief-of-stuff merge-approved --root .` lists them with their merge-ready lines.", "Pipeline"),
+        # #419 review R8: the coordinator is the one who sends the worker its line, so the worker merges on its own `ready` line.
+        ("the worker is told, with the line", "Tell the owning worker to merge it, quoting the line.", "Pipeline"),
     )
+    # The worker's own rule (scripts/dispatch_prompt.py, `merge_owner = "worker"`): the worker is the only actor that merges in that
+    # mode, so a red pipeline or a head that moved lands there unless it merges only on its own `ready` line, pinned to its head.
+    WORKER_MERGE_RULE = "Before you merge, run `chief-of-stuff merge-ready --root .`; merge only if your pull request's line says `ready` and its head sha is the one you pushed, and merge with `--match-head-commit <sha>` (GitHub) or the `sha` parameter (GitLab)."
     # A sentence that says a request is mergeable or ready to merge, and is not the rule that bans the words.
     SAYS_MERGEABLE = re.compile(r"(?i)\b(?:mergeable|ready to merge)\b")
 
@@ -827,6 +832,24 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         for name, sentence, section in self.MERGE_READY_RULE:
             with self.subTest(name):
                 self.assertTrue(sentence in self._section(section), f"{section} must say ({name}): {sentence}")
+
+    def test_the_coordinator_tells_the_worker_to_merge_after_naming_who_merges(self):
+        pipeline = self._section("Pipeline")
+        rule = {n: s for n, s, _ in self.MERGE_READY_RULE}
+        names, tells = rule["the worker merges a ready one"], rule["the worker is told, with the line"]
+        self.assertTrue(tells in pipeline, f"Pipeline must say: {tells}")
+        self.assertGreater(pipeline.find(tells), pipeline.find(names), f"the instruction follows the sentence that names who merges: {tells}")
+
+    def test_a_worker_that_merges_runs_merge_ready_and_merges_only_on_its_own_ready_line_pinned_to_its_head(self):
+        tmp, root = workspace(claude_md=CLAUDE + "- Settings: `cos.toml`\n")
+        self.addCleanup(tmp.cleanup)
+        for toml, merges in (('[workflow]\nmerge_owner = "worker"\n', True), ('[workflow]\nmerge_owner = "user"\n', False),
+                             ('[workflow]\nmerge_owner = "approval"\napprover = "robin"\n', False),
+                             ('[workflow]\ndelivery = "branch"\n', False)):
+            (root / "cos.toml").write_text(toml)
+            body = dp.compose(root, "2026-09-18", "Security audit")
+            with self.subTest(toml=toml):
+                self.assertEqual(self.WORKER_MERGE_RULE in body, merges, self.WORKER_MERGE_RULE)
 
     def test_the_scheduled_check_runs_merge_ready_inside_its_own_bullet(self):
         check = self._section("Check")

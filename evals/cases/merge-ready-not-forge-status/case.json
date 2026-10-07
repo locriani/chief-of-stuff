@@ -16,7 +16,9 @@
           "conclusion": "FAILURE"
         }
       ],
-      "mergeable": "MERGEABLE"
+      "mergeable": "MERGEABLE",
+      "isDraft": false,
+      "mergeStateStatus": "UNSTABLE"
     }
   ],
   "gh_graphql": {
@@ -29,7 +31,10 @@
               "title": "Retry jitter",
               "url": "https://github.com/o/app/pull/12",
               "reviewThreads": {
-                "nodes": []
+                "nodes": [],
+                "pageInfo": {
+                  "hasNextPage": false
+                }
               },
               "commits": {
                 "nodes": [
@@ -53,7 +58,9 @@
                     }
                   }
                 ]
-              }
+              },
+              "isDraft": false,
+              "mergeStateStatus": "UNSTABLE"
             }
           ]
         }

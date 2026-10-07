@@ -24,9 +24,11 @@ def review(login, state, oid=HEAD, at="2026-09-26T01:00:00Z"):
     return {"author": {"login": login}, "state": state, "commit": {"oid": oid}, "submittedAt": at}
 
 
-def pr(number, reviews, checks=OK, mergeable="MERGEABLE", head=HEAD):
+def pr(number, reviews, checks=OK, mergeable="MERGEABLE", head=HEAD, draft=False, state="CLEAN"):
+    """`gh pr list --json` for one pull request; `draft` is isDraft and `state` is mergeStateStatus (#419 review: R5, R6)."""
     return {"number": number, "title": f"PR {number}", "url": f"https://github.com/o/app/pull/{number}",
-            "headRefOid": head, "reviews": reviews, "statusCheckRollup": checks, "mergeable": mergeable}
+            "headRefOid": head, "reviews": reviews, "statusCheckRollup": checks, "mergeable": mergeable,
+            "isDraft": draft, "mergeStateStatus": state}
 
 
 PRS = [
@@ -59,26 +61,31 @@ class FakeGh:
         return [c for c in self.calls if c[:2] == ["pr", "merge"]]
 
 
-def graphql_node(number, threads=(), sha=HEAD, run=None):
+def graphql_node(number, threads=(), sha=HEAD, run=None, more=False):
     """What the one graphql call of merge-ready answers for an open pull request (#419): its review threads, and the
     commit its checks ran on with the id of the workflow run that made them. `threads` is one isResolved flag per thread;
-    `run=False` is a commit with no checks."""
+    `more` is reviewThreads.pageInfo.hasNextPage (the first 100 are all that came back); `run=False` is a commit with no checks.
+    FakeGhGraphql adds isDraft and mergeStateStatus from the list's row, as the forge answers them in both places."""
     runs = [] if run is False else [{"__typename": "CheckRun", "checkSuite": {"workflowRun": {"databaseId": run or 9000 + number}}}]
-    return {"number": number, "reviewThreads": {"nodes": [{"isResolved": t} for t in threads]},
+    return {"number": number,
+            "reviewThreads": {"nodes": [{"isResolved": t} for t in threads], "pageInfo": {"hasNextPage": more}},
             "commits": {"nodes": [{"commit": {"oid": sha, "statusCheckRollup": {"contexts": {"nodes": runs}} if runs else None}}]}}
 
 
 class FakeGhGraphql(FakeGh):
     """FakeGh that also answers merge-ready's graphql call. `nodes` replaces the default node of a pull request, by number."""
 
-    def __init__(self, prs, nodes=()):
+    def __init__(self, prs, nodes=(), only_given=False):
         super().__init__(prs)
         self.nodes = {n["number"]: n for n in nodes}
+        self.only_given = only_given  # True: answer only the nodes given, so a pull request can be missing from the read
 
     def __call__(self, args, input_text=None):
         if args[:2] == ["api", "graphql"]:
             self.calls.append(args)
-            nodes = [self.nodes.get(p["number"]) or graphql_node(p["number"], sha=p["headRefOid"]) for p in self.prs]
+            nodes = [{"isDraft": p.get("isDraft", False), "mergeStateStatus": p.get("mergeStateStatus", "CLEAN"),
+                      **(self.nodes.get(p["number"]) or graphql_node(p["number"], sha=p["headRefOid"]))}
+                     for p in self.prs if p["number"] in self.nodes or not self.only_given]
             return 0, json.dumps({"data": {"repository": {"pullRequests": {"nodes": nodes}}}}), ""
         return super().__call__(args, input_text)
 
@@ -177,17 +184,35 @@ class MainTest(unittest.TestCase):
 def request(**kw):
     """A request as merge-ready's readers fill it: the head pipeline's id and sha, and the unresolved thread count (#419)."""
     base = dict(number=1, title="t", url="u", head=HEAD, approval="approved", pipeline="passed", mergeable="yes",
-                approver="robin", pipeline_id="9001", pipeline_sha=HEAD, threads=0)
+                approver="robin", pipeline_id="9001", pipeline_sha=HEAD, threads=0, draft=False, merge_state="CLEAN")
     return ma.Request(**{**base, **kw})
 
 
 class RequestVerdictTest(unittest.TestCase):
     """One place decides ready or not (#419: the coordinator wrote mergeable from the forge's own status, no pipeline read).
-    Precedence: conflicts > red > stale pipeline > running > no pipeline > findings open > ready."""
+    Precedence (#419 review): conflicts > draft > red > stale pipeline > running > no pipeline > unverified > blocked > findings
+    open > ready. A state that was not read is None, never "" or 0, and None is not ready."""
 
-    def test_the_request_carries_the_head_pipeline_and_the_thread_count_with_defaults_that_keep_old_callers(self):
+    def test_the_request_carries_the_head_pipeline_and_the_thread_count_and_unread_is_none(self):
         r = ma.Request(1, "t", "u", HEAD, "approved", "passed", "yes", "robin")
-        self.assertEqual((r.pipeline_id, r.pipeline_sha, r.threads), ("", "", 0))
+        self.assertEqual(r.pipeline_id, "")
+        self.assertIsNone(r.pipeline_sha, "a head pipeline's sha that was not read is None, never ''")
+        self.assertIsNone(r.threads, "unresolved threads that were not read are None, never 0")
+        self.assertEqual((r.draft, r.merge_state), (False, ""))
+
+    def test_a_request_whose_pipeline_sha_or_threads_were_not_read_is_never_ready(self):
+        # R7: an empty string used to mean "not stale" and 0 "no findings", so a request read by the plain readers said ready.
+        bare = ma.Request(1, "t", "u", HEAD, "approved", "passed", "yes", "robin")
+        self.assertEqual(bare.verdict, "unverified")
+        self.assertEqual(request(pipeline_sha=None).verdict, "unverified")
+        self.assertEqual(request(threads=None).verdict, "unverified")
+        self.assertNotEqual(request(pipeline_sha="").verdict, "ready", "an empty sha is not the head's sha")
+        self.assertNotEqual(request(pipeline_sha="").verdict, "findings open")
+
+    def test_the_plain_readers_never_hand_back_a_ready_request(self):
+        got = {r.number: r.verdict for r in ma.github_requests("o/app", "robin", FakeGh(PRS))}
+        self.assertEqual(got, {12: "unverified", 13: "unverified", 14: "unverified", 15: "unverified", 16: "red",
+                               17: "conflicts", 18: "running", 19: "unverified"})
 
     def test_ready_only_when_the_pipeline_passed_on_the_head_with_no_conflict_and_no_open_thread(self):
         self.assertEqual(request().verdict, "ready")
@@ -207,8 +232,33 @@ class RequestVerdictTest(unittest.TestCase):
             ({"mergeable": "unknown"}, "running"),
             ({"pipeline": "none", "pipeline_id": "", "pipeline_sha": ""}, "no pipeline"),
             ({"pipeline": "none", "pipeline_id": "", "pipeline_sha": "", "threads": 2}, "no pipeline"),
+            ({"pipeline": "none", "pipeline_id": "", "pipeline_sha": None, "threads": None}, "no pipeline"),
             ({"threads": 2}, "findings open"),
             ({"threads": 1}, "findings open"),
+            # draft: not ready, below only conflicts
+            ({"draft": True}, "draft"),
+            ({"draft": True, "pipeline": "failed", "pipeline_sha": OLD, "threads": 2}, "draft"),
+            ({"draft": True, "pipeline": "none", "pipeline_id": "", "pipeline_sha": ""}, "draft"),
+            ({"draft": True, "mergeable": "conflict"}, "conflicts"),
+            # unverified: unread state, below no pipeline and above blocked and findings
+            ({"pipeline_sha": None}, "unverified"),
+            ({"threads": None}, "unverified"),
+            ({"pipeline_sha": None, "pipeline": "running"}, "running"),
+            ({"pipeline_sha": None, "pipeline": "failed"}, "red"),
+            ({"threads": None, "merge_state": "BEHIND"}, "unverified"),
+            ({"threads": None, "pipeline": "none", "pipeline_id": "", "pipeline_sha": ""}, "no pipeline"),
+            # blocked: GitHub's mergeStateStatus is anything but CLEAN; below unverified, above findings
+            ({"merge_state": "BLOCKED"}, "blocked"),
+            ({"merge_state": "BEHIND"}, "blocked"),
+            ({"merge_state": "DIRTY"}, "blocked"),
+            ({"merge_state": "UNSTABLE"}, "blocked"),
+            ({"merge_state": "HAS_HOOKS"}, "blocked"),
+            ({"merge_state": "UNKNOWN"}, "blocked"),
+            ({"merge_state": "BEHIND", "threads": 2}, "blocked"),
+            ({"merge_state": "BEHIND", "pipeline": "running"}, "running"),
+            ({"merge_state": "BEHIND", "pipeline_sha": OLD}, "stale pipeline"),
+            ({"merge_state": "CLEAN"}, "ready"),
+            ({"merge_state": ""}, "ready"),  # GitLab has no mergeStateStatus
         )
         for kw, want in table:
             with self.subTest(**kw):
@@ -278,6 +328,61 @@ class WorkerMergeOwnerTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("ready", {l.split()[0]: l for l in out.splitlines()}["#12"])
         self.assertNotIn("owning worker", out)
+
+
+class ApprovalModeKeepsItsRulesTest(unittest.TestCase):
+    """approval mode keeps its own rule (the approver's approval on the head decides) and still never merges what is plainly not
+    mergeable: #419 review R1(e), R5, R6, R11."""
+
+    ROBIN = [review("robin", "APPROVED")]
+
+    def run_main(self, prs, *args):
+        gh = FakeGh(prs)
+        main = MainTest()
+        code, out, err = main.run_main(main.workspace(MainTest.OPT_IN), *args, gh=gh)
+        return gh, code, out, err
+
+    def test_an_approved_request_with_no_pipeline_stays_ready_and_merges(self):
+        # R1(e): merge_approved.blocked() drops the "no pipeline" blocker; the docstring says a request with none stays ready.
+        prs = [pr(40, self.ROBIN, checks=[])]
+        gh, code, out, _ = self.run_main(prs)
+        self.assertEqual(code, 0)
+        self.assertEqual(out.split()[:2], ["#40", "ready"])
+        gh, code, _, err = self.run_main(prs, "--merge", "40")
+        self.assertEqual((code, len(gh.merges)), (0, 1), err)
+
+    def test_a_pipeline_that_passed_with_the_forge_still_unsure_reads_not_mergeable_without_saying_running(self):
+        # R11: the forge's own word is the blocker; "pipeline running" is for a pipeline that is running.
+        r = ma.Request(1, "t", "u", HEAD, "approved", "passed", "unknown", "robin")
+        self.assertEqual(r.blockers, ["not mergeable: unknown"])
+        r = ma.Request(1, "t", "u", HEAD, "approved", "passed", "checking", "robin")
+        self.assertEqual(r.blockers, ["not mergeable: checking"])
+        r = ma.Request(1, "t", "u", HEAD, "approved", "running", "yes", "robin")
+        self.assertEqual(r.blockers, ["pipeline running"])
+
+    def test_a_draft_or_a_branch_the_forge_will_not_merge_is_not_merged_on_approval(self):
+        prs = [pr(41, self.ROBIN, draft=True), pr(42, self.ROBIN, state="BEHIND"), pr(43, self.ROBIN, state="BLOCKED"),
+               pr(44, self.ROBIN)]
+        found = {r.number: r.blockers for r in ma.github_requests("o/app", "robin", FakeGh(prs))}
+        self.assertEqual(found[44], [])
+        for n in (41, 42, 43):
+            with self.subTest(n=n):
+                self.assertTrue(found[n], f"#{n} must name what blocks it")
+                gh, code, _, err = self.run_main(prs, "--merge", str(n))
+                self.assertEqual((code, gh.merges), (1, []), err)
+
+
+class WorkerListingNeverNamesWhatIsNotReadyTest(unittest.TestCase):
+    def test_a_draft_a_blocked_and_an_unverified_request_are_listed_but_never_named_ready(self):
+        prs = [pr(51, []), pr(52, [], draft=True), pr(53, [], state="BEHIND"), pr(54, [])]
+        gh = FakeGhGraphql(prs, [graphql_node(54, [False], more=True)])
+        main = MainTest()
+        code, out, err = main.run_main(main.workspace(WorkerMergeOwnerTest.WORKER), gh=gh)
+        self.assertEqual(code, 0, err)
+        lines = {l.split()[0]: l for l in out.splitlines() if l[:1] == "#"}
+        self.assertEqual([lines[k].split()[1] for k in ("#51", "#52", "#53", "#54")], ["ready", "draft", "blocked", "unverified"])
+        self.assertIn("ready for their owning worker to merge: #51", out.splitlines())
+        self.assertNotRegex(out, r"owning worker to merge:.*#5[234]")
 
 
 class SettingsTest(unittest.TestCase):
