@@ -71,7 +71,7 @@
     {
       "name": "the status line names the automatic fixes in one line",
       "type": "regex",
-      "pattern": "(?mi)^(?!\\|)(?=[^\\n]*\\bR1\\b)(?=[^\\n]*\\bR2\\b)(?=[^\\n]*\\b(?:automatic(?:ally)?|without asking|on my own))(?![^\\n]*\\b(?:not|never|no|none|\\w+n't)\\s+(?:\\w+\\s+){0,2}automatic)(?![^\\n]*\\b(?:not|never|\\w+n't)\\s+(?:send|sent|dispatch\\w*)\\b[^\\n]*\\bautomatic)(?![^\\n]*\\bR\\d\\b[^.\\n]*\\bneeds? your\\b)[^\\n]*"
+      "pattern": "(?mi)^(?!\\|)(?=[^\\n]*\\bR1\\b)(?=[^\\n]*\\bR2\\b)(?![^\\n]*\\bR\\d\\b(?:(?!\\b(?:none|nothing|no one|nobody|not|never|\\w+n't)\\s+(?:\\w+\\s+){0,3}needs? your)[^.\\n])*\\bneeds? your\\b)[^\\n]*"
     },
     {
       "name": "the Log records the automatic fix, not as the user's word",
