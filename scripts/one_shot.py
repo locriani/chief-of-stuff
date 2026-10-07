@@ -110,6 +110,34 @@ def worker_result(path: Path, exit_code: int) -> tuple[str, str, str]:
     return data["status"], data["reason"], data["changes"]
 
 
+QUOTA_STOP = "quota stop: "
+_QUOTA_TAIL = 65536  # the worker's stderr is read for this one decision only, and only its tail
+
+
+def quota_marker(runtime: str, model: str) -> str:
+    """The launcher's quota-stop marker exactly as the Log line carries it: the writer and the cap both read this text."""
+    return _brief(f"{QUOTA_STOP}{runtime} {model}")
+
+
+def quota_stop(log: Path, runtime: str, model: str) -> str:
+    """The relaunch reason when the worker's stderr shows an exhausted quota (a 429 with RESOURCE_EXHAUSTED or quota), else "".
+    A missing or unreadable log grants nothing. The caller applies it only to an unchanged tree with no result (#422)."""
+    try:
+        with log.open("rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - _QUOTA_TAIL))
+            text = f.read().decode(errors="replace")
+    except OSError:
+        return ""
+    # One line must carry a standalone 429 (after whitespace, `=`, `(` or the line start) and the quota word; its reset text is the snippet.
+    for line in text.splitlines():
+        low = line.lower()
+        if re.search(r"(?<![^\s=(])429(?!\w)", line) and ("resource_exhausted" in low or "quota" in low):
+            reset = re.search(r"\bresets?\b.*", line, re.IGNORECASE)
+            return quota_marker(runtime, model) + (f"; {reset.group().strip()[:80].rstrip()}" if reset else "")
+    return ""
+
+
 def changed_files(cwd: Path) -> str:
     try:
         out = subprocess.run(["git", "status", "--short"], cwd=cwd, capture_output=True,
@@ -266,7 +294,7 @@ def write_report(root: Path, cwd: Path, report: dict) -> dict:
 
 
 def reconcile(root: Path, day: str, task: str, name: str, cwd: Path, exit_code: int,
-              before_head: str | None = None, read_only: bool = False) -> dict:
+              before_head: str | None = None, read_only: bool = False, runtime: str = "", model: str = "") -> dict:
     cfg = dispatch_prompt.config(root)
     settings = load_settings(root, cfg.settings_path)
     status, reason, changes = worker_result(cwd / RESULT, exit_code)
@@ -284,11 +312,26 @@ def reconcile(root: Path, day: str, task: str, name: str, cwd: Path, exit_code: 
     if status == "done" and actual:
         status = "human_review"
         reason = f"worker reported completion but the worktree is not clean: {actual}"
+    quota = ""
+    if status == "human_review" and not changes and not actual and commits == NO_COMMITS:
+        # No valid result from an unchanged tree: a quota stop returns it to ready rather than holding it (#422).
+        quota = quota_stop(cwd / dispatch_prompt.PROMPT_DIR / "worker-stderr.log", runtime, model)
+        if quota:
+            status, reason = "relaunch", quota
     if status == "relaunch":
         # A relaunch is for a run that changed nothing, once: anything else is someone's to look at.
+        # A quota relaunch does not spend that limit; it has its own, once per task and runtime+model a day (#422).
+        marker = RELAUNCHED.format(task=task)
+        log = path.read_text().splitlines()
+        if not quota and _brief(reason).startswith(QUOTA_STOP):  # as the Log folds it, so padding cannot dodge it
+            reason = f"worker: {reason}"  # the launcher's marker is the launcher's alone
         if actual or commits != NO_COMMITS:
             status, reason = "human_review", f"worker asked to be relaunched but left changes: {reason}"
-        elif RELAUNCHED.format(task=task) in path.read_text():
+        elif quota:
+            mine = re.escape(quota_marker(runtime, model))  # then the line goes on with `;` and a snippet, or ends with `.`
+            if any(marker in line and re.match(mine + r"(?:;|\.$)", line.split(marker, 1)[1]) for line in log):
+                status, reason = "human_review", f"quota stop repeated: {quota[len(QUOTA_STOP):]}"
+        elif any(marker in line and not line.split(marker, 1)[1].startswith(QUOTA_STOP) for line in log):
             status, reason = "human_review", f"already relaunched once today and stopped again: {reason}"
     summary = (changes + f"\nCommits from this run:\n{commits}" +
                (f"\nWorking tree:\n{actual}" if actual else "\nWorking tree clean"))
@@ -409,7 +452,7 @@ def _launch(root: Path, cfg, chosen_day: str, task: str, cwd: Path, name: str, r
     except OSError as exc:
         (logs / "worker-stderr.log").write_text(f"Could not start worker: {exc}\n")
         exit_code = 127
-    report = reconcile(root, chosen_day, task, name, cwd, exit_code, before_head,
+    report = reconcile(root, chosen_day, task, name, cwd, exit_code, before_head, runtime=runtime, model=model,
                        read_only=dispatch_prompt.READ_ONLY in body.splitlines())  # held to what it was told
     print(toon_encode(report))
     return 0 if report["status"] == "done" and not report["errors"] else 1
