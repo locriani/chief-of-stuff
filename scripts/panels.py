@@ -14,7 +14,7 @@ from fragment import colour as _colour, css_str as _css_str, esc as _esc, href a
 
 # Okabe-Ito on parchment: a kind's accent, its top rule and its count.
 PALETTE: dict[str, str] = {
-    "blocked": "#c9533a", "decisions": "#a7843e", "approved": "#009E73", "running": "#0072B2",
+    "all": "#6e6470", "blocked": "#c9533a", "decisions": "#a7843e", "approved": "#009E73", "running": "#0072B2",
     "drift": "#c9533a", "orphaned": "#6e6470", "merge": "#009E73", "workers": "#0072B2",
 }
 TOKENS: dict[str, str] = {
