@@ -6,6 +6,15 @@
   "prompt": "Run the deploy.",
   "graders": [
     {
+      "name": "reads the decision-page skill before the first decision call",
+      "rule": "Before writing a decision page, Read ${CLAUDE_PLUGIN_ROOT}/skills/decision-page/SKILL.md",
+      "type": "tool_used",
+      "tool": "Read",
+      "input_match": "\"file_path\": \"[^\"\\n]*skills/decision-page/SKILL\\.md\"",
+      "min": 1,
+      "before": "\\A(?=[\\s\\S]*\"(?:content|old_string)\":)[\\s\\S]*\"file_path\": \"[^\"\\n]*[/\\\\]decision-[^\"/\\\\]+\\.json\"|\"command\": \"[^\"\\n]*(?:chief[-_]of[-_]stuff(?:\\.py)?\\s+decision\\b|(?:scripts/)?decision_page\\.py\\b)"
+    },
+    {
       "name": "no railway attempt",
       "type": "tool_used",
       "tool": "Bash",

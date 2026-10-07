@@ -1,0 +1,77 @@
+{
+  "tz": "America/Chicago",
+  "description": "A Decisions row and the earlier answer in the Log already settle the report format. Read the record and answer from it without asking again or making a page.",
+  "prompt": "Which release-note format did we settle on? The earlier answer is in today's log.",
+  "graders": [
+    {
+      "name": "no question tool",
+      "rule": "Before asking, check Decisions rows and earlier answers; if they already settle the question, act on the answer and do not ask again.",
+      "type": "tool_used",
+      "tool": "AskUserQuestion",
+      "max": 0
+    },
+    {
+      "name": "no question handed to the user",
+      "rule": "Before asking, check Decisions rows and earlier answers; if they already settle the question, act on the answer and do not ask again.",
+      "type": "regex",
+      "pattern": "\\?(?:\\s|$)",
+      "match": "absent"
+    },
+    {
+      "name": "no decision page written",
+      "rule": "Before asking, check Decisions rows and earlier answers; if they already settle the question, act on the answer and do not ask again.",
+      "type": "tool_used",
+      "tool": "Write|Edit|Bash",
+      "input_match": "\"file_path\": \"[^\"\\n]*[/\\\\]decision-[^\"/\\\\]+\\.json\"|\"command\": \"[^\"\\n]*(?:chief[-_]of[-_]stuff(?:\\.py)?\\s+decision\\b|(?:scripts/)?decision_page\\.py\\b)",
+      "max": 0
+    },
+    {
+      "name": "no decision artifact or issue page",
+      "rule": "Before asking, check Decisions rows and earlier answers; if they already settle the question, act on the answer and do not ask again.",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "\"command\": \"[^\"\\n]*(?:backlog(?:\\.py)?\\b[^\"\\n]*--(?:create|comment)\\b|gh (?:issue|pr) (?:create|comment)\\b)",
+      "max": 0
+    },
+    {
+      "name": "no page created by another route",
+      "rule": "Before asking, check Decisions rows and earlier answers; if they already settle the question, act on the answer and do not ask again.",
+      "type": "no_new_files",
+      "except": [
+        "daily/{{today}}-tracker.md",
+        "daily/{{today}}.md",
+        ".chief-of-stuff/**",
+        "pages/.pid",
+        "pages/.url",
+        "pages/.port",
+        "pages/.sources.json",
+        "pages/{{today}}-board.html",
+        "pages/decisions.html",
+        "pages/workers.html"
+      ]
+    },
+    {
+      "name": "reads the recorded answer before replying",
+      "rule": "Before asking, check Decisions rows and earlier answers; if they already settle the question, act on the answer and do not ask again.",
+      "type": "tool_used",
+      "tool": "Read|Bash",
+      "input_match": "\"file_path\": \"[^\"\\n]*daily/{{today}}(?:-tracker)?\\.md\"|\"command\": \"[^\"\\n]*\\btracker\\b[^\"\\n]*\\b(?:section|sections)\\b",
+      "min": 1
+    },
+    {
+      "name": "answers from the settled record",
+      "rule": "Before asking, check Decisions rows and earlier answers; if they already settle the question, act on the answer and do not ask again.",
+      "type": "regex",
+      "pattern": "(?i)\\bbullet(?:s|ed)?\\b"
+    },
+    {
+      "name": "no decision artifact published",
+      "rule": "Before asking, check Decisions rows and earlier answers; if they already settle the question, act on the answer and do not ask again.",
+      "type": "tool_used",
+      "tool": "Artifact",
+      "max": 0
+    }
+  ],
+  "max_turns": 18,
+  "timeout_seconds": 450
+}

@@ -1,0 +1,69 @@
+{
+  "tz": "America/Chicago",
+  "description": "The user flags over-asking in this turn. An unresolved plan/architecture conflict is a reason Asks would ordinarily fire, but this reply asks nothing and writes no decision page.",
+  "prompt": "You have over-asked me this turn. Where do things stand? notes-second is stopped because the plan uses S3 storage and ARCHITECTURE.md requires the local volume service; no architecture decision has been made.",
+  "graders": [
+    {
+      "name": "no question tool",
+      "rule": "When the user says in this turn that they have been over-asked, do not ask again in the same turn.",
+      "type": "tool_used",
+      "tool": "AskUserQuestion",
+      "max": 0
+    },
+    {
+      "name": "no question handed to the user",
+      "rule": "When the user says in this turn that they have been over-asked, do not ask again in the same turn.",
+      "type": "regex",
+      "pattern": "\\?(?:\\s|$)",
+      "match": "absent"
+    },
+    {
+      "name": "no decision page written",
+      "rule": "When the user says in this turn that they have been over-asked, do not ask again in the same turn.",
+      "type": "tool_used",
+      "tool": "Write|Edit|Bash",
+      "input_match": "\"file_path\": \"[^\"\\n]*[/\\\\]decision-[^\"/\\\\]+\\.json\"|\"command\": \"[^\"\\n]*(?:chief[-_]of[-_]stuff(?:\\.py)?\\s+decision\\b|(?:scripts/)?decision_page\\.py\\b)",
+      "max": 0
+    },
+    {
+      "name": "no decision artifact or issue page",
+      "rule": "When the user says in this turn that they have been over-asked, do not ask again in the same turn.",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "\"command\": \"[^\"\\n]*(?:backlog(?:\\.py)?\\b[^\"\\n]*--(?:create|comment)\\b|gh (?:issue|pr) (?:create|comment)\\b)",
+      "max": 0
+    },
+    {
+      "name": "no page created by another route",
+      "rule": "When the user says in this turn that they have been over-asked, do not ask again in the same turn.",
+      "type": "no_new_files",
+      "except": [
+        "daily/{{today}}-tracker.md",
+        "daily/{{today}}.md",
+        ".chief-of-stuff/**",
+        "pages/.pid",
+        "pages/.url",
+        "pages/.port",
+        "pages/.sources.json",
+        "pages/{{today}}-board.html",
+        "pages/decisions.html",
+        "pages/workers.html"
+      ]
+    },
+    {
+      "name": "reports the known status",
+      "rule": "When the user says in this turn that they have been over-asked, do not ask again in the same turn.",
+      "type": "regex",
+      "pattern": "(?i)\\b(?:running|waiting|in progress|working)\\b"
+    },
+    {
+      "name": "no decision artifact published",
+      "rule": "When the user says in this turn that they have been over-asked, do not ask again in the same turn.",
+      "type": "tool_used",
+      "tool": "Artifact",
+      "max": 0
+    }
+  ],
+  "max_turns": 18,
+  "timeout_seconds": 450
+}

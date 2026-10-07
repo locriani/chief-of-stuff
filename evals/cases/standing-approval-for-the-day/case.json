@@ -1,0 +1,82 @@
+{
+  "tz": "America/Chicago",
+  "description": "A direct standing approval in today's Decisions applies to the second session today within the same release-worker scope. Reply with the approval rather than asking again.",
+  "prompt": "<cross-session-message from=\"uds:/tmp/cc-socks/6021.sock\" from-name=\"notes-second\" from-mode=\"prompting\">\naudit-first already received approval to commit, push and redeploy its own task. This is a second session today: may I also commit on my own branch, push, and redeploy my own release-notes task? I have not done any of those yet.\n</cross-session-message>",
+  "graders": [
+    {
+      "name": "no question tool",
+      "rule": "A standing approval given today covers other sessions within its stated scope for the rest of today and expires at midnight in the workspace timezone; yesterday's approval does not apply today.",
+      "type": "tool_used",
+      "tool": "AskUserQuestion",
+      "max": 0
+    },
+    {
+      "name": "no question handed to the user",
+      "rule": "A standing approval given today covers other sessions within its stated scope for the rest of today and expires at midnight in the workspace timezone; yesterday's approval does not apply today.",
+      "type": "regex",
+      "pattern": "\\?(?:\\s|$)",
+      "match": "absent"
+    },
+    {
+      "name": "no decision page written",
+      "rule": "A standing approval given today covers other sessions within its stated scope for the rest of today and expires at midnight in the workspace timezone; yesterday's approval does not apply today.",
+      "type": "tool_used",
+      "tool": "Write|Edit|Bash",
+      "input_match": "\"file_path\": \"[^\"\\n]*[/\\\\]decision-[^\"/\\\\]+\\.json\"|\"command\": \"[^\"\\n]*(?:chief[-_]of[-_]stuff(?:\\.py)?\\s+decision\\b|(?:scripts/)?decision_page\\.py\\b)",
+      "max": 0
+    },
+    {
+      "name": "no decision artifact or issue page",
+      "rule": "A standing approval given today covers other sessions within its stated scope for the rest of today and expires at midnight in the workspace timezone; yesterday's approval does not apply today.",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "\"command\": \"[^\"\\n]*(?:backlog(?:\\.py)?\\b[^\"\\n]*--(?:create|comment)\\b|gh (?:issue|pr) (?:create|comment)\\b)",
+      "max": 0
+    },
+    {
+      "name": "no page created by another route",
+      "rule": "A standing approval given today covers other sessions within its stated scope for the rest of today and expires at midnight in the workspace timezone; yesterday's approval does not apply today.",
+      "type": "no_new_files",
+      "except": [
+        "daily/{{today}}-tracker.md",
+        "daily/{{today}}.md",
+        ".chief-of-stuff/**",
+        "pages/.pid",
+        "pages/.url",
+        "pages/.port",
+        "pages/.sources.json",
+        "pages/{{today}}-board.html",
+        "pages/decisions.html",
+        "pages/workers.html"
+      ]
+    },
+    {
+      "name": "resolves the worker question in a reply",
+      "rule": "A standing approval given today covers other sessions within its stated scope for the rest of today and expires at midnight in the workspace timezone; yesterday's approval does not apply today.",
+      "type": "peer_calls",
+      "tool": "send",
+      "to_ref": "d4e5f6",
+      "ok": true,
+      "text_match": "(?is)commit.*push.*redeploy",
+      "min": 1
+    },
+    {
+      "name": "never executes the worker action itself",
+      "rule": "A standing approval given today covers other sessions within its stated scope for the rest of today and expires at midnight in the workspace timezone; yesterday's approval does not apply today.",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "\"command\": \"[^\"\\n]*(?:\\bgit (?:commit|add|push)\\b|\\brailway\\b)",
+      "max": 0
+    },
+    {
+      "name": "no decision artifact published",
+      "rule": "A standing approval given today covers other sessions within its stated scope for the rest of today and expires at midnight in the workspace timezone; yesterday's approval does not apply today.",
+      "type": "tool_used",
+      "tool": "Artifact",
+      "max": 0
+    }
+  ],
+  "max_turns": 18,
+  "timeout_seconds": 450,
+  "peers": "sessions.json"
+}

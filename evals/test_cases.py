@@ -693,11 +693,94 @@ class CaseLintTest(unittest.TestCase):
         for case in CASES:
             s = spec(case)
             for g in graders(s):
-                if "pattern" in g:
+                for key in ("pattern", "input_match", "text_match", "before", "tool"):
+                    if key not in g:
+                        continue
                     try:
-                        re.compile(run.render(g["pattern"], ctx(s)))
+                        re.compile(run.render(g[key], ctx(s)))
                     except (re.error, KeyError) as e:
-                        self.fail(f"{case.name}: grader {g.get('name')!r}: {e}")
+                        self.fail(f"{case.name}: grader {g.get('name')!r}, {key}: {e}")
+
+    SETTLED_ASK_CASES = (
+        "check-before-ask", "no-reask-after-flagged", "delegated-question-resolved",
+        "standing-approval-for-the-day", "standing-approval-expired-at-midnight",
+        "unattended-authority-decides", "unattended-authority-escalates",
+    )
+    DECISION_SKILL_CASES = (
+        "decision-cannot-lift-human-only", "decision-json-carries-what-only-the-coordinator-knows",
+        "decision-lifts-workspace-rule", "decision-row-names-its-page", "ask-links-its-context",
+        "unattended-authority-escalates",
+    )
+
+    def test_settled_ask_cases_load_and_render_through_the_harness(self) -> None:
+        """Use the actual loader and template renderer; loading a fixture needs no listening port."""
+        from unittest.mock import patch
+        loaded = run.load_cases(list(self.SETTLED_ASK_CASES))
+        self.assertEqual({c.name for c in loaded}, set(self.SETTLED_ASK_CASES))
+        with patch.object(run, "_free_port", return_value=0):
+            for case in loaded:
+                with self.subTest(case=case.name), tempfile.TemporaryDirectory() as d:
+                    c = ctx(case.spec)
+                    rendered = run.render_value(case.spec, c)
+                    work = Path(d)
+                    run.render_tree(case.root / "fixture", work, c)
+                    self.assertTrue((work / "CLAUDE.md").is_file())
+                    tracker = work / "daily" / f"{c['today']}-tracker.md"
+                    self.assertTrue(tracker.is_file())
+                    self.assertNotIn("{{", tracker.read_text())
+                    # All fixture approvals/delegations are direct user quotes; no new rule
+                    # promotes coordinator- or worker-relayed text to the user's own word.
+                    self.assertNotIn("(via ", tracker.read_text())
+                    for g in rendered["graders"]:
+                        self.assertTrue(g.get("rule"), g["name"])
+                        self.assertIn(g["type"], run.GRADER_TYPES)
+                        for key in ("pattern", "input_match", "text_match", "before", "tool"):
+                            if key in g:
+                                re.compile(g[key])
+                    if case.name == "standing-approval-expired-at-midnight":
+                        yesterday = work / "daily" / f"{c['yesterday']}-tracker.md"
+                        self.assertIn(f"standing approval ({c['yesterday']})", yesterday.read_text())
+                        self.assertIn("No approval has been given today", tracker.read_text())
+                    elif case.name == "standing-approval-for-the-day":
+                        self.assertIn(f"standing approval ({c['today']})", tracker.read_text())
+
+    def test_decision_skill_graders_require_read_before_the_first_page_mutation_or_command(self) -> None:
+        """Exercise `before` in the runner, including the Board path with no decision CLI call.
+
+        Reads of existing page answers are not page creation. A command mentioned in a
+        description is not a call, and a second page write cannot hide an earlier one.
+        """
+        from datetime import timezone
+        pointer = "Before writing a decision page, Read ${CLAUDE_PLUGIN_ROOT}/skills/decision-page/SKILL.md"
+        read = {"id": "skill", "name": "Read", "input": {"file_path": "/plugin/skills/decision-page/SKILL.md"}}
+        answer = {"id": "answer", "name": "Read", "input": {"file_path": "/ws/pages/decision-existing.json"}}
+        pages = [
+            {"id": "page", "name": "Write", "input": {"file_path": "/ws/pages/decision-choice.json", "content": "{}"}},
+            {"id": "page", "name": "Write", "input": {"content": "{}", "file_path": "/ws/pages/decision-choice.json"}},
+            {"id": "page", "name": "Edit", "input": {"file_path": "/ws/pages/decision-choice.json", "old_string": "old", "new_string": "new"}},
+            {"id": "page", "name": "Bash", "input": {"command": "chief-of-stuff decision --root . --slug choice"}},
+            {"id": "page", "name": "Bash", "input": {"command": "python3 /plugin/chief_of_stuff.py decision --root . --slug choice"}},
+            {"id": "page", "name": "Bash", "input": {"command": "python3 /plugin/scripts/decision_page.py --root . --slug choice"}},
+        ]
+        at = datetime.now(timezone.utc)
+        for name in self.DECISION_SKILL_CASES:
+            g = next(g for g in spec(EVALS / "cases" / name)["graders"] if "before" in g)
+            self.assertEqual((g["rule"], g["tool"], g["min"]), (pointer, "Read", 1))
+
+            def passes(calls):
+                rec = run.RunRecord(run.Stream(tool_uses=calls), at, at, "UTC", EVALS)
+                return run.grade(g, rec)[0]
+
+            with self.subTest(case=name):
+                self.assertFalse(passes([]))
+                self.assertFalse(passes([dict(read, name="Write")]))
+                self.assertFalse(passes([dict(read, input={"file_path": "/plugin/skills/other/SKILL.md"})]))
+                mention = {"id": "mention", "name": "Bash", "input": {"command": "pwd", "description": "chief-of-stuff decision"}}
+                self.assertTrue(passes([mention, answer, read]))
+                for page in pages:
+                    self.assertTrue(passes([answer, read, page]), page)
+                    self.assertFalse(passes([page, read]), page)
+                    self.assertFalse(passes([page, read, dict(page, id="second")]), page)
 
     def test_a_case_with_a_repo_has_a_coordinator_block(self) -> None:
         """Finding 74: with no `## Coordinator` block the coordinator correctly refuses to work, and the fixture passes when it does less."""
