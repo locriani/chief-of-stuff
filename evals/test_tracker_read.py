@@ -541,6 +541,13 @@ class ChangeKeysReviewTest(unittest.TestCase):
         text = f"Review {self.CHANGE} and check diagnostics; context: {self.CONTEXT_ISSUE}"
         self.assertEqual(change_keys(text), ("", self.CHANGE))
 
+    def test_a_closing_clause_before_the_change_url_is_not_its_issue_key(self):
+        # PR 461 R1: only the suffix after the change URL supplies its issue clause.
+        for change in (self.CHANGE, "https://github.com/group/project/pull/51"):
+            with self.subTest(change=change):
+                text = f"Earlier work closes #9; review {change} and check diagnostics"
+                self.assertEqual(change_keys(text), ("", change))
+
     def test_the_changes_own_closing_clause_wins_over_a_later_context_issue_url(self):
         for verb in ("closes", "fixes", "issue"):
             with self.subTest(verb=verb):
