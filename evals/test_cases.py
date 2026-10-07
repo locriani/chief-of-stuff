@@ -735,7 +735,7 @@ class CaseLintTest(unittest.TestCase):
                         self.fail(f"{case.name}: grader {g.get('name')!r}, {key}: {e}")
 
     SETTLED_ASK_CASES = (
-        "check-before-ask", "no-reask-after-flagged",
+        "check-before-ask",
         "standing-approval-for-the-day", "standing-approval-expired-at-midnight",
         "unattended-authority-decides", "unattended-authority-escalates",
     )
