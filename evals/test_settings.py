@@ -124,6 +124,50 @@ class SettingsTest(unittest.TestCase):
         with self.assertRaises(st.SettingsError):
             st.load(self.root, self.write('[workers]\nlauncher = "shell"\n'))
 
+    def test_worker_launcher_accepts_herdr(self):
+        # #471: interactive workers may share the user's running herdr server.
+        for prefix in ("", '[notify]\nadapter = "off"\n'):
+            with self.subTest(notify=bool(prefix)):
+                got = st.load(self.root, self.write(prefix + '[workers]\nlauncher = "herdr"\n'))
+                self.assertEqual(got.workers.launcher, "herdr")
+                self.assertEqual(got.workers.mode, "interactive")
+
+    def test_unknown_worker_launcher_is_refused_naming_all_three_choices(self):
+        for value in ('"shell"', '"HERDR"', '""', "true", "17"):
+            with self.subTest(value=value):
+                with self.assertRaises(st.SettingsError) as refused:
+                    st.load(self.root, self.write(f'[workers]\nlauncher = {value}\n'))
+                message = str(refused.exception)
+                self.assertIn("[workers] launcher", message)
+                for choice in ("ghostty", "tmux", "herdr"):
+                    self.assertIn(choice, message)
+
+    def test_worker_herdr_session_defaults_to_chief_of_stuff(self):
+        self.assertEqual(st.load(self.root, None).workers.herdr_session, "chief-of-stuff")
+        self.assertEqual(st.load(self.root, "absent.toml").workers.herdr_session, "chief-of-stuff")
+        for text in ("", '[notify]\nadapter = "off"\n', '[workers]\n', '[workers]\nlauncher = "tmux"\n'):
+            with self.subTest(text=text):
+                got = st.load(self.root, self.write(text)).workers
+                self.assertEqual(got.herdr_session, "chief-of-stuff")
+
+    def test_worker_herdr_session_accepts_valid_names_verbatim(self):
+        for name in ("chief-of-stuff", "0", "a", "review_workers-471", "a" * 32):
+            with self.subTest(name=name):
+                got = st.load(self.root, self.write(f'[workers]\nherdr_session = "{name}"\n')).workers
+                self.assertEqual(got.herdr_session, name)
+                self.assertEqual(got.launcher, "ghostty")
+                self.assertEqual(got.mode, "interactive")
+
+    def test_worker_herdr_session_refuses_invalid_names_and_non_strings(self):
+        # No lowercasing, trimming, or title sanitization for the configured session name.
+        for value in ('""', '"Chief-of-stuff"', '"two words"', '" workers"', '"workers "',
+                      '"-workers"', '"_workers"', '"workers.main"', '"../workers"',
+                      '"' + 'a' * 33 + '"', '"workers;touch marker"', '"$(whoami)"',
+                      '"workers\\n"', '"workers\\t"', '"w\\u00e9"',
+                      "17", "true", "1.5", '["workers"]', '{name = "workers"}'):
+            with self.subTest(value=value), self.assertRaisesRegex(st.SettingsError, r"\[workers\] herdr_session"):
+                st.load(self.root, self.write(f'[workers]\nherdr_session = {value}\n'))
+
     def test_worker_mode_accepts_one_shot_and_refuses_unknown_values(self):
         self.assertEqual(st.load(self.root, self.write('[workers]\nmode = "one-shot"\n')).workers.mode,
                          "one-shot")
