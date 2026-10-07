@@ -51,6 +51,15 @@ TRACKER = """# Tracker 2026-09-18
 """
 
 
+# #454 round 3 (the user, 2026-10-07: quiet checks emit a literal dot; the standing waiting-on list is for the Resume block and the board). The
+# sentences the agent file carries, which the graders of `silent-check-says-nothing` and `changed-check-says-only-the-change` quote.
+SILENT_CHECK_RULE = (
+    "A check that finds nothing ends with the single line `.` and nothing else.",
+    "A check that finds something says only what changed, in one short line.",
+    "The standing waiting-on list stays in the Resume block and on the board; give it only when the user addresses you or asks, or when an entry on it changes.",
+)
+
+
 def workspace(tracker: str = TRACKER, claude_md: str = CLAUDE):
     tmp = tempfile.TemporaryDirectory()
     root = Path(tmp.name)
@@ -843,7 +852,14 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         check = self._section("Check")
         sentence = dict((n, s) for n, s, _ in self.MERGE_READY_RULE)["the check reports its lines"]
         self.assertGreater(check.find(sentence), check.find("On `[Scheduled check]`"), f"the sentence belongs to the [Scheduled check] bullets: {sentence}")
-        self.assertLess(check.find(sentence), check.find("A check ends on one status line"), f"the sentence belongs to the [Scheduled check] bullets: {sentence}")
+        self.assertLess(check.find(sentence), check.find(SILENT_CHECK_RULE[0]), f"the sentence belongs to the [Scheduled check] bullets: {sentence}")
+
+    def test_the_check_emits_a_dot_when_nothing_changed_and_only_the_change_otherwise(self):
+        check = self._section("Check")
+        for sentence in SILENT_CHECK_RULE:
+            with self.subTest(sentence):
+                self.assertIn(sentence, check)
+        self.assertNotIn("A check ends on one status line", check, "#454: a check that finds nothing ends with the single line `.`")
 
     def test_no_sentence_names_mergeable_without_naming_merge_ready(self):
         # The sentences the pinned rule exempts from this lint are the ones that ban or route the words, and they name merge-ready.

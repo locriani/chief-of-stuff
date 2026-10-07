@@ -40,6 +40,7 @@ class Row:
     note: str
     segments: tuple[Segment, ...]
     href: str = ""  # where the ref links, if anywhere
+    ref_title: str = ""
 
 
 @dataclass(frozen=True)
@@ -88,8 +89,10 @@ _ticks = ticks  # `render` takes a `ticks` argument of its own
 
 
 def _bar(g: Segment, win: Window) -> str:
-    clock = "%H:%M" if win.end - win.start <= DAY else "%a %H:%M"
-    label = _esc(" · ".join(p for p in (f"{g.category} {g.start:{clock}}–{g.end:{clock}}", g.title, g.kind) if p))
+    def clock(at: datetime) -> str:
+        return at.strftime("%a %H:%M" if win.end - win.start > DAY or at.date() != win.now.date() else "%H:%M")
+
+    label = _esc(" · ".join(p for p in (f"{g.category} {clock(g.start)}–{clock(g.end)}", g.title, g.kind) if p))
     return (f'<span class="gantt-bar gantt-{_kind(g.kind)}" data-cat="{_esc(g.category)}" tabindex="0" role="img" '
             f'aria-label="{label}" title="{label}" style="{place(g.start, g.end, win.start, win.end)}"></span>')
 
@@ -111,7 +114,8 @@ def render(rows: list[Row], win: Window, ticks: list[tuple[datetime, str]] | Non
     out.append((f'<span class="gantt-nowline" style="left:{now}"></span>' if on else "") + "</div>")
     for r in rows:
         segs = "".join(_bar(g, win) for g in r.segments if g.end > win.start and g.start < win.end)
-        ref = f'<a {_href(r.href)} class="gantt-ref">{_esc(r.ref)}</a>' if r.href else f'<span class="gantt-ref">{_esc(r.ref)}</span>'
+        title = f' title="{_esc(r.ref_title)}"' if r.ref_title else ""
+        ref = f'<a {_href(r.href)} class="gantt-ref"{title}>{_esc(r.ref)}</a>' if r.href else f'<span class="gantt-ref"{title}>{_esc(r.ref)}</span>'
         out.append(f'<div class="gantt-row"><span class="gantt-label">{ref}'
                    f'<span class="gantt-name">{_esc(r.name)}</span></span><span class="gantt-track">{segs}</span>'
                    f'<span class="gantt-note">{_esc(r.note)}</span></div>')
