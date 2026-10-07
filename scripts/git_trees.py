@@ -19,8 +19,8 @@ from tree_state import TreeState
 
 # Replace refs and grafts both rewrite parents, so neither may make a yes.
 GIT_ENV = {"GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0", "GIT_NO_REPLACE_OBJECTS": "1"}
-# The tree under inspection is worker-writable, so no config a worker wrote may be read: a home with none, and the
-# global and system files pointed at nothing.
+# The tree under inspection is worker-writable, so no global or system config may be read: a home with none, and the
+# global and system files pointed at nothing. The repository's own config is still read, and is tracked separately.
 SAFE_HOME = "/var/empty"
 # What picks a repository over `-C`: the fetch must not inherit them, or it writes where the reads do not look.
 REPO_VARS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_NAMESPACE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY",

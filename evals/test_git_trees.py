@@ -1324,7 +1324,7 @@ class ShaTreesTest(Repo):
 
 
 class AuditEnvTest(Repo):
-    """The audit calls read no config the inspected tree can write (#442)."""
+    """The audit calls read no home, global or system config, and take nothing from the launcher's environment (#442)."""
 
     def _spied_env(self) -> dict[str, str]:
         done = subprocess.CompletedProcess([], 0, stdout="", stderr="")
@@ -1332,7 +1332,7 @@ class AuditEnvTest(Repo):
             git_trees.git(["status", "--porcelain"], self.clone)
         return run.call_args.kwargs["env"]
 
-    def test_the_audit_call_names_no_config_the_tree_can_write(self) -> None:
+    def test_the_audit_call_names_no_home_global_or_system_config(self) -> None:
         env = self._spied_env()
         self.assertEqual(git_trees.SAFE_HOME, "/var/empty")
         self.assertEqual(env["HOME"], git_trees.SAFE_HOME)
@@ -1340,6 +1340,14 @@ class AuditEnvTest(Repo):
         self.assertEqual((env.get("GIT_CONFIG_GLOBAL"), env.get("GIT_CONFIG_SYSTEM")), ("/dev/null", "/dev/null"))
         self.assertEqual(env.get("GIT_CONFIG_NOSYSTEM"), "1")
         self.assertIn(env.get("XDG_CONFIG_HOME"), (None, "/dev/null"))
+
+    def test_the_audit_env_is_built_from_scratch(self) -> None:
+        leaks = {"GIT_CONFIG_PARAMETERS": "'core.fsmonitor=x'", "GIT_CONFIG_COUNT": "1", "GIT_DIR": "/elsewhere",
+                 "AUDIT_ENV_MARKER": "m"}
+        with patch.dict(os.environ, leaks):
+            env = self._spied_env()
+        self.assertEqual(set(env), {"GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS", "GIT_NO_REPLACE_OBJECTS", "PATH", "HOME",
+                                    "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM"})
 
     def test_the_audit_call_keeps_the_rest_of_its_environment(self) -> None:
         env = self._spied_env()

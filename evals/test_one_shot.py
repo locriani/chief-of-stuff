@@ -1820,6 +1820,14 @@ class TreeReadEnvTest(unittest.TestCase):
             self.assertEqual(env.get("GIT_NO_REPLACE_OBJECTS"), "1")
             self.assertEqual(env.get("PATH"), os.environ["PATH"])
 
+    def test_the_read_env_is_the_launchers_plus_the_pin(self):
+        env = one_shot.GIT_READ_ENV
+        self.assertEqual(env["GIT_NO_REPLACE_OBJECTS"], "1")
+        self.assertEqual((env["PATH"], env["HOME"]), (os.environ["PATH"], os.environ["HOME"]))
+        self.assertEqual(set(env), set(os.environ) | {"GIT_NO_REPLACE_OBJECTS"})
+        for key in set(env) - {"GIT_NO_REPLACE_OBJECTS"}:
+            self.assertEqual(os.environ[key], env[key], key)
+
     def test_changed_files_ignores_replace_refs(self):
         self.assertReadsIgnoringReplaceRefs(lambda: one_shot.changed_files(self.tree))
 
