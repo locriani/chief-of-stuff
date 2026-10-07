@@ -1080,6 +1080,33 @@ class RelaunchReviewPassTwoTest(unittest.TestCase):
             "Check formatter": [(at(TODAY, "01:00"), NOW, "worker-2")]})
 
 
+class FullIssueMergeKeyTest(unittest.TestCase):
+    """#459 control: a shared display number must not combine different projects' issue histories."""
+
+    def test_forge_issue_url_passes_merge_by_full_key_not_number(self):
+        first = "https://forge.example/group/project/-/issues/7"
+        other = "https://forge.example/group/other/-/issues/7"
+        text = flow_launch_tracker([
+            ("Build parser", "Implement parser", first),
+            ("Review parser", "Check parser diagnostics", first),
+            ("Build formatter", "Implement formatter", other),
+        ], [
+            ("Implement parser", "worker-1", "00:10"),
+            ("Check parser diagnostics", "worker-2", "00:40"),
+            ("Implement formatter", "worker-3", "00:50"),
+        ])
+        built = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(), {}, NOW)
+        self.assertEqual(len(built), 2)
+        self.assertEqual([(r.ref, r.name) for _, r in built], [
+            ("forge.example/group/project#7", "Build parser"),
+            ("forge.example/group/other#7", "Build formatter"),
+        ])
+        self.assertEqual([[(g.start, g.end, g.title) for g in r.segments] for _, r in built], [
+            [(at(TODAY, "00:10"), NOW, "worker-1"), (at(TODAY, "00:40"), NOW, "worker-2")],
+            [(at(TODAY, "00:50"), NOW, "worker-3")],
+        ])
+
+
 class GrownLaunchRowTest(unittest.TestCase):
     """#455 sits beside #182: growing an item must keep the launch on its original Flow row."""
 

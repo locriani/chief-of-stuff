@@ -337,9 +337,11 @@ def render(tracker_text: str, cfg: Config, now: datetime, lanes: dict | None = N
                                            if t.name.strip() and any(c.state == "open" and c.approved for c in task_changes(t, sources))),
                                  ended=forge_ends(tasks, sources, zone), home=sources.home)
     # An issue's row links to its page, pages.py's /issues/<n>.
+    issue_cells = {issue_key(t.issue, sources.home): t.issue.strip() for t in known if t.issue.strip() and not t.workflow}
+
     def flow_ref(row):
         if (number := issue_number(row.ref)) is not None:
-            return replace(row, href=f"/issues/{number}")
+            return replace(row, ref=f"#{number}", href=f"/issues/{number}", ref_title=issue_cells.get(row.ref, row.ref))
         if change := change_keys(row.ref)[1]:
             return replace(row, ref=f"!{int(change.rstrip('/').rsplit('/', 1)[1])}")
         return row

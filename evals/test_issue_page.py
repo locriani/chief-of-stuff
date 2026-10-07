@@ -155,7 +155,7 @@ class RenderTest(unittest.TestCase):
         self.assertTrue(figures)
         for fig in figures:
             self.assertEqual(fig.count('<div class="gantt-row">'), 1)
-        self.assertEqual(set(re.findall(r'class="gantt-ref">([^<]*)<', html)), {"#109"})
+        self.assertEqual(set(re.findall(r'class="gantt-ref"[^>]*>([^<]*)<', html)), {"#109"})
         self.assertEqual(set(re.findall(r'class="gantt-name">([^<]*)<', html)), {row.name})
         for g in row.segments:
             with self.subTest(segment=(g.category, f"{g.start:%H:%M}")):
@@ -522,7 +522,7 @@ class BoardLinkTest(unittest.TestCase):
                                    "- Tracker: `daily/<date>-tracker.md`\n- Timezone: America/Chicago\n", today=TODAY)
         html = rb.render(TODAY_TRACKER, cfg, NOW, lanes=LANES, tracker_day=TODAY, kanban=KANBAN)
         flow = html[html.index("<h2>Flow ·"):]
-        refs = set(re.findall(r'class="gantt-ref">([^<]+)<', flow))
+        refs = set(re.findall(r'class="gantt-ref"[^>]*>([^<]+)<', flow))
         self.assertEqual(refs, {"#109", "#111", "#98"})
         self.assertEqual(set(re.findall(r'href="(/issues/[^"]*)"', flow)), {f"/issues/{r[1:]}" for r in refs})
 
