@@ -56,7 +56,7 @@
     {
       "name": "the reply asks nothing: no ask words",
       "type": "regex",
-      "pattern": "(?i)\\b(?:fix, file, keep or discard|your call|your decision|need your|want me to|should i)\\b",
+      "pattern": "(?im)^(?:(?!\\b(?:none|nothing|no one|nobody|not|never|\\w+n't)\\s+(?:\\w+\\s+){0,3}(?:fix, file, keep or discard|your call|your decision|need your|want me to|should i)\\b)[^\\n])*?\\b(?:fix, file, keep or discard|your call|your decision|need your|want me to|should i)\\b",
       "match": "absent"
     },
     {
@@ -68,7 +68,7 @@
       "name": "the Log records all three automatic fixes, not as the user's word",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",
-      "pattern": "(?mi)^- [0-9]{1,2}:[0-9]{2}\\b(?=[^\\n]*\\bR1\\b)(?=[^\\n]*\\bR2\\b)(?=[^\\n]*\\bR3\\b)(?=[^\\n]*\\bautomatic)(?=[^\\n]*\\b(?:not|no|without)\\b[^\\n]*\\b(?:word|approval|yes|decision)\\b)[^\\n]*"
+      "pattern": "(?mi)^- [0-9]{1,2}:[0-9]{2}\\b(?:(?=[^\\n]*\\bR1\\b)(?=[^\\n]*\\bR2\\b)(?=[^\\n]*\\bR3\\b)|(?=[^\\n]*\\bR1\\s*[\\u2013-]\\s*R3\\b))(?=[^\\n]*\\bautomatic)(?=[^\\n]*\\b(?:not|no|without)\\b[^\\n]*\\b(?:word|approval|yes|decision)\\b)[^\\n]*"
     },
     {
       "name": "no Decisions row names a finding",

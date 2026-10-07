@@ -163,8 +163,9 @@ class CaseLintTest(unittest.TestCase):
             ("R1\u2013R2 sent as automatic fixes.", "R2\u2013R3 sent as automatic fixes.", "R1\u2013R3 need your word; automatic fixes are off.", "R1\u2013R3 were not automatic.", "R1\u2013R3: no automatic fix was sent.", "R1, R2 and R3 were never automatic.", "I did not send R1, R2 and R3 automatically.",
              "R1 and R2 went as automatic fixes.", "R1, R2 and R3 are with impl-uploads.", "R1, R2 and R3 need your word.", "| 10:00 | R1, R2, R3 | automatic fix |")),
         "the Log records all three automatic fixes, not as the user's word": (
-            ("- 20:38 R1, R2, R3 from the full pass sent to impl-uploads as an automatic fix, not the user's word",),
-            ("- 20:38 R1 and R2 sent as an automatic fix, not the user's word", "- 20:38 R1, R2, R3 sent to impl-uploads", "- 20:38 R1, R2, R3 sent as an automatic fix")),
+            ("- 20:38 R1, R2, R3 from the full pass sent to impl-uploads as an automatic fix, not the user's word",
+             "- 20:38 R1\u2013R3 are automatic fixes, not the user's word", "- 20:38 R1-R3 are automatic fixes, not the user's word"),
+            ("- 20:38 R1 and R2 sent as an automatic fix, not the user's word", "- 20:38 R1\u2013R2 are automatic fixes, not the user's word", "- 20:38 R1, R2, R3 sent to impl-uploads", "- 20:38 R1, R2, R3 sent as an automatic fix")),
         "no Decisions row names a finding": (
             (TRACKER % ("triage", "", "- 20:38 R1, R2 sent as an automatic fix, not the user's word"),),
             ("| 20:38 | R1 and R2 sent | automatic fix, not Robin's word |", "| 20:41 | Upload path check | R3: keep, Robin said so |",
@@ -189,8 +190,9 @@ class CaseLintTest(unittest.TestCase):
             ("R1 to R3 are sent to impl-uploads as automatic fixes; nothing is left for you.",),
             ("Fix, file, keep or discard for R1 (https://github.com/o/app/pull/12)?", "Anything else?")),
         "the reply asks nothing: no ask words": (
-            ("R1 to R3 are sent to impl-uploads as automatic fixes; nothing is left for you.", "I sent R1, R2 and R3 without asking."),
-            ("Fix, file, keep or discard for R1", "R2 is your call.", "I need your decision on R3.", "Want me to send R1?", "Should I send R3 too.")),
+            ("R1 to R3 are sent to impl-uploads as automatic fixes; nothing is left for you.", "I sent R1, R2 and R3 without asking.",
+             "I sent all three as automatic fixes, so none need your call.", "There is nothing for your call here."),
+            ("Fix, file, keep or discard for R1", "R2 is your call.", "Nothing is ready yet, so it is your call.", "I need your decision on R3.", "Want me to send R1?", "Should I send R3 too.")),
         "R1 is asked in the reply's last line": (
             ("R1 contradicts your earlier word.\nFix, file, keep or discard for R1 (https://github.com/o/app/pull/12)?",),
             ("R1 is a literal. I held it.", "Fix, file, keep or discard for R2 (https://github.com/o/app/pull/12)?", "Fix, file, keep or discard for R1.")),
