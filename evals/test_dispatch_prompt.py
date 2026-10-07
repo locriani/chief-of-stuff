@@ -847,12 +847,24 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         # The reviewer's vocabulary is Critical, Important, Minor.
         self.assertIsNone(re.search(r"(?i)\bhigh\b", triage), "Triage uses the reviewer's severities (Critical, Important, Minor), never `high`")
 
-    def test_no_sentence_about_an_automatic_fix_names_a_decisions_row(self):
+    def test_no_sentence_records_an_automatic_fix_in_decisions(self):
         # :22 "never invent an approval quote in Decisions": the Decisions table holds the user's words, an automatic fix is a Log entry.
+        # A sentence that mentions an automatic fix and says to record, write or add something in Decisions (not under a "never") is wrong;
+        # naming a Decisions row as where the user's own words live (the eligibility sentence) is not.
+        records_in_decisions = re.compile(r"\b(?:record|write|add)\w*\b(?:(?!\bnever\b)[^.])*\bDecisions\b", re.IGNORECASE)
+        table = (
+            (True, "Record one Decisions row naming the R-numbers sent this way and saying it was an automatic fix"),
+            (True, "Write an automatic fix as a Decisions row, not the user's word."),
+            (False, self.TRIAGE_RULE[0][1]),
+            (False, self.TRIAGE_RULE[4][1]),
+        )
+        for rejected, sentence in table:
+            with self.subTest(sentence[:60]):
+                self.assertEqual(rejected, "automatic" in sentence and records_in_decisions.search(sentence) is not None, sentence)
         for sentence in re.split(r"(?<=[.:;])\s+", self._section("Triage")):
             if "automatic" in sentence:
-                with self.subTest(sentence[:60]):
-                    self.assertNotIn("Decisions row", sentence, "an automatic fix is recorded in the Log, never in a `Decisions row`")
+                with self.subTest("agent file: " + sentence[:60]):
+                    self.assertIsNone(records_in_decisions.search(sentence), f"an automatic fix is recorded in the Log, never in Decisions: {sentence}")
 
     def test_every_handed_task_opens_plan_mode(self):
         # Zach, 2026-09-23 22:25: "tasks passed to implementers should cause the implementer to enter plan mode for the new task".
