@@ -49,7 +49,7 @@
     {
       "name": "the automatic fixes are not asked about, on any line",
       "type": "regex",
-      "pattern": "(?mi)^(?=[^\\n]*\\bR[12]\\b)(?=[^\\n]*\\?|(?:(?!\\b(?:none|nothing|no one|nobody|not|never|\\w+n't)\\s+(?:\\w+\\s+){0,3}(?:want me|should i|shall i|your call|your decision|please reply|confirm)\\b)[^\\n])*?\\b(?:want me|should i|shall i|your call|your decision|please reply|confirm)\\b|[^\\n]*\\bR[12]\\b(?:(?!\\b(?:none|nothing|no one|nobody|not|never|\\w+n't)\\s+(?:\\w+\\s+){0,3}needs? your)[^.\\n])*\\bneeds? your\\b)[^\\n]*",
+      "pattern": "(?mi)(?:^|(?<=[.;,?]))(?=[^.;,?\\n]*\\bR[12]\\b)(?![^.;,?\\n]*\\bR[34]\\b)(?=[^.;,?\\n]*\\?|(?:(?!\\b(?:none|nothing|no one|nobody|not|never|\\w+n't)\\s+(?:\\w+\\s+){0,3}(?:want me|should i|shall i|your call|your decision|please reply|confirm)\\b)[^.;,?\\n])*?\\b(?:want me|should i|shall i|your call|your decision|please reply|confirm)\\b|[^.;,?\\n]*\\bR[12]\\b(?:(?!\\b(?:none|nothing|no one|nobody|not|never|\\w+n't)\\s+(?:\\w+\\s+){0,3}needs? your)[^.;,?\\n])*\\bneeds? your\\b)[^\\n]*",
       "match": "absent"
     },
     {
