@@ -478,6 +478,49 @@ class CodexAddDirArgsTest(unittest.TestCase):
             (base / ".git/worktrees/tree/commondir").write_bytes(b"../..\0x\n")
             self.assertEqual(git_trees.codex_add_dir_args(tree), [])
 
+    def test_a_subdirectory_with_a_forged_back_pointer_is_refused_by_the_toplevel_guard(self):
+        # The toplevel check is the only guard here: git reports the common dir and gitdir of the tree above, and
+        # a back-pointer rewritten to `<sub>/.git` would otherwise agree with the missing `<sub>/.git`.
+        with tempfile.TemporaryDirectory() as tmp:
+            base, tree = self._repo_with_linked_tree(tmp)
+            sub = tree / "sub"
+            sub.mkdir()
+            (base / ".git/worktrees/tree/gitdir").write_text(f"{sub / '.git'}\n")
+            self.assertEqual(git_trees.codex_add_dir_args(sub), [])
+
+    def test_a_relative_paths_worktree_still_gets_its_two_dirs(self):
+        # `git worktree add --relative-paths` writes the back-pointer relative to the gitdir; it is resolved before comparing.
+        with tempfile.TemporaryDirectory() as tmp:
+            base, tree = Path(tmp) / "base", Path(tmp) / "tree"
+            subprocess.run(["git", "init", "-q", str(base)], check=True)
+            self._git("-C", str(base), "commit", "-q", "--allow-empty", "-m", "init")
+            made = subprocess.run(["git", "-C", str(base), "worktree", "add", "-q", "--relative-paths", str(tree)],
+                                  capture_output=True, text=True)
+            if made.returncode:
+                self.skipTest(f"this git has no `worktree add --relative-paths`: {made.stderr.strip()}")
+            pointer = (base / ".git/worktrees/tree/gitdir").read_text().strip()
+            self.assertFalse(Path(pointer).is_absolute(), pointer)  # the fixture is the relative form
+            self.assertEqual(git_trees.codex_add_dir_args(tree),
+                             self.pairs((base / ".git").resolve(), (base / ".git/worktrees/tree").resolve()))
+
+    def test_a_hung_git_grants_nothing_and_every_git_call_is_bounded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, tree = self._repo_with_linked_tree(tmp)
+            real, kwargs = subprocess.run, []
+
+            def recording(argv, *a, **kw):
+                kwargs.append(kw)
+                return real(argv, *a, **kw)
+
+            with mock.patch.object(git_trees.subprocess, "run", side_effect=recording):
+                self.assertEqual(len(git_trees.codex_add_dir_args(tree)), 4)
+            self.assertTrue(kwargs)
+            for kw in kwargs:
+                self.assertIsNotNone(kw.get("timeout"), kw)
+            hung = subprocess.TimeoutExpired(["git"], 15)
+            with mock.patch.object(git_trees.subprocess, "run", side_effect=hung):
+                self.assertEqual(git_trees.codex_add_dir_args(tree), [])
+
     def test_one_shot_codex_command_carries_exactly_the_shared_fragment(self):
         with tempfile.TemporaryDirectory() as tmp:
             _, tree = self._repo_with_linked_tree(tmp)

@@ -409,6 +409,20 @@ class ResumeCodexGrantTest(unittest.TestCase):
             self.assertEqual(shot[shot.index("--add-dir"):][:4], resume[resume.index("--add-dir"):])
             self.assertEqual(resume[len(self.old(tree)):], git_trees.codex_add_dir_args(tree))
 
+    def test_a_subdirectory_with_a_forged_back_pointer_resumes_with_the_six_old_elements(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base, tree = self._repo_with_linked_tree(tmp)
+            sub = tree / "sub"
+            sub.mkdir()
+            (base / ".git/worktrees/tree/gitdir").write_text(f"{sub / '.git'}\n")
+            self.assertEqual(self.resume(tmp, sub), self.old(sub))
+
+    def test_a_hung_git_resumes_with_the_six_old_elements_and_does_not_raise(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, tree = self._repo_with_linked_tree(tmp)
+            with mock.patch.object(git_trees.subprocess, "run", side_effect=subprocess.TimeoutExpired(["git"], 15)):
+                self.assertEqual(self.resume(tmp, tree), self.old(tree))
+
     def test_a_damaged_or_hostile_gitfile_resumes_with_the_six_old_elements_and_does_not_raise(self):
         with tempfile.TemporaryDirectory() as tmp:
             base, tree = self._repo_with_linked_tree(tmp)
