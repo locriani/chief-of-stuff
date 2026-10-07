@@ -124,11 +124,13 @@ def quota_stop(log: Path, runtime: str, model: str) -> str:
             text = f.read().decode(errors="replace")
     except OSError:
         return ""
-    low = text.lower()
-    if not (re.search(r"\b429\b", low) and ("resource_exhausted" in low or "quota" in low)):
-        return ""
-    reset = re.search(r"\bresets?\b[^\r\n]*", text, re.IGNORECASE)
-    return f"{QUOTA_STOP}{runtime} {model}" + (f"; {reset.group().strip()[:80].rstrip()}" if reset else "")
+    # One line must carry a standalone 429 (after whitespace, `=`, `(` or the line start) and the quota word; its reset text is the snippet.
+    for line in text.splitlines():
+        low = line.lower()
+        if re.search(r"(?<![^\s=(])429(?!\w)", line) and ("resource_exhausted" in low or "quota" in low):
+            reset = re.search(r"\bresets?\b.*", line, re.IGNORECASE)
+            return f"{QUOTA_STOP}{runtime} {model}" + (f"; {reset.group().strip()[:80].rstrip()}" if reset else "")
+    return ""
 
 
 def changed_files(cwd: Path) -> str:
@@ -313,12 +315,18 @@ def reconcile(root: Path, day: str, task: str, name: str, cwd: Path, exit_code: 
             status, reason = "relaunch", quota
     if status == "relaunch":
         # A relaunch is for a run that changed nothing, once: anything else is someone's to look at.
-        # A quota relaunch neither counts toward that limit nor is held by it.
+        # A quota relaunch does not spend that limit; it has its own, once per task and runtime+model a day (#422).
         marker = RELAUNCHED.format(task=task)
+        log = path.read_text().splitlines()
+        if not quota and reason.startswith(QUOTA_STOP):
+            reason = f"worker: {reason}"  # the launcher's marker is the launcher's alone
         if actual or commits != NO_COMMITS:
             status, reason = "human_review", f"worker asked to be relaunched but left changes: {reason}"
-        elif not quota and any(marker in line and not line.split(marker, 1)[1].startswith(QUOTA_STOP)
-                               for line in path.read_text().splitlines()):
+        elif quota:
+            mine = quota.split(";")[0]  # "quota stop: <runtime> <model>", then a snippet or the line's end
+            if any(marker in line and re.match(re.escape(mine) + r"[.;]", line.split(marker, 1)[1]) for line in log):
+                status, reason = "human_review", f"quota stop repeated: {quota[len(QUOTA_STOP):]}"
+        elif any(marker in line and not line.split(marker, 1)[1].startswith(QUOTA_STOP) for line in log):
             status, reason = "human_review", f"already relaunched once today and stopped again: {reason}"
     summary = (changes + f"\nCommits from this run:\n{commits}" +
                (f"\nWorking tree:\n{actual}" if actual else "\nWorking tree clean"))

@@ -15,7 +15,8 @@ from datetime import date, datetime, time
 from zoneinfo import ZoneInfo
 
 # A one-shot's end line says one of these. A relaunch line says RELAUNCHED instead, and the launcher looks for it so
-# a task relaunches at most once a day.
+# a task relaunches at most once a day. A quota stop on a model is relaunched once per task and model a day instead,
+# and does not use that daily relaunch.
 COMPLETED = "completed; awaiting integration"
 HUMAN_REVIEW = "HUMAN REVIEW NEEDED"
 RELAUNCHED = ": relaunch requested for {task} — "
