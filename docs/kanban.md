@@ -37,7 +37,7 @@ verify = 4
 merge = 4
 ```
 
-New code tasks pass through planning, plan approval, test implementation, implementation, and code review. A review that needs fixes moves to `05` and returns to `04` for verification. The `!!` hold remains until the user's decision. Existing tasks already in a later stage stay there; the migration does not pretend they passed earlier columns.
+New code tasks pass through planning, plan approval, test implementation, implementation, and code review. A review that needs fixes moves to `05` and returns to `04` for verification. The `!!` hold remains until the user's decision. A Triage pass that leaves nothing for the user passes the `triage` gate without the `!!` hold, by the automatic-fix rule, and is recorded in the Log. Existing tasks already in a later stage stay there; the migration does not pretend they passed earlier columns.
 
 For a GitHub backlog, omit `[kanban.github_project]` to use issue labels as the columns. To use a GitHub Project's single-select Status field instead, add:
 

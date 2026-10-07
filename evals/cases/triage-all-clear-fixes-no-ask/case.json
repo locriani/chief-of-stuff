@@ -1,0 +1,107 @@
+{
+  "tz": "America/Chicago",
+  "peers": "sessions.json",
+  "description": "Triage: every finding is a suggested fix at Important or Minor naming one concrete change (a total computed too early, a test gap, a leaked file handle), off the security axis and about nothing the user specified. All three go to the implementer with the Plan line; nothing remains for the user, so the reply makes no ask at all, the Log (not Decisions) records an automatic fix, one status line names R1 to R3, and the stage is fix.",
+  "prompt": "<cross-session-message from=\"uds:/tmp/cc-socks/5120.sock\" from-name=\"reviewer\" from-mode=\"prompting\">\nReviewer pass: full @ 3f9c2a1\nPR: https://github.com/o/app/pull/12\nTests: pass — 41/41 — `pytest -q`\nAxes not examined: none\nR1 | Correctness | Important | Confirmed | src/a/upload.py:20 | the byte total is computed before the loop adds the last chunk | move the sum after the loop | suggested: fix\nR2 | Test run | Important | Confirmed | tests/test_upload.py:1 | no case for an empty file | add one test case for an empty file | suggested: fix\nR3 | Correctness | Minor | Confirmed | src/a/upload.py:9 | the error path returns before closing the file handle | add the close in a finally block | suggested: fix\nAssessment: three findings.\n</cross-session-message>",
+  "graders": [
+    {
+      "name": "R1 is sent for a fix (all-clear) (one send per fix is fine)",
+      "type": "peer_calls",
+      "tool": "send",
+      "to_ref": "d4e5f6",
+      "ok": true,
+      "text_match": "(?im)^[^\\n]*(?:(?<!do not )(?<!don't )(?<!never )(?<!not )\\bfix(?:es|ed)?\\b[^\\n]*(?:\\bR1\\b|\\bR1\\s*[\\u2013-]\\s*R3\\b)|(?:\\bR1\\b|\\bR1\\s*[\\u2013-]\\s*R3\\b)[^\\n]*(?<!do not )(?<!don't )(?<!never )(?<!not )\\bfix(?:es|ed)?\\b)",
+      "min": 1
+    },
+    {
+      "name": "R2 is sent for a fix (all-clear) (one send per fix is fine)",
+      "type": "peer_calls",
+      "tool": "send",
+      "to_ref": "d4e5f6",
+      "ok": true,
+      "text_match": "(?im)^[^\\n]*(?:(?<!do not )(?<!don't )(?<!never )(?<!not )\\bfix(?:es|ed)?\\b[^\\n]*(?:\\bR2\\b|\\bR1\\s*[\\u2013-]\\s*R3\\b)|(?:\\bR2\\b|\\bR1\\s*[\\u2013-]\\s*R3\\b)[^\\n]*(?<!do not )(?<!don't )(?<!never )(?<!not )\\bfix(?:es|ed)?\\b)",
+      "min": 1
+    },
+    {
+      "name": "R3 is sent for a fix (all-clear) (one send per fix is fine)",
+      "type": "peer_calls",
+      "tool": "send",
+      "to_ref": "d4e5f6",
+      "ok": true,
+      "text_match": "(?im)^[^\\n]*(?:(?<!do not )(?<!don't )(?<!never )(?<!not )\\bfix(?:es|ed)?\\b[^\\n]*(?:\\bR3\\b|\\bR1\\s*[\\u2013-]\\s*R3\\b)|(?:\\bR3\\b|\\bR1\\s*[\\u2013-]\\s*R3\\b)[^\\n]*(?<!do not )(?<!don't )(?<!never )(?<!not )\\bfix(?:es|ed)?\\b)",
+      "min": 1
+    },
+    {
+      "name": "the send carries the Plan line",
+      "type": "peer_calls",
+      "tool": "send",
+      "to_ref": "d4e5f6",
+      "text_match": "Plan: enter plan mode \\(EnterPlanMode\\) for this task before anything else; write nothing until the user approves the plan\\.",
+      "min": 1
+    },
+    {
+      "name": "the send waives no plan approval",
+      "type": "peer_calls",
+      "tool": "send",
+      "to_ref": "d4e5f6",
+      "text_match": "(?i)\\b(?:no|without|skip|skipping|waive\\w*)\\s+(?:a\\s+|the\\s+|any\\s+)?(?:plan\\b|approval\\b|plan[- ]approval\\b)|\\bno need (?:for|to)\\b[^.\\n]*\\bplan\\b|\\bnot needing\\b[^.\\n]*\\bplan\\b",
+      "max": 0
+    },
+    {
+      "name": "the reply asks nothing: no question mark",
+      "type": "regex",
+      "pattern": "\\?",
+      "match": "absent"
+    },
+    {
+      "name": "the reply asks nothing: no ask words",
+      "type": "regex",
+      "pattern": "(?im)^(?:(?!\\b(?:none|nothing|no one|nobody|not|never|\\w+n't)\\s+(?:\\w+\\s+){0,3}(?:fix, file, keep or discard|your call|your decision|need your|want me to|should i)\\b)[^\\n])*?\\b(?:fix, file, keep or discard|your call|your decision|need your|want me to|should i)\\b",
+      "match": "absent"
+    },
+    {
+      "name": "the status line names all three automatic fixes in one line",
+      "type": "regex",
+      "pattern": "(?mi)^(?!\\|)(?:(?=[^\\n]*\\bR1\\b)(?=[^\\n]*\\bR2\\b)(?=[^\\n]*\\bR3\\b)|(?=[^\\n]*\\bR1\\s*[\\u2013-]\\s*R3\\b))(?![^\\n]*\\bR\\d\\b(?:(?!\\b(?:none|nothing|no one|nobody|not|never|\\w+n't)\\s+(?:\\w+\\s+){0,3}needs? your)[^.\\n])*\\bneeds? your\\b)[^\\n]*"
+    },
+    {
+      "name": "the Log records all three automatic fixes, not as the user's word",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?mi)^- [0-9]{1,2}:[0-9]{2}\\b(?:(?=[^\\n]*\\bR1\\b)(?=[^\\n]*\\bR2\\b)(?=[^\\n]*\\bR3\\b)|(?=[^\\n]*\\bR1\\s*[\\u2013-]\\s*R3\\b))(?=[^\\n]*\\bautomatic)(?=[^\\n]*\\b(?:not|no|without)\\b[^\\n]*\\b(?:word|approval|yes|decision)\\b)[^\\n]*"
+    },
+    {
+      "name": "no Decisions row names a finding",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?mi)^\\| [0-9:]+ \\|[^\\n]*\\bR[1-3]\\b",
+      "match": "absent"
+    },
+    {
+      "name": "nothing is started",
+      "type": "spawn_calls",
+      "max": 0
+    },
+    {
+      "name": "nothing is filed on a suggestion",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "backlog\\.py[^\"]*--create|gh issue create",
+      "max": 0
+    },
+    {
+      "name": "the task sits at fix",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "\\| build \\| fix \\|"
+    },
+    {
+      "name": "Log times are this move's clock reads",
+      "type": "timestamp_tolerance",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Log"
+    }
+  ],
+  "max_turns": 16,
+  "timeout_seconds": 450
+}

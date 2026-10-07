@@ -1,0 +1,116 @@
+{
+  "tz": "America/Chicago",
+  "peers": "sessions.json",
+  "description": "Triage (#391): of four findings, R1 (Important, a total computed before the loop ends) and R2 (Minor, a missing empty-file test) are a suggested fix naming one concrete change each, off the security axis and not about security in substance, about nothing the user specified: they go to the implementer at once with the Plan line, no ask, a Log line (never a Decisions row) and one status line. R3 (a suggested fix whose evidence leaves two designs open) and R4 (a suggested keep) are asked together; the stage stays triage while that ask is open.",
+  "prompt": "<cross-session-message from=\"uds:/tmp/cc-socks/5120.sock\" from-name=\"reviewer\" from-mode=\"prompting\">\nReviewer pass: full @ 3f9c2a1\nPR: https://github.com/o/app/pull/12\nTests: pass — 41/41 — `pytest -q`\nAxes not examined: none\nR1 | Correctness | Important | Confirmed | src/a/upload.py:20 | the byte total is computed before the loop adds the last chunk | move the sum after the loop | suggested: fix\nR2 | Test run | Minor | Confirmed | tests/test_upload.py:1 | no case for an empty file | add one test case for an empty file | suggested: fix\nR3 | Architecture compliance | Important | Probable | src/a/upload.py:9 | the handler reads config directly | ARCHITECTURE.md allows both a settings module and a per-request loader | suggested: fix\nR4 | Maintainability | Minor | Probable | src/a/upload.py:12 | the 10 MB limit is a literal | one constant would name it; the limit is stable | suggested: keep\nAssessment: four findings.\n</cross-session-message>",
+  "graders": [
+    {
+      "name": "R1 is sent for a fix (one send per fix is fine)",
+      "type": "peer_calls",
+      "tool": "send",
+      "to_ref": "d4e5f6",
+      "ok": true,
+      "text_match": "(?im)^[^\\n]*(?:(?<!do not )(?<!don't )(?<!never )(?<!not )\\bfix(?:es|ed)?\\b[^\\n]*(?:\\bR1\\b|\\bR1\\s*[\\u2013-]\\s*R2\\b)|(?:\\bR1\\b|\\bR1\\s*[\\u2013-]\\s*R2\\b)[^\\n]*(?<!do not )(?<!don't )(?<!never )(?<!not )\\bfix(?:es|ed)?\\b)",
+      "min": 1
+    },
+    {
+      "name": "R2 is sent for a fix (one send per fix is fine)",
+      "type": "peer_calls",
+      "tool": "send",
+      "to_ref": "d4e5f6",
+      "ok": true,
+      "text_match": "(?im)^[^\\n]*(?:(?<!do not )(?<!don't )(?<!never )(?<!not )\\bfix(?:es|ed)?\\b[^\\n]*(?:\\bR2\\b|\\bR1\\s*[\\u2013-]\\s*R2\\b)|(?:\\bR2\\b|\\bR1\\s*[\\u2013-]\\s*R2\\b)[^\\n]*(?<!do not )(?<!don't )(?<!never )(?<!not )\\bfix(?:es|ed)?\\b)",
+      "min": 1
+    },
+    {
+      "name": "the send carries the Plan line",
+      "type": "peer_calls",
+      "tool": "send",
+      "to_ref": "d4e5f6",
+      "text_match": "Plan: enter plan mode \\(EnterPlanMode\\) for this task before anything else; write nothing until the user approves the plan\\.",
+      "min": 1
+    },
+    {
+      "name": "the send waives no plan approval",
+      "type": "peer_calls",
+      "tool": "send",
+      "to_ref": "d4e5f6",
+      "text_match": "(?i)\\b(?:no|without|skip|skipping|waive\\w*)\\s+(?:a\\s+|the\\s+|any\\s+)?(?:plan\\b|approval\\b|plan[- ]approval\\b)|\\bno need (?:for|to)\\b[^.\\n]*\\bplan\\b|\\bnot needing\\b[^.\\n]*\\bplan\\b",
+      "max": 0
+    },
+    {
+      "name": "the asked findings are not handed over (a send may say they wait)",
+      "type": "peer_calls",
+      "tool": "send",
+      "to_ref": "d4e5f6",
+      "text_match": "(?im)^(?!\\s*not (?:in scope|yours)\\b)(?!(?!\\s*(?:also |then )?(?:fix|change|do|move|replace|add)\\b)[^\\n]*\\b(?:are|is) with \\w+ for (?:a )?disposition\\b)(?!\\s*R[34]\\b[^\\n]*?\\b(?:are|is) (?:not (?:yours|part of this)|with robin)\\b)(?!(?:(?!\\bR[34]\\b)[^\\n])*(?:do not|don't) touch\\b)[^\\n]*\\bR[34]\\b",
+      "max": 0
+    },
+    {
+      "name": "the automatic fixes are not asked about, on any line",
+      "type": "regex",
+      "pattern": "(?mi)(?:^|(?<=[.;,?]))(?=[^.;,?\\n]*\\bR[12]\\b)(?![^.;,?\\n]*\\bR[34]\\b)(?=[^.;,?\\n]*\\?|(?:(?!\\b(?:none|nothing|no one|nobody|not|never|\\w+n't)\\s+(?:\\w+\\s+){0,3}(?:want me|should i|shall i|your call|your decision|please reply|confirm)\\b)[^.;,?\\n])*?\\b(?:want me|should i|shall i|your call|your decision|please reply|confirm)\\b|[^.;,?\\n]*\\bR[12]\\b(?:(?!\\b(?:none|nothing|no one|nobody|not|never|\\w+n't)\\s+(?:\\w+\\s+){0,3}needs? your)[^.;,?\\n])*\\bneeds? your\\b)[^\\n]*",
+      "match": "absent"
+    },
+    {
+      "name": "R3 and R4 are asked in the reply's last line",
+      "type": "regex",
+      "pattern": "(?m)^(?![^\\n]*\\bR[12]\\b)(?=[^\\n]*(?:\\bR3\\b[^\\n]*\\bR4\\b|\\bR4\\b[^\\n]*\\bR3\\b|\\bR3\\s*[\\u2013-]\\s*R4\\b))[^\\n]*\\?\\s*\\Z"
+    },
+    {
+      "name": "the ask links the findings' page",
+      "type": "regex",
+      "pattern": "https://github\\.com/o/app/pull/12\\S*[^\\n]*\\?\\s*\\Z"
+    },
+    {
+      "name": "one ask, not one per finding",
+      "type": "regex",
+      "pattern": "(?m)^[^\\n]*\\?[ \\t]*\\n(?:[^\\n]*\\n)*?[^\\n]*\\?\\s*\\Z",
+      "match": "absent"
+    },
+    {
+      "name": "the status line names the automatic fixes in one line",
+      "type": "regex",
+      "pattern": "(?mi)^(?!\\|)(?=[^\\n]*\\bR1\\b)(?=[^\\n]*\\bR2\\b)(?![^\\n]*\\bR\\d\\b(?:(?!\\b(?:none|nothing|no one|nobody|not|never|\\w+n't)\\s+(?:\\w+\\s+){0,3}needs? your)[^.\\n])*\\bneeds? your\\b)[^\\n]*"
+    },
+    {
+      "name": "the Log records the automatic fix, not as the user's word",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?mi)^- [0-9]{1,2}:[0-9]{2}\\b(?=[^\\n]*\\bR1\\b)(?=[^\\n]*\\bR2\\b)(?=[^\\n]*\\bautomatic)(?=[^\\n]*\\b(?:not|no|without)\\b[^\\n]*\\b(?:word|approval|yes|decision)\\b)[^\\n]*"
+    },
+    {
+      "name": "no Decisions row names a finding",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?mi)^\\| [0-9:]+ \\|[^\\n]*\\bR[1-4]\\b",
+      "match": "absent"
+    },
+    {
+      "name": "nothing is started",
+      "type": "spawn_calls",
+      "max": 0
+    },
+    {
+      "name": "nothing is filed on a suggestion",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "backlog\\.py[^\"]*--create|gh issue create",
+      "max": 0
+    },
+    {
+      "name": "the task sits at triage",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "\\| build \\| triage \\|"
+    },
+    {
+      "name": "Log times are this move's clock reads",
+      "type": "timestamp_tolerance",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Log"
+    }
+  ],
+  "max_turns": 16,
+  "timeout_seconds": 450
+}

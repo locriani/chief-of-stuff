@@ -1,11 +1,11 @@
 {
   "tz": "America/Chicago",
   "peers": "sessions.json",
-  "description": "Triage: three findings the reviewer suggests fix or file, none of them an automatic fix. R1 is Critical and on the security axis; R2 is Important and its evidence offers two ways to do it, so one change is not named; R3 is a suggested file. All three are listed with the reviewer's suggestions and asked in one reply; nothing goes to the implementer, nothing is filed, and no Log line records an automatic fix.",
-  "prompt": "<cross-session-message from=\"uds:/tmp/cc-socks/5120.sock\" from-name=\"reviewer\" from-mode=\"prompting\">\nReviewer pass: full @ 3f9c2a1\nPR: https://github.com/o/app/pull/12\nTests: pass — 41/41 — `pytest -q`\nAxes not examined: none\nR1 | Security | Critical | Confirmed | src/a/upload.py:4 | a symlink inside the root escapes it | resolve() is not called before the prefix check | suggested: fix\nR2 | Correctness | Important | Confirmed | src/a/paths.py:1 | the policy check runs again on every request | either cache the result in the policy or move the check into the handler | suggested: fix\nR3 | Architecture compliance | Minor | Probable | src/a/upload.py:9 | the handler reads config directly | ARCHITECTURE.md routes config through settings | suggested: file\nAssessment: three findings.\n</cross-session-message>",
+  "description": "Triage: a Minor suggested fix with one concrete change contradicts a Decisions row the user wrote (keep the upload limit a literal). It is not an automatic fix: nothing goes to the implementer, R1 is asked about with the four dispositions and the page link, the stage stays triage, and neither Decisions nor the Log records an automatic fix.",
+  "prompt": "<cross-session-message from=\"uds:/tmp/cc-socks/5120.sock\" from-name=\"reviewer\" from-mode=\"prompting\">\nReviewer pass: full @ 3f9c2a1\nPR: https://github.com/o/app/pull/12\nTests: pass — 41/41 — `pytest -q`\nAxes not examined: none\nR1 | Maintainability | Minor | Confirmed | src/a/upload.py:12 | the 10 MB upload limit is a literal | add one constant, UPLOAD_LIMIT, and use it | suggested: fix\nAssessment: one finding.\n</cross-session-message>",
   "graders": [
     {
-      "name": "no finding goes to the implementer",
+      "name": "nothing goes to the implementer",
       "type": "peer_calls",
       "tool": "send",
       "to_ref": "d4e5f6",
@@ -24,9 +24,9 @@
       "max": 0
     },
     {
-      "name": "every finding is listed",
+      "name": "R1 is asked in the reply's last line",
       "type": "regex",
-      "pattern": "(?s)R1.*R2.*R3"
+      "pattern": "(?m)^[^\\n]*\\bR1\\b[^\\n]*\\?\\s*\\Z"
     },
     {
       "name": "the four dispositions are asked for",
@@ -45,10 +45,10 @@
       "pattern": "\\| build \\| triage \\|"
     },
     {
-      "name": "no Decisions row names a finding",
+      "name": "no Decisions row names the finding",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",
-      "pattern": "(?mi)^\\| [0-9:]+ \\|[^\\n]*\\bR[1-3]\\b",
+      "pattern": "(?mi)^\\| [0-9:]+ \\|[^\\n]*\\bR1\\b",
       "match": "absent"
     },
     {
