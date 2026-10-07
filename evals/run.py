@@ -181,7 +181,7 @@ def stop_pages(work: Path) -> None:
         server_pid = int(pid.read_text())
         if server_pid > 1 and server_pid != os.getpid():  # an unprepared {{live_pid}} fixture names the harness itself
             os.kill(server_pid, signal.SIGTERM)
-    except (OSError, ValueError):
+    except (OSError, ValueError, OverflowError):
         pass
 
 
@@ -189,10 +189,11 @@ def start_fixture_pages(work: Path, env: dict[str, str], root: Path) -> None:
     """A pages/.pid containing {{live_pid}} requests an already-serving board before the first turn.
 
     pages.py checks HTTP and the server version, not pid liveness. Start the real server under the
-    eval's shim environment; --ensure replaces the template pid with its own for normal cleanup.
+    eval's shim environment; remove the template pid first so a failed ensure cannot leave it behind.
     """
     pid = work / "pages" / ".pid"
     if pid.is_file() and pid.read_text().strip() == str(os.getpid()):
+        pid.unlink()
         subprocess.run([sys.executable, str(root / "scripts" / "pages.py"), "--ensure"],
                        cwd=work, env=env, capture_output=True, text=True, check=True, timeout=15)
 
@@ -1583,7 +1584,10 @@ def run_one(case: Case, arm: str, model: str, out: Path, root: Path | None = Non
         calls_log.touch()
         env = eval_environment(out, calls_log, tz, root=root, runtimes_present=spec.get("runtimes_present"))
         env["CHIEF_OF_STUFF_WORKSPACE"] = str(work)
-        start_fixture_pages(work, env, root or PLUGIN_ROOT)
+        try:
+            start_fixture_pages(work, env, root or PLUGIN_ROOT)
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            return [], f"pages setup: {exc}", {"runtime": runtime}
         # After every piece of setup, so the baseline is what the agent was handed, not a part of it.
         before_snapshot(work, out / "fixture-before")
         mcp_config = None
