@@ -180,8 +180,8 @@ def build_columns(tasks: list[Task], lanes: dict | None, kanban: Kanban | None =
 
     def card(task: Task, stage: str | None = None) -> columns.Card:
         changes = task_changes(task, sources)
-        url = issue_url(issue_key(task.issue), task.issue)
-        issue = issue_key(task.issue) if changes or url else task.issue.strip()
+        url = issue_url(issue_key(task.issue, sources.home), task.issue)
+        issue = issue_key(task.issue, sources.home) if changes or url else task.issue.strip()
         refs = ((issue, page(issue, url)),) * bool(issue) + tuple((c.ref, change_href(c)) for c in changes)
         marks = change_marks(changes) + ((columns.Mark("drift", "drift"),) if drifts(task, kanban, sources, stage) else ())
         owner = task.shown_owner

@@ -13,11 +13,13 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path[:0] = [str(HERE.parent / "scripts"), str(HERE)]
+import backlog_ref as backlog  # noqa: E402
 import board_sources as bs  # noqa: E402
 import columns  # noqa: E402
 import decision_page  # noqa: E402
 import panels  # noqa: E402
 import render_board as rb  # noqa: E402
+import task_forge  # noqa: E402
 from workspace import parse_coordinator  # noqa: E402
 import settings as st  # noqa: E402
 from test_render_board import CLAUDE_MD, NOW  # noqa: E402
@@ -220,6 +222,39 @@ class Build(unittest.TestCase):
 
 def card_named(cols: list[columns.Column], name: str) -> columns.Card:
     return next(c for col in cols for c in col.cards if c.name == name)
+
+
+class HomeProjectUrlTest(unittest.TestCase):
+    """#409 review: a home-project task named by its issue's URL reads the forge's `#8` keys through `sources.home`;
+    each reader (task_changes, drifts, the board card) must pass it, or its change, drift or ref silently vanishes."""
+
+    HOME = backlog.Backlog(host="https://example.com", project="o/app")
+    CELL = "https://example.com/o/app/-/issues/8"
+
+    def setUp(self) -> None:
+        self.sources = bs.Sources({}, {"#8": bs.Issue("#8", self.CELL, "Locale", "open", ("stage::implement",))},
+                                  {"!60": change("!60", issues=("#8",))}, (), {}, self.HOME)
+        tracker = TRACKER.replace("## Decisions", f"| Ship it | Ship | Robin | waiting | 09:00 |  | S | build | review | {self.CELL} | c |\n\n## Decisions")
+        self.tasks = rb.parse_tracker(tracker).tasks
+        self.task = next(t for t in self.tasks if t.name == "Ship it")
+
+    def test_task_changes_finds_the_change_closing_the_issue(self) -> None:
+        self.assertEqual([c.ref for c in task_forge.task_changes(self.task, self.sources)], ["!60"])
+
+    def test_drifts_reads_the_issues_labels(self) -> None:
+        # stage review, but the issue carries stage::implement
+        self.assertTrue(task_forge.drifts(self.task, KANBAN, self.sources))
+
+    def test_the_card_names_the_issue_by_its_short_key(self) -> None:
+        card = card_named(rb.build_columns(self.tasks, LANES, KANBAN, self.sources, NOW), "Ship it")
+        self.assertEqual(card.refs, (("#8", "/issues/8"), ("!60", "/issues/8")))
+        self.assertIn(columns.Mark("drift", "drift"), card.marks)
+
+    def test_the_cards_own_key_decides_its_ref(self) -> None:
+        # no change and no known issue: only the card's own issue_key call decides its ref
+        bare = replace(self.sources, changes={}, issues={})
+        card = card_named(rb.build_columns(self.tasks, LANES, KANBAN, bare, NOW), "Ship it")
+        self.assertEqual(card.refs, (("#8", "/issues/8"),))
 
 
 class CardLinkTest(unittest.TestCase):
