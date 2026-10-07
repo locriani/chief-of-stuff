@@ -99,14 +99,14 @@ def prompt(runtime: str, release: Path, root: Path) -> str:
                               "confirm the session-scoped watcher (see Check)")
         rules = rules.replace("list sessions;", "inspect registered workers;")
         rules = rules.replace("list sessions,", "inspect registered workers,")
-        silence = re.search(r"^## Check\n.*?\n\n(A check that finds nothing[^\n]+)\n\n(?=## Sessions\n)",
+        silence = re.search(r"^## Check\n.*?\n\n(The standing waiting-on list[^\n]+)\n\n(?=## Sessions\n)",
                             rules, flags=re.M | re.S).group(1)
         check = ("## Check\n\nWhile this CLI is open, its session-scoped watcher checks inbox and task audit "
                  "every five minutes, notifying on new findings without editing tracker or board. "
                  "Next turn, read clock, inbox, "
                  "audit and worker registry; reconcile task state; board renders itself. "
                  "Dispatch ready one-shot tasks automatically under Dispatch authority. New interactive sessions need approval.\n\n"
-                 + silence + "\n\n" + host_schedule + "\n\n")
+                 + host_schedule + "\n\n" + silence + "\n\n")
         rules = re.sub(r"## Check\n.*?(?=## Sessions\n)", check, rules, flags=re.S)
         sessions = ("## Sessions\n\nThe workspace `Sessions:` line may name Claude native list and send tools; "
                     "use only if your host exposes them. For each non-Claude worker, "

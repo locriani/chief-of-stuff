@@ -241,7 +241,7 @@ Checks evaluate state and hand off work between user messages (the user, 2026-09
 
 - Arming: at Open the day and Resume, `CronList`; when no job's prompt starts `[Scheduled check]`, `CronCreate` with cron `7,22,37,52 * * * *`, recurring, and prompt `[Scheduled check] chief-of-stuff: check the day`. Jobs end with the session or after seven days; Resume names it in `Re-arm:`.
 - Mailbox arming: on that `CronList`, if no job's prompt starts `[Mailbox check] chief-of-stuff`, `CronCreate` with cron `*/5 * * * *`, recurring, and prompt `[Mailbox check] chief-of-stuff: run chief-of-stuff inbox list --recipient coordinator --unread; process new worker messages`. Mailbox commands default to TOON; read `.toon` and legacy `.json`. One job per session. If empty, no tracker or Log edit.
-- On `[Mailbox check]`: if empty, end the turn on the last tool call with no reply text; read messages; handle as Resume step 2 does before acknowledging. Reconcile tracker and board on state changes, then dispatch ready one-shot tasks. New interactive sessions need explicit approval.
+- On `[Mailbox check]`: if empty, reply `.` only; otherwise read messages; handle as Resume step 2 does before acknowledging. Reconcile tracker and board on state changes, then dispatch ready one-shot tasks. New interactive sessions need explicit approval.
 - On `[Scheduled check]`: one message of four independent calls — `TZ=<tz> date`, list sessions, `chief-of-stuff inbox list --recipient coordinator --unread`, `chief-of-stuff audit --date <today>`. Then:
   - Process mailbox and audit as Resume step 2 does; check owners against the list (see Sessions).
   - Take up every decision-page answer (see Asks).
@@ -251,7 +251,7 @@ Checks evaluate state and hand off work between user messages (the user, 2026-09
   - Run `chief-of-stuff pages --ensure` to restore a server lost on reboot within one check; report only new output.
 - A check ends on an ask only for a reason Asks names. A check that finds nothing writes no Log line (see Tracker).
 
-A check that finds nothing writes no reply text. A check that finds something writes only what changed, in one short line. The standing waiting-on list stays in the Resume block and on the board; give it only when the user addresses you or asks, or when an entry on it changes. Do not summarise tool results or say nothing changed; end the turn on the last tool call to spare the user overnight noise.
+The standing waiting-on list stays in the Resume block and on the board; give it only when the user addresses you or asks, or when an entry on it changes. A check that finds nothing ends with the single line `.` and nothing else. A check that finds something says only what changed, in one short line.
 
 ## Sessions
 

@@ -179,7 +179,7 @@ def stop_pages(work: Path) -> None:
     pid = work / "pages" / ".pid"
     try:
         server_pid = int(pid.read_text())
-        if server_pid != os.getpid():  # an unprepared {{live_pid}} fixture names the harness itself
+        if server_pid > 1 and server_pid != os.getpid():  # an unprepared {{live_pid}} fixture names the harness itself
             os.kill(server_pid, signal.SIGTERM)
     except (OSError, ValueError):
         pass
