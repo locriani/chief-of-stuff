@@ -867,8 +867,8 @@ class HerdrLauncherTest(unittest.TestCase):
     """#471: exact argv, JSON pane handoff, and refusal cleanup; no real herdr or agent runs.
 
     Every CLI call selects a dedicated named session before its subcommand. Dry runs use
-    <root-pane>, since tab creation has not happened. Agent names must match
-    [a-z][a-z0-9_-]{0,31} verbatim: the assignment, registry and herdr use one identity.
+    <root-pane>, since tab creation has not happened. The pane shell receives the same
+    wrapper as tmux, with each word shell-quoted. Assignment, registry and label keep one name.
     The fake tab-created response follows the installed herdr v0.9.3 API schema.
     """
 
@@ -907,9 +907,9 @@ if args[:2] == ['tab', 'create']:
         print('no running herdr server', file=sys.stderr)
         sys.exit(7)
     print(json.dumps(config['reply']))
-elif args[:2] == ['agent', 'start']:
-    if config['failure'] == 'agent':
-        print('agent was not detected', file=sys.stderr)
+elif args[:2] == ['pane', 'run']:
+    if config['failure'] == 'pane':
+        print('pane command was rejected', file=sys.stderr)
         sys.exit(8)
     print(json.dumps({{'result': {{'started': True}}}}))
 elif args[:2] == ['tab', 'close']:
@@ -986,16 +986,12 @@ print(found)
     def tab_argv(self, title="audit-01", *, session="chief-of-stuff"):
         return ["--session", session, "tab", "create", "--cwd", str(self.tree), "--label", title, "--no-focus"]
 
-    def start_argv(self, *, title="audit-01", name="audit-01", runtime="claude", pane=None, model="", effort="",
-                   session="chief-of-stuff"):
-        # R8 independently requires and bounds --timeout. Leave its chosen millisecond value
-        # flexible here, while retaining the existing R3 assertion about every token after --.
-        command = self.commands(title=title, runtime=runtime, session=session, model=model, effort=effort)[1]
-        readiness = (["--timeout", command[command.index("--timeout") + 1]]
-                     if "--timeout" in command[:command.index("--")] else [])
-        return ["--session", session, "agent", "start", name, "--kind", runtime, "--pane", pane or self.pane_id,
-                *readiness, "--",
-                *self.worker_tokens(title=title, runtime=runtime, model=model, effort=effort)]
+    def pane_argv(self, *, title="audit-01", runtime="claude", pane=None, model="", effort="",
+                  session="chief-of-stuff"):
+        # herdr joins these words for the pane's shell; quote every wrapper token independently.
+        return ["--session", session, "pane", "run", pane or self.pane_id,
+                *[shlex.quote(token) for token in self.worker_tokens(
+                    title=title, runtime=runtime, model=model, effort=effort)]]
 
     def commands(self, *, title="audit-01", runtime="claude", session="chief-of-stuff", model="", effort=""):
         binary = self.bin / {"claude": "claude", "codex": "codex", "cursor": "agent", "agy": "agy"}[runtime]
@@ -1027,15 +1023,15 @@ print(found)
                 self.assertEqual(len(lines), 3, out.stdout)
                 create = [str(self.herdr), *self.tab_argv()]
                 self.assertEqual(lines[0], "would run: " + shlex.join(create))
-                expected = [str(self.herdr), *self.start_argv(runtime=runtime,
-                                                            pane="<root-pane>", model=model, effort=effort)]
+                expected = [str(self.herdr), *self.pane_argv(runtime=runtime,
+                                                           pane="<root-pane>", model=model, effort=effort)]
                 self.assertEqual(lines[1], "would run: " + shlex.join(expected))
                 self.assertEqual(lines[2], f"would write: {self.dispatch}")
                 self.assertEqual(self.calls(), [])
                 self.assertFalse(self.dispatch.exists())
                 self.assertFalse(self.runtime_log.exists())
 
-    def test_real_run_hands_json_root_pane_to_agent_start_and_keeps_dispatch(self):
+    def test_real_run_hands_json_root_pane_to_pane_run_and_keeps_dispatch(self):
         for pane in ("w53:p97", "w208:p413"):
             with self.subTest(pane=pane):
                 self.pane_id = pane
@@ -1045,7 +1041,7 @@ print(found)
                 out = self.invoke()
                 self.assertEqual(out.returncode, 0, out.stderr)
                 calls = self.calls()
-                self.assertEqual([call["argv"] for call in calls], [self.tab_argv(), self.start_argv()])
+                self.assertEqual([call["argv"] for call in calls], [self.tab_argv(), self.pane_argv()])
                 self.assertTrue(all(call["dispatch_exists"] for call in calls))
                 self.assertIn("Task: Security audit", self.dispatch.read_text())
                 self.assertIn("started", out.stdout)
@@ -1056,16 +1052,16 @@ print(found)
         (self.root / "chief-of-stuff.toml").write_text('[workers]\nlauncher = "herdr"\n')
         out = self.invoke(launcher=None)
         self.assertEqual(out.returncode, 0, out.stderr)
-        self.assertEqual([call["argv"] for call in self.calls()], [self.tab_argv(), self.start_argv()])
+        self.assertEqual([call["argv"] for call in self.calls()], [self.tab_argv(), self.pane_argv()])
 
-    def test_configured_herdr_session_is_used_by_tab_create_and_agent_start(self):
+    def test_configured_herdr_session_is_used_by_tab_create_and_pane_run(self):
         session = "review_workers-471"
         # The setting also applies when herdr is selected by --launcher rather than TOML.
         (self.root / "chief-of-stuff.toml").write_text(f'[workers]\nherdr_session = "{session}"\n')
         out = self.invoke()
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertEqual([call["argv"] for call in self.calls()],
-                         [self.tab_argv(session=session), self.start_argv(session=session)])
+                         [self.tab_argv(session=session), self.pane_argv(session=session)])
         self.assertTrue(self.dispatch.is_file())
 
     def test_configured_herdr_session_is_printed_in_both_dry_run_argv(self):
@@ -1076,21 +1072,21 @@ print(found)
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertEqual(out.stdout.splitlines(),
                          ["would run: " + shlex.join([str(self.herdr), *self.tab_argv(session=session)]),
-                          "would run: " + shlex.join([str(self.herdr), *self.start_argv(
+                          "would run: " + shlex.join([str(self.herdr), *self.pane_argv(
                               session=session, pane="<root-pane>")]),
                           f"would write: {self.dispatch}"])
         self.assertEqual(self.calls(), [])
         self.assertFalse(self.dispatch.exists())
 
-    def test_failed_agent_start_closes_tab_in_configured_herdr_session(self):
+    def test_failed_pane_run_closes_tab_in_configured_herdr_session(self):
         session = "review_workers-471"
         (self.root / "chief-of-stuff.toml").write_text(
             f'[workers]\nlauncher = "herdr"\nherdr_session = "{session}"\n')
-        self.configure_fake(failure="agent")
+        self.configure_fake(failure="pane")
         out = self.invoke(launcher=None)
-        self.assert_refused(out, "agent", "agent was not detected")
+        self.assert_refused(out, "pane run", "pane command was rejected")
         self.assertEqual([call["argv"] for call in self.calls()],
-                         [self.tab_argv(session=session), self.start_argv(session=session),
+                         [self.tab_argv(session=session), self.pane_argv(session=session),
                           self.close_argv(session=session)])
 
     def test_invalid_herdr_session_refuses_before_dispatch_or_cli_calls(self):
@@ -1121,23 +1117,23 @@ print(found)
                 for key in ("PATH", "HOME", "SHELL"):
                     self.assertEqual(call["env"][key], self.env[key])
 
-    def test_herdr_tab_create_and_agent_start_scrub_parent_herdr_environment(self):
+    def test_herdr_tab_create_and_pane_run_scrub_parent_herdr_environment(self):
         self.add_herdr_environment_bait()
         out = self.invoke()
         self.assertEqual(out.returncode, 0, out.stderr)
         calls = self.calls()
-        self.assertEqual([call["argv"] for call in calls], [self.tab_argv(), self.start_argv()])
+        self.assertEqual([call["argv"] for call in calls], [self.tab_argv(), self.pane_argv()])
         self.assert_cli_environment_matches_launch_env(calls)
         self.assertFalse(self.runtime_log.exists())
 
     def test_herdr_failure_cleanup_also_scrubs_parent_herdr_environment(self):
         self.add_herdr_environment_bait()
-        self.configure_fake(failure="agent")
+        self.configure_fake(failure="pane")
         out = self.invoke()
-        self.assert_refused(out, "agent", "agent was not detected")
+        self.assert_refused(out, "pane run", "pane command was rejected")
         calls = self.calls()
         self.assertEqual([call["argv"] for call in calls],
-                         [self.tab_argv(), self.start_argv(), self.close_argv()])
+                         [self.tab_argv(), self.pane_argv(), self.close_argv()])
         self.assert_cli_environment_matches_launch_env(calls)
 
     def test_control_tmux_scrubs_parent_herdr_environment_using_launch_env(self):
@@ -1167,7 +1163,7 @@ with open({str(self.log)!r}, 'a') as log:
         self.assertEqual([call["argv"] for call in self.calls()], [self.tab_argv()])
         self.assertTrue(self.calls()[0]["dispatch_exists"])
 
-    def test_json_without_root_pane_closes_known_tab_and_never_starts_an_agent(self):
+    def test_json_without_root_pane_closes_known_tab_and_never_runs_a_pane(self):
         self.tab_id = "w53:t113"  # Cleanup must use the received id, not an assumed first tab.
         reply = self.tab_reply()
         del reply["result"]["root_pane"]
@@ -1176,12 +1172,12 @@ with open({str(self.log)!r}, 'a') as log:
         self.assert_refused(out, "pane")
         self.assertEqual([call["argv"] for call in self.calls()], [self.tab_argv(), self.close_argv()])
 
-    def test_failed_agent_start_closes_created_tab_and_removes_dispatch(self):
-        self.configure_fake(failure="agent")
+    def test_failed_pane_run_closes_created_tab_and_removes_dispatch(self):
+        self.configure_fake(failure="pane")
         out = self.invoke()
-        self.assert_refused(out, "agent", "agent was not detected")
+        self.assert_refused(out, "pane run", "pane command was rejected")
         self.assertEqual([call["argv"] for call in self.calls()],
-                         [self.tab_argv(), self.start_argv(), self.close_argv()])
+                         [self.tab_argv(), self.pane_argv(), self.close_argv()])
 
     def test_missing_or_malformed_pane_id_refuses_and_closes_the_created_tab(self):
         for pane in ({}, {"pane_id": None}, {"pane_id": ""}, {"pane_id": "--x"},
@@ -1220,13 +1216,13 @@ with open({str(self.log)!r}, 'a') as log:
         self.assert_refused(self.invoke(), "tab id")
         self.assertEqual([call["argv"] for call in self.calls()], [self.tab_argv()])
 
-    def test_agent_failure_reports_cleanup_failure_without_hiding_original_error(self):
-        self.configure_fake(failure="agent", cleanup_failure=True)
+    def test_pane_failure_reports_cleanup_failure_without_hiding_original_error(self):
+        self.configure_fake(failure="pane", cleanup_failure=True)
         out = self.invoke()
-        self.assert_refused(out, "agent was not detected")
+        self.assert_refused(out, "pane command was rejected")
         self.assertRegex(out.stderr, r"(?m)^cleanup: .*herdr tab close.*cleanup denied")
         self.assertEqual([call["argv"] for call in self.calls()],
-                         [self.tab_argv(), self.start_argv(), self.close_argv()])
+                         [self.tab_argv(), self.pane_argv(), self.close_argv()])
 
     def test_commands_refuse_invalid_dedicated_session_even_without_settings_loader(self):
         # Exercise the builder's own check; settings validation cannot kill its mutant.
@@ -1252,10 +1248,7 @@ with open({str(self.log)!r}, 'a') as log:
             cli_calls.append(command[1:])
             timeout = kw.get("timeout")
             self.assertIsInstance(timeout, (int, float), "every herdr CLI call needs a subprocess timeout")
-            if action in ("tab create", "tab close"):
-                self.assertEqual(timeout, 30, "tab operations keep the 30 s subprocess timeout")
-            else:
-                self.assertGreaterEqual(timeout, 30)
+            self.assertEqual(timeout, 30, "every CLI operation keeps the 30 s subprocess timeout")
             if action == hang:
                 raise subprocess.TimeoutExpired(command, timeout)
             return real_run(command, **kw)
@@ -1272,25 +1265,25 @@ with open({str(self.log)!r}, 'a') as log:
         self.assert_refused(out, "tab create", "timed out")
         self.assertEqual(calls, [self.tab_argv()])
 
-    def test_hung_agent_start_is_refused_and_closes_created_tab(self):
-        out, calls = self.invoke_with_cli_probe(hang="agent start")
-        self.assert_refused(out, "agent start", "timed out")
-        self.assertEqual(calls, [self.tab_argv(), self.start_argv(), self.close_argv()])
+    def test_hung_pane_run_is_refused_and_closes_created_tab(self):
+        out, calls = self.invoke_with_cli_probe(hang="pane run")
+        self.assert_refused(out, "pane run", "timed out")
+        self.assertEqual(calls, [self.tab_argv(), self.pane_argv(), self.close_argv()])
 
-    def test_hung_cleanup_is_reported_and_original_agent_error_is_preserved(self):
-        self.configure_fake(failure="agent")
+    def test_hung_cleanup_is_reported_and_original_pane_error_is_preserved(self):
+        self.configure_fake(failure="pane")
         out, calls = self.invoke_with_cli_probe(hang="tab close")
-        self.assert_refused(out, "agent was not detected")
+        self.assert_refused(out, "pane command was rejected")
         self.assertRegex(out.stderr, r"(?m)^cleanup: .*herdr tab close.*timed out")
-        self.assertEqual(calls, [self.tab_argv(), self.start_argv(), self.close_argv()])
+        self.assertEqual(calls, [self.tab_argv(), self.pane_argv(), self.close_argv()])
 
     def test_every_cli_call_filters_even_explicitly_kept_herdr_variables(self):
         self.add_herdr_environment_bait()
         self.env["herdr_future_token"] = "parent-only"
         # Ordinary whitelist tests cannot catch removal of the HERDR_* filter. An approved
-        # variable must still be stripped from create, start and close (case-insensitively).
+        # variable must still be stripped from create, run and close (case-insensitively).
         approved = (*ss.KEEP, *[key for key in self.env if key.upper().startswith("HERDR_")])
-        self.configure_fake(failure="agent")
+        self.configure_fake(failure="pane")
         real_run = subprocess.run
         calls = []
 
@@ -1311,69 +1304,64 @@ with open({str(self.log)!r}, 'a') as log:
             self.assertEqual(ss.launch_env()["HERDR_SOCKET_PATH"], self.env["HERDR_SOCKET_PATH"])
             code = ss.main(self.args())
         out = subprocess.CompletedProcess([], code, output.getvalue(), errors.getvalue())
-        self.assert_refused(out, "agent was not detected")
-        self.assertEqual(calls, [self.tab_argv(), self.start_argv(), self.close_argv()])
+        self.assert_refused(out, "pane command was rejected")
+        self.assertEqual(calls, [self.tab_argv(), self.pane_argv(), self.close_argv()])
 
-    def test_agent_start_has_explicit_readiness_timeout_shorter_than_subprocess_deadline(self):
-        create, start = self.commands()
-        options = start[:start.index("--")]
-        self.assertIn("--timeout", options, "herdr's default 30000 ms wait races a 30 s subprocess timeout")
-        self.assertEqual(options.count("--timeout"), 1)
-        value = options[options.index("--timeout") + 1]
-        self.assertRegex(value, r"^[0-9]+$")
-        readiness_ms = int(value)
-        self.assertGreater(readiness_ms, 0)
-        self.assertLessEqual(readiness_ms, 300000, "herdr's maximum readiness wait")
+    def test_pane_run_uses_quoted_tmux_wrapper_without_agent_start_options(self):
+        create, run = self.commands(runtime="codex", model="gpt-test", effort="high")
+        self.assertEqual(create, [str(self.herdr), *self.tab_argv()])
+        self.assertEqual(run, [str(self.herdr), *self.pane_argv(
+            runtime="codex", pane="<root-pane>", model="gpt-test", effort="high")])
+        self.assertEqual(run[3:6], ["pane", "run", "<root-pane>"])
+        self.assertNotIn("--timeout", run)
+        self.assertNotIn("--kind", run)
+        with unittest.mock.patch.dict(os.environ, self.env, clear=True):
+            tmux = ss.tmux_command(tmux=self.bin / "tmux", binary=self.bin / "codex",
+                                   cwd=str(self.tree), agent_type=None, title="audit-01",
+                                   runtime="codex", model="gpt-test", effort="high", workspace=str(self.root))
+        self.assertEqual(shlex.split(" ".join(run[6:])), tmux[7:])
 
-        def run(command, **kw):
-            if command[3:5] == ["agent", "start"]:
-                self.assertGreater(kw.get("timeout", 0), readiness_ms / 1000,
-                                   "the subprocess must outlive herdr's readiness wait")
-            return subprocess.CompletedProcess(command, 0, json.dumps(self.tab_reply()), "")
+    def test_hostile_titles_and_paths_round_trip_through_the_pane_shell(self):
+        # The command builder must quote even inputs rejected by the assignment's name policy.
+        # No shell is executed: shlex.split checks exactly the literal words herdr's shell sees.
+        original_root, original_tree, original_bin = self.root, self.tree, self.bin
+        original_path = self.env["PATH"]
+        hostile = ("two words", "single'quote", 'double"quote', "$(touch marker)",
+                   "`touch marker`", "semi; touch marker", "first\nsecond")
+        for runtime, model, effort in (("claude", "sonnet", "high"), ("codex", "gpt-test", "low"),
+                                       ("cursor", "cursor-test", ""), ("agy", "agy-test", "medium")):
+            for value in hostile:
+                with self.subTest(runtime=runtime, value=value):
+                    self.root = original_root / value
+                    self.tree = original_tree / value
+                    self.bin = original_bin / value
+                    self.env["PATH"] = str(self.bin)
+                    create, run = self.commands(title=value, runtime=runtime, model=model, effort=effort)
+                    tokens = self.worker_tokens(title=value, runtime=runtime, model=model, effort=effort)
+                    self.assertEqual(create, [str(self.herdr), *self.tab_argv(value)])
+                    self.assertEqual(run[:6], [str(self.herdr), "--session", "chief-of-stuff",
+                                              "pane", "run", "<root-pane>"])
+                    self.assertEqual(run[6:], [shlex.quote(token) for token in tokens])
+                    self.assertEqual(shlex.split(" ".join(run[6:])), tokens)
+                    self.assertIn(str(self.tree), tokens)
+                    self.assertIn(f"PATH={self.bin}", tokens)
+                    self.assertIn(f"CHIEF_OF_STUFF_WORKSPACE={self.root}", tokens)
+        self.root, self.tree, self.bin = original_root, original_tree, original_bin
+        self.env["PATH"] = original_path
+        self.assertEqual(self.calls(), [])
+        self.assertFalse(self.runtime_log.exists())
 
-        with unittest.mock.patch.object(ss.subprocess, "run", side_effect=run) as runner:
-            ss.launch_herdr(create, start)
-        self.assertEqual(runner.call_count, 2, "success must reach agent start and never close the tab")
-
-    def test_titles_that_would_change_identity_are_refused_before_any_cli_call(self):
-        marker = self.root / "shell-was-run"
-        titles = ("Audit Team", "AUDIT-01", " audit-01", "audit-01 ", "audit.team",
-                  f"audit; touch {marker}", f"audit $(touch {marker}) `touch {marker}` | < > &",
-                  "---", "!!!", "a" * 33, "a" * 80)
-        for title in titles:
-            # Dry-run proves name validation independently of the tab-reply parsing bug.
-            for extra in ([], ["--dry-run"]):
-                with self.subTest(title=title, dry_run=bool(extra)):
-                    self.log.unlink(missing_ok=True)
-                    self.dispatch.unlink(missing_ok=True)
-                    out = self.invoke(title=title, extra=extra)
-                    self.assert_refused(out, "name")
-                    self.assertEqual(self.calls(), [])
-                    self.assertNotIn("would run:", out.stdout)
-                    self.assertFalse(marker.exists(), "the title must never become shell source")
-
-    def test_digit_underscore_and_hyphen_leading_agent_names_are_refused(self):
-        for title in ("0", "7-day", "2024-audit", "_audit", "-audit"):
-            for extra in ([], ["--dry-run"]):
-                with self.subTest(title=title, dry_run=bool(extra)):
-                    self.log.unlink(missing_ok=True)
-                    self.dispatch.unlink(missing_ok=True)
-                    out = self.invoke(title=title, extra=extra)
-                    self.assert_refused(out, "name")
-                    self.assertEqual(self.calls(), [])
-                    self.assertNotIn("would run:", out.stdout)
-
-    def test_valid_names_are_verbatim_in_assignment_registry_and_agent_start(self):
-        for title in ("a", "audit-team", "audit_team-01", "a" * 32):
+    def test_valid_names_are_verbatim_in_assignment_registry_and_pane_run(self):
+        for title in ("a", "audit-team", "audit_team-01", "AUDIT-01", "audit.team", "0", "7-day", "a" * 64):
             with self.subTest(title=title):
                 self.log.unlink(missing_ok=True)
                 self.dispatch.unlink(missing_ok=True)
                 out = self.invoke(title=title, runtime="codex")
                 self.assertEqual(out.returncode, 0, out.stderr)
                 self.assertEqual([call["argv"] for call in self.calls()],
-                                 [self.tab_argv(title), self.start_argv(title=title, name=title, runtime="codex")])
+                                 [self.tab_argv(title), self.pane_argv(title=title, runtime="codex")])
                 self.assertIn(f"name `{title}`;", self.dispatch.read_text())
-                start = self.calls()[1]["argv"]
+                start = shlex.split(" ".join(self.calls()[1]["argv"][5:]))
                 # session_exec registers this --name; do not execute the worker in the fake.
                 registry = start.index("--registry")
                 self.assertEqual(start[registry + 1],
@@ -1381,15 +1369,17 @@ with open({str(self.log)!r}, 'a') as log:
                 name_flag = start.index("--name", registry)
                 self.assertEqual(start[name_flag + 1], title)
 
-    def test_control_valid_agent_names_stay_verbatim_in_dry_run(self):
-        for title in ("a", "audit-team", "audit_team-01", "a" * 32):
+    def test_control_valid_session_names_stay_verbatim_in_dry_run(self):
+        for title in ("a", "audit-team", "audit_team-01", "AUDIT-01", "audit.team", "0", "7-day", "a" * 64):
             with self.subTest(title=title):
                 out = self.invoke(title=title, runtime="codex", extra=["--dry-run"])
                 self.assertEqual(out.returncode, 0, out.stderr)
                 lines = out.stdout.splitlines()
                 self.assertEqual(lines[0], "would run: " + shlex.join([str(self.herdr), *self.tab_argv(title)]))
                 start = shlex.split(lines[1].removeprefix("would run: "))
-                self.assertEqual(start[5], title)
+                self.assertEqual(start[:6], [str(self.herdr), "--session", "chief-of-stuff",
+                                              "pane", "run", "<root-pane>"])
+                start = shlex.split(" ".join(start[6:]))
                 registry = start.index("--registry")
                 self.assertEqual(start[registry + 1],
                                  str(self.root / ss.PROMPT_DIR / "sessions" / f"{title}.json"))
