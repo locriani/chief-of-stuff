@@ -18,6 +18,8 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from evals.rules_text import rules_text
+
 EVALS = Path(__file__).resolve().parent
 sys.path.insert(0, str(EVALS))
 sys.path.insert(0, str(EVALS.parent / "scripts"))
@@ -474,7 +476,7 @@ class CaseLintTest(unittest.TestCase):
         """Split from the lint above so its rows run while the agent file still carries the old sentence."""
         rule = ("When that word names a sha as on main, check it first: `chief-of-stuff audit --sha <sha>` fetches and prints "
                 "whether origin/main or local main holds it, and a sha it finds on neither closes nothing.")
-        agent_text = (EVALS.parent / "agents" / "chief-of-stuff.md").read_text()
+        agent_text = rules_text()
         graders = spec(EVALS / "cases" / "sha-claim-checked-through-audit")["graders"]
         self.assertEqual([g["type"] for g in graders], ["tool_used", "file_matches"])
         for g in graders:
@@ -541,7 +543,7 @@ class CaseLintTest(unittest.TestCase):
         """#362: every rule-bearing grader of the review case quotes the one sentence the agent file carries."""
         rule = ("A workflow step — a review, or anything the pipeline itself performs — takes no issue: "
                 "write `workflow` in its `issue` cell.")
-        agent_text = (EVALS.parent / "agents" / "chief-of-stuff.md").read_text()
+        agent_text = rules_text()
         graders = spec(EVALS / "cases" / "review-step-takes-the-workflow-token")["graders"]
         self.assertEqual([g["type"] for g in graders], ["file_matches", "tool_used", "file_matches", "timestamp_tolerance"])
         for g in graders[:3]:
@@ -607,7 +609,7 @@ class CaseLintTest(unittest.TestCase):
         """#52: every grader of the effort case quotes the one sentence the agent file carries."""
         rule = ("Launch an entry as `--runtime <runtime> --model <model-id>`, plus `--effort <effort>` when the entry has one, "
                 "with the model ID verbatim.")
-        agent_text = (EVALS.parent / "agents" / "chief-of-stuff.md").read_text()
+        agent_text = rules_text()
         for g in spec(EVALS / "cases" / "models-effort-whatever-the-runtime")["graders"][:3]:
             self.assertEqual(g["rule"], rule, g["name"])
             self.assertIn(g["rule"], agent_text, g["name"])
@@ -762,7 +764,7 @@ class CaseLintTest(unittest.TestCase):
     def test_worktree_clone_name_graders_enforce_a_sentence_the_agent_carries(self) -> None:
         """#54: the settings name two repositories and the ready task is one project's, so the worktree call must carry that project's
         name as `--clone <repo>`. Two graders read the call (the name is passed; no other `--clone` value is) and one reads the tree it cut."""
-        agent_text = (EVALS.parent / "agents" / "chief-of-stuff.md").read_text()
+        agent_text = rules_text()
         case = EVALS / "cases" / "worktree-clone-is-a-repos-name"
         s = spec(case)
         self.assertNotIn("golden", s)
@@ -828,7 +830,7 @@ class CaseLintTest(unittest.TestCase):
     def test_disjoint_one_shot_graders_quote_the_agent_file(self) -> None:
         """#365 review R9: every grader that judges a launch quotes a sentence the agent file carries. The launch sentence is the
         background one (its exact text is in test_dispatch_prompt's one-shot lint)."""
-        agent_text = (EVALS.parent / "agents" / "chief-of-stuff.md").read_text()
+        agent_text = rules_text()
         report, export, single, limits, handler, rows = spec(EVALS / "cases" / "one-shot-disjoint-tasks-launch-together")["graders"][:6]
         for g in (report, export, single, limits, handler, rows):
             self.assertIn(g["rule"], agent_text, g["name"])
@@ -897,7 +899,7 @@ class CaseLintTest(unittest.TestCase):
         `processes`: both of those are the helper sentence, which sends liveness to the helper instead of `ps`/`pgrep`. Every grader quotes a
         sentence the agent file carries. No agent sentence says `processes` also answers for one-shot runs; what it lists is
         pinned by test_process_status.py, and a reply that says the run stopped is not graded."""
-        agent_text = (EVALS.parent / "agents" / "chief-of-stuff.md").read_text()
+        agent_text = rules_text()
         launch, asks, listing = spec(EVALS / "cases" / "one-shot-in-flight-is-checked-with-processes")["graders"]
         self.assertIn("Ready means an open, unassigned task", launch["rule"])
         helper = "Use this helper instead of ad hoc `ps` or `pgrep` calls, and do not mark an `unverified` worker gone."
@@ -985,7 +987,7 @@ class CaseLintTest(unittest.TestCase):
         """#56: the three graders that judge how a finished one-shot's report is read quote one sentence, and the agent file
         must carry it. There is no fourth: no rule sentence states what the reply says, so a reply grader would assert the
         author's expected answer. The sentence's "or a host output file" half is asserted by no grader."""
-        agent_text = (EVALS.parent / "agents" / "chief-of-stuff.md").read_text()
+        agent_text = rules_text()
         called, shell, files = spec(EVALS / "cases" / "one-shot-report-is-read-with-result")["graders"]
         rule = ("Read a finished one-shot's report with `chief-of-stuff result --root . --task <task>`, "
                 "never by reading files under its worktree or a host output file.")
@@ -1163,7 +1165,7 @@ class CaseLintTest(unittest.TestCase):
         never needed. A standing row's own session name is what lets it skip the issue rule, so the grader that bars
         `--cwd` no longer bars `--name`: the fixture's Retry budget row is not a standing row, and the rule asks for a
         name only for one."""
-        agent_text = (EVALS.parent / "agents" / "chief-of-stuff.md").read_text()
+        agent_text = rules_text()
         case = EVALS / "cases" / "worker-check-validates-a-new-row"
         s = spec(case)
         check, no_flags, no_tree, no_launch, reply, no_proposal = s["graders"]

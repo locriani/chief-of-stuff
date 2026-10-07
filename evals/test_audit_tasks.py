@@ -20,6 +20,8 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from evals.rules_text import rules_text
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import audit_tasks as al  # noqa: E402
@@ -1597,7 +1599,7 @@ class StageWithNoLaneTest(unittest.TestCase):
         self.assertEqual([str(f) for f in report.lanes], ["lane: Drops out \u2014 stage review but no lane"])
 
     def test_the_agent_file_names_the_clause(self):
-        rules = (Path(__file__).resolve().parents[1] / "agents/chief-of-stuff.md").read_text()
+        rules = rules_text()
         self.assertIn("a lane with no stage, and a stage with no lane.", rules)
 
 
