@@ -226,7 +226,9 @@ def commit_rule(workflow: Workflow, root: Path) -> str:
     if workflow.merge_owner == "worker":
         rule = rule.replace("The merge is the user's alone: you never merge a pull request.",
                             "After the coordinator confirms review and required approvals, merge your pull "
-                            "request and report the resulting main sha.")
+                            f"request and report the resulting main sha. Before you merge, run `chief-of-stuff merge-ready --root {shlex.quote(str(root.resolve()))}`; "
+                            "merge only if your pull request's line says `ready` and its head sha is the one you pushed, "
+                            "and merge with `--match-head-commit <sha>` (GitHub) or the `sha` parameter (GitLab).")
     elif workflow.merge_owner == "approval":
         rule = rule.replace("The merge is the user's alone: you never merge a pull request.",
                             "You never merge a pull request: the coordinator merges it once the user approves it "

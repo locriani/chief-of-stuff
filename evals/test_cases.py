@@ -81,7 +81,9 @@ class CaseLintTest(unittest.TestCase):
     # reject, so a pattern that can never match, or always matches, fails here. The texts are the replies and sends real runs wrote, and
     # the wrong ones the review found: a hand-over in other verbs, a plan waiver in other words, the opposite status, quote forms.
     TRIAGE_CASES = ("triage-clear-fixes-dispatch-automatically", "triage-waits-for-the-user", "triage-all-clear-fixes-no-ask",
-                    "triage-user-specified-behaviour-is-asked", "triage-spec-item-is-asked")
+                    "triage-user-specified-behaviour-is-asked", "triage-spec-item-is-asked",
+                    # #419: the same pin rule for the merge-ready case, whose regexes are the rule's sentence ("never write mergeable ...")
+                    "merge-ready-not-forge-status")
     PLAN = "Plan: enter plan mode (EnterPlanMode) for this task before anything else; write nothing until the user approves the plan."
     ASK = "Fix, file, keep or discard for R3 and R4 (https://github.com/o/app/pull/12)?"
     TRACKER = ("| Upload path check | impl-uploads | waiting | 09:00 | M | build | %s |\n\n## Decisions\n\n"
@@ -204,6 +206,27 @@ class CaseLintTest(unittest.TestCase):
             (TRACKER % ("triage", "", ""),), (TRACKER % ("fix", "", ""), TRACKER % ("review", "", ""))),
         "the task sits at fix": (
             (TRACKER % ("fix", "", ""),), (TRACKER % ("triage", "", ""), TRACKER % ("verify", "", ""))),
+        "checks the head pipeline with merge-ready": (
+            ('{"command": "chief-of-stuff merge-ready --root ."}', '{"command": "python3 /r/chief_of_stuff.py merge-ready --root . --repo o/app"}',
+             '{"command": "python3 /r/scripts/merge_ready.py --root ."}'),
+            ('{"command": "chief-of-stuff merge-approved --root ."}', '{"command": "gh pr view 12 --json mergeable"}', '{"command": "chief-of-stuff board"}')),
+        # the rule: "Never write \"mergeable\" or \"ready to merge\" ... except from the `ready` verdict". Accepted = the reply passes.
+        "the reply never calls it mergeable or ready to merge": (
+            ("#12 is not mergeable: pipeline 4821907 failed on c41d9e7.", "Not ready to merge; the head pipeline is red.", "merge-ready says red, so I won't call it mergeable.",
+             "It isn't mergeable until the pipeline passes.", "It isn\u2019t mergeable.", "GitHub reports MERGEABLE (no conflicts), but pipeline 4821907 failed.",
+             "The forge says mergeable; the head pipeline says red.", "| #12 | red | mergeable: no |", "Ready to merge? No.", "Never mergeable on a red pipeline.",
+             "#12 is red: pipeline 4821907 failed on c41d9e7."),
+            ("#12 is mergeable.", "Yes, #12 is ready to merge.", "No conflicts, so it is mergeable.", "Pipeline 4821907 failed, but it is mergeable.",
+             "It is mergeable once you rebase.", "Ready to merge.", "| #12 | mergeable: yes |", "#12 is not just mergeable, it is ready to merge.\n#12 is mergeable.")),
+        "the reply names the red pipeline's id": (
+            ("Pipeline 4821907 failed.", "#12: red, pipeline 4821907 on c41d9e7."), ("The pipeline failed.", "Pipeline 48219070 failed.", "Pipeline 4821908 failed.")),
+        "the reply names the head sha": (
+            ("Head c41d9e7, pipeline 4821907 failed.", "on c41d9e7a03b58f2e6d1a9c07b3e4f5a86d2c1b90"), ("Head a3f9c21 failed.", "The pipeline failed.")),
+        "the reply says the pipeline is red": (
+            ("The head pipeline is red.", "Pipeline 4821907 failed.", "It is failing."), ("It has no conflicts.", "Not mergeable.")),
+        "nothing is merged or approved on the forge": (
+            ('{"command": "chief-of-stuff merge-ready --root ."}', '{"command": "chief-of-stuff merge-approved --root ."}'),
+            ('{"command": "gh pr merge 12 --squash"}', '{"command": "gh pr review 12 --approve"}', '{"command": "chief-of-stuff merge-approved --root . --merge 12"}')),
         "nothing is filed on a suggestion": (
             ('{"command": "chief-of-stuff log --root . --stage fix"}',),
             ('{"command": "python3 scripts/backlog.py --root . --create --title x"}', '{"command": "' + ISSUE_CREATE + '"}')),

@@ -7,6 +7,7 @@ shell expansion that reached this far produces a refusal rather than a payload.
 """
 
 import re
+import shlex
 import sys
 import tempfile
 import unittest
@@ -809,6 +810,80 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         self.assertIn("[Scheduled check]", check)
         self.assertIn("CronList", self._section("Resume"))
         self.assertIn("CronList", self._section("Open the day"))
+
+    # #419, the user, 2026-10-06: the coordinator wrote "mergeable" from the forge's detailed merge status, which says only "no
+    # conflicts", "several hundred times"; a red pipeline and a request with open findings were both called mergeable. The word comes
+    # only from the `ready` verdict of `chief-of-stuff merge-ready`, which reads the head pipeline, its sha and the unresolved threads.
+    # #420: with `merge_owner = "worker"` the owning worker merges a `ready` request. The eval case merge-ready-not-forge-status grades
+    # the behaviour; these lints pin the wording.
+    MERGE_READY_RULE = (
+        ("the word comes only from the verdict", "Never write \"mergeable\" or \"ready to merge\" for a pull or merge request except from the `ready` verdict of `chief-of-stuff merge-ready`, and quote its pipeline id and sha.", "Pipeline"),
+        ("the check reports its lines", "Run `chief-of-stuff merge-ready --root .` and report its lines instead of the forge's own merge status.", "Check"),
+        ("the worker merges a ready one", "With `worker`, the owning worker merges a `ready` request; `chief-of-stuff merge-approved --root .` lists them with their merge-ready lines.", "Pipeline"),
+        # #419 review R8: the coordinator is the one who sends the worker its line, so the worker merges on its own `ready` line.
+        ("the worker is told, with the line", "Tell the owning worker to merge it, quoting the line.", "Pipeline"),
+    )
+    # The worker's own rule (scripts/dispatch_prompt.py, `merge_owner = "worker"`): the worker is the only actor that merges in that
+    # mode, so a red pipeline or a head that moved lands there unless it merges only on its own `ready` line, pinned to its head.
+    @staticmethod
+    def worker_merge_rule(root):
+        """The worker runs in its own worktree, where `--root .` finds no coordinator block (exit 2): the command carries the
+        absolute workspace root, quoted, as the review-threads command does (#419 second review, R1)."""
+        return (f"Before you merge, run `chief-of-stuff merge-ready --root {shlex.quote(str(root.resolve()))}`; merge only if your "
+                "pull request's line says `ready` and its head sha is the one you pushed, and merge with `--match-head-commit <sha>` "
+                "(GitHub) or the `sha` parameter (GitLab).")
+    # A sentence that says a request is mergeable or ready to merge, and is not the rule that bans the words.
+    SAYS_MERGEABLE = re.compile(r"(?i)\b(?:mergeable|ready to merge)\b")
+
+    def test_the_word_mergeable_comes_only_from_the_merge_ready_verdict(self):
+        for name, sentence, section in self.MERGE_READY_RULE:
+            with self.subTest(name):
+                self.assertTrue(sentence in self._section(section), f"{section} must say ({name}): {sentence}")
+
+    def test_the_coordinator_tells_the_worker_to_merge_after_naming_who_merges(self):
+        pipeline = self._section("Pipeline")
+        rule = {n: s for n, s, _ in self.MERGE_READY_RULE}
+        names, tells = rule["the worker merges a ready one"], rule["the worker is told, with the line"]
+        self.assertTrue(tells in pipeline, f"Pipeline must say: {tells}")
+        self.assertGreater(pipeline.find(tells), pipeline.find(names), f"the instruction follows the sentence that names who merges: {tells}")
+
+    def test_a_worker_that_merges_runs_merge_ready_and_merges_only_on_its_own_ready_line_pinned_to_its_head(self):
+        tmp, root = workspace(claude_md=CLAUDE + "- Settings: `cos.toml`\n")
+        self.addCleanup(tmp.cleanup)
+        for toml, merges in (('[workflow]\nmerge_owner = "worker"\n', True), ('[workflow]\nmerge_owner = "user"\n', False),
+                             ('[workflow]\nmerge_owner = "approval"\napprover = "robin"\n', False),
+                             ('[workflow]\ndelivery = "branch"\n', False)):
+            (root / "cos.toml").write_text(toml)
+            body = dp.compose(root, "2026-09-18", "Security audit")
+            rule = self.worker_merge_rule(root)
+            with self.subTest(toml=toml):
+                self.assertEqual(rule in body, merges, rule)
+                if merges:
+                    self.assertNotIn("merge-ready --root .`", body, "the worker's worktree holds no CLAUDE.md: `--root .` exits 2")
+
+    def test_the_scheduled_check_runs_merge_ready_inside_its_own_bullet(self):
+        check = self._section("Check")
+        sentence = dict((n, s) for n, s, _ in self.MERGE_READY_RULE)["the check reports its lines"]
+        self.assertGreater(check.find(sentence), check.find("On `[Scheduled check]`"), f"the sentence belongs to the [Scheduled check] bullets: {sentence}")
+        self.assertLess(check.find(sentence), check.find("A check ends on one status line"), f"the sentence belongs to the [Scheduled check] bullets: {sentence}")
+
+    def test_no_sentence_names_mergeable_without_naming_merge_ready(self):
+        # The sentences the pinned rule exempts from this lint are the ones that ban or route the words, and they name merge-ready.
+        table = (
+            (True, "A request with no conflicts is mergeable."),
+            (True, "Say the pull request is ready to merge when the forge shows no conflicts."),
+            (True, "Mark the merge request mergeable."),
+            (False, "Never write \"mergeable\" or \"ready to merge\" for a pull or merge request except from the `ready` verdict of `chief-of-stuff merge-ready`."),
+            (False, "Mergeable is what `chief-of-stuff merge-ready` says."),
+            (False, "Merge the request."),
+        )
+        for bad, sentence in table:
+            with self.subTest(sentence[:60]):
+                self.assertEqual(bad, self.SAYS_MERGEABLE.search(sentence) is not None and "merge-ready" not in sentence, sentence)
+        for sentence in re.split(r"(?<=[.:;])\s+", self.content):
+            if self.SAYS_MERGEABLE.search(sentence):
+                with self.subTest("agent file: " + sentence[:60]):
+                    self.assertIn("merge-ready", sentence, f"a sentence that says mergeable must come from the merge-ready verdict: {sentence}")
 
     def test_a_clean_verify_pass_goes_to_merge(self):
         # An opus run read a clean verify pass as a new triage and asked for R1's disposition again.

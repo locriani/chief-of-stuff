@@ -1,89 +1,37 @@
 #!/usr/bin/env python3
-"""List the open pull or merge requests the user approved, and merge one that is ready.
+"""List the open pull or merge requests ready to merge, and merge one that is.
 
     chief-of-stuff merge-approved --root R [--repo owner/name]            list, ready ones first
     chief-of-stuff merge-approved --root R [--repo owner/name] --merge N  merge N, or say what blocks it
 
-The user, 2026-09-26 01:57 (#97): "I want to be able to mark a PR as approved, and you handle merging
-in what I mark approved." Only with `[workflow] merge_owner = "approval"`; `approver` is the user's forge
-username, and no other account's approval counts. Ready is all three: the approver's approval on the
-head commit, a pipeline that passed (or none), and no conflict. The merge names the head it checked,
-so a push after the check fails the merge instead of landing unreviewed code.
+With `[workflow] merge_owner = "approval"` (the user, 2026-09-26 01:57, #97: "I want to be able to mark a PR
+as approved, and you handle merging in what I mark approved."): `approver` is the user's forge username, and
+no other account's approval counts. Ready is all three: the approver's approval on the head commit, a
+pipeline that passed (or none), and no conflict. The merge names the head it checked, so a push after the
+check fails the merge instead of landing unreviewed code.
+
+With `merge_owner = "worker"` (#420): the owning worker merges a request once its reviewer cleared it and its
+head pipeline is green, so this command only lists. Each open request prints its merge-ready line (head sha,
+pipeline id, status and sha, conflicts, unresolved threads), ready ones first, then one line naming the ready
+ones for their owning worker. It never merges and refuses `--merge`. Here a request with no pipeline is not ready: a
+green pipeline on the head sha is what a worker merges on. With `user` merging stays the user's.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import sys
-from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlencode
 
 import backlog
-from forge_review import (GITLAB_PIPELINE, forge, github_approval as _github_approval,
-                          github_pipeline as _github_pipeline)
+from forge_review import NO_PIPELINE, Request, forge, github_requests, gitlab_requests  # noqa: F401  (re-exported)
 from workspace import ConfigError
 from settings import SettingsError
 
 
-@dataclass(frozen=True)
-class Request:
-    number: int
-    title: str
-    url: str
-    head: str
-    approval: str   # approved | stale | none
-    pipeline: str   # passed | failed | running | none
-    mergeable: str  # yes | conflict | the forge's own word
-    approver: str = ""
-
-    @property
-    def blockers(self) -> list[str]:
-        out = {"none": [f"no approval from {self.approver}"],
-               "stale": [f"{self.approver} approved an earlier commit"]}.get(self.approval, [])
-        if self.pipeline in ("failed", "running"):
-            out.append(f"pipeline {self.pipeline}")
-        if self.mergeable != "yes":
-            out.append("conflict" if self.mergeable == "conflict" else f"not mergeable: {self.mergeable}")
-        return out
-
-
-def github_requests(repo: str, approver: str, gh=backlog.run_gh) -> list[Request]:
-    code, out, err = gh(["pr", "list", "-R", repo, "--state", "open", "--limit", "100", "--json",
-                         "number,title,url,headRefOid,reviews,statusCheckRollup,mergeable"])
-    if code != 0:
-        raise RuntimeError(f"gh pr list: {err.strip() or code}")
-    return [Request(p["number"], p["title"], p["url"], p["headRefOid"],
-                    _github_approval(p.get("reviews") or [], approver, p["headRefOid"]),
-                    _github_pipeline(p.get("statusCheckRollup") or []),
-                    {"MERGEABLE": "yes", "CONFLICTING": "conflict"}.get(p.get("mergeable"), "unknown"), approver)
-            for p in json.loads(out)]
-
-
-def gitlab_requests(home: backlog.Backlog, project: str, approver: str, token: str, call=backlog._call) -> list[Request]:
-    # ponytail: GitLab's approvals API names no commit, so an approval counts for the head only when the
-    # project resets approvals on push. Check that project setting once; a per-note sha check if it is off.
-    base = home.api(project)
-    listed, _, err = call("GET", f"{base}/merge_requests?" + urlencode({"state": "opened", "per_page": 100}), token, backlog.TIMEOUT)
-    if err:
-        raise RuntimeError(f"merge requests: {err}")
-    out = []
-    for row in listed:
-        iid = int(row["iid"])
-        mr, _, err = call("GET", f"{base}/merge_requests/{iid}", token, backlog.TIMEOUT)
-        approvals, _, err2 = call("GET", f"{base}/merge_requests/{iid}/approvals", token, backlog.TIMEOUT)
-        if err or err2:
-            raise RuntimeError(f"!{iid}: {err or err2}")
-        names = {(a.get("user") or {}).get("username") for a in approvals.get("approved_by") or []}
-        pipeline = (mr.get("head_pipeline") or {}).get("status")
-        status = mr.get("detailed_merge_status") or ""
-        out.append(Request(iid, mr.get("title", ""), mr.get("web_url", ""), mr.get("sha", ""),
-                           "approved" if approver in names else "none",
-                           "none" if pipeline is None else GITLAB_PIPELINE.get(pipeline, "running"),
-                           "conflict" if mr.get("has_conflicts") else ("yes" if status == "mergeable" else status),
-                           approver))
-    return out
+def blocked(r: Request) -> list[str]:
+    """What stops an approved request, for `approval`: a request with no pipeline stays ready, as its docstring says."""
+    return [b for b in r.blockers if b != NO_PIPELINE]
 
 
 def main(argv: list[str] | None = None, gh=backlog.run_gh, call=backlog._call) -> int:
@@ -97,12 +45,20 @@ def main(argv: list[str] | None = None, gh=backlog.run_gh, call=backlog._call) -
     except (OSError, ConfigError, SettingsError) as exc:
         print(f"merge-approved: {exc}", file=sys.stderr)
         return 2
-    if workflow.merge_owner != "approval":
+    worker = workflow.merge_owner == "worker"
+    if workflow.merge_owner != "approval" and not worker:
         print(f"merge-approved: [workflow] merge_owner is {workflow.merge_owner}; merging on approval is "
               "off, and merging stays the user's", file=sys.stderr)
         return 2
+    if worker and args.merge is not None:
+        print("merge-approved: [workflow] merge_owner is worker; the owning worker merges, this command only lists",
+              file=sys.stderr)
+        return 2
     try:
-        if github:
+        if worker:
+            import merge_ready  # only the worker listing needs it
+            found = merge_ready.read(home, github, repo, gh, call)
+        elif github:
             found = github_requests(repo, workflow.approver, gh)
         else:
             secret = backlog.token(home)
@@ -111,16 +67,23 @@ def main(argv: list[str] | None = None, gh=backlog.run_gh, call=backlog._call) -
         print(f"merge-approved: {exc}", file=sys.stderr)
         return 1
     mark = "#" if github else "!"
+    if worker:
+        for r in sorted(found, key=lambda r: (r.verdict != "ready", r.number)):
+            print(merge_ready.line(r, mark))
+        ready = [f"{mark}{r.number}" for r in found if r.verdict == "ready"]
+        if ready:
+            print("ready for their owning worker to merge: " + " ".join(sorted(ready, key=lambda n: int(n[1:]))))
+        return 0
     if args.merge is None:
-        for r in sorted(found, key=lambda r: (bool(r.blockers), r.number)):
-            print(f"{mark}{r.number} {'ready' if not r.blockers else '; '.join(r.blockers)} · {r.title} · {r.url}")
+        for r in sorted(found, key=lambda r: (bool(blocked(r)), r.number)):
+            print(f"{mark}{r.number} {'ready' if not blocked(r) else '; '.join(blocked(r))} · {r.title} · {r.url}")
         return 0
     one = next((r for r in found if r.number == args.merge), None)
     if one is None:
         print(f"merge-approved: {mark}{args.merge} is not an open request in {repo}", file=sys.stderr)
         return 1
-    if one.blockers:
-        print(f"merge-approved: {mark}{one.number} not merged: {'; '.join(one.blockers)}", file=sys.stderr)
+    if blocked(one):
+        print(f"merge-approved: {mark}{one.number} not merged: {'; '.join(blocked(one))}", file=sys.stderr)
         return 1
     if github:
         # ponytail: squash, as this plugin's own repo merges; a [workflow] merge_method when a workspace differs.

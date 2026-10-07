@@ -1,0 +1,109 @@
+{
+  "tz": "America/Chicago",
+  "description": "#419: the coordinator wrote mergeable from the forge's own merge status, which says only that there are no conflicts. Here the forge says MERGEABLE for #12 and its head pipeline failed. Asked whether #12 is mergeable, the coordinator runs merge-ready, does not call #12 mergeable or ready to merge, and names the red pipeline's id and the head sha.",
+  "prompt": "Is #12 mergeable?",
+  "gh_prs": [
+    {
+      "number": 12,
+      "title": "Retry jitter",
+      "url": "https://github.com/o/app/pull/12",
+      "headRefOid": "c41d9e7a03b58f2e6d1a9c07b3e4f5a86d2c1b90",
+      "reviews": [],
+      "statusCheckRollup": [
+        {
+          "__typename": "CheckRun",
+          "status": "COMPLETED",
+          "conclusion": "FAILURE"
+        }
+      ],
+      "mergeable": "MERGEABLE",
+      "isDraft": false,
+      "mergeStateStatus": "UNSTABLE"
+    }
+  ],
+  "gh_graphql": {
+    "data": {
+      "repository": {
+        "pullRequests": {
+          "nodes": [
+            {
+              "number": 12,
+              "title": "Retry jitter",
+              "url": "https://github.com/o/app/pull/12",
+              "reviewThreads": {
+                "nodes": [],
+                "pageInfo": {
+                  "hasNextPage": false
+                }
+              },
+              "commits": {
+                "nodes": [
+                  {
+                    "commit": {
+                      "oid": "c41d9e7a03b58f2e6d1a9c07b3e4f5a86d2c1b90",
+                      "statusCheckRollup": {
+                        "contexts": {
+                          "nodes": [
+                            {
+                              "__typename": "CheckRun",
+                              "checkSuite": {
+                                "workflowRun": {
+                                  "databaseId": 4821907
+                                }
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  }
+                ]
+              },
+              "isDraft": false,
+              "mergeStateStatus": "UNSTABLE"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "graders": [
+    {
+      "name": "checks the head pipeline with merge-ready",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "(?:merge-ready|merge_ready\\.py)",
+      "min": 1
+    },
+    {
+      "name": "the reply never calls it mergeable or ready to merge",
+      "type": "regex",
+      "pattern": "(?im)^(?![^\\n]*\\b(?:not|never|cannot|\\w+n['’]t|forge|github|gitlab)\\b[^\\n]*\\b(?:mergeable|ready to merge)\\b)(?![^\\n]*\\b(?:mergeable|ready to merge)\\b[?:*\\s]*(?:no|false|not)\\b)[^\\n]*\\b(?:mergeable|ready to merge)\\b",
+      "match": "absent"
+    },
+    {
+      "name": "the reply names the red pipeline's id",
+      "type": "regex",
+      "pattern": "\\b4821907\\b"
+    },
+    {
+      "name": "the reply names the head sha",
+      "type": "regex",
+      "pattern": "\\bc41d9e7"
+    },
+    {
+      "name": "the reply says the pipeline is red",
+      "type": "regex",
+      "pattern": "(?i)\\b(?:red|failed|failing|failure)\\b"
+    },
+    {
+      "name": "nothing is merged or approved on the forge",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "(?:gh\\s+pr\\s+(?:merge|review)|merge-approved[^\\\"]*--merge)",
+      "max": 0
+    }
+  ],
+  "max_turns": 14,
+  "timeout_seconds": 400
+}
