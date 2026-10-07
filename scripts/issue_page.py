@@ -22,7 +22,7 @@ from fragment import href, tab_bar
 from module_graph import section as _graph
 from clock import dur as _dur
 from task_forge import forge_ends
-from tracker import TRAILING_NUMBER, parse_tracker, resolve_due as _resolve_due
+from tracker import TRAILING_NUMBER, issue_number, parse_tracker, resolve_due as _resolve_due
 from workspace import Config, ConfigError, daily_trackers, read_config
 from settings import Graph, SettingsError, load as load_settings
 
@@ -191,7 +191,7 @@ def render(number: int, trackers: list[tuple[date, str]], sources: board_sources
     ref = f"#{number}"
     names = lambda t: {k.strip().casefold() for k in (t.name, t.item) if k.strip()}  # noqa: E731
     known = [t for _, text in trackers for t in parse_tracker(text).tasks]
-    mine = [t for t in known if (m := TRAILING_NUMBER.search(t.issue)) and int(m[1]) == number]
+    mine = [t for t in known if issue_number(t.issue) == number]
     if not mine:
         return None
     keys = set().union(*map(names, mine))
@@ -203,7 +203,7 @@ def render(number: int, trackers: list[tuple[date, str]], sources: board_sources
     # (#200, #220) forge_ends is shared with the board, so both end a row at the same time
     rows = [(s, r) for s, r in flow_chart.build(log, known, lanes or {}, set(), ends, now,
                                                 ended=forge_ends(known, sources, now.tzinfo))
-            if (m := TRAILING_NUMBER.search(r.ref)) and int(m[1]) == number]
+            if issue_number(r.ref) == number]
     log = [m for m in log if m.name.strip().casefold() in keys]
     issue, latest = sources.issues.get(ref), {k: t for t in known for k in names(t)}  # later trackers win
     status = rows[0][0] if rows else mine[-1].kind
