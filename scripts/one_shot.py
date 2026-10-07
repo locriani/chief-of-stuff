@@ -39,27 +39,25 @@ BOOTSTRAP = ("Read {dispatch} first. It is your entire one-shot assignment. Work
 
 def _own_git_dirs(cwd: Path) -> list[str]:
     """The git directories codex may write: a linked worktree's common dir and own gitdir, or a clone's `.git`."""
-    # The worker can rewrite `.git`, `commondir`, and gitfiles, so a path git reports is granted only when it provably belongs to cwd.
-    def rev(flag: str) -> Path | None:
-        try:
-            out = subprocess.run(["git", "-C", str(cwd), "rev-parse", "--path-format=absolute", flag],
-                                 capture_output=True, text=True, check=False, timeout=15)
-        except (OSError, subprocess.TimeoutExpired):
-            return None
-        return Path(out.stdout.strip()).resolve() if out.returncode == 0 and out.stdout.strip() else None
+    # The worker can rewrite `.git`, `commondir`, and gitfiles, so a path is granted only at cwd's own toplevel, where `.git` and git agree.
+    def rev(flag: str) -> Path:
+        out = subprocess.run(["git", "-C", str(cwd), "rev-parse", "--path-format=absolute", flag], env=clean_env(),
+                             capture_output=True, text=True, check=False, timeout=15)
+        return Path(out.stdout.strip()).resolve() if out.returncode == 0 and out.stdout.strip() else Path()
 
-    common, gitdir = rev("--git-common-dir"), rev("--absolute-git-dir")
-    here = cwd.resolve()
-    dotgit = next((d / ".git" for d in (here, *here.parents) if (d / ".git").exists()), None)
-    if not (common and gitdir and dotgit):
+    try:
+        here, top, common, gitdir = cwd.resolve(), rev("--show-toplevel"), rev("--git-common-dir"), rev("--absolute-git-dir")
+        dotgit = here / ".git"
+        if top != here or dotgit.is_symlink() or Path() in (common, gitdir):
+            return []
+        if dotgit.is_dir():  # a normal clone
+            return [str(common)] if dotgit.resolve() == common == gitdir else []
+        # commondir must name `common` and the back-pointer file must name this `.git`; a damaged file raises and grants nothing.
+        owns = (gitdir / (gitdir / "commondir").read_text().strip()).resolve() == common \
+            and (gitdir / (gitdir / "gitdir").read_text().strip()).resolve() == dotgit
+        return [str(common), str(gitdir)] if owns and gitdir.parent == common / "worktrees" else []
+    except (OSError, ValueError, subprocess.TimeoutExpired):
         return []
-    if dotgit.is_dir():  # a normal clone, possibly entered from a subdirectory
-        return [str(common)] if dotgit.resolve() == common == gitdir else []
-    commondir = gitdir / "commondir"
-    if gitdir.parent == common / "worktrees" and commondir.is_file() \
-            and (gitdir / commondir.read_text().strip()).resolve() == common:
-        return [str(common), str(gitdir)]
-    return []
 
 
 def command(runtime: str, binary: str, cwd: Path, dispatch: Path, *, agent_type: str | None,
