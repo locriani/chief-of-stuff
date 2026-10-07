@@ -59,7 +59,7 @@ launcher = "ghostty" # ghostty, tmux, or herdr for interactive workers
 herdr_session = "chief-of-stuff" # herdr only: the dedicated session workers run in
 ```
 
-With `launcher = "herdr"`, each interactive worker starts in its own tab of a dedicated herdr session (default `chief-of-stuff`, name rule `[a-z0-9][a-z0-9_-]{0,31}`), so a worker cannot reach the user's other herdr panes. The worker's environment carries no `HERDR_*` variables. A failed agent start closes the tab.
+With `launcher = "herdr"`, each interactive worker starts in its own tab of a dedicated herdr session (default `chief-of-stuff`, session name rule `[a-z0-9][a-z0-9_-]{0,31}`), which must already be running with an active workspace. Worker names must match `[a-z][a-z0-9_-]{0,31}` verbatim. The launcher's own herdr calls carry no `HERDR_*` variables; herdr sets its own variables inside each pane, and isolation comes from the dedicated session's own socket. Any launch failure after a valid tab id is received attempts to close that tab.
 
 The settings' `[repos]` table maps a repository name to a path relative to the workspace root (`alder = "repo"`). `chief-of-stuff worktree --clone <name>` cuts from that entry; a `--clone` that is no entry's name is a path, as before. The coordinator passes the name when the table names the repository, otherwise the path. Settings that cannot be read are a refusal.
 

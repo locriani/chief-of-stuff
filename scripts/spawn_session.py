@@ -57,7 +57,8 @@ SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "fish", "env", "eval", "exec", "xa
 METACHARACTERS = re.compile(r"[;&|`$<>\n]")
 PLACEHOLDER = re.compile(r"\{(\w+)\}")
 FIELDS = ("cwd", "title", "type", "dispatch", "model", "effort", "root")
-HERDR_TOKEN = re.compile(r"[A-Za-z0-9:_-]{1,64}")
+HERDR_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9:_-]{0,63}")
+HERDR_READY_TIMEOUT_MS = 30_000
 
 
 class RefusedError(ValueError):
@@ -172,8 +173,10 @@ def tmux_command(*, tmux: Path | None, **worker) -> list[str]:
 
 
 def herdr_name(title: str) -> str:
-    """A herdr agent identity, separate from the original tab label and runtime title."""
-    return re.sub(r"[^a-z0-9_-]", "-", title.lower()).lstrip("-_")[:32] or "worker"
+    """Require one unchanged identity for the assignment, registry and herdr agent."""
+    if not isinstance(title, str) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", title):
+        raise RefusedError("herdr agent name must match [a-z][a-z0-9_-]{0,31}; choose a valid --name verbatim")
+    return title
 
 
 def herdr_commands(*, herdr: Path | None, session: str, **worker) -> tuple[list[str], list[str]]:
@@ -182,22 +185,23 @@ def herdr_commands(*, herdr: Path | None, session: str, **worker) -> tuple[list[
         raise RefusedError("herdr launcher is configured but herdr is unavailable on PATH")
     if not HERDR_NAME.fullmatch(session):
         raise RefusedError("[workers] herdr_session must match [a-z0-9][a-z0-9_-]{0,31}")
-    title = worker.get("title") or worker["runtime"]
+    title = worker.get("title")
     name = herdr_name(title)
     prefix = [str(herdr), "--session", session]
     return ([*prefix, "tab", "create", "--cwd", os.path.abspath(worker["cwd"]),
              "--label", title, "--no-focus"],
             [*prefix, "agent", "start", name, "--kind", worker["runtime"],
-             "--pane", "<root-pane>", "--", *runtime_tokens(**worker)])
+             "--pane", "<root-pane>", "--timeout", str(HERDR_READY_TIMEOUT_MS),
+             "--", *runtime_tokens(**worker)])
 
 
 def launch_herdr(create: list[str], start: list[str]) -> None:
     """Treat CLI output as data; close the created tab if the agent cannot start."""
     env = {k: v for k, v in launch_env().items() if not k.upper().startswith("HERDR_")}
 
-    def run(command: list[str], action: str):
+    def run(command: list[str], action: str, *, timeout: float = 30):
         try:
-            out = subprocess.run(command, text=True, capture_output=True, timeout=30, env=env)
+            out = subprocess.run(command, text=True, capture_output=True, timeout=timeout, env=env)
         except subprocess.TimeoutExpired:
             raise RefusedError(f"herdr {action} timed out") from None
         except (OSError, UnicodeError) as exc:
@@ -216,16 +220,18 @@ def launch_herdr(create: list[str], start: list[str]) -> None:
     if not isinstance(result, dict):
         raise RefusedError("herdr tab create JSON has no result containing a root pane")
     tab = result.get("tab")
+    tab = tab.get("tab_id") if isinstance(tab, dict) else None
     if not isinstance(tab, str) or not HERDR_TOKEN.fullmatch(tab):
         raise RefusedError("herdr tab create JSON has no valid tab id")
     try:
         pane = result.get("root_pane")
+        pane = pane.get("pane_id") if isinstance(pane, dict) else None
         if not isinstance(pane, str) or not HERDR_TOKEN.fullmatch(pane):
             raise RefusedError("herdr tab create JSON has no valid root pane id")
         command = list(start)
         command[command.index("--pane") + 1] = pane
-        run(command, "agent start")
-    except (RefusedError, OSError, ValueError):
+        run(command, "agent start", timeout=HERDR_READY_TIMEOUT_MS / 1000 + 5)
+    except Exception:
         try:
             run([*create[:3], "tab", "close", tab], "tab close")
         except RefusedError as exc:
