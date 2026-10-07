@@ -22,7 +22,7 @@ from fragment import esc
 from tracker import WORKFLOW, change_keys, issue_key, launch_row, launcher
 # The Log line grammar and the moves read with it live in tracker_log.py, which draws nothing. `moves` is imported
 # here as well, so `flow_chart.moves` still names it.
-from tracker_log import Move, moves  # noqa: F401
+from tracker_log import RELAUNCH_STAGE, Move, moves  # noqa: F401
 
 H = timedelta(hours=1)
 # (title, behind now, ahead of now), after the Flow artboard.
@@ -133,12 +133,28 @@ def build(log: list[Move], tasks, lanes: dict, held: set[str], ends: dict[str, d
                 stop = last.at
         finish = task and (ended or {}).get(task.name.strip())
         is_held = bool(task and task.name.strip() in held)
+        boundary = last.at
+        # A launcher stop ends its run but leaves the row at its prior working stage.
+        mine = [m for m in mine if not (m.launch and m.stage == RELAUNCH_STAGE)]
+        last = mine[-1]
         # #227: a held row's last stage bar ends at its own last move — no dangling bar reading as work
         # in progress — and the hold bar alone carries it from now through the window.
-        segs = [gantt.Segment(m.at, e, m.stage, "done", owner(key, m.at, task))
-                for m, nxt in zip(mine, mine[1:] + [None])
-                if m.stage not in terminal and m.stage != "relaunch"
-                and (nxt is not None or not is_held) and (e := nxt.at if nxt else stop) > m.at]
+        segs = []
+        for m, nxt in zip(mine, mine[1:] + [None]):
+            if m.stage in terminal:
+                continue
+            e = nxt.at if nxt else stop
+            if m.launch and m.stage == "implement":
+                # Concurrent launches have separate boundaries and retain their own worker titles.
+                run = next(r for r in runs[key] if r[0] == m.worker and r[1] == m.at)
+                e = min(run[2] or stop, first.get(key, stop))
+                if is_held:
+                    e = min(e, boundary)
+            elif nxt is None and is_held:
+                continue
+            if e > m.at:
+                segs.append(gantt.Segment(m.at, e, m.stage, "done",
+                                          m.worker if m.launch and m.stage == "implement" else owner(key, m.at, task)))
         if finish:
             at, word = finish
             segs = [replace(g, end=min(g.end, at)) for g in segs if g.start < at]

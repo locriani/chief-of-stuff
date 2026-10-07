@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 COMPLETED = "completed; awaiting integration"
 HUMAN_REVIEW = "HUMAN REVIEW NEEDED"
 RELAUNCHED = ": relaunch requested for {task} — "
+RELAUNCH_STAGE = "relaunch"
 
 STAGE = re.compile(r"^- (\d{1,2}):(\d{2}) stage: (.+) → (\S+)\s*$")
 STARTED = re.compile(r"^- (\d{1,2}):(\d{2}) one-shot (\S+) started: .*, task (.+?)\s*$")
@@ -87,6 +88,8 @@ def moves(text: str, day: date, zone: ZoneInfo) -> list[Move]:
             task_of[m[3]] = m[4]
             out.append(Move(at, m[4], "implement", True, line, m[3]))
         elif m[3] in task_of:
-            stage = "relaunch" if m.re is RELAUNCH else "pr" if m[4].startswith("completed") else "review"
+            if m.re is RELAUNCH and not line[m.end():].startswith(f"{task_of[m[3]]} — "):
+                continue
+            stage = RELAUNCH_STAGE if m.re is RELAUNCH else "pr" if m[4].startswith("completed") else "review"
             out.append(Move(at, task_of.pop(m[3]), stage, True, line, m[3]))
     return out
