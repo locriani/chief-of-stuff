@@ -14,6 +14,7 @@ import stat
 import subprocess
 from pathlib import Path
 
+import git_view
 from shell_setup import clean_env
 from tree_state import TreeState
 
@@ -197,15 +198,7 @@ def _has_grafts(tree: Path) -> bool | None:
     return stat.S_ISREG(info.st_mode) and info.st_size > 0
 
 
-def read_regular(path: Path, limit: int, nofollow: bool = False) -> bytes | None:
-    """At most `limit` bytes of `path`, or None when it is not a regular file (decided on the opened one, so a swap after
-    the open cannot matter). For a file a worker can write: `O_NONBLOCK`, so opening a FIFO cannot block; `nofollow` refuses
-    a symlink (an `OSError`, as is any open or read that fails)."""
-    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | (os.O_NOFOLLOW if nofollow else 0))
-    try:
-        return os.read(fd, limit) if stat.S_ISREG(os.fstat(fd).st_mode) else None
-    finally:
-        os.close(fd)
+read_regular = git_view.read_regular
 
 
 def _pruned_common(tree: Path) -> Path | None:
