@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import runtimes
+import git_trees
 from shell_setup import clean_env, exec_login, resolve
 
 
@@ -59,7 +60,8 @@ def main(argv: list[str] | None = None) -> int:
             resume.error("codex is unavailable on PATH")
         path = options.root / ".chief-of-stuff" / "sessions" / f"{options.name}.json"
         register(path, runtime="codex", name=options.name, worktree=str(options.worktree), pid=os.getpid())
-        command = [binary, "resume", options.session_id, "-C", str(options.worktree), "-s", "workspace-write"]
+        command = [binary, "resume", options.session_id, "-C", str(options.worktree), "-s", "workspace-write",
+                   *git_trees.codex_add_dir_args(options.worktree)]
         exec_login(command)
     if argv and argv[0] == "list":
         listing = argparse.ArgumentParser(description="List registered non-Claude workers and liveness")

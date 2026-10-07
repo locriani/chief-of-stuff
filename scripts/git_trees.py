@@ -14,6 +14,7 @@ import stat
 import subprocess
 from pathlib import Path
 
+from shell_setup import clean_env
 from tree_state import TreeState
 
 # Replace refs and grafts both rewrite parents, so neither may make a yes.
@@ -275,3 +276,31 @@ def _verdict(sha: str, tree: Path, fetch_error: str, commits: list[str] | None) 
         if local_code == 0:
             line = f"sha {sha}: on local main only, not pushed to {BASE} {tip} (fetched)"
     return code, line, held
+
+
+def _own_git_dirs(cwd: Path) -> list[str]:
+    """The git directories codex may write: a linked worktree's common dir and own gitdir, or a clone's `.git`."""
+    # The worker can rewrite `.git`, `commondir`, and gitfiles, so a path is granted only at cwd's own toplevel, where `.git` and git agree.
+    def rev(flag: str) -> Path:
+        out = subprocess.run(["git", "-C", str(cwd), "rev-parse", "--path-format=absolute", flag], env=clean_env(),
+                             capture_output=True, text=True, check=False, timeout=15)
+        return Path(out.stdout.strip()).resolve() if out.returncode == 0 and out.stdout.strip() else Path()
+
+    try:
+        here, top, common, gitdir = cwd.resolve(), rev("--show-toplevel"), rev("--git-common-dir"), rev("--absolute-git-dir")
+        dotgit = here / ".git"
+        if top != here or dotgit.is_symlink() or Path() in (common, gitdir):
+            return []
+        if dotgit.is_dir():  # a normal clone
+            return [str(common)] if dotgit.resolve() == common == gitdir else []
+        # commondir must name `common` and the back-pointer file must name this `.git`; a damaged file raises and grants nothing.
+        owns = (gitdir / (gitdir / "commondir").read_text().strip()).resolve() == common \
+            and (gitdir / (gitdir / "gitdir").read_text().strip()).resolve() == dotgit
+        return [str(common), str(gitdir)] if owns and gitdir.parent == common / "worktrees" else []
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return []
+
+
+def codex_add_dir_args(cwd: Path) -> list[str]:
+    """The `--add-dir` argv that grants codex the validated git directories (#428)."""
+    return [a for d in _own_git_dirs(cwd) for a in ("--add-dir", d)]
