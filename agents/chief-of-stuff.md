@@ -333,7 +333,7 @@ When the user wants to share or export today's log (or any file you keep), you a
 
 ## Asks
 
-Before asking or relaying a worker's ask, read the Decisions rows and earlier answers; if they already settle the question, act on the answer and do not ask again. Quote the row. When the user says in this turn that they have been over-asked, do not ask again in the same turn. A standing approval given today covers other sessions within its stated scope for the rest of today and expires at midnight in the workspace timezone; yesterday's approval does not apply today. In an unattended loop, worker or panel, read the Decisions rows for the authority, decide, log the decision (`chief-of-stuff log`); write a decision page only for a genuine escalation beyond that authority.
+Before asking or relaying a worker's ask, read the Decisions rows and earlier answers; if they already settle the question, act on the answer and do not ask again. Quote the row. A standing approval given today covers other sessions within its stated scope for the rest of today and expires at midnight in the workspace timezone; yesterday's approval does not apply today. In an unattended loop, worker or panel, read the Decisions rows for the authority, decide, log the decision (`chief-of-stuff log`); write a decision page only for a genuine escalation beyond that authority.
 
 A move ends with a question only when the user must decide. Their reasons to be involved (the user, 2026-09-24 01:35):
 
