@@ -998,6 +998,88 @@ class RelaunchStopTest(unittest.TestCase):
             ("pr", at(TODAY, "01:00"), NOW, "done")])
 
 
+class RelaunchReviewPassTwoTest(unittest.TestCase):
+    """#470: run boundaries, launch identity, and controls for the resolved successor rule."""
+
+    def tracker(self):
+        return flow_launch_tracker([("Check parser", "Check parser", "#701")],
+                                   [("Check parser", "worker-1", "00:10")])
+
+    def launch(self, text, worker, clock):
+        return tw.append_log(text, tl.started_line(clock, worker, "codex", "gpt-test",
+                                                  "worktree `trees/retry` (retry)", "Check parser"))
+
+    def row(self, text, held=()):
+        built = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(held), {}, NOW)
+        self.assertEqual([r.name for _, r in built], ["Check parser"])
+        return built[0][1]
+
+    def worker_bars(self, row):
+        return [(g.start, g.end, g.title) for g in row.segments if g.category == "implement" and g.kind == "done"]
+
+    def test_a_held_row_with_an_open_worker_draws_only_the_hold_bar(self):
+        text = self.tracker().replace("| worker-1 | running 00:10 |", "| Robin | waiting |")
+        for held in (False, True):
+            with self.subTest(held=held):
+                row = self.row(text, {"Check parser"} if held else set())
+                self.assertEqual([(g.category, g.start, g.end, g.kind, g.title) for g in row.segments],
+                                 [("implement", NOW, NOW + fc.WINDOWS[-1][2], "hold", "worker-1")] if held else
+                                 [("implement", at(TODAY, "00:10"), NOW, "done", "worker-1")])
+
+    def test_simultaneous_launch_bars_name_each_launching_worker_despite_the_current_owner(self):
+        text = self.launch(self.tracker(), "worker-2", "00:10")
+        text = text.replace("| worker-1 | running 00:10 |", "| Robin | open |")
+        text = tw.append_log(text, tl.relaunch_line("00:40", "worker-1", "Check parser", "base moved"))
+        text = tw.append_log(text, tl.relaunch_line("00:50", "worker-2", "Check parser", "base moved"))
+        self.assertEqual(rb.parse_tracker(text).tasks[0].shown_owner, "Robin")
+        self.assertEqual(self.worker_bars(self.row(text)), [
+            (at(TODAY, "00:10"), at(TODAY, "00:40"), "worker-1"),
+            (at(TODAY, "00:10"), at(TODAY, "00:50"), "worker-2")])
+
+    def test_a_relaunch_closes_the_latest_of_two_open_runs_with_the_same_worker_name(self):
+        text = self.launch(self.tracker(), "worker-1", "01:00")
+        text = tw.append_log(text, tl.relaunch_line("01:20", "worker-1", "Check parser", "base moved"))
+        bars = self.worker_bars(self.row(text))
+        self.assertEqual(len(bars), 2)
+        self.assertEqual(bars[1], (at(TODAY, "01:00"), at(TODAY, "01:20"), "worker-1"))
+        self.assertNotEqual(bars[0][1], at(TODAY, "01:20"), "the latest stop must not close the first run")
+
+    def test_an_open_launch_run_on_a_done_task_ends_at_its_done_clock(self):
+        text = self.tracker().replace("| running 00:10 |", "| done 00:40 |")
+        # Reconciliation records the terminal stage later than the actual task completion.
+        # That later stage must not hide a fallback from the task's stop clock to now.
+        text = tw.append_log(text, tl.stage_line("01:00", "Check parser", "main"))
+        self.assertEqual(self.worker_bars(self.row(text)),
+                         [(at(TODAY, "00:10"), at(TODAY, "00:40"), "worker-1")])
+
+    def test_a_successor_closes_a_run_without_an_explicit_end_or_stop(self):
+        for worker in ("worker-2", "worker-1"):
+            with self.subTest(successor=worker):
+                text = self.launch(self.tracker(), worker, "01:00")
+                self.assertEqual(self.worker_bars(self.row(text)), [
+                    (at(TODAY, "00:10"), at(TODAY, "01:00"), "worker-1"),
+                    (at(TODAY, "01:00"), NOW, worker)])
+
+    def test_a_later_explicit_end_preserves_overlap_with_a_same_task_successor(self):
+        for status in ("done", "human_review"):
+            with self.subTest(status=status):
+                text = self.launch(self.tracker(), "worker-2", "01:00")
+                text = tw.append_log(text, tl.ended_line("01:20", "worker-1", status, "finished", "parser.py"))
+                self.assertEqual(self.worker_bars(self.row(text)), [
+                    (at(TODAY, "00:10"), at(TODAY, "01:20"), "worker-1"),
+                    (at(TODAY, "01:00"), NOW, "worker-2")])
+
+    def test_launches_on_different_tasks_can_overlap_without_explicit_ends(self):
+        text = flow_launch_tracker([("Check parser", "Check parser", "#701"),
+                                    ("Check formatter", "Check formatter", "#702")],
+                                   [("Check parser", "worker-1", "00:10"),
+                                    ("Check formatter", "worker-2", "01:00")])
+        built = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(), {}, NOW)
+        self.assertEqual({r.name: self.worker_bars(r) for _, r in built}, {
+            "Check parser": [(at(TODAY, "00:10"), NOW, "worker-1")],
+            "Check formatter": [(at(TODAY, "01:00"), NOW, "worker-2")]})
+
+
 class GrownLaunchRowTest(unittest.TestCase):
     """#455 sits beside #182: growing an item must keep the launch on its original Flow row."""
 

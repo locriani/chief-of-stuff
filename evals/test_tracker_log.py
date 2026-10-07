@@ -4,6 +4,7 @@ import sys
 import unittest
 from datetime import date, time
 from pathlib import Path
+from unittest import mock
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
@@ -190,6 +191,29 @@ class RelaunchStopTest(unittest.TestCase):
         right = tl.relaunch_line("10:30", "worker01", "Check parser", "base moved")
         text = f"## Log\n\n{started}\n{wrong}\n{right}\n"
         self.assertEqual([m.line for m in tl.moves(text, DAY, CT)], [started, right])
+
+    def test_a_longer_task_with_the_same_prefix_does_not_consume_the_launch(self):
+        started = tl.started_line("09:15", "worker01", "codex", "gpt-test", TREE, "Check parser")
+        right = tl.relaunch_line("10:30", "worker01", "Check parser", "base moved")
+        # Merely accepting the task prefix would consume the run before its real stop.
+        for other_task in ("Check parser extra", "Check parser — extra"):
+            with self.subTest(other_task=other_task):
+                wrong = tl.relaunch_line("10:20", "worker01", other_task, "base moved")
+                text = f"## Log\n\n{started}\n{wrong}\n{right}\n"
+                self.assertEqual([m.line for m in tl.moves(text, DAY, CT)], [started, right])
+
+    def test_stop_matching_uses_the_relaunch_formatters_task_suffix(self):
+        started = tl.started_line("09:15", "worker01", "codex", "gpt-test", TREE, "Check parser")
+        # Keep RELAUNCH's recognized prefix fixed, but vary the formatter's suffix to detect a
+        # separately hand-written task delimiter in the reader. The unmodified template is a control.
+        for template in (tl.RELAUNCHED, tl.RELAUNCHED.replace(" — ", " :: ")):
+            with self.subTest(template=template), mock.patch.object(tl, "RELAUNCHED", template):
+                stopped = f"- 10:20 one-shot worker01{tl.RELAUNCHED.format(task='Check parser')}base moved."
+                self.assertIsNotNone(tl.RELAUNCH.match(stopped))
+                got = tl.moves(f"## Log\n\n{started}\n{stopped}\n", DAY, CT)
+                self.assertEqual([(m.at.time(), m.name, m.worker, m.line) for m in got], [
+                    (time(9, 15), "Check parser", "worker01", started),
+                    (time(10, 20), "Check parser", "worker01", stopped)])
 
 
 if __name__ == "__main__":
