@@ -337,6 +337,11 @@ def _opened(path: Path, env: dict[str, str], base: Path | None, deadline: float)
         child_env = {**env, "GIT_DIR": str(directory)}
         if layout.tree is not None:
             child_env.update(GIT_WORK_TREE=str(layout.tree), GIT_INDEX_FILE=str(directory / "index"))
+            # Older Git can trust copied fsmonitor-valid bits despite core.fsmonitor=false.
+            index = _run(["update-index", "--no-fsmonitor"], cwd=directory, env=child_env,
+                         timeout=_remaining(deadline))
+            if index.returncode:
+                raise Unviewable("index fsmonitor state cannot be cleared")
         view = View(layout, child_env)
     except BaseException:
         shutil.rmtree(directory, ignore_errors=True)
