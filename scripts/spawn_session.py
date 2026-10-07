@@ -20,7 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import dispatch_prompt  # noqa: E402
 import runtimes  # noqa: E402
-from settings import SettingsError, load as load_settings  # noqa: E402
+from settings import HERDR_NAME, SettingsError, load as load_settings  # noqa: E402
 from shell_setup import ShellError, resolve  # noqa: E402
 
 ENV = "CHIEF_OF_STUFF_LAUNCHER"
@@ -57,6 +57,7 @@ SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "fish", "env", "eval", "exec", "xa
 METACHARACTERS = re.compile(r"[;&|`$<>\n]")
 PLACEHOLDER = re.compile(r"\{(\w+)\}")
 FIELDS = ("cwd", "title", "type", "dispatch", "model", "effort", "root")
+HERDR_TOKEN = re.compile(r"[A-Za-z0-9:_-]{1,64}")
 
 
 class RefusedError(ValueError):
@@ -170,6 +171,68 @@ def tmux_command(*, tmux: Path | None, **worker) -> list[str]:
             "-n", worker.get("title") or worker["runtime"], *tokens]
 
 
+def herdr_name(title: str) -> str:
+    """A herdr agent identity, separate from the original tab label and runtime title."""
+    return re.sub(r"[^a-z0-9_-]", "-", title.lower()).lstrip("-_")[:32] or "worker"
+
+
+def herdr_commands(*, herdr: Path | None, session: str, **worker) -> tuple[list[str], list[str]]:
+    """Create a tab, then start exact worker argv in its JSON root pane."""
+    if herdr is None:
+        raise RefusedError("herdr launcher is configured but herdr is unavailable on PATH")
+    if not HERDR_NAME.fullmatch(session):
+        raise RefusedError("[workers] herdr_session must match [a-z0-9][a-z0-9_-]{0,31}")
+    title = worker.get("title") or worker["runtime"]
+    name = herdr_name(title)
+    prefix = [str(herdr), "--session", session]
+    return ([*prefix, "tab", "create", "--cwd", os.path.abspath(worker["cwd"]),
+             "--label", title, "--no-focus"],
+            [*prefix, "agent", "start", name, "--kind", worker["runtime"],
+             "--pane", "<root-pane>", "--", *runtime_tokens(**worker)])
+
+
+def launch_herdr(create: list[str], start: list[str]) -> None:
+    """Treat CLI output as data; close the created tab if the agent cannot start."""
+    env = {k: v for k, v in launch_env().items() if not k.upper().startswith("HERDR_")}
+
+    def run(command: list[str], action: str):
+        try:
+            out = subprocess.run(command, text=True, capture_output=True, timeout=30, env=env)
+        except subprocess.TimeoutExpired:
+            raise RefusedError(f"herdr {action} timed out") from None
+        except (OSError, UnicodeError) as exc:
+            raise RefusedError(f"herdr {action} failed: {str(exc)[:1000]}") from None
+        if out.returncode != 0:
+            detail = " ".join(CONTROL.sub("", out.stderr[:1000]).split())
+            raise RefusedError(f"herdr {action} failed (exit {out.returncode}): {detail}")
+        return out
+
+    out = run(create, "tab create")
+    try:
+        reply = json.loads(out.stdout)
+    except (ValueError, RecursionError):
+        raise RefusedError("herdr tab create returned invalid JSON; no root pane") from None
+    result = reply.get("result") if isinstance(reply, dict) else None
+    if not isinstance(result, dict):
+        raise RefusedError("herdr tab create JSON has no result containing a root pane")
+    tab = result.get("tab")
+    if not isinstance(tab, str) or not HERDR_TOKEN.fullmatch(tab):
+        raise RefusedError("herdr tab create JSON has no valid tab id")
+    try:
+        pane = result.get("root_pane")
+        if not isinstance(pane, str) or not HERDR_TOKEN.fullmatch(pane):
+            raise RefusedError("herdr tab create JSON has no valid root pane id")
+        command = list(start)
+        command[command.index("--pane") + 1] = pane
+        run(command, "agent start")
+    except (RefusedError, OSError, ValueError):
+        try:
+            run([*create[:3], "tab", "close", tab], "tab close")
+        except RefusedError as exc:
+            print(f"cleanup: {exc}", file=sys.stderr)
+        raise
+
+
 def ghostty_script(*, cwd: str, agent_type: str | None, claude: Path | None, title: str | None = None,
                    runtime: str = "claude", model: str = "", effort: str = "", workspace: str = ".") -> str:
     """Build a Ghostty tab script with an absolute binary and the launching shell's PATH."""
@@ -208,10 +271,10 @@ EFFORTS = ("", "low", "medium", "high", "xhigh", "max")
 CHECK_TREE = Path("<worktree>")  # --check makes no tree; the one-shot assignment still names one
 
 
-def assignment(args, one_shot: bool, worktree: Path | None) -> str:
+def assignment(args, one_shot: bool, worktree: Path | None, *, name: str | None = None) -> str:
     """The assignment a dispatch composes from its flags: one path for a launch and for --check."""
     return dispatch_prompt.compose(Path(args.root), args.date, args.task, worktree=worktree, coordinator=args.coordinator,
-                                   name=args.title, runtime=args.runtime, one_shot=one_shot)
+                                   name=args.title if name is None else name, runtime=args.runtime, one_shot=one_shot)
 
 
 def main(argv_in: list[str] | None = None) -> int:
@@ -228,7 +291,7 @@ def main(argv_in: list[str] | None = None) -> int:
                     help="claude (default), agy, codex, or cursor")
     ap.add_argument("--class", dest="model_class",
                     help="a [models] task class; with no --model or --runtime, launch its suggested entry")
-    ap.add_argument("--launcher", choices=("ghostty", "tmux"),
+    ap.add_argument("--launcher", choices=("ghostty", "tmux", "herdr"),
                     help="terminal launcher; default: [workers] launcher in workspace settings, then ghostty")
     ap.add_argument("--model", default="", help="model id; required for agy")
     ap.add_argument("--effort", default="",
@@ -313,8 +376,9 @@ def main(argv_in: list[str] | None = None) -> int:
 
     override = os.environ.get(ENV)
     try:
-        body = assignment(args, False, Path(args.cwd))
         selected = args.launcher or worker_settings.launcher
+        body = assignment(args, False, Path(args.cwd),
+                          name=herdr_name(args.title) if selected == "herdr" and not override else args.title)
         # The eval harness uses the argv override.
         worker = dict(cwd=args.cwd, agent_type=args.agent_type, title=args.title, runtime=args.runtime,
                       model=args.model, effort=args.effort, workspace=args.root)
@@ -327,6 +391,12 @@ def main(argv_in: list[str] | None = None) -> int:
                                    binary=Path(p) if (p := resolve(runtime.binary)) else None,
                                    **worker)
             script = None
+        elif selected == "herdr":
+            command, agent_command = herdr_commands(
+                herdr=Path(p) if (p := resolve("herdr")) else None,
+                session=worker_settings.herdr_session,
+                binary=Path(p) if (p := resolve(runtime.binary)) else None, **worker)
+            script = None
         else:
             command = [OSASCRIPT, "-"]
             script = ghostty_script(claude=Path(p) if (p := resolve(runtime.binary)) else None,
@@ -338,6 +408,8 @@ def main(argv_in: list[str] | None = None) -> int:
     if args.dry_run:
         # Keep each argv token intact if the preview is copied into a shell.
         print("would run: " + " ".join(shlex.quote(t) for t in command))
+        if not override and selected == "herdr":
+            print("would run: " + " ".join(shlex.quote(t) for t in agent_command))
         if script:
             print("would ask Ghostty for a tab:")
             print(script.rstrip())
@@ -362,6 +434,9 @@ def main(argv_in: list[str] | None = None) -> int:
                 written.unlink(missing_ok=True)
                 return 1
             where = "a new tmux window"
+        elif selected == "herdr":
+            launch_herdr(command, agent_command)
+            where = f"a new herdr tab in session {worker_settings.herdr_session}"
         else:
             # Pass AppleScript on stdin to avoid another quoting layer.
             out = subprocess.run(command, input=script, text=True, capture_output=True,
