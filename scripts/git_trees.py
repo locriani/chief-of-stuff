@@ -33,10 +33,16 @@ REF = f"refs/remotes/{BASE}"  # the full name: a branch, tag or `refs/origin/mai
 def audit_env() -> dict[str, str]:
     """The environment of every git call that audits a worker-writable tree. Fresh each call.
 
-    No home, global or system config is read. The repository's own config is still read, and is tracked separately.
+    No home, global or system config is read (a system-level `safe.directory`, for one, no longer applies to audit
+    calls). The repository's own config is still read, and is tracked separately.
     """
     return {**GIT_ENV, "PATH": "/usr/bin:/bin:/usr/local/bin", "HOME": SAFE_HOME, "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_CONFIG_SYSTEM": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+
+
+def user_env() -> dict[str, str]:
+    """The caller's own environment, for calls that run the user's own hooks and need the user's credentials; never for reading a worker-writable tree."""
+    return {**{k: v for k, v in os.environ.items() if k not in REPO_VARS}, "GIT_TERMINAL_PROMPT": "0"}
 
 
 def git(args: list[str], cwd: Path) -> tuple[int, str]:
@@ -109,13 +115,12 @@ def fetch_base(tree: Path, timeout: int = 30) -> str:
     explicit and forced, so the ref moves whatever `remote.origin.fetch` says and follows a rewritten main, and
     `--no-tags` keeps it the only ref written. Not through `git()`: a fetch needs the caller's credentials and ssh
     agent, which that sandboxed call strips. A fetch that loses a race for the ref (`cannot lock ref`) runs once more."""
-    env = {k: v for k, v in os.environ.items() if k not in REPO_VARS}
     try:
         for _ in range(2):  # a concurrent fetch holding the ref has moved it by the second try
             out = subprocess.run(
                 ["git", "-C", str(tree), "fetch", "-q", "--no-tags", "origin", f"+refs/heads/main:{REF}"],
                 capture_output=True, text=True, errors="backslashreplace", timeout=timeout,  # stderr from ssh or a helper may hold any byte
-                env={**env, "GIT_TERMINAL_PROMPT": "0"},
+                env=user_env(),
             )
             if out.returncode == 0 or "cannot lock ref" not in out.stderr:
                 break

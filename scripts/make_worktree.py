@@ -41,19 +41,22 @@ class Made:
     sha: str  # the base commit, short
 
 
-def git(args: list[str], cwd: Path) -> tuple[int, str]:
-    """Run a bounded Git command without a shell."""
+def _run(args: list[str], cwd: Path, env: dict[str, str]) -> tuple[int, str]:
     try:
-        out = subprocess.run(
-            ["git", "-C", str(cwd), *args],
-            capture_output=True,
-            text=True,
-            timeout=GIT_TIMEOUT,
-            env=git_trees.audit_env(),
-        )
+        out = subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True, timeout=GIT_TIMEOUT, env=env)
     except (OSError, subprocess.SubprocessError) as exc:
         return 1, f"{type(exc).__name__}: {exc}"
     return out.returncode, (out.stdout or out.stderr).strip()
+
+
+def git(args: list[str], cwd: Path) -> tuple[int, str]:
+    """Run a bounded Git read without a shell, on the audit env."""
+    return _run(args, cwd, git_trees.audit_env())
+
+
+def git_trusted(args: list[str], cwd: Path) -> tuple[int, str]:
+    """Run a bounded Git command that runs the clone's own hooks, in the user's environment."""
+    return _run(args, cwd, git_trees.user_env())
 
 
 def agent_types(claude_md: str) -> dict[str, str]:
@@ -140,7 +143,7 @@ def build(root: Path, clone: Path, trees: str, name: str, branch: str, agent_typ
         except RefusedError as exc:
             raise RefusedError(f"{exc}; no local main" if no_main else f"{exc}; --from-local cuts from local main ({local}) instead") from None
         path.parent.mkdir(parents=True, exist_ok=True)
-        code, detail = git(["worktree", "add", "--no-track", "-b", branch, "--", str(path), ref], clone)
+        code, detail = git_trusted(["worktree", "add", "--no-track", "-b", branch, "--", str(path), ref], clone)
         if code != 0:
             raise RefusedError(f"git worktree add failed: {detail}")
         sha = r[1] if (r := git(["rev-parse", "--short", "HEAD"], path))[0] == 0 else "?"  # not git's error text
