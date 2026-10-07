@@ -65,6 +65,10 @@ def gpr(number, checks=OK, mergeable="MERGEABLE", draft=False, state="CLEAN"):
     return tma.pr(number, [], checks=checks, mergeable=mergeable, draft=draft, state=state)
 
 
+def without(row, key):
+    return {k: v for k, v in row.items() if k != key}
+
+
 # number -> (the pull request, the graphql node, the verdict)
 GITHUB = {
     21: (gpr(21), tma.graphql_node(21), "ready"),
@@ -89,6 +93,13 @@ GITHUB = {
     39: (gpr(39), tma.graphql_node(39, [True] * 100, more=True), "unverified"),
     40: (gpr(40, mergeable="CONFLICTING", draft=True), tma.graphql_node(40), "conflicts"),
     41: (gpr(41, state="UNKNOWN"), tma.graphql_node(41), "blocked"),
+    # #419 second review: no mergeStateStatus at all is UNKNOWN (R3); a draft seen by one read only is a draft (R5); a thread
+    # read that says more follow and carries none is cut off (R6)
+    42: (without(gpr(42), "mergeStateStatus"), tma.graphql_node(42), "blocked"),
+    43: ({**gpr(43), "mergeStateStatus": None}, tma.graphql_node(43), "blocked"),
+    44: (gpr(44), {**tma.graphql_node(44), "isDraft": True}, "draft"),
+    45: (gpr(45, draft=True), {**tma.graphql_node(45), "isDraft": False}, "draft"),
+    46: (gpr(46), tma.graphql_node(46, [], more=True), "unverified"),
 }
 
 
@@ -209,6 +220,30 @@ class GitHubReadyTest(unittest.TestCase):
                 self.assertEqual(got == "passed", want, got)
         self.assertEqual(fr.github_pipeline([{"__typename": "CheckRun", "status": "IN_PROGRESS", "conclusion": ""}]), "running")
 
+    def test_a_pull_request_with_no_merge_state_is_blocked_as_unknown_and_never_ready(self):
+        # second review R3: absent and null both read as UNKNOWN; defaulting to CLEAN would print `ready`.
+        by = {r.number: r for r in mr.github_ready("o/app", github_gh([42, 43]))}
+        for n in (42, 43):
+            with self.subTest(n=n):
+                self.assertEqual((by[n].verdict, by[n].merge_state), ("blocked", "UNKNOWN"))
+                self.assertTrue(mr.line(by[n], "#").startswith(f"#{n} blocked (UNKNOWN) · head "), mr.line(by[n], "#"))
+
+    def test_a_draft_seen_by_only_one_of_the_two_reads_is_a_draft(self):
+        # second review R5: the list's isDraft and the graphql node's isDraft are each enough; the fake gives the node only what the
+        # query asks for, so the graphql-only draft is not the list's copied across.
+        gh = github_gh([44, 45])
+        by = {r.number: r.verdict for r in mr.github_ready("o/app", gh)}
+        self.assertEqual(by, {44: "draft", 45: "draft"})
+        query = next(a for c in gh.calls if c[:2] == ["api", "graphql"] for a in c if a.startswith("query="))
+        self.assertIn("isDraft", query)
+        self.assertNotIn("mergeStateStatus", query, "the fake answers only what the query asks for; merge state comes from the list")
+
+    def test_a_cut_off_thread_read_that_carries_no_thread_is_still_unverified(self):
+        # second review R6(a): the count of threads read doubled as the cut-off flag, so `hasNextPage` with zero nodes was `ready`.
+        (r,) = mr.github_ready("o/app", github_gh([46]))
+        self.assertEqual(r.verdict, "unverified")
+        self.assertEqual(LINE.match(mr.line(r, "#"))["why"], "threads cut off at 100")
+
 
 ABSENT = object()  # a head_pipeline with no `sha` key at all (None is a `sha` that is null)
 
@@ -249,6 +284,14 @@ def thread(resolved=False, resolvable=True, system=False):
     return {"id": f"d{id(object())}", "notes": [{"resolvable": resolvable, "resolved": resolved, "system": system}]}
 
 
+def discussion(*notes):
+    """One discussion holding several notes, as a diff discussion does: a system note ("changed this line in version 2") beside
+    the resolvable note, in either order. A note is `(resolved, resolvable, system)`."""
+    return {"id": f"d{id(notes)}", "notes": [{"resolved": r, "resolvable": rv, "system": sy} for r, rv, sy in notes]}
+
+
+SYSTEM, UNRESOLVED, RESOLVED = (False, False, True), (False, True, False), (True, True, False)
+
 GITLAB = {
     5: ({}, "ready"),
     6: ({"pipeline": "failed"}, "red"),
@@ -268,6 +311,10 @@ GITLAB = {
     19: ({"discussions": [thread(resolved=True) for _ in range(100)] + [thread()]}, "findings open"),
     20: ({"draft": True, "pipeline": "failed", "status": "draft_status"}, "draft"),
     21: ({"discussions": [thread(resolved=True) for _ in range(100)]}, "ready"),
+    # #419 second review R4: a discussion's system note beside its resolvable note, in either order
+    22: ({"discussions": [discussion(SYSTEM, UNRESOLVED)]}, "findings open"),
+    23: ({"discussions": [discussion(RESOLVED, SYSTEM)]}, "ready"),
+    24: ({"discussions": [discussion(UNRESOLVED, SYSTEM)]}, "findings open"),
 }
 
 
@@ -304,6 +351,20 @@ class GitLabReadyTest(unittest.TestCase):
         (r,) = mr.gitlab_ready(self.HOME, "team/app", "t", call)
         self.assertEqual((r.threads, r.verdict), (0, "ready"))
         self.assertEqual([parse_qs(urlsplit(u).query).get("page", ["1"])[0] for u in call.urls], ["1", "2"])
+
+    def test_a_discussion_counts_once_if_any_of_its_notes_is_an_unresolved_resolvable_one_whatever_the_system_notes(self):
+        # second review R4: every other thread has one note, so any() was never told from all(), first-note-only, or last-note-only.
+        got = self.read([22, 23, 24])
+        self.assertEqual({n: r.threads for n, r in got.items()}, {22: 1, 23: 0, 24: 1})
+        mixed = gitlab_fake({5: {"discussions": [discussion(SYSTEM, UNRESOLVED), discussion(RESOLVED, SYSTEM), thread()]}})
+        (r,) = mr.gitlab_ready(self.HOME, "team/app", "t", mixed)
+        self.assertEqual((r.threads, r.verdict), (2, "findings open"))
+
+    def test_more_than_max_pages_of_discussions_is_an_error_and_never_ready(self):
+        # second review R2: replacing the raise with `pass` proceeded with MAX_PAGES full pages read and printed `ready`.
+        many = {"discussions": [thread(resolved=True)] * (ma.backlog.MAX_PAGES * ma.backlog.PER_PAGE + 1)}
+        with self.assertRaises(RuntimeError):
+            mr.gitlab_ready(self.HOME, "team/app", "t", gitlab_fake({5: many}))
 
     def test_a_canceled_pipeline_is_red_and_never_ready(self):
         # R1(d): forge_review's GITLAB_PIPELINE maps canceled to failed; "canceled" mapped to "passed" survived every test.
@@ -511,6 +572,23 @@ class MainTest(unittest.TestCase):
         with mock.patch.object(ma.backlog, "token", return_value="t"):
             code, out, err = self.run_main(self.workspace(claude=self.GITLAB_ROOT), call=call)
         self.never_ready(code, out, err, "!5")
+
+    def test_more_than_max_pages_of_discussions_exits_1_with_nothing_on_stdout(self):
+        many = {"discussions": [thread(resolved=True)] * (ma.backlog.MAX_PAGES * ma.backlog.PER_PAGE + 1)}
+        with mock.patch.object(ma.backlog, "token", return_value="t"):
+            code, out, err = self.run_main(self.workspace(claude=self.GITLAB_ROOT), call=gitlab_fake({5: many}))
+        self.assertEqual((code, out), (1, ""), err)
+        self.assertTrue(err.startswith("merge-ready:"), err)
+
+    def test_a_pull_request_with_no_commit_in_the_graphql_read_never_escapes_as_a_traceback_or_a_ready(self):
+        # second review R6(c): an empty commits.nodes raised IndexError, which main() does not catch.
+        node = tma.graphql_node(47)
+        node["commits"]["nodes"] = []
+        gh = tma.FakeGhGraphql([gpr(47)], [node])
+        code, out, err = self.run_main(self.workspace(), gh=gh)
+        self.never_ready(code, out, err, "#47")
+        if code == 1:
+            self.assertEqual(len(err.splitlines()), 1, err)
 
     def test_a_gitlab_workspace_prints_draft_unverified_and_canceled_lines(self):
         call = gitlab_fake({n: GITLAB[n][0] for n in (15, 16, 18, 19)})

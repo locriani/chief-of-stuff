@@ -65,7 +65,7 @@ def graphql_node(number, threads=(), sha=HEAD, run=None, more=False):
     """What the one graphql call of merge-ready answers for an open pull request (#419): its review threads, and the
     commit its checks ran on with the id of the workflow run that made them. `threads` is one isResolved flag per thread;
     `more` is reviewThreads.pageInfo.hasNextPage (the first 100 are all that came back); `run=False` is a commit with no checks.
-    FakeGhGraphql adds isDraft and mergeStateStatus from the list's row, as the forge answers them in both places."""
+    FakeGhGraphql adds isDraft and mergeStateStatus from the list's row if the query asks for them."""
     runs = [] if run is False else [{"__typename": "CheckRun", "checkSuite": {"workflowRun": {"databaseId": run or 9000 + number}}}]
     return {"number": number,
             "reviewThreads": {"nodes": [{"isResolved": t} for t in threads], "pageInfo": {"hasNextPage": more}},
@@ -83,8 +83,13 @@ class FakeGhGraphql(FakeGh):
     def __call__(self, args, input_text=None):
         if args[:2] == ["api", "graphql"]:
             self.calls.append(args)
-            nodes = [{"isDraft": p.get("isDraft", False), "mergeStateStatus": p.get("mergeStateStatus", "CLEAN"),
-                      **(self.nodes.get(p["number"]) or graphql_node(p["number"], sha=p["headRefOid"]))}
+            query = next((a for a in args if a.startswith("query=")), "")
+            # Faithful to the query: a node carries `isDraft` and `mergeStateStatus` only if the query asks for them. The list row's
+            # value is the default and a node given in `nodes` overrides it (`isDraft: True` against a list row of False), so a draft
+            # seen by only one of the two reads is separable (#419 second review, R5).
+            nodes = [{k: v for k, v in {"isDraft": p.get("isDraft", False), "mergeStateStatus": p.get("mergeStateStatus", "CLEAN"),
+                                        **(self.nodes.get(p["number"]) or graphql_node(p["number"], sha=p["headRefOid"]))}.items()
+                      if k in ("number", "reviewThreads", "commits") or k in query}
                      for p in self.prs if p["number"] in self.nodes or not self.only_given]
             return 0, json.dumps({"data": {"repository": {"pullRequests": {"nodes": nodes}}}}), ""
         return super().__call__(args, input_text)

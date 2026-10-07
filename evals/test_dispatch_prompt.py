@@ -7,6 +7,7 @@ shell expansion that reached this far produces a refusal rather than a payload.
 """
 
 import re
+import shlex
 import sys
 import tempfile
 import unittest
@@ -824,7 +825,13 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
     )
     # The worker's own rule (scripts/dispatch_prompt.py, `merge_owner = "worker"`): the worker is the only actor that merges in that
     # mode, so a red pipeline or a head that moved lands there unless it merges only on its own `ready` line, pinned to its head.
-    WORKER_MERGE_RULE = "Before you merge, run `chief-of-stuff merge-ready --root .`; merge only if your pull request's line says `ready` and its head sha is the one you pushed, and merge with `--match-head-commit <sha>` (GitHub) or the `sha` parameter (GitLab)."
+    @staticmethod
+    def worker_merge_rule(root):
+        """The worker runs in its own worktree, where `--root .` finds no coordinator block (exit 2): the command carries the
+        absolute workspace root, quoted, as the review-threads command does (#419 second review, R1)."""
+        return (f"Before you merge, run `chief-of-stuff merge-ready --root {shlex.quote(str(root.resolve()))}`; merge only if your "
+                "pull request's line says `ready` and its head sha is the one you pushed, and merge with `--match-head-commit <sha>` "
+                "(GitHub) or the `sha` parameter (GitLab).")
     # A sentence that says a request is mergeable or ready to merge, and is not the rule that bans the words.
     SAYS_MERGEABLE = re.compile(r"(?i)\b(?:mergeable|ready to merge)\b")
 
@@ -848,8 +855,11 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
                              ('[workflow]\ndelivery = "branch"\n', False)):
             (root / "cos.toml").write_text(toml)
             body = dp.compose(root, "2026-09-18", "Security audit")
+            rule = self.worker_merge_rule(root)
             with self.subTest(toml=toml):
-                self.assertEqual(self.WORKER_MERGE_RULE in body, merges, self.WORKER_MERGE_RULE)
+                self.assertEqual(rule in body, merges, rule)
+                if merges:
+                    self.assertNotIn("merge-ready --root .`", body, "the worker's worktree holds no CLAUDE.md: `--root .` exits 2")
 
     def test_the_scheduled_check_runs_merge_ready_inside_its_own_bullet(self):
         check = self._section("Check")
