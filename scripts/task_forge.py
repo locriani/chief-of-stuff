@@ -24,8 +24,7 @@ def worker_names(sources: board_sources.Sources) -> set[str]:
 
 def task_changes(task: Task, sources: board_sources.Sources) -> tuple[board_sources.Change, ...]:
     """The changes naming the task's issue: the open ones, or else the merged ones."""
-    # ponytail: keyed by `#N` alone, so two projects' #N collide; key by host and project when a board spans them.
-    key = issue_key(task.issue) if task.issue.strip() else None
+    key = issue_key(task.issue, sources.home) if task.issue.strip() else None
     named = [c for c in sources.changes.values() if key and key in c.issues and c.state != "closed"]
     return tuple(c for c in named if c.state == "open") or tuple(named)
 
@@ -53,7 +52,7 @@ def forge_ends(tasks: list[Task], sources: board_sources.Sources, zone: ZoneInfo
             continue
         if merges := [c.merged_at for c in task_changes(t, sources) if c.state == "merged" and c.merged_at]:
             out[name] = (max(merges).astimezone(zone), "merged")
-        elif (issue := sources.issues.get(issue_key(t.issue)) if t.issue.strip() else None) and issue.state == "closed" and issue.closed_at:
+        elif (issue := sources.issues.get(issue_key(t.issue, sources.home)) if t.issue.strip() else None) and issue.state == "closed" and issue.closed_at:
             out[name] = (issue.closed_at.astimezone(zone), "closed")
     return out
 
@@ -62,7 +61,7 @@ def drifts(task: Task, kanban: Kanban | None, sources: board_sources.Sources, st
     """The forge's labels disagree with the task's stage, by the same check the audit runs (kanban.drift).
     `stage` overrides the tracker's own cell — pass `effective_stage()` so a merged change's card is judged at
     the stage it now draws in, not the one it's stuck reading (#240)."""
-    issue = sources.issues.get(issue_key(task.issue)) if task.issue.strip() else None
+    issue = sources.issues.get(issue_key(task.issue, sources.home)) if task.issue.strip() else None
     stage = task.stage.strip() if stage is None else stage
     # ponytail: labels only; a GitHub Project's Status is not in the sources, so a project board never drifts here.
     if kanban is None or kanban.github_project or issue is None or not stage or task.kind == "done":
