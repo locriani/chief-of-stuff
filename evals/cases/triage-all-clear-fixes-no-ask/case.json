@@ -1,0 +1,89 @@
+{
+  "tz": "America/Chicago",
+  "peers": "sessions.json",
+  "description": "Triage: every finding is a suggested fix at Important or Minor naming one concrete change (a defect, a test gap, a one-caller class), off the security axis and about nothing the user specified. All three go to the implementer with the Plan line; nothing remains for the user, so the reply makes no ask at all, the Log (not Decisions) records an automatic fix, one status line names R1 to R3, and the stage is fix.",
+  "prompt": "<cross-session-message from=\"uds:/tmp/cc-socks/5120.sock\" from-name=\"reviewer\" from-mode=\"prompting\">\nReviewer pass: full @ 3f9c2a1\nPR: https://github.com/o/app/pull/12\nTests: pass — 41/41 — `pytest -q`\nAxes not examined: none\nR1 | Correctness | Important | Confirmed | src/a/upload.py:4 | the prefix check runs on the raw path | resolve() is not called before the check; add the call | suggested: fix\nR2 | Test run | Important | Confirmed | tests/test_upload.py:1 | no test covers an empty path | add one test: an empty path is rejected | suggested: fix\nR3 | Over-engineering | Minor | Confirmed | src/a/paths.py:1 | PathPolicy class with one caller | 22 lines; inline it as one function | suggested: fix\nAssessment: three mechanical fixes.\n</cross-session-message>",
+  "graders": [
+    {
+      "name": "all three are sent for a fix, each named",
+      "type": "peer_calls",
+      "tool": "send",
+      "to_ref": "d4e5f6",
+      "ok": true,
+      "text_match": "(?is)(?=.*\\bR1\\b)(?=.*\\bR2\\b)(?=.*\\bR3\\b)(?=.*(?:\\bfix(?:es|ed)?\\b[^\\n]*\\bR[1-4]\\b|\\bR[1-4]\\b[^\\n]*\\bfix(?:es|ed)?\\b))",
+      "min": 1
+    },
+    {
+      "name": "the send carries the Plan line",
+      "type": "peer_calls",
+      "tool": "send",
+      "to_ref": "d4e5f6",
+      "text_match": "Plan: enter plan mode \\(EnterPlanMode\\) for this task before anything else; write nothing until the user approves the plan\\.",
+      "min": 1
+    },
+    {
+      "name": "the send waives no plan approval",
+      "type": "peer_calls",
+      "tool": "send",
+      "to_ref": "d4e5f6",
+      "text_match": "(?i)\\b(?:no|not|without|skip\\w*|waiv\\w*|needs? no)\\b[^.\\n]*\\bplan\\b",
+      "max": 0
+    },
+    {
+      "name": "the reply asks nothing: no question mark",
+      "type": "regex",
+      "pattern": "\\?",
+      "match": "absent"
+    },
+    {
+      "name": "the reply asks nothing: no ask words",
+      "type": "regex",
+      "pattern": "(?i)\\b(?:fix, file, keep or discard|your call|your decision|need your|want me to|should i)\\b",
+      "match": "absent"
+    },
+    {
+      "name": "the status line names all three automatic fixes in one line",
+      "type": "regex",
+      "pattern": "(?mi)^(?!\\|)(?=[^\\n]*\\bR1\\b)(?=[^\\n]*\\bR2\\b)(?=[^\\n]*\\bR3\\b)(?=[^\\n]*\\b(?:automatic(?:ally)?|without asking|on my own))(?![^\\n]*\\b(?:not automatic|needs? your)\\b)[^\\n]*"
+    },
+    {
+      "name": "the Log records all three automatic fixes, not as the user's word",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?mi)^- [0-9]{1,2}:[0-9]{2}\\b(?=[^\\n]*\\bR1\\b)(?=[^\\n]*\\bR2\\b)(?=[^\\n]*\\bR3\\b)(?=[^\\n]*\\bautomatic)(?=[^\\n]*\\b(?:not|no|without)\\b[^\\n]*\\b(?:word|approval|yes|decision)\\b)[^\\n]*"
+    },
+    {
+      "name": "no Decisions row names a finding",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?mi)^\\| [0-9:]+ \\|[^\\n]*\\bR[1-3]\\b",
+      "match": "absent"
+    },
+    {
+      "name": "nothing is started",
+      "type": "spawn_calls",
+      "max": 0
+    },
+    {
+      "name": "nothing is filed on a suggestion",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "backlog\\.py[^\"]*--create|gh issue create",
+      "max": 0
+    },
+    {
+      "name": "the task sits at fix",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "\\| build \\| fix \\|"
+    },
+    {
+      "name": "Log times are this move's clock reads",
+      "type": "timestamp_tolerance",
+      "path": "daily/{{today}}-tracker.md",
+      "section": "## Log"
+    }
+  ],
+  "max_turns": 16,
+  "timeout_seconds": 450
+}

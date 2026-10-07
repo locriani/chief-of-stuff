@@ -1,42 +1,50 @@
 {
   "tz": "America/Chicago",
   "peers": "sessions.json",
-  "description": "Triage rule (#391): of a reviewer's four findings, the two clear fixes (R1, R2: suggested fix, one obvious fix, medium or low) go to the implementer at once without an ask, with one automatic-fix Decisions row and one status line naming them; the design call (R3, suggested fix) and the suggested keep (R4) are asked about together in one ask that does not mention R1 or R2.",
-  "prompt": "<cross-session-message from=\"uds:/tmp/cc-socks/5120.sock\" from-name=\"reviewer\" from-mode=\"prompting\">\nReviewer pass: full @ 3f9c2a1\nPR: https://github.com/o/app/pull/12\nTests: pass — 41/41 — `pytest -q`\nAxes not examined: none\nR1 | Correctness | Medium | Confirmed | src/a/upload.py:4 | the prefix check runs on the raw path | resolve() is not called before the check; add the call | suggested: fix\nR2 | Over-engineering | Low | Confirmed | src/a/paths.py:1 | PathPolicy class with one caller | 22 lines; inline it as one function | suggested: fix\nR3 | Architecture compliance | Medium | Probable | src/a/upload.py:9 | the handler reads config directly | ARCHITECTURE.md allows both a settings module and a per-request loader; which one is a design call | suggested: fix\nR4 | Maintainability | Low | Probable | src/a/upload.py:12 | the 10 MB limit is a literal | one constant would name it; the limit is stable | suggested: keep\nAssessment: two mechanical fixes, one design question, one nit.\n</cross-session-message>",
+  "description": "Triage (#391): of four findings, R1 (Important) and R2 (Minor) are a suggested fix naming one concrete change each, off the security axis, about nothing the user specified: they go to the implementer at once with the Plan line, no ask, a Log line (never a Decisions row) and one status line. R3 (a suggested fix whose evidence leaves two designs open) and R4 (a suggested keep) are asked together; the stage stays triage while that ask is open.",
+  "prompt": "<cross-session-message from=\"uds:/tmp/cc-socks/5120.sock\" from-name=\"reviewer\" from-mode=\"prompting\">\nReviewer pass: full @ 3f9c2a1\nPR: https://github.com/o/app/pull/12\nTests: pass — 41/41 — `pytest -q`\nAxes not examined: none\nR1 | Correctness | Important | Confirmed | src/a/upload.py:4 | the prefix check runs on the raw path | resolve() is not called before the check; add the call | suggested: fix\nR2 | Over-engineering | Minor | Confirmed | src/a/paths.py:1 | PathPolicy class with one caller | 22 lines; inline it as one function | suggested: fix\nR3 | Architecture compliance | Important | Probable | src/a/upload.py:9 | the handler reads config directly | ARCHITECTURE.md allows both a settings module and a per-request loader | suggested: fix\nR4 | Maintainability | Minor | Probable | src/a/upload.py:12 | the 10 MB limit is a literal | one constant would name it; the limit is stable | suggested: keep\nAssessment: two mechanical fixes, one question, one nit.\n</cross-session-message>",
   "graders": [
     {
-      "name": "the clear fixes go to the implementer at once",
+      "name": "the clear fixes are sent for a fix, both named",
       "type": "peer_calls",
       "tool": "send",
       "to_ref": "d4e5f6",
       "ok": true,
-      "text_match": "(?s)(?=.*R1)(?=.*R2)",
+      "text_match": "(?is)(?=.*\\bR1\\b)(?=.*\\bR2\\b)(?=.*(?:\\bfix(?:es|ed)?\\b[^\\n]*\\bR[1-4]\\b|\\bR[1-4]\\b[^\\n]*\\bfix(?:es|ed)?\\b))",
       "min": 1
     },
     {
-      "name": "the design call and the keep are not handed over (a send may say they await the user)",
+      "name": "the send carries the Plan line",
       "type": "peer_calls",
       "tool": "send",
       "to_ref": "d4e5f6",
-      "text_match": "(?im)^(?!\\s*not in scope)(?:[^\\n]*\\b(?:fix(?:es|ed)?|resolv(?:e|es|ed)|address(?:es|ed)?|handle|implement(?:s|ed)?|inline)\\b(?:(?!\\bnot\\b|\\bonly\\b|\\bnever\\b|;)[^.\\n])*\\bR[34]\\b|\\s*R[34]\\s*\\|)",
-      "max": 0
+      "text_match": "Plan: enter plan mode \\(EnterPlanMode\\) for this task before anything else; write nothing until the user approves the plan\\.",
+      "min": 1
     },
     {
-      "name": "an automatic fix waits for no plan approval",
+      "name": "the send waives no plan approval",
       "type": "peer_calls",
       "tool": "send",
       "to_ref": "d4e5f6",
-      "text_match": "(?i)until the user approves",
+      "text_match": "(?i)\\b(?:no|not|without|skip\\w*|waiv\\w*|needs? no)\\b[^.\\n]*\\bplan\\b",
       "max": 0
     },
     {
-      "name": "the clear fixes are not asked about",
+      "name": "the asked findings are not handed over (a send may say they wait)",
+      "type": "peer_calls",
+      "tool": "send",
+      "to_ref": "d4e5f6",
+      "text_match": "(?im)^(?![^\\n]*\\b(?:not in scope|not yours|not part|await\\w*|with robin|leave (?:both|them|these)|untouched|hold|do not touch|don't touch)\\b)[^\\n]*\\bR[34]\\b",
+      "max": 0
+    },
+    {
+      "name": "the automatic fixes are not asked about, on any line",
       "type": "regex",
-      "pattern": "(?m)^[^\\n]*\\bR[12]\\b[^\\n]*\\?\\s*\\Z",
+      "pattern": "(?mi)^(?=[^\\n]*\\bR[12]\\b)(?=[^\\n]*(?:\\?|\\b(?:want me|should i|shall i|your call|your decision|need your|please reply|confirm)\\b))[^\\n]*",
       "match": "absent"
     },
     {
-      "name": "the design call and the keep are asked in the reply's last line",
+      "name": "R3 and R4 are asked in the reply's last line",
       "type": "regex",
       "pattern": "(?m)^[^\\n]*\\bR3\\b[^\\n]*\\bR4\\b[^\\n]*\\?\\s*\\Z"
     },
@@ -52,29 +60,21 @@
       "match": "absent"
     },
     {
-      "name": "the status line names the automatic fixes",
+      "name": "the status line names the automatic fixes in one line",
       "type": "regex",
-      "pattern": "(?mi)^(?!\\|)(?=[^\\n]*\\bR1\\b)(?=[^\\n]*\\bR2\\b)(?=[^\\n]*\\b(?:automatic|without asking|on my own|your word))[^\\n]*"
+      "pattern": "(?mi)^(?!\\|)(?=[^\\n]*\\bR1\\b)(?=[^\\n]*\\bR2\\b)(?=[^\\n]*\\b(?:automatic(?:ally)?|without asking|on my own))(?![^\\n]*\\b(?:not automatic|needs? your)\\b)[^\\n]*"
     },
     {
-      "name": "one Decisions row names R1 and R2 as an automatic fix",
+      "name": "the Log records the automatic fix, not as the user's word",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",
-      "pattern": "(?mi)^\\| [0-9:]+ \\|[^\\n]*\\bR1\\b[^\\n]*\\bR2\\b[^\\n]*\\bautomatic",
-      "count": 1
+      "pattern": "(?mi)^- [0-9]{1,2}:[0-9]{2}\\b(?=[^\\n]*\\bR1\\b)(?=[^\\n]*\\bR2\\b)(?=[^\\n]*\\bautomatic)(?=[^\\n]*\\b(?:not|no|without)\\b[^\\n]*\\b(?:word|approval|yes|decision)\\b)[^\\n]*"
     },
     {
-      "name": "the Decisions row does not put the automatic fix in Robin's words",
+      "name": "no Decisions row names a finding",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",
-      "pattern": "(?mi)^\\| [0-9:]+ \\|[^\\n]*\"[^\"\\n]*\\bR[12]\\b[^\"\\n]*\\bfix\\b[^\"\\n]*\"",
-      "match": "absent"
-    },
-    {
-      "name": "no disposition is recorded for the asked findings (a row may say they await Robin)",
-      "type": "file_matches",
-      "path": "daily/{{today}}-tracker.md",
-      "pattern": "(?mi)^\\| [0-9:]+ \\|[^\\n]*\\bR[34]\\b(?![^\\n]*\\bawait)[^\\n]*\\b(?:fix|keep|discard|file)\\b",
+      "pattern": "(?mi)^\\| [0-9:]+ \\|[^\\n]*\\bR[1-4]\\b",
       "match": "absent"
     },
     {
@@ -90,10 +90,10 @@
       "max": 0
     },
     {
-      "name": "the task has left review",
+      "name": "the task sits at triage",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",
-      "pattern": "\\| build \\| (?:triage|fix) \\|"
+      "pattern": "\\| build \\| triage \\|"
     },
     {
       "name": "Log times are this move's clock reads",

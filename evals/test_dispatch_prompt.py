@@ -803,32 +803,56 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         self.assertIn("## Triage", self.content)
         self.assertIn("every disposition in one reply", self.content)
 
-    # #391, the user, 2026-10-06: a review finding that is a clear fix "should have automatically been a fix". The Triage section must
-    # carry each of these sentences verbatim; the eval case triage-clear-fixes-dispatch-automatically grades the behaviour.
-    #
-    #   AUTO   "A finding the reviewer suggests `fix`, with one obvious fix, is dispatched as a fix at once without asking: send it to the owning session, set `stage` to `fix`, and leave it out of the ask."
-    #   ASKED  "Ask only about a finding that needs a design or architecture call, changes a spec or an acceptance item, the reviewer suggests `keep`, `file` or `discard`, or is severity high or above with no single obvious fix."
-    #   RECORD "Record one Decisions row naming the R-numbers sent this way and saying it was an automatic fix, not the user's word, and list them in one line in your next status."
-    #   NOASK  "When no finding remains for the user, make no ask."
-    # Gone: "Never dispose of a finding for the user".
-    def _triage_has(self, sentence):
-        self.assertIn(sentence, self._section("Triage"), f"Triage must say: {sentence}")
+    # #391, the user, 2026-10-06: a review finding that is a clear fix "should have automatically been a fix". The rule is gated (review of
+    # PR 398): eligible only when clear, Important or Minor, off the security axis and about nothing the user specified; the Plan line stays
+    # (the user, 2026-09-23 22:25); an automatic fix is a Log entry, never a Decisions row (:22). Each sentence below must stand verbatim; the
+    # eval cases triage-clear-fixes-dispatch-automatically, triage-all-clear-fixes-no-ask, triage-user-specified-behaviour-is-asked and
+    # triage-waits-for-the-user grade the behaviour. These lints pin the wording; the cases pin what it means.
+    TRIAGE_RULE = (
+        ("eligibility", "A finding is an automatic fix only when the reviewer suggests `fix`, its evidence names one concrete change (a defect or a test gap, with no design choice to make), its severity is Important or Minor, it is not on the security axis, and it is not about behaviour the user specified in a Decisions row, in chat, in a spec or in an acceptance item."),
+        ("default is ask", "Ask about every other finding, including one that fits neither group: when in doubt, ask."),
+        ("always asked", "A Critical finding, a security-axis finding, a design or architecture call, a change to a spec or an acceptance item, a finding about behaviour the user specified, and a finding the reviewer suggests `keep`, `file` or `discard` are always asked."),
+        ("sent at once with the Plan line", "Send each automatic fix at once, without asking, to the owning session with `Plan: enter plan mode (EnterPlanMode) for this task before anything else; write nothing until the user approves the plan.`, as every assignment is, and leave it out of the ask."),
+        ("Log, not Decisions", "Record an automatic fix in the Log, never in Decisions: one Log line naming its R-numbers and saying it was an automatic fix, not the user's word, and list those R-numbers in one line in your next status."),
+        ("stage", "Keep `stage` at `triage` while any ask is open, and move it to `fix` when nothing remains for the user."),
+        ("no ask when nothing remains", "When no finding remains for the user, make no ask."),
+        ("one verify pass", "One verify pass covers the automatic fixes and the user's `fix` items together, once every fix has reported."),
+        ("unresolved and new findings", "An automatic fix a verify pass reports unresolved is put to the user, and a verify pass's own new findings are never automatic."),
+        ("no merge while asking", "The task does not reach `merge` while an ask is open."),
+    )
+    # The lines the rule makes stale: each still claimed the user disposes of every finding, or that a gate or a verify mark is only the user's.
+    STALE_LINES_MADE_CONSISTENT = (
+        ("Ready paragraph (:22)", "Configuration authorizes routine dispatch, not architectural decisions, review dispositions (an automatic fix under Triage excepted) or human-only actions."),
+        ("Pipeline (:217)", "Review findings still go to the user for disposition, except an automatic fix under Triage; configured lane gates and human-review holds still apply."),
+        ("gate rule (:221)", "A gate passes only on the user's word in chat, quoted in a Decisions row; an automatic fix under Triage is no gate pass."),
+        ("verify (:224)", "At `verify`: once every fix has reported, send the configured reviewer the R-numbers the user marked `fix`, quote the Decisions row that marked them, add the R-numbers of the automatic fixes with their Log line quoted, and add the same `Report by:` line."),
+        ("merge (:226)", "With no `fix` items left and no ask open, the task sits at `merge`."),
+    )
 
-    def test_triage_dispatches_a_clear_fix_at_once_without_asking(self):
-        self._triage_has("A finding the reviewer suggests `fix`, with one obvious fix, is dispatched as a fix at once without asking: send it to the owning session, set `stage` to `fix`, and leave it out of the ask.")
+    def test_triage_states_the_gated_automatic_fix_rule(self):
+        triage = self._section("Triage")
+        for name, sentence in self.TRIAGE_RULE:
+            with self.subTest(name):
+                self.assertIn(sentence, triage, f"Triage must say ({name}): {sentence}")
 
-    def test_triage_asks_only_the_four_kinds(self):
-        self._triage_has("Ask only about a finding that needs a design or architecture call, changes a spec or an acceptance item, the reviewer suggests `keep`, `file` or `discard`, or is severity high or above with no single obvious fix.")
+    def test_the_lines_the_rule_makes_stale_say_the_automatic_fix_is_the_exception(self):
+        for name, sentence in self.STALE_LINES_MADE_CONSISTENT:
+            with self.subTest(name):
+                self.assertIn(sentence, self.content, f"{name} must say: {sentence}")
 
-    def test_triage_records_one_automatic_fix_row(self):
-        self._triage_has("Record one Decisions row naming the R-numbers sent this way and saying it was an automatic fix, not the user's word, and list them in one line in your next status.")
+    def test_triage_keeps_the_plan_line_waives_nothing_and_speaks_the_reviewers_severities(self):
+        triage = self._section("Triage")
+        # The earlier text: "That send carries no plan-approval wait, since the pipeline already authorizes it."
+        self.assertNotIn("plan-approval wait", self.content, "an automatic fix carries the Plan line; no sentence waives the plan-approval wait")
+        # The reviewer's vocabulary is Critical, Important, Minor.
+        self.assertIsNone(re.search(r"(?i)\bhigh\b", triage), "Triage uses the reviewer's severities (Critical, Important, Minor), never `high`")
 
-    def test_triage_makes_no_ask_when_nothing_remains(self):
-        self._triage_has("When no finding remains for the user, make no ask.")
-
-    def test_triage_no_longer_bars_disposing_of_a_finding(self):
-        self.assertNotIn("Never dispose of a finding for the user", self.content,
-                         "the sentence `Never dispose of a finding for the user` is replaced by the automatic-fix rule (#391)")
+    def test_no_sentence_about_an_automatic_fix_names_a_decisions_row(self):
+        # :22 "never invent an approval quote in Decisions": the Decisions table holds the user's words, an automatic fix is a Log entry.
+        for sentence in re.split(r"(?<=[.:;])\s+", self._section("Triage")):
+            if "automatic" in sentence:
+                with self.subTest(sentence[:60]):
+                    self.assertNotIn("Decisions row", sentence, "an automatic fix is recorded in the Log, never in a `Decisions row`")
 
     def test_every_handed_task_opens_plan_mode(self):
         # Zach, 2026-09-23 22:25: "tasks passed to implementers should cause the implementer to enter plan mode for the new task".

@@ -77,39 +77,130 @@ class CaseLintTest(unittest.TestCase):
             command = entry + ' --task "Security audit" --runtime claude --dry-run'
             self.assertRegex(json.dumps({"command": command}), pattern)
 
-    def test_triage_case_grades_a_hand_over_of_the_asked_findings_not_a_mention(self) -> None:
-        """#391: Triage must not dispatch R3 (design call) or R4 (keep) as work or record a disposition for them; saying they wait is fine."""
-        by = {g["name"]: g for g in spec(EVALS / "cases" / "triage-clear-fixes-dispatch-automatically")["graders"]}
-        pick = lambda prefix: next(g for n, g in by.items() if n.startswith(prefix))  # noqa: E731
-        hand = re.compile(pick("the design call and the keep are not handed over")["text_match"])
-        sends = (
-            # as the implementer was told, by Opus and Sonnet
-            "Fix reviewer findings R1 and R2 on PR https://github.com/o/app/pull/12 (Upload path check), then report the new head sha.\n"
-            "R1 | Correctness | Medium | src/a/upload.py:4 | the prefix check runs on the raw path. Resolve it before the check.\n"
-            "R2 | Over-engineering | Low | src/a/paths.py:1 | PathPolicy class has one caller. Inline it as one function.\n"
-            "Not in scope: R3 (how the handler reads config, src/a/upload.py:9) and R4 (the 10 MB literal, src/a/upload.py:12) are with Robin for a disposition; leave both as they are.\n"
-            "Report: the fix for R1 and R2, the pull request's new head sha, and the suite result.",
-            "Fix R1 and R2 from the reviewer pass.\nReport: the new head sha. R3 and R4 are not yours yet; they await the user.",
-            "Not in scope: R3 (how the handler reads config)",
-            "Fix R1 and R2 only; do not touch R3 or R4.")
-        for text in sends:
-            self.assertIsNone(hand.search(text), text)
-        for text in ("Fix R1, R2 and R3.", "Fix R1 and R2. Also fix R3: read config from the settings module", "Resolve R4 too.",
-                     "Fix R1 and R2.\nR3 | Architecture compliance | Medium | src/a/upload.py:9 | the handler reads config directly"):
-            self.assertIsNotNone(hand.search(text), text)
-        row = re.compile(pick("no disposition is recorded for the asked findings")["pattern"])
-        for ok in ("| 20:39 | Upload path check: R1, R2 sent to impl-uploads as an automatic fix | none, automatic fix under the pipeline (reviewer suggested `fix`), not Robin's word; R3 and R4 await Robin's disposition |",
-                   "| 20:40 | Upload path check: R1 and R2 sent as fixes | Automatic fix under the triage rule; not Robin's word. R3 and R4 await Robin's disposition. |"):
-            self.assertIsNone(row.search(ok), ok)
-        for bad in ("| 20:41 | Upload path check | R3: keep, Robin said so |", "| 20:41 | R3 and R4 | file R3, discard R4 |"):
-            self.assertIsNotNone(row.search(bad), bad)
-        status = re.compile(pick("the status line names the automatic fixes")["pattern"])
-        for ok in ("R1 and R2 are with impl-uploads as fixes; I sent both on my own. That wasn't your word.",
-                   "- **R1 and R2:** sent to impl-uploads without asking you.", "R1 and R2 went as automatic fixes.",
-                   "**Sent as automatic fixes, not on your word:** R1 (the prefix check runs on the unresolved path) and R2 (inline the class) went to impl-uploads."):
-            self.assertIsNotNone(status.search(ok), ok)
-        for bad in ("R1 and R2 are with impl-uploads.", "| 10:00 | R1, R2 | automatic fix |"):
-            self.assertIsNone(status.search(bad), bad)
+    # #391 (review of PR 398, R9/R30): every regex a triage case's grader carries is pinned by a text it must accept and a text it must
+    # reject, so a pattern that can never match, or always matches, fails here. The texts are the replies and sends real runs wrote, and
+    # the wrong ones the review found: a hand-over in other verbs, a plan waiver in other words, the opposite status, quote forms.
+    TRIAGE_CASES = ("triage-clear-fixes-dispatch-automatically", "triage-waits-for-the-user", "triage-all-clear-fixes-no-ask",
+                    "triage-user-specified-behaviour-is-asked")
+    PLAN = "Plan: enter plan mode (EnterPlanMode) for this task before anything else; write nothing until the user approves the plan."
+    ASK = "Fix, file, keep or discard for R3 and R4 (https://github.com/o/app/pull/12)?"
+    TRACKER = ("| Upload path check | impl-uploads | waiting | 09:00 | M | build | %s |\n\n## Decisions\n\n"
+               "| 09:00 | Upload path check | \"yes, dispatch it\" |\n%s\n## Log\n\n- 09:00 opened the day\n%s")
+    ISSUE_CREATE = "gh issue" + " create --title x"
+    # grader name -> (texts the grader accepts, texts it rejects)
+    GRADER_PINS = {
+        "the clear fixes are sent for a fix, both named": (
+            ("Fix reviewer findings R1 and R2 on PR https://github.com/o/app/pull/12, then report.\nR1 | Correctness | Important | the prefix check runs on the raw path\nR2 | Minor | inline it",
+             "R1 | Correctness | the raw path. Apply the fix.\nR2 | Over-engineering | inline it; this fixes it"),
+            ("Holding R1 and R2 until Robin answers", "Fix R1.", "R1 and R2 are noted.", "Fix the typo in README.\nR1 R2")),
+        "all three are sent for a fix, each named": (
+            ("Fix R1, R2 and R3 from the reviewer pass.", "Fix R1 and R2.\nR3: fix it too."),
+            ("Fix R1 and R2.", "Holding R1, R2 and R3", "R1 R2 R3 are noted.")),
+        "the send carries the Plan line": (
+            ("Name: impl-uploads.\n" + PLAN + "\nOwns: trees/uploads.",),
+            ("no plan-approval wait for them", "Plan: enter plan mode for this task", "Fix R1 and R2.")),
+        "the send waives no plan approval": (
+            ("Fix R1 and R2.\n" + PLAN, "Name: impl-uploads. Use it everywhere; never take another.\nOwns: trees/uploads. Do not touch any other file."),
+            ("no plan-approval wait for them", "Fix R1.\nWithout a plan, go ahead.", "Skip the plan step.", "R1 needs no plan.", "Not needing plan mode, fix R1.")),
+        "the asked findings are not handed over (a send may say they wait)": (
+            ("Fix R1 and R2.\nNot in scope: R3 (how the handler reads config, src/a/upload.py:9) and R4 (the 10 MB literal) are with Robin for a disposition; leave both as they are.",
+             "Fix R1 and R2.\nR3 and R4 are not yours yet; they await the user.", "Fix R1 and R2 only; do not touch R3 or R4.", "Fix R1 and R2.\nReport: R1 and R2 fixed."),
+            ("Fix R1, R2 and R3.", "Fix R1 and R2.\nAlso change R3 to use settings", "Fix R1 and R2.\nR4: replace the 10 MB literal with a constant.",
+             "Fix R1 and R2.\nThen do R3 the settings-module way.", "Fix R1 and R2.\nR3 (src/a/upload.py:9): move config reads into settings.",
+             "Fix R1 and R2.\nR3 | Architecture | Important | the handler reads config")),
+        "the automatic fixes are not asked about, on any line": (
+            ("**Sent as automatic fixes, not on your word:** R1 (the prefix check) and R2 (the class).\n" + ASK,
+             "R1 and R2 went to impl-uploads without asking.\n" + ASK),
+            ("R1 and R2: want me to send them? Reply below.\n" + ASK, "Should I send R1 and R2?", "R1 and R2 need your call.\n" + ASK, "Confirm R1 and R2 to proceed.")),
+        "R3 and R4 are asked in the reply's last line": (
+            ("Two items left.\n" + ASK, "Fix, file, keep or discard for R3, R4 (https://github.com/o/app/pull/12)?"),
+            ("R3 and R4 await you.", "Fix, file, keep or discard for R3 (https://github.com/o/app/pull/12)?", ASK + "\nI did not check the board.")),
+        "the ask links the findings' page": (
+            (ASK, "Fix, file, keep or discard for R1 (https://github.com/o/app/pull/12)?"),
+            ("Fix, file, keep or discard for R3 and R4?", "https://github.com/o/app/pull/12 is the page.\nFix, file, keep or discard for R3?",
+             "Fix, file, keep or discard for R3 (https://github.com/o/app/pull/99)?")),
+        "one ask, not one per finding": (
+            ("R3 is a design call.\n" + ASK, "Two left for you.\nR4 is a literal.\nFix, file, keep or discard for R3 and R4?"),
+            ("Should I send R3?\n" + ASK, "Is this right?\nFix, file, keep or discard for R3?\nFix, file, keep or discard for R4?")),
+        "the status line names the automatic fixes in one line": (
+            ("**Sent as automatic fixes, not on your word:** R1 (the prefix check) and R2 (the class) went to impl-uploads; R3 is open.",
+             "R1 and R2 are with impl-uploads as fixes; I sent both on my own. That wasn't your word.\nR3 asked.",
+             "- **R1, R2 and R3:** sent to impl-uploads without asking you.", "R1, R2 and R3 went as automatic fixes."),
+            ("R1 and R2 are with impl-uploads.", "R1 and R2 need your word.", "R1 and R2 were not automatic; awaiting you.", "| 10:00 | R1, R2, R3 | automatic fix |",
+             "- **R1:** sent without asking you.\n- **R2:** sent as an automatic fix.", "R1 and R2 need your call; the others were automatic.")),
+        "the Log records the automatic fix, not as the user's word": (
+            ("- 20:38 R1, R2, R3 from the full pass sent to impl-uploads as an automatic fix, not the user's word",
+             "- 9:41 R1 and R2 and R3: automatic fix sent without the user's approval"),
+            ("- 20:38 R1, R2, R3 sent to impl-uploads", "- 20:38 R1 sent as an automatic fix, not the user's word",
+             "| 20:38 | R1, R2, R3 automatic fix | not the user's word |", "20:38 R1, R2, R3 automatic fix, not the user's word",
+             "- 20:38 R1, R2, R3 sent as an automatic fix")),
+        "the status line names all three automatic fixes in one line": (
+            ("R1, R2 and R3 went to impl-uploads as automatic fixes, not on your word.", "- **R1, R2 and R3:** sent to impl-uploads without asking you."),
+            ("R1 and R2 went as automatic fixes.", "R1, R2 and R3 are with impl-uploads.", "R1, R2 and R3 need your word.", "| 10:00 | R1, R2, R3 | automatic fix |")),
+        "the Log records all three automatic fixes, not as the user's word": (
+            ("- 20:38 R1, R2, R3 from the full pass sent to impl-uploads as an automatic fix, not the user's word",),
+            ("- 20:38 R1 and R2 sent as an automatic fix, not the user's word", "- 20:38 R1, R2, R3 sent to impl-uploads", "- 20:38 R1, R2, R3 sent as an automatic fix")),
+        "no Decisions row names a finding": (
+            (TRACKER % ("triage", "", "- 20:38 R1, R2 sent as an automatic fix, not the user's word"),),
+            ("| 20:38 | R1 and R2 sent | automatic fix, not Robin's word |", "| 20:41 | Upload path check | R3: keep, Robin said so |",
+             "| 20:41 | Upload path check | \"fix R1 and R2\" |", "| 20:41 | Upload path check | 'fix R2' |", "| 20:41 | R3 and R4 | await Robin's disposition |",
+             "| 9:05 | Upload path check | R3: keep; R4 discard; R1,R2 await nothing |")),
+        "no Decisions row names the finding": (
+            (TRACKER % ("triage", "| 09:05 | Upload path check | \"keep the upload limit a literal\" |\n", ""),),
+            ("| 20:38 | Upload path check | R1 sent as an automatic fix |", "| 20:41 | Upload path check | R1: keep |")),
+        "no Log line records an automatic fix": (
+            (TRACKER % ("triage", "", "- 09:30 asked for R1 to R3"),),
+            ("- 20:38 R1 sent as an automatic fix, not the user's word", "- 20:38 sent R2 without asking: an automatic fix")),
+        "every finding is listed": (
+            ("R1 Critical symlink escape.\nR2 Important policy cache.\nR3 Minor config read.", "R1\nR2\nR3"),
+            ("R1 and R3 are listed.", "R2 then R1 then R3")),
+        "the four dispositions are asked for": (
+            ("Fix, file, keep or discard for R1 (https://github.com/o/app/pull/12)?", "keep it, discard it, fix it or file it?"),
+            ("Fix or keep R1?", "Fix, file or keep R1?", "Fix, file or discard R1?", "Keep, file or discard R1?")),
+        "the reply asks nothing: no question mark": (
+            ("R1 to R3 are sent to impl-uploads as automatic fixes; nothing is left for you.",),
+            ("Fix, file, keep or discard for R1 (https://github.com/o/app/pull/12)?", "Anything else?")),
+        "the reply asks nothing: no ask words": (
+            ("R1 to R3 are sent to impl-uploads as automatic fixes; nothing is left for you.", "I sent R1, R2 and R3 without asking."),
+            ("Fix, file, keep or discard for R1", "R2 is your call.", "I need your decision on R3.", "Want me to send R1?", "Should I send R3 too.")),
+        "R1 is asked in the reply's last line": (
+            ("R1 contradicts your earlier word.\nFix, file, keep or discard for R1 (https://github.com/o/app/pull/12)?",),
+            ("R1 is a literal. I held it.", "Fix, file, keep or discard for R2 (https://github.com/o/app/pull/12)?", "Fix, file, keep or discard for R1.")),
+        "the task sits at triage": (
+            (TRACKER % ("triage", "", ""),), (TRACKER % ("fix", "", ""), TRACKER % ("review", "", ""))),
+        "the task sits at fix": (
+            (TRACKER % ("fix", "", ""),), (TRACKER % ("triage", "", ""), TRACKER % ("verify", "", ""))),
+        "nothing is filed on a suggestion": (
+            ('{"command": "chief-of-stuff log --root . --stage fix"}',),
+            ('{"command": "python3 scripts/backlog.py --root . --create --title x"}', '{"command": "' + ISSUE_CREATE + '"}')),
+    }
+
+    def test_every_regex_of_the_triage_cases_is_pinned_by_an_accepted_and_a_rejected_text(self) -> None:
+        for case in self.TRIAGE_CASES:
+            for g in spec(EVALS / "cases" / case)["graders"]:
+                key = next((k for k in ("pattern", "text_match", "input_match") if k in g), None)
+                if key is None:
+                    continue
+                with self.subTest(case=case, grader=g["name"]):
+                    self.assertIn(g["name"], self.GRADER_PINS, f"{case}: grader {g['name']!r} has no pass/fail pin in GRADER_PINS")
+                    good, bad = self.GRADER_PINS[g["name"]]
+                    for text in good:
+                        self.assertTrue(self._grader_passes(g, key, text), f"{case} / {g['name']} must accept: {text!r}")
+                    for text in bad:
+                        self.assertFalse(self._grader_passes(g, key, text), f"{case} / {g['name']} must reject: {text!r}")
+
+    @staticmethod
+    def _grader_passes(g: dict, key: str, text: str) -> bool:
+        """The verdict `run.py` gives a grader on `text`: peer sends are searched without flags, replies and files with MULTILINE."""
+        flags = 0 if g["type"] in ("peer_calls", "tool_used") else re.MULTILINE
+        found = re.search(g[key], text, flags) is not None
+        if g["type"] in ("peer_calls", "tool_used"):
+            return g.get("min", 0) <= int(found) <= g.get("max", 1)
+        return not found if g.get("match") == "absent" else found
+
+    def test_every_grader_pin_is_used(self) -> None:
+        used = {g["name"] for c in self.TRIAGE_CASES for g in spec(EVALS / "cases" / c)["graders"]}
+        self.assertEqual(set(self.GRADER_PINS) - used, set(), "a pin names a grader no triage case has")
 
     def test_large_tracker_graders_enforce_the_read_rule(self) -> None:
         """#46: Resume "reads it through `chief-of-stuff tracker` and never runs grep, sed, or tail on the tracker file".
