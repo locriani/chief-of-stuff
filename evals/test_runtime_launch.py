@@ -24,6 +24,9 @@ import process_status  # noqa: E402
 import runtimes  # noqa: E402
 import spawn_session as spawn  # noqa: E402
 from evals.test_spawn_session import CLAUDE, TRACKER  # noqa: E402
+import evals.test_one_shot as one_shot_tests  # noqa: E402 (module-qualified: its tests are not re-collected here)
+import git_trees  # noqa: E402
+import one_shot  # noqa: E402
 
 
 class CoordinatorLaunchTest(unittest.TestCase):
@@ -348,6 +351,79 @@ class WorkerRuntimeTest(unittest.TestCase):
             env=env, capture_output=True, text=True, timeout=10)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(marker.read_text(), "from-zshrc")
+
+
+class ResumeCodexGrantTest(unittest.TestCase):
+    """#428: `resume-codex` grants the same validated git directories as the one-shot path, after the existing args."""
+    _repo_with_linked_tree = one_shot_tests.CommandTest._repo_with_linked_tree
+    _other_repo_with_worktree = one_shot_tests.CommandTest._other_repo_with_worktree
+    _git = one_shot_tests.CommandTest._git
+
+    class Exec(Exception):
+        pass
+
+    def resume(self, tmp, worktree):
+        """The argv `resume-codex` hands to exec_login, with the exec itself mocked."""
+        root = Path(tmp) / "workspace"
+        root.mkdir(exist_ok=True)
+        with mock.patch.object(session_exec, "resolve", return_value="/bin/fake-codex"), \
+             mock.patch.object(session_exec, "exec_login", side_effect=self.Exec) as login:
+            with self.assertRaises(self.Exec):
+                session_exec.main(["resume-codex", "--root", str(root), "--name", "impl01",
+                                   "--worktree", str(worktree), "--session-id", "sid-1"])
+        return login.call_args.args[0]
+
+    @staticmethod
+    def old(worktree):
+        return ["/bin/fake-codex", "resume", "sid-1", "-C", str(worktree), "-s", "workspace-write"]
+
+    def test_a_linked_worktree_resumes_with_its_common_dir_then_its_own_gitdir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base, tree = self._repo_with_linked_tree(tmp)
+            self.assertEqual(self.resume(tmp, tree), [
+                *self.old(tree), "--add-dir", str((base / ".git").resolve()),
+                "--add-dir", str((base / ".git/worktrees/tree").resolve())])
+
+    def test_a_normal_clone_resumes_with_its_dot_git(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "base"
+            subprocess.run(["git", "init", "-q", str(base)], check=True)
+            self.assertEqual(self.resume(tmp, base), [*self.old(base), "--add-dir", str((base / ".git").resolve())])
+
+    def test_a_plain_dir_and_a_clone_subdirectory_resume_with_the_six_old_elements(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base, plain = Path(tmp) / "base", Path(tmp) / "plain"
+            subprocess.run(["git", "init", "-q", str(base)], check=True)
+            (base / "src").mkdir()
+            plain.mkdir()
+            for cwd in (plain, base / "src"):
+                with self.subTest(cwd=str(cwd)):
+                    self.assertEqual(self.resume(tmp, cwd), self.old(cwd))
+
+    def test_the_resume_grant_equals_the_one_shot_grant(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, tree = self._repo_with_linked_tree(tmp)
+            shot = one_shot.command("codex", "/bin/fake", tree, tree / "d.md", agent_type=None, model="", effort="")
+            resume = self.resume(tmp, tree)
+            self.assertIn("--add-dir", resume)
+            self.assertEqual(shot[shot.index("--add-dir"):][:4], resume[resume.index("--add-dir"):])
+            self.assertEqual(resume[len(self.old(tree)):], git_trees.codex_add_dir_args(tree))
+
+    def test_a_damaged_or_hostile_gitfile_resumes_with_the_six_old_elements_and_does_not_raise(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base, tree = self._repo_with_linked_tree(tmp)
+            other, _ = self._other_repo_with_worktree(tmp)
+            victim, twin = Path(tmp) / "victim", Path(tmp) / "twin"
+            subprocess.run(["git", "init", "-q", str(victim)], check=True)
+            self._git("-C", str(base), "worktree", "add", "-q", str(twin))
+            (twin / ".git").write_text(f"gitdir: {other / '.git/worktrees/other-tree'}\n")
+            self.assertEqual(self.resume(tmp, twin), self.old(twin))
+            (tree / ".git").write_text(f"gitdir: {victim / '.git'}\n")
+            self.assertEqual(self.resume(tmp, tree), self.old(tree))
+            (tree / ".git").write_text("\0 not a gitfile")
+            self.assertEqual(self.resume(tmp, tree), self.old(tree))
+            (tree / ".git").unlink()
+            self.assertEqual(self.resume(tmp, tree), self.old(tree))
 
 
 if __name__ == "__main__":
