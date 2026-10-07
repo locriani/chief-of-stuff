@@ -103,7 +103,10 @@ def prompt(runtime: str, release: Path, root: Path) -> str:
                  "while this CLI session is open. It sends notifications for new findings and never "
                  "edits the tracker or board. On the next coordinator turn, read the clock, inbox, "
                  "audit and worker registry; reconcile task state; the board renders itself. "
-                 "Dispatch ready one-shot tasks automatically under Dispatch authority. New interactive sessions need approval.\n\n" + host_schedule + "\n\n")
+                 "Dispatch ready one-shot tasks automatically under Dispatch authority. New interactive sessions need approval.\n\n"
+                 "A check that finds nothing writes no reply text. "
+                 "A check that finds something writes only what changed, in one short line. "
+                 "The standing waiting-on list stays in the Resume block and on the board; give it only when the user addresses you or asks, or when an entry on it changes.\n\n" + host_schedule + "\n\n")
         rules = re.sub(r"## Check\n.*?(?=## Sessions\n)", check, rules, flags=re.S)
         sessions = ("## Sessions\n\nThe workspace `Sessions:` line may name Claude native list and send tools. "
                     "Use those only when your host exposes them. For every non-Claude worker, "
@@ -122,10 +125,8 @@ def prompt(runtime: str, release: Path, root: Path) -> str:
                   "Check non-Claude workers with the `chief-of-stuff processes --root <workspace>` "
                   "batch helper; use the shared `chief-of-stuff inbox` "
                   "mailbox for their messages. Claude workers retain their native session tools when available. "
-                  "A five-minute watcher audits tasks and unread inbox messages while this session "
-                  "is open and sends notifications. "
                   "On your next turn, reconcile the tracker and board and dispatch ready one-shot tasks automatically. "
-                  "New interactive sessions need approval. If the named calendar tool is unavailable, "
+                  "If the named calendar tool is unavailable, "
                   "report it, leave calendar facts unverified, and continue work that does not depend on it.\n")
     return (f"You are chief-of-stuff. The installed rules and scripts are pinned at {release}. "
             f"The workspace is {root}. Read its CLAUDE.md for configuration.\n\n{rules}\n\n{START}")

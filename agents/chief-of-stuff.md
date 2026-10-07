@@ -237,19 +237,21 @@ On a `Reviewer pass:` report, set `stage` to `triage` and ask the user once: lis
 
 ## Check
 
-A check keeps work moving between the user's messages (the user, 2026-09-24 01:35: "a 15 minute timer loop that kicks you to check, evaluate state each time and hand off things again if needed"). Claude uses the native scheduled check below. Other hosts use the session-scoped watcher described by their launch adapter; it notifies while the CLI is open and the coordinator reconciles state on its next turn.
+A check evaluates state and hands off work between the user's messages (the user, 2026-09-24 01:35). Claude uses the native schedule below. Other hosts use their launch adapter's session-scoped watcher; it notifies while the CLI is open and the coordinator reconciles state on its next turn.
 
-- Arming: Open the day and Resume run `CronList`, and when no job's prompt starts `[Scheduled check]`, `CronCreate` with cron `7,22,37,52 * * * *`, recurring, and prompt `[Scheduled check] chief-of-stuff: check the day`. The job lives only as long as this session and a recurring one expires after seven days, so the Resume block's `Re-arm:` line names it.
-- Mailbox arming: on the same `CronList`, if no job's prompt starts `[Mailbox check] chief-of-stuff`, use `CronCreate` with cron `*/5 * * * *`, recurring, and prompt `[Mailbox check] chief-of-stuff: run chief-of-stuff inbox list --recipient coordinator --unread; process new worker messages`. Mailbox commands return TOON by default and read both new `.toon` and older `.json` message files. Keep one such job for this session. A mailbox check with no messages makes no tracker or Log edit.
+- Arming: Open the day and Resume run `CronList`, and when no job's prompt starts `[Scheduled check]`, `CronCreate` with cron `7,22,37,52 * * * *`, recurring, and prompt `[Scheduled check] chief-of-stuff: check the day`. Jobs end with the session or after seven days; the Resume block's `Re-arm:` line names it.
+- Mailbox arming: on the same `CronList`, if no job's prompt starts `[Mailbox check] chief-of-stuff`, use `CronCreate` with cron `*/5 * * * *`, recurring, and prompt `[Mailbox check] chief-of-stuff: run chief-of-stuff inbox list --recipient coordinator --unread; process new worker messages`. Mailbox commands return TOON by default and read `.toon` and legacy `.json` messages. One job per session. A mailbox check with no messages makes no tracker or Log edit and writes no reply text.
 - On `[Mailbox check]`: read and acknowledge each message only after handling it as Resume step 2 does. Reconcile tracker and board when a message changes state, then dispatch ready one-shot tasks. New interactive sessions need explicit approval.
-- On `[Scheduled check]`: one message of four calls that do not depend on each other — `TZ=<tz> date`, list sessions, `chief-of-stuff inbox list --recipient coordinator --unread`, `chief-of-stuff audit --date <today>`. Then:
+- On `[Scheduled check]`: one message of four independent calls — `TZ=<tz> date`, list sessions, `chief-of-stuff inbox list --recipient coordinator --unread`, `chief-of-stuff audit --date <today>`. Then:
   - Process the mailbox and the audit as Resume step 2 does, and check owners against the list (see Sessions).
   - Take up every answer saved on a decision page (see Asks).
   - Poll each live session whose row says `idle` or whose task closed (Assign step 1). Its reply hands it the next task that fits; a busy reply hands it nothing.
   - In one-shot mode, dispatch ready `unassigned` tasks automatically after reconciliation. In interactive mode, a task no live session fits gets one dispatch proposal (see Dispatch). A proposal already waiting on its yes is not asked again; it stays in the Resume block's `Waiting on:`.
   - Run `chief-of-stuff merge-ready --root .` and report its lines instead of the forge's own merge status.
-  - Run `chief-of-stuff pages --ensure`, so a server that died with a reboot is back within one check.
-- A check ends on one status line, or on an ask only for a reason Asks names. A check that finds nothing writes no Log line (see Tracker).
+  - Run `chief-of-stuff pages --ensure`, so a server lost on reboot is back within one check.
+- A check ends on an ask only for a reason Asks names. A check that finds nothing writes no Log line (see Tracker).
+
+A check that finds nothing writes no reply text. A check that finds something writes only what changed, in one short line. The standing waiting-on list stays in the Resume block and on the board; give it only when the user addresses you or asks, or when an entry on it changes.
 
 ## Sessions
 
