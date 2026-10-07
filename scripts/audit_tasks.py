@@ -250,7 +250,7 @@ def _read_merged(tasks, home: Backlog | GitHubBacklog, gh, call) -> list[MergedF
 
 @dataclass(frozen=True)
 class LaneFault:
-    """A task whose lane the settings file does not name, or whose stage is not one of its lane's (#33)."""
+    """A task whose lane the settings file does not name, whose stage is not one of its lane's (#33), or that has a stage and no lane (#363)."""
 
     task: str
     why: str
@@ -262,10 +262,11 @@ class LaneFault:
 def lane_faults(tasks, lanes: dict, settings_path: str | None) -> list[LaneFault]:
     faults: list[LaneFault] = []
     for task in tasks:
-        if not task.lane.strip():
-            continue
         name, stage, lane = clip_name(task.label), task.stage.strip(), lanes.get(task.lane.strip())
-        if lane is None:
+        if not task.lane.strip():
+            if stage:  # BUILD draws a card only for a task with a lane
+                faults.append(LaneFault(name, f"stage {stage} but no lane"))
+        elif lane is None:
             faults.append(LaneFault(name, f"lane {task.lane.strip()} is not in {settings_path or 'the settings file'}"))
         elif not stage:
             faults.append(LaneFault(name, f"lane {task.lane.strip()} but no stage"))
@@ -854,7 +855,7 @@ def audit(root: Path, day: str, gh=None, check_issues: bool = True, now: datetim
     report.lines.extend(str(o) for o in report.over)
     budgeted = f" over={len(report.over)}" if settings.budgets else ""
     report.lines.extend(str(f) for f in report.lanes)
-    laned = f" lanes={len(report.lanes)}" if any(t.lane.strip() for t in tasks) else ""
+    laned = f" lanes={len(report.lanes)}" if report.lanes or any(t.lane.strip() for t in tasks) else ""
     kanban = f" kanban={len(report.kanban)}" if settings.kanban and check_issues else ""
     facts = len({(r.worktree, r.why) for r in report.reopen})
     reopen = f"{facts} tree{'' if facts == 1 else 's'}/{len(report.reopen)} task{'' if len(report.reopen) == 1 else 's'}" if report.reopen else "0"
