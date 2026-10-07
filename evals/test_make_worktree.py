@@ -155,6 +155,132 @@ class CloneCase(unittest.TestCase):
         return make_repo.git(["branch", "--list", "feat/new"], self.clone)
 
 
+class AuditEnvTest(CloneCase):
+    """make_worktree's git call reads no home, global or system config and ignores replace refs: the one shared env."""
+
+    def setUp(self):
+        super().setUp()
+        self.tree = self.build().path
+
+    def test_the_call_passes_the_shared_audit_env(self):
+        done = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        with mock.patch.object(mw.subprocess, "run", return_value=done) as run:
+            mw.git(["status"], self.tree)
+        env = run.call_args.kwargs["env"]
+        self.assertEqual(env, git_trees.audit_env())
+        self.assertNotEqual(env["HOME"], str(self.tree))
+
+    def test_a_global_config_the_worker_wrote_does_not_run(self):
+        marker = self.root / "marker"
+        hook = f"{sys.executable} -c \\\"import pathlib; pathlib.Path('{marker}').touch()\\\""
+        (self.tree / ".gitconfig").write_text(f'[core]\n\tfsmonitor = "{hook}"\n')
+        control = {"PATH": make_repo.ENV["PATH"], "HOME": str(self.tree)}  # what the call used to run with
+        subprocess.run(["git", "-C", str(self.tree), "status"], env=control, capture_output=True, check=False)
+        self.assertTrue(marker.exists(), "the fixture must fire under the old environment, or the test proves nothing")
+        marker.unlink()
+        mw.git(["status"], self.tree)
+        self.assertFalse(marker.exists())
+
+    def test_a_replace_ref_does_not_hide_a_change(self):
+        (self.tree / "README.md").write_text("changed\n")
+        make_repo.git(["add", "README.md"], self.tree)
+        replacement = make_repo.git(["commit-tree", make_repo.git(["write-tree"], self.tree), "-m", "replacement"], self.tree)
+        make_repo.git(["replace", "-f", rev(self.tree), replacement], self.tree)
+        # The fixture hides the change from a plain reader and shows it to one that ignores replace refs.
+        self.assertEqual(make_repo.git(["status", "--short"], self.tree), "")
+        self.assertIn("README.md", mw.git(["status", "--short"], self.tree)[1])
+
+
+class GitHelperErrorPathTest(unittest.TestCase):
+    """The helper's own failure shape: a git that cannot run is code 1 with the exception's class name, never a raise."""
+
+    def test_an_oserror_is_code_1_naming_the_exception_class(self):
+        with mock.patch.object(mw.subprocess, "run", side_effect=FileNotFoundError("no git")):
+            code, detail = mw.git(["status"], Path("."))
+        self.assertEqual(code, 1)
+        self.assertIn("FileNotFoundError", detail)
+
+    def test_a_timeout_is_code_1_naming_the_exception_class(self):
+        with mock.patch.object(mw.subprocess, "run", side_effect=subprocess.TimeoutExpired("git", 1)):
+            code, detail = mw.git(["status"], Path("."))
+        self.assertEqual(code, 1)
+        self.assertIn("TimeoutExpired", detail)
+
+    def test_the_call_is_bounded_by_the_git_timeout(self):
+        done = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        with mock.patch.object(mw.subprocess, "run", return_value=done) as run:
+            mw.git(["status"], Path("."))
+        self.assertIsNotNone(run.call_args.kwargs["timeout"])
+        self.assertEqual(run.call_args.kwargs["timeout"], mw.GIT_TIMEOUT)
+
+    def test_stderr_is_the_detail_when_stdout_is_empty(self):
+        done = subprocess.CompletedProcess([], 3, stdout="", stderr="boom\n")
+        with mock.patch.object(mw.subprocess, "run", return_value=done):
+            self.assertEqual(mw.git(["status"], Path(".")), (3, "boom"))
+
+    def test_stdout_wins_over_stderr_when_both_are_set(self):
+        done = subprocess.CompletedProcess([], 0, stdout="out\n", stderr="boom\n")
+        with mock.patch.object(mw.subprocess, "run", return_value=done):
+            self.assertEqual(mw.git(["status"], Path(".")), (0, "out"))
+
+    def test_a_branch_is_refused_when_git_cannot_run(self):
+        with mock.patch.object(mw, "git", return_value=(1, "x")):
+            with self.assertRaises(mw.RefusedError):
+                mw.check_branch("fix/plain")
+
+
+class WorktreeAddEnvTest(CloneCase):
+    """`worktree add` runs the clone's own post-checkout hook, and a hook in the user's own clone is trusted: that one call
+    runs in the user's environment (the repo-selecting variables dropped). Every read stays on the audit env."""
+
+    def record(self):
+        calls = []
+        real = subprocess.run
+
+        def spy(argv, **kw):
+            calls.append((argv, kw.get("env")))
+            return real(argv, **kw)
+
+        return calls, spy
+
+    def test_a_post_checkout_hook_that_needs_a_writable_home_succeeds(self):
+        hook = self.clone / ".git" / "hooks" / "post-checkout"
+        hook.write_text(
+            f"#!{sys.executable}\n"
+            "import os, sys\n"
+            "try:\n"
+            "    os.makedirs(os.path.join(os.environ['HOME'], '.cache-marker'))\n"
+            "except OSError:\n"
+            "    sys.exit(1)\n"
+        )
+        hook.chmod(0o755)
+        home = self.root / "user-home"
+        home.mkdir()
+        with mock.patch.dict(os.environ, {"HOME": str(home)}):
+            made = self.build()
+        self.assertTrue(made.path.is_dir())
+        self.assertTrue((home / ".cache-marker").is_dir(), "the hook ran with the user's HOME")
+
+    def test_the_add_call_runs_in_the_users_env_and_every_read_stays_on_the_audit_env(self):
+        home = self.root / "user-home"
+        home.mkdir()
+        repo_vars = {"GIT_DIR": str(self.root / "nowhere"), "GIT_WORK_TREE": str(self.root / "nowhere"), "GIT_INDEX_FILE": str(self.root / "nowhere.idx")}
+        calls, spy = self.record()
+        with mock.patch.dict(os.environ, {"HOME": str(home), **repo_vars}), mock.patch.object(mw.subprocess, "run", spy):
+            self.build()
+        adds = [env for argv, env in calls if argv[3:5] == ["worktree", "add"]]
+        self.assertEqual(len(adds), 1)
+        env = adds[0]
+        self.assertEqual(env["HOME"], str(home))
+        for var in repo_vars:
+            self.assertNotIn(var, env)
+        self.assertEqual(env["GIT_TERMINAL_PROMPT"], "0")
+        reads = {argv[3]: env for argv, env in calls if argv[3] in ("check-ref-format", "rev-parse", "log")}
+        self.assertEqual(set(reads), {"check-ref-format", "rev-parse", "log"})
+        for verb, read_env in reads.items():
+            self.assertEqual(read_env, git_trees.audit_env(), verb)
+
+
 class BuildTest(CloneCase):
     def test_creates_the_tree_on_a_new_branch_off_main(self):
         made = self.build()
@@ -408,17 +534,17 @@ scripts, root, clone, marks = sys.argv[1:5]
 sys.path.insert(0, scripts)
 import git_trees
 import make_worktree as mw
-real_fetch, real_git = git_trees.fetch_base, mw.git
+real_fetch, real_add = git_trees.fetch_base, mw.git_trusted
 def fetch(*a, **k):
     Path(marks, "started").touch()
     time.sleep(2)
     return real_fetch(*a, **k)
-def git(args, cwd):
-    out = real_git(args, cwd)
+def add(args, cwd):
+    out = real_add(args, cwd)
     if args[:2] == ["worktree", "add"]:
         Path(marks, "add_end").write_text(repr(time.time()))
     return out
-git_trees.fetch_base, mw.git = fetch, git
+git_trees.fetch_base, mw.git_trusted = fetch, add
 mw.build(Path(root), Path(clone), "trees", "wt-child", "feat/child", "implementer")
 """
 
@@ -433,7 +559,7 @@ class SerializedDispatchTest(CloneCase):
     def spans(self, from_local: bool) -> tuple[dict[str, tuple[float, float]], dict[str, object]]:
         """Run BUILDERS simultaneous builds; (thread -> (span start, span end), thread -> Made or the exception)."""
         events: list[tuple[str, str, float]] = []
-        real_git, real_fetch = mw.git, git_trees.fetch_base
+        real_add, real_fetch = mw.git_trusted, git_trees.fetch_base
 
         def note(kind: str):
             events.append((threading.current_thread().name, kind, time.monotonic()))
@@ -443,12 +569,12 @@ class SerializedDispatchTest(CloneCase):
             time.sleep(self.HOLD)
             return real_fetch(tree, *a, **k)
 
-        def git(args, cwd):
+        def git_trusted(args, cwd):
             adding = args[:2] == ["worktree", "add"]
             if adding and from_local:
                 note("start")
                 time.sleep(self.HOLD)
-            out = real_git(args, cwd)
+            out = real_add(args, cwd)
             if adding:
                 note("end")
             return out
@@ -463,7 +589,7 @@ class SerializedDispatchTest(CloneCase):
             except Exception as exc:  # the test reports it, whatever it is
                 results[f"b{i}"] = exc
 
-        with mock.patch.object(mw.git_trees, "fetch_base", fetch_base), mock.patch.object(mw, "git", git):
+        with mock.patch.object(mw.git_trees, "fetch_base", fetch_base), mock.patch.object(mw, "git_trusted", git_trusted):
             threads = [threading.Thread(target=dispatch, args=(i,), name=f"b{i}") for i in range(self.BUILDERS)]
             for t in threads:
                 t.start()
@@ -479,6 +605,7 @@ class SerializedDispatchTest(CloneCase):
             self.assertGreaterEqual(b_start, a_end, f"{b} began its fetch-and-add {a_end - b_start:.2f}s before {a} finished its own: {ordered}")
         refused = {w: str(r) for w, r in results.items() if not isinstance(r, mw.Made)}
         self.assertEqual(refused, {}, "no dispatch is refused by another")
+        self.assertEqual(len(spans), self.BUILDERS, "every build's span was recorded: the add went through the wrapped call")
 
     def test_threads_fetch_and_add_one_at_a_time(self):
         self.assert_serialized(from_local=False)

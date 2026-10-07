@@ -1355,6 +1355,20 @@ class AuditEnvTest(Repo):
         self.assertEqual((env["GIT_TERMINAL_PROMPT"], env["GIT_OPTIONAL_LOCKS"]), ("0", "0"))
         self.assertEqual(env["PATH"], "/usr/bin:/bin:/usr/local/bin")
 
+    def test_audit_env_is_the_one_definition(self) -> None:
+        self.assertEqual(git_trees.audit_env(), {
+            "GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0", "GIT_NO_REPLACE_OBJECTS": "1",
+            "PATH": "/usr/bin:/bin:/usr/local/bin", "HOME": git_trees.SAFE_HOME,
+            "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"})
+
+    def test_audit_env_is_a_fresh_dict_that_ignores_the_launchers_environment(self) -> None:
+        git_trees.audit_env()["HOME"] = "changed"
+        self.assertEqual(git_trees.audit_env()["HOME"], git_trees.SAFE_HOME)
+        with patch.dict(os.environ, {"GIT_CONFIG_PARAMETERS": "'core.fsmonitor=x'", "GIT_DIR": "/elsewhere"}):
+            env = git_trees.audit_env()
+        self.assertNotIn("GIT_CONFIG_PARAMETERS", env)
+        self.assertNotIn("GIT_DIR", env)
+
     def test_a_global_config_the_worker_wrote_does_not_run(self) -> None:
         tree, marker = self.tree("wt", "feat/wt"), self.root / "marker"
         hook = f"{sys.executable} -c \\\"import pathlib; pathlib.Path('{marker}').touch()\\\""
