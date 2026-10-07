@@ -1870,6 +1870,19 @@ class FlowRefReviewTest(unittest.TestCase):
             self.assertEqual(label, "#7")
             self.assertIn('href="/issues/7"', attrs)
 
+    def test_markdown_issue_flow_ref_titles_escape_quotes_and_angle_brackets(self) -> None:
+        # PR 469 R1: the issue cell's markdown label must not become HTML attributes.
+        url = "https://forge.example/group/project/-/issues/7"
+        issue = f'[x" onmouseover="alert(1)<b>]({url})'
+        flow = self.flow(issue, "Build the parser")
+        rows = re.findall(r'<div class="gantt-row">[^\n]+', flow)
+        self.assertEqual(len(rows), 2)
+        for row in rows:
+            self.assertIn(f'title="[x&quot; onmouseover=&quot;alert(1)&lt;b&gt;]({url})"', row)
+            # Checking the entire row covers every attribute, including malformed ones.
+            self.assertNotIn('" onmouseover=', row)
+            self.assertNotIn("<b>", row)
+
 
 class SettingsLineTest(unittest.TestCase):
     """`Settings: <path>` names the workspace's chief-of-stuff.toml (Zach, 2026-09-22 22:20)."""

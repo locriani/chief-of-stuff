@@ -187,6 +187,16 @@ class BarWeekdayTest(unittest.TestCase):
                 html = gantt.render([row(seg(0, 1))], win)
                 self.assert_bar_label(html, f"implement {NOW:%H:%M}–{NOW + H:%H:%M} · worker-01 · done")
 
+    def test_a_clipped_start_on_the_same_day_number_in_another_month_names_its_weekday(self) -> None:
+        # PR 469 R2: comparing day numbers alone mistakes a previous month for today.
+        now = NOW.replace(day=1)
+        start = now.replace(month=now.month - 1)
+        win = gantt.window(now, 6 * H, 18 * H)
+        segment = gantt.Segment(start, now, "implement", "done", "worker-01")
+        html = gantt.render([row(segment)], win)
+        self.assertEqual(bars(html), [(0.0, 25.0)])
+        self.assert_bar_label(html, f"implement {start:%a %H:%M}–{now:%H:%M} · worker-01 · done")
+
     def test_week_window_keeps_weekdays_even_for_same_day_endpoints(self) -> None:
         html = gantt.render([row(seg(0, 1))], WEEK)
         self.assert_bar_label(html, f"implement {NOW:%a %H:%M}–{NOW + H:%a %H:%M} · worker-01 · done")
