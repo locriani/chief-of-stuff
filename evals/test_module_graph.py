@@ -15,17 +15,19 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import board_sources as bs  # noqa: E402
 import git_trees  # noqa: E402
+import make_repo  # noqa: E402
 import module_graph  # noqa: E402
 
-IDENTITY = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
-            "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com"}
+# The fixtures never read the machine's git config (a global commit.gpgsign would fail every fixture commit) and carry a
+# fixed identity; the subject under test, module_graph.run, still runs with the real environment.
+FIXTURE_ENV = {**make_repo.ENV, "HOME": "/var/empty", "GIT_CONFIG_NOSYSTEM": "1"}
 
 
 def git(cwd: Path, *args: str) -> str:
-    env = {**git_trees.user_env(), **IDENTITY}
-    return subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True, check=True, env=env).stdout.strip()
+    return subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True, check=True, env=FIXTURE_ENV).stdout.strip()
 
 
 def commit(repo: Path, name: str) -> str:
@@ -65,9 +67,9 @@ class ModuleGraphEnvTest(unittest.TestCase):
         remote = self.tmp / "remote.git"
         seed = repo(self.tmp / "seed", "main")
         base = git(seed, "rev-parse", "HEAD")
-        subprocess.run(["git", "clone", "-q", "--bare", str(seed), str(remote)], check=True, capture_output=True)
-        clone = self.tmp / "clone"
-        subprocess.run(["git", "clone", "-q", str(remote), str(clone)], check=True, capture_output=True)
+        subprocess.run(["git", "clone", "-q", "--bare", str(seed), str(remote)], check=True, capture_output=True, env=FIXTURE_ENV)
+        clone =self.tmp / "clone"
+        subprocess.run(["git", "clone", "-q", str(remote), str(clone)], check=True, capture_output=True, env=FIXTURE_ENV)
         # The change's head and a newer base live only on the remote; the clone has neither.
         git(seed, "checkout", "-q", "-b", "change")
         head = commit(seed, "change.txt")
