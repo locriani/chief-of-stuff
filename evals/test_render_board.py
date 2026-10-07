@@ -1843,6 +1843,33 @@ class FlowRefReviewTest(unittest.TestCase):
                 flow = self.flow(ref, "Build the parser")
                 self.assertEqual(set(re.findall(r'href="(/issues/[^"]*)"', flow)), {"/issues/7"})
 
+    def test_forge_issue_url_flow_labels_show_only_the_issue_number(self) -> None:
+        # #459: display is #N, independent of the full key used to merge passes.
+        for url in ("https://forge.example/group/project/-/issues/7",
+                    "https://github.com/group/project/issues/7"):
+            with self.subTest(url=url):
+                flow = self.flow(url, "Build the parser")
+                self.assertEqual(re.findall(r'class="gantt-ref"[^>]*>([^<]*)<', flow), ["#7", "#7"])
+
+    def test_forge_issue_url_flow_ref_titles_keep_the_full_url(self) -> None:
+        # #459 decision: the short label's title retains the tracker cell's full URL.
+        for url in ("https://forge.example/group/project/-/issues/7",
+                    "https://github.com/group/project/issues/7"):
+            with self.subTest(url=url):
+                flow = self.flow(url, "Build the parser")
+                refs = re.findall(r'<a\b([^>]*\bclass="gantt-ref"[^>]*)>', flow)
+                self.assertEqual(len(refs), 2)
+                for attrs in refs:
+                    self.assertIn(f'title="{url}"', attrs)
+
+    def test_bare_issue_flow_labels_and_task_page_links_stay_unchanged(self) -> None:
+        flow = self.flow("#7", "Build the parser")
+        refs = re.findall(r'<a\b([^>]*\bclass="gantt-ref"[^>]*)>([^<]*)</a>', flow)
+        self.assertEqual(len(refs), 2)
+        for attrs, label in refs:
+            self.assertEqual(label, "#7")
+            self.assertIn('href="/issues/7"', attrs)
+
 
 class SettingsLineTest(unittest.TestCase):
     """`Settings: <path>` names the workspace's chief-of-stuff.toml (Zach, 2026-09-22 22:20)."""
