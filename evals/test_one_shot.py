@@ -5,6 +5,7 @@ import io
 import multiprocessing
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -88,6 +89,261 @@ class CommandTest(unittest.TestCase):
             subprocess.run(["git", "-C", str(base), "worktree", "add", "-q", str(tree)], check=True)
             args = one_shot.command("codex", "/bin/fake", tree, tree / "d.md", agent_type=None, model="", effort="")
             self.assertEqual(args[args.index("--add-dir") + 1], str((base / ".git").resolve()))
+
+    def _repo_with_linked_tree(self, tmp):
+        base, tree = Path(tmp) / "base", Path(tmp) / "tree"
+        subprocess.run(["git", "init", "-q", str(base)], check=True)
+        subprocess.run(["git", "-C", str(base), "-c", "user.name=t", "-c", "user.email=t@example.com",
+                        "commit", "-q", "--allow-empty", "-m", "init"], check=True)
+        subprocess.run(["git", "-C", str(base), "worktree", "add", "-q", str(tree)], check=True)
+        return base, tree
+
+    @staticmethod
+    def _add_dirs(args):
+        return [args[i + 1] for i, a in enumerate(args) if a == "--add-dir"]
+
+    def test_codex_may_write_the_linked_worktrees_own_gitdir(self):
+        # #421: codex carves the cwd's own gitdir out as read-only even under a writable common dir;
+        # only an explicit entry for <common>/worktrees/<tree> overrides it, or fetch, commit, and checkout -b fail.
+        with tempfile.TemporaryDirectory() as tmp:
+            base, tree = self._repo_with_linked_tree(tmp)
+            args = one_shot.command("codex", "/bin/fake", tree, tree / "d.md", agent_type=None, model="", effort="")
+            gitdir = subprocess.run(["git", "-C", str(tree), "rev-parse", "--path-format=absolute",
+                                     "--absolute-git-dir"], capture_output=True, text=True, check=True).stdout.strip()
+            self.assertEqual(self._add_dirs(args), [str((base / ".git").resolve()), str(Path(gitdir).resolve())])
+            self.assertNotEqual(self._add_dirs(args)[0], self._add_dirs(args)[1])
+
+    def test_codex_in_a_normal_clone_adds_its_git_dir_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "base"
+            subprocess.run(["git", "init", "-q", str(base)], check=True)
+            args = one_shot.command("codex", "/bin/fake", base, base / "d.md", agent_type=None, model="", effort="")
+            self.assertEqual(self._add_dirs(args), [str((base / ".git").resolve())])
+
+    def test_codex_outside_a_git_repo_adds_no_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            args = one_shot.command("codex", "/bin/fake", Path(tmp), Path(tmp) / "d.md",
+                                    agent_type=None, model="", effort="")
+            self.assertEqual(self._add_dirs(args), [])
+
+    def test_codex_grants_nothing_when_a_git_lookup_fails(self):
+        # The pair cannot be validated without both answers, so a failing lookup grants nothing, not even the
+        # common dir (it used to keep it): no flag, no exception.
+        real_run = subprocess.run
+        for failing in ("--git-common-dir", "--absolute-git-dir"):
+            def run(argv, *a, _failing=failing, **kw):
+                if _failing in argv:
+                    return subprocess.CompletedProcess(argv, 128, stdout="", stderr="fatal")
+                return real_run(argv, *a, **kw)
+
+            with self.subTest(failing=failing), tempfile.TemporaryDirectory() as tmp:
+                _, tree = self._repo_with_linked_tree(tmp)
+                with mock.patch.object(one_shot.subprocess, "run", side_effect=run):
+                    args = one_shot.command("codex", "/bin/fake", tree, tree / "d.md",
+                                            agent_type=None, model="", effort="")
+                self.assertEqual(self._add_dirs(args), [])
+
+    def _codex_dirs(self, cwd):
+        return self._add_dirs(one_shot.command("codex", "/bin/fake", cwd, cwd / "d.md",
+                                               agent_type=None, model="", effort=""))
+
+    def _git(self, *args):
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *args], check=True,
+                       capture_output=True)
+
+    def test_codex_refuses_a_gitfile_that_points_at_another_repo(self):
+        # #421 review: the worker can rewrite the worktree's `.git` file; the next launch must not grant any
+        # valid git directory on disk.
+        with tempfile.TemporaryDirectory() as tmp:
+            _, tree = self._repo_with_linked_tree(tmp)
+            victim = Path(tmp) / "victim"
+            subprocess.run(["git", "init", "-q", str(victim)], check=True)
+            (tree / ".git").write_text(f"gitdir: {victim / '.git'}\n")
+            self.assertEqual(self._codex_dirs(tree), [])
+
+    def test_codex_refuses_a_rewritten_commondir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base, tree = self._repo_with_linked_tree(tmp)
+            victim = Path(tmp) / "victim"
+            subprocess.run(["git", "init", "-q", str(victim)], check=True)
+            (base / ".git/worktrees/tree/commondir").write_text(f"{victim / '.git'}\n")
+            self.assertEqual(self._codex_dirs(tree), [])
+
+    def test_codex_refuses_a_gitfile_that_points_inside_the_worktree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, tree = self._repo_with_linked_tree(tmp)
+            subprocess.run(["git", "init", "-q", "--bare", str(tree / "forged")], check=True)
+            (tree / ".git").write_text(f"gitdir: {tree / 'forged'}\n")
+            self.assertEqual(self._codex_dirs(tree), [])
+
+    def test_codex_grants_a_submodule_nothing(self):
+        # Pinned rule: a submodule's gitdir is `<super>/.git/modules/<name>`, not under `<common>/worktrees`,
+        # so it is neither a linked worktree nor a normal clone: nothing is granted.
+        with tempfile.TemporaryDirectory() as tmp:
+            sub, sup = Path(tmp) / "sub", Path(tmp) / "super"
+            for repo in (sub, sup):
+                subprocess.run(["git", "init", "-q", str(repo)], check=True)
+                self._git("-C", str(repo), "commit", "-q", "--allow-empty", "-m", "init")
+            self._git("-C", str(sup), "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(sub), "mod")
+            self.assertTrue((sup / "mod/.git").is_file())
+            self.assertEqual(self._codex_dirs(sup / "mod"), [])
+
+    def test_codex_grants_a_linked_worktree_reached_through_a_symlink(self):
+        # The cwd may be a symlink to the toplevel: the toplevel is compared resolved.
+        with tempfile.TemporaryDirectory() as tmp:
+            base, tree = self._repo_with_linked_tree(tmp)
+            link = Path(tmp) / "link"
+            link.symlink_to(tree)
+            gitdir = (base / ".git/worktrees/tree").resolve()
+            self.assertEqual(self._codex_dirs(link), [str((base / ".git").resolve()), str(gitdir)])
+
+    def test_codex_grants_nothing_from_a_subdirectory(self):
+        # Second review: only the toplevel is bound to its git directory; a subdirectory of a clone, of a linked
+        # worktree (also through a symlink), or of a plain dir below an unrelated repo gets nothing.
+        with tempfile.TemporaryDirectory() as tmp:
+            base, tree = self._repo_with_linked_tree(tmp)
+            parent = Path(tmp) / "parent"
+            subprocess.run(["git", "init", "-q", str(parent)], check=True)
+            link = Path(tmp) / "link"
+            link.symlink_to(tree)
+            cwds = [base / "src", tree / "src", link / "src", parent / "trees/plain"]
+            for cwd in cwds:
+                cwd.mkdir(parents=True, exist_ok=True)
+            for cwd in cwds:
+                with self.subTest(cwd=str(cwd)):
+                    self.assertEqual(self._codex_dirs(cwd), [])
+
+    def test_codex_grants_a_bare_repo_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bare = Path(tmp) / "bare.git"
+            subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True)
+            self.assertEqual(self._codex_dirs(bare), [])
+
+    def _other_repo_with_worktree(self, tmp):
+        other, other_tree = Path(tmp) / "other", Path(tmp) / "other-tree"
+        subprocess.run(["git", "init", "-q", str(other)], check=True)
+        self._git("-C", str(other), "commit", "-q", "--allow-empty", "-m", "init")
+        self._git("-C", str(other), "worktree", "add", "-q", str(other_tree))
+        return other, other_tree
+
+    def test_codex_refuses_a_gitfile_that_points_at_another_repos_worktree_gitdir(self):
+        # R1/R3: `<OTHER>/.git/worktrees/<name>` has the right shape and a valid commondir; only its back-pointer
+        # (it names the other tree's `.git`, not ours) gives it away.
+        with tempfile.TemporaryDirectory() as tmp:
+            _, tree = self._repo_with_linked_tree(tmp)
+            other, _ = self._other_repo_with_worktree(tmp)
+            (tree / ".git").write_text(f"gitdir: {other / '.git/worktrees/other-tree'}\n")
+            self.assertEqual(self._codex_dirs(tree), [])
+
+    def test_codex_refuses_a_sibling_worktrees_gitdir_with_its_own_back_pointer_intact(self):
+        # R6: same clone, same `commondir`; the sibling's `gitdir` file still names the sibling's own `.git`.
+        with tempfile.TemporaryDirectory() as tmp:
+            base, tree = self._repo_with_linked_tree(tmp)
+            self._git("-C", str(base), "worktree", "add", "-q", str(Path(tmp) / "sibling"))
+            (tree / ".git").write_text(f"gitdir: {base / '.git/worktrees/sibling'}\n")
+            self.assertEqual(self._codex_dirs(tree), [])
+
+    def test_codex_refuses_a_symlinked_dot_git(self):
+        # R4: a symlinked `.git` grants nothing, whatever it points at.
+        with tempfile.TemporaryDirectory() as tmp:
+            base, tree = self._repo_with_linked_tree(tmp)
+            other, _ = self._other_repo_with_worktree(tmp)
+            clone, sibling, twin = (Path(tmp) / n for n in ("clone", "sibling", "twin"))
+            subprocess.run(["git", "init", "-q", str(clone)], check=True)
+            self._git("-C", str(base), "worktree", "add", "-q", str(sibling))
+            self._git("-C", str(base), "worktree", "add", "-q", str(twin))
+            (tree / ".git").unlink()
+            (tree / ".git").symlink_to(other / ".git")
+            shutil.rmtree(clone / ".git")
+            (clone / ".git").symlink_to(other / ".git")
+            (twin / ".git").unlink()
+            (twin / ".git").symlink_to(sibling / ".git")
+            for label, cwd in (("worktree -> other .git", tree), ("clone -> other .git", clone),
+                               ("worktree -> sibling's .git file", twin)):
+                with self.subTest(case=label):
+                    self.assertEqual(self._codex_dirs(cwd), [])
+
+    def _patched_rev_parse(self, answers):
+        real_run = subprocess.run
+
+        def run(argv, *a, **kw):
+            for flag, path in answers.items():
+                if flag in argv:
+                    return subprocess.CompletedProcess(argv, 0, stdout=f"{path}\n", stderr="")
+            return real_run(argv, *a, **kw)
+
+        return mock.patch.object(one_shot.subprocess, "run", side_effect=run)
+
+    def test_codex_clone_grant_needs_its_common_dir_to_be_its_dot_git(self):
+        # R2: `<clone>/.git/commondir` rewritten to another repo: git reports the other repo as the common dir.
+        with tempfile.TemporaryDirectory() as tmp:
+            clone, victim = Path(tmp) / "clone", Path(tmp) / "victim"
+            for repo in (clone, victim):
+                subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            (clone / ".git/commondir").write_text(f"{victim / '.git'}\n")
+            self.assertEqual(self._codex_dirs(clone), [])
+
+    def test_codex_clone_grant_needs_its_gitdir_to_equal_its_common_dir(self):
+        # R2, one term at a time: dot-git == common, but git reports another gitdir.
+        with tempfile.TemporaryDirectory() as tmp:
+            clone, other = Path(tmp) / "clone", Path(tmp) / "other"
+            for repo in (clone, other):
+                subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            with self._patched_rev_parse({"--absolute-git-dir": other / ".git"}):
+                self.assertEqual(self._codex_dirs(clone), [])
+
+    def test_codex_clone_grant_needs_its_dot_git_to_equal_the_reported_dirs(self):
+        # R2, one term at a time: gitdir == common (both another repo), but `<clone>/.git` is not that.
+        with tempfile.TemporaryDirectory() as tmp:
+            clone, other = Path(tmp) / "clone", Path(tmp) / "other"
+            for repo in (clone, other):
+                subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            with self._patched_rev_parse({"--absolute-git-dir": other / ".git",
+                                          "--git-common-dir": other / ".git"}):
+                self.assertEqual(self._codex_dirs(clone), [])
+
+    def test_codex_never_raises_on_a_corrupt_commondir(self):
+        # R7: a NUL byte or an unreadable `commondir` grants nothing and does not raise out of command().
+        for label, damage in (("NUL byte", lambda f: f.write_bytes(b"../..\0x\n")),
+                              ("unreadable", lambda f: (f.write_text("../..\n"), f.chmod(0)))):
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as tmp:
+                base, tree = self._repo_with_linked_tree(tmp)
+                commondir = base / ".git/worktrees/tree/commondir"
+                damage(commondir)
+                try:
+                    self.assertEqual(self._codex_dirs(tree), [])
+                finally:
+                    commondir.chmod(0o644)
+
+    def test_codex_grants_a_linked_worktree_despite_git_environment_variables(self):
+        # R9: GIT_DIR and friends in the launcher's environment must not redirect the rev-parse calls.
+        with tempfile.TemporaryDirectory() as tmp:
+            base, tree = self._repo_with_linked_tree(tmp)
+            other, _ = self._other_repo_with_worktree(tmp)
+            want = [str((base / ".git").resolve()), str((base / ".git/worktrees/tree").resolve())]
+            for env in ({"GIT_DIR": str(other / ".git")}, {"GIT_COMMON_DIR": str(other / ".git")},
+                        {"GIT_DIR": str(other / ".git/worktrees/other-tree")}):
+                with self.subTest(env=env), mock.patch.dict(os.environ, env):
+                    self.assertEqual(self._codex_dirs(tree), want)
+
+    def test_codex_grants_a_normal_clone_reached_through_a_symlink_as_the_resolved_path(self):
+        # R1: the grant is the resolved path, not the literal one the cwd was given as.
+        with tempfile.TemporaryDirectory() as tmp:
+            base, link = Path(tmp) / "base", Path(tmp) / "link"
+            subprocess.run(["git", "init", "-q", str(base)], check=True)
+            link.symlink_to(base)
+            dirs = self._codex_dirs(link)
+            self.assertEqual(dirs, [str((base / ".git").resolve())])
+            self.assertNotIn(str(link), dirs[0])
+
+    def test_only_codex_gets_add_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, tree = self._repo_with_linked_tree(tmp)
+            for runtime in ("claude", "cursor", "agy"):
+                with self.subTest(runtime=runtime):
+                    args = one_shot.command(runtime, "/bin/fake", tree, tree / "d.md",
+                                            agent_type=None, model="", effort="")
+                    self.assertNotIn("--add-dir", args)
 
     def test_codex_reaches_the_network_inside_workspace_write(self):
         # Remote-facing one-shots fetch, push, and call forge APIs; file writes stay confined.
@@ -860,6 +1116,20 @@ class RunTest(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertFalse((self.tree / ".chief-of-stuff").exists())
         self.assertEqual(self.tracker.read_text(), TRACKER)
+
+    def test_dry_run_with_a_corrupt_commondir_grants_nothing_and_does_not_raise(self):
+        # #421 second review: a damaged `commondir` must not raise out of command(), dry-run included.
+        linked = self.root / "trees/linked"
+        subprocess.run(["git", "-C", str(self.tree), "worktree", "add", "-q", str(linked)], check=True)
+        (self.tree / ".git/worktrees/linked/commondir").write_bytes(b"../..\0x\n")
+        fake = self._fake('status: done\nreason: done\nchanges: changed\n')
+        out = io.StringIO()
+        with mock.patch.object(one_shot, "resolve", return_value=str(fake)), contextlib.redirect_stdout(out):
+            result = one_shot.run(root=self.root, day="2026-09-18", task="Security audit",
+                                  cwd=linked, name="worker01", runtime="codex", agent_type=None,
+                                  model="", effort="", dry_run=True)
+        self.assertEqual(result, 0)
+        self.assertNotIn("--add-dir", out.getvalue())
 
     def test_review_adds_hold_and_comments_with_partial_changes(self):
         (self.root / "CLAUDE.md").write_text(CLAUDE +
