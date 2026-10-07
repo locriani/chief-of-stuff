@@ -7,10 +7,11 @@ from __future__ import annotations
 
 import functools
 import re
+from bisect import bisect_left
 from dataclasses import dataclass
 from datetime import date, datetime
 
-from backlog_ref import WORKFLOW, Backlog, GitHubBacklog, issue_ref
+from backlog_ref import WORKFLOW, Backlog, GitHubBacklog, IssueRef, issue_ref
 from clock import DATE, HHMM, RAN, hhmm as _hhmm
 from md import cells as _cells, is_separator as _is_separator, section as _section, split_row as _split_row, unmark as _unmark
 from workspace import Config
@@ -434,13 +435,33 @@ def issue_key(cell: str, home: Backlog | GitHubBacklog | None = None) -> str:
     return f"#{m[1]}" if m else cell.strip()
 
 
+def change_keys(text: str) -> tuple[str, str]:
+    """(issue key, change URL) named by tracker prose, with a bare issue resolved in the change's project.
+    Empty strings when neither is named. Issue and change URLs use the shared issue-reference parser."""
+    # ponytail: reads tracker prose, so an omitted or stale relationship is unknowable; the forge-sourced key replaces it.
+    issue, change, project = "", "", None
+    for url in re.findall(r"https://[^\s`<>()]+", text):
+        url = url.rstrip(".,;:")
+        issue_url = re.sub(r"/(?:merge_requests|pull)/(\d+)(/?)$", r"/issues/\1\2", url)
+        if ref := issue_ref(issue_url, None, any_host=True):
+            if issue_url != url:
+                if not change:
+                    change, project = url.rstrip("/"), ref
+            elif not issue:
+                issue = ref.label(None)
+    if not issue and (m := re.search(r"(?i)\b(?:issue|close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)\b", text)):
+        issue = IssueRef(project.repo, int(m[1]), project.host).label(None) if project else f"#{m[1]}"
+    return issue, change
+
+
 # A `#N` or `!N` issue or change reference in a one-shot's launch text.
 REF = re.compile(r"(?<!\w)[#!]\d+")
 
 
 def launch_row(text: str, tasks):
     """(row, name) for a one-shot's launch-time task text: the row whose item the text begins with, else the row
-    named by a leading "name:", else the row whose issue ref it carries (later rows win), and that row's name;
+    named by a leading "name:", else a grown item beginning with at least 40 characters of launch text,
+    else the row whose issue ref it carries (later rows win), and that row's name;
     with no row, None and the text's first line cut to 80 characters. The launch keeps its text; the row's item
     may change after it (#182)."""
     return launcher(tasks)(text)
@@ -448,7 +469,7 @@ def launch_row(text: str, tasks):
 
 def launcher(tasks):
     """launch_row over `tasks`, indexed once: items by length, task names (with a trailing ":") by length,
-    `#N`/`!N` issues by ref, and each text looked up once (#184). An issue cell of another shape
+    grown items in sorted order, `#N`/`!N` issues by ref, and each text looked up once (#184). An issue cell of another shape
     (`group/app#118`, a URL) keeps its own search."""
     items, names, refs, other = {}, {}, {}, []
     for i, t in enumerate(tasks):
@@ -463,6 +484,14 @@ def launcher(tasks):
                 other.append(((i, t), re.compile(rf"(?<!\w){re.escape(issue)}(?!\d)")))
     lengths = {len(k) for k in items}
     name_lengths = {len(k) for k in names}
+    sorted_items = sorted(items)
+
+    def grown(text: str):
+        if len(text) >= 40:
+            i = bisect_left(sorted_items, text)
+            while i < len(sorted_items) and sorted_items[i].startswith(text):
+                yield items[sorted_items[i]]
+                i += 1
 
     @functools.cache
     def row(text: str):
@@ -470,6 +499,7 @@ def launcher(tasks):
         first = text.split("\n", 1)[0][:80]
         for hits in ([items.get(text[:n]) for n in lengths],
                      [names.get(text[:n]) for n in name_lengths],
+                     grown(text),
                      [refs.get(r) for r in REF.findall(text)] + [hit for hit, p in other if p.search(text)]):
             if hits := [h for h in hits if h]:
                 t = max(hits, key=lambda h: h[0])[1]

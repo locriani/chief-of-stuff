@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 import gantt
 from clock import done_clock
 from fragment import esc
-from tracker import launch_row, launcher
+from tracker import WORKFLOW, change_keys, issue_key, launch_row, launcher
 # The Log line grammar and the moves read with it live in tracker_log.py, which draws nothing. `moves` is imported
 # here as well, so `flow_chart.moves` still names it.
 from tracker_log import Move, moves  # noqa: F401
@@ -68,6 +68,20 @@ def build(log: list[Move], tasks, lanes: dict, held: set[str], ends: dict[str, d
     # A move names a task by its name or its item; the name wins.
     find = {**{t.item.strip().casefold(): t for t in tasks if t.item.strip()}, **by_name}
     row_of = launcher(tasks)
+    # A row naming both a change and its issue bridges passes that name only the change.
+    named = {text: change_keys(text) for text in [*(t.item for t in tasks), *(m.name for m in log)]}
+    change_issues = {change: issue for issue, change in named.values() if issue and change}
+    for t in tasks:
+        if (change := named[t.item][1]) and t.issue.strip() and not t.workflow:
+            change_issues[change] = issue_key(t.issue)
+
+    def ref_of(task, text: str) -> str:
+        if task and task.issue.strip() and not task.workflow:
+            return issue_key(task.issue)
+        if task and not task.workflow:
+            return ""
+        issue, change = named[task.item if task else text]
+        return issue or change_issues.get(change, change)
 
     def key_of(m: Move) -> str:
         t = find.get(m.name.strip().casefold()) or (row_of(m.name)[0] if m.launch else None)
@@ -137,7 +151,7 @@ def build(log: list[Move], tasks, lanes: dict, held: set[str], ends: dict[str, d
             kind = task.kind if task else ""
             status = "approved" if is_approved else ("running" if kind == "open" else kind)
             note = "approved" if is_approved else last.stage
-        out.append((status, gantt.Row(task.issue.strip() if task else "", task.name.strip() if task else launch_row(last.name, ())[1],
+        out.append((status, gantt.Row(ref_of(task, last.name), task.name.strip() if task else launch_row(last.name, ())[1],
                                       note, tuple(segs))))
     # Each slot is free once the forecast holding it ends; more forecasts than slots wait for the (n-k+1)th end.
     slots = max(1, slots)
@@ -156,7 +170,7 @@ def build(log: list[Move], tasks, lanes: dict, held: set[str], ends: dict[str, d
             break
         heapq.heappush(busy, start + took)
         stages = [s for s in lane.stages if s not in terminal]
-        out.append((t.kind, gantt.Row(t.issue.strip(), t.name.strip(), f"queued · {_clock(start + took, now)}",
+        out.append((t.kind, gantt.Row(ref_of(t, t.item), t.name.strip(), f"queued · {_clock(start + took, now)}",
                                       tuple(_ahead(stages, start, start + took, owner(key, now, t))))))
     # #226: rows group merged, approved, running, needs input, queued, earliest move first within a group.
     far_future = now + WINDOWS[-1][2] * 1000  # a row with no segments at all sorts last in its bucket
@@ -175,7 +189,7 @@ def _merge_issues(rows: list[tuple[str, gantt.Row]]) -> list[tuple[str, gantt.Ro
     segment at all merges with none and is not clipped (#406)."""
     groups: dict[str, list[int]] = {}
     for i, (_, row) in enumerate(rows):
-        if row.ref:
+        if row.ref and row.ref != WORKFLOW:
             groups.setdefault(row.ref, []).append(i)
     out, drop = list(rows), set()
     for idxs in groups.values():
