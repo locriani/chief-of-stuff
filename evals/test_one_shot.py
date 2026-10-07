@@ -992,10 +992,12 @@ class RunTest(unittest.TestCase):
         self.assertEqual((report["status"], report["reason"]), ("relaunch", self.AGY_REASON))
 
     def test_a_second_genuine_agy_quota_stop_the_same_day_needs_review_with_the_same_reset_text(self):
-        # The Log line ends `Resets in 3h46m46s..` (snippet period, then the writer's); the cap must still match it.
+        # The Log line ends with the reason's own period, not a second one; the cap must still match it.
         self._stopped(stderr=self.AGY, runtime="agy")
         self.assertEqual(self._report()["status"], "relaunch")
-        self.assertIn(f"relaunch requested for Security audit — {self.AGY_REASON}.", self.tracker.read_text())
+        tracker = self.tracker.read_text()
+        self.assertIn(f"relaunch requested for Security audit — {self.AGY_REASON}\n", tracker)
+        self.assertNotIn("3h46m46s..", tracker)
         again = self._another_tree("worker-2")
         self._stopped(stderr=self.AGY, runtime="agy", tree=again)
         report = self._report(again)

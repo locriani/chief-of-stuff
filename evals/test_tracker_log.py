@@ -54,6 +54,14 @@ class RoundTripTest(unittest.TestCase):
         # The launcher finds an earlier relaunch of the task by this text.
         self.assertIn(tl.RELAUNCHED.format(task="Security audit"), line)
 
+    def test_a_relaunch_line_does_not_double_a_reasons_final_period(self):
+        # #436: a quota stop's reset text ends in a period of its own.
+        marker = tl.RELAUNCHED.format(task="Security audit")
+        for reason, tail in (("Resets in 3h46m46s.", "Resets in 3h46m46s."), ("base moved", "base moved."), ("", ".")):
+            with self.subTest(reason=reason):
+                self.assertEqual(tl.relaunch_line("10:20", "worker01", "Security audit", reason),
+                                 f"- 10:20 one-shot worker01{marker}{tail}")
+
     def test_the_moves_read_from_the_written_lines(self):
         text = "\n".join(("# Tracker", "", "## Log", "",
                           tl.started_line("09:15", "worker01", "codex", "", TREE, "Security audit"),
