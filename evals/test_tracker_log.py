@@ -133,6 +133,64 @@ class RelaunchStopTest(unittest.TestCase):
         self.assertEqual([(m.at.time(), m.name, m.stage, m.worker) for m in tl.moves(text, DAY, CT)],
                          [(time(9, 15), "Check parser", "implement", "worker01")])
 
+    def test_prose_mentioning_a_relaunch_mid_line_is_not_a_stop(self):
+        started = tl.started_line("09:15", "worker01", "codex", "gpt-test", TREE, "Check parser")
+        quoted = tl.relaunch_line("10:20", "worker01", "Check parser", "base moved")
+        note = f"- 10:20 note: retry example {quoted} was discussed; work continues."
+        text = f"## Log\n\n{started}\n{note}\n"
+        self.assertIsNone(tl.RELAUNCH.search(note))
+        self.assertEqual([m.line for m in tl.moves(text, DAY, CT)], [started])
+
+    def test_a_stage_named_relaunch_is_read_as_a_stage_move(self):
+        line = tl.stage_line("10:20", "Check parser", "relaunch")
+        self.assertIsNone(tl.RELAUNCH.match(line))
+        self.assertEqual([(m.at.time(), m.name, m.stage, m.launch, m.worker, m.line)
+                          for m in tl.moves(f"## Log\n\n{line}\n", DAY, CT)],
+                         [(time(10, 20), "Check parser", "relaunch", False, "", line)])
+
+    def test_the_same_worker_relaunched_twice_records_only_its_first_stop(self):
+        started = tl.started_line("09:15", "worker01", "codex", "gpt-test", TREE, "Check parser")
+        first = tl.relaunch_line("10:20", "worker01", "Check parser", "base moved")
+        duplicate = tl.relaunch_line("10:30", "worker01", "Check parser", "base moved again")
+        text = f"## Log\n\n{started}\n{first}\n{duplicate}\n"
+        self.assertEqual([m.line for m in tl.moves(text, DAY, CT)], [started, first])
+
+    def test_a_relaunch_before_any_launch_is_ignored(self):
+        early = tl.relaunch_line("09:00", "worker01", "Check parser", "base moved")
+        started = tl.started_line("09:15", "worker01", "codex", "gpt-test", TREE, "Check parser")
+        text = f"## Log\n\n{early}\n{started}\n"
+        self.assertEqual([m.line for m in tl.moves(text, DAY, CT)], [started])
+
+    def test_a_relaunch_without_a_timestamp_is_ignored(self):
+        started = tl.started_line("09:15", "worker01", "codex", "gpt-test", TREE, "Check parser")
+        unstamped = "- one-shot worker01: relaunch requested for Check parser — base moved."
+        text = f"## Log\n\n{started}\n{unstamped}\n"
+        self.assertEqual([m.line for m in tl.moves(text, DAY, CT)], [started])
+
+    def test_a_relaunch_with_an_invalid_clock_is_ignored(self):
+        started = tl.started_line("09:15", "worker01", "codex", "gpt-test", TREE, "Check parser")
+        for clock in ("24:00", "10:60"):
+            with self.subTest(clock=clock):
+                stopped = tl.relaunch_line(clock, "worker01", "Check parser", "base moved")
+                text = f"## Log\n\n{started}\n{stopped}\n"
+                self.assertEqual([m.line for m in tl.moves(text, DAY, CT)], [started])
+
+    def test_a_relaunch_after_the_worker_ended_adds_no_move(self):
+        started = tl.started_line("09:15", "worker01", "codex", "gpt-test", TREE, "Check parser")
+        stopped = tl.relaunch_line("10:30", "worker01", "Check parser", "base moved")
+        for status in ("done", "human_review"):
+            with self.subTest(status=status):
+                ended = tl.ended_line("10:20", "worker01", status, "check finished", "parser.py")
+                text = f"## Log\n\n{started}\n{ended}\n{stopped}\n"
+                self.assertEqual([m.line for m in tl.moves(text, DAY, CT)], [started, ended])
+
+    def test_a_relaunch_for_another_task_does_not_consume_the_workers_launch(self):
+        started = tl.started_line("09:15", "worker01", "codex", "gpt-test", TREE, "Check parser")
+        wrong = tl.relaunch_line("10:20", "worker01", "Check formatter", "base moved")
+        right = tl.relaunch_line("10:30", "worker01", "Check parser", "base moved")
+        text = f"## Log\n\n{started}\n{wrong}\n{right}\n"
+        self.assertEqual([m.line for m in tl.moves(text, DAY, CT)], [started, right])
+
 
 if __name__ == "__main__":
     unittest.main()

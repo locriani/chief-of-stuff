@@ -874,6 +874,129 @@ class RelaunchStopTest(unittest.TestCase):
                     ("implement", at(TODAY, "00:10"), at(TODAY, "00:40")),
                     (stage, at(TODAY, "00:40"), NOW)])
 
+    def ready_tracker(self):
+        # After reconciliation the task is open again, with its previous lane/stage and owner.
+        return self.tracker().replace("| worker-1 | running 00:10 |", "| Robin | open |").replace(
+            "| S |  |  | #701 |", "| S | build | implement | #701 |")
+
+    def stopped_tracker(self):
+        return tw.append_log(self.ready_tracker(),
+                             tl.relaunch_line("00:40", "worker-1", "Check parser", "base moved"))
+
+    def test_prose_mentioning_a_relaunch_mid_line_leaves_the_worker_running(self):
+        quoted = tl.relaunch_line("00:40", "worker-1", "Check parser", "base moved")
+        text = tw.append_log(self.tracker(), f"- 00:40 note: retry example {quoted} was discussed; work continues.")
+        row = self.row(text)
+        self.assertEqual([(g.category, g.start, g.end, g.title) for g in row.segments],
+                         [("implement", at(TODAY, "00:10"), NOW, "worker-1")])
+
+    def test_a_stop_keeps_the_workers_bar_title_and_releases_ownership_for_a_later_stage(self):
+        text = tw.append_log(self.stopped_tracker(), tl.stage_line("01:00", "Check parser", "review"))
+        row = self.row(text)
+        self.assertEqual([(g.category, g.start, g.end, g.title) for g in row.segments], [
+            ("implement", at(TODAY, "00:10"), at(TODAY, "00:40"), "worker-1"),
+            ("review", at(TODAY, "01:00"), NOW, "Robin")])
+        rendered = titles([("running", row)], "Check parser")
+        self.assertTrue(rendered)
+        for title in rendered:
+            with self.subTest(title=title):
+                if title.startswith("implement "):
+                    self.assertIn("00:10", title)
+                    self.assertIn("00:40", title)
+                    self.assertIn(" · worker-1 · done", title)
+                else:
+                    self.assertIn(" · Robin · done", title)
+
+    def test_relaunching_the_earlier_overlapping_worker_leaves_the_other_running(self):
+        text = tw.append_log(self.tracker(), tl.started_line("00:20", "worker-2", "codex", "gpt-test",
+                                                           "worktree `trees/parallel` (parallel)", "Check parser"))
+        text = tw.append_log(text, tl.relaunch_line("00:40", "worker-1", "Check parser", "base moved"))
+        row = self.row(text)
+        self.assertEqual([(g.category, g.start, g.end, g.title) for g in row.segments], [
+            ("implement", at(TODAY, "00:10"), at(TODAY, "00:40"), "worker-1"),
+            ("implement", at(TODAY, "00:20"), NOW, "worker-2")])
+
+    def test_a_relaunch_naming_another_task_leaves_the_workers_bar_running(self):
+        text = tw.append_log(self.tracker(),
+                             tl.relaunch_line("00:40", "worker-1", "Check formatter", "base moved"))
+        row = self.row(text)
+        self.assertEqual([(g.category, g.start, g.end, g.title) for g in row.segments],
+                         [("implement", at(TODAY, "00:10"), NOW, "worker-1")])
+
+    def test_the_same_worker_relaunched_twice_keeps_only_the_first_bar_boundary(self):
+        text = tw.append_log(self.stopped_tracker(),
+                             tl.relaunch_line("00:50", "worker-1", "Check parser", "base moved again"))
+        row = self.row(text)
+        self.assertEqual([(g.category, g.start, g.end, g.title) for g in row.segments],
+                         [("implement", at(TODAY, "00:10"), at(TODAY, "00:40"), "worker-1")])
+
+    def test_a_worker_name_reused_for_a_new_launch_can_be_stopped_again(self):
+        text = tw.append_log(self.stopped_tracker(), tl.started_line("01:00", "worker-1", "codex", "gpt-test",
+                                                                   "worktree `trees/retry` (retry)", "Check parser"))
+        text = tw.append_log(text, tl.relaunch_line("01:20", "worker-1", "Check parser", "base moved again"))
+        row = self.row(text)
+        self.assertEqual([(g.category, g.start, g.end, g.title) for g in row.segments], [
+            ("implement", at(TODAY, "00:10"), at(TODAY, "00:40"), "worker-1"),
+            ("implement", at(TODAY, "01:00"), at(TODAY, "01:20"), "worker-1")])
+
+    def test_a_relaunch_as_the_last_move_keeps_the_prior_stage_note(self):
+        row = self.row(self.stopped_tracker())
+        self.assertEqual(row.note, "implement")
+
+    def test_an_open_task_without_a_stop_keeps_its_due_date_forecast(self):
+        # Control: the same open row, lane and due-date estimate used by the relaunch regression.
+        text = self.ready_tracker()
+        end = NOW + 2 * H
+        built = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(),
+                         {"Check parser": end}, NOW)
+        self.assertEqual(len(built), 1)
+        _, row = built[0]
+        stages = ["implement", "pr", "review", "triage", "merge"]
+        step = (end - NOW) / len(stages)
+        self.assertEqual([(g.category, g.start, g.end) for g in row.segments if g.kind == "forecast"],
+                         [(s, NOW + i * step, NOW + (i + 1) * step) for i, s in enumerate(stages)])
+        self.assertEqual(row.note, f"implement · ~{end:%H:%M}")
+
+    def test_a_relaunch_as_the_last_move_keeps_the_due_date_forecast(self):
+        text = self.stopped_tracker()
+        end = NOW + 2 * H
+        built = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(),
+                         {"Check parser": end}, NOW)
+        self.assertEqual(len(built), 1)
+        _, row = built[0]
+        stages = ["implement", "pr", "review", "triage", "merge"]
+        step = (end - NOW) / len(stages)
+        self.assertEqual([(g.category, g.start, g.end) for g in row.segments if g.kind == "forecast"],
+                         [(s, NOW + i * step, NOW + (i + 1) * step) for i, s in enumerate(stages)])
+        self.assertEqual(row.note, f"implement · ~{end:%H:%M}")
+        self.assertEqual({g.title for g in row.segments if g.kind == "forecast"}, {"Robin"})
+        self.assertEqual([(g.start, g.end, g.title) for g in row.segments if g.kind == "done"],
+                         [(at(TODAY, "00:10"), at(TODAY, "00:40"), "worker-1")])
+
+    def test_a_held_relaunched_rows_hold_bar_uses_the_prior_stage_category(self):
+        text = self.stopped_tracker().replace("| Robin | open |", "| Robin | waiting |")
+        built = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, {"Check parser"}, {}, NOW)
+        self.assertEqual(len(built), 1)
+        status, row = built[0]
+        self.assertEqual(status, "needs input")
+        self.assertEqual([(g.category, g.start, g.end, g.title) for g in row.segments if g.kind == "hold"],
+                         [("implement", NOW, NOW + fc.WINDOWS[-1][2], "Robin")])
+        self.assertEqual(row.note, "needs input · implement")
+        self.assertNotIn("relaunch", [g.category for g in row.segments])
+
+    def test_a_stage_log_named_relaunch_keeps_its_working_bar(self):
+        # The word is a valid custom stage; only a launcher-built relaunch is a stop.
+        lanes = {"build": st.Lane(("implement", "relaunch", "pr", "main"))}
+        text = tw.append_log(self.ready_tracker(), tl.stage_line("00:40", "Check parser", "relaunch"))
+        text = tw.append_log(text, tl.stage_line("01:00", "Check parser", "pr"))
+        built = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, lanes, set(), {}, NOW)
+        self.assertEqual(len(built), 1)
+        _, row = built[0]
+        self.assertEqual([(g.category, g.start, g.end, g.kind) for g in row.segments], [
+            ("implement", at(TODAY, "00:10"), at(TODAY, "00:40"), "done"),
+            ("relaunch", at(TODAY, "00:40"), at(TODAY, "01:00"), "done"),
+            ("pr", at(TODAY, "01:00"), NOW, "done")])
+
 
 class GrownLaunchRowTest(unittest.TestCase):
     """#455 sits beside #182: growing an item must keep the launch on its original Flow row."""
