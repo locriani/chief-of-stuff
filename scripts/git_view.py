@@ -107,39 +107,41 @@ _OID = r"(?:[0-9a-f]{40}|[0-9a-f]{64})"
 _NAME = r"[A-Za-z0-9._/-]+"
 _BOOL_KEYS = ("core.filemode", "core.ignorecase", "core.precomposeunicode", "core.symlinks")
 _INDEX_LIMIT = 512 * 1024 * 1024
+_PACKED_REFS_LIMIT = 16 * 1024 * 1024
 _OBJECT_ONLY = frozenset(("branch", "cat-file", "for-each-ref", "log", "ls-files", "ls-tree",
                           "merge-base", "rev-list", "rev-parse", "show", "symbolic-ref"))
-# Exact option spellings, restricted operand count, required read option.
+# Exact option spellings, restricted operand count, required read option, operand policy.
 # A named operand group consumes a separate option value, not a revision/path.
 _READ_OPTIONS = {
-    "status": (r"--(?:porcelain|short)", None, None),
+    "status": (r"--(?:porcelain|short)", None, None, "path"),
     "rev-parse": (r"--(?:abbrev-ref|absolute-git-dir|git-common-dir|is-shallow-repository|quiet|short|show-toplevel|verify)"
                   r"|-q|--path-format=(?:absolute|relative)|--disambiguate=[0-9a-f]{1,64}"
-                  r"|--git-path=.+|(?P<operand>--git-path)", None, None),
-    "log": (r"--format=.+|--(?:no-color|no-ext-diff|no-textconv|stat)|-1", None, None),
-    "merge-base": (r"--is-ancestor", None, None),
-    "diff": (r"--(?:name-only|no-color|no-ext-diff|no-renames|no-textconv|numstat|stat)", None, None),
-    "show": (r"--format=.+|--stat", None, None),
-    "for-each-ref": (r"--format=.+|(?P<operand>--format)", None, None),
-    "ls-files": (r"--stage|-z", None, None),
-    "ls-tree": (r"-r", None, None),
-    "cat-file": (r"--batch-check|-[ept]", None, None),
-    "rev-list": (r"--(?:count|left-right)", None, None),
-    "branch": (r"--show-current", 0, "--show-current"),
-    "symbolic-ref": (r"--short|-q", 1, None),
-    "check-ref-format": (r"--branch", None, None),
+                  r"|--git-path=.+|(?P<operand>--git-path)", None, None, "mixed"),
+    "log": (r"--format=(?!.*%G).+|--(?:no-color|no-ext-diff|no-textconv|stat)|-1", None, None, "mixed"),
+    "merge-base": (r"--is-ancestor", None, None, None),
+    "diff": (r"--(?:name-only|no-color|no-ext-diff|no-renames|no-textconv|numstat|stat)", None, None, "revision"),
+    "show": (r"--format=(?!.*%G).+|--stat", None, None, "mixed"),
+    "for-each-ref": (r"--format=.+|(?P<operand>--format)", None, None, None),
+    "ls-files": (r"--stage|-z", None, None, "path"),
+    "ls-tree": (r"-r", None, None, "mixed"),
+    "cat-file": (r"--batch-check|-[ept]", None, None, None),
+    "rev-list": (r"--(?:count|left-right)", None, None, "mixed"),
+    "branch": (r"--show-current", 0, "--show-current", None),
+    "symbolic-ref": (r"--short|-q", 1, None, None),
+    "check-ref-format": (r"--branch", None, None, None),
 }
 _SAFE_CALLER_ENV = frozenset(("PATH", "HOME", "GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS",
                              "GIT_NO_REPLACE_OBJECTS"))
 
 
-def _check_args(args: list[str]) -> None:
+def _check_args(args: list[str]) -> tuple[list[str], list[str]]:
     if not args or args[0] not in _READ_OPTIONS:
         raise Unviewable("command is not an allowed read")
     if any(arg.startswith(("--git-dir", "--work-tree", "--output", "--submodule", "--ignore-submodules"))
            for arg in args):
         raise Unviewable("repository, output and submodule options are not allowed")
-    pattern, count, required = _READ_OPTIONS[args[0]]
+    pattern, count, required, policy = _READ_OPTIONS[args[0]]
+    revisions, paths = [], []
     operands = 0
     options = set()
     separated = False
@@ -149,6 +151,10 @@ def _check_args(args: list[str]) -> None:
             separated = True
         elif separated or not arg.startswith("-"):
             operands += 1
+            if policy is not None:
+                paths.append(arg)
+                if policy == "revision" and not separated:
+                    revisions.append(arg)
         else:
             match = re.fullmatch(pattern, arg)
             if match is None:
@@ -160,6 +166,23 @@ def _check_args(args: list[str]) -> None:
                     raise Unviewable("option value is missing")
     if (count is not None and operands != count) or (required is not None and required not in options):
         raise Unviewable("arguments are not an allowed read form")
+    return revisions, paths
+
+
+def _check_operand(arg: str, tree: Path) -> None:
+    try:
+        if (tree / arg).resolve().is_relative_to(tree):
+            return
+    except (OSError, ValueError, RuntimeError):
+        pass
+    raise Unviewable("operand is outside the repository tree")
+
+
+def _run(args: list[str], *, cwd: Path, env: dict[str, str], timeout: float,
+         text: bool = True) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+                          capture_output=True, text=text, errors="backslashreplace" if text else None,
+                          timeout=timeout)
 
 
 def _head(layout: Layout) -> tuple[bytes, str | None]:
@@ -181,8 +204,8 @@ def _config(layout: Layout, branch: str | None, env: dict[str, str], timeout: fl
     # Explicit-file parsing never follows includes or loads repository config.
     # Check the file type first so a planted FIFO is refused before starting git.
     _read(layout.common / "config", 1024 * 1024)
-    out = subprocess.run(["git", "config", "--file", str(layout.common / "config"), "-z", "--list"],
-                         cwd=Path("/"), env=env, capture_output=True, text=True, errors="backslashreplace", timeout=timeout)
+    out = _run(["config", "--file", str(layout.common / "config"), "-z", "--list"],
+               cwd=Path("/"), env=env, timeout=timeout)
     if out.returncode:
         raise Unviewable("config is unreadable")
     facts: dict[tuple[str, str], list[str]] = {}
@@ -219,7 +242,7 @@ def _config(layout: Layout, branch: str | None, env: dict[str, str], timeout: fl
     if fmt == "sha256":
         lines.extend(["[extensions]", "\tobjectformat = sha256"])
     lines.extend(["[status]", "\tsubmoduleSummary = false", "[diff]", "\tignoreSubmodules = all",
-                  "[pack]", "\tuseBitmaps = false"])
+                  "[pack]", "\tuseBitmaps = false", "[gpg]", f"\tprogram = {os.devnull}"])
     for (section, key), values in facts.items():
         if section != "core":
             lines.append(f"[{section}]")
@@ -291,8 +314,8 @@ def _opened(path: Path, env: dict[str, str], base: Path | None, deadline: float)
         head, branch = _head(layout)
         (directory / "HEAD").write_bytes(head)
         (directory / "refs").symlink_to(layout.common / "refs", target_is_directory=True)
-        if (layout.common / "packed-refs").exists():
-            (directory / "packed-refs").symlink_to(layout.common / "packed-refs")
+        if os.path.lexists(layout.common / "packed-refs"):
+            (directory / "packed-refs").write_bytes(_read(layout.common / "packed-refs", _PACKED_REFS_LIMIT))
         (directory / "objects/info").mkdir(parents=True)
         objects = str(layout.common / "objects")
         if "\n" in objects or "\r" in objects:
@@ -334,20 +357,29 @@ def opened(path: Path, env: dict[str, str], base: Path | None = None) -> Iterato
 def run(args: list[str], path: Path, *, env: dict[str, str], timeout: int = 15,
         base: Path | None = None) -> subprocess.CompletedProcess[str]:
     """Build, read and remove a view within one subprocess time budget."""
-    _check_args(args)
+    revisions, paths = _check_args(args)
     command = args[0]
     deadline = time.monotonic() + timeout
+    if paths:
+        layout = locate(path)
+        for operand in paths:
+            _check_operand(operand, layout.tree or layout.gitdir)
     with _opened(path, env, base, deadline) as view:
         cwd = view.layout.tree or Path(view.env["GIT_DIR"])
+        for revision in revisions:
+            resolved = _run(["rev-parse", "--revs-only", "--no-flags", "--end-of-options", revision],
+                            cwd=cwd, env=view.env, timeout=_remaining(deadline))
+            if (resolved.returncode or not resolved.stdout
+                    or any(not re.fullmatch(r"\^?" + _OID, oid) for oid in resolved.stdout.splitlines())):
+                raise Unviewable("paths require an explicit separator")
         if command not in _OBJECT_ONLY:
-            index = subprocess.run(["git", "ls-files", "--stage", "-z"], cwd=cwd, env=view.env,
-                                   capture_output=True, timeout=_remaining(deadline))
+            index = _run(["ls-files", "--stage", "-z"], cwd=cwd, env=view.env,
+                         text=False, timeout=_remaining(deadline))
             if index.returncode:
                 raise Unviewable("index is unreadable")
             if any(entry.startswith(b"160000 ") for entry in index.stdout.split(b"\0")):
                 raise Unviewable("submodules are not inspected")
-        return subprocess.run(["git", *args], cwd=cwd, env=view.env, capture_output=True,
-                              text=True, errors="backslashreplace", timeout=_remaining(deadline))
+        return _run(args, cwd=cwd, env=view.env, timeout=_remaining(deadline))
 
 
 def signals(layout: Layout) -> frozenset[str]:
