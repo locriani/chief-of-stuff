@@ -17,6 +17,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import dispatch_prompt as dp  # noqa: E402
 import inbox  # noqa: E402
+from evals.rules_text import one_shot_paragraph, rules_text, sections  # noqa: E402
 
 CLAUDE = """# Workspace
 
@@ -48,29 +49,6 @@ TRACKER = """# Tracker 2026-09-18
 
 - 09:00 opened the day
 """
-
-
-def sections(text: str) -> dict:
-    """`## ` heading -> that section's text, heading line included. The one section splitter: a `## `
-    line inside a code fence is content, not a heading, and a repeated heading is an error."""
-    out, current, fenced = {}, None, False
-    for line in re.findall(r"[^\n]*\n|[^\n]+", text):
-        if line.startswith("```"):
-            fenced = not fenced
-        elif not fenced and line.startswith("## "):
-            current = line[3:].strip()
-            if current in out:
-                raise ValueError(f"repeated heading: ## {current}")
-            out[current] = ""
-        if current:
-            out[current] += line
-    return out
-
-
-def one_shot_paragraph(text: str) -> str:
-    found = next((p for p in text.split("\n") if p.startswith('If `[workers] mode = "one-shot"`')), None)
-    assert found, 'the one-shot paragraph no longer opens with: If `[workers] mode = "one-shot"`'
-    return found
 
 
 def workspace(tracker: str = TRACKER, claude_md: str = CLAUDE):
@@ -667,12 +645,12 @@ class PromptCharacterBoundsTest(unittest.TestCase):
 
 
 class CoordinatorPromptWorkflowTest(unittest.TestCase):
-    """Coordinator prompt workflow rules in agents/chief-of-stuff.md."""
+    """Coordinator workflow rules in the agent and its on-demand skills."""
 
     def setUp(self):
         self.agent_file = Path(__file__).resolve().parent.parent / "agents" / "chief-of-stuff.md"
         self.assertTrue(self.agent_file.exists(), f"Missing {self.agent_file}")
-        self.content = self.agent_file.read_text()
+        self.content = rules_text()
 
     def test_resume_step_2_script_paths_are_fully_qualified(self):
         self.assertIn("chief-of-stuff inbox read <id> --ack", self.content)
