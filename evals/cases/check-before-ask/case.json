@@ -55,7 +55,7 @@
       "rule": "Before asking, check Decisions rows and earlier answers; if they already settle the question, act on the answer and do not ask again.",
       "type": "tool_used",
       "tool": "Read|Bash|Grep",
-      "input_match": "\"file_path\": \"[^\"\\n]*daily/{{today}}(?:-tracker)?\\.md\"|\"command\": \"[^\"\\n]*\\btracker\\b[^\"\\n]*\\b(?:section|sections)\\b|\"path\": \"(?:[^\"\\n]*/)?daily(?:/|/{{today}}(?:-tracker)?\\.md)?\"",
+      "input_match": "\"file_path\": \"[^\"\\n]*daily/{{today}}(?:-tracker)?\\.md\"|\"command\": \"[^\"\\n]*\\btracker\\b[^\"\\n]*\\b(?:section|sections)\\b|\"path\": \"(?:[^\"\\n]*/)?daily(?:/|/{{today}}(?:-tracker)?\\.md)?\"|\"command\": \"(?:\\\\.|[^\"\\\\])*\\b(?:cat|grep|sed|head|tail|less)\\b(?:\\\\.|[^\"\\\\;&|])*(?<![\\w.-])daily/{{today}}",
       "min": 1
     },
     {

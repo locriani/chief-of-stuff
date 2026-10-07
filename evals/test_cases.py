@@ -96,6 +96,23 @@ class CaseLintTest(unittest.TestCase):
         self.assertTrue(grader_hits(g, "Read", file_path=f"/w/daily/{c['today']}-tracker.md"))
         self.assertTrue(grader_hits(g, "Bash", command="chief-of-stuff tracker section Decisions --root ."))
 
+    def test_check_before_ask_accepts_bash_reads_of_todays_daily_record(self) -> None:
+        s = spec(EVALS / "cases" / "check-before-ask")
+        c = ctx(s)
+        g = next(g for g in s["graders"] if g["name"] == "reads the recorded answer before replying")
+        g = dict(g, input_match=run.render(g["input_match"], c))
+        commands = [f'ls daily/; grep -n -i "release" daily/{c["today"]}*.md']
+        commands.extend(f"{reader} daily/{c['today']}*" for reader in ("cat", "grep release", "sed -n '1,80p'", "head", "tail", "less"))
+        commands.append(f'cat "/w/daily/{c["today"]}-tracker.md"')
+        for command in commands:
+            with self.subTest(command=command):
+                self.assertTrue(grader_hits(g, "Bash", command=command))
+        for command in ("ls daily/", f"ls daily/{c['today']}*",
+                        f"cat daily/{c['yesterday']}*.md", f"cat notdaily/{c['today']}*.md",
+                        f"grep release notes.md; ls daily/{c['today']}*"):
+            with self.subTest(command=command):
+                self.assertFalse(grader_hits(g, "Bash", command=command))
+
     # #391 (review of PR 398, R9/R30): every regex a triage case's grader carries is pinned by a text it must accept and a text it must
     # reject, so a pattern that can never match, or always matches, fails here. The texts are the replies and sends real runs wrote, and
     # the wrong ones the review found: a hand-over in other verbs, a plan waiver in other words, the opposite status, quote forms.
@@ -718,7 +735,7 @@ class CaseLintTest(unittest.TestCase):
                         self.fail(f"{case.name}: grader {g.get('name')!r}, {key}: {e}")
 
     SETTLED_ASK_CASES = (
-        "check-before-ask", "no-reask-after-flagged", "delegated-question-resolved",
+        "check-before-ask", "no-reask-after-flagged",
         "standing-approval-for-the-day", "standing-approval-expired-at-midnight",
         "unattended-authority-decides", "unattended-authority-escalates",
     )
