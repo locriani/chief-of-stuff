@@ -76,25 +76,54 @@ class SkillsPlumbingTest(unittest.TestCase):
         # Deliberately misleading frontmatter name: the skill's path name identifies its pointer.
         zeta_body = "ZETA_BODY\n\n---\n\nhosts: claude\nZETA_AFTER_BREAK"
         # A hosts key in body/example text is not a frontmatter host restriction.
-        write_skill(self.plugin, "zeta", zeta_body)
-        write_skill(self.plugin, "alpha", "ALPHA_BODY", "description: FRONTMATTER_ONLY\nname: not-the-path")
+        bodies = {"alpha": "\n \tALPHA_BODY\t \n\n", "zeta": "\n\t" + zeta_body + " \t\n\n"}
+        write_skill(self.plugin, "zeta", bodies["zeta"])
+        write_skill(self.plugin, "alpha", bodies["alpha"], "description: FRONTMATTER_ONLY\nname: not-the-path")
         (self.plugin / "skills" / "alpha" / "README.md").write_text("SUPPORT_ONLY")
         for runtime in NON_CLAUDE:
             with self.subTest(runtime=runtime):
                 prompt = start.prompt(runtime, self.plugin, self.workspace)
                 headings = []
-                for name, body in (("alpha", "ALPHA_BODY"), ("zeta", zeta_body)):
+                for name, raw_body in bodies.items():
+                    body = raw_body.strip()
                     self.assertEqual(prompt.count(body), 1, f"{runtime} must append the {name} body once")
-                    heading = next((line for line in prompt.splitlines()
-                                    if line.startswith("#") and name in line and "SKILL.md" not in line), None)
-                    self.assertIsNotNone(heading, f"{name} needs a skill-naming heading")
-                    self.assertLess(prompt.index(heading), prompt.index(body))
+                    heading = f"\n\n## {name}\n\n"
+                    self.assertIn(heading + body + "\n\n", prompt,
+                                  f"{name} needs an exact level-two heading immediately before its stripped body")
+                    self.assertNotIn(raw_body, prompt, f"{name} body must have surrounding whitespace stripped")
                     headings.append(prompt.index(heading))
                 self.assertLess(headings[0], headings[1], "skills must be sorted by path name")
                 self.assertGreater(headings[0], prompt.index("RELAY_KEPT"), "skills follow the agent rules")
                 self.assertNotIn("FRONTMATTER_ONLY", prompt)
                 self.assertNotIn("name: not-the-path", prompt)
                 self.assertNotIn("SUPPORT_ONLY", prompt)
+
+    def test_hosts_line_in_body_with_frontmatter_is_not_a_restriction(self):
+        body = "BODY_WITH_FRONTMATTER\n\nhosts: claude\n\nAFTER_BODY_HOSTS"
+        write_skill(self.plugin, "alpha", body, "description: Use for all hosts.\nname: alpha")
+        for runtime in NON_CLAUDE:
+            with self.subTest(runtime=runtime):
+                self.assertIn("\n\n## alpha\n\n" + body + "\n\n",
+                              start.prompt(runtime, self.plugin, self.workspace))
+
+    def test_unsupported_frontmatter_hosts_forms_refuse_non_claude(self):
+        for hosts in ('hosts: "claude"', "hosts: [claude]", "hosts: claude # note",
+                      "hosts: Claude", "hosts: claude, codex", "hosts: codex", "hosts:"):
+            write_skill(self.plugin, "restricted", "RESTRICTED_BODY",
+                        "description: A restricted skill.\n" + hosts)
+            for runtime in NON_CLAUDE:
+                with self.subTest(hosts=hosts, runtime=runtime):
+                    with self.assertRaisesRegex(start.Refused, "restricted"):
+                        start.prompt(runtime, self.plugin, self.workspace)
+
+    def test_unsupported_frontmatter_hosts_forms_leave_claude_prompt_unchanged(self):
+        before = start.prompt("claude", self.plugin, self.workspace)
+        for hosts in ('hosts: "claude"', "hosts: [claude]", "hosts: claude # note",
+                      "hosts: Claude", "hosts: claude, codex", "hosts: codex", "hosts:"):
+            with self.subTest(hosts=hosts):
+                write_skill(self.plugin, "restricted", "RESTRICTED_BODY",
+                            "description: A restricted skill.\n" + hosts)
+                self.assertEqual(start.prompt("claude", self.plugin, self.workspace), before)
 
     def test_appended_bodies_rewrite_plugin_root_and_survive_host_section_replacement(self):
         body = ("## Check\n\nSKILL_CHECK: ${CLAUDE_PLUGIN_ROOT}/scripts/tool.py\n\n"

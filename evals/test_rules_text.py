@@ -27,7 +27,7 @@ class RulesTextTest(unittest.TestCase):
                          "## Role\n\nGeneric coordinator.\n\n\n## First\n\nFirst rule.\n\n## Last\n\nLast rule.")
 
     def test_body_without_frontmatter_keeps_fences_and_thematic_breaks(self):
-        body = "## Detail\n\nFirst.\n\n---\n\n```\n## Example\n```\n\nLast."
+        body = "## Detail\n\nFirst.\n\n---\n\n```\n## Example\n```\n\n---\n\nLast."
         write_skill(self.plugin, "plain", body)
         write_skill(self.plugin, "yaml", body.replace("Detail", "More"), "description: Not a rule.")
         text = rules_text(self.plugin)

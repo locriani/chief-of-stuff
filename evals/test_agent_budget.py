@@ -64,19 +64,27 @@ def description(text: str) -> str:
     """Read the description key only in leading frontmatter, including folded/literal prose.
 
     Skill descriptions use plain or quoted strings, or YAML's indented block notation.
+    For budgeting, join nonempty scalar lines with one space, including literal blocks.
     Searching the whole file would count an example's description as metadata.
     """
     front = re.match(r"\A---\r?\n(.*?)\r?\n---(?:\r?\n|\Z)", text, flags=re.S)
     if not front:
         return ""
-    match = re.search(r"(?m)^description:[ \t]*(.*)((?:\n[ \t]+[^\n]*)*)", front[1])
-    if not match:
-        return ""
-    value, continuation = match.groups()
-    if value in (">", ">-", ">+", "|", "|-", "|+"):
-        lines = [line.strip() for line in continuation.splitlines() if line.strip()]
-        return (" " if value.startswith(">") else "\n").join(lines)
-    return value.strip().strip("\"'")
+    lines = front[1].splitlines()
+    for index, line in enumerate(lines):
+        match = re.match(r"^description:[ \t]*(.*)$", line)
+        if not match:
+            continue
+        value = match[1].strip()
+        parts = [] if value in ("", ">", ">-", ">+", "|", "|-", "|+") else [value]
+        for continuation in lines[index + 1:]:
+            if not continuation.strip():
+                continue
+            if not continuation.startswith((" ", "\t")):
+                break
+            parts.append(continuation.strip())
+        return " ".join(parts).strip("\"'")
+    return ""
 
 
 def assert_skill_descriptions(test: unittest.TestCase, root: Path):
@@ -167,6 +175,33 @@ class AgentBudgetTest(unittest.TestCase):
                     assert_skill_descriptions(self, root)
                     write_skill(root, "alpha", body,
                                 "description: " + template.format("é" * (DESCRIPTION_CAP + 1)) + "\nname: alpha")
+                    with self.assertRaisesRegex(AssertionError, "alpha description exceeds 300"):
+                        assert_skill_descriptions(self, root)
+
+    def test_multiline_description_controls_count_all_400_characters(self):
+        # Budget normalization joins nonempty continuation lines with one space,
+        # including literal blocks; this helper measures prose, not YAML rendering.
+        expected = "é" * 199 + " " + "é" * 200
+        templates = {
+            "plain_continuation": "description: {first}\n  {second}",
+            "value_on_next_line": "description:\n  {first}\n  {second}",
+            "folded_blank_line": "description: >-\n  {first}\n\n  {second}",
+            "literal_blank_line": "description: |-\n  {first}\n\n  {second}",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = write_plugin(Path(tmp))
+            for form, template in templates.items():
+                with self.subTest(form=form):
+                    # The same multiline forms at the cap remain valid controls.
+                    metadata = template.format(first="é" * 149, second="é" * 150) + "\nname: alpha"
+                    path = write_skill(root, "alpha", "description: BODY_ONLY", metadata)
+                    self.assertEqual(description(path.read_text()), "é" * 149 + " " + "é" * 150)
+                    assert_skill_descriptions(self, root)
+                    metadata = template.format(first="é" * 199, second="é" * 200) + "\nname: alpha"
+                    path = write_skill(root, "alpha", "description: BODY_ONLY", metadata)
+                    value = description(path.read_text())
+                    self.assertEqual(len(value), 400)
+                    self.assertEqual(value, expected, "do not count the following key or body")
                     with self.assertRaisesRegex(AssertionError, "alpha description exceeds 300"):
                         assert_skill_descriptions(self, root)
 
