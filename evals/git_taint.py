@@ -246,6 +246,44 @@ def committed_gitlink(fx: Fx) -> None:
     fx.clear()
 
 
+def historical_gitlink(fx: Fx) -> None:
+    """Two gitlink commits, an executable nested diff, and no gitlink in index."""
+    nested = fx.tree / "gl"
+    nested.mkdir()
+    git(["init", "-q", "-b", "main"], nested)
+    for label, content in (("nested-one", "one\n"), ("nested-two", "two\n")):
+        (nested / "file.txt").write_text(content)
+        git(["add", "file.txt"], nested)
+        git(["commit", "-qm", label], nested)
+        oid = git(["rev-parse", "HEAD"], nested).stdout.strip()
+        git(["update-index", "--add", "--cacheinfo", f"160000,{oid},gl"], fx.tree)
+        git(["commit", "-qm", label, "--", "gl"], fx.tree)
+    config(fx, "diff.external", fx.command("nested-external-diff"), file=nested / ".git/config")
+    git(["update-index", "--force-remove", "gl"], fx.tree)
+    fx.clear()
+
+
+def metadata_snapshot(fx: Fx) -> dict[str, bytes]:
+    """Ref/HEAD/config/reflog bytes: writes through shared refs must be visible."""
+    paths = [fx.common / "HEAD", fx.gitdir / "HEAD", fx.common / "config", fx.common / "packed-refs"]
+    for directory in (fx.common / "refs", fx.common / "logs", fx.gitdir / "logs"):
+        paths.extend(p for p in directory.rglob("*") if p.is_file())
+    return {str(p.relative_to(fx.root)): p.read_bytes() for p in paths if p.is_file()}
+
+
+def pager_control(fx: Fx, env: dict[str, str]) -> subprocess.CompletedProcess:
+    """Real Git needs a terminal on stdout to exercise the caller's PAGER."""
+    import pty
+    master, slave = pty.openpty()
+    try:
+        return subprocess.run(["git", "--paginate", "log", "--format=%s"],
+                              cwd=fx.tree, env=env, stdin=subprocess.DEVNULL,
+                              stdout=slave, stderr=subprocess.PIPE, text=True, timeout=5)
+    finally:
+        os.close(slave)
+        os.close(master)
+
+
 def forged_linked_layout(fx: Fx) -> tuple[Path, Path]:
     """A mutually consistent gitfile/commondir/backpointer in worker data."""
     common = fx.tree / "copied-repository"

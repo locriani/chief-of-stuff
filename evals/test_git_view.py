@@ -1490,5 +1490,427 @@ class SignalsTest(FixtureCase):
         self.assertEqual(view.signals(layout), frozenset())
 
 
+# R13 docstring expectation recorded: workers cannot write metadata outside their tree; expected-common validation is filed.
+
+# Exact public vocabulary: inventory reads plus the existing suite's --stage/-z
+# and --is-shallow-repository probes. Internal config/index preflights are not
+# public commands. Preserve the existing reserved output/repository-token rule.
+OPTION_VOCABULARY = {
+    "status": {"--short", "--porcelain"},
+    "rev-parse": {"--git-common-dir", "--abbrev-ref", "--is-shallow-repository",
+                  "--verify", "--quiet", "-q", "--short", "--path-format",
+                  "--disambiguate", "--git-path", "--show-toplevel", "--absolute-git-dir"},
+    "log": {"--format", "--stat", "--no-ext-diff", "--no-textconv", "--no-color", "-1"},
+    "merge-base": {"--is-ancestor"},
+    "diff": {"--stat", "--name-only", "--numstat", "--no-ext-diff", "--no-textconv",
+             "--no-color", "--no-renames"},
+    "show": {"--stat", "--format"},
+    "for-each-ref": {"--format"},
+    "ls-files": {"--stage", "-z"},
+    "ls-tree": {"-r"},
+    "cat-file": {"-p", "-t", "-e", "--batch-check"},
+    "rev-list": {"--count", "--left-right"},
+    "branch": {"--show-current"},
+    "symbolic-ref": {"-q", "--short"},
+    "check-ref-format": {"--branch"},
+}
+# PATH/HOME are the only caller non-GIT names. No editor, pager, loader,
+# locale, trace, or future arbitrary variable is inherited by any subprocess.
+CHILD_ENV_ALLOWLIST = SAFE_CALLER_GIT_ENV | {
+    "PATH", "HOME", "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
+}
+MODULE_CONFIG_PINS = {"GIT_CONFIG_GLOBAL": os.devnull,
+                      "GIT_CONFIG_SYSTEM": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+
+
+class RoundTwoControlsTest(FixtureCase):
+    """Every attack control runs real Git independently of the guarded test."""
+
+
+class RoundTwoCommandsTest(FixtureCase):
+    assert_no_git = ReviewCommandsTest.assert_no_git
+
+
+def historical_submodule_test(command, *, guarded):
+    def test(self):
+        fx = self.fixture()
+        taint.historical_gitlink(fx)
+        self.assertNotIn("160000 ", raw(fx, ["ls-files", "--stage"]).stdout)
+        self.assertIn("160000 commit", raw(fx, ["ls-tree", "HEAD", "gl"]).stdout)
+        args = [command, "-p", "--ignore-submodules=none", "--submodule=diff"]
+        control = raw(fx, args)
+        self.assertEqual(control.returncode, 0, control.stderr)
+        self.assertIn("nested-external-diff", fx.fired(), control.stderr)
+        fx.clear()
+        if not guarded:
+            return
+        # --no-ext-diff on the parent cannot guard a nested Git process.
+        for attack in (args, [*args, "--no-ext-diff"]):
+            with self.subTest(args=attack):
+                self.assert_no_git(fx, attack)
+        for safe in ([command], [command, "--stat", "--format=%s"]):
+            with self.subTest(read=safe):
+                # A safe view intentionally omits gitlink patches/stats. Use
+                # the same policy for truth, while still reading real history.
+                control = raw(fx, ["-c", "diff.ignoreSubmodules=all", *safe])
+                self.assertEqual(control.returncode, 0, control.stderr)
+                result = self.run_view(fx, safe)
+                self.assertEqual(answer(result), answer(control))
+                self.assertIn("nested-two", result.stdout)
+                self.assertEqual(fx.fired(), [])
+        self.assertEqual(self.leftovers(), [])
+    return test
+
+
+for _command in ("log", "show"):
+    setattr(RoundTwoControlsTest, f"test_control_r10_{_command}_historical_gitlink",
+            historical_submodule_test(_command, guarded=False))
+    setattr(RoundTwoCommandsTest, f"test_r10_{_command}_historical_gitlink_refuses_nested_diff",
+            historical_submodule_test(_command, guarded=True))
+
+
+def ref_write_fixture(case, form):
+    fx = case.fixture()
+    taint.git(["branch", "victim", fx.sha["B"]], fx.tree)
+    args = {
+        "branch_delete": ["branch", "-D", "victim"],
+        "branch_create": ["branch", "candidate"],
+        "branch_force": ["branch", "-f", "victim", fx.sha["A"]],
+        "branch_description": ["branch", "--edit-description"],
+        "symbolic_head_write": ["symbolic-ref", "HEAD", "refs/heads/victim"],
+        "symbolic_shared_write": ["symbolic-ref", "refs/heads/alias", "refs/heads/victim"],
+        "symbolic_shared_delete": ["symbolic-ref", "-d", "refs/heads/alias"],
+    }[form]
+    if form == "symbolic_shared_delete":
+        taint.git(["symbolic-ref", "refs/heads/alias", "refs/heads/victim"], fx.tree)
+    return fx, args, {**git_trees.audit_env(), "EDITOR": fx.command("editor")}
+
+
+def ref_write_test(form, *, guarded):
+    def test(self):
+        fx, args, env = ref_write_fixture(self, form)
+        before = taint.metadata_snapshot(fx)
+        control = raw(fx, args, env)
+        self.assertEqual(control.returncode, 0, control.stderr)
+        if form == "branch_description":
+            self.assertIn("editor", fx.fired())
+        else:
+            self.assertNotEqual(taint.metadata_snapshot(fx), before, "control must really change metadata")
+        if not guarded:
+            return
+        fx, args, env = ref_write_fixture(self, form)
+        before = taint.metadata_snapshot(fx)
+        refused = False
+        try:
+            self.view.run(args, fx.tree, env=env, base=self.base)
+        except self.view.Unviewable:
+            refused = True
+        # Check actual bytes even when the command failed to refuse. In
+        # particular HEAD writes affect the private copy, shared refs do not.
+        self.assertEqual(taint.metadata_snapshot(fx), before, "real refs/HEAD/config/reflogs were modified")
+        self.assertEqual(fx.fired(), [], "caller editor executed")
+        self.assertEqual(self.leftovers(), [])
+        self.assertTrue(refused, "write form must raise Unviewable")
+        self.assert_no_git(fx, args, env=env)
+    return test
+
+
+for _form in ("branch_delete", "branch_create", "branch_force", "branch_description",
+              "symbolic_head_write", "symbolic_shared_write", "symbolic_shared_delete"):
+    setattr(RoundTwoControlsTest, "test_control_r11_" + _form, ref_write_test(_form, guarded=False))
+    setattr(RoundTwoCommandsTest, "test_r11_refuses_" + _form, ref_write_test(_form, guarded=True))
+
+
+def inventory_calls(fx, command):
+    """A concrete, nonempty operand for every public vocabulary entry."""
+    calls = {
+        "status": [["--short"], ["--porcelain"]],
+        "rev-parse": [["HEAD"], ["--git-common-dir"], ["--abbrev-ref", "HEAD"],
+                      ["--is-shallow-repository"], ["--verify", "HEAD"],
+                      ["--verify", "--quiet", "HEAD"], ["--verify", "-q", "HEAD"],
+                      ["--short", "HEAD"], ["--path-format=absolute", "--git-common-dir"],
+                      ["--disambiguate=" + fx.sha["D"][:12]], ["--git-path", "info/grafts"],
+                      ["--show-toplevel"], ["--absolute-git-dir"]],
+        "log": [[option, "HEAD"] for option in ("--format=%s", "--stat", "--no-ext-diff",
+                                                 "--no-textconv", "--no-color", "-1")],
+        "merge-base": [["--is-ancestor", "main", "HEAD"]],
+        "diff": [[option, "HEAD"] for option in OPTION_VOCABULARY["diff"]],
+        "show": [["--stat", "HEAD"], ["--format=%s", "HEAD"]],
+        "for-each-ref": [["--format=%(refname)", "refs/heads"], ["--format", "%(refname)"]],
+        "ls-files": [[], ["--stage"], ["-z"]],
+        "ls-tree": [["-r", "HEAD"]],
+        "cat-file": [["-p", "HEAD:README.md"], ["-t", "HEAD"], ["-e", "HEAD^{commit}"],
+                     ["--batch-check"]],
+        "rev-list": [["--count", "HEAD"], ["--left-right", "--count", "main...HEAD"]],
+        "branch": [["--show-current"]],
+        "symbolic-ref": [["HEAD"], ["-q", "HEAD"], ["--short", "HEAD"]],
+        "check-ref-format": [["--branch", "candidate"]],
+    }
+    return [[command, *tail] for tail in calls[command]]
+
+
+def vocabulary_test(command, *, accepted):
+    def test(self):
+        fx = self.fixture()
+        self.assertEqual(set(OPTION_VOCABULARY), READ_ONLY_COMMANDS)
+        if accepted:
+            seen = set()
+            for args in inventory_calls(fx, command):
+                seen.update(arg.split("=", 1)[0] for arg in args[1:] if arg.startswith("-"))
+                with self.subTest(args=args):
+                    control = raw(fx, args)
+                    self.assertEqual(control.returncode, 0, control.stderr)
+                    result = self.run_view(fx, args)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    if command == "rev-parse" and any(token in args for token in (
+                            "--git-common-dir", "--absolute-git-dir", "--git-path")):
+                        # These name ephemeral metadata rather than the real
+                        # common directory. Pin acceptance and private location.
+                        private = Path(result.stdout.strip())
+                        self.assertTrue(private.is_absolute())
+                        self.assertTrue(private.is_relative_to(self.base))
+                    else:
+                        self.assertEqual(answer(result), answer(control), result.stderr)
+                    self.assertEqual(fx.fired(), [])
+                    self.assertEqual(self.leftovers(), [])
+            self.assertEqual(seen, OPTION_VOCABULARY[command])
+            return
+        # A real unguarded parser control establishes that these tokens reach
+        # Git (rev-parse even echoes unknown options with rc=0).
+        with patch.object(subprocess, "run", wraps=subprocess.run) as start:
+            raw(fx, [command, "--fixture-unknown-option"])
+        start.assert_called_once()
+        all_options = set().union(*OPTION_VOCABULARY.values())
+        forbidden = (all_options - OPTION_VOCABULARY[command]) | {
+            "--no-index", "-O" + str(fx.root / "outside-order"),
+            "--exclude-from=" + str(fx.root / "outside-excludes"),
+            "--output", "--output=" + str(fx.root / "outside-output"), "--output-extra",
+            "--ext-diff", "--textconv", "--fixture-unknown-option",
+            "--submodule", "--submodule=diff", "--submodule=log", "--submodule-extra",
+            "--ignore-submodules", "--ignore-submodules=none", "--ignore-submodules-extra",
+        }
+        for option in sorted(forbidden):
+            with self.subTest(option=option):
+                self.assert_no_git(fx, [command, option])
+        # No abbreviation/prefix acceptance or arbitrary values on boolean
+        # options. Options taking values are separately exercised above.
+        valued = {"--format", "--disambiguate", "--path-format", "--git-path"}
+        for option in sorted(OPTION_VOCABULARY[command]):
+            for bad in (option + "-extra", *(() if option in valued else (option + "=unexpected",))):
+                with self.subTest(option=bad):
+                    self.assert_no_git(fx, [command, bad])
+    return test
+
+
+for _command in sorted(OPTION_VOCABULARY):
+    _name = _command.replace("-", "_")
+    setattr(RoundTwoCommandsTest, "test_r12_accepts_vocabulary_" + _name,
+            vocabulary_test(_command, accepted=True))
+    setattr(RoundTwoCommandsTest, "test_r12_refuses_other_options_" + _name,
+            vocabulary_test(_command, accepted=False))
+
+
+def file_option_control(case, vector):
+    fx = case.fixture()
+    if vector == "no_index":
+        outside = fx.root / "outside.txt"
+        outside.write_text("generic outside sentinel\n")
+        args = ["diff", "--no-index", str(outside), os.devnull]
+        control = raw(fx, args)
+        case.assertEqual(control.returncode, 1, control.stderr)
+        case.assertIn("-generic outside sentinel\n", control.stdout)
+        # The exact review reproduction, without retaining system-file data.
+        system = raw(fx, ["diff", "--no-index", "/etc/hosts", os.devnull])
+        case.assertEqual(system.returncode, 1, system.stderr)
+        case.assertIn("diff --git", system.stdout)
+    elif vector == "orderfile":
+        (fx.tree / "b.txt").write_text("changed\n")
+        outside = fx.root / "outside-order.txt"
+        outside.write_text("b.txt\nREADME.md\n")
+        args = ["diff", "-O" + str(outside)]
+        before = raw(fx, ["diff"])
+        control = raw(fx, args)
+        case.assertEqual(control.returncode, 0, control.stderr)
+        case.assertLess(before.stdout.index("diff --git a/README.md"), before.stdout.index("diff --git a/b.txt"))
+        case.assertLess(control.stdout.index("diff --git a/b.txt"), control.stdout.index("diff --git a/README.md"),
+                        "external orderfile bytes must change the answer")
+    elif vector == "exclude_from":
+        outside = fx.root / "outside-excludes.txt"
+        outside.write_text("new.txt\n")
+        args = ["ls-files", "--others", "--exclude-from=" + str(outside)]
+        case.assertIn("new.txt\n", raw(fx, ["ls-files", "--others"]).stdout)
+        control = raw(fx, args)
+        case.assertEqual(control.returncode, 0, control.stderr)
+        case.assertNotIn("new.txt\n", control.stdout, "external exclude bytes must change the answer")
+    elif vector in ("external_diff", "textconv"):
+        taint.config(fx, "diff.external" if vector == "external_diff" else "diff.x.textconv",
+                     fx.command(vector))
+        args = ["diff", "--ext-diff" if vector == "external_diff" else "--textconv"]
+        control = raw(fx, args)
+        case.assertEqual(control.returncode, 0, control.stderr)
+        case.assertIn(vector, fx.fired(), control.stderr)
+    else:
+        case.fail("missing file-option control")
+    fx.clear()
+    return fx, args
+
+
+def file_option_test(vector, *, guarded):
+    def test(self):
+        fx, args = file_option_control(self, vector)
+        if not guarded:
+            return
+        self.assert_no_git(fx, args)
+        if vector == "no_index":
+            self.assert_no_git(fx, ["diff", "--no-index", "/etc/hosts", os.devnull])
+        elif vector == "orderfile":
+            self.assert_no_git(fx, ["diff", "-O", args[1][2:]])
+        elif vector == "exclude_from":
+            self.assert_no_git(fx, ["ls-files", "--exclude-from=" + args[2].split("=", 1)[1]])
+            self.assert_no_git(fx, ["ls-files", "--exclude-from", args[2].split("=", 1)[1]])
+    return test
+
+
+for _vector in ("no_index", "orderfile", "exclude_from", "external_diff", "textconv"):
+    setattr(RoundTwoControlsTest, "test_control_r12_" + _vector, file_option_test(_vector, guarded=False))
+    setattr(RoundTwoCommandsTest, "test_r12_refuses_" + _vector, file_option_test(_vector, guarded=True))
+
+
+def positional_test(self):
+    fx = self.fixture()
+    for name in ("--fixture-unknown-option", "-Ooutside-order"):
+        (fx.tree / name).write_text("before\n")
+    taint.git(["add", "--", "--fixture-unknown-option", "-Ooutside-order"], fx.tree)
+    taint.git(["commit", "-qm", "generic paths", "--", "--fixture-unknown-option", "-Ooutside-order"], fx.tree)
+    for name in ("--fixture-unknown-option", "-Ooutside-order"):
+        (fx.tree / name).write_text("after\n")
+        for args in (["diff", "--name-only", "HEAD", "--", name],
+                     ["log", "--format=%s", "HEAD~1..HEAD", "--", name],
+                     ["show", "--stat", "HEAD", "--", name], ["ls-files", "--", name]):
+            with self.subTest(args=args):
+                control = raw(fx, args)
+                self.assertEqual(control.returncode, 0, control.stderr)
+                self.assertTrue(control.stdout)
+                self.assertEqual(answer(self.run_view(fx, args)), answer(control))
+    self.assertEqual(fx.fired(), [])
+    self.assertEqual(self.leftovers(), [])
+
+
+RoundTwoCommandsTest.test_r12_revisions_and_option_looking_paths_after_separator_are_operands = positional_test
+
+
+def caller_program_control(case, name):
+    fx = case.fixture()
+    env = {**git_trees.audit_env(), "TERM": "xterm", name: fx.command("caller-" + name.lower())}
+    if name == "PAGER":
+        control = taint.pager_control(fx, env)
+    else:
+        control = raw(fx, ["branch", "--edit-description"], env)
+    case.assertEqual(control.returncode, 0, control.stderr)
+    case.assertIn("caller-" + name.lower(), fx.fired(), "the exact caller variable must execute")
+    fx.clear()
+    return fx, env
+
+
+def caller_program_test(name, *, guarded):
+    def test(self):
+        fx, env = caller_program_control(self, name)
+        if not guarded:
+            return
+        caller = dict(env)
+        real_run = subprocess.run
+        with patch.object(subprocess, "run", wraps=real_run) as start:
+            for args in (["branch", "--show-current"], ["symbolic-ref", "HEAD"], ["log", "--format=%s"]):
+                result = self.view.run(args, fx.tree, env=env, base=self.base)
+                self.assertEqual(result.returncode, 0, result.stderr)
+        for call in start.call_args_list:
+            self.assertNotIn(name, call.kwargs["env"], "also scrub the config parser/preflight")
+            self.assertLessEqual(set(call.kwargs["env"]), CHILD_ENV_ALLOWLIST)
+        with self.view.opened(fx.tree, env, base=self.base) as v:
+            self.assertNotIn(name, v.env)
+            self.assertLessEqual(set(v.env), CHILD_ENV_ALLOWLIST)
+        self.assertEqual(env, caller)
+        self.assertEqual(fx.fired(), [])
+        self.assertEqual(self.leftovers(), [])
+        self.assert_no_git(fx, ["branch", "--edit-description"], env=env)
+    return test
+
+
+for _name in ("EDITOR", "VISUAL", "PAGER", "GIT_EDITOR"):
+    setattr(RoundTwoControlsTest, "test_control_r11_caller_" + _name.lower(), caller_program_test(_name, guarded=False))
+    setattr(RoundTwoCommandsTest, "test_r11_drops_caller_" + _name.lower(), caller_program_test(_name, guarded=True))
+
+
+def child_allowlist_test(self):
+    fx, env = caller_program_control(self, "EDITOR")
+    for name in ("VISUAL", "PAGER", "GIT_EDITOR", "SSH_ASKPASS", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES",
+                 "XDG_CONFIG_HOME", "LC_ALL", "GIT_FUTURE_OPTION", "FIXTURE_FUTURE_OPTION"):
+        env[name] = "fixture-untrusted-value"
+    # Drop the loader/editor variables BEFORE Git starts, including during
+    # config parsing. The spy checks all subprocesses, not only the last read.
+    real_run = subprocess.run
+    caller = dict(env)
+    with patch.object(subprocess, "run", wraps=real_run) as start:
+        result = self.view.run(["rev-parse", "HEAD"], fx.tree, env=env, base=self.base)
+    self.assertEqual(answer(result), (0, fx.sha["D"] + "\n"))
+    for call in start.call_args_list:
+        self.assertLessEqual(set(call.kwargs["env"]), CHILD_ENV_ALLOWLIST)
+    with self.view.opened(fx.tree, env, base=self.base) as v:
+        self.assertEqual(set(v.env), CHILD_ENV_ALLOWLIST)
+        self.assertEqual(v.env["PATH"], env["PATH"])
+        self.assertEqual(v.env["HOME"], env["HOME"])
+    self.assertEqual(env, caller)
+    self.assertEqual(fx.fired(), [])
+    self.assertEqual(self.leftovers(), [])
+
+
+RoundTwoCommandsTest.test_r11_child_environment_has_only_the_named_allowlist = child_allowlist_test
+
+
+def home_config_control(case, mode):
+    fx = case.fixture()
+    home = fx.root / "home"
+    home.mkdir()
+    probe = taint.marker_program(fx, "home-external-diff")
+    global_config = home / ".gitconfig"
+    taint.config(fx, "diff.external", str(probe), file=global_config)
+    env = {k: v for k, v in git_trees.audit_env().items() if k not in MODULE_CONFIG_PINS}
+    env["HOME"] = str(home)
+    if mode == "overridden":
+        env.update(GIT_CONFIG_GLOBAL=str(global_config), GIT_CONFIG_SYSTEM=str(global_config),
+                   GIT_CONFIG_NOSYSTEM="0")
+    control = raw(fx, ["diff"], env)
+    case.assertIn("home-external-diff", fx.fired(), control.stderr)
+    fx.clear()
+    return fx, env
+
+
+def config_pins_test(mode, *, guarded):
+    def test(self):
+        fx, env = home_config_control(self, mode)
+        if not guarded:
+            return
+        caller = dict(env)
+        real_run = subprocess.run
+        with patch.object(subprocess, "run", wraps=real_run) as start:
+            result = self.view.run(["diff"], fx.tree, env=env, base=self.base)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("diff --git", result.stdout)
+        self.assertEqual(fx.fired(), [])
+        for call in start.call_args_list:
+            child = call.kwargs["env"]
+            self.assertEqual({name: child.get(name) for name in MODULE_CONFIG_PINS}, MODULE_CONFIG_PINS)
+        with self.view.opened(fx.tree, env, base=self.base) as v:
+            self.assertEqual({name: v.env.get(name) for name in MODULE_CONFIG_PINS}, MODULE_CONFIG_PINS)
+        self.assertEqual(env, caller)
+        self.assertEqual(self.leftovers(), [])
+    return test
+
+
+for _mode in ("omitted", "overridden"):
+    setattr(RoundTwoControlsTest, "test_control_r14_config_pins_" + _mode, config_pins_test(_mode, guarded=False))
+    setattr(RoundTwoCommandsTest, "test_r14_module_authors_config_pins_" + _mode, config_pins_test(_mode, guarded=True))
+
+
 if __name__ == "__main__":
     unittest.main()
