@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import backlog  # noqa: E402
 from _vendor.toon_format import decode as toon_decode  # noqa: E402
 from md import section  # noqa: E402
-from tracker import SHORT_NAME, clip_name, parse_tracker  # noqa: E402
+from tracker import SHORT_NAME, Task, clip_name, launch_row, launcher, parse_tracker  # noqa: E402
 from workspace import read_config  # noqa: E402
 import tracker_read  # noqa: E402
 
@@ -418,6 +418,67 @@ class TrackerReadTest(unittest.TestCase):
         for number, _, name in printed:
             with self.subTest(heading=name):
                 self.assertEqual(lines[int(number) - 1], f"## {name}")
+
+
+def launch_task(item: str, name: str = "Review change", issue: str = "workflow") -> Task:
+    """A generic row; launch lookup needs no dated state or workspace configuration."""
+    return Task(item, "w2", "open", "", "", "", name=name, issue=issue)
+
+
+class GrownLaunchItemTest(unittest.TestCase):
+    """#455: a note appended after dispatch preserves the launch's own row."""
+
+    PROMPT = "Review the parser change and check empty input handling."
+    NOTE = " Reviewed 15:09 by w2: the empty input checks pass."
+
+    def assert_lookup(self, prompt: str, tasks: list[Task], expected: Task | None):
+        # Exercise both the reusable index and the public one-off lookup, by identity.
+        for label, lookup in (("launcher", launcher(tasks)), ("launch_row", lambda text: launch_row(text, tasks))):
+            with self.subTest(lookup=label):
+                row, name = lookup(prompt)
+                self.assertIs(row, expected)
+                self.assertEqual(name, expected.name if expected else prompt.split("\n", 1)[0][:80])
+
+    def test_a_launch_finds_its_item_after_a_note_was_appended(self):
+        row = launch_task(self.PROMPT + self.NOTE)
+        self.assert_lookup(self.PROMPT, [row], row)
+
+    def test_exact_or_shrunk_items_win_before_grown_items(self):
+        grown = launch_task(self.PROMPT + self.NOTE, "Later grown row")
+        # The grown-only subcase is red today; exact and shrunk subcases guard the old first rung.
+        for label, item in (("grown only", None), ("exact", self.PROMPT), ("shrunk", "Review the parser change")):
+            with self.subTest(item=label):
+                first = launch_task(item, "Original row") if item else None
+                self.assert_lookup(self.PROMPT, [first, grown] if first else [grown], first or grown)
+
+    def test_a_grown_item_wins_before_a_later_row_sharing_the_issue(self):
+        issue_url = "https://forge.example/group/project/-/issues/7"
+        for issue in ("#7", issue_url):
+            with self.subTest(issue=issue):
+                prompt = f"Review the parser change for {issue} and check empty input handling."
+                own = launch_task(prompt + self.NOTE, "Review parser", issue)
+                later = launch_task("Verify the separate parser checks", "Later verify", issue)
+                self.assert_lookup(prompt, [own, later], own)
+
+    def test_the_latest_of_several_grown_items_sharing_the_launch_prefix_wins(self):
+        first = launch_task(self.PROMPT + " Built 14:37 by w1: checks pass.", "First pass")
+        latest = launch_task(self.PROMPT + self.NOTE, "Latest pass")
+        # Lexicographic order and tracker order disagree; position must decide the tie.
+        for tasks in ([first, latest], [latest, first]):
+            with self.subTest(latest=tasks[-1].name):
+                self.assert_lookup(self.PROMPT, tasks, tasks[-1])
+
+    def test_growth_matching_requires_at_least_40_characters(self):
+        # #455 leaves the cutoff open: 40 characters keeps a generic short instruction from claiming a row.
+        unrelated = launch_task("Review the unrelated release checklist and publish the notes.")
+        self.assert_lookup("Review", [unrelated], None)
+        boundary = "Review the parser change for empty input"
+        self.assertEqual(len(boundary), 40)
+        for width in (39, 40):
+            with self.subTest(characters=width):
+                prompt = boundary[:width]
+                grown = launch_task(prompt + self.NOTE)
+                self.assert_lookup(prompt, [grown], grown if width == 40 else None)
 
 
 if __name__ == "__main__":

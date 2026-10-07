@@ -787,6 +787,124 @@ class LaunchRowTest(unittest.TestCase):
         self.assertTrue(SWEEP_PROMPT.splitlines()[0].startswith(name), name)
 
 
+CHANGE_URL = "https://forge.example/group/project/-/merge_requests/50"
+ISSUE_URL = "https://forge.example/group/project/-/issues/7"
+FLOW_LAUNCH_TEMPLATE = """# Tracker {{today}}
+
+## Tasks
+
+| name | item | owner | state | since | due | size | lane | stage | issue | checklist |
+|---|---|---|---|---|---|---|---|---|---|---|
+{tasks}
+
+## File ownership
+
+| context | paths |
+|---|---|
+{ownership}
+
+## Log
+"""
+
+
+def flow_launch_tracker(tasks: list[tuple[str, str, str]], launches: list[tuple[str, str, str]]) -> str:
+    """Generic (name, item, issue) rows and (item, worker, HH:MM) real dispatches; no stage lines."""
+    text = FLOW_LAUNCH_TEMPLATE.replace("{tasks}", "\n".join(
+        f"| {name} | {item} | unassigned | open | {{{{today}}}} |  | S |  |  | {issue} | c |"
+        for name, item, issue in tasks)).replace("{ownership}", "\n".join(
+            f"| {name} | `src/task{i}/` |" for i, (name, _, _) in enumerate(tasks)))
+    text = text.replace("{{today}}", str(TODAY))
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "tracker.md"
+        path.write_text(text)
+        for i, (prompt, worker, hhmm) in enumerate(launches):
+            one_shot.record_launch(path, prompt, worker, f"worktree `trees/task{i}` (task{i})", "claude", "opus", hhmm)
+        return path.read_text()
+
+
+class GrownLaunchRowTest(unittest.TestCase):
+    """#455 sits beside #182: growing an item must keep the launch on its original Flow row."""
+
+    def test_a_grown_items_launch_draws_on_its_own_row_not_the_latest_issue_row(self):
+        prompt = "Build the parser for #7 and reject empty input with a helpful message."
+        text = flow_launch_tracker([
+            ("Build parser", prompt, "#7"),
+            ("Verify parser", "Check the parser diagnostics in the example client", "#7")], [(prompt, "w1", "00:20")])
+        # The append happens AFTER record_launch writes the original item into the Log.
+        text = text.replace(f"| Build parser | {prompt} |",
+                            f"| Build parser | {prompt} Reviewed 15:09 by w2: checks pass. |")
+        got = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(), {}, NOW)
+        self.assertEqual(len(got), 1)
+        status, row = got[0]
+        self.assertEqual((status, row.ref, row.name), ("running", "#7", "Build parser"))
+        self.assertEqual([(g.start, g.end, g.category, g.title) for g in row.segments],
+                         [(at(TODAY, "00:20"), NOW, "implement", "w1")])
+
+
+class WorkflowFlowRowTest(unittest.TestCase):
+    """#456: the workflow token never joins unrelated changes; a real change still joins its passes."""
+
+    def test_merge_issues_does_not_group_the_literal_workflow_token(self):
+        review = gantt.Segment(at(TODAY, "00:20"), at(TODAY, "00:40"), "review", "done", "w1")
+        verify = gantt.Segment(at(TODAY, "00:50"), NOW, "implement", "done", "w2")
+        entries = [("running", gantt.Row("workflow", "Review change 50", "review", (review,))),
+                   ("running", gantt.Row("workflow", "Verify change 51", "implement", (verify,)))]
+        got = fc._merge_issues(entries)
+        self.assertEqual(len(got), 2, "workflow is a token, never a merge key")
+        self.assertEqual([(r.name, r.segments) for _, r in got],
+                         [("Review change 50", (review,)), ("Verify change 51", (verify,))])
+
+    def test_workflow_rows_for_different_changes_stay_separate_in_build(self):
+        other_url = "https://forge.example/group/project/-/merge_requests/51"
+        review = f"Review {CHANGE_URL} and check the parser diagnostics."
+        verify = f"Verify {other_url} and check the format examples."
+        text = flow_launch_tracker([
+            ("Review change 50", review, "workflow"), ("Verify change 51", verify, "workflow")],
+            [(review, "w1", "00:20"), (verify, "w2", "00:50")])
+        got = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(), {}, NOW)
+        self.assertEqual(len(got), 2, "unrelated changes share only the workflow token")
+        self.assertEqual([(r.name, [(g.start, g.end, g.title) for g in r.segments]) for _, r in got], [
+            ("Review change 50", [(at(TODAY, "00:20"), NOW, "w1")]),
+            ("Verify change 51", [(at(TODAY, "00:50"), NOW, "w2")])])
+        for _, row in got:
+            self.assertNotEqual(row.ref, "workflow")
+
+    def test_build_review_and_verify_of_one_change_merge_under_the_build_name_in_time_order(self):
+        build = f"Build the parser in {CHANGE_URL}; closes #7."
+        review = f"Review {CHANGE_URL}; closes #7; check empty input handling."
+        verify = f"Verify {CHANGE_URL}; issue #7; check the client diagnostics."
+        # Tracker order differs from launch order: the build's earliest segment supplies the name.
+        text = flow_launch_tracker([
+            ("Verify parser", verify, "workflow"), ("Review parser", review, "workflow"),
+            ("Build parser", build, ISSUE_URL)],
+            [(build, "w1", "00:10"), (review, "w2", "00:40"), (verify, "w3", "01:10")])
+        got = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(), {}, NOW)
+        self.assertEqual(len(got), 1, "the real issue must join its build, review and verify passes")
+        status, row = got[0]
+        self.assertEqual((status, row.name), ("running", "Build parser"))
+        self.assertTrue(row.ref)
+        self.assertNotEqual(row.ref, "workflow")
+        self.assertEqual([(g.start, g.end, g.category, g.title) for g in row.segments], [
+            (at(TODAY, "00:10"), NOW, "implement", "w1"),
+            (at(TODAY, "00:40"), NOW, "implement", "w2"),
+            (at(TODAY, "01:10"), NOW, "implement", "w3")])
+
+    def test_unmatched_dispatches_naming_no_change_keep_separate_short_names_and_no_ref(self):
+        # Control: deleting the Tasks rows leaves the writer's authentic launch lines intact.
+        prompts = ["Inspect the local workflow helpers and document the accepted input shapes for the next maintainer.",
+                   "Compare the local format examples and describe how the decoder treats empty fields in each sample."]
+        text = flow_launch_tracker([
+            ("Inspect helpers", prompts[0], "workflow"), ("Compare examples", prompts[1], "workflow")],
+            [(prompts[0], "w1", "00:20"), (prompts[1], "w2", "00:50")])
+        text = "".join(line for line in text.splitlines(keepends=True)
+                       if not line.startswith(("| Inspect helpers |", "| Compare examples |")))
+        got = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(), {}, NOW)
+        self.assertEqual(len(got), 2)
+        self.assertEqual([(r.ref, r.name) for _, r in got], [("", prompt.split("\n", 1)[0][:80]) for prompt in prompts])
+        self.assertEqual([[(g.start, g.end, g.title) for g in r.segments] for _, r in got], [
+            [(at(TODAY, "00:20"), NOW, "w1")], [(at(TODAY, "00:50"), NOW, "w2")]])
+
+
 # #204: a launch names its task by the text before ":"; that name outranks a later row that merely shares,
 # or also carries, the same issue ref.
 RENAMED_ROW_TRACKER = """# Tracker
