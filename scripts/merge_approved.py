@@ -12,8 +12,8 @@ check fails the merge instead of landing unreviewed code.
 
 With `merge_owner = "worker"` (#420): the owning worker merges a request once its reviewer cleared it and its
 head pipeline is green, so this command only lists. Each open request prints its merge-ready line (head sha,
-pipeline id, status and sha, conflicts, unresolved threads), ready ones first, then the ready ones named for
-their owning worker. It never merges and refuses `--merge`. Here a request with no pipeline is not ready: a
+pipeline id, status and sha, conflicts, unresolved threads), ready ones first, then one line naming the ready
+ones for their owning worker. It never merges and refuses `--merge`. Here a request with no pipeline is not ready: a
 green pipeline on the head sha is what a worker merges on. With `user` merging stays the user's.
 """
 
@@ -56,7 +56,7 @@ def main(argv: list[str] | None = None, gh=backlog.run_gh, call=backlog._call) -
         return 2
     try:
         if worker:
-            import merge_ready  # here: merge_ready imports this module's readers
+            import merge_ready  # only the worker listing needs it
             found = merge_ready.read(home, github, repo, gh, call)
         elif github:
             found = github_requests(repo, workflow.approver, gh)

@@ -6,8 +6,9 @@
 The coordinator wrote "mergeable" from the forge's detailed merge status, which says only that there are no
 conflicts, so a red pipeline and a request with open review findings were both called mergeable. This prints
 one line per open request: the verdict (ready | red | running | conflicts | findings open | stale pipeline |
-no pipeline), the head sha, the head pipeline's id, status and the sha it ran on, conflicts, and unresolved
-review threads. "Mergeable" is written only from a `ready` line, quoting its pipeline id and sha. It never
+no pipeline | draft | unverified | blocked; `unverified` and `blocked` say why in parentheses: a pipeline sha or
+thread count that was not read, threads cut off at 100, the forge's mergeStateStatus), the head sha, the head
+pipeline's id, status and the sha it ran on, conflicts, and unresolved review threads. "Mergeable" is written only from a `ready` line, quoting its pipeline id and sha. It never
 merges and needs no approver or merge_owner setting; merge_approved.py lists the same lines for `worker`.
 GitHub reads its pull requests with `gh pr list` and one `gh api graphql` call (review threads, the head
 commit and its workflow run id); GitLab reads merge requests and their discussions over REST.
@@ -27,20 +28,24 @@ from forge_review import Request, forge, github_requests, gitlab_requests
 from settings import SettingsError
 from workspace import ConfigError
 
-# ponytail: first 100 open requests, threads and checks each; paginate when a request outgrows that.
+# ponytail: first 100 open requests and checks each; paginate when a request outgrows that. Threads past 100 print `unverified`.
 QUERY = """query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) {
-  pullRequests(states: OPEN, first: 100) { nodes { number
-    reviewThreads(first: 100) { nodes { isResolved } }
+  pullRequests(states: OPEN, first: 100) { nodes { number isDraft
+    reviewThreads(first: 100) { pageInfo { hasNextPage } nodes { isResolved } }
     commits(last: 1) { nodes { commit { oid statusCheckRollup { contexts(first: 100) { nodes {
       __typename ... on CheckRun { checkSuite { workflowRun { databaseId } } } } } } } } } } } } }"""
 
 
 def github_ready(repo: str, gh=backlog.run_gh) -> list[Request]:
     owner, name = repo.split("/", 1)
-    code, out, err = gh(["api", "graphql", "-f", f"query={QUERY}", "-F", f"owner={owner}", "-F", f"name={name}"])
+    # -f, not -F: -F types its value (digits become a number, `@path` reads a file)
+    code, out, err = gh(["api", "graphql", "-f", f"query={QUERY}", "-f", f"owner={owner}", "-f", f"name={name}"])
     if code != 0:
         raise RuntimeError(f"gh api graphql: {err.strip() or code}")
-    nodes = {n["number"]: n for n in json.loads(out)["data"]["repository"]["pullRequests"]["nodes"]}
+    answer = json.loads(out)
+    if answer.get("errors"):
+        raise RuntimeError(f"gh api graphql: {answer['errors']}")
+    nodes = {n["number"]: n for n in answer["data"]["repository"]["pullRequests"]["nodes"]}
     found = []
     for r in github_requests(repo, "", gh):
         n = nodes.get(r.number)
@@ -50,9 +55,11 @@ def github_ready(repo: str, gh=backlog.run_gh) -> list[Request]:
         rollup = commit.get("statusCheckRollup")
         ids = [str(run["databaseId"]) for c in (rollup or {}).get("contexts", {}).get("nodes", [])
                if (run := ((c.get("checkSuite") or {}).get("workflowRun") or {}))]
+        threads = n["reviewThreads"]
         found.append(dataclasses.replace(
-            r, pipeline_id=ids[0] if ids else "", pipeline_sha=commit["oid"] if rollup else "",
-            threads=sum(not t["isResolved"] for t in n["reviewThreads"]["nodes"])))
+            r, pipeline_id=ids[0] if ids else "", pipeline_sha=commit["oid"], draft=r.draft or bool(n["isDraft"]),
+            threads=sum(not t["isResolved"] for t in threads["nodes"]),
+            threads_cut_at=len(threads["nodes"]) if threads["pageInfo"]["hasNextPage"] else 0))
     return found
 
 
@@ -60,13 +67,19 @@ def gitlab_ready(home: backlog.Backlog, project: str, token: str, call=backlog._
     base = home.api(project)
     found = []
     for r in gitlab_requests(home, project, "", token, call):
-        discussions, _, err = call("GET", f"{base}/merge_requests/{r.number}/discussions?" + urlencode({"per_page": 100}),
-                                   token, backlog.TIMEOUT)
-        if err:
-            raise RuntimeError(f"!{r.number}: {err}")
-        open_threads = sum(any(n.get("resolvable") and not n.get("resolved") and not n.get("system")
+        threads = 0
+        for page in range(1, backlog.MAX_PAGES + 1):  # until a short page; x-next-page is not relied on
+            discussions, _, err = call("GET", f"{base}/merge_requests/{r.number}/discussions?"
+                                       + urlencode({"per_page": backlog.PER_PAGE, "page": page}), token, backlog.TIMEOUT)
+            if err:
+                raise RuntimeError(f"!{r.number}: {err}")
+            threads += sum(any(n.get("resolvable") and not n.get("resolved") and not n.get("system")
                                for n in d.get("notes") or []) for d in discussions)
-        found.append(dataclasses.replace(r, threads=open_threads))
+            if len(discussions) < backlog.PER_PAGE:
+                break
+        else:
+            raise RuntimeError(f"!{r.number}: more than {backlog.MAX_PAGES} pages of discussions")
+        found.append(dataclasses.replace(r, threads=threads))
     return found
 
 
@@ -75,9 +88,12 @@ def read(home, github: bool, repo: str, gh=backlog.run_gh, call=backlog._call) -
 
 
 def line(r: Request, mark: str) -> str:
-    pipeline = "none" if r.pipeline == "none" else f"{r.pipeline_id or '-'} {r.pipeline} on {r.pipeline_sha[:7]}"
-    return (f"{mark}{r.number} {r.verdict} · head {r.head[:7]} · pipeline {pipeline} · "
-            f"conflicts {'yes' if r.mergeable == 'conflict' else 'no'} · unresolved threads {r.threads} · {r.url}")
+    sha = "unread" if r.pipeline_sha is None else r.pipeline_sha[:7] or "-"
+    pipeline = "none" if r.pipeline == "none" else f"{r.pipeline_id or '-'} {r.pipeline} on {sha}"
+    why = f" ({r.why})" if r.why else ""
+    threads = "unread" if r.threads is None else r.threads
+    return (f"{mark}{r.number} {r.verdict}{why} · head {r.head[:7]} · pipeline {pipeline} · "
+            f"conflicts {'yes' if r.mergeable == 'conflict' else 'no'} · unresolved threads {threads} · {r.url}")
 
 
 def main(argv: list[str] | None = None, gh=backlog.run_gh, call=backlog._call) -> int:

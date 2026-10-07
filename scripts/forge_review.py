@@ -15,7 +15,7 @@ import backlog_ref
 from settings import Workflow, load as load_settings
 from workspace import ConfigError, read_config
 
-FAILED = {"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"}
+PASSED = {"SUCCESS", "NEUTRAL", "SKIPPED"}  # a completed check that concluded anything else (STALE, "") is not a pass
 GITLAB_PIPELINE = {"success": "passed", "failed": "failed", "canceled": "failed"}
 
 
@@ -32,11 +32,11 @@ def github_approval(reviews: list[dict], approver: str, head: str) -> str:
 def github_pipeline(checks: list[dict]) -> str:
     if not checks:
         return "none"
-    if any((c.get("conclusion") or c.get("state") or "").upper() in FAILED for c in checks):
+    def running(c: dict) -> bool:
+        return (c.get("status") != "COMPLETED") if c.get("__typename") == "CheckRun" else c.get("state") in ("PENDING", "EXPECTED")
+    if any(not running(c) and (c.get("conclusion") or c.get("state") or "").upper() not in PASSED for c in checks):
         return "failed"
-    running = [c for c in checks if (c.get("__typename") == "CheckRun" and c.get("status") != "COMPLETED")
-               or (c.get("__typename") != "CheckRun" and c.get("state") in ("PENDING", "EXPECTED"))]
-    return "running" if running else "passed"
+    return "running" if any(running(c) for c in checks) else "passed"
 
 
 def forge(root: Path, repo: str | None) -> tuple[Workflow, backlog_ref.Backlog, bool, str]:
@@ -64,23 +64,47 @@ class Request:
     mergeable: str  # yes | conflict | the forge's own word
     approver: str = ""
     pipeline_id: str = ""   # the head pipeline's id; "" when none or unread
-    pipeline_sha: str = ""  # the commit that pipeline ran on; "" when unread, which never counts as stale
-    threads: int = 0        # unresolved review threads
+    pipeline_sha: str | None = None  # the commit that pipeline ran on; None when unread, which is never "not stale"
+    threads: int | None = None       # unresolved review threads; None when unread, which is never zero
+    threads_cut_at: int = 0          # the count read when more threads lay behind it (a cut-off read is not a whole one)
+    draft: bool = False
+    merge_state: str = ""            # GitHub's mergeStateStatus; "" (GitLab) has none
+
+    @property
+    def unverified(self) -> str:
+        """Why the pipeline's sha or the thread count cannot be trusted; "" when both were read in full."""
+        if self.pipeline_sha is None:
+            return "pipeline sha unread"
+        if self.threads is None:
+            return "threads unread"
+        return f"threads cut off at {self.threads_cut_at}" if self.threads_cut_at else ""
 
     @property
     def verdict(self) -> str:
-        """The one place that decides ready (#419), from the head pipeline and never the forge's own merge word."""
+        """The one place that decides ready (#419), from the head pipeline and never the forge's own merge word.
+        Precedence: conflicts > draft > red > stale pipeline > running > no pipeline > unverified > blocked > findings > ready."""
         if self.mergeable == "conflict":
             return "conflicts"
+        if self.draft:
+            return "draft"
         if self.pipeline == "failed":
             return "red"
-        if self.pipeline != "none" and self.pipeline_sha and self.pipeline_sha != self.head:
+        if self.pipeline != "none" and self.pipeline_sha is not None and self.pipeline_sha != self.head:
             return "stale pipeline"
         if self.pipeline == "running" or self.mergeable != "yes":
             return "running"
         if self.pipeline == "none":
             return NO_PIPELINE
+        if self.unverified:
+            return "unverified"
+        if self.merge_state not in ("", "CLEAN"):
+            return "blocked"
         return "findings open" if self.threads else "ready"
+
+    @property
+    def why(self) -> str:
+        """The one clause the line adds to `unverified` and `blocked`."""
+        return {"unverified": self.unverified, "blocked": self.merge_state}.get(self.verdict, "")
 
     @property
     def blockers(self) -> list[str]:
@@ -90,8 +114,10 @@ class Request:
             out.append(f"pipeline {self.pipeline}")
         if self.mergeable != "yes":
             out.append("conflict" if self.mergeable == "conflict" else f"not mergeable: {self.mergeable}")
-        if self.verdict == "running" and "pipeline running" not in out:
-            out.append("pipeline running")  # the forge has not settled the head's checks yet
+        if self.draft:
+            out.append("draft")
+        if self.merge_state not in ("", "CLEAN"):
+            out.append(f"not mergeable: {self.merge_state}")
         for verdict, why in (("stale pipeline", "pipeline ran on an earlier commit"), (NO_PIPELINE, NO_PIPELINE),
                              ("findings open", f"{self.threads} unresolved threads")):
             if self.verdict == verdict:
@@ -101,13 +127,14 @@ class Request:
 
 def github_requests(repo: str, approver: str, gh=backlog.run_gh) -> list[Request]:
     code, out, err = gh(["pr", "list", "-R", repo, "--state", "open", "--limit", "100", "--json",
-                         "number,title,url,headRefOid,reviews,statusCheckRollup,mergeable"])
+                         "number,title,url,headRefOid,reviews,statusCheckRollup,mergeable,isDraft,mergeStateStatus"])
     if code != 0:
         raise RuntimeError(f"gh pr list: {err.strip() or code}")
     return [Request(p["number"], p["title"], p["url"], p["headRefOid"],
                     github_approval(p.get("reviews") or [], approver, p["headRefOid"]),
                     github_pipeline(p.get("statusCheckRollup") or []),
-                    {"MERGEABLE": "yes", "CONFLICTING": "conflict"}.get(p.get("mergeable"), "unknown"), approver)
+                    {"MERGEABLE": "yes", "CONFLICTING": "conflict"}.get(p.get("mergeable"), "unknown"), approver,
+                    draft=bool(p.get("isDraft")), merge_state=p.get("mergeStateStatus") or "UNKNOWN")
             for p in json.loads(out)]
 
 
@@ -133,5 +160,6 @@ def gitlab_requests(home: backlog.Backlog, project: str, approver: str, token: s
                            "approved" if approver in names else "none",
                            "none" if pipeline is None else GITLAB_PIPELINE.get(pipeline, "running"),
                            "conflict" if mr.get("has_conflicts") else ("yes" if status == "mergeable" else status),
-                           approver, str(head.get("id") or ""), head.get("sha") or ""))
+                           approver, str(head.get("id") or ""), (head.get("sha") or None) if head else "",
+                           draft=bool(mr.get("draft"))))
     return out
