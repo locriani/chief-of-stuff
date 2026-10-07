@@ -9,13 +9,14 @@ import start_coordinator as start
 from evals.skill_fixtures import write_plugin, write_skill
 
 NON_CLAUDE = ("codex", "cursor", "agy")
-# Frozen before skills support, from AGENT in skill_fixtures. Only the temporary paths are
-# normalized: whitespace, substitutions, adapter text and START all remain byte-sensitive.
+# No-skills baseline from AGENT in skill_fixtures, refreshed for main's Check adaptation.
+# Only temporary paths are normalized; whitespace, substitutions, adapter text and START
+# all remain byte-sensitive.
 LEGACY_SHA256 = {
-    "claude": "d656baeb0255a848acd914f65dae3e39a3f2ec48a2475bb8617848d471b91bf3",
-    "codex": "b988c2fb6be5f3d8d3b1c3c1a596f76219d0811e27e056bec952add0ca63e705",
-    "cursor": "98135264e33ef0ebb149106d331be921197f05d3d16f31f7666d45b86baaf0d5",
-    "agy": "7a085e63b6cd376c5b5383e442801825499fa677001658063e5a301a6a9652be",
+    "claude": "e03c9850cccd6c80db8e038cf10672f1c54afc1c48945098d958e958d6b1000d",
+    "codex": "92e8307a069a35a4ca56e13b95acc0ff76749dfef69e7aca9b64971eaa39dc2a",
+    "cursor": "a538a064eb92e4143f569e3f418e361c2d2a8281f80909ef7043a2f83ed32298",
+    "agy": "480c12e14f76f349005afc8905106d89d0868862d8ef6dbc512caa17949bec55",
 }
 
 
@@ -107,6 +108,8 @@ class SkillsPlumbingTest(unittest.TestCase):
                 self.assertNotIn("${CLAUDE_PLUGIN_ROOT}", prompt)
                 self.assertIn(str(self.plugin / "skills" / "alpha" / "SKILL.md"), prompt)
                 self.assertNotIn("CLAUDE_CHECK_ONLY", prompt)
+                check = prompt.split("## Check\n", 1)[1].split("## Sessions\n", 1)[0]
+                self.assertIn("\n\nThe standing waiting-on list stays generic.\n\n", check)
                 self.assertNotIn("CLAUDE_SESSIONS_ONLY", prompt)
                 self.assertIn("RELAY_KEPT", prompt)
 

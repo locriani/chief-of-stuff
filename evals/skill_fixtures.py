@@ -14,7 +14,9 @@ Run python3 ${CLAUDE_PLUGIN_ROOT}/scripts/tool.py.
 
 ## Check
 
-CLAUDE_CHECK_ONLY
+Check the generic task. CLAUDE_CHECK_ONLY
+
+The standing waiting-on list stays generic.
 
 ## Sessions
 
