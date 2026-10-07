@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 import start_coordinator as start
+from evals.rules_text import skill_body
 from evals.skill_fixtures import write_plugin, write_skill
 
 NON_CLAUDE = ("codex", "cursor", "agy")
@@ -157,6 +158,20 @@ class SkillsPlumbingTest(unittest.TestCase):
         self.assertEqual(start.prompt("claude", self.plugin, self.workspace), before)
         self.assertIn(str(self.plugin / "skills" / "alpha" / "SKILL.md"), before)
         self.assertNotIn("${CLAUDE_PLUGIN_ROOT}", before)
+
+    def test_shipped_decision_page_body_is_appended_only_for_non_claude_hosts(self):
+        root = Path(__file__).resolve().parent.parent
+        body = skill_body((root / "skills" / "decision-page" / "SKILL.md").read_text())
+        self.assertTrue(body)
+        headed_body = "\n\n## decision-page\n\n" + body + "\n\n"
+        for runtime in NON_CLAUDE:
+            with self.subTest(runtime=runtime):
+                prompt = start.prompt(runtime, root, self.workspace)
+                self.assertIn(headed_body, prompt)
+                self.assertEqual(prompt.count(body), 1)
+        claude = start.prompt("claude", root, self.workspace)
+        self.assertNotIn(body, claude)
+        self.assertNotIn("\n\n## decision-page\n\n", claude)
 
     def test_no_skills_prompt_is_byte_identical_to_the_legacy_prompt(self):
         for empty_dir in (False, True):

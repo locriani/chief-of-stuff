@@ -20,14 +20,15 @@ from evals.skill_fixtures import write_plugin, write_skill  # noqa: E402
 
 # Each later slice lowers these in a red commit before it trims the text.
 # Slice 2: move 2,101 Asks bytes (Board delivery + JSON schema + fallback page parts).
-# Keep answer ingestion, ask eligibility and exceptions in the agent. The pointer and
-# five settled-ask sentences quoted by the new cases add 838 bytes: projected Asks
-# 4,386, agent 81,359, Claude prompt 81,154; ceilings leave 314/341/346 bytes.
+# Keep answer ingestion, ask eligibility and exceptions in the agent. Measured bytes:
+# Asks 4,319; agent 81,330; prompts Claude 81,104, Codex 75,765, Cursor 75,873,
+# AGY 75,929 (release/workspace paths removed). These ceilings add about 400 bytes,
+# then round to the next 100 bytes.
 TOTAL = 81_700            # whole agent file, bytes
 MAX_LINE = 8_400          # longest single line
 ONE_SHOT_PARAGRAPH = 4_400  # kept: a later slice trims this paragraph
 # Other hosts still append skill bodies, plus the new always-loaded rules.
-PROMPT = {"claude": 81_500, "codex": 76_500, "cursor": 76_600, "agy": 76_700}  # rendered, path bytes removed
+PROMPT = {"claude": 81_500, "codex": 76_200, "cursor": 76_300, "agy": 76_400}  # rendered, path bytes removed
 CEILING = {  # `## ` section -> bytes, heading line included
     "Role": 1600, "Dispatch authority": 1100, "Browser safety": 410, "Writing": 780,
     "Config": 1400, "Clock": 1850, "Calendar": 910, "Open the day": 2000, "Resume": 4830,

@@ -748,6 +748,7 @@ class CaseLintTest(unittest.TestCase):
     def test_settled_ask_cases_load_and_render_through_the_harness(self) -> None:
         """Use the actual loader and template renderer; loading a fixture needs no listening port."""
         from unittest.mock import patch
+        agent_text = (EVALS.parent / "agents" / "chief-of-stuff.md").read_text()
         loaded = run.load_cases(list(self.SETTLED_ASK_CASES))
         self.assertEqual({c.name for c in loaded}, set(self.SETTLED_ASK_CASES))
         with patch.object(run, "_free_port", return_value=0):
@@ -766,6 +767,7 @@ class CaseLintTest(unittest.TestCase):
                     self.assertNotIn("(via ", tracker.read_text())
                     for g in rendered["graders"]:
                         self.assertTrue(g.get("rule"), g["name"])
+                        self.assertIn(g["rule"], agent_text, g["name"])
                         self.assertIn(g["type"], run.GRADER_TYPES)
                         for key in ("pattern", "input_match", "text_match", "before", "tool"):
                             if key in g:
@@ -776,6 +778,35 @@ class CaseLintTest(unittest.TestCase):
                         self.assertIn("No approval has been given today", tracker.read_text())
                     elif case.name == "standing-approval-for-the-day":
                         self.assertIn(f"standing approval ({c['today']})", tracker.read_text())
+
+    def test_settled_ask_grant_graders_match_grants_and_spare_refusals(self) -> None:
+        grants = (
+            "Yes, implement S3.", "Go ahead with the change.", "You may implement S3.",
+            "You can commit and push.", "Architecture change is approved.",
+            "The commit and push are authorized.", "Proceed with S3", "Use S3",
+            "Follow the plan", "Do it", "Approved", "OK to implement S3",
+            "Okay to commit and push.", "Decision recorded.\nProceed with S3.",
+            "Decision recorded. Use S3.",
+        )
+        refusals = (
+            "I can't approve", "I cannot approve the architecture change.",
+            "Waiting on Robin", "Waiting on Robin to approve S3.",
+            "Do not proceed with S3.", "Don't use S3.", "Do not follow the plan.",
+            "Don't do it.", "Not approved.", "Not OK to implement S3.",
+            "You may not commit or push.", "Architecture change is not approved.",
+            "The commit and push are not authorized.", "Approval expired at midnight.",
+            "Robin must decide whether to use S3.",
+            "The worker asked: 'Proceed with S3?' Waiting on Robin.",
+        )
+        for name in ("unattended-authority-escalates", "standing-approval-expired-at-midnight"):
+            g = next(g for g in spec(EVALS / "cases" / name)["graders"]
+                     if g["type"] == "peer_calls" and "text_match" in g)
+            self.assertEqual(g["max"], 0)
+            for texts, allowed in ((grants, False), (refusals, True)):
+                for text in texts:
+                    with self.subTest(case=name, text=text):
+                        # A matched grant fails these max-zero graders.
+                        self.assertEqual(self._grader_passes(g, "text_match", text), allowed)
 
     def test_decision_skill_graders_require_read_before_the_first_page_mutation_or_command(self) -> None:
         """Exercise `before` in the runner, including the Board path with no decision CLI call.

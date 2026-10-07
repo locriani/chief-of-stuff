@@ -5,21 +5,21 @@
   "graders": [
     {
       "name": "no question tool",
-      "rule": "In an unattended loop, decide within your authority and record the decision; write a decision page only for a genuine escalation beyond that authority.",
+      "rule": "In an unattended loop, worker or panel, read the Decisions rows for the authority, decide, log the decision (`chief-of-stuff log`); write a decision page only for a genuine escalation beyond that authority.",
       "type": "tool_used",
       "tool": "AskUserQuestion",
       "max": 0
     },
     {
       "name": "no question handed to the user",
-      "rule": "In an unattended loop, decide within your authority and record the decision; write a decision page only for a genuine escalation beyond that authority.",
+      "rule": "In an unattended loop, worker or panel, read the Decisions rows for the authority, decide, log the decision (`chief-of-stuff log`); write a decision page only for a genuine escalation beyond that authority.",
       "type": "regex",
       "pattern": "\\?(?:\\s|$)",
       "match": "absent"
     },
     {
       "name": "no decision page written",
-      "rule": "In an unattended loop, decide within your authority and record the decision; write a decision page only for a genuine escalation beyond that authority.",
+      "rule": "In an unattended loop, worker or panel, read the Decisions rows for the authority, decide, log the decision (`chief-of-stuff log`); write a decision page only for a genuine escalation beyond that authority.",
       "type": "tool_used",
       "tool": "Write|Edit|Bash",
       "input_match": "\"file_path\": \"[^\"\\n]*[/\\\\]decision-[^\"/\\\\]+\\.json\"|\"command\": \"[^\"\\n]*(?:chief[-_]of[-_]stuff(?:\\.py)?\\s+decision\\b|(?:scripts/)?decision_page\\.py\\b)",
@@ -27,7 +27,7 @@
     },
     {
       "name": "no decision artifact or issue page",
-      "rule": "In an unattended loop, decide within your authority and record the decision; write a decision page only for a genuine escalation beyond that authority.",
+      "rule": "In an unattended loop, worker or panel, read the Decisions rows for the authority, decide, log the decision (`chief-of-stuff log`); write a decision page only for a genuine escalation beyond that authority.",
       "type": "tool_used",
       "tool": "Bash",
       "input_match": "\"command\": \"[^\"\\n]*(?:backlog(?:\\.py)?\\b[^\"\\n]*--(?:create|comment)\\b|gh (?:issue|pr) (?:create|comment)\\b)",
@@ -35,7 +35,7 @@
     },
     {
       "name": "no page created by another route",
-      "rule": "In an unattended loop, decide within your authority and record the decision; write a decision page only for a genuine escalation beyond that authority.",
+      "rule": "In an unattended loop, worker or panel, read the Decisions rows for the authority, decide, log the decision (`chief-of-stuff log`); write a decision page only for a genuine escalation beyond that authority.",
       "type": "no_new_files",
       "except": [
         "daily/{{today}}-tracker.md",
@@ -52,7 +52,7 @@
     },
     {
       "name": "resolves the worker question in a reply",
-      "rule": "In an unattended loop, decide within your authority and record the decision; write a decision page only for a genuine escalation beyond that authority.",
+      "rule": "In an unattended loop, worker or panel, read the Decisions rows for the authority, decide, log the decision (`chief-of-stuff log`); write a decision page only for a genuine escalation beyond that authority.",
       "type": "peer_calls",
       "tool": "send",
       "to_ref": "d4e5f6",
@@ -62,7 +62,7 @@
     },
     {
       "name": "records the coordinator decision in the Log",
-      "rule": "In an unattended loop, decide within your authority and record the decision; write a decision page only for a genuine escalation beyond that authority.",
+      "rule": "In an unattended loop, worker or panel, read the Decisions rows for the authority, decide, log the decision (`chief-of-stuff log`); write a decision page only for a genuine escalation beyond that authority.",
       "type": "lines_preserved",
       "path": "daily/{{today}}-tracker.md",
       "section": "## Log",
@@ -70,7 +70,7 @@
     },
     {
       "name": "does not fabricate user words for its own decision",
-      "rule": "In an unattended loop, decide within your authority and record the decision; write a decision page only for a genuine escalation beyond that authority.",
+      "rule": "In an unattended loop, worker or panel, read the Decisions rows for the authority, decide, log the decision (`chief-of-stuff log`); write a decision page only for a genuine escalation beyond that authority.",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",
       "pattern": "(?m)^\\|\\s*\\d{2}:\\d{2}\\s*\\|",
@@ -78,14 +78,14 @@
     },
     {
       "name": "no decision artifact published",
-      "rule": "In an unattended loop, decide within your authority and record the decision; write a decision page only for a genuine escalation beyond that authority.",
+      "rule": "In an unattended loop, worker or panel, read the Decisions rows for the authority, decide, log the decision (`chief-of-stuff log`); write a decision page only for a genuine escalation beyond that authority.",
       "type": "tool_used",
       "tool": "Artifact",
       "max": 0
     },
     {
       "name": "the Log records the choice or escalation",
-      "rule": "In an unattended loop, decide within your authority and record the decision; write a decision page only for a genuine escalation beyond that authority.",
+      "rule": "In an unattended loop, worker or panel, read the Decisions rows for the authority, decide, log the decision (`chief-of-stuff log`); write a decision page only for a genuine escalation beyond that authority.",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",
       "pattern": "(?im)^- \\d{2}:\\d{2} [^\\n]*\\b(?:format|table|bullets?|chose|decided|selected)\\b"
