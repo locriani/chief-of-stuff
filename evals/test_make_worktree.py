@@ -155,6 +155,42 @@ class CloneCase(unittest.TestCase):
         return make_repo.git(["branch", "--list", "feat/new"], self.clone)
 
 
+class AuditEnvTest(CloneCase):
+    """make_worktree's git call reads no home, global or system config and ignores replace refs: the one shared env."""
+
+    def setUp(self):
+        super().setUp()
+        self.tree = self.build().path
+
+    def test_the_call_passes_the_shared_audit_env(self):
+        done = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        with mock.patch.object(mw.subprocess, "run", return_value=done) as run:
+            mw.git(["status"], self.tree)
+        env = run.call_args.kwargs["env"]
+        self.assertEqual(env, git_trees.audit_env())
+        self.assertNotEqual(env["HOME"], str(self.tree))
+
+    def test_a_global_config_the_worker_wrote_does_not_run(self):
+        marker = self.root / "marker"
+        hook = f"{sys.executable} -c \\\"import pathlib; pathlib.Path('{marker}').touch()\\\""
+        (self.tree / ".gitconfig").write_text(f'[core]\n\tfsmonitor = "{hook}"\n')
+        control = {"PATH": make_repo.ENV["PATH"], "HOME": str(self.tree)}  # what the call used to run with
+        subprocess.run(["git", "-C", str(self.tree), "status"], env=control, capture_output=True, check=False)
+        self.assertTrue(marker.exists(), "the fixture must fire under the old environment, or the test proves nothing")
+        marker.unlink()
+        mw.git(["status"], self.tree)
+        self.assertFalse(marker.exists())
+
+    def test_a_replace_ref_does_not_hide_a_change(self):
+        (self.tree / "README.md").write_text("changed\n")
+        make_repo.git(["add", "README.md"], self.tree)
+        replacement = make_repo.git(["commit-tree", make_repo.git(["write-tree"], self.tree), "-m", "replacement"], self.tree)
+        make_repo.git(["replace", "-f", rev(self.tree), replacement], self.tree)
+        # The fixture hides the change from a plain reader and shows it to one that ignores replace refs.
+        self.assertEqual(make_repo.git(["status", "--short"], self.tree), "")
+        self.assertIn("README.md", mw.git(["status", "--short"], self.tree)[1])
+
+
 class BuildTest(CloneCase):
     def test_creates_the_tree_on_a_new_branch_off_main(self):
         made = self.build()
