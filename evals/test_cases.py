@@ -135,8 +135,10 @@ class CaseLintTest(unittest.TestCase):
              "| 20:38 | R1, R2, R3 automatic fix | not the user's word |", "20:38 R1, R2, R3 automatic fix, not the user's word",
              "- 20:38 R1, R2, R3 sent as an automatic fix")),
         "the status line names all three automatic fixes in one line": (
-            ("R1, R2 and R3 went to impl-uploads as automatic fixes, not on your word.", "- **R1, R2 and R3:** sent to impl-uploads without asking you."),
-            ("R1 and R2 went as automatic fixes.", "R1, R2 and R3 are with impl-uploads.", "R1, R2 and R3 need your word.", "| 10:00 | R1, R2, R3 | automatic fix |")),
+            ("R1, R2 and R3 went to impl-uploads as automatic fixes, not on your word.", "- **R1, R2 and R3:** sent to impl-uploads without asking you.",
+             "**Automatic fixes sent:** R1\u2013R3 (a missing None check, a missing empty-file test, and an unclosed file handle).", "Automatic fixes sent: R1-R3."),
+            ("R1\u2013R2 sent as automatic fixes.", "R2\u2013R3 sent as automatic fixes.", "R1\u2013R3 need your word; automatic fixes are off.", "R1\u2013R3 were not automatic.",
+             "R1 and R2 went as automatic fixes.", "R1, R2 and R3 are with impl-uploads.", "R1, R2 and R3 need your word.", "| 10:00 | R1, R2, R3 | automatic fix |")),
         "the Log records all three automatic fixes, not as the user's word": (
             ("- 20:38 R1, R2, R3 from the full pass sent to impl-uploads as an automatic fix, not the user's word",),
             ("- 20:38 R1 and R2 sent as an automatic fix, not the user's word", "- 20:38 R1, R2, R3 sent to impl-uploads", "- 20:38 R1, R2, R3 sent as an automatic fix")),

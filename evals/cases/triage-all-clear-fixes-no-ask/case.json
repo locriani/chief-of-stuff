@@ -44,7 +44,7 @@
     {
       "name": "the status line names all three automatic fixes in one line",
       "type": "regex",
-      "pattern": "(?mi)^(?!\\|)(?=[^\\n]*\\bR1\\b)(?=[^\\n]*\\bR2\\b)(?=[^\\n]*\\bR3\\b)(?=[^\\n]*\\b(?:automatic(?:ally)?|without asking|on my own))(?![^\\n]*\\b(?:not automatic|needs? your)\\b)[^\\n]*"
+      "pattern": "(?mi)^(?!\\|)(?:(?=[^\\n]*\\bR1\\b)(?=[^\\n]*\\bR2\\b)(?=[^\\n]*\\bR3\\b)|(?=[^\\n]*\\bR1\\s*[\\u2013-]\\s*R3\\b))(?=[^\\n]*\\b(?:automatic(?:ally)?|without asking|on my own))(?![^\\n]*\\b(?:not automatic|needs? your)\\b)[^\\n]*"
     },
     {
       "name": "the Log records all three automatic fixes, not as the user's word",
