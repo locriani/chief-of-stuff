@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 COMPLETED = "completed; awaiting integration"
 HUMAN_REVIEW = "HUMAN REVIEW NEEDED"
 RELAUNCHED = ": relaunch requested for {task} — "
+RELAUNCH_STAGE = "relaunch"
 
 STAGE = re.compile(r"^- (\d{1,2}):(\d{2}) stage: (.+) → (\S+)\s*$")
 STARTED = re.compile(r"^- (\d{1,2}):(\d{2}) one-shot (\S+) started: .*, task (.+?)\s*$")
@@ -72,12 +73,12 @@ class Move:
 
 def moves(text: str, day: date, zone: ZoneInfo) -> list[Move]:
     """The `stage:` and one-shot launcher lines of the tracker's `## Log`, stamped on `day`. A launcher move names
-    the task key of its worker's latest started line."""
+    the task key of its worker's active started line; a relaunch is a stop boundary, not a working stage."""
     log = next((part for part in re.split(r"(?m)^## ", text) if part.split("\n", 1)[0].strip() == "Log"), "")
     out, task_of = [], {}
     for line in log.splitlines():
         line = line.strip()
-        m = STAGE.match(line) or STARTED.match(line) or ENDED.match(line)
+        m = STAGE.match(line) or STARTED.match(line) or ENDED.match(line) or RELAUNCH.match(line)
         if not m or int(m[1]) >= 24 or int(m[2]) >= 60:
             continue
         at = datetime.combine(day, time(int(m[1]), int(m[2])), tzinfo=zone)
@@ -87,5 +88,12 @@ def moves(text: str, day: date, zone: ZoneInfo) -> list[Move]:
             task_of[m[3]] = m[4]
             out.append(Move(at, m[4], "implement", True, line, m[3]))
         elif m[3] in task_of:
-            out.append(Move(at, task_of[m[3]], "pr" if m[4].startswith("completed") else "review", True, line, m[3]))
+            if m.re is RELAUNCH:
+                # Take the final full separator: the task itself may contain it.
+                suffix = RELAUNCHED.split("{task}", 1)[1]
+                head, separator, _ = line[m.end(3):].rpartition(suffix)
+                if head + separator != RELAUNCHED.format(task=task_of[m[3]]):
+                    continue
+            stage = RELAUNCH_STAGE if m.re is RELAUNCH else "pr" if m[4].startswith("completed") else "review"
+            out.append(Move(at, task_of.pop(m[3]), stage, True, line, m[3]))
     return out
