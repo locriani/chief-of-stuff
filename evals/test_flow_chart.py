@@ -17,7 +17,7 @@ import flow_chart as fc  # noqa: E402
 import gantt  # noqa: E402
 import one_shot  # noqa: E402
 import render_board as rb  # noqa: E402
-from workspace import parse_coordinator  # noqa: E402
+from workspace import Backlog, parse_coordinator  # noqa: E402
 import settings as st  # noqa: E402
 import tracker_write as tw  # noqa: E402
 
@@ -785,6 +785,323 @@ class LaunchRowTest(unittest.TestCase):
         self.assertTrue(name)
         self.assertLessEqual(len(name), 80)
         self.assertTrue(SWEEP_PROMPT.splitlines()[0].startswith(name), name)
+
+
+CHANGE_URL = "https://forge.example/group/project/-/merge_requests/50"
+ISSUE_URL = "https://forge.example/group/project/-/issues/7"
+FLOW_LAUNCH_TEMPLATE = """# Tracker {{today}}
+
+## Tasks
+
+| name | item | owner | state | since | due | size | lane | stage | issue | checklist |
+|---|---|---|---|---|---|---|---|---|---|---|
+{tasks}
+
+## File ownership
+
+| context | paths |
+|---|---|
+{ownership}
+
+## Log
+"""
+
+
+def flow_launch_tracker(tasks: list[tuple[str, str, str]], launches: list[tuple[str, str, str]]) -> str:
+    """Generic (name, item, issue) rows and (item, worker, HH:MM) real dispatches; no stage lines."""
+    text = FLOW_LAUNCH_TEMPLATE.replace("{tasks}", "\n".join(
+        f"| {name} | {item} | unassigned | open | {{{{today}}}} |  | S |  |  | {issue} | c |"
+        for name, item, issue in tasks)).replace("{ownership}", "\n".join(
+            f"| {name} | `src/task{i}/` |" for i, (name, _, _) in enumerate(tasks)))
+    text = text.replace("{{today}}", str(TODAY))
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "tracker.md"
+        path.write_text(text)
+        for i, (prompt, worker, hhmm) in enumerate(launches):
+            one_shot.record_launch(path, prompt, worker, f"worktree `trees/task{i}` (task{i})", "claude", "opus", hhmm)
+        return path.read_text()
+
+
+class GrownLaunchRowTest(unittest.TestCase):
+    """#455 sits beside #182: growing an item must keep the launch on its original Flow row."""
+
+    def test_a_grown_items_launch_draws_on_its_own_row_not_the_latest_issue_row(self):
+        prompt = "Build the parser for #7 and reject empty input with a helpful message."
+        text = flow_launch_tracker([
+            ("Build parser", prompt, "#7"),
+            ("Verify parser", "Check the parser diagnostics in the example client", "#7")], [(prompt, "w1", "00:20")])
+        # The append happens AFTER record_launch writes the original item into the Log.
+        text = text.replace(f"| Build parser | {prompt} |",
+                            f"| Build parser | {prompt} Reviewed 15:09 by w2: checks pass. |")
+        got = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(), {}, NOW)
+        self.assertEqual(len(got), 1)
+        status, row = got[0]
+        self.assertEqual((status, row.ref, row.name), ("running", "#7", "Build parser"))
+        self.assertEqual([(g.start, g.end, g.category, g.title) for g in row.segments],
+                         [(at(TODAY, "00:20"), NOW, "implement", "w1")])
+
+
+class WorkflowFlowRowTest(unittest.TestCase):
+    """#456: the workflow token never joins unrelated changes; a real change still joins its passes."""
+
+    def test_merge_issues_does_not_group_the_literal_workflow_token(self):
+        review = gantt.Segment(at(TODAY, "00:20"), at(TODAY, "00:40"), "review", "done", "w1")
+        verify = gantt.Segment(at(TODAY, "00:50"), NOW, "implement", "done", "w2")
+        entries = [("running", gantt.Row("workflow", "Review change 50", "review", (review,))),
+                   ("running", gantt.Row("workflow", "Verify change 51", "implement", (verify,)))]
+        got = fc._merge_issues(entries)
+        self.assertEqual(len(got), 2, "workflow is a token, never a merge key")
+        self.assertEqual([(r.name, r.segments) for _, r in got],
+                         [("Review change 50", (review,)), ("Verify change 51", (verify,))])
+
+    def test_workflow_rows_for_different_changes_stay_separate_in_build(self):
+        other_url = "https://forge.example/group/project/-/merge_requests/51"
+        review = f"Review {CHANGE_URL} and check the parser diagnostics."
+        verify = f"Verify {other_url} and check the format examples."
+        text = flow_launch_tracker([
+            ("Review change 50", review, "workflow"), ("Verify change 51", verify, "workflow")],
+            [(review, "w1", "00:20"), (verify, "w2", "00:50")])
+        got = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(), {}, NOW)
+        self.assertEqual(len(got), 2, "unrelated changes share only the workflow token")
+        self.assertEqual([(r.name, [(g.start, g.end, g.title) for g in r.segments]) for _, r in got], [
+            ("Review change 50", [(at(TODAY, "00:20"), NOW, "w1")]),
+            ("Verify change 51", [(at(TODAY, "00:50"), NOW, "w2")])])
+        for _, row in got:
+            self.assertNotEqual(row.ref, "workflow")
+
+    def test_build_review_and_verify_of_one_change_merge_under_the_build_name_in_time_order(self):
+        build = f"Build the parser in {CHANGE_URL}; closes #7."
+        review = f"Review {CHANGE_URL}; closes #7; check empty input handling."
+        verify = f"Verify {CHANGE_URL}; issue #7; check the client diagnostics."
+        # Tracker order differs from launch order: the build's earliest segment supplies the name.
+        text = flow_launch_tracker([
+            ("Verify parser", verify, "workflow"), ("Review parser", review, "workflow"),
+            ("Build parser", build, ISSUE_URL)],
+            [(build, "w1", "00:10"), (review, "w2", "00:40"), (verify, "w3", "01:10")])
+        got = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(), {}, NOW)
+        self.assertEqual(len(got), 1, "the real issue must join its build, review and verify passes")
+        status, row = got[0]
+        self.assertEqual((status, row.name), ("running", "Build parser"))
+        self.assertTrue(row.ref)
+        self.assertNotEqual(row.ref, "workflow")
+        self.assertEqual([(g.start, g.end, g.category, g.title) for g in row.segments], [
+            (at(TODAY, "00:10"), NOW, "implement", "w1"),
+            (at(TODAY, "00:40"), NOW, "implement", "w2"),
+            (at(TODAY, "01:10"), NOW, "implement", "w3")])
+
+    def test_unmatched_dispatches_naming_no_change_keep_separate_short_names_and_no_ref(self):
+        # Control: deleting the Tasks rows leaves the writer's authentic launch lines intact.
+        prompts = ["Inspect the local workflow helpers and document the accepted input shapes for the next maintainer.",
+                   "Compare the local format examples and describe how the decoder treats empty fields in each sample."]
+        text = flow_launch_tracker([
+            ("Inspect helpers", prompts[0], "workflow"), ("Compare examples", prompts[1], "workflow")],
+            [(prompts[0], "w1", "00:20"), (prompts[1], "w2", "00:50")])
+        text = "".join(line for line in text.splitlines(keepends=True)
+                       if not line.startswith(("| Inspect helpers |", "| Compare examples |")))
+        got = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(), {}, NOW)
+        self.assertEqual(len(got), 2)
+        self.assertEqual([(r.ref, r.name) for _, r in got], [("", prompt.split("\n", 1)[0][:80]) for prompt in prompts])
+        self.assertEqual([[(g.start, g.end, g.title) for g in r.segments] for _, r in got], [
+            [(at(TODAY, "00:20"), NOW, "w1")], [(at(TODAY, "00:50"), NOW, "w2")]])
+
+
+class ChangeBridgeReviewTest(unittest.TestCase):
+    """R1: a change-only pass needs a unique bridge, including evidence retained in the Log."""
+
+    def build(self, text):
+        return fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(), {}, NOW)
+
+    def test_a_change_only_pass_joins_the_issue_through_another_rows_bridge(self):
+        # Both bridge sources matter: explicit issue cell, and a workflow item's own closes clause.
+        for bridge_issue, suffix in ((ISSUE_URL, ""), ("workflow", "; closes #7")):
+            with self.subTest(bridge=bridge_issue):
+                build = f"Build the parser for {ISSUE_URL}"
+                bridge = f"Verify {CHANGE_URL}{suffix}"
+                review = f"Review {CHANGE_URL} and check empty input handling."
+                text = flow_launch_tracker([
+                    ("Build parser", build, ISSUE_URL), ("Verify parser", bridge, bridge_issue),
+                    ("Review parser", review, "workflow")],
+                    [(build, "w1", "00:10"), (bridge, "w2", "00:40"), (review, "w3", "01:10")])
+                got = self.build(text)
+                self.assertEqual(len(got), 1, "a change URL alone must use the unique issue bridge")
+                status, row = got[0]
+                self.assertEqual((status, row.name), ("running", "Build parser"))
+                self.assertEqual(row.ref, "forge.example/group/project#7")
+                self.assertEqual([(g.start, g.end, g.title) for g in row.segments], [
+                    (at(TODAY, "00:10"), NOW, "w1"), (at(TODAY, "00:40"), NOW, "w2"),
+                    (at(TODAY, "01:10"), NOW, "w3")])
+
+    def test_conflicting_bridges_leave_the_change_only_pass_unkeyed_in_either_order(self):
+        review = f"Review {CHANGE_URL} and check empty input handling."
+        for source in ("closes clause", "issue cell"):
+            for numbers in ((7, 8), (8, 7)):
+                with self.subTest(source=source, order=numbers):
+                    tasks = []
+                    for number in numbers:
+                        item = f"Verify {CHANGE_URL} for parser case {number}"
+                        issue = "workflow"
+                        if source == "closes clause":
+                            item += f"; closes #{number}"
+                        else:
+                            issue = f"https://forge.example/group/project/-/issues/{number}"
+                        tasks.append((f"Verify case {number}", item, issue))
+                    text = flow_launch_tracker([*tasks, ("Review parser", review, "workflow")],
+                                              [(review, "w3", "01:10")])
+                    got = self.build(text)
+                    self.assertEqual(len(got), 1)
+                    self.assertEqual(got[0][1].ref, "", "conflicting evidence must not choose the latest issue")
+                    self.assertEqual(got[0][1].name, "Review parser")
+
+    def test_a_stale_launch_bridge_conflicting_with_the_item_leaves_a_change_only_pass_unkeyed(self):
+        original = f"Verify {CHANGE_URL}; closes #7"
+        current = f"Verify {CHANGE_URL}; closes #8"
+        review = f"Review {CHANGE_URL} and check empty input handling."
+        text = flow_launch_tracker([
+            ("Verify parser", original, "workflow"), ("Review parser", review, "workflow")],
+            [(original, "w1", "00:10"), (review, "w2", "00:40")])
+        # The old bridge stays in the launch Log; only the item cell is corrected.
+        text = text.replace(f"| Verify parser | {original} |", f"| Verify parser | {current} |")
+        got = self.build(text)
+        review_rows = [r for _, r in got if any(g.title == "w2" for g in r.segments)]
+        self.assertEqual(len(review_rows), 1)
+        self.assertEqual(review_rows[0].ref, "", "the stale Log must not win over contradictory item evidence")
+        self.assertEqual(review_rows[0].name, "Review parser")
+
+
+class HomeFlowReviewTest(unittest.TestCase):
+    """R2: Flow uses the same sources.home that the board's other issue-key callers use."""
+
+    HOME = Backlog("https://forge.example", "group/project")
+
+    def tracker(self):
+        build = f"Build the parser in {CHANGE_URL}; closes #7."
+        review = f"Review {CHANGE_URL}; closes #7; check empty input handling."
+        return flow_launch_tracker([
+            ("Build parser", build, "#7"), ("Review parser", review, "workflow")],
+            [(build, "w1", "00:10"), (review, "w2", "00:40")])
+
+    def test_build_accepts_home_by_keyword_and_merges_a_bare_issue_with_its_review(self):
+        text = self.tracker()
+        got = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks,
+                       LANES, set(), {}, NOW, home=self.HOME)
+        self.assertEqual(len(got), 1, "home #7 and the home project's closes #7 are the same issue")
+        status, row = got[0]
+        self.assertEqual((status, row.ref, row.name), ("running", "#7", "Build parser"))
+        self.assertEqual([(g.start, g.end, g.title) for g in row.segments], [
+            (at(TODAY, "00:10"), NOW, "w1"), (at(TODAY, "00:40"), NOW, "w2")])
+
+    def test_render_board_passes_sources_home_to_build_by_keyword(self):
+        sources = bs.Sources({}, {}, {}, (), {}, home=self.HOME)
+        # Deliberately different: config.backlog must not replace the source cache's home.
+        cfg = replace(BoardTest().cfg(), backlog=Backlog("https://forge.example", "other/project"))
+        with mock.patch.object(rb.flow_chart, "build", wraps=fc.build) as build:
+            rb.render(self.tracker(), cfg, NOW, lanes=LANES, tracker_day=TODAY, sources=sources)
+        self.assertEqual(build.call_count, 1)
+        self.assertIs(build.call_args.kwargs.get("home"), sources.home)
+
+    def test_build_without_home_preserves_the_existing_bare_issue_key(self):
+        text = self.tracker()
+        got = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(), {}, NOW)
+        self.assertEqual([(r.name, r.ref) for _, r in got], [
+            ("Build parser", "#7"), ("Review parser", "forge.example/group/project#7")])
+
+
+class WorkflowKeyReviewTest(unittest.TestCase):
+    """R3: context references cannot steal a workflow row or stop another task's live bar."""
+
+    OTHER_CHANGE = "https://forge.example/group/project/-/merge_requests/51"
+
+    def build(self, text):
+        return fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(), {}, NOW)
+
+    def context_tracker(self, context, done=False):
+        build = f"Build the parser for {ISSUE_URL}"
+        review = f"Review {self.OTHER_CHANGE} and check diagnostics; context: {context}"
+        text = flow_launch_tracker([
+            ("Build parser", build, ISSUE_URL), ("Review formatter", review, "workflow")],
+            [(build, "w1", "00:10"), (review, "w2", "00:40")])
+        if done:
+            text = text.replace(f"| Review formatter | {review} | w2 | running 00:40 |",
+                                f"| Review formatter | {review} | w2 | done 00:50 |")
+        return text
+
+    def test_a_later_context_issue_url_does_not_join_another_tasks_row(self):
+        got = self.build(self.context_tracker(ISSUE_URL))
+        self.assertEqual(len(got), 2, "a context issue is not this change's closing issue")
+        self.assertEqual([(r.name, r.ref) for _, r in got], [
+            ("Build parser", "forge.example/group/project#7"),
+            ("Review formatter", self.OTHER_CHANGE)])
+        self.assertEqual([[(g.start, g.end, g.title) for g in r.segments] for _, r in got], [
+            [(at(TODAY, "00:10"), NOW, "w1")], [(at(TODAY, "00:40"), NOW, "w2")]])
+
+    def test_a_done_context_review_never_clips_another_tasks_running_segment(self):
+        got = self.build(self.context_tracker(ISSUE_URL, done=True))
+        live = [g for _, r in got for g in r.segments if g.title == "w1"]
+        self.assertEqual([(g.start, g.end) for g in live], [(at(TODAY, "00:10"), NOW)],
+                         "a different task's done 00:50 must not clip the parser's still-running bar")
+        self.assertEqual(len(got), 2)
+        own = {r.name: (s, r) for s, r in got}
+        self.assertEqual(own["Build parser"][0], "running")
+        self.assertEqual(own["Review formatter"][0], "done")
+        self.assertEqual([(g.start, g.end, g.title) for g in own["Review formatter"][1].segments],
+                         [(at(TODAY, "00:40"), at(TODAY, "00:50"), "w2")])
+
+    def test_a_workflow_rows_own_closing_issue_wins_over_another_tasks_context_issue(self):
+        other_issue = "https://forge.example/group/project/-/issues/8"
+        parser = f"Build the parser for {ISSUE_URL}"
+        formatter = f"Build the formatter for {other_issue}"
+        review = f"Review {self.OTHER_CHANGE}; closes #8; context: {ISSUE_URL}"
+        text = flow_launch_tracker([
+            ("Build parser", parser, ISSUE_URL), ("Build formatter", formatter, other_issue),
+            ("Review formatter", review, "workflow")],
+            [(parser, "w1", "00:10"), (formatter, "w2", "00:20"), (review, "w3", "00:40")])
+        got = self.build(text)
+        self.assertEqual(len(got), 2)
+        self.assertEqual({r.ref: [(g.start, g.end, g.title) for g in r.segments] for _, r in got}, {
+            "forge.example/group/project#7": [(at(TODAY, "00:10"), NOW, "w1")],
+            "forge.example/group/project#8": [(at(TODAY, "00:20"), NOW, "w2"),
+                                               (at(TODAY, "00:40"), NOW, "w3")]})
+
+    def test_a_later_context_change_url_leaves_the_workflow_row_unkeyed(self):
+        build = f"Build the parser in {CHANGE_URL}; closes #7"
+        review = f"Review {self.OTHER_CHANGE} and check diagnostics; context: {CHANGE_URL}"
+        for done in (False, True):
+            with self.subTest(done=done):
+                text = flow_launch_tracker([
+                    ("Build parser", build, ISSUE_URL), ("Review formatter", review, "workflow")],
+                    [(build, "w1", "00:10"), (review, "w2", "00:40")])
+                if done:
+                    text = text.replace(f"| Review formatter | {review} | w2 | running 00:40 |",
+                                        f"| Review formatter | {review} | w2 | done 00:50 |")
+                got = self.build(text)
+                self.assertEqual(len(got), 2)
+                own = {r.name: r for _, r in got}
+                self.assertEqual(own["Review formatter"].ref, "", "two distinct changes are ambiguous")
+                self.assertEqual(own["Build parser"].segments[-1].end, NOW)
+
+    def test_a_workflow_item_with_two_distinct_closing_issues_keeps_its_own_unkeyed_row(self):
+        build = f"Build the parser for {ISSUE_URL}"
+        review = f"Review {CHANGE_URL}; closes #7; fixes #8"
+        text = flow_launch_tracker([
+            ("Build parser", build, ISSUE_URL), ("Review ambiguous change", review, "workflow")],
+            [(build, "w1", "00:10"), (review, "w2", "00:40")])
+        got = self.build(text)
+        self.assertEqual(len(got), 2)
+        own = {r.name: r for _, r in got}
+        self.assertEqual(own["Review ambiguous change"].ref, "")
+        self.assertEqual([(g.start, g.end, g.title) for g in own["Review ambiguous change"].segments],
+                         [(at(TODAY, "00:40"), NOW, "w2")])
+
+    def test_the_same_issue_number_in_different_change_projects_stays_separate(self):
+        other = "https://forge.example/other/project/-/merge_requests/50"
+        prompts = [f"Review {url}; closes #7" for url in (CHANGE_URL, other)]
+        text = flow_launch_tracker([
+            ("Review parser", prompts[0], "workflow"), ("Review formatter", prompts[1], "workflow")],
+            [(prompts[0], "w1", "00:10"), (prompts[1], "w2", "00:40")])
+        got = self.build(text)
+        self.assertEqual([(r.name, r.ref) for _, r in got], [
+            ("Review parser", "forge.example/group/project#7"),
+            ("Review formatter", "forge.example/other/project#7")])
 
 
 # #204: a launch names its task by the text before ":"; that name outranks a later row that merely shares,

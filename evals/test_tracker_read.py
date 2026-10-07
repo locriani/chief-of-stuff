@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import backlog  # noqa: E402
 from _vendor.toon_format import decode as toon_decode  # noqa: E402
 from md import section  # noqa: E402
-from tracker import SHORT_NAME, clip_name, parse_tracker  # noqa: E402
+from tracker import SHORT_NAME, Task, change_keys, clip_name, launch_row, launcher, parse_tracker  # noqa: E402
 from workspace import read_config  # noqa: E402
 import tracker_read  # noqa: E402
 
@@ -418,6 +418,165 @@ class TrackerReadTest(unittest.TestCase):
         for number, _, name in printed:
             with self.subTest(heading=name):
                 self.assertEqual(lines[int(number) - 1], f"## {name}")
+
+
+def launch_task(item: str, name: str = "Review change", issue: str = "workflow") -> Task:
+    """A generic row; launch lookup needs no dated state or workspace configuration."""
+    return Task(item, "w2", "open", "", "", "", name=name, issue=issue)
+
+
+class GrownLaunchItemTest(unittest.TestCase):
+    """#455: a note appended after dispatch preserves the launch's own row."""
+
+    PROMPT = "Review the parser change and check empty input handling."
+    NOTE = " Reviewed 15:09 by w2: the empty input checks pass."
+
+    def assert_lookup(self, prompt: str, tasks: list[Task], expected: Task | None):
+        # Exercise both the reusable index and the public one-off lookup, by identity.
+        for label, lookup in (("launcher", launcher(tasks)), ("launch_row", lambda text: launch_row(text, tasks))):
+            with self.subTest(lookup=label):
+                row, name = lookup(prompt)
+                self.assertIs(row, expected)
+                self.assertEqual(name, expected.name if expected else prompt.split("\n", 1)[0][:80])
+
+    def test_a_launch_finds_its_item_after_a_note_was_appended(self):
+        row = launch_task(self.PROMPT + self.NOTE)
+        self.assert_lookup(self.PROMPT, [row], row)
+
+    def test_exact_or_shrunk_items_win_before_grown_items(self):
+        grown = launch_task(self.PROMPT + self.NOTE, "Later grown row")
+        # The grown-only subcase is red today; exact and shrunk subcases guard the old first rung.
+        for label, item in (("grown only", None), ("exact", self.PROMPT), ("shrunk", "Review the parser change")):
+            with self.subTest(item=label):
+                first = launch_task(item, "Original row") if item else None
+                self.assert_lookup(self.PROMPT, [first, grown] if first else [grown], first or grown)
+
+    def test_a_grown_item_wins_before_a_later_row_sharing_the_issue(self):
+        issue_url = "https://forge.example/group/project/-/issues/7"
+        for issue in ("#7", issue_url):
+            with self.subTest(issue=issue):
+                prompt = f"Review the parser change for {issue} and check empty input handling."
+                own = launch_task(prompt + self.NOTE, "Review parser", issue)
+                later = launch_task("Verify the separate parser checks", "Later verify", issue)
+                self.assert_lookup(prompt, [own, later], own)
+
+    def test_the_latest_of_several_grown_items_sharing_the_launch_prefix_wins(self):
+        first = launch_task(self.PROMPT + " Built 14:37 by w1: checks pass.", "First pass")
+        latest = launch_task(self.PROMPT + self.NOTE, "Latest pass")
+        # Lexicographic order and tracker order disagree; position must decide the tie.
+        for tasks in ([first, latest], [latest, first]):
+            with self.subTest(latest=tasks[-1].name):
+                self.assert_lookup(self.PROMPT, tasks, tasks[-1])
+
+    def test_growth_matching_requires_at_least_40_characters(self):
+        # #455 leaves the cutoff open: 40 characters keeps a generic short instruction from claiming a row.
+        unrelated = launch_task("Review the unrelated release checklist and publish the notes.")
+        self.assert_lookup("Review", [unrelated], None)
+        boundary = "Review the parser change for empty input"
+        self.assertEqual(len(boundary), 40)
+        for width in (39, 40):
+            with self.subTest(characters=width):
+                prompt = boundary[:width]
+                grown = launch_task(prompt + self.NOTE)
+                self.assert_lookup(prompt, [grown], grown if width == 40 else None)
+
+    def test_growth_cannot_extend_a_change_number_into_a_different_change(self):
+        prompt = "Review https://forge.example/group/project/-/merge_requests/5"
+        row = launch_task(prompt + "0 and check the parser diagnostics", "Review change 50")
+        self.assertGreaterEqual(len(prompt), 40)
+        self.assert_lookup(prompt, [row], None)
+
+    def test_growth_remainder_must_start_at_whitespace_or_punctuation(self):
+        for remainder in (" and check diagnostics", "; check diagnostics", ". Checks pass", "\nChecks pass",
+                          "x and check diagnostics"):
+            with self.subTest(remainder=remainder):
+                row = launch_task(self.PROMPT + remainder)
+                self.assert_lookup(self.PROMPT, [row], None if remainder[0] == "x" else row)
+
+    def test_grown_matches_with_different_names_and_issue_keys_are_ambiguous(self):
+        first = launch_task(self.PROMPT + " Check the parser diagnostics.", "Review parser", "#7")
+        second = launch_task(self.PROMPT + " Check the formatter diagnostics.", "Review formatter", "#8")
+        for tasks in ([first, second], [second, first]):
+            with self.subTest(order=[t.name for t in tasks]):
+                self.assert_lookup(self.PROMPT, tasks, None)
+
+    def test_a_long_boilerplate_prefix_shared_by_unrelated_tasks_matches_none(self):
+        prompt = "Review the change and report every finding to the coordinator for the next pass."
+        self.assertGreaterEqual(len(prompt), 40)
+        tasks = [launch_task(prompt + suffix, name, issue) for suffix, name, issue in (
+            (" Check the parser diagnostics.", "Review parser", "#7"),
+            (" Check the formatter diagnostics.", "Review formatter", "#8"),
+            (" Check the decoder diagnostics.", "Review decoder", "#9"))]
+        for ordered in (tasks, list(reversed(tasks))):
+            with self.subTest(order=[t.name for t in ordered]):
+                self.assert_lookup(prompt, ordered, None)
+
+    def test_several_grown_rows_sharing_one_issue_key_still_choose_the_latest(self):
+        url = "https://forge.example/group/project/-/issues/7"
+        # Different cell spellings of the same canonical issue key are still one task's passes.
+        first = launch_task(self.PROMPT + " Built by w1: checks pass.", "First pass", url)
+        second = launch_task(self.PROMPT + self.NOTE, "Latest pass", f"[#7]({url})")
+        for tasks in ([first, second], [second, first]):
+            with self.subTest(latest=tasks[-1].name):
+                self.assert_lookup(self.PROMPT, tasks, tasks[-1])
+
+    def test_several_grown_rows_sharing_one_name_still_choose_the_latest(self):
+        # The rejection rule requires BOTH different names and different issue keys.
+        first = launch_task(self.PROMPT + " Built by w1: checks pass.", "Review parser", "#7")
+        second = launch_task(self.PROMPT + self.NOTE, "Review parser", "#8")
+        for tasks in ([first, second], [second, first]):
+            with self.subTest(latest=tasks[-1].issue):
+                self.assert_lookup(self.PROMPT, tasks, tasks[-1])
+
+
+class ChangeKeysReviewTest(unittest.TestCase):
+    """R3: a closing issue belongs to the item's own single change, never a context reference."""
+
+    CHANGE = "https://forge.example/group/project/-/merge_requests/51"
+    OTHER_CHANGE = "https://forge.example/group/project/-/merge_requests/50"
+    CONTEXT_ISSUE = "https://forge.example/group/project/-/issues/7"
+    OWN_ISSUE = "forge.example/group/project#8"
+
+    def test_a_context_issue_url_is_not_a_change_issue_key(self):
+        text = f"Review {self.CHANGE} and check diagnostics; context: {self.CONTEXT_ISSUE}"
+        self.assertEqual(change_keys(text), ("", self.CHANGE))
+
+    def test_a_closing_clause_before_the_change_url_is_not_its_issue_key(self):
+        # PR 461 R1: only the suffix after the change URL supplies its issue clause.
+        for change in (self.CHANGE, "https://github.com/group/project/pull/51"):
+            with self.subTest(change=change):
+                text = f"Earlier work closes #9; review {change} and check diagnostics"
+                self.assertEqual(change_keys(text), ("", change))
+
+    def test_the_changes_own_closing_clause_wins_over_a_later_context_issue_url(self):
+        for verb in ("closes", "fixes", "issue"):
+            with self.subTest(verb=verb):
+                text = f"Review {self.CHANGE}; {verb} #8; context: {self.CONTEXT_ISSUE}"
+                self.assertEqual(change_keys(text), (self.OWN_ISSUE, self.CHANGE))
+
+    def test_rebase_onto_one_change_then_review_another_is_unkeyed(self):
+        # P3: silently taking 50 would key a review of 51 to the rebase target's task.
+        text = f"Rebase onto {self.OTHER_CHANGE} then review {self.CHANGE}"
+        self.assertEqual(change_keys(text), ("", ""))
+
+    def test_two_distinct_changes_are_unkeyed_even_with_a_closing_clause(self):
+        for first, second in ((self.CHANGE, self.OTHER_CHANGE), (self.OTHER_CHANGE, self.CHANGE)):
+            with self.subTest(first=first):
+                self.assertEqual(change_keys(f"Review {first}; closes #8; context: {second}"), ("", ""))
+
+    def test_one_change_with_two_distinct_issues_is_unkeyed_in_either_order(self):
+        for first, second in ((7, 8), (8, 7)):
+            with self.subTest(first=first):
+                self.assertEqual(change_keys(f"Review {self.CHANGE}; closes #{first}; fixes #{second}"), ("", ""))
+
+    def test_one_change_with_its_own_issue_clause_keeps_the_existing_key(self):
+        for verb in ("closes", "fixes", "issue", "resolves"):
+            with self.subTest(verb=verb):
+                self.assertEqual(change_keys(f"Review {self.CHANGE}; {verb} #8"), (self.OWN_ISSUE, self.CHANGE))
+
+    def test_repeated_references_to_the_same_change_and_issue_are_not_ambiguous(self):
+        text = f"Review {self.CHANGE}; closes #8; verify {self.CHANGE}; issue #8"
+        self.assertEqual(change_keys(text), (self.OWN_ISSUE, self.CHANGE))
 
 
 if __name__ == "__main__":

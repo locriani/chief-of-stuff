@@ -7,10 +7,11 @@ from __future__ import annotations
 
 import functools
 import re
+from bisect import bisect_left
 from dataclasses import dataclass
 from datetime import date, datetime
 
-from backlog_ref import WORKFLOW, Backlog, GitHubBacklog, issue_ref
+from backlog_ref import WORKFLOW, Backlog, GitHubBacklog, IssueRef, issue_ref
 from clock import DATE, HHMM, RAN, hhmm as _hhmm
 from md import cells as _cells, is_separator as _is_separator, section as _section, split_row as _split_row, unmark as _unmark
 from workspace import Config
@@ -425,6 +426,14 @@ UNASSIGNED = re.compile(r"(?i)^unassigned$")
 TRAILING_NUMBER = re.compile(r"(\d+)\s*$")
 
 
+def issue_number(cell: str) -> int | None:
+    """An issue URL or issue key's number, including bare #N and canonical host/project#N keys."""
+    if ref := issue_ref(cell, None, any_host=True):
+        return ref.number
+    key, marker, number = cell.strip().rpartition("#")
+    return int(number) if marker and number.isdecimal() and "://" not in key else None
+
+
 def issue_key(cell: str, home: Backlog | GitHubBacklog | None = None) -> str:
     """The key a board source files an issue under (`IssueRef.label`, as board_sources writes it), from an issue cell:
     `#118`, `group/app#118` or the issue's URL. A cell that names no issue, or a bare `#N` with no `home`, keeps `#N`."""
@@ -434,13 +443,35 @@ def issue_key(cell: str, home: Backlog | GitHubBacklog | None = None) -> str:
     return f"#{m[1]}" if m else cell.strip()
 
 
+def change_keys(text: str, home: Backlog | GitHubBacklog | None = None) -> tuple[str, str]:
+    """(issue key, change URL) from one change and its own issue clause; ambiguous references give empty strings.
+    A bare issue resolves in the change's project, using the shared issue-reference parser."""
+    # ponytail: keyed only when the text names exactly one distinct change; URLs with suffixes (/files, #note),
+    # bare !N or #N references, and stacked reviews naming two changes stay unkeyed.
+    changes = {}
+    for m in re.finditer(r"https://[^\s`<>()]+", text):
+        url = m[0].rstrip(".,;:")
+        issue_url = re.sub(r"/(?:merge_requests|pull)/(\d+)(/?)$", r"/issues/\1\2", url)
+        if issue_url != url and (ref := issue_ref(issue_url, None, any_host=True)):
+            changes.setdefault(url.rstrip("/"), (ref, m.end()))
+    if len(changes) != 1:
+        return "", ""
+    change, (project, start) = next(iter(changes.items()))
+    issues = {IssueRef(project.repo, int(n), project.host).label(home)
+              for n in re.findall(r"(?i)\b(?:issue|close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)\b", text[start:])}
+    if len(issues) > 1:
+        return "", ""
+    return next(iter(issues), ""), change
+
+
 # A `#N` or `!N` issue or change reference in a one-shot's launch text.
 REF = re.compile(r"(?<!\w)[#!]\d+")
 
 
 def launch_row(text: str, tasks):
     """(row, name) for a one-shot's launch-time task text: the row whose item the text begins with, else the row
-    named by a leading "name:", else the row whose issue ref it carries (later rows win), and that row's name;
+    named by a leading "name:", else a grown item beginning with at least 40 characters of launch text,
+    else the row whose issue ref it carries (later rows win), and that row's name;
     with no row, None and the text's first line cut to 80 characters. The launch keeps its text; the row's item
     may change after it (#182)."""
     return launcher(tasks)(text)
@@ -448,8 +479,9 @@ def launch_row(text: str, tasks):
 
 def launcher(tasks):
     """launch_row over `tasks`, indexed once: items by length, task names (with a trailing ":") by length,
-    `#N`/`!N` issues by ref, and each text looked up once (#184). An issue cell of another shape
+    grown items in sorted order, `#N`/`!N` issues by ref, and each text looked up once (#184). An issue cell of another shape
     (`group/app#118`, a URL) keeps its own search."""
+    # ponytail: 40-character grown minimum, prose-derived; persist launch identity if shorter or rewritten items must match.
     items, names, refs, other = {}, {}, {}, []
     for i, t in enumerate(tasks):
         if item := t.item.strip():
@@ -463,15 +495,27 @@ def launcher(tasks):
                 other.append(((i, t), re.compile(rf"(?<!\w){re.escape(issue)}(?!\d)")))
     lengths = {len(k) for k in items}
     name_lengths = {len(k) for k in names}
+    sorted_items = sorted(items)
+
+    def grown(text: str):
+        if len(text) >= 40:
+            i = bisect_left(sorted_items, text)
+            while i < len(sorted_items) and sorted_items[i].startswith(text):
+                if re.match(r"\W|$", sorted_items[i][len(text):]):
+                    yield items[sorted_items[i]]
+                i += 1
 
     @functools.cache
     def row(text: str):
         text = text.strip()
         first = text.split("\n", 1)[0][:80]
-        for hits in ([items.get(text[:n]) for n in lengths],
-                     [names.get(text[:n]) for n in name_lengths],
-                     [refs.get(r) for r in REF.findall(text)] + [hit for hit, p in other if p.search(text)]):
+        for rung, hits in enumerate(([items.get(text[:n]) for n in lengths],
+                                     [names.get(text[:n]) for n in name_lengths],
+                                     grown(text),
+                                     [refs.get(r) for r in REF.findall(text)] + [hit for hit, p in other if p.search(text)])):
             if hits := [h for h in hits if h]:
+                if rung == 2 and len({t.name.strip() for _, t in hits}) > 1 and len({issue_key(t.issue) for _, t in hits}) > 1:
+                    return None, first
                 t = max(hits, key=lambda h: h[0])[1]
                 return t, t.name.strip() or first
         return None, first
