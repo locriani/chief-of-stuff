@@ -19,6 +19,7 @@ import one_shot  # noqa: E402
 import render_board as rb  # noqa: E402
 from workspace import Backlog, parse_coordinator  # noqa: E402
 import settings as st  # noqa: E402
+import tracker_log as tl  # noqa: E402
 import tracker_write as tw  # noqa: E402
 
 CT = ZoneInfo("America/Chicago")
@@ -820,6 +821,58 @@ def flow_launch_tracker(tasks: list[tuple[str, str, str]], launches: list[tuple[
         for i, (prompt, worker, hhmm) in enumerate(launches):
             one_shot.record_launch(path, prompt, worker, f"worktree `trees/task{i}` (task{i})", "claude", "opus", hhmm)
         return path.read_text()
+
+
+class RelaunchStopTest(unittest.TestCase):
+    """#457: a recorded relaunch stop ends that worker's bar, even while the task remains active."""
+
+    def tracker(self):
+        return flow_launch_tracker([("Check parser", "Check parser", "#701")],
+                                   [("Check parser", "worker-1", "00:10")])
+
+    def row(self, text):
+        built = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(), {}, NOW)
+        self.assertEqual([r.name for _, r in built], ["Check parser"])
+        return built[0][1]
+
+    def test_a_relaunch_requested_stop_ends_the_workers_bar_at_the_stop_time_not_now(self):
+        text = tw.append_log(self.tracker(),
+                             tl.relaunch_line("00:40", "worker-1", "Check parser", "base moved"))
+        row = self.row(text)
+        self.assertTrue(row.segments)
+        self.assertEqual(row.segments[0].end, at(TODAY, "00:40"))
+        # A stop supplies a boundary, not a new working stage stretching from the stop to now.
+        self.assertEqual([(g.category, g.start, g.end, g.title) for g in row.segments],
+                         [("implement", at(TODAY, "00:10"), at(TODAY, "00:40"), "worker-1")])
+
+    def test_a_later_launch_leaves_a_gap_after_the_relaunch_requested_stop(self):
+        text = tw.append_log(self.tracker(), tl.relaunch_line("00:40", "worker-1", "Check parser", "base moved"))
+        text = tw.append_log(text, tl.started_line("01:00", "worker-2", "codex", "gpt-test",
+                                                  "worktree `trees/retry` (retry)", "Check parser"))
+        row = self.row(text)
+        self.assertEqual([(g.category, g.start, g.end, g.title) for g in row.segments], [
+            ("implement", at(TODAY, "00:10"), at(TODAY, "00:40"), "worker-1"),
+            ("implement", at(TODAY, "01:00"), NOW, "worker-2")])
+
+    def test_a_worker_without_a_matching_stop_still_runs_to_now(self):
+        for unmatched in (False, True):
+            with self.subTest(unmatched_relaunch=unmatched):
+                text = self.tracker()
+                if unmatched:
+                    text = tw.append_log(text, tl.relaunch_line("00:40", "worker-2", "Check parser", "base moved"))
+                row = self.row(text)
+                self.assertEqual([(g.category, g.start, g.end, g.title) for g in row.segments],
+                                 [("implement", at(TODAY, "00:10"), NOW, "worker-1")])
+
+    def test_completion_and_human_review_still_advance_the_flow_stage(self):
+        for status, stage in (("done", "pr"), ("human_review", "review")):
+            with self.subTest(status=status):
+                text = tw.append_log(self.tracker(),
+                                     tl.ended_line("00:40", "worker-1", status, "check finished", "parser.py"))
+                row = self.row(text)
+                self.assertEqual([(g.category, g.start, g.end) for g in row.segments], [
+                    ("implement", at(TODAY, "00:10"), at(TODAY, "00:40")),
+                    (stage, at(TODAY, "00:40"), NOW)])
 
 
 class GrownLaunchRowTest(unittest.TestCase):

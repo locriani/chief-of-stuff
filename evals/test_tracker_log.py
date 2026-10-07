@@ -113,5 +113,26 @@ class WordingTest(unittest.TestCase):
                 self.assertEqual(line, before)
 
 
+class RelaunchStopTest(unittest.TestCase):
+    """#457: the written relaunch request records the matched worker's stop time."""
+
+    def test_a_relaunch_requested_stop_is_read_at_its_stop_time(self):
+        started = tl.started_line("09:15", "worker01", "codex", "gpt-test", TREE, "Check parser")
+        stopped = tl.relaunch_line("10:20", "worker01", "Check parser", "base moved")
+        text = f"## Log\n\n{started}\n{stopped}\n"
+        # Assert the boundary and its identity without prescribing an internal stage name for a stop.
+        self.assertEqual([(m.at.date(), m.at.time(), m.name, m.launch, m.worker, m.line)
+                          for m in tl.moves(text, DAY, CT)], [
+            (DAY, time(9, 15), "Check parser", True, "worker01", started),
+            (DAY, time(10, 20), "Check parser", True, "worker01", stopped)])
+
+    def test_an_unmatched_relaunch_does_not_stop_another_worker(self):
+        started = tl.started_line("09:15", "worker01", "codex", "gpt-test", TREE, "Check parser")
+        stopped = tl.relaunch_line("10:20", "worker02", "Check parser", "base moved")
+        text = f"## Log\n\n{started}\n{stopped}\n"
+        self.assertEqual([(m.at.time(), m.name, m.stage, m.worker) for m in tl.moves(text, DAY, CT)],
+                         [(time(9, 15), "Check parser", "implement", "worker01")])
+
+
 if __name__ == "__main__":
     unittest.main()
