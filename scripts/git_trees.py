@@ -302,5 +302,5 @@ def _own_git_dirs(cwd: Path) -> list[str]:
 
 
 def codex_add_dir_args(cwd: Path) -> list[str]:
-    """The `--add-dir` argv that grants codex the validated git directories (#428)."""
+    """The `--add-dir` argv that grants codex the validated git directories (#428). The grant is paired with git_control's snapshot and restore (#427)."""
     return [a for d in _own_git_dirs(cwd) for a in ("--add-dir", d)]

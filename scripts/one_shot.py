@@ -15,6 +15,7 @@ from pathlib import Path
 
 import backlog
 import dispatch_prompt
+import git_control
 import git_trees
 import kanban
 import ownership
@@ -39,8 +40,9 @@ BOOTSTRAP = ("Read {dispatch} first. It is your entire one-shot assignment. Work
 
 
 def command(runtime: str, binary: str, cwd: Path, dispatch: Path, *, agent_type: str | None,
-            model: str, effort: str) -> list[str]:
-    """A single foreground CLI invocation, without interactive plan or mailbox modes."""
+            model: str, effort: str, grant: bool = True) -> list[str]:
+    """A single foreground CLI invocation, without interactive plan or mailbox modes. `grant` False leaves codex its
+    own tree only: no git directories (#427)."""
     prompt = BOOTSTRAP.format(dispatch=dispatch, cwd=cwd)
     tail: list[str] = []
     if runtime == "claude":
@@ -53,7 +55,7 @@ def command(runtime: str, binary: str, cwd: Path, dispatch: Path, *, agent_type:
         argv = [binary, "-a", "never", "exec", "-C", str(cwd), "--sandbox", "workspace-write",
                 # Network for fetch, push, and forge APIs; file writes stay confined.
                 "-c", "sandbox_workspace_write.network_access=true", "--ephemeral"]
-        argv += git_trees.codex_add_dir_args(cwd)
+        argv += git_trees.codex_add_dir_args(cwd) if grant else []
     elif runtime == "cursor":
         argv = [binary, "--print", "--force", "--trust", "--workspace", str(cwd)]
     elif runtime == "agy":
@@ -272,7 +274,10 @@ def write_report(root: Path, cwd: Path, report: dict) -> dict:
 
 
 def reconcile(root: Path, day: str, task: str, name: str, cwd: Path, exit_code: int,
-              before_head: str | None = None, read_only: bool = False, runtime: str = "", model: str = "") -> dict:
+              before_head: str | None = None, read_only: bool = False, runtime: str = "", model: str = "",
+              git_snap: git_control.Snapshot | None = None) -> dict:
+    # First, before any git call: what the worker left in git's control files is put back (#427).
+    restored = git_control.verify_and_restore(git_snap) if git_snap else []
     cfg = dispatch_prompt.config(root)
     settings = load_settings(root, cfg.settings_path)
     status, reason, changes = worker_result(cwd / RESULT, exit_code)
@@ -311,6 +316,8 @@ def reconcile(root: Path, day: str, task: str, name: str, cwd: Path, exit_code: 
                 status, reason = "human_review", f"quota stop repeated: {quota[len(QUOTA_STOP):]}"
         elif any(marker in line and not line.split(marker, 1)[1].startswith(QUOTA_STOP) for line in log):
             status, reason = "human_review", f"already relaunched once today and stopped again: {reason}"
+    if restored:  # the launcher's own finding, over whatever the worker reported or how it ended
+        status, reason = "human_review", f"git control files changed during the run and were restored: {', '.join(restored)}"
     summary = (changes + f"\nCommits from this run:\n{commits}" +
                (f"\nWorking tree:\n{actual}" if actual else "\nWorking tree clean"))
     rows = [row for row in parse_tracker(path.read_text()).tasks if row.item.strip() == task]
@@ -388,11 +395,16 @@ def run(*, root: Path, day: str | None, task: str, cwd: Path, name: str,
         raise ValueError(f"no worktree at {cwd}")
     trees = root / worktrees_dir((root / "CLAUDE.md").read_text())
     with slot(trees, cwd, task, load_settings(root, cfg.settings_path).workers.max_concurrency):
-        return _launch(root, cfg, chosen_day, task, cwd, name, runtime, model, effort, body, argv, timeout_minutes)
+        # A codex run is granted its git directories only when their control files can be recorded to put back (#427).
+        snap = git_control.snapshot(cwd) if runtime == "codex" else None
+        if runtime == "codex" and snap is None:
+            argv = command(runtime, binary, cwd, dispatch, agent_type=agent_type, model=model, effort=effort, grant=False)
+        return _launch(root, cfg, chosen_day, task, cwd, name, runtime, model, effort, body, argv, timeout_minutes, snap)
 
 
 def _launch(root: Path, cfg, chosen_day: str, task: str, cwd: Path, name: str, runtime: str, model: str,
-            effort: str, body: str, argv: list[str], timeout_minutes: int) -> int:
+            effort: str, body: str, argv: list[str], timeout_minutes: int,
+            git_snap: git_control.Snapshot | None = None) -> int:
     # Same clean login-shell path as interactive sessions; auth and user PATH come from shell setup.
     # Everything that can refuse runs before anything is written; a refused row takes its dispatch back.
     launch_argv, tree = login_argv(argv), _tree_note(root, cwd)
@@ -431,6 +443,6 @@ def _launch(root: Path, cfg, chosen_day: str, task: str, cwd: Path, name: str, r
         (logs / "worker-stderr.log").write_text(f"Could not start worker: {exc}\n")
         exit_code = 127
     report = reconcile(root, chosen_day, task, name, cwd, exit_code, before_head, runtime=runtime, model=model,
-                       read_only=dispatch_prompt.READ_ONLY in body.splitlines())  # held to what it was told
+                       git_snap=git_snap, read_only=dispatch_prompt.READ_ONLY in body.splitlines())  # held to what it was told
     print(toon_encode(report))
     return 0 if report["status"] == "done" and not report["errors"] else 1
