@@ -7,13 +7,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 import subprocess
 from html import escape
 from pathlib import Path
 
 import board_sources
+import git_trees
 from fragment import href
 from settings import Graph
 
@@ -33,7 +33,7 @@ def run(cmd: list[str], timeout: int = 120) -> str:
     """stdout, or ValueError with the last line of stderr."""
     try:
         out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL,
-                             env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+                             env=git_trees.user_env())  # the launcher's repository-selecting variables must not win over the clone the path names
     except subprocess.TimeoutExpired:
         raise ValueError(f"{cmd[0]} timed out after {timeout}s") from None
     if out.returncode:
