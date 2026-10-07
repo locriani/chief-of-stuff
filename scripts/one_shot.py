@@ -15,6 +15,7 @@ from pathlib import Path
 
 import backlog
 import dispatch_prompt
+import git_trees
 import kanban
 import ownership
 import runtimes
@@ -37,29 +38,6 @@ BOOTSTRAP = ("Read {dispatch} first. It is your entire one-shot assignment. Work
              "Finish in this invocation and write the requested TOON result before exiting.")
 
 
-def _own_git_dirs(cwd: Path) -> list[str]:
-    """The git directories codex may write: a linked worktree's common dir and own gitdir, or a clone's `.git`."""
-    # The worker can rewrite `.git`, `commondir`, and gitfiles, so a path is granted only at cwd's own toplevel, where `.git` and git agree.
-    def rev(flag: str) -> Path:
-        out = subprocess.run(["git", "-C", str(cwd), "rev-parse", "--path-format=absolute", flag], env=clean_env(),
-                             capture_output=True, text=True, check=False, timeout=15)
-        return Path(out.stdout.strip()).resolve() if out.returncode == 0 and out.stdout.strip() else Path()
-
-    try:
-        here, top, common, gitdir = cwd.resolve(), rev("--show-toplevel"), rev("--git-common-dir"), rev("--absolute-git-dir")
-        dotgit = here / ".git"
-        if top != here or dotgit.is_symlink() or Path() in (common, gitdir):
-            return []
-        if dotgit.is_dir():  # a normal clone
-            return [str(common)] if dotgit.resolve() == common == gitdir else []
-        # commondir must name `common` and the back-pointer file must name this `.git`; a damaged file raises and grants nothing.
-        owns = (gitdir / (gitdir / "commondir").read_text().strip()).resolve() == common \
-            and (gitdir / (gitdir / "gitdir").read_text().strip()).resolve() == dotgit
-        return [str(common), str(gitdir)] if owns and gitdir.parent == common / "worktrees" else []
-    except (OSError, ValueError, subprocess.TimeoutExpired):
-        return []
-
-
 def command(runtime: str, binary: str, cwd: Path, dispatch: Path, *, agent_type: str | None,
             model: str, effort: str) -> list[str]:
     """A single foreground CLI invocation, without interactive plan or mailbox modes."""
@@ -75,7 +53,7 @@ def command(runtime: str, binary: str, cwd: Path, dispatch: Path, *, agent_type:
         argv = [binary, "-a", "never", "exec", "-C", str(cwd), "--sandbox", "workspace-write",
                 # Network for fetch, push, and forge APIs; file writes stay confined.
                 "-c", "sandbox_workspace_write.network_access=true", "--ephemeral"]
-        argv += [a for d in _own_git_dirs(cwd) for a in ("--add-dir", d)]
+        argv += git_trees.codex_add_dir_args(cwd)
     elif runtime == "cursor":
         argv = [binary, "--print", "--force", "--trust", "--workspace", str(cwd)]
     elif runtime == "agy":
