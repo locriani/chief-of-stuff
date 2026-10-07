@@ -218,7 +218,7 @@ def _plural(n: int, word: str) -> str:
 # The panels' and the new marks' colours are the board's own tokens, so the dark scheme reaches them.
 PANEL_TOKENS = {"ink": "var(--fg)", "muted": "var(--muted)", "card": "var(--surface)", "rule": "var(--line)",
                 "edge": "var(--brass)", "link": "var(--brass)", "hot": "var(--dl)", "hot-ink": "var(--surface)"}
-PANEL_COLOURS = {"all": "var(--muted)", "blocked": "var(--dl)", "decisions": "var(--brass)", "approved": "var(--stage-review)",
+PANEL_COLOURS = {"all": "var(--fg)", "blocked": "var(--dl)", "decisions": "var(--brass)", "approved": "var(--stage-review)",
                  "running": "var(--stage-implement)", "drift": "var(--dl)", "orphaned": "var(--muted)",
                  "merge": "var(--stage-review)", "workers": "var(--stage-implement)"}
 CARD_COLOURS = {**columns.PALETTE, "merged today": columns.PALETTE["done"],
