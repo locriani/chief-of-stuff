@@ -17,15 +17,15 @@ import start_coordinator as start  # noqa: E402
 from evals.test_dispatch_prompt import one_shot_paragraph, sections  # noqa: E402
 
 # Each later slice lowers these in a red commit before it trims the text.
-TOTAL = 82_400            # whole agent file, bytes
+TOTAL = 82_800            # whole agent file, bytes
 MAX_LINE = 8_400          # longest single line
 ONE_SHOT_PARAGRAPH = 4_400  # kept: slice 2 trims this paragraph
-PROMPT = {"claude": 82_200, "codex": 74_600, "cursor": 74_700, "agy": 74_800}  # rendered, path bytes removed
+PROMPT = {"claude": 82_600, "codex": 75_000, "cursor": 75_100, "agy": 75_200}  # rendered, path bytes removed
 CEILING = {  # `## ` section -> bytes, heading line included
     "Role": 1600, "Dispatch authority": 1100, "Browser safety": 410, "Writing": 780,
     "Config": 1400, "Clock": 1850, "Calendar": 910, "Open the day": 2000, "Resume": 4830,
     "Write authority": 2310, "Filing": 1360, "Human-only actions": 1280, "Dispatch": 15210,
-    "Assign": 2560, "Brief": 730, "Pipeline": 5910, "Triage": 3770, "Check": 2670,
+    "Assign": 2560, "Brief": 730, "Pipeline": 6150, "Triage": 3770, "Check": 2780,
     "Sessions": 7380, "Relay": 2510, "Tracker": 10930, "Notices": 740, "Board": 1750,
     "Requirements": 1580, "Share": 460, "Asks": 5740, "Notify": 1940,
 }

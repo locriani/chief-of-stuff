@@ -66,10 +66,10 @@ SPAWN_SESSION = PLUGIN_ROOT / "scripts" / "spawn_session.py"
 # from code, never from the agent. git and curl stay off the allowlist — the scripts call them.
 SCRIPTS = ("render_board.py", "pages.py", "probe_health.py", "audit_tasks.py", "make_worktree.py",
            "spawn_session.py", "notify.py", "inbox.py", "backlog.py", "kanban.py", "process_status.py",
-           "decision_page.py", "tracker_write.py", "merge_approved.py", "review_threads.py", "install_model_guidance.py",
+           "decision_page.py", "tracker_write.py", "merge_approved.py", "merge_ready.py", "review_threads.py", "install_model_guidance.py",
            "board_sources.py", "tracker_read.py", "one_shot_result.py")
 OPERATIONS = ("board", "pages", "health", "audit", "worktree", "worker", "notify", "inbox",
-              "backlog", "kanban", "processes", "decision", "log", "merge-approved", "review-threads", "models", "sources",
+              "backlog", "kanban", "processes", "decision", "log", "merge-approved", "merge-ready", "review-threads", "models", "sources",
               "tracker", "result")
 
 
