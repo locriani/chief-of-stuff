@@ -154,10 +154,11 @@ class Adapter(unittest.TestCase):
         self.assertTrue(all(isinstance(c, columns.Column) for c in cols), cols)
         self.assertEqual([c.name for col in cols for c in col.cards], ["Rate limit headers", "Session timeout", "Locale fallback"])
 
-    def test_a_kanban_hold_stage_flags_its_cards_on_hold(self) -> None:
+    def test_a_kanban_hold_stage_flags_its_cards_needs_input(self) -> None:
+        # #349: the artboard's label, where the flag read ON HOLD.
         kanban = st.Kanban(("todo", "doing"), "needs-human", {"implement": 1, "triage": 1, "main": 1}, hold_stages=("triage",))
         held = [(c.name, c.flag, c.marks) for col in self.build(kanban=kanban) for c in col.cards if c.flag]
-        self.assertEqual(held, [("Session timeout", columns.Mark("ON HOLD", "hold"), ())])
+        self.assertEqual(held, [("Session timeout", columns.Mark("NEEDS INPUT", "hold"), ())])
 
     def test_lanes_merge_in_order_and_disjoint_lanes_stay_whole(self) -> None:
         lanes = {"code": st.Lane(("implement", "review", "merge")), "research": st.Lane(("implement", "triage", "review", "merge")),

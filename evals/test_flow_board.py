@@ -344,28 +344,57 @@ class Page(unittest.TestCase):
         self.assertIn('<div class="panels-warn">workers: no registry</div>', html)
 
     def test_tile_counts(self) -> None:
-        tiles = dict(re.findall(r'<span class="panels-label">([A-Z]+)</span><b class="panels-count">(\d+)</b>', self.body))
-        # blocked: no kanban hold stage, so no ON HOLD card; running: the two workers; drift: README at triage has stage::implement.
-        self.assertEqual(tiles, {"BLOCKED": "0", "DECISIONS": "1", "APPROVED": "3", "RUNNING": "2", "DRIFT": "1", "ORPHANED": "1"})
+        # #349: the artboard's label. ALL counts every task (the header's 4 tasks); NEEDS INPUT is what BLOCKED counted, the held
+        # cards (none: no kanban hold stage); RUNNING is the two workers; DRIFT: README at triage has stage::implement.
+        # The DECISIONS tile's count is no tile now: the tab bar's badge and the DECISIONS panel carry it.
+        tiles = re.findall(r'<span class="panels-label">([A-Z ]+)</span><b class="panels-count">(\d+)</b>', self.body)
+        self.assertEqual(tiles, [("ALL", "4"), ("NEEDS INPUT", "0"), ("RUNNING", "2"), ("APPROVED", "3"), ("ORPHANED", "1"), ("DRIFT", "1")])
 
-    def test_blocked_counts_the_on_hold_cards(self) -> None:
-        # Flow.dc.html v22: BLOCKED is the number of ON HOLD cards; what the user owns and the orphaned are not in it.
+    def test_each_tile_links_where_it_linked_before(self) -> None:
+        # #349: the artboard's label. BLOCKED linked to #flow, APPROVED to #merge, RUNNING to #workers, ORPHANED and DRIFT to #flow;
+        # ALL had no tile, and the BUILD section whose cards it counts is #flow.
+        links = re.findall(r'<a class="panels-tile" data-kind="[a-z]+" href="#([a-z]+)"><span class="panels-label">([A-Z ]+)</span>', self.body)
+        self.assertEqual(links, [("flow", "ALL"), ("flow", "NEEDS INPUT"), ("workers", "RUNNING"), ("merge", "APPROVED"),
+                                 ("flow", "ORPHANED"), ("flow", "DRIFT")])
+
+    def test_all_counts_every_task_not_only_the_active_ones(self) -> None:
+        # #349: the artboard's ALL counts every task, as the header does, finished ones too.
+        tracker = TRACKER.replace("## Decisions", "| Old chore | Done long ago | Robin | done | 08:00 |  | S |  |  |  | c |\n\n## Decisions")
+        html = rb.render(tracker, self.cfg, NOW, lanes=LANES, kanban=KANBAN, sources=SOURCES)
+        self.assertIn("5 tasks</div>", html)
+        self.assertIn('<span class="panels-label">ALL</span><b class="panels-count">5</b>', html)
+
+    def test_the_old_tile_and_flag_words_are_drawn_nowhere(self) -> None:
+        # #349: the artboard's label. A board with held cards and a pending decision draws none of BLOCKED, ON HOLD, or
+        # DECISIONS as a tile: not in the tiles, the card flags, or any text after the style block.
+        held = replace(KANBAN, hold_stages=("triage", "implement"))
+        html = rb.render(TRACKER, self.cfg, NOW, lanes=LANES, kanban=held, sources=SOURCES,
+                         decisions=[("x", {"headline": "Pick", "recommended": "B", "default": "d"}, NOW.replace(hour=10, minute=0), "")])
+        drawn = re.sub(r"<[^>]*>", " ", html.split("</style>", 1)[1])  # the words a reader sees, not class or data- names
+        self.assertNotRegex(drawn, r"(?i)\bblocked\b|on[ -]hold")
+        self.assertNotIn('<span class="panels-label">DECISIONS</span>', html)
+
+    def test_needs_input_counts_the_held_cards_and_each_is_flagged_so(self) -> None:
+        # #349: the artboard's label. What BLOCKED counted, the held cards; the flag on each reads NEEDS INPUT too.
+        # Flow.dc.html v22: what the user owns and the orphaned are not in it.
         held = replace(KANBAN, hold_stages=("triage", "implement"))
         html = rb.render(TRACKER, self.cfg, NOW, lanes=LANES, kanban=held, sources=SOURCES)
-        tiles = dict(re.findall(r'<span class="panels-label">([A-Z]+)</span><b class="panels-count">(\d+)</b>', html))
-        self.assertEqual(tiles["BLOCKED"], "2")
-        self.assertEqual(html.count(">ON HOLD<"), 2)
+        tiles = dict(re.findall(r'<span class="panels-label">([A-Z ]+)</span><b class="panels-count">(\d+)</b>', html))
+        self.assertEqual(tiles["NEEDS INPUT"], "2")
+        flags = re.findall(r'<div class="columns-tag columns-flag" data-cat="hold">([^<]*)<', html)
+        self.assertEqual(flags, ["NEEDS INPUT", "NEEDS INPUT"])
 
     def test_tasks_with_no_name_are_held_each_by_its_own_stage(self) -> None:
         # Keyed by name, every blank-named task shared one stage: one hold held them all, or none of them.
         tracker = TRACKER.replace("| Write README |", "|  |").replace("| Webhook check |", "|  |")
         held = replace(KANBAN, hold_stages=("triage",))
         html = rb.render(tracker, self.cfg, NOW, lanes=LANES, kanban=held, sources=SOURCES)
-        self.assertEqual(html.count(">ON HOLD<"), 1)
+        # #349: the artboard's label. One flag, and the tile that counts it.
+        self.assertEqual(html.count(">NEEDS INPUT<"), 2)
 
-    def test_blocked_and_drift_exclude_a_task_whose_change_already_merged(self) -> None:
+    def test_needs_input_and_drift_exclude_a_task_whose_change_already_merged(self) -> None:
         # (#240) The same forge answer that moves a stuck card off the `merge` column keeps it out of the
-        # BLOCKED and DRIFT tiles too — both read `held`/`drifts` on every task, not just the laned ones build_columns sees.
+        # NEEDS INPUT and DRIFT tiles too — both read `held`/`drifts` on every task, not just the laned ones build_columns sees.
         lanes = {"build": st.Lane(("implement", "pr", "review", "triage", "merge", "main"), ("triage", "merge"))}
         kanban = replace(KANBAN, hold_stages=("merge",), terminal_stages=("main",))
         sources = replace(SOURCES, issues={**SOURCES.issues, "#8": bs.Issue("#8", "https://forge/i/8", "Locale", "open", ())})
@@ -373,8 +402,9 @@ class Page(unittest.TestCase):
                                   "| Ship the tool | Ship it | Robin | waiting | 09:00 |  | S | build | merge | #8 | Checklist: ship |\n"
                                   "\n## Decisions")
         html = rb.render(tracker, self.cfg, NOW, lanes=lanes, kanban=kanban, sources=sources)
-        tiles = dict(re.findall(r'<span class="panels-label">([A-Z]+)</span><b class="panels-count">(\d+)</b>', html))
-        self.assertEqual(tiles["BLOCKED"], "0")
+        tiles = dict(re.findall(r'<span class="panels-label">([A-Z ]+)</span><b class="panels-count">(\d+)</b>', html))
+        # #349: the artboard's label (BLOCKED is NEEDS INPUT).
+        self.assertEqual(tiles["NEEDS INPUT"], "0")
         self.assertEqual(tiles["DRIFT"], "1")  # unrelated, pre-existing: README at triage has stage::implement
 
     def test_tiles_link_to_their_sections(self) -> None:
@@ -383,8 +413,9 @@ class Page(unittest.TestCase):
 
     def test_empty_sources_render_and_running_falls_back_to_tasks(self) -> None:
         html = rb.render(TRACKER, self.cfg, NOW, lanes=LANES)
-        tiles = dict(re.findall(r'<span class="panels-label">([A-Z]+)</span><b class="panels-count">(\d+)</b>', html))
-        self.assertEqual(tiles, {"BLOCKED": "0", "DECISIONS": "0", "APPROVED": "0", "RUNNING": "1", "DRIFT": "0", "ORPHANED": "1"})
+        tiles = re.findall(r'<span class="panels-label">([A-Z ]+)</span><b class="panels-count">(\d+)</b>', html)
+        # #349: the artboard's label, in the artboard's order.
+        self.assertEqual(tiles, [("ALL", "4"), ("NEEDS INPUT", "0"), ("RUNNING", "1"), ("APPROVED", "0"), ("ORPHANED", "1"), ("DRIFT", "0")])
         self.assertIn("rendered 14:30 CDT · tracker 14:30 · 4 tasks", html)
 
     def test_panel_and_tile_colours_are_board_tokens_light_and_dark(self) -> None:
