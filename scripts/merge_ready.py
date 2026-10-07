@@ -28,12 +28,13 @@ from forge_review import Request, forge, github_requests, gitlab_requests
 from settings import SettingsError
 from workspace import ConfigError
 
-# ponytail: first 100 open requests and checks each; paginate when a request outgrows that. Threads past 100 print `unverified`.
+THREAD_LIMIT = 100
+# ponytail: first 100 open requests and checks each; paginate when a request outgrows that. Threads past THREAD_LIMIT print `unverified`.
 QUERY = """query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) {
   pullRequests(states: OPEN, first: 100) { nodes { number isDraft
-    reviewThreads(first: 100) { pageInfo { hasNextPage } nodes { isResolved } }
+    reviewThreads(first: %d) { pageInfo { hasNextPage } nodes { isResolved } }
     commits(last: 1) { nodes { commit { oid statusCheckRollup { contexts(first: 100) { nodes {
-      __typename ... on CheckRun { checkSuite { workflowRun { databaseId } } } } } } } } } } } } }"""
+      __typename ... on CheckRun { checkSuite { workflowRun { databaseId } } } } } } } } } } } } }""" % THREAD_LIMIT
 
 
 def github_ready(repo: str, gh=backlog.run_gh) -> list[Request]:
@@ -51,6 +52,8 @@ def github_ready(repo: str, gh=backlog.run_gh) -> list[Request]:
         n = nodes.get(r.number)
         if n is None:
             raise RuntimeError(f"#{r.number}: not in the graphql read")
+        if not n["commits"]["nodes"]:
+            raise RuntimeError(f"#{r.number}: no commit in the graphql read")
         commit = n["commits"]["nodes"][0]["commit"]
         rollup = commit.get("statusCheckRollup")
         ids = [str(run["databaseId"]) for c in (rollup or {}).get("contexts", {}).get("nodes", [])
@@ -59,7 +62,7 @@ def github_ready(repo: str, gh=backlog.run_gh) -> list[Request]:
         found.append(dataclasses.replace(
             r, pipeline_id=ids[0] if ids else "", pipeline_sha=commit["oid"], draft=r.draft or bool(n["isDraft"]),
             threads=sum(not t["isResolved"] for t in threads["nodes"]),
-            threads_cut_at=len(threads["nodes"]) if threads["pageInfo"]["hasNextPage"] else 0))
+            threads_cut_at=THREAD_LIMIT if threads["pageInfo"]["hasNextPage"] else 0))
     return found
 
 
