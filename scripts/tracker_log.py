@@ -88,8 +88,12 @@ def moves(text: str, day: date, zone: ZoneInfo) -> list[Move]:
             task_of[m[3]] = m[4]
             out.append(Move(at, m[4], "implement", True, line, m[3]))
         elif m[3] in task_of:
-            if m.re is RELAUNCH and not line[m.end():].startswith(f"{task_of[m[3]]} — "):
-                continue
+            if m.re is RELAUNCH:
+                # Take the final full separator: the task itself may contain it.
+                suffix = RELAUNCHED.split("{task}", 1)[1]
+                head, separator, _ = line[m.end(3):].rpartition(suffix)
+                if head + separator != RELAUNCHED.format(task=task_of[m[3]]):
+                    continue
             stage = RELAUNCH_STAGE if m.re is RELAUNCH else "pr" if m[4].startswith("completed") else "review"
             out.append(Move(at, task_of.pop(m[3]), stage, True, line, m[3]))
     return out

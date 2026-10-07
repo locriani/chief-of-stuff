@@ -112,6 +112,13 @@ def build(log: list[Move], tasks, lanes: dict, held: set[str], ends: dict[str, d
         elif run := next((r for r in reversed(runs.get(key, ())) if r[0] == m.worker and r[2] is None), None):
             run[2] = m.at
 
+    # Only runs without an explicit end fall back to the next launch on their task.
+    # Resolve this after reading all stops so explicitly overlapping runs keep their ends.
+    for task_runs in runs.values():
+        for run, successor in zip(task_runs, task_runs[1:]):
+            if run[2] is None:
+                run[2] = successor[1]
+
     def owner(key: str, at: datetime, task) -> str:
         running = [w for w, start, end in runs.get(key, ()) if start <= at and (end is None or at < end)]
         return running[-1] if running else task.shown_owner if task else ""
