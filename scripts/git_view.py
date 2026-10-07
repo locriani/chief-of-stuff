@@ -1,6 +1,6 @@
 """Read worker-written git data through private, launcher-authored metadata.
 
-Callers supply the audit environment. Refs and objects remain untrusted data;
+Callers supply the audit environment; only allowlisted GIT_* settings survive. Refs and objects remain untrusted data;
 config, hooks, grafts and shallow boundaries never enter the view. This module
 does not serve writes or inspect submodules.
 """
@@ -92,6 +92,8 @@ def locate(path: Path) -> Layout:
             raise Unviewable("invalid worktree pointers")
         common = (gitdir / common_name).resolve()
         back = (gitdir / back_name).resolve()
+        if common.is_relative_to(tree) or gitdir.is_relative_to(tree):
+            raise Unviewable("linked repository metadata is inside the worktree")
         if gitdir.parent != common / "worktrees" or back != dotgit:
             raise Unviewable("not a linked worktree of its own repository")
         _repository(common)
@@ -104,6 +106,11 @@ _OID = r"(?:[0-9a-f]{40}|[0-9a-f]{64})"
 _NAME = r"[A-Za-z0-9._/-]+"
 _BOOL_KEYS = ("core.filemode", "core.ignorecase", "core.precomposeunicode", "core.symlinks")
 _INDEX_LIMIT = 512 * 1024 * 1024
+_OBJECT_ONLY = frozenset(("branch", "cat-file", "for-each-ref", "log", "ls-files", "ls-tree",
+                          "merge-base", "rev-list", "rev-parse", "show", "symbolic-ref"))
+_READ_ONLY_COMMANDS = _OBJECT_ONLY | {"check-ref-format", "diff", "status"}
+_SAFE_GIT_ENV = frozenset(("GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS", "GIT_NO_REPLACE_OBJECTS",
+                          "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM"))
 
 
 def _head(layout: Layout) -> tuple[bytes, str | None]:
@@ -155,7 +162,7 @@ def _config(layout: Layout, branch: str | None, env: dict[str, str], timeout: fl
                 facts[(section, "url")] = ["/nonexistent"]
     lines = ["[core]", f"\trepositoryformatversion = {int(fmt == 'sha256')}",
              f"\tbare = {str(layout.tree is None).lower()}", "\tfsmonitor = false", "\tuntrackedCache = false",
-             "\tcommitGraph = false", "\tmultiPackIndex = false", f"\thooksPath = {os.devnull}",
+             "\tcommitGraph = false", "\tmultiPackIndex = false", "\tuseReplaceRefs = false", f"\thooksPath = {os.devnull}",
              f"\tattributesFile = {os.devnull}", f"\texcludesFile = {os.devnull}"]
     for (section, key), values in facts.items():
         if section == "core":
@@ -195,11 +202,13 @@ def _base(layout: Layout, base: Path | None) -> Path:
     explicit = base is not None
     if base is None:
         cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+        if not cache.is_absolute():
+            raise Unviewable("the cache directory is relative")
         base = cache / "chief-of-stuff/git-views"
     base = Path(base).resolve()
     forbidden = [layout.tree, layout.common, layout.gitdir]
     if not explicit:
-        forbidden.append(Path(tempfile.gettempdir()).resolve())
+        forbidden.extend(Path(root).resolve() for root in (tempfile.gettempdir(), "/tmp", "/var/tmp"))
     if any(root is not None and base.is_relative_to(root) for root in forbidden):
         raise Unviewable("the view directory would be worker-writable")
     base.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -220,6 +229,7 @@ def _base(layout: Layout, base: Path | None) -> Path:
 
 @contextmanager
 def _opened(path: Path, env: dict[str, str], base: Path | None, deadline: float) -> Iterator[View]:
+    env = {key: value for key, value in env.items() if not key.startswith("GIT_") or key in _SAFE_GIT_ENV}
     layout = locate(path)
     if (layout.common / "reftable").exists():
         raise Unviewable("reftable ref storage")
@@ -272,10 +282,15 @@ def opened(path: Path, env: dict[str, str], base: Path | None = None) -> Iterato
 def run(args: list[str], path: Path, *, env: dict[str, str], timeout: int = 15,
         base: Path | None = None) -> subprocess.CompletedProcess[str]:
     """Build, read and remove a view within one subprocess time budget."""
+    if not args or args[0].startswith("-") or args[0] not in _READ_ONLY_COMMANDS:
+        raise Unviewable("command is not an allowed read")
+    if any(arg.startswith(("--git-dir", "--work-tree", "--output")) for arg in args):
+        raise Unviewable("repository and output options are not allowed")
+    command = args[0]
     deadline = time.monotonic() + timeout
     with _opened(path, env, base, deadline) as view:
         cwd = view.layout.tree or Path(view.env["GIT_DIR"])
-        if args and args[0] in ("status", "diff"):
+        if command not in _OBJECT_ONLY:
             index = subprocess.run(["git", "ls-files", "--stage", "-z"], cwd=cwd, env=view.env,
                                    capture_output=True, timeout=_remaining(deadline))
             if index.returncode:
