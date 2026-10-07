@@ -133,7 +133,7 @@ def quota_stop(log: Path, runtime: str, model: str) -> str:
     for line in text.splitlines():
         low = line.lower()
         if re.search(r"(?<![^\s=(])429(?!\w)", line) and ("resource_exhausted" in low or "quota" in low):
-            reset = re.search(r"\bresets?\b.*", line, re.IGNORECASE)
+            reset = re.search(r"\bresets?\b(?:[^\".]|\.(?!\s|$))*(?:\.(?=\s|$)|(?=\"))?", line, re.IGNORECASE)
             return quota_marker(runtime, model) + (f"; {reset.group().strip()[:80].rstrip()}" if reset else "")
     return ""
 
