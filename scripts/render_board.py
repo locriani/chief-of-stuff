@@ -335,7 +335,7 @@ def render(tracker_text: str, cfg: Config, now: datetime, lanes: dict | None = N
                                  queue_durations(active, hist), slots,
                                  frozenset(t.name.strip() for t in tasks
                                            if t.name.strip() and any(c.state == "open" and c.approved for c in task_changes(t, sources))),
-                                 ended=forge_ends(tasks, sources, zone))
+                                 ended=forge_ends(tasks, sources, zone), home=sources.home)
     # An issue's row links to its page, pages.py's /issues/<n>.
     flow_html = flow_chart.section([(s, replace(r, href=f"/issues/{int(m[1])}") if (m := TRAILING_NUMBER.search(r.ref)) else r)
                                     for s, r in flow_rows], now)

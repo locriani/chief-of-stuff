@@ -53,9 +53,32 @@ def _ahead(stages: list[str], start: datetime, end: datetime, title: str = "") -
     return [gantt.Segment(start + step * i, start + step * (i + 1), s, "forecast", title) for i, s in enumerate(stages)]
 
 
+def _refs(tasks, log: list[Move], home):
+    """Look up a row's issue or change, bridging change-only passes only through a unique issue."""
+    named = {text: change_keys(text, home) for text in [*(t.item for t in tasks), *(m.name for m in log)]}
+    pairs = list(named.values()) + [(issue_key(t.issue, home), named[t.item][1])
+                                   for t in tasks if t.issue.strip() and not t.workflow]
+    issues = {}
+    for issue, change in pairs:
+        if issue and change:
+            issues.setdefault(change, set()).add(issue)
+    change_issues = {change: next(iter(keys)) if len(keys) == 1 else "" for change, keys in issues.items()}
+
+    def ref_of(task, text: str) -> str:
+        if task and task.issue.strip() and not task.workflow:
+            return issue_key(task.issue, home)
+        if task and not task.workflow:
+            return ""
+        issue, change = named[task.item if task else text]
+        return issue or change_issues.get(change, change)
+
+    return ref_of
+
+
 def build(log: list[Move], tasks, lanes: dict, held: set[str], ends: dict[str, datetime], now: datetime,
           durations: dict[str, timedelta] | None = None, slots: int = 1,
-          approved: frozenset[str] = frozenset(), ended: dict[str, tuple[datetime, str]] | None = None) -> list[tuple[str, gantt.Row]]:
+          approved: frozenset[str] = frozenset(), ended: dict[str, tuple[datetime, str]] | None = None,
+          home=None) -> list[tuple[str, gantt.Row]]:
     """(status, row) per task with a move, first moved first, then the queued tasks in tracker order. `tasks` are
     tracker rows, later ones winning; `held` names the held tasks; `ends` maps a task's item to its estimated end;
     `durations` maps a queued task's item to how long it will take, and `slots` is how many run at once;
@@ -63,25 +86,12 @@ def build(log: list[Move], tasks, lanes: dict, held: set[str], ends: dict[str, d
     `ended` maps a task's name to (time, word) — its change's forge merge or its closed issue's close time — which
     ends its row (#220). Status is that word, `held` or the task's state word. Every bar's title names the worker
     whose launch was running when it began (now, for a forecast or hold bar), else the task's owner cell, shown as
-    the board shows it (#192, #193)."""
+    the board shows it (#192, #193). `home` resolves issue keys as in the board's source cache."""
     by_name = {t.name.strip().casefold(): t for t in tasks if t.name.strip()}
     # A move names a task by its name or its item; the name wins.
     find = {**{t.item.strip().casefold(): t for t in tasks if t.item.strip()}, **by_name}
     row_of = launcher(tasks)
-    # A row naming both a change and its issue bridges passes that name only the change.
-    named = {text: change_keys(text) for text in [*(t.item for t in tasks), *(m.name for m in log)]}
-    change_issues = {change: issue for issue, change in named.values() if issue and change}
-    for t in tasks:
-        if (change := named[t.item][1]) and t.issue.strip() and not t.workflow:
-            change_issues[change] = issue_key(t.issue)
-
-    def ref_of(task, text: str) -> str:
-        if task and task.issue.strip() and not task.workflow:
-            return issue_key(task.issue)
-        if task and not task.workflow:
-            return ""
-        issue, change = named[task.item if task else text]
-        return issue or change_issues.get(change, change)
+    ref_of = _refs(tasks, log, home)
 
     def key_of(m: Move) -> str:
         t = find.get(m.name.strip().casefold()) or (row_of(m.name)[0] if m.launch else None)

@@ -435,23 +435,24 @@ def issue_key(cell: str, home: Backlog | GitHubBacklog | None = None) -> str:
     return f"#{m[1]}" if m else cell.strip()
 
 
-def change_keys(text: str) -> tuple[str, str]:
-    """(issue key, change URL) named by tracker prose, with a bare issue resolved in the change's project.
-    Empty strings when neither is named. Issue and change URLs use the shared issue-reference parser."""
-    # ponytail: reads tracker prose, so an omitted or stale relationship is unknowable; the forge-sourced key replaces it.
-    issue, change, project = "", "", None
-    for url in re.findall(r"https://[^\s`<>()]+", text):
-        url = url.rstrip(".,;:")
+def change_keys(text: str, home: Backlog | GitHubBacklog | None = None) -> tuple[str, str]:
+    """(issue key, change URL) from one change and its own issue clause; ambiguous references give empty strings.
+    A bare issue resolves in the change's project, using the shared issue-reference parser."""
+    # ponytail: first change reference only, prose-derived; forge-sourced relationships replace omitted or stale clauses.
+    changes = {}
+    for m in re.finditer(r"https://[^\s`<>()]+", text):
+        url = m[0].rstrip(".,;:")
         issue_url = re.sub(r"/(?:merge_requests|pull)/(\d+)(/?)$", r"/issues/\1\2", url)
-        if ref := issue_ref(issue_url, None, any_host=True):
-            if issue_url != url:
-                if not change:
-                    change, project = url.rstrip("/"), ref
-            elif not issue:
-                issue = ref.label(None)
-    if not issue and (m := re.search(r"(?i)\b(?:issue|close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)\b", text)):
-        issue = IssueRef(project.repo, int(m[1]), project.host).label(None) if project else f"#{m[1]}"
-    return issue, change
+        if issue_url != url and (ref := issue_ref(issue_url, None, any_host=True)):
+            changes.setdefault(url.rstrip("/"), (ref, m.end()))
+    if len(changes) != 1:
+        return "", ""
+    change, (project, start) = next(iter(changes.items()))
+    issues = {IssueRef(project.repo, int(n), project.host).label(home)
+              for n in re.findall(r"(?i)\b(?:issue|close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)\b", text[start:])}
+    if len(issues) > 1:
+        return "", ""
+    return next(iter(issues), ""), change
 
 
 # A `#N` or `!N` issue or change reference in a one-shot's launch text.
@@ -471,6 +472,7 @@ def launcher(tasks):
     """launch_row over `tasks`, indexed once: items by length, task names (with a trailing ":") by length,
     grown items in sorted order, `#N`/`!N` issues by ref, and each text looked up once (#184). An issue cell of another shape
     (`group/app#118`, a URL) keeps its own search."""
+    # ponytail: 40-character grown minimum, prose-derived; persist launch identity if shorter or rewritten items must match.
     items, names, refs, other = {}, {}, {}, []
     for i, t in enumerate(tasks):
         if item := t.item.strip():
@@ -490,18 +492,21 @@ def launcher(tasks):
         if len(text) >= 40:
             i = bisect_left(sorted_items, text)
             while i < len(sorted_items) and sorted_items[i].startswith(text):
-                yield items[sorted_items[i]]
+                if re.match(r"\W|$", sorted_items[i][len(text):]):
+                    yield items[sorted_items[i]]
                 i += 1
 
     @functools.cache
     def row(text: str):
         text = text.strip()
         first = text.split("\n", 1)[0][:80]
-        for hits in ([items.get(text[:n]) for n in lengths],
-                     [names.get(text[:n]) for n in name_lengths],
-                     grown(text),
-                     [refs.get(r) for r in REF.findall(text)] + [hit for hit, p in other if p.search(text)]):
+        for rung, hits in enumerate(([items.get(text[:n]) for n in lengths],
+                                     [names.get(text[:n]) for n in name_lengths],
+                                     grown(text),
+                                     [refs.get(r) for r in REF.findall(text)] + [hit for hit, p in other if p.search(text)])):
             if hits := [h for h in hits if h]:
+                if rung == 2 and len({t.name.strip() for _, t in hits}) > 1 and len({issue_key(t.issue) for _, t in hits}) > 1:
+                    return None, first
                 t = max(hits, key=lambda h: h[0])[1]
                 return t, t.name.strip() or first
         return None, first
