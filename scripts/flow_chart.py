@@ -171,7 +171,8 @@ def _merge_issues(rows: list[tuple[str, gantt.Row]]) -> list[tuple[str, gantt.Ro
     was its lane's last stage) still counts toward the group, but only a row with segments can supply the name
     or the status/note, falling back to the first or last row by position when none of the group has any. When
     the winning row is finished (merged, closed or done), every segment in the group ends no later than that
-    row's own last segment end, and a segment starting after that end is dropped (#220)."""
+    row's own last segment end, and a segment starting after that end is dropped (#220); a finished group with no
+    segment at all merges with none and is not clipped (#406)."""
     groups: dict[str, list[int]] = {}
     for i, (_, row) in enumerate(rows):
         if row.ref:
@@ -188,7 +189,7 @@ def _merge_issues(rows: list[tuple[str, gantt.Row]]) -> list[tuple[str, gantt.Ro
         else:
             status, last_row = entries[-1]
         segs = [g for _, r in entries for g in r.segments]
-        if status in ("merged", "closed", "done"):
+        if status in ("merged", "closed", "done") and last_row.segments:
             finish = last_row.segments[-1].end
             segs = [replace(g, end=min(g.end, finish)) for g in segs if g.start <= finish]
         segs = tuple(sorted(segs, key=lambda g: g.start))
