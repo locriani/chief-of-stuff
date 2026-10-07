@@ -1805,6 +1805,45 @@ class IssueColumnTest(unittest.TestCase):
             parse_coordinator(CLAUDE_MD.replace("- Human-only", "- Backlog: GitHub issues\n- Human-only"), today=NOW.date())
 
 
+class FlowRefReviewTest(unittest.TestCase):
+    """PR 461 R2: change refs and issue refs with the same number are different destinations."""
+
+    CHANGE_URLS = (
+        "https://forge.example/group/project/-/merge_requests/51",
+        "https://github.com/group/project/pull/51",
+    )
+
+    def flow(self, issue: str, item: str) -> str:
+        from test_flow_chart import LANES, NOW, TODAY, flow_launch_tracker
+
+        tracker = flow_launch_tracker([("Build parser", item, issue)], [(item, "worker-1", "00:10")])
+        cfg = parse_coordinator("## Coordinator\n\n- User: User\n- Daily log dir: `daily/`\n"
+                                "- Tracker: `daily/<date>-tracker.md`\n- Timezone: America/Chicago\n", today=TODAY)
+        html = rb.render(tracker, cfg, NOW, lanes=LANES, tracker_day=TODAY)
+        self.assertIn('<span class="gantt-name">Build parser</span>', html)
+        return html[html.index("<h2>Flow ·"):]
+
+    def test_a_change_url_flow_ref_does_not_link_to_an_issue_page(self) -> None:
+        for url in self.CHANGE_URLS:
+            with self.subTest(url=url):
+                flow = self.flow("workflow", f"Review {url} and check diagnostics")
+                self.assertNotRegex(flow, r'href="/issues/\d+"')
+
+    def test_merge_request_and_pull_flow_refs_are_labelled_as_changes(self) -> None:
+        # Pin !51 for both merge_requests and GitHub pull URLs; #51 is reserved for issues.
+        for url in self.CHANGE_URLS:
+            with self.subTest(url=url):
+                flow = self.flow("workflow", f"Review {url} and check diagnostics")
+                self.assertEqual(set(re.findall(r'class="gantt-ref">([^<]*)<', flow)), {"!51"})
+
+    def test_issue_key_and_issue_url_flow_refs_still_link_to_the_issue_page(self) -> None:
+        for ref in ("group/project#7", "https://forge.example/group/project/-/issues/7",
+                    "https://github.com/group/project/issues/7"):
+            with self.subTest(ref=ref):
+                flow = self.flow(ref, "Build the parser")
+                self.assertEqual(set(re.findall(r'href="(/issues/[^"]*)"', flow)), {"/issues/7"})
+
+
 class SettingsLineTest(unittest.TestCase):
     """`Settings: <path>` names the workspace's chief-of-stuff.toml (Zach, 2026-09-22 22:20)."""
 

@@ -33,7 +33,7 @@ import pages as pg  # noqa: E402
 import render_board as rb  # noqa: E402
 from workspace import parse_coordinator  # noqa: E402
 import tracker_write as tw  # noqa: E402
-from test_flow_chart import BoardTest, CT, KANBAN, LANES, NOW, TODAY, TODAY_TRACKER, YESTERDAY, at, merged  # noqa: E402
+from test_flow_chart import BoardTest, CT, KANBAN, LANES, NOW, TODAY, TODAY_TRACKER, YESTERDAY, at, flow_launch_tracker, merged  # noqa: E402
 from test_pages import get  # noqa: E402
 
 try:
@@ -483,6 +483,36 @@ class WhatHappensNextTest(unittest.TestCase):
                 got = text(section(html, "What happens next"))
                 self.assertRegex(got, r"(?i)\bnothing\b.*\bnext\b")
                 self.assertNotRegex(got, r"(?i)\bno estimate\b")
+
+
+class FlowRefReviewTest(unittest.TestCase):
+    """PR 461 R2: an issue page excludes change-keyed Flow rows with the same number."""
+
+    def test_an_issue_page_does_not_list_a_change_flow_row_with_the_same_number(self):
+        for url in ("https://forge.example/group/project/-/merge_requests/51",
+                    "https://github.com/group/project/pull/51"):
+            with self.subTest(url=url):
+                review = f"Review {url} and check diagnostics"
+                tracker = flow_launch_tracker([
+                    ("Build parser", "Build the parser", "#51"),
+                    ("Review change", review, "workflow")],
+                    [("Build the parser", "worker-1", "00:10"), (review, "worker-2", "00:40")])
+                html = page(51, src=bs.Sources({}, {}, {}, (), {}), trackers=[(TODAY, tracker)])
+                self.assertIsNotNone(html)
+                flow = section(html, "Flow")
+                self.assertEqual(set(re.findall(r'class="gantt-name">([^<]*)<', flow)), {"Build parser"})
+                self.assertNotIn("Review change", flow)
+
+    def test_issue_key_and_issue_url_flow_rows_still_appear_on_the_issue_page(self):
+        for ref in ("group/project#7", "https://forge.example/group/project/-/issues/7",
+                    "https://github.com/group/project/issues/7"):
+            with self.subTest(ref=ref):
+                tracker = flow_launch_tracker([("Build parser", "Build the parser", ref)],
+                                              [("Build the parser", "worker-1", "00:10")])
+                html = page(7, src=bs.Sources({}, {}, {}, (), {}), trackers=[(TODAY, tracker)])
+                self.assertIsNotNone(html)
+                self.assertEqual(set(re.findall(r'class="gantt-name">([^<]*)<', section(html, "Flow"))),
+                                 {"Build parser"})
 
 
 class BoardLinkTest(unittest.TestCase):
