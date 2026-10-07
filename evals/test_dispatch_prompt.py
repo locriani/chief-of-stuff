@@ -812,6 +812,7 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         ("eligibility", "A finding is an automatic fix only when the reviewer suggests `fix`, its evidence names one concrete change (a defect or a test gap, with no design choice to make), its severity is Important or Minor, it is not on the security axis and does not concern security in substance (a path check, authentication, input handling, secrets, permissions), whatever axis the reviewer gave it, and it is not about behaviour the user specified in a Decisions row, in chat, in a spec or in an acceptance item."),
         ("default is ask", "Ask about every other finding, including one that fits neither group: when in doubt, ask."),
         ("always asked", "A Critical finding, a security-axis finding, a design or architecture call, a change to a spec or an acceptance item, a finding about behaviour the user specified, and a finding the reviewer suggests `keep`, `file` or `discard` are always asked."),
+        ("check first, before the send", "Before you send an automatic fix, read the task row, the Decisions and the Log for anything about the finding's subject; a finding that touches anything found there is asked, not sent."),
         ("sent at once with the Plan line", "Send each automatic fix at once, without asking, to the owning session with `Plan: enter plan mode (EnterPlanMode) for this task before anything else; write nothing until the user approves the plan.`, as every assignment is, and leave it out of the ask."),
         ("Log, not Decisions", "Record an automatic fix in the Log, never in Decisions: one Log line naming its R-numbers and saying it was an automatic fix, not the user's word, and list those R-numbers in one line in your next status."),
         ("stage", "Keep `stage` at `triage` while any ask is open, and move it to `fix` when nothing remains for the user."),
@@ -842,6 +843,14 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
             with self.subTest(name):
                 self.assertIn(sentence, triage, f"Triage must say ({name}): {sentence}")
 
+    def test_the_check_precedes_the_dispatch_sentence(self):
+        # Sonnet runs sent a finding that contradicted a Decisions row, then retracted: the check is a step before the send, so it comes first.
+        triage = self._section("Triage")
+        sentences = dict(self.TRIAGE_RULE)
+        check, send = sentences["check first, before the send"], sentences["sent at once with the Plan line"]
+        self.assertIn(check, triage, f"Triage must say: {check}")
+        self.assertLess(triage.find(check), triage.find(send), f"the check sentence must precede the dispatch sentence: {check}")
+
     def test_the_lines_the_rule_makes_stale_say_the_automatic_fix_is_the_exception(self):
         for name, sentence in self.STALE_LINES_MADE_CONSISTENT:
             with self.subTest(name):
@@ -868,8 +877,8 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         table = (
             (True, "Record one Decisions row naming the R-numbers sent this way and saying it was an automatic fix"),
             (True, "Write an automatic fix as a Decisions row, not the user's word."),
-            (False, self.TRIAGE_RULE[0][1]),
-            (False, self.TRIAGE_RULE[4][1]),
+            (False, dict(self.TRIAGE_RULE)["eligibility"]),
+            (False, dict(self.TRIAGE_RULE)["Log, not Decisions"]),
         )
         for rejected, sentence in table:
             with self.subTest(sentence[:60]):
