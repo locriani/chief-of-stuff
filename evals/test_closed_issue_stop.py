@@ -38,6 +38,7 @@ import board_sources as bs  # noqa: E402
 import flow_chart as fc  # noqa: E402
 import render_board as rb  # noqa: E402
 import tracker_write as tw  # noqa: E402
+from tracker import issue_key  # noqa: E402
 import test_board_sources as tbs  # noqa: E402  (module-qualified: don't re-collect its TestCases)
 import test_issue_page as tip  # noqa: E402  (module-qualified: don't re-collect its TestCases)
 from test_flow_chart import CT, LANES, NOW, TODAY, TODAY_TRACKER, YESTERDAY, YESTERDAY_TRACKER, at, merged  # noqa: E402
@@ -207,6 +208,85 @@ class TaskPageEndedRowsTest(unittest.TestCase):
         issue = replace(tip.ISSUE, state="closed", closed_at=closed_at)
         html = ip.render(109, tip.work_trackers(), tip.sources(issue=issue), NOW, LANES)
         self.assertRegex(tip.text(html), r"(?i)\bWorked\s+4h25m\s+of\s+5h35m\s+elapsed\s*·\s*1h10m\s+waiting\b")
+
+
+# --- #409: issue state is keyed by host and project, not by number alone ---------------------------------
+
+CLOSED_AT = "2026-09-25T20:15:00+00:00"
+CLOSED = datetime.fromisoformat(CLOSED_AT).astimezone(CT)
+
+
+def two_projects_tracker(issue_a: str, issue_b: str) -> str:
+    """A tracker whose two waiting tasks name issue #8 of two different projects."""
+    head = tbs.TRACKER.split("| Rate limit |", 1)[0]
+    return head + (f"| Task A | Item A | Robin | waiting | 01:00 |  | S | {issue_a} |  |\n"
+                   f"| Task B | Item B | Robin | waiting | 01:00 |  | S | {issue_b} |  |\n")
+
+
+def issue(state: str) -> bs.Issue:
+    return bs.Issue("#8", "u", "t", state, (), closed_at=datetime.fromisoformat(CLOSED_AT) if state == "closed" else None)
+
+
+class IssueKeyedByProjectTest(unittest.TestCase):
+    A, B = "https://example.com/o/app/-/issues/8", "https://example.com/acme/web/-/issues/8"
+
+    def test_each_task_reads_the_state_of_its_own_projects_issue(self):
+        tasks = rb.parse_tracker(two_projects_tracker(self.A, self.B)).tasks
+        for closed, other, ended in ((self.A, self.B, "Task A"), (self.B, self.A, "Task B")):
+            with self.subTest(closed=closed):
+                # the sources' keys are whatever the reader's own key says: no key format is assumed here
+                src = bs.Sources({}, {issue_key(closed): issue("closed"), issue_key(other): issue("open")}, {}, (), {})
+                self.assertEqual(rb.forge_ends(tasks, src, CT), {ended: (CLOSED, "closed")})
+
+    def test_the_task_on_the_open_issue_keeps_its_flow_row_unclipped(self):
+        tasks = rb.parse_tracker(TODAY_TRACKER.replace("| #109 |", f"| {self.B} |").replace("| #111 |", f"| {self.A} |")).tasks
+        src = bs.Sources({}, {issue_key(self.A): issue("closed"), issue_key(self.B): issue("open")}, {}, (), {})
+        built = {r.name: (s, r) for s, r in fc.build(_log(), tasks, LANES, set(), {}, NOW, ended=rb.forge_ends(tasks, src, CT))}
+        status, row = built["Upload size limit"]  # on B, open
+        self.assertNotEqual(status, "closed")
+        self.assertEqual(built["Cache warmup"][0], "closed")  # on A, closed
+        self.assertGreater(max(g.end for g in row.segments), at(TODAY, "01:00"))
+
+
+class SourcesWriterAndReaderAgreeTest(unittest.TestCase):
+    """The refresh writes `.sources.json`; `forge_ends` reads it back. Both must key an issue the same way (#409)."""
+
+    def check(self, backlog, home_cell, other_cell, call=None, gh=None):
+        root = tbs.workspace(backlog)
+        path = root / "daily" / f"{tbs.DAY}-tracker.md"
+        path.write_text(two_projects_tracker(home_cell, other_cell))
+        tasks = rb.parse_tracker(path.read_text()).tasks
+        with mock.patch.dict(os.environ, {"CHIEF_OF_STUFF_GITLAB_TOKEN": "tok"}):
+            got = bs.refresh(root, tbs.NOW, **{k: v for k, v in (("call", call), ("gh", gh)) if v})
+        self.assertEqual(got.errors, {})
+        self.assertEqual(len(got.issues), 2)  # one entry per project's #8: the writer already keeps them apart
+        for name, src in (("refreshed", got), ("reloaded from the cache", bs.load(root / "pages"))):
+            with self.subTest(sources=name):
+                # the home project's #8 is closed, the other project's #8 is open: only Task A ends
+                self.assertEqual(rb.forge_ends(tasks, src, CT), {"Task A": (CLOSED, "closed")})
+
+    def test_gitlab_issue_of_another_project_on_the_backlogs_host(self):
+        def call(method, url, token, timeout, payload=None):
+            project = re.search(r'fullPath: "([^"]+)"', payload["query"])[1]
+            node = {"iid": "8", "webUrl": f"https://example.com/{project}/-/issues/8", "title": project, "labels": {"nodes": []},
+                    "state": "closed" if project == "o/app" else "opened", "closedAt": CLOSED_AT if project == "o/app" else None}
+            return {"data": {"p0": {"issues": {"nodes": [node]}, "merged": {"nodes": []}}}}, {}, ""
+
+        self.check("GitLab issues; host https://example.com; project o/app",
+                   "https://example.com/o/app/-/issues/8", "https://example.com/acme/web/-/issues/8", call=call)
+
+    def test_github_issue_of_another_repo(self):
+        def gh(args, input_text=None):
+            query = args[args.index("-f") + 1]
+            data = {}
+            for i, repo in enumerate(re.findall(r'repository\(owner: "([^"]+)", name: "([^"]+)"\)', query)):
+                name = "/".join(repo)
+                data[f"r{i}"] = {"n8": {"__typename": "Issue", "number": 8, "url": f"https://github.com/{name}/issues/8",
+                                        "title": name, "state": "CLOSED" if name == "o/app" else "OPEN",
+                                        "closedAt": CLOSED_AT if name == "o/app" else None, "labels": {"nodes": []}}}
+            return 0, json.dumps({"data": {**data, "merged": {"nodes": []}}}), ""
+
+        self.check("GitHub issues; repo o/app", "#8", "acme/web#8", gh=gh)
 
 
 if __name__ == "__main__":
