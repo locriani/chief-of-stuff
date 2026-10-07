@@ -1780,6 +1780,75 @@ def _slot_child(barrier, answered, out: str, trees: str, i: int, cap: int) -> No
     (Path(out) / str(i)).write_text(outcome)
 
 
+class TreeReadEnvTest(unittest.TestCase):
+    """Every git call that reads a tree after a run ignores replace refs and keeps the launcher's environment (#442)."""
+    ENV = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_AUTHOR_NAME": "T", "GIT_AUTHOR_EMAIL": "t@example.test",
+           "GIT_COMMITTER_NAME": "T", "GIT_COMMITTER_EMAIL": "t@example.test"}
+
+    def git(self, *args: str) -> str:
+        return subprocess.run(["git", "-C", str(self.tree), *args], env=self.ENV, capture_output=True, text=True,
+                              check=True).stdout.strip()
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root, self.tree = Path(tmp.name), Path(tmp.name) / "trees" / "worker"
+        self.tree.mkdir(parents=True)
+        (self.root / "CLAUDE.md").write_text(CLAUDE)
+        self.git("init", "-q", "--initial-branch=main")
+        (self.tree / "f.txt").write_text("a\n")
+        self.git("add", "f.txt")
+        self.git("commit", "-q", "-m", "first")
+
+    def spied(self, call) -> list[dict]:
+        real, envs = subprocess.run, []
+
+        def spy(argv, *args, **kwargs):
+            if argv[0] == "git":
+                envs.append(kwargs.get("env"))
+            return real(argv, *args, **kwargs)
+
+        with mock.patch.object(one_shot.subprocess, "run", side_effect=spy):
+            call()
+        return envs
+
+    def assertReadsIgnoringReplaceRefs(self, call) -> None:
+        envs = self.spied(call)
+        self.assertTrue(envs)
+        for env in envs:
+            self.assertIsNotNone(env, "a bare call inherits no pin against replace refs")
+            self.assertEqual(env.get("GIT_NO_REPLACE_OBJECTS"), "1")
+            self.assertEqual(env.get("PATH"), os.environ["PATH"])
+
+    def test_changed_files_ignores_replace_refs(self):
+        self.assertReadsIgnoringReplaceRefs(lambda: one_shot.changed_files(self.tree))
+
+    def test_git_head_ignores_replace_refs(self):
+        self.assertReadsIgnoringReplaceRefs(lambda: one_shot.git_head(self.tree))
+
+    def test_committed_changes_ignores_replace_refs(self):
+        before = one_shot.git_head(self.tree)
+        (self.tree / "g.txt").write_text("b\n")
+        self.git("add", "g.txt")
+        self.git("commit", "-q", "-m", "second")
+        self.assertReadsIgnoringReplaceRefs(lambda: one_shot.committed_changes(self.tree, before))
+
+    def test_the_tree_note_ignores_replace_refs(self):
+        self.assertReadsIgnoringReplaceRefs(lambda: one_shot._tree_note(self.root, self.tree))
+
+    def test_a_replace_ref_does_not_hide_a_change(self):
+        (self.tree / "f.txt").write_text("b\n")
+        self.git("add", "f.txt")
+        replacement = self.git("commit-tree", self.git("write-tree"), "-m", "replacement")
+        self.git("replace", "-f", self.git("rev-parse", "HEAD"), replacement)
+        # The fixture hides the change from a plain reader and shows it to one that ignores replace refs.
+        self.assertEqual(self.git("status", "--short"), "")
+        pinned = subprocess.run(["git", "-C", str(self.tree), "status", "--short"], capture_output=True, text=True,
+                                env={**self.ENV, "GIT_NO_REPLACE_OBJECTS": "1"}, check=True).stdout
+        self.assertIn("f.txt", pinned)
+        self.assertIn("f.txt", one_shot.changed_files(self.tree))
+
+
 class ConcurrentLaunchTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
