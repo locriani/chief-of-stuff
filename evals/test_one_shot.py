@@ -976,6 +976,40 @@ class RunTest(unittest.TestCase):
         self.assertNotIn("\n", report["reason"])
         self.assertNotIn("second line", report["reason"])
 
+    # #436: the genuine agy stderr is two lines; only the second (a one-line JSON error) carries the 429.
+    AGY = ("error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 3h46m46s.\n"
+           'AGY_ERROR: {"short_error":"RESOURCE_EXHAUSTED (code 429): Individual quota reached. Please upgrade your '
+           'subscription to increase your limits. Resets in 3h46m46s.","status":"RESOURCE_EXHAUSTED","error_code":429,'
+           '"code_kind":"http","retryable":true,"error_id":"00000000-0000-0000-0000-000000000000-1"}\n')
+    AGY_REASON = "quota stop: agy m-test; Resets in 3h46m46s."
+
+    def test_the_reset_text_of_a_genuine_agy_quota_error_ends_where_its_sentence_ends(self):
+        self._with_an_issue_and_kanban()
+        _, hold, comment = self._stopped(stderr=self.AGY, runtime="agy")
+        hold.assert_not_called()
+        comment.assert_not_called()
+        report = self._report()
+        self.assertEqual((report["status"], report["reason"]), ("relaunch", self.AGY_REASON))
+
+    def test_a_second_genuine_agy_quota_stop_the_same_day_needs_review_with_the_same_reset_text(self):
+        # The Log line ends `Resets in 3h46m46s..` (snippet period, then the writer's); the cap must still match it.
+        self._stopped(stderr=self.AGY, runtime="agy")
+        self.assertEqual(self._report()["status"], "relaunch")
+        self.assertIn(f"relaunch requested for Security audit — {self.AGY_REASON}.", self.tracker.read_text())
+        again = self._another_tree("worker-2")
+        self._stopped(stderr=self.AGY, runtime="agy", tree=again)
+        report = self._report(again)
+        self.assertEqual((report["status"], report["reason"]),
+                         ("human_review", "quota stop repeated: agy m-test; Resets in 3h46m46s."))
+
+    def test_the_reset_text_stops_before_the_first_quote(self):
+        report = self._stop_status('429 quota {"msg":"resets in 4h","status":"x"}\n', 0)
+        self.assertEqual((report["status"], report["reason"]), ("relaunch", "quota stop: codex m-test; resets in 4h"))
+
+    def test_the_reset_text_keeps_its_period_and_drops_a_following_sentence(self):
+        report = self._stop_status("429 quota reached. Resets in 4h. Upgrade your plan for more.\n", 0)
+        self.assertEqual((report["status"], report["reason"]), ("relaunch", "quota stop: codex m-test; Resets in 4h."))
+
     def test_a_second_quota_stop_on_the_same_runtime_and_model_the_same_day_needs_review(self):
         # #422 review R4: the coordinator redispatched the exhausted model; there is nothing more to rotate to.
         self._quota_relaunched()
