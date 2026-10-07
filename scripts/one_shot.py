@@ -133,8 +133,8 @@ def quota_stop(log: Path, runtime: str, model: str) -> str:
     for line in text.splitlines():
         low = line.lower()
         if re.search(r"(?<![^\s=(])429(?!\w)", line) and ("resource_exhausted" in low or "quota" in low):
-            reset = re.search(r"\bresets?\b.*", line, re.IGNORECASE)
-            return quota_marker(runtime, model) + (f"; {reset.group().strip()[:80].rstrip()}" if reset else "")
+            reset = re.search(r"\bresets?\b(?:[^\".]|\.(?!\s|$))*(?:\.(?=\s|$))?", line, re.IGNORECASE)
+            return quota_marker(runtime, model) + (f"; {reset.group()[:80].rstrip()}" if reset else "")
     return ""
 
 
@@ -329,7 +329,7 @@ def reconcile(root: Path, day: str, task: str, name: str, cwd: Path, exit_code: 
             status, reason = "human_review", f"worker asked to be relaunched but left changes: {reason}"
         elif quota:
             mine = re.escape(quota_marker(runtime, model))  # then the line goes on with `;` and a snippet, or ends with `.`
-            if any(marker in line and re.match(mine + r"(?:;|\.$)", line.split(marker, 1)[1]) for line in log):
+            if any(marker in line and re.match(mine + r"(?:;|\.?$)", line.split(marker, 1)[1]) for line in log):
                 status, reason = "human_review", f"quota stop repeated: {quota[len(QUOTA_STOP):]}"
         elif any(marker in line and not line.split(marker, 1)[1].startswith(QUOTA_STOP) for line in log):
             status, reason = "human_review", f"already relaunched once today and stopped again: {reason}"

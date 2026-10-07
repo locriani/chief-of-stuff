@@ -976,6 +976,45 @@ class RunTest(unittest.TestCase):
         self.assertNotIn("\n", report["reason"])
         self.assertNotIn("second line", report["reason"])
 
+    # #436: the genuine agy stderr is two lines; only the second (a one-line JSON error) carries the 429.
+    AGY = ("error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 3h46m46s.\n"
+           'AGY_ERROR: {"short_error":"RESOURCE_EXHAUSTED (code 429): Individual quota reached. Please upgrade your '
+           'subscription to increase your limits. Resets in 3h46m46s.","status":"RESOURCE_EXHAUSTED","error_code":429,'
+           '"code_kind":"http","retryable":true,"error_id":"00000000-0000-0000-0000-000000000000-1"}\n')
+    AGY_REASON = "quota stop: agy m-test; Resets in 3h46m46s."
+
+    def test_the_reset_text_of_a_genuine_agy_quota_error_ends_where_its_sentence_ends(self):
+        self._with_an_issue_and_kanban()
+        _, hold, comment = self._stopped(stderr=self.AGY, runtime="agy")
+        hold.assert_not_called()
+        comment.assert_not_called()
+        report = self._report()
+        self.assertEqual((report["status"], report["reason"]), ("relaunch", self.AGY_REASON))
+
+    def test_a_second_genuine_agy_quota_stop_the_same_day_needs_review_with_the_same_reset_text(self):
+        # The Log line ends with the reason's own period, not a second one; the cap must still match it.
+        self._stopped(stderr=self.AGY, runtime="agy")
+        self.assertEqual(self._report()["status"], "relaunch")
+        tracker = self.tracker.read_text()
+        self.assertIn(f"relaunch requested for Security audit — {self.AGY_REASON}\n", tracker)
+        self.assertNotIn("3h46m46s..", tracker)
+        again = self._another_tree("worker-2")
+        self._stopped(stderr=self.AGY, runtime="agy", tree=again)
+        report = self._report(again)
+        self.assertEqual((report["status"], report["reason"]),
+                         ("human_review", "quota stop repeated: agy m-test; Resets in 3h46m46s."))
+        tracker = self.tracker.read_text()
+        self.assertIn("3h46m46s. Changes:", tracker)  # the HUMAN REVIEW line: one period before `Changes:`
+        self.assertNotIn("3h46m46s..", tracker)
+
+    def test_the_reset_text_stops_before_the_first_quote(self):
+        report = self._stop_status('429 quota {"msg":"resets in 4h","status":"x"}\n', 0)
+        self.assertEqual((report["status"], report["reason"]), ("relaunch", "quota stop: codex m-test; resets in 4h"))
+
+    def test_the_reset_text_keeps_its_period_and_drops_a_following_sentence(self):
+        report = self._stop_status("429 quota reached. Resets in 4h. Upgrade your plan for more.\n", 0)
+        self.assertEqual((report["status"], report["reason"]), ("relaunch", "quota stop: codex m-test; Resets in 4h."))
+
     def test_a_second_quota_stop_on_the_same_runtime_and_model_the_same_day_needs_review(self):
         # #422 review R4: the coordinator redispatched the exhausted model; there is nothing more to rotate to.
         self._quota_relaunched()
@@ -1158,6 +1197,46 @@ class RunTest(unittest.TestCase):
     def test_a_model_with_regex_characters_is_still_held_when_repeated(self):
         first, second = self._twice({"model": "a.b+c(d)[e]*?$^|x"})
         self.assertEqual((first["status"], second["status"]), ("relaunch", "human_review"))
+
+    def test_a_model_ending_in_a_period_is_held_when_repeated_without_reset_text(self):
+        # #436 review R1: the Log line is `...m-test.` (the writer adds no period of its own), so the cap's tail is `;`, or `.` or nothing.
+        first, second = self._twice({"model": "m-test.", "stderr": "429 RESOURCE_EXHAUSTED quota\n"})
+        self.assertEqual(first["status"], "relaunch")
+        self.assertEqual((second["status"], second["reason"]), ("human_review", "quota stop repeated: codex m-test."))
+
+    def test_a_marker_the_500_character_log_cut_ends_on_a_period_is_held_when_repeated(self):
+        model = "x" * (500 - len("quota stop: codex ") - 1) + "." + "y" * 20  # the cut keeps the period as the marker's last character
+        first, second = self._twice({"model": model, "stderr": "429 RESOURCE_EXHAUSTED quota\n"})
+        self.assertEqual(first["status"], "relaunch")
+        self.assertEqual(len(first["reason"]), 500)
+        self.assertTrue(first["reason"].endswith("."), first["reason"][-5:])
+        self.assertEqual(second["status"], "human_review", second["reason"])
+
+    def test_a_decimal_inside_the_reset_text_is_kept(self):
+        report = self._stop_status("429 quota resets in 1.5 hours\n", 0)
+        self.assertEqual((report["status"], report["reason"]),
+                         ("relaunch", "quota stop: codex m-test; resets in 1.5 hours"))
+
+    def test_a_period_at_the_very_end_of_the_line_ends_the_reset_text(self):
+        report = self._stop_status("429 quota Resets in 4h.\n", 0)
+        self.assertEqual((report["status"], report["reason"]), ("relaunch", "quota stop: codex m-test; Resets in 4h."))
+
+    def test_a_reset_text_of_eighty_characters_is_kept_whole_and_one_of_eighty_one_is_cut_to_eighty(self):
+        for n, length in enumerate((80, 81)):
+            with self.subTest(length=length):
+                text = "resets " + "a" * (length - len("resets "))
+                report = self._stop_status(f"429 quota {text}\n", n)
+                self.assertEqual(report["reason"], f"quota stop: codex m-test; {text[:80]}")
+
+    def test_the_reset_text_cut_at_eighty_does_not_end_in_a_space(self):
+        text = "resets " + "a" * 72 + " bbb"  # character 80 is the space
+        report = self._stop_status(f"429 quota {text}\n", 0)
+        self.assertEqual(report["reason"], "quota stop: codex m-test; " + text[:79])
+
+    def test_a_reset_text_that_ends_in_spaces_before_a_quote_has_none_trailing(self):
+        # `.strip()` before the cut and `.rstrip()` after it overlap here, so dropping only one of them is not pinned by this case.
+        report = self._stop_status('429 quota resets in 4h  "x"\n', 0)
+        self.assertEqual(report["reason"], "quota stop: codex m-test; resets in 4h")
 
     def test_a_429_followed_by_a_word_character_is_not_a_429(self):
         for line in ("HTTP 429x RESOURCE_EXHAUSTED", "HTTP 429abc quota", "HTTP 4290 quota"):

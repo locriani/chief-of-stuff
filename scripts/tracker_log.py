@@ -43,16 +43,21 @@ def started_line(at: str, name: str, runtime: str, model: str, tree: str, task: 
     return f"- {at} one-shot {name} started: {' '.join(filter(None, (runtime, model, effort and f'effort={effort}')))}, {tree.split(' (')[0]}, task {task}"
 
 
+def one_period(reason: str) -> str:
+    """`reason` with exactly one final period."""
+    return reason if reason.endswith(".") else reason + "."
+
+
 def ended_line(at: str, name: str, status: str, reason: str, changes: str) -> str:
     """The launcher's line when worker `name` stops `done`, or with any other status for review. `reason` and
     `changes` come already on one line."""
     return (f"- {at} one-shot {name}: {COMPLETED if status == 'done' else HUMAN_REVIEW}"
-            f" — {reason}. Changes: {changes}.")
+            f" — {one_period(reason)} Changes: {changes}.")
 
 
 def relaunch_line(at: str, name: str, task: str, reason: str) -> str:
     """The launcher's line when worker `name` asks for `task` to run again; `reason` comes already on one line."""
-    return f"- {at} one-shot {name}{RELAUNCHED.format(task=task)}{reason}."
+    return f"- {at} one-shot {name}{RELAUNCHED.format(task=task)}{one_period(reason)}"
 
 
 @dataclass(frozen=True)
