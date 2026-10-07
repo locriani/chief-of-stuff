@@ -118,8 +118,7 @@ def snippet() -> str:
 class ReloadSnippetTest(unittest.TestCase):
     """Every page the server serves carries one shared reload check, injected at serve time (#330: "I'd like loaded
     pages to auto-refresh if the underlying page is changed by an agent").
-    ponytail: the snippet's behaviour is pinned by text only; no eval here runs JS (no browser or node harness), so a
-    stub-DOM run of the focused / typed-input / reload branches is the ceiling to add if one appears."""
+    These pin the snippet's text; test_page_reload_node.py runs its branches in node against a stub page (#337)."""
 
     ROUTES = {"/": "2026-09-24-board.html", "/workers": "workers.html", "/decisions": "decisions.html",
               "/decisions/cache-ttl": "decision-cache-ttl.html", "/issues/7": "issue-7.html",
