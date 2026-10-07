@@ -32,7 +32,7 @@ class Refused(ValueError):
 
 
 def files(source: Path) -> list[Path]:
-    includes = [source / "agents", source / "scripts", source / "assets", source / ".claude-plugin", source / "hooks"]
+    includes = [source / "agents", source / "skills", source / "scripts", source / "assets", source / ".claude-plugin", source / "hooks"]
     result = [source / "start_coordinator.py", source / "chief_of_stuff.py"]
     for folder in includes:
         result.extend(p for p in folder.rglob("*") if p.is_file() and "__pycache__" not in p.parts
@@ -127,6 +127,15 @@ def prompt(runtime: str, release: Path, root: Path) -> str:
                   "On your next turn, reconcile the tracker and board and dispatch ready one-shot tasks automatically. "
                   "New interactive sessions need approval. If the named calendar tool is unavailable, "
                   "report it, leave calendar facts unverified, and continue work that does not depend on it.\n")
+        # Append after host adaptation so skill sections retain their own text.
+        for path in sorted((release / "skills").glob("*/SKILL.md")):
+            text = path.read_text()
+            front = re.match(r"\A---\r?\n(.*?)\r?\n---(?:\r?\n|\Z)", text, flags=re.S)
+            if front and re.search(r"(?m)^hosts:[ \t]*claude[ \t]*$", front[1]):
+                continue
+            body = (text[front.end():] if front else text).strip()
+            body = body.replace("${CLAUDE_PLUGIN_ROOT}", str(release))
+            rules += f"\n\n## {path.parent.name}\n\n{body}"
     return (f"You are chief-of-stuff. The installed rules and scripts are pinned at {release}. "
             f"The workspace is {root}. Read its CLAUDE.md for configuration.\n\n{rules}\n\n{START}")
 
