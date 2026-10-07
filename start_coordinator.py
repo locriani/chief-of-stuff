@@ -99,25 +99,25 @@ def prompt(runtime: str, release: Path, root: Path) -> str:
                               "confirm the session-scoped watcher (see Check)")
         rules = rules.replace("list sessions;", "inspect registered workers;")
         rules = rules.replace("list sessions,", "inspect registered workers,")
-        check = ("## Check\n\nA session-scoped watcher checks the inbox and task audit every five minutes "
-                 "while this CLI session is open. It sends notifications for new findings and never "
-                 "edits the tracker or board. On the next coordinator turn, read the clock, inbox, "
-                 "audit and worker registry; reconcile task state; the board renders itself. "
+        silence = re.search(r"^## Check\n.*?\n\n(A check that finds nothing[^\n]+)\n\n(?=## Sessions\n)",
+                            rules, flags=re.M | re.S).group(1)
+        check = ("## Check\n\nWhile this CLI is open, its session-scoped watcher checks inbox and task audit "
+                 "every five minutes, notifying on new findings without editing tracker or board. "
+                 "Next turn, read clock, inbox, "
+                 "audit and worker registry; reconcile task state; board renders itself. "
                  "Dispatch ready one-shot tasks automatically under Dispatch authority. New interactive sessions need approval.\n\n"
-                 "A check that finds nothing writes no reply text. "
-                 "A check that finds something writes only what changed, in one short line. "
-                 "The standing waiting-on list stays in the Resume block and on the board; give it only when the user addresses you or asks, or when an entry on it changes.\n\n" + host_schedule + "\n\n")
+                 + silence + "\n\n" + host_schedule + "\n\n")
         rules = re.sub(r"## Check\n.*?(?=## Sessions\n)", check, rules, flags=re.S)
-        sessions = ("## Sessions\n\nThe workspace `Sessions:` line may name Claude native list and send tools. "
-                    "Use those only when your host exposes them. For every non-Claude worker, "
+        sessions = ("## Sessions\n\nThe workspace `Sessions:` line may name Claude native list and send tools; "
+                    "use only if your host exposes them. For each non-Claude worker, "
                     "run `chief-of-stuff processes --root <workspace>` to check "
-                    "registered worker PIDs in one batch. The assigned name, worktree and process "
+                    "registered PIDs in one batch. Its assigned name, worktree and process "
                     "identify it; do not invent a Claude ref. Receive registrations and reports "
-                    "through the shared mailbox and send replies there. A missing registration "
+                    "and send replies through the shared mailbox. No registration "
                     "is `starting`; a dead registered process can orphan its task after audit. "
-                    "Preserve the tracker `## Sessions` states: planning, working, waiting, idle.\n\n")
+                    "Preserve tracker `## Sessions` states: planning, working, waiting, idle.\n\n")
         rules = re.sub(r"## Sessions\n.*?(?=## Relay\n)", sessions, rules, flags=re.S)
-        rules += ("\n\n## Host adapter\n\nYou run in " + runtime + ". Use your host's own tools to read, edit and run the pinned scripts above. "
+        rules += ("\n\n## Host adapter\n\nYou run in " + runtime + ". Use your host's tools to read, edit and run the pinned scripts. "
                   "When these rules say Write or Edit, use your host's own file-edit tool directly (in Codex, "
                   "`apply_patch` with a patch you write yourself); never generate file content or a patch with a "
                   "script, and never pipe command output into the edit tool. "
@@ -125,7 +125,7 @@ def prompt(runtime: str, release: Path, root: Path) -> str:
                   "Check non-Claude workers with the `chief-of-stuff processes --root <workspace>` "
                   "batch helper; use the shared `chief-of-stuff inbox` "
                   "mailbox for their messages. Claude workers retain their native session tools when available. "
-                  "On your next turn, reconcile the tracker and board and dispatch ready one-shot tasks automatically. "
+                  "Next turn, reconcile tracker and board and dispatch ready one-shot tasks automatically. "
                   "If the named calendar tool is unavailable, "
                   "report it, leave calendar facts unverified, and continue work that does not depend on it.\n")
     return (f"You are chief-of-stuff. The installed rules and scripts are pinned at {release}. "

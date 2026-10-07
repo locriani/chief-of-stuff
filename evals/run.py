@@ -178,9 +178,23 @@ def stop_pages(work: Path) -> None:
     """End the pages server a case started with `pages.py --ensure`: it is detached and would outlive the run."""
     pid = work / "pages" / ".pid"
     try:
-        os.kill(int(pid.read_text()), signal.SIGTERM)
+        server_pid = int(pid.read_text())
+        if server_pid != os.getpid():  # an unprepared {{live_pid}} fixture names the harness itself
+            os.kill(server_pid, signal.SIGTERM)
     except (OSError, ValueError):
         pass
+
+
+def start_fixture_pages(work: Path, env: dict[str, str], root: Path) -> None:
+    """A pages/.pid containing {{live_pid}} requests an already-serving board before the first turn.
+
+    pages.py checks HTTP and the server version, not pid liveness. Start the real server under the
+    eval's shim environment; --ensure replaces the template pid with its own for normal cleanup.
+    """
+    pid = work / "pages" / ".pid"
+    if pid.is_file() and pid.read_text().strip() == str(os.getpid()):
+        subprocess.run([sys.executable, str(root / "scripts" / "pages.py"), "--ensure"],
+                       cwd=work, env=env, capture_output=True, text=True, check=True, timeout=15)
 
 
 def context(tz: str, now: datetime) -> dict[str, str]:
@@ -1564,13 +1578,14 @@ def run_one(case: Case, arm: str, model: str, out: Path, root: Path | None = Non
         if "repo" in spec:
             # Real git: `merge-base --is-ancestor` is the thing under test, and a fixture cannot carry a repo.
             make_repo.build(work, spec["repo"])
-        # After every piece of setup, so the baseline is what the agent was handed, not a part of it.
-        before_snapshot(work, out / "fixture-before")
         write_shims(out / "shims", spec.get("gh_prs"), spec.get("gh_graphql"), spec.get("gh_issues"))
         calls_log.parent.mkdir(parents=True, exist_ok=True)
         calls_log.touch()
         env = eval_environment(out, calls_log, tz, root=root, runtimes_present=spec.get("runtimes_present"))
         env["CHIEF_OF_STUFF_WORKSPACE"] = str(work)
+        start_fixture_pages(work, env, root or PLUGIN_ROOT)
+        # After every piece of setup, so the baseline is what the agent was handed, not a part of it.
+        before_snapshot(work, out / "fixture-before")
         mcp_config = None
         if "calendar" in spec:
             # Events live in the results dir, not the agent's cwd, so the calendar is reachable only through the mock.
