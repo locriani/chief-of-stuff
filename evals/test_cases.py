@@ -25,6 +25,7 @@ import audit_tasks  # noqa: E402
 import run  # noqa: E402
 import render_board as rb  # noqa: E402
 from settings import load as load_settings  # noqa: E402
+from test_dispatch_prompt import SILENT_CHECK_RULE, sections  # noqa: E402
 from workspace import settings_path  # noqa: E402
 
 CASES = sorted(p for p in (EVALS / "cases").iterdir() if (p / "case.json").exists())
@@ -479,6 +480,62 @@ class CaseLintTest(unittest.TestCase):
         for g in graders:
             self.assertEqual(g["rule"], rule, g["name"])
             self.assertIn(g["rule"], agent_text, g["name"])
+
+    def test_silent_check_graders_enforce_sentences_the_agent_carries(self) -> None:
+        """#454: every rule-bearing grader of the two check cases quotes one sentence the agent file carries, and the
+        regex that grades a silent reply takes an empty reply or exactly `.` and nothing else."""
+        check = sections((EVALS.parent / "agents" / "chief-of-stuff.md").read_text())["Check"]
+        silent, changed = (spec(EVALS / "cases" / c) for c in ("silent-check-says-nothing", "changed-check-says-only-the-change"))
+        quiet = [g for s in (silent, changed) for t in s["turns"] for g in t["graders"] if g.get("rule") == SILENT_CHECK_RULE[0]]
+        self.assertEqual(len(quiet), 3, "two quiet checks in the first case, one in the second")
+        for s in (silent, changed):
+            for turn in s["turns"]:
+                for g in turn["graders"]:
+                    if "rule" in g:
+                        with self.subTest(grader=g["name"], rule=g["rule"]):
+                            self.assertIn(g["rule"], SILENT_CHECK_RULE, g["name"])
+                            self.assertIn(g["rule"], check, g["name"])
+        for g in quiet:
+            for reply, silent_reply in (("", True), (".", True), (" .\n", True), ("\n", True), ("Nothing new.", False),
+                                        ("Quiet. Still waiting on Robin for the release notes owner.", False), ("..", False),
+                                        ("Mailbox empty.", False), (". Now 09:40 CDT", False), ("Done.\n.", False)):
+                self.assertEqual(re.search(g["pattern"], reply, re.MULTILINE) is not None, silent_reply, repr(reply))
+
+    def test_silent_check_fixtures_have_pages_serving_before_every_turn(self) -> None:
+        """#454: pages maintenance must contribute no change, including the audit-report turn."""
+        for name in ("silent-check-says-nothing", "changed-check-says-only-the-change"):
+            case = EVALS / "cases" / name
+            s = spec(case)
+            self.assertEqual((case / "fixture" / "pages" / ".pid").read_text(), "{{live_pid}}\n")
+            with tempfile.TemporaryDirectory() as d:
+                work, out = Path(d) / "work", Path(d) / "out"
+                run.render_tree(case / "fixture", work, ctx(s))
+                run.write_shims(out / "shims")
+                env = run.eval_environment(out, out / "calls.jsonl", s["tz"])
+                try:
+                    run.start_fixture_pages(work, env, run.PLUGIN_ROOT)
+                    pid = (work / "pages" / ".pid").read_text()
+                    self.assertNotEqual(int(pid), os.getpid())
+                    for turn in s["turns"]:
+                        result = subprocess.run([sys.executable, str(run.PLUGIN_ROOT / "scripts" / "pages.py"), "--ensure"],
+                                                cwd=work, env=env, capture_output=True, text=True, timeout=15)
+                        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "pages: serving\n", ""), turn["prompt"])
+                        self.assertEqual((work / "pages" / ".pid").read_text(), pid)
+                finally:
+                    run.stop_pages(work)
+
+    def test_pages_fixture_setup_is_opt_in_and_cleanup_spares_the_harness(self) -> None:
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as d:
+            work = Path(d)
+            with patch.object(run.subprocess, "run") as start:
+                run.start_fixture_pages(work, {}, run.PLUGIN_ROOT)
+                start.assert_not_called()
+            (work / "pages").mkdir()
+            (work / "pages" / ".pid").write_text(str(os.getpid()))
+            with patch.object(run.os, "kill") as kill:
+                run.stop_pages(work)
+                kill.assert_not_called()
 
     def test_workflow_step_graders_enforce_a_sentence_the_agent_carries(self) -> None:
         """#362: every rule-bearing grader of the review case quotes the one sentence the agent file carries."""
