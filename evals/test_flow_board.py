@@ -196,7 +196,7 @@ class Build(unittest.TestCase):
 
     def test_a_merged_change_draws_the_card_at_its_lanes_last_stage(self) -> None:
         # (#240) A stalled coordinator can leave the tracker cell at `merge` for hours after the change actually
-        # merged; the card draws at the lane's last stage instead, and carries neither drift nor ON HOLD for it —
+        # merged; the card draws at the lane's last stage instead, and carries neither drift nor the NEEDS INPUT flag for it —
         # the forge already answered the only question that stage cell was tracking.
         lanes = {"build": st.Lane(("implement", "pr", "review", "triage", "merge", "main"), ("triage", "merge"))}
         kanban = replace(KANBAN, hold_stages=("merge",), terminal_stages=("main",))
@@ -353,9 +353,21 @@ class Page(unittest.TestCase):
     def test_each_tile_links_where_it_linked_before(self) -> None:
         # #349: the artboard's label. BLOCKED linked to #flow, APPROVED to #merge, RUNNING to #workers, ORPHANED and DRIFT to #flow;
         # ALL had no tile, and the BUILD section whose cards it counts is #flow.
-        links = re.findall(r'<a class="panels-tile" data-kind="[a-z]+" href="#([a-z]+)"><span class="panels-label">([A-Z ]+)</span>', self.body)
-        self.assertEqual(links, [("flow", "ALL"), ("flow", "NEEDS INPUT"), ("workers", "RUNNING"), ("merge", "APPROVED"),
-                                 ("flow", "ORPHANED"), ("flow", "DRIFT")])
+        links = re.findall(r'<a class="panels-tile" data-kind="([a-z]+)" href="#([a-z]+)"><span class="panels-label">([A-Z ]+)</span>', self.body)
+        # #349 review: the kind is what the stylesheet colours a tile by, so each is pinned with its link and label.
+        self.assertEqual(links, [("all", "flow", "ALL"), ("blocked", "flow", "NEEDS INPUT"), ("running", "workers", "RUNNING"),
+                                 ("approved", "merge", "APPROVED"), ("orphaned", "flow", "ORPHANED"), ("drift", "flow", "DRIFT")])
+
+    def test_every_tile_kind_has_a_colour_and_all_draws_in_the_artboards_ink(self) -> None:
+        # #349 review: the artboard's tone map gives ALL ink (Flow.dc.html `all: '#2f2630'`, the light --fg); a tile with
+        # no rule for its kind draws with no --k at all.
+        css = self.html.split("<style>", 1)[1].split("</style>", 1)[0]
+        for kind in re.findall(r'class="panels-tile" data-kind="([a-z]+)"', self.body):
+            with self.subTest(kind=kind):
+                self.assertIn(f'.panels-tile[data-kind="{kind}"]', css)
+                self.assertIn(kind, rb.PANEL_COLOURS)
+        self.assertEqual(rb.PANEL_COLOURS["all"], "var(--fg)")
+        self.assertIn('[data-kind="all"]{--k:var(--fg)}', css)
 
     def test_all_counts_every_task_not_only_the_active_ones(self) -> None:
         # #349: the artboard's ALL counts every task, as the header does, finished ones too.
@@ -376,7 +388,8 @@ class Page(unittest.TestCase):
 
     def test_needs_input_counts_the_held_cards_and_each_is_flagged_so(self) -> None:
         # #349: the artboard's label. What BLOCKED counted, the held cards; the flag on each reads NEEDS INPUT too.
-        # Flow.dc.html v22: what the user owns and the orphaned are not in it.
+        # The board counts held cards only: the live canvas's `needs` list also takes in what the user owns and the
+        # orphaned, which the tile does not (#383 asks what the tile should count).
         held = replace(KANBAN, hold_stages=("triage", "implement"))
         html = rb.render(TRACKER, self.cfg, NOW, lanes=LANES, kanban=held, sources=SOURCES)
         tiles = dict(re.findall(r'<span class="panels-label">([A-Z ]+)</span><b class="panels-count">(\d+)</b>', html))
@@ -389,8 +402,9 @@ class Page(unittest.TestCase):
         tracker = TRACKER.replace("| Write README |", "|  |").replace("| Webhook check |", "|  |")
         held = replace(KANBAN, hold_stages=("triage",))
         html = rb.render(tracker, self.cfg, NOW, lanes=LANES, kanban=held, sources=SOURCES)
-        # #349: the artboard's label. One flag, and the tile that counts it.
-        self.assertEqual(html.count(">NEEDS INPUT<"), 2)
+        # #349: the artboard's label. One card is flagged, as strongly as ON HOLD counted before: flags only, not the tile.
+        flags = re.findall(r'<div class="columns-tag columns-flag" data-cat="hold">([^<]*)<', html)
+        self.assertEqual(flags, ["NEEDS INPUT"])
 
     def test_needs_input_and_drift_exclude_a_task_whose_change_already_merged(self) -> None:
         # (#240) The same forge answer that moves a stuck card off the `merge` column keeps it out of the
