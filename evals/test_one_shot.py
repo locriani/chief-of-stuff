@@ -89,6 +89,67 @@ class CommandTest(unittest.TestCase):
             args = one_shot.command("codex", "/bin/fake", tree, tree / "d.md", agent_type=None, model="", effort="")
             self.assertEqual(args[args.index("--add-dir") + 1], str((base / ".git").resolve()))
 
+    def _repo_with_linked_tree(self, tmp):
+        base, tree = Path(tmp) / "base", Path(tmp) / "tree"
+        subprocess.run(["git", "init", "-q", str(base)], check=True)
+        subprocess.run(["git", "-C", str(base), "-c", "user.name=t", "-c", "user.email=t@example.com",
+                        "commit", "-q", "--allow-empty", "-m", "init"], check=True)
+        subprocess.run(["git", "-C", str(base), "worktree", "add", "-q", str(tree)], check=True)
+        return base, tree
+
+    @staticmethod
+    def _add_dirs(args):
+        return [args[i + 1] for i, a in enumerate(args) if a == "--add-dir"]
+
+    def test_codex_may_write_the_linked_worktrees_own_gitdir(self):
+        # #421: codex carves the cwd's own gitdir out as read-only even under a writable common dir;
+        # only an explicit entry for <common>/worktrees/<tree> overrides it, or fetch, commit, and checkout -b fail.
+        with tempfile.TemporaryDirectory() as tmp:
+            base, tree = self._repo_with_linked_tree(tmp)
+            args = one_shot.command("codex", "/bin/fake", tree, tree / "d.md", agent_type=None, model="", effort="")
+            gitdir = subprocess.run(["git", "-C", str(tree), "rev-parse", "--path-format=absolute",
+                                     "--absolute-git-dir"], capture_output=True, text=True, check=True).stdout.strip()
+            self.assertEqual(self._add_dirs(args), [str((base / ".git").resolve()), str(Path(gitdir).resolve())])
+            self.assertNotEqual(self._add_dirs(args)[0], self._add_dirs(args)[1])
+
+    def test_codex_in_a_normal_clone_adds_its_git_dir_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "base"
+            subprocess.run(["git", "init", "-q", str(base)], check=True)
+            args = one_shot.command("codex", "/bin/fake", base, base / "d.md", agent_type=None, model="", effort="")
+            self.assertEqual(self._add_dirs(args), [str((base / ".git").resolve())])
+
+    def test_codex_outside_a_git_repo_adds_no_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            args = one_shot.command("codex", "/bin/fake", Path(tmp), Path(tmp) / "d.md",
+                                    agent_type=None, model="", effort="")
+            self.assertEqual(self._add_dirs(args), [])
+
+    def test_codex_keeps_the_common_dir_when_the_gitdir_lookup_fails(self):
+        # A failing second git call is skipped like a failing first one: no flag, no exception.
+        real_run = subprocess.run
+
+        def run(argv, *a, **kw):
+            if "--absolute-git-dir" in argv:
+                return subprocess.CompletedProcess(argv, 128, stdout="", stderr="fatal")
+            return real_run(argv, *a, **kw)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base, tree = self._repo_with_linked_tree(tmp)
+            with mock.patch.object(one_shot.subprocess, "run", side_effect=run):
+                args = one_shot.command("codex", "/bin/fake", tree, tree / "d.md",
+                                        agent_type=None, model="", effort="")
+            self.assertEqual(self._add_dirs(args), [str((base / ".git").resolve())])
+
+    def test_only_codex_gets_add_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, tree = self._repo_with_linked_tree(tmp)
+            for runtime in ("claude", "cursor", "agy"):
+                with self.subTest(runtime=runtime):
+                    args = one_shot.command(runtime, "/bin/fake", tree, tree / "d.md",
+                                            agent_type=None, model="", effort="")
+                    self.assertNotIn("--add-dir", args)
+
     def test_codex_reaches_the_network_inside_workspace_write(self):
         # Remote-facing one-shots fetch, push, and call forge APIs; file writes stay confined.
         args = one_shot.command("codex", "/bin/fake", Path("/tmp/one-shot-tree"), Path("/tmp/d.md"),
