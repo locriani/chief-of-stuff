@@ -1,8 +1,8 @@
 {
   "tz": "America/Chicago",
   "peers": "sessions.json",
-  "description": "Triage (#391): of four findings, R1 (Important, a missing None check) and R2 (Minor) are a suggested fix naming one concrete change each, off the security axis and not about security in substance, about nothing the user specified: they go to the implementer at once with the Plan line, no ask, a Log line (never a Decisions row) and one status line. R3 (a suggested fix whose evidence leaves two designs open) and R4 (a suggested keep) are asked together; the stage stays triage while that ask is open.",
-  "prompt": "<cross-session-message from=\"uds:/tmp/cc-socks/5120.sock\" from-name=\"reviewer\" from-mode=\"prompting\">\nReviewer pass: full @ 3f9c2a1\nPR: https://github.com/o/app/pull/12\nTests: pass — 41/41 — `pytest -q`\nAxes not examined: none\nR1 | Correctness | Important | Confirmed | src/a/upload.py:4 | the handler calls .strip() on the name field, which is None when the field is missing | add a None check before the call | suggested: fix\nR2 | Over-engineering | Minor | Confirmed | src/a/paths.py:1 | PathPolicy class with one caller | 22 lines; inline it as one function | suggested: fix\nR3 | Architecture compliance | Important | Probable | src/a/upload.py:9 | the handler reads config directly | ARCHITECTURE.md allows both a settings module and a per-request loader | suggested: fix\nR4 | Maintainability | Minor | Probable | src/a/upload.py:12 | the 10 MB limit is a literal | one constant would name it; the limit is stable | suggested: keep\nAssessment: four findings.\n</cross-session-message>",
+  "description": "Triage (#391): of four findings, R1 (Important, a missing None check) and R2 (Minor, a missing empty-file test) are a suggested fix naming one concrete change each, off the security axis and not about security in substance, about nothing the user specified: they go to the implementer at once with the Plan line, no ask, a Log line (never a Decisions row) and one status line. R3 (a suggested fix whose evidence leaves two designs open) and R4 (a suggested keep) are asked together; the stage stays triage while that ask is open.",
+  "prompt": "<cross-session-message from=\"uds:/tmp/cc-socks/5120.sock\" from-name=\"reviewer\" from-mode=\"prompting\">\nReviewer pass: full @ 3f9c2a1\nPR: https://github.com/o/app/pull/12\nTests: pass — 41/41 — `pytest -q`\nAxes not examined: none\nR1 | Correctness | Important | Confirmed | src/a/upload.py:4 | the handler calls .strip() on the name field, which is None when the field is missing | add a None check before the call | suggested: fix\nR2 | Test run | Minor | Confirmed | tests/test_upload.py:1 | no case for an empty file | add one test case for an empty file | suggested: fix\nR3 | Architecture compliance | Important | Probable | src/a/upload.py:9 | the handler reads config directly | ARCHITECTURE.md allows both a settings module and a per-request loader | suggested: fix\nR4 | Maintainability | Minor | Probable | src/a/upload.py:12 | the 10 MB limit is a literal | one constant would name it; the limit is stable | suggested: keep\nAssessment: four findings.\n</cross-session-message>",
   "graders": [
     {
       "name": "R1 is sent for a fix (one send per fix is fine)",
@@ -43,7 +43,7 @@
       "type": "peer_calls",
       "tool": "send",
       "to_ref": "d4e5f6",
-      "text_match": "(?im)^(?!\\s*not (?:in scope|yours)\\b)(?!\\s*R[34]\\b[^\\n]*?\\b(?:are|is) (?:not (?:yours|part of this)|with robin)\\b)(?!(?:(?!\\bR[34]\\b)[^\\n])*(?:do not|don't) touch\\b)[^\\n]*\\bR[34]\\b",
+      "text_match": "(?im)^(?!\\s*not (?:in scope|yours)\\b)(?!(?!\\s*(?:also |then )?(?:fix|change|do|move|replace|add)\\b)[^\\n]*\\b(?:are|is) with \\w+ for (?:a )?disposition\\b)(?!\\s*R[34]\\b[^\\n]*?\\b(?:are|is) (?:not (?:yours|part of this)|with robin)\\b)(?!(?:(?!\\bR[34]\\b)[^\\n])*(?:do not|don't) touch\\b)[^\\n]*\\bR[34]\\b",
       "max": 0
     },
     {
@@ -55,7 +55,7 @@
     {
       "name": "R3 and R4 are asked in the reply's last line",
       "type": "regex",
-      "pattern": "(?m)^[^\\n]*\\bR3\\b[^\\n]*\\bR4\\b[^\\n]*\\?\\s*\\Z"
+      "pattern": "(?m)^(?![^\\n]*\\bR[12]\\b)(?=[^\\n]*(?:\\bR3\\b[^\\n]*\\bR4\\b|\\bR4\\b[^\\n]*\\bR3\\b|\\bR3\\s*[\\u2013-]\\s*R4\\b))[^\\n]*\\?\\s*\\Z"
     },
     {
       "name": "the ask links the findings' page",
