@@ -186,7 +186,7 @@ def build_columns(tasks: list[Task], lanes: dict | None, kanban: Kanban | None =
         marks = change_marks(changes) + ((columns.Mark("drift", "drift"),) if drifts(task, kanban, sources, stage) else ())
         owner = task.shown_owner
         return columns.Card(task.label, task.kind, refs, owner, task.state, marks,
-                            flag=columns.Mark("ON HOLD", "hold") if held(task, kanban, stage) else None,
+                            flag=columns.Mark("NEEDS INPUT", "hold") if held(task, kanban, stage) else None,
                             href=page(task.issue, next((c.url for c in changes if c.state == "open"), url)),
                             owner_href="/workers" if owner in workers else "")
 
@@ -218,7 +218,7 @@ def _plural(n: int, word: str) -> str:
 # The panels' and the new marks' colours are the board's own tokens, so the dark scheme reaches them.
 PANEL_TOKENS = {"ink": "var(--fg)", "muted": "var(--muted)", "card": "var(--surface)", "rule": "var(--line)",
                 "edge": "var(--brass)", "link": "var(--brass)", "hot": "var(--dl)", "hot-ink": "var(--surface)"}
-PANEL_COLOURS = {"blocked": "var(--dl)", "decisions": "var(--brass)", "approved": "var(--stage-review)",
+PANEL_COLOURS = {"all": "var(--fg)", "blocked": "var(--dl)", "decisions": "var(--brass)", "approved": "var(--stage-review)",
                  "running": "var(--stage-implement)", "drift": "var(--dl)", "orphaned": "var(--muted)",
                  "merge": "var(--stage-review)", "workers": "var(--stage-implement)"}
 CARD_COLOURS = {**columns.PALETTE, "merged today": columns.PALETTE["done"],
@@ -281,14 +281,14 @@ def worker_panel(sources: board_sources.Sources, now: datetime) -> panels.Panel:
     return panels.Panel("workers", "WORKERS", "workers", len(rows), rows, note, href="/workers")  # (#195)
 
 
-def flow_tiles(blocked: int, decisions: int, sources: board_sources.Sources, running: int, drift: int, orphaned: int) -> list[panels.Tile]:
-    """Six counts, each linking to where its items are listed. RUNNING counts workers, or running tasks when no
-    worker source is read."""
+def flow_tiles(total: int, held: int, sources: board_sources.Sources, running: int, drift: int, orphaned: int) -> list[panels.Tile]:
+    """Six counts in the artboard's order and words, each linking to where its items are listed. ALL counts every
+    task; NEEDS INPUT the held cards; RUNNING workers, or running tasks when no worker source is read."""
     approved = sum(c.state == "open" and c.approved for c in sources.changes.values())
-    return [panels.Tile("BLOCKED", blocked, "flow", "blocked"), panels.Tile("DECISIONS", decisions, "decisions", "decisions"),
-            panels.Tile("APPROVED", approved, "merge", "approved"),
+    return [panels.Tile("ALL", total, "flow", "all"), panels.Tile("NEEDS INPUT", held, "flow", "blocked"),
             panels.Tile("RUNNING", len(sources.workers) or running, "workers", "running"),
-            panels.Tile("DRIFT", drift, "flow", "drift"), panels.Tile("ORPHANED", orphaned, "flow", "orphaned")]
+            panels.Tile("APPROVED", approved, "merge", "approved"),
+            panels.Tile("ORPHANED", orphaned, "flow", "orphaned"), panels.Tile("DRIFT", drift, "flow", "drift")]
 
 
 def render(tracker_text: str, cfg: Config, now: datetime, lanes: dict | None = None,
@@ -325,7 +325,7 @@ def render(tracker_text: str, cfg: Config, now: datetime, lanes: dict | None = N
     known = [t for _, text in stage_log or [] for t in parse_tracker(text).tasks] + tasks
     ends = {t.item: end for t in active if (end := _end(t, cfg, now, now, est))[1] in ("due", "derived")}
     # #227: a `waiting` task owned by a person, not a worker, holds too — the same worker/person split
-    # the BUILD cards draw their "ON HOLD" flag and owner link from.
+    # the BUILD cards draw their "NEEDS INPUT" flag and owner link from.
     # flow_chart names its rows' tasks, and a nameless task has no name to hold it by (as forge_ends).
     flow_held = {t.name.strip() for t in tasks if t.name.strip() and
                 (held(t, kanban, stages[t]) or
@@ -346,8 +346,8 @@ def render(tracker_text: str, cfg: Config, now: datetime, lanes: dict | None = N
             _tasks(len(tasks))]
     head = panels.Header(f"Board · {now.strftime('%a %d %b')}", tuple(meta), now, nearest.name, nearest.at,
                          tuple(f"{k}: {why}" for k, why in sources.errors.items()))
-    # BLOCKED counts the ON HOLD cards (Flow.dc.html v22), by the flag that draws them.
-    tiles = flow_tiles(sum(held(t, kanban, stages[t]) for t in tasks), sum(d is not None for _, d, _, _ in pending),
+    # NEEDS INPUT counts the cards flagged NEEDS INPUT, by the same `held`; ALL counts every task (#349).
+    tiles = flow_tiles(len(tasks), sum(held(t, kanban, stages[t]) for t in tasks),
                        sources, len(running), sum(drifts(t, kanban, sources, stages[t]) for t in tasks), len(unowned))
     panels_html = panels.panels([merge_order(sources), decision_panel(pending, answered, now), worker_panel(sources, now)])
 

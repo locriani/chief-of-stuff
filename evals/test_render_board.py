@@ -652,7 +652,9 @@ class CliTest(unittest.TestCase):
         # The board's DECISIONS panel lists the same pending entries as decisions.html, the unreadable one apart.
         self.assertIn('<a class="panels-link" href="/decisions">decisions page</a><b class="panels-count">1</b>', board)
         self.assertIn('<a class="panels-name" href="/decisions/deploy-window">Decide deploy-window</a>', board)
-        self.assertIn('<span class="panels-label">DECISIONS</span><b class="panels-count">1</b>', board)
+        # #349: the artboard's label. Its six tiles have no DECISIONS; the pending count is the tab bar's badge.
+        self.assertNotIn('<span class="panels-label">DECISIONS</span>', board)
+        self.assertIn('<span class="badge" title="1 pending">1</span>', board)
         self.assertIn('decision-broken.json', board)
 
     def test_summary_line_counts_long_items(self) -> None:
