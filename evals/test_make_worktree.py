@@ -191,6 +191,96 @@ class AuditEnvTest(CloneCase):
         self.assertIn("README.md", mw.git(["status", "--short"], self.tree)[1])
 
 
+class GitHelperErrorPathTest(unittest.TestCase):
+    """The helper's own failure shape: a git that cannot run is code 1 with the exception's class name, never a raise."""
+
+    def test_an_oserror_is_code_1_naming_the_exception_class(self):
+        with mock.patch.object(mw.subprocess, "run", side_effect=FileNotFoundError("no git")):
+            code, detail = mw.git(["status"], Path("."))
+        self.assertEqual(code, 1)
+        self.assertIn("FileNotFoundError", detail)
+
+    def test_a_timeout_is_code_1_naming_the_exception_class(self):
+        with mock.patch.object(mw.subprocess, "run", side_effect=subprocess.TimeoutExpired("git", 1)):
+            code, detail = mw.git(["status"], Path("."))
+        self.assertEqual(code, 1)
+        self.assertIn("TimeoutExpired", detail)
+
+    def test_the_call_is_bounded_by_the_git_timeout(self):
+        done = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        with mock.patch.object(mw.subprocess, "run", return_value=done) as run:
+            mw.git(["status"], Path("."))
+        self.assertIsNotNone(run.call_args.kwargs["timeout"])
+        self.assertEqual(run.call_args.kwargs["timeout"], mw.GIT_TIMEOUT)
+
+    def test_stderr_is_the_detail_when_stdout_is_empty(self):
+        done = subprocess.CompletedProcess([], 3, stdout="", stderr="boom\n")
+        with mock.patch.object(mw.subprocess, "run", return_value=done):
+            self.assertEqual(mw.git(["status"], Path(".")), (3, "boom"))
+
+    def test_stdout_wins_over_stderr_when_both_are_set(self):
+        done = subprocess.CompletedProcess([], 0, stdout="out\n", stderr="boom\n")
+        with mock.patch.object(mw.subprocess, "run", return_value=done):
+            self.assertEqual(mw.git(["status"], Path(".")), (0, "out"))
+
+    def test_a_branch_is_refused_when_git_cannot_run(self):
+        with mock.patch.object(mw, "git", return_value=(1, "x")):
+            with self.assertRaises(mw.RefusedError):
+                mw.check_branch("fix/plain")
+
+
+class WorktreeAddEnvTest(CloneCase):
+    """`worktree add` runs the clone's own post-checkout hook, and a hook in the user's own clone is trusted: that one call
+    runs in the user's environment (the repo-selecting variables dropped). Every read stays on the audit env."""
+
+    def record(self):
+        calls = []
+        real = subprocess.run
+
+        def spy(argv, **kw):
+            calls.append((argv, kw.get("env")))
+            return real(argv, **kw)
+
+        return calls, spy
+
+    def test_a_post_checkout_hook_that_needs_a_writable_home_succeeds(self):
+        hook = self.clone / ".git" / "hooks" / "post-checkout"
+        hook.write_text(
+            f"#!{sys.executable}\n"
+            "import os, sys\n"
+            "try:\n"
+            "    os.makedirs(os.path.join(os.environ['HOME'], '.cache-marker'))\n"
+            "except OSError:\n"
+            "    sys.exit(1)\n"
+        )
+        hook.chmod(0o755)
+        home = self.root / "user-home"
+        home.mkdir()
+        with mock.patch.dict(os.environ, {"HOME": str(home)}):
+            made = self.build()
+        self.assertTrue(made.path.is_dir())
+        self.assertTrue((home / ".cache-marker").is_dir(), "the hook ran with the user's HOME")
+
+    def test_the_add_call_runs_in_the_users_env_and_every_read_stays_on_the_audit_env(self):
+        home = self.root / "user-home"
+        home.mkdir()
+        repo_vars = {"GIT_DIR": str(self.root / "nowhere"), "GIT_WORK_TREE": str(self.root / "nowhere"), "GIT_INDEX_FILE": str(self.root / "nowhere.idx")}
+        calls, spy = self.record()
+        with mock.patch.dict(os.environ, {"HOME": str(home), **repo_vars}), mock.patch.object(mw.subprocess, "run", spy):
+            self.build()
+        adds = [env for argv, env in calls if argv[3:5] == ["worktree", "add"]]
+        self.assertEqual(len(adds), 1)
+        env = adds[0]
+        self.assertEqual(env["HOME"], str(home))
+        for var in repo_vars:
+            self.assertNotIn(var, env)
+        self.assertEqual(env["GIT_TERMINAL_PROMPT"], "0")
+        reads = {argv[3]: env for argv, env in calls if argv[3] in ("check-ref-format", "rev-parse", "log")}
+        self.assertEqual(set(reads), {"check-ref-format", "rev-parse", "log"})
+        for verb, read_env in reads.items():
+            self.assertEqual(read_env, git_trees.audit_env(), verb)
+
+
 class BuildTest(CloneCase):
     def test_creates_the_tree_on_a_new_branch_off_main(self):
         made = self.build()
