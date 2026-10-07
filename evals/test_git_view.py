@@ -353,6 +353,14 @@ class ContentsTest(FixtureCase):
                          "remote.origin.url": "/nonexistent"})
         return expected
 
+    def assert_config_values(self, directory, expected):
+        facts = self.config_values(directory)
+        # Round 3 separately REQUIRES this new safety pin. Keep the earlier
+        # factual-config contract compatible with both sides of that RED fix.
+        if "gpg.program" in facts:
+            self.assertEqual(facts.pop("gpg.program"), os.devnull)
+        self.assertEqual(facts, expected)
+
     def test_contents_and_exact_allowlisted_config_facts(self):
         for shape in ("sha1", "sha256", "bare", "detached", "no-upstream", "packed", "split"):
             with self.subTest(shape=shape):
@@ -381,8 +389,10 @@ class ContentsTest(FixtureCase):
                     self.assertTrue((directory / "refs").is_symlink())
                     self.assertEqual((directory / "refs").resolve(), fx.common / "refs")
                     if shape == "packed":
-                        self.assertTrue((directory / "packed-refs").is_symlink())
-                        self.assertEqual((directory / "packed-refs").resolve(), fx.common / "packed-refs")
+                        # R18 separately requires a bounded private copy. This
+                        # older inventory check accepts either representation.
+                        self.assertEqual((directory / "packed-refs").read_bytes(),
+                                         (fx.common / "packed-refs").read_bytes())
                     self.assertEqual((directory / "HEAD").read_bytes(), (fx.common if shape == "bare" else fx.gitdir).joinpath("HEAD").read_bytes())
                     self.assertEqual((directory / "objects/info/alternates").read_text(), str(fx.common / "objects") + "\n")
                     self.assertNotIn("GIT_COMMON_DIR", v.env)
@@ -396,7 +406,7 @@ class ContentsTest(FixtureCase):
                         self.assertEqual((directory / "index").read_bytes(), (fx.gitdir / "index").read_bytes())
                         for shared in fx.gitdir.glob("sharedindex.*"):
                             self.assertEqual((directory / shared.name).read_bytes(), shared.read_bytes())
-                    self.assertEqual(self.config_values(directory), self.expected_config(
+                    self.assert_config_values(directory, self.expected_config(
                         fx, bare=shape == "bare", detached=shape == "detached",
                         upstream=shape != "no-upstream", sha256=shape == "sha256"))
                 self.assertFalse(directory.exists())
@@ -416,7 +426,7 @@ class ContentsTest(FixtureCase):
         expected = self.expected_config(fx)
         with self.view.opened(fx.tree, git_trees.audit_env(), base=self.base) as v:
             directory = Path(v.env["GIT_DIR"])
-            self.assertEqual(self.config_values(directory), expected)
+            self.assert_config_values(directory, expected)
             text = (directory / "config").read_text()
             for hostile in ("worker-command", "worker.cfg", "worker-hooks", "include-fsmonitor",
                             "wtconfig-fsmonitor", "filter-clean", "textconv", str(fx.markers)):
@@ -1910,6 +1920,346 @@ def config_pins_test(mode, *, guarded):
 for _mode in ("omitted", "overridden"):
     setattr(RoundTwoControlsTest, "test_control_r14_config_pins_" + _mode, config_pins_test(_mode, guarded=False))
     setattr(RoundTwoCommandsTest, "test_r14_module_authors_config_pins_" + _mode, config_pins_test(_mode, guarded=True))
+
+
+class RoundThreeControlsTest(FixtureCase):
+    """Live attacks, runnable independently of the round-3 production fixes."""
+
+
+class RoundThreeOperandsTest(FixtureCase):
+    def assert_operand_refused(self, fx, args, sentinel):
+        # Resolution may need a safe revision probe, so do not require zero
+        # subprocesses. It must refuse, without printing private file bytes.
+        with patch("sys.stdout") as stdout, patch("sys.stderr") as stderr:
+            try:
+                result = self.run_view(fx, args)
+            except self.view.Unviewable as error:
+                self.assertNotIn(sentinel, str(error))
+            else:
+                self.assertEqual(result.stdout, "", "outside operand produced output")
+                self.assertNotIn(sentinel, result.stderr)
+                self.fail("outside/path-without-separator operand must raise Unviewable")
+        stdout.write.assert_not_called()
+        stderr.write.assert_not_called()
+        self.assertEqual(self.leftovers(), [])
+
+    def test_r16_diff_accepts_revisions_and_in_tree_paths_after_separator(self):
+        fx = self.fixture()
+        for args in (["diff"], ["diff", "HEAD"], ["diff", fx.sha["A"], fx.sha["B"]],
+                     ["diff", "main", "HEAD"], ["diff", "--", "README.md"],
+                     ["diff", "HEAD", "--", "README.md"],
+                     ["diff", fx.sha["A"], fx.sha["B"], "--", "b.txt"]):
+            with self.subTest(args=args):
+                control = raw(fx, args)
+                self.assertEqual(control.returncode, 0, control.stderr)
+                self.assertTrue(control.stdout, "positive read must produce a real patch")
+                self.assertEqual(answer(self.run_view(fx, args)), answer(control))
+        # Keep every currently allowlisted diff option usable with revisions
+        # and paths. --cached is deliberately outside the round-2 vocabulary.
+        for option in sorted(OPTION_VOCABULARY["diff"]):
+            args = ["diff", option, "HEAD", "--", "README.md"]
+            with self.subTest(args=args):
+                control = raw(fx, args)
+                self.assertEqual(control.returncode, 0, control.stderr)
+                self.assertTrue(control.stdout)
+                self.assertEqual(answer(self.run_view(fx, args)), answer(control))
+        self.assertEqual(self.leftovers(), [])
+
+    def test_r16_diff_paths_before_separator_are_refused(self):
+        fx = self.fixture()
+        # Raw Git accepts these implicit paths; the stricter view contract
+        # makes the caller explicitly distinguish paths from revisions.
+        for args in (["diff", "README.md"], ["diff", "HEAD", "README.md"],
+                     ["diff", "README.md", "b.txt"]):
+            with self.subTest(args=args):
+                control = raw(fx, args)
+                self.assertEqual(control.returncode, 0, control.stderr)
+                self.assert_operand_refused(fx, args, "generic absent secret")
+
+
+def outside_diff_control(case, kind):
+    fx = case.fixture()
+    operand, sentinel = taint.outside_operand(fx, kind)
+    # Git's implicit-mode heuristic does not resolve the symlinked directory
+    # when both spellings appear in-tree. A /dev/null peer triggers no-index,
+    # after which Git follows that directory and reads the external bytes.
+    peer = os.devnull if kind == "symlink_directory" else "empty.txt"
+    args = ["diff", operand, peer]
+    control = raw(fx, args)
+    case.assertEqual(control.returncode, 1, control.stderr)
+    case.assertIn("-" + sentinel + "\n", control.stdout,
+                  "implicit --no-index must actually read the external file")
+    return fx, operand, sentinel
+
+
+def outside_diff_test(kind, *, guarded):
+    def test(self):
+        fx, operand, sentinel = outside_diff_control(self, kind)
+        if not guarded:
+            return
+        # Absolute and parent paths leak with a genuinely in-tree peer. The
+        # symlink control needs /dev/null to trigger Git's mode heuristic.
+        # Either position and an explicit separator must be refused.
+        peer = os.devnull if kind == "symlink_directory" else "empty.txt"
+        for paths in ([operand, peer], [peer, operand]):
+            for separator in ([], ["--"]):
+                for options in ([], ["--no-ext-diff"]):
+                    args = ["diff", *options, *separator, *paths]
+                    with self.subTest(args=args):
+                        control = raw(fx, args)
+                        self.assertEqual(control.returncode, 1, control.stderr)
+                        self.assertIn(sentinel, control.stdout)
+                        self.assert_operand_refused(fx, args, sentinel)
+        # Single paths must obey the same rule; a revision alongside an
+        # external path is not permission to reach outside the worktree.
+        for args in (["diff", "--", operand], ["diff", "HEAD", "--", operand]):
+            with self.subTest(args=args):
+                self.assert_operand_refused(fx, args, sentinel)
+        if kind == "symlink_directory":
+            for paths in ([operand, "empty.txt"], ["empty.txt", operand]):
+                with self.subTest(paths=paths):
+                    self.assert_operand_refused(fx, ["diff", "--", *paths], sentinel)
+    return test
+
+
+for _kind in ("absolute", "parent", "symlink_directory"):
+    setattr(RoundThreeControlsTest, "test_control_r16_implicit_no_index_" + _kind,
+            outside_diff_test(_kind, guarded=False))
+    setattr(RoundThreeOperandsTest, "test_r16_diff_refuses_outside_" + _kind,
+            outside_diff_test(_kind, guarded=True))
+
+
+def other_path_operands_test(command):
+    def test(self):
+        for kind in ("absolute", "parent", "symlink_directory"):
+            with self.subTest(kind=kind):
+                # Git already refuses or ignores most of these paths. Reuse
+                # the live diff control to prove this exact path reaches the
+                # external bytes; do not invent a leak in a safe command.
+                fx, operand, sentinel = outside_diff_control(self, kind)
+                prefix = {
+                    "ls-files": ["ls-files"], "ls-tree": ["ls-tree", "-r", "HEAD"],
+                    "status": ["status", "--short"], "log": ["log", "-1", "--format=%s", "HEAD"],
+                    "show": ["show", "--stat", "HEAD"],
+                }[command]
+                args = [*prefix, "--", operand]
+                with self.subTest(args=args):
+                    self.assert_operand_refused(fx, args, sentinel)
+                safe = [*prefix, "--", "d.txt" if command == "show" else "README.md"]
+                control = raw(fx, safe)
+                self.assertEqual(control.returncode, 0, control.stderr)
+                self.assertTrue(control.stdout)
+                self.assertEqual(answer(self.run_view(fx, safe)), answer(control))
+        self.assertEqual(self.leftovers(), [])
+    return test
+
+
+for _command in ("ls-files", "ls-tree", "status", "log", "show"):
+    setattr(RoundThreeOperandsTest, "test_r16_path_boundary_" + _command.replace("-", "_"),
+            other_path_operands_test(_command))
+
+
+class RoundThreeSignatureTest(FixtureCase):
+    assert_no_git = ReviewCommandsTest.assert_no_git
+
+    def test_r17_gpg_program_is_pinned_non_executable_in_view_config(self):
+        fx, env = signature_control(self, "log", "%G?")
+        # A worker-selected verifier must not override the launcher-authored
+        # defense in depth, even when all signature atoms are refused.
+        taint.config(fx, "gpg.program", str(fx.root / "caller-bin/gpg"))
+        with self.view.opened(fx.tree, env, base=self.base) as v:
+            directory = Path(v.env["GIT_DIR"])
+            result = taint.git(["config", "--file", str(directory / "config"),
+                                "--get", "gpg.program"], self.root, check=False)
+            self.assertEqual(answer(result), (0, os.devnull + "\n"),
+                             "pin gpg.program to /dev/null as defense in depth")
+            self.assertFalse(os.access(os.devnull, os.X_OK))
+            # Bypass argument validation to test the config defense itself.
+            direct = subprocess.run(["git", "log", "-1", "--format=%G?"], cwd=fx.tree,
+                                    env=v.env, stdin=subprocess.DEVNULL,
+                                    capture_output=True, text=True, timeout=5)
+            self.assertEqual(direct.returncode, 0, direct.stderr)
+            self.assertEqual(fx.fired(), [], "config alone must prevent PATH gpg execution")
+        self.assertEqual(self.leftovers(), [])
+
+    def test_r17_unknown_g_atom_is_refused_for_future_verifiers(self):
+        fx, env = signature_control(self, "log", "%G?")
+        for command in ("log", "show"):
+            with self.subTest(command=command):
+                self.assert_no_git(fx, [command, "--format=%GZ", "HEAD"], env=env)
+
+
+def signature_control(case, command, atom):
+    fx = case.fixture()
+    env = taint.signed_commit_on_path(fx, git_trees.audit_env())
+    args = [command, "--format=" + atom, "HEAD"]
+    if command == "log":
+        args.insert(1, "-1")
+    control = raw(fx, args, env)
+    case.assertEqual(control.returncode, 0, control.stderr)
+    case.assertEqual(fx.fired(), ["gpg"], "the exact %G atom must execute caller PATH gpg")
+    fx.clear()
+    return fx, env
+
+
+def signature_atom_test(command, atom, *, guarded):
+    def test(self):
+        fx, env = signature_control(self, command, atom)
+        if not guarded:
+            return
+        for fmt in (atom, "prefix " + atom + " suffix %s"):
+            args = [command, "--format=" + fmt, "HEAD"]
+            with self.subTest(args=args):
+                self.assert_no_git(fx, args, env=env)
+        safe = [command, "--format=%H %s", "HEAD"]
+        control = raw(fx, safe, env)
+        self.assertEqual(control.returncode, 0, control.stderr)
+        self.assertEqual(answer(self.view.run(safe, fx.tree, env=env, base=self.base)), answer(control))
+        self.assertEqual(fx.fired(), [])
+        self.assertEqual(self.leftovers(), [])
+    return test
+
+
+for _command in ("log", "show"):
+    for _atom, _name in (("%G?", "status"), ("%GG", "raw"), ("%GS", "signer"),
+                         ("%GK", "key"), ("%GF", "fingerprint"),
+                         ("%GP", "primary_fingerprint"), ("%GT", "trust")):
+        setattr(RoundThreeControlsTest, f"test_control_r17_{_command}_gpg_{_name}",
+                signature_atom_test(_command, _atom, guarded=False))
+        setattr(RoundThreeSignatureTest, f"test_r17_{_command}_refuses_g_atom_{_name}",
+                signature_atom_test(_command, _atom, guarded=True))
+
+
+def packed_secret_control(case):
+    fx = case.fixture()
+    sentinel = taint.packed_refs_secret(fx)
+    for args in (["for-each-ref"], ["log", "-1", "--format=%H"]):
+        control = raw(fx, args)
+        case.assertNotEqual(control.returncode, 0)
+        case.assertIn(sentinel, control.stderr,
+                      "unguarded packed-ref parse error must disclose external bytes")
+    return fx, sentinel
+
+
+class RoundThreeMetadataTest(FixtureCase):
+    def test_r18_packed_refs_symlink_refuses_without_disclosing_secret(self):
+        fx, sentinel = packed_secret_control(self)
+        for args in (["for-each-ref"], ["log", "-1", "--format=%H"]):
+            with self.subTest(args=args), patch("sys.stdout") as stdout, patch("sys.stderr") as stderr:
+                try:
+                    result = self.run_view(fx, args)
+                except self.view.Unviewable as error:
+                    self.assertNotIn(sentinel, str(error))
+                else:
+                    self.assertNotIn(sentinel, result.stdout)
+                    self.assertNotIn(sentinel, result.stderr, "packed-refs symlink disclosed external bytes")
+                    self.fail("packed-refs symlink must raise Unviewable")
+                stdout.write.assert_not_called()
+                stderr.write.assert_not_called()
+        self.assertEqual(self.leftovers(), [])
+
+    def test_r18_legitimate_packed_refs_use_bounded_read_and_private_snapshot(self):
+        # Establish the unsafe linked-file control before pinning its safe
+        # replacement. Do not turn a legitimate packed repo into a refusal.
+        packed_secret_control(self)
+        fx = self.fixture(packed=True)
+        source = fx.common / "packed-refs"
+        before = source.read_bytes()
+        reads = (["rev-parse", "main"], ["log", "-1", "--format=%H", "main"],
+                 ["for-each-ref", "--format=%(refname) %(objectname)"])
+        expected = [(args, answer(raw(fx, args))) for args in reads]
+        for args, truth in expected:
+            self.assertEqual(truth[0], 0)
+            self.assertTrue(truth[1])
+            self.assertEqual(answer(self.run_view(fx, args)), truth)
+        view = self.view
+        with patch.object(view, "_read", wraps=view._read) as bounded:
+            with view.opened(fx.tree, git_trees.audit_env(), base=self.base) as v:
+                copied = Path(v.env["GIT_DIR"]) / "packed-refs"
+                calls = [call for call in bounded.call_args_list if Path(call.args[0]) == source]
+                with self.subTest(contract="bounded _read"):
+                    self.assertEqual(len(calls), 1, "packed-refs must pass through the common _read guard")
+                    self.assertIsInstance(calls[0].args[1], int)
+                    self.assertGreater(calls[0].args[1], 0)
+                with self.subTest(contract="private regular copy"):
+                    self.assertTrue(stat.S_ISREG(copied.lstat().st_mode), "packed-refs must be a regular copy")
+                    self.assertFalse(copied.is_symlink())
+                    self.assertEqual(copied.read_bytes(), before)
+                    source.write_text("generic changed worker metadata\n")
+                    self.assertEqual(copied.read_bytes(), before, "worker edits must not change the open view")
+                    result = subprocess.run(["git", "rev-parse", "main"], cwd=fx.tree,
+                                            env=v.env, stdin=subprocess.DEVNULL,
+                                            capture_output=True, text=True, timeout=5)
+                    self.assertEqual(answer(result), (0, fx.sha["B"] + "\n"))
+        self.assertEqual(self.leftovers(), [])
+
+
+def packed_secret_control_test(self):
+    packed_secret_control(self)
+
+
+RoundThreeControlsTest.test_control_r18_packed_refs_symlink_leaks_parse_error = packed_secret_control_test
+
+
+def stdin_control(case):
+    fx = case.fixture()
+    payload = fx.sha["D"] + "\nGENERIC-LAUNCHER-INPUT\n"
+    result = taint.launcher_stdin(fx, case.base, git_trees.audit_env(), payload, guarded=False)
+    case.assertIsNone(result["error"])
+    case.assertEqual(result["returncode"], 0, result["stderr"])
+    case.assertIn(fx.sha["D"] + " commit ", result["stdout"])
+    case.assertIn("GENERIC-LAUNCHER-INPUT missing\n", result["stdout"])
+    case.assertEqual(result["rest"], "", "control must consume the launcher's fd 0")
+    return fx, payload
+
+
+class RoundThreeStdinTest(FixtureCase):
+    def test_r19_every_subprocess_including_config_and_preflight_uses_devnull(self):
+        fx, payload = stdin_control(self)
+        real_run = subprocess.run
+
+        def execute_with_closed_stdin(*args, **kwargs):
+            # Record the module's original kwargs, but keep a missing-guard
+            # regression from blocking the test runner on its own stdin.
+            return real_run(*args, **{**kwargs, "stdin": subprocess.DEVNULL})
+
+        with patch.object(subprocess, "run", side_effect=execute_with_closed_stdin) as started:
+            for args in (["rev-parse", "HEAD"], ["status", "--short"], ["cat-file", "--batch-check"]):
+                result = self.run_view(fx, args)
+                self.assertEqual(result.returncode, 0, result.stderr)
+        commands = [call.args[0][1] for call in started.call_args_list]
+        self.assertIn("config", commands)
+        self.assertIn("ls-files", commands)
+        self.assertIn("cat-file", commands)
+        for call in started.call_args_list:
+            with self.subTest(argv=call.args[0]):
+                self.assertEqual(call.kwargs.get("stdin"), subprocess.DEVNULL,
+                                 "every module subprocess must explicitly close stdin")
+        self.assertEqual(self.leftovers(), [])
+
+
+def stdin_pipe_test(*, hold_open, guarded):
+    def test(self):
+        fx, payload = stdin_control(self)
+        if not guarded:
+            return
+        result = taint.launcher_stdin(fx, self.base, git_trees.audit_env(), payload,
+                                    guarded=True, hold_open=hold_open)
+        self.assertIsNone(result["error"], "batch-check must return promptly, even without launcher EOF")
+        self.assertEqual(result["returncode"], 0, result["stderr"])
+        self.assertEqual(result["stdout"], "", "batch-check must not echo launcher input")
+        self.assertNotIn("GENERIC-LAUNCHER-INPUT", result["stderr"])
+        self.assertEqual(result["rest"], payload, "launcher stdin must remain unread")
+        self.assertEqual(self.leftovers(), [])
+    return test
+
+
+RoundThreeControlsTest.test_control_r19_batch_check_consumes_and_echoes_launcher_pipe = stdin_pipe_test(
+    hold_open=False, guarded=False)
+RoundThreeStdinTest.test_r19_batch_check_leaves_launcher_pipe_unread = stdin_pipe_test(
+    hold_open=False, guarded=True)
+RoundThreeStdinTest.test_r19_batch_check_returns_with_launcher_pipe_still_open = stdin_pipe_test(
+    hold_open=True, guarded=True)
 
 
 if __name__ == "__main__":

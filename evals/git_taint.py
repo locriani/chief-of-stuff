@@ -6,6 +6,7 @@ environment, never through workspace data or a fixture file.
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import shutil
@@ -313,3 +314,106 @@ def partial_clone(fx: Fx, name: str) -> tuple[Path, str]:
     probe = marker_program(fx, "lazy-fetch", upload_pack=True)
     git(["config", "remote.origin.uploadpack", str(probe)], clone)
     return clone, blob
+
+
+def outside_operand(fx: Fx, kind: str) -> tuple[str, str]:
+    """One generic secret outside the worktree, reached by three spellings."""
+    secret = fx.root / "outside.txt"
+    sentinel = "generic outside content sentinel"
+    secret.write_text(sentinel + "\n")
+    if kind == "absolute":
+        operand = str(secret)
+    elif kind == "parent":
+        operand = "../outside.txt"
+    elif kind == "symlink_directory":
+        (fx.tree / "outside-link").symlink_to(fx.root, target_is_directory=True)
+        operand = "outside-link/outside.txt"
+    else:
+        raise ValueError(f"unknown outside operand: {kind}")
+    (fx.tree / "empty.txt").write_text("")
+    return operand, sentinel
+
+
+def signed_commit_on_path(fx: Fx, env: dict[str, str]) -> dict[str, str]:
+    """A worker-written signature header and a Python gpg on caller PATH.
+
+    No keyring or real signature is needed: Git invokes the verifier before
+    it can decide that these generic signature bytes are invalid.
+    """
+    tree = git(["rev-parse", "HEAD^{tree}"], fx.tree).stdout.strip()
+    body = (f"tree {tree}\nparent {fx.sha['D']}\n"
+            f"author Fixture <fixture@example.test> {ENV['GIT_AUTHOR_DATE']}\n"
+            f"committer Fixture <fixture@example.test> {ENV['GIT_COMMITTER_DATE']}\n"
+            "gpgsig -----BEGIN PGP SIGNATURE-----\n \n"
+            " generic-signature-bytes\n -----END PGP SIGNATURE-----\n\n"
+            "generic signed-looking commit\n")
+    result = subprocess.run(["git", "hash-object", "-t", "commit", "-w", "--stdin"],
+                            cwd=fx.tree, env=ENV, input=body, capture_output=True,
+                            text=True, timeout=5, check=True)
+    git(["update-ref", "refs/heads/feat", result.stdout.strip()], fx.tree)
+    directory = fx.root / "caller-bin"
+    directory.mkdir()
+    marker_program(fx, "gpg", name="caller-bin/gpg")
+    home = fx.root / "caller-home"
+    home.mkdir()
+    return {**env, "PATH": str(directory) + os.pathsep + env["PATH"], "HOME": str(home)}
+
+
+def packed_refs_secret(fx: Fx) -> str:
+    """Git's packed-ref parse diagnostic must not echo this external line."""
+    sentinel = "generic packed refs secret sentinel"
+    secret = fx.root / "private-metadata.txt"
+    secret.write_text(sentinel + "\n")
+    packed = fx.common / "packed-refs"
+    packed.unlink(missing_ok=True)
+    packed.symlink_to(secret)
+    return sentinel
+
+
+def launcher_stdin(fx: Fx, base: Path, env: dict[str, str], payload: str,
+                   *, guarded: bool, hold_open: bool = False) -> dict:
+    """A real Python launcher with fd 0 piped, optionally without EOF.
+
+    Read remaining bytes directly from fd 0 after the child finishes; Python
+    text buffering must not hide whether Git consumed the launcher's input.
+    The held-open writer establishes that a guard cannot merely wait for EOF.
+    """
+    scripts = Path(__file__).resolve().parent.parent / "scripts"
+    code = (
+        "import json, os, subprocess, sys\nfrom pathlib import Path\n"
+        f"sys.path.insert(0, {str(scripts)!r})\n"
+        f"tree = Path({str(fx.tree)!r})\nenv = {env!r}\n"
+        "error = None\nstdout = stderr = ''\nreturncode = None\ntry:\n"
+        + (" import git_view\n"
+           f" result = git_view.run(['cat-file', '--batch-check'], tree, env=env, "
+           f"base=Path({str(base)!r}), timeout=1)\n" if guarded else
+           " result = subprocess.run(['git', 'cat-file', '--batch-check'], cwd=tree, "
+           "env=env, capture_output=True, text=True, timeout=1)\n")
+        + " returncode, stdout, stderr = result.returncode, result.stdout, result.stderr\n"
+        "except Exception as exc:\n error = type(exc).__name__\n"
+        "os.set_blocking(0, False)\n"
+        "try:\n rest = os.read(0, 65536).decode()\n"
+        "except BlockingIOError:\n rest = ''\n"
+        "print(json.dumps(dict(error=error, returncode=returncode, stdout=stdout, "
+        "stderr=stderr, rest=rest)))\n"
+    )
+    if not hold_open:
+        result = subprocess.run([sys.executable, "-c", code], input=payload,
+                                capture_output=True, text=True, timeout=4, check=True)
+        return json.loads(result.stdout)
+    process = subprocess.Popen([sys.executable, "-c", code], stdin=subprocess.PIPE,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        process.stdin.write(payload)
+        process.stdin.flush()
+        process.wait(timeout=4)  # Keep stdin's writer open throughout the wait.
+        stdout, stderr = process.stdout.read(), process.stderr.read()
+        if process.returncode:
+            raise AssertionError(f"launcher failed: {stderr}")
+        return json.loads(stdout)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        for stream in (process.stdin, process.stdout, process.stderr):
+            stream.close()
