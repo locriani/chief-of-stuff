@@ -59,6 +59,30 @@ class FakeGh:
         return [c for c in self.calls if c[:2] == ["pr", "merge"]]
 
 
+def graphql_node(number, threads=(), sha=HEAD, run=None):
+    """What the one graphql call of merge-ready answers for an open pull request (#419): its review threads, and the
+    commit its checks ran on with the id of the workflow run that made them. `threads` is one isResolved flag per thread;
+    `run=False` is a commit with no checks."""
+    runs = [] if run is False else [{"__typename": "CheckRun", "checkSuite": {"workflowRun": {"databaseId": run or 9000 + number}}}]
+    return {"number": number, "reviewThreads": {"nodes": [{"isResolved": t} for t in threads]},
+            "commits": {"nodes": [{"commit": {"oid": sha, "statusCheckRollup": {"contexts": {"nodes": runs}} if runs else None}}]}}
+
+
+class FakeGhGraphql(FakeGh):
+    """FakeGh that also answers merge-ready's graphql call. `nodes` replaces the default node of a pull request, by number."""
+
+    def __init__(self, prs, nodes=()):
+        super().__init__(prs)
+        self.nodes = {n["number"]: n for n in nodes}
+
+    def __call__(self, args, input_text=None):
+        if args[:2] == ["api", "graphql"]:
+            self.calls.append(args)
+            nodes = [self.nodes.get(p["number"]) or graphql_node(p["number"], sha=p["headRefOid"]) for p in self.prs]
+            return 0, json.dumps({"data": {"repository": {"pullRequests": {"nodes": nodes}}}}), ""
+        return super().__call__(args, input_text)
+
+
 class GitHubReadinessTest(unittest.TestCase):
     def test_only_the_approvers_approval_on_the_head_with_passing_checks_and_no_conflict_is_ready(self):
         got = {r.number: r.blockers for r in ma.github_requests("o/app", "robin", FakeGh(PRS))}
@@ -148,6 +172,112 @@ class MainTest(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertEqual(gh.calls, [])
         self.assertIn("merge_owner", err)
+
+
+def request(**kw):
+    """A request as merge-ready's readers fill it: the head pipeline's id and sha, and the unresolved thread count (#419)."""
+    base = dict(number=1, title="t", url="u", head=HEAD, approval="approved", pipeline="passed", mergeable="yes",
+                approver="robin", pipeline_id="9001", pipeline_sha=HEAD, threads=0)
+    return ma.Request(**{**base, **kw})
+
+
+class RequestVerdictTest(unittest.TestCase):
+    """One place decides ready or not (#419: the coordinator wrote mergeable from the forge's own status, no pipeline read).
+    Precedence: conflicts > red > stale pipeline > running > no pipeline > findings open > ready."""
+
+    def test_the_request_carries_the_head_pipeline_and_the_thread_count_with_defaults_that_keep_old_callers(self):
+        r = ma.Request(1, "t", "u", HEAD, "approved", "passed", "yes", "robin")
+        self.assertEqual((r.pipeline_id, r.pipeline_sha, r.threads), ("", "", 0))
+
+    def test_ready_only_when_the_pipeline_passed_on_the_head_with_no_conflict_and_no_open_thread(self):
+        self.assertEqual(request().verdict, "ready")
+
+    def test_each_verdict_and_the_precedence_between_them(self):
+        table = (
+            ({"mergeable": "conflict"}, "conflicts"),
+            ({"mergeable": "conflict", "pipeline": "failed", "threads": 2}, "conflicts"),
+            ({"pipeline": "failed"}, "red"),
+            ({"pipeline": "failed", "pipeline_sha": OLD, "threads": 2}, "red"),
+            ({"pipeline_sha": OLD}, "stale pipeline"),
+            ({"pipeline_sha": OLD, "threads": 2}, "stale pipeline"),
+            ({"pipeline": "running", "pipeline_sha": OLD}, "stale pipeline"),
+            ({"pipeline": "running"}, "running"),
+            ({"pipeline": "running", "threads": 2}, "running"),
+            ({"mergeable": "checking"}, "running"),
+            ({"mergeable": "unknown"}, "running"),
+            ({"pipeline": "none", "pipeline_id": "", "pipeline_sha": ""}, "no pipeline"),
+            ({"pipeline": "none", "pipeline_id": "", "pipeline_sha": "", "threads": 2}, "no pipeline"),
+            ({"threads": 2}, "findings open"),
+            ({"threads": 1}, "findings open"),
+        )
+        for kw, want in table:
+            with self.subTest(**kw):
+                self.assertEqual(request(**kw).verdict, want)
+
+    def test_the_forges_own_no_conflicts_word_alone_never_makes_a_request_ready(self):
+        # The #419 defect: the forge said "mergeable" (no conflicts) with a red head pipeline, and with open findings.
+        for kw in ({"pipeline": "failed"}, {"threads": 3}, {"pipeline_sha": OLD}):
+            with self.subTest(**kw):
+                self.assertNotEqual(request(mergeable="yes", **kw).verdict, "ready")
+
+
+class WorkerMergeOwnerTest(unittest.TestCase):
+    """#420: with merge_owner = "worker" the owning worker merges, so merge-approved lists readiness and never merges."""
+
+    WORKER = '[workflow]\nmerge_owner = "worker"\n'
+    PRS = [pr(31, [], checks=[{"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "FAILURE"}]),
+           pr(32, []),
+           pr(33, [], mergeable="CONFLICTING"),
+           pr(34, [])]
+
+    def run_main(self, toml, *args, gh=None):
+        main = MainTest()
+        return main.run_main(main.workspace(toml), *args, gh=gh or FakeGhGraphql(self.PRS))
+
+    def test_it_lists_each_open_request_with_its_merge_ready_line_ready_ones_first(self):
+        code, out, err = self.run_main(self.WORKER)
+        self.assertEqual(code, 0, err)
+        lines = [l for l in out.splitlines() if l[:1] == "#"]
+        self.assertEqual([l.split()[0] for l in lines], ["#32", "#34", "#31", "#33"])
+        self.assertEqual([l.split()[1] for l in lines], ["ready", "ready", "red", "conflicts"])
+        # the line merge-ready prints: verdict, head sha, pipeline id with status and sha, conflicts, threads, url
+        self.assertEqual(lines[0], "#32 ready · head aaaaaaa · pipeline 9032 passed on aaaaaaa · conflicts no · "
+                                   "unresolved threads 0 · https://github.com/o/app/pull/32")
+
+    def test_it_says_the_ready_ones_are_for_their_owning_worker_to_merge(self):
+        code, out, _ = self.run_main(self.WORKER)
+        self.assertEqual(code, 0)
+        self.assertIn("ready for their owning worker to merge: #32 #34", out.splitlines())
+
+    def test_with_nothing_ready_it_names_none_for_the_worker(self):
+        code, out, _ = self.run_main(self.WORKER, gh=FakeGhGraphql([self.PRS[0], self.PRS[2]]))
+        self.assertEqual((code, len(out.splitlines())), (0, 2))
+        self.assertNotIn("ready for their owning worker", out)
+
+    def test_it_never_merges_and_never_says_merging_stays_the_users(self):
+        gh = FakeGhGraphql(self.PRS)
+        for args in ((), ("--merge", "32")):
+            code, out, err = self.run_main(self.WORKER, *args, gh=gh)
+            with self.subTest(args=args):
+                self.assertEqual(gh.merges, [])
+                self.assertNotIn("stays the user's", out + err)
+                self.assertNotIn("merging on approval is off", out + err)
+        self.assertEqual(code, 2, "--merge is refused for worker: the owning worker merges")
+        self.assertIn("owning worker", err)
+
+    def test_it_needs_no_approver(self):
+        code, _, err = self.run_main(self.WORKER)
+        self.assertEqual(code, 0, err)
+
+    def test_user_and_approval_behave_as_before(self):
+        gh = FakeGhGraphql(self.PRS)
+        code, _, err = self.run_main('[workflow]\nmerge_owner = "user"\n', gh=gh)
+        self.assertEqual((code, gh.calls), (2, []))
+        self.assertIn("merging stays the user's", err)
+        code, out, _ = self.run_main(MainTest.OPT_IN, gh=FakeGh(PRS))
+        self.assertEqual(code, 0)
+        self.assertIn("ready", {l.split()[0]: l for l in out.splitlines()}["#12"])
+        self.assertNotIn("owning worker", out)
 
 
 class SettingsTest(unittest.TestCase):

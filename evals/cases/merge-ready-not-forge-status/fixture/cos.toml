@@ -1,0 +1,2 @@
+[lanes]
+build = { stages = ["implement", "pr", "review", "triage", "merge", "main"], gates = ["triage"] }
