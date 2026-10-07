@@ -114,6 +114,11 @@ QUOTA_STOP = "quota stop: "
 _QUOTA_TAIL = 65536  # the worker's stderr is read for this one decision only, and only its tail
 
 
+def quota_marker(runtime: str, model: str) -> str:
+    """The launcher's quota-stop marker exactly as the Log line carries it: the writer and the cap both read this text."""
+    return _brief(f"{QUOTA_STOP}{runtime} {model}")
+
+
 def quota_stop(log: Path, runtime: str, model: str) -> str:
     """The relaunch reason when the worker's stderr shows an exhausted quota (a 429 with RESOURCE_EXHAUSTED or quota), else "".
     A missing or unreadable log grants nothing. The caller applies it only to an unchanged tree with no result (#422)."""
@@ -129,7 +134,7 @@ def quota_stop(log: Path, runtime: str, model: str) -> str:
         low = line.lower()
         if re.search(r"(?<![^\s=(])429(?!\w)", line) and ("resource_exhausted" in low or "quota" in low):
             reset = re.search(r"\bresets?\b.*", line, re.IGNORECASE)
-            return f"{QUOTA_STOP}{runtime} {model}" + (f"; {reset.group().strip()[:80].rstrip()}" if reset else "")
+            return quota_marker(runtime, model) + (f"; {reset.group().strip()[:80].rstrip()}" if reset else "")
     return ""
 
 
@@ -318,13 +323,13 @@ def reconcile(root: Path, day: str, task: str, name: str, cwd: Path, exit_code: 
         # A quota relaunch does not spend that limit; it has its own, once per task and runtime+model a day (#422).
         marker = RELAUNCHED.format(task=task)
         log = path.read_text().splitlines()
-        if not quota and reason.startswith(QUOTA_STOP):
+        if not quota and _brief(reason).startswith(QUOTA_STOP):  # as the Log folds it, so padding cannot dodge it
             reason = f"worker: {reason}"  # the launcher's marker is the launcher's alone
         if actual or commits != NO_COMMITS:
             status, reason = "human_review", f"worker asked to be relaunched but left changes: {reason}"
         elif quota:
-            mine = quota.split(";")[0]  # "quota stop: <runtime> <model>", then a snippet or the line's end
-            if any(marker in line and re.match(re.escape(mine) + r"[.;]", line.split(marker, 1)[1]) for line in log):
+            mine = re.escape(quota_marker(runtime, model))  # then the line goes on with `;` and a snippet, or ends with `.`
+            if any(marker in line and re.match(mine + r"(?:;|\.$)", line.split(marker, 1)[1]) for line in log):
                 status, reason = "human_review", f"quota stop repeated: {quota[len(QUOTA_STOP):]}"
         elif any(marker in line and not line.split(marker, 1)[1].startswith(QUOTA_STOP) for line in log):
             status, reason = "human_review", f"already relaunched once today and stopped again: {reason}"
