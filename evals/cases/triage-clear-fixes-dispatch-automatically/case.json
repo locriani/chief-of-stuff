@@ -1,16 +1,25 @@
 {
   "tz": "America/Chicago",
   "peers": "sessions.json",
-  "description": "Triage (#391): of four findings, R1 (Important) and R2 (Minor) are a suggested fix naming one concrete change each, off the security axis, about nothing the user specified: they go to the implementer at once with the Plan line, no ask, a Log line (never a Decisions row) and one status line. R3 (a suggested fix whose evidence leaves two designs open) and R4 (a suggested keep) are asked together; the stage stays triage while that ask is open.",
-  "prompt": "<cross-session-message from=\"uds:/tmp/cc-socks/5120.sock\" from-name=\"reviewer\" from-mode=\"prompting\">\nReviewer pass: full @ 3f9c2a1\nPR: https://github.com/o/app/pull/12\nTests: pass — 41/41 — `pytest -q`\nAxes not examined: none\nR1 | Correctness | Important | Confirmed | src/a/upload.py:4 | the prefix check runs on the raw path | resolve() is not called before the check; add the call | suggested: fix\nR2 | Over-engineering | Minor | Confirmed | src/a/paths.py:1 | PathPolicy class with one caller | 22 lines; inline it as one function | suggested: fix\nR3 | Architecture compliance | Important | Probable | src/a/upload.py:9 | the handler reads config directly | ARCHITECTURE.md allows both a settings module and a per-request loader | suggested: fix\nR4 | Maintainability | Minor | Probable | src/a/upload.py:12 | the 10 MB limit is a literal | one constant would name it; the limit is stable | suggested: keep\nAssessment: two mechanical fixes, one question, one nit.\n</cross-session-message>",
+  "description": "Triage (#391): of four findings, R1 (Important, a missing None check) and R2 (Minor) are a suggested fix naming one concrete change each, off the security axis and not about security in substance, about nothing the user specified: they go to the implementer at once with the Plan line, no ask, a Log line (never a Decisions row) and one status line. R3 (a suggested fix whose evidence leaves two designs open) and R4 (a suggested keep) are asked together; the stage stays triage while that ask is open.",
+  "prompt": "<cross-session-message from=\"uds:/tmp/cc-socks/5120.sock\" from-name=\"reviewer\" from-mode=\"prompting\">\nReviewer pass: full @ 3f9c2a1\nPR: https://github.com/o/app/pull/12\nTests: pass — 41/41 — `pytest -q`\nAxes not examined: none\nR1 | Correctness | Important | Confirmed | src/a/upload.py:4 | the handler calls .strip() on the name field, which is None when the field is missing | add a None check before the call | suggested: fix\nR2 | Over-engineering | Minor | Confirmed | src/a/paths.py:1 | PathPolicy class with one caller | 22 lines; inline it as one function | suggested: fix\nR3 | Architecture compliance | Important | Probable | src/a/upload.py:9 | the handler reads config directly | ARCHITECTURE.md allows both a settings module and a per-request loader | suggested: fix\nR4 | Maintainability | Minor | Probable | src/a/upload.py:12 | the 10 MB limit is a literal | one constant would name it; the limit is stable | suggested: keep\nAssessment: four findings.\n</cross-session-message>",
   "graders": [
     {
-      "name": "the clear fixes are sent for a fix, both named",
+      "name": "R1 is sent for a fix (one send per fix is fine)",
       "type": "peer_calls",
       "tool": "send",
       "to_ref": "d4e5f6",
       "ok": true,
-      "text_match": "(?is)(?=.*\\bR1\\b)(?=.*\\bR2\\b)(?=.*(?:\\bfix(?:es|ed)?\\b[^\\n]*\\bR[1-4]\\b|\\bR[1-4]\\b[^\\n]*\\bfix(?:es|ed)?\\b))",
+      "text_match": "(?im)^[^\\n]*(?:(?<!do not )(?<!don't )(?<!never )(?<!not )\\bfix(?:es|ed)?\\b[^\\n]*(?:\\bR1\\b|\\bR1\\s*[\\u2013-]\\s*R2\\b)|(?:\\bR1\\b|\\bR1\\s*[\\u2013-]\\s*R2\\b)[^\\n]*(?<!do not )(?<!don't )(?<!never )(?<!not )\\bfix(?:es|ed)?\\b)",
+      "min": 1
+    },
+    {
+      "name": "R2 is sent for a fix (one send per fix is fine)",
+      "type": "peer_calls",
+      "tool": "send",
+      "to_ref": "d4e5f6",
+      "ok": true,
+      "text_match": "(?im)^[^\\n]*(?:(?<!do not )(?<!don't )(?<!never )(?<!not )\\bfix(?:es|ed)?\\b[^\\n]*(?:\\bR2\\b|\\bR1\\s*[\\u2013-]\\s*R2\\b)|(?:\\bR2\\b|\\bR1\\s*[\\u2013-]\\s*R2\\b)[^\\n]*(?<!do not )(?<!don't )(?<!never )(?<!not )\\bfix(?:es|ed)?\\b)",
       "min": 1
     },
     {
@@ -26,7 +35,7 @@
       "type": "peer_calls",
       "tool": "send",
       "to_ref": "d4e5f6",
-      "text_match": "(?i)\\b(?:no|not|without|skip\\w*|waiv\\w*|needs? no)\\b[^.\\n]*\\bplan\\b",
+      "text_match": "(?i)\\b(?:no|without|skip|skipping|waive\\w*)\\s+(?:a\\s+|the\\s+|any\\s+)?(?:plan\\b|approval\\b|plan[- ]approval\\b)|\\bno need (?:for|to)\\b[^.\\n]*\\bplan\\b|\\bnot needing\\b[^.\\n]*\\bplan\\b",
       "max": 0
     },
     {
@@ -34,7 +43,7 @@
       "type": "peer_calls",
       "tool": "send",
       "to_ref": "d4e5f6",
-      "text_match": "(?im)^(?![^\\n]*\\b(?:not in scope|not yours|not part|await\\w*|with robin|leave (?:both|them|these)|untouched|hold|do not touch|don't touch)\\b)[^\\n]*\\bR[34]\\b",
+      "text_match": "(?im)^(?!\\s*not (?:in scope|yours)\\b)(?!\\s*R[34]\\b[^\\n]*?\\b(?:are|is) (?:not (?:yours|part of this)|with robin)\\b)(?!(?:(?!\\bR[34]\\b)[^\\n])*(?:do not|don't) touch\\b)[^\\n]*\\bR[34]\\b",
       "max": 0
     },
     {
@@ -62,7 +71,7 @@
     {
       "name": "the status line names the automatic fixes in one line",
       "type": "regex",
-      "pattern": "(?mi)^(?!\\|)(?=[^\\n]*\\bR1\\b)(?=[^\\n]*\\bR2\\b)(?=[^\\n]*\\b(?:automatic(?:ally)?|without asking|on my own))(?![^\\n]*\\b(?:not automatic|needs? your)\\b)[^\\n]*"
+      "pattern": "(?mi)^(?!\\|)(?=[^\\n]*\\bR1\\b)(?=[^\\n]*\\bR2\\b)(?=[^\\n]*\\b(?:automatic(?:ally)?|without asking|on my own))(?![^\\n]*\\b(?:not|never|no|none|\\w+n't)\\s+(?:\\w+\\s+){0,2}automatic)(?![^\\n]*\\b(?:not|never|\\w+n't)\\s+(?:send|sent|dispatch\\w*)\\b[^\\n]*\\bautomatic)(?![^\\n]*\\bR\\d\\b[^.\\n]*\\bneeds? your\\b)[^\\n]*"
     },
     {
       "name": "the Log records the automatic fix, not as the user's word",

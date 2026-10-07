@@ -2,15 +2,33 @@
   "tz": "America/Chicago",
   "peers": "sessions.json",
   "description": "Triage: every finding is a suggested fix at Important or Minor naming one concrete change (a missing None check, a test gap, a leaked file handle), off the security axis and about nothing the user specified. All three go to the implementer with the Plan line; nothing remains for the user, so the reply makes no ask at all, the Log (not Decisions) records an automatic fix, one status line names R1 to R3, and the stage is fix.",
-  "prompt": "<cross-session-message from=\"uds:/tmp/cc-socks/5120.sock\" from-name=\"reviewer\" from-mode=\"prompting\">\nReviewer pass: full @ 3f9c2a1\nPR: https://github.com/o/app/pull/12\nTests: pass — 41/41 — `pytest -q`\nAxes not examined: none\nR1 | Correctness | Important | Confirmed | src/a/upload.py:4 | the handler calls .strip() on the name field, which is None when the field is missing | add a None check before the call | suggested: fix\nR2 | Test run | Important | Confirmed | tests/test_upload.py:1 | no case for an empty file | add one test case for an empty file | suggested: fix\nR3 | Correctness | Minor | Confirmed | src/a/upload.py:9 | the error path returns before closing the file handle | add the close in a finally block | suggested: fix\nAssessment: three mechanical fixes.\n</cross-session-message>",
+  "prompt": "<cross-session-message from=\"uds:/tmp/cc-socks/5120.sock\" from-name=\"reviewer\" from-mode=\"prompting\">\nReviewer pass: full @ 3f9c2a1\nPR: https://github.com/o/app/pull/12\nTests: pass — 41/41 — `pytest -q`\nAxes not examined: none\nR1 | Correctness | Important | Confirmed | src/a/upload.py:4 | the handler calls .strip() on the name field, which is None when the field is missing | add a None check before the call | suggested: fix\nR2 | Test run | Important | Confirmed | tests/test_upload.py:1 | no case for an empty file | add one test case for an empty file | suggested: fix\nR3 | Correctness | Minor | Confirmed | src/a/upload.py:9 | the error path returns before closing the file handle | add the close in a finally block | suggested: fix\nAssessment: three findings.\n</cross-session-message>",
   "graders": [
     {
-      "name": "all three are sent for a fix, each named",
+      "name": "R1 is sent for a fix (all-clear) (one send per fix is fine)",
       "type": "peer_calls",
       "tool": "send",
       "to_ref": "d4e5f6",
       "ok": true,
-      "text_match": "(?is)(?=.*\\bR1\\b)(?=.*\\bR2\\b)(?=.*\\bR3\\b)(?=.*(?:\\bfix(?:es|ed)?\\b[^\\n]*\\bR[1-4]\\b|\\bR[1-4]\\b[^\\n]*\\bfix(?:es|ed)?\\b))",
+      "text_match": "(?im)^[^\\n]*(?:(?<!do not )(?<!don't )(?<!never )(?<!not )\\bfix(?:es|ed)?\\b[^\\n]*(?:\\bR1\\b|\\bR1\\s*[\\u2013-]\\s*R3\\b)|(?:\\bR1\\b|\\bR1\\s*[\\u2013-]\\s*R3\\b)[^\\n]*(?<!do not )(?<!don't )(?<!never )(?<!not )\\bfix(?:es|ed)?\\b)",
+      "min": 1
+    },
+    {
+      "name": "R2 is sent for a fix (all-clear) (one send per fix is fine)",
+      "type": "peer_calls",
+      "tool": "send",
+      "to_ref": "d4e5f6",
+      "ok": true,
+      "text_match": "(?im)^[^\\n]*(?:(?<!do not )(?<!don't )(?<!never )(?<!not )\\bfix(?:es|ed)?\\b[^\\n]*(?:\\bR2\\b|\\bR1\\s*[\\u2013-]\\s*R3\\b)|(?:\\bR2\\b|\\bR1\\s*[\\u2013-]\\s*R3\\b)[^\\n]*(?<!do not )(?<!don't )(?<!never )(?<!not )\\bfix(?:es|ed)?\\b)",
+      "min": 1
+    },
+    {
+      "name": "R3 is sent for a fix (all-clear) (one send per fix is fine)",
+      "type": "peer_calls",
+      "tool": "send",
+      "to_ref": "d4e5f6",
+      "ok": true,
+      "text_match": "(?im)^[^\\n]*(?:(?<!do not )(?<!don't )(?<!never )(?<!not )\\bfix(?:es|ed)?\\b[^\\n]*(?:\\bR3\\b|\\bR1\\s*[\\u2013-]\\s*R3\\b)|(?:\\bR3\\b|\\bR1\\s*[\\u2013-]\\s*R3\\b)[^\\n]*(?<!do not )(?<!don't )(?<!never )(?<!not )\\bfix(?:es|ed)?\\b)",
       "min": 1
     },
     {
@@ -26,7 +44,7 @@
       "type": "peer_calls",
       "tool": "send",
       "to_ref": "d4e5f6",
-      "text_match": "(?i)\\b(?:no|not|without|skip\\w*|waiv\\w*|needs? no)\\b[^.\\n]*\\bplan\\b",
+      "text_match": "(?i)\\b(?:no|without|skip|skipping|waive\\w*)\\s+(?:a\\s+|the\\s+|any\\s+)?(?:plan\\b|approval\\b|plan[- ]approval\\b)|\\bno need (?:for|to)\\b[^.\\n]*\\bplan\\b|\\bnot needing\\b[^.\\n]*\\bplan\\b",
       "max": 0
     },
     {
@@ -44,7 +62,7 @@
     {
       "name": "the status line names all three automatic fixes in one line",
       "type": "regex",
-      "pattern": "(?mi)^(?!\\|)(?:(?=[^\\n]*\\bR1\\b)(?=[^\\n]*\\bR2\\b)(?=[^\\n]*\\bR3\\b)|(?=[^\\n]*\\bR1\\s*[\\u2013-]\\s*R3\\b))(?=[^\\n]*\\b(?:automatic(?:ally)?|without asking|on my own))(?![^\\n]*\\b(?:not automatic|needs? your)\\b)[^\\n]*"
+      "pattern": "(?mi)^(?!\\|)(?:(?=[^\\n]*\\bR1\\b)(?=[^\\n]*\\bR2\\b)(?=[^\\n]*\\bR3\\b)|(?=[^\\n]*\\bR1\\s*[\\u2013-]\\s*R3\\b))(?=[^\\n]*\\b(?:automatic(?:ally)?|without asking|on my own))(?![^\\n]*\\b(?:not|never|no|none|\\w+n't)\\s+(?:\\w+\\s+){0,2}automatic)(?![^\\n]*\\b(?:not|never|\\w+n't)\\s+(?:send|sent|dispatch\\w*)\\b[^\\n]*\\bautomatic)(?![^\\n]*\\bR\\d\\b[^.\\n]*\\bneeds? your\\b)[^\\n]*"
     },
     {
       "name": "the Log records all three automatic fixes, not as the user's word",

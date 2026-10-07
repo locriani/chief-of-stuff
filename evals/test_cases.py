@@ -81,7 +81,7 @@ class CaseLintTest(unittest.TestCase):
     # reject, so a pattern that can never match, or always matches, fails here. The texts are the replies and sends real runs wrote, and
     # the wrong ones the review found: a hand-over in other verbs, a plan waiver in other words, the opposite status, quote forms.
     TRIAGE_CASES = ("triage-clear-fixes-dispatch-automatically", "triage-waits-for-the-user", "triage-all-clear-fixes-no-ask",
-                    "triage-user-specified-behaviour-is-asked")
+                    "triage-user-specified-behaviour-is-asked", "triage-spec-item-is-asked")
     PLAN = "Plan: enter plan mode (EnterPlanMode) for this task before anything else; write nothing until the user approves the plan."
     ASK = "Fix, file, keep or discard for R3 and R4 (https://github.com/o/app/pull/12)?"
     TRACKER = ("| Upload path check | impl-uploads | waiting | 09:00 | M | build | %s |\n\n## Decisions\n\n"
@@ -89,25 +89,39 @@ class CaseLintTest(unittest.TestCase):
     ISSUE_CREATE = "gh issue" + " create --title x"
     # grader name -> (texts the grader accepts, texts it rejects)
     GRADER_PINS = {
-        "the clear fixes are sent for a fix, both named": (
-            ("Fix reviewer findings R1 and R2 on PR https://github.com/o/app/pull/12, then report.\nR1 | Correctness | Important | the prefix check runs on the raw path\nR2 | Minor | inline it",
-             "R1 | Correctness | the raw path. Apply the fix.\nR2 | Over-engineering | inline it; this fixes it"),
-            ("Holding R1 and R2 until Robin answers", "Fix R1.", "R1 and R2 are noted.", "Fix the typo in README.\nR1 R2")),
-        "all three are sent for a fix, each named": (
-            ("Fix R1, R2 and R3 from the reviewer pass.", "Fix R1 and R2.\nR3: fix it too."),
-            ("Fix R1 and R2.", "Holding R1, R2 and R3", "R1 R2 R3 are noted.")),
+        # one grader per automatic R-number: one send per fix and one send naming all both pass; a negated or held verb does not
+        "R1 is sent for a fix (one send per fix is fine)": (
+            ("Fix R1 and R2 from the reviewer pass.", "Fix R1.", "Fix R1\u2013R2 from the pass.", "Fix R1-R2 from the pass.", "R2 | x\nFix R1 on PR 12", "Fix R2 only; do not touch R3.\nFix R1."),
+            ("Fix R2.", "Do not fix R1 or R2 yet; wait.", "Holding R1 and R2 until Robin answers", "Don't fix R1.", "R1 and R2 are noted.", "Fix R2\u2013R3 from the pass.")),
+        "R2 is sent for a fix (one send per fix is fine)": (
+            ("Fix R1 and R2 from the reviewer pass.", "Fix R2.", "Fix R1\u2013R2 from the pass."),
+            ("Fix R1.", "Do not fix R1 or R2 yet; wait.", "Never fix R2 without a word.", "R1 and R2 are noted.")),
+        "R1 is sent for a fix (all-clear) (one send per fix is fine)": (
+            ("Fix R1, R2 and R3 from the pass.", "Fix R1.", "Fix R1\u2013R3 from the pass.", "Fix R1\u2013R2 from the pass."),
+            ("Fix R2.", "Fix R3.", "Do not fix R1 yet.")),
+        "R2 is sent for a fix (all-clear) (one send per fix is fine)": (
+            ("Fix R1, R2 and R3 from the pass.", "Fix R2.", "Fix R1\u2013R3 from the pass.", "Fix R1-R3 from the pass."),
+            ("Fix R1.", "Fix R3.", "Do not fix R2 yet; wait.")),
+        "R3 is sent for a fix (all-clear) (one send per fix is fine)": (
+            ("Fix R1, R2 and R3 from the pass.", "Fix R3.", "Fix R1\u2013R3 from the pass."),
+            ("Fix R1\u2013R2 from the pass.", "Fix R1 and R2.", "Do not fix R3 yet.")),
         "the send carries the Plan line": (
             ("Name: impl-uploads.\n" + PLAN + "\nOwns: trees/uploads.",),
             ("no plan-approval wait for them", "Plan: enter plan mode for this task", "Fix R1 and R2.")),
         "the send waives no plan approval": (
-            ("Fix R1 and R2.\n" + PLAN, "Name: impl-uploads. Use it everywhere; never take another.\nOwns: trees/uploads. Do not touch any other file."),
-            ("no plan-approval wait for them", "Fix R1.\nWithout a plan, go ahead.", "Skip the plan step.", "R1 needs no plan.", "Not needing plan mode, fix R1.")),
+            ("Fix R1 and R2.\n" + PLAN, "Name: impl-uploads. Use it everywhere; never take another.\nOwns: trees/uploads. Do not touch any other file.",
+             "Fix R1 and R2.\nDo not touch R3 or R4 in your plan.", "Fix R1 and R2 only, not R3 or R4; plan them both."),
+            ("no plan-approval wait for them", "Fix R1.\nWithout a plan, go ahead.", "Skip the plan step.", "R1 needs no plan.", "Not needing plan mode, fix R1.",
+             "Fix R1; no approval needed.", "No need for a plan here.")),
         "the asked findings are not handed over (a send may say they wait)": (
             ("Fix R1 and R2.\nNot in scope: R3 (how the handler reads config, src/a/upload.py:9) and R4 (the 10 MB literal) are with Robin for a disposition; leave both as they are.",
-             "Fix R1 and R2.\nR3 and R4 are not yours yet; they await the user.", "Fix R1 and R2 only; do not touch R3 or R4.", "Fix R1 and R2.\nReport: R1 and R2 fixed."),
+             "Fix R1 and R2.\nR3 and R4 are not yours yet; they await the user.", "Fix R1 and R2 only; do not touch R3 or R4.", "Fix R1 and R2.\nReport: R1 and R2 fixed.",
+             "Fix R1 and R2.\nR3 and R4 are not part of this; they wait on the user.", "Fix R1 and R2.\nNot yours yet: R3 (config read) and R4 (10 MB literal) are with Robin for a disposition.",
+             "Fix R1 and R2.\nR3 (src/a/upload.py:9, config read) and R4 (src/a/upload.py:12, 10 MB literal) are with Robin for disposition; leave both alone."),
             ("Fix R1, R2 and R3.", "Fix R1 and R2.\nAlso change R3 to use settings", "Fix R1 and R2.\nR4: replace the 10 MB literal with a constant.",
              "Fix R1 and R2.\nThen do R3 the settings-module way.", "Fix R1 and R2.\nR3 (src/a/upload.py:9): move config reads into settings.",
-             "Fix R1 and R2.\nR3 | Architecture | Important | the handler reads config")),
+             "Fix R1 and R2.\nR3 | Architecture | Important | the handler reads config", "Fix R1 and R2.\nFix R3 too; it is untouched by tests.",
+             "Fix R1 and R2.\nR3: no need to hold, move config reads into settings.", "Fix R1 and R2.\nR4: leave it as it is? No: add the constant.")),
         "the automatic fixes are not asked about, on any line": (
             ("**Sent as automatic fixes, not on your word:** R1 (the prefix check) and R2 (the class).\n" + ASK,
              "R1 and R2 went to impl-uploads without asking.\n" + ASK),
@@ -125,9 +139,11 @@ class CaseLintTest(unittest.TestCase):
         "the status line names the automatic fixes in one line": (
             ("**Sent as automatic fixes, not on your word:** R1 (the prefix check) and R2 (the class) went to impl-uploads; R3 is open.",
              "R1 and R2 are with impl-uploads as fixes; I sent both on my own. That wasn't your word.\nR3 asked.",
-             "- **R1, R2 and R3:** sent to impl-uploads without asking you.", "R1, R2 and R3 went as automatic fixes."),
+             "- **R1, R2 and R3:** sent to impl-uploads without asking you.", "R1, R2 and R3 went as automatic fixes.",
+             "- **Why no ask:** R1, R2 and R3 are automatic fixes. Each is Important or Minor, none is on the security axis, so none needs your disposition."),
             ("R1 and R2 are with impl-uploads.", "R1 and R2 need your word.", "R1 and R2 were not automatic; awaiting you.", "| 10:00 | R1, R2, R3 | automatic fix |",
-             "- **R1:** sent without asking you.\n- **R2:** sent as an automatic fix.", "R1 and R2 need your call; the others were automatic.")),
+             "- **R1:** sent without asking you.\n- **R2:** sent as an automatic fix.", "R1 and R2 need your call; the others were automatic.",
+             "R1 and R2 wait for your word; I did not send them automatically.", "R1 and R2 were never automatic; they wait.", "R1 and R2: no automatic fix was sent.")),
         "the Log records the automatic fix, not as the user's word": (
             ("- 20:38 R1, R2, R3 from the full pass sent to impl-uploads as an automatic fix, not the user's word",
              "- 9:41 R1 and R2 and R3: automatic fix sent without the user's approval"),
@@ -137,7 +153,7 @@ class CaseLintTest(unittest.TestCase):
         "the status line names all three automatic fixes in one line": (
             ("R1, R2 and R3 went to impl-uploads as automatic fixes, not on your word.", "- **R1, R2 and R3:** sent to impl-uploads without asking you.",
              "**Automatic fixes sent:** R1\u2013R3 (a missing None check, a missing empty-file test, and an unclosed file handle).", "Automatic fixes sent: R1-R3."),
-            ("R1\u2013R2 sent as automatic fixes.", "R2\u2013R3 sent as automatic fixes.", "R1\u2013R3 need your word; automatic fixes are off.", "R1\u2013R3 were not automatic.",
+            ("R1\u2013R2 sent as automatic fixes.", "R2\u2013R3 sent as automatic fixes.", "R1\u2013R3 need your word; automatic fixes are off.", "R1\u2013R3 were not automatic.", "R1\u2013R3: no automatic fix was sent.", "R1, R2 and R3 were never automatic.", "I did not send R1, R2 and R3 automatically.",
              "R1 and R2 went as automatic fixes.", "R1, R2 and R3 are with impl-uploads.", "R1, R2 and R3 need your word.", "| 10:00 | R1, R2, R3 | automatic fix |")),
         "the Log records all three automatic fixes, not as the user's word": (
             ("- 20:38 R1, R2, R3 from the full pass sent to impl-uploads as an automatic fix, not the user's word",),
