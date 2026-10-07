@@ -673,10 +673,13 @@ class IssueRowTest(unittest.TestCase):
         # #406: nothing in the group has a segment, so there is no last move to finish on; the board must still build.
         for status in ("merged", "closed", "done"):
             with self.subTest(status=status):
-                rows_ = [(status, gantt.Row("#406", name, "", ())) for name in ("First", "Second")]
+                rows_ = [("running", gantt.Row("#406", "First", "first note", ())),
+                         (status, gantt.Row("#406", "Second", "second note", ()))]
                 got = fc._merge_issues(rows_)
                 self.assertEqual(len(got), 1)
-                self.assertEqual((got[0][0], got[0][1].segments), (status, ()))
+                got_status, row = got[0]
+                # name from the first row by position; status and note from the last
+                self.assertEqual((got_status, row.name, row.note, row.segments), (status, "First", "second note", ()))
 
     def test_a_finished_group_clips_segments_to_the_finishing_rows_own_end(self):
         # Guard for #406's fix: with a winning row that has segments, behaviour is unchanged.
