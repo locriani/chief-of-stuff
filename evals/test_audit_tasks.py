@@ -1547,10 +1547,8 @@ class LaneAuditTest(unittest.TestCase):
 
 
 # #363: BUILD draws a card only for a row with a lane AND a stage (render_board.build_columns:
-# `laned = [t for t in tasks if t.lane.strip() and t.stage.strip()]`). A stage with no lane vanished silently.
-# The audit must fault it. Agent-file clause for the code author, appended to the existing sentence
-# "`audit_tasks.py` reports a lane the settings file does not name, a stage that is not one of its lane's, and a lane with no stage":
-#   "`audit_tasks.py` reports a lane the settings file does not name, a stage that is not one of its lane's, a lane with no stage, and a stage with no lane."
+# `laned = [t for t in tasks if t.lane.strip() and t.stage.strip()]`). A stage with no lane vanished silently,
+# so the audit faults it: for every state, and whether or not the settings name any lanes.
 LANELESS_TRACKER = TRACKER.replace(
     "| item | owner | state | since | due | checklist |\n|---|---|---|---|---|---|\n{rows}",
     "| name | item | owner | state | since | due | size | lane | stage | issue | checklist |\n|---|---|---|---|---|---|---|---|---|---|---|\n"
@@ -1583,11 +1581,20 @@ class StageWithNoLaneTest(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(al.main(["--root", str(self.root), "--date", "2026-09-17"]), 1)
 
-    def test_a_six_column_tracker_with_lanes_configured_says_nothing(self):
-        self.tracker.write_text(TRACKER.format(rows="| x | a | open | 10:00 | | c |", ownership="", sessions=""))
+    def test_a_done_row_with_a_stage_and_no_lane_faults_too(self):
+        """A done row is still drawn in BUILD, so one that loses its card is a real drop."""
+        self.tracker.write_text(LANELESS_TRACKER.replace(
+            "| Finished | done earlier | a | done 09:00-10:00 | 09:00 | | S | | | | c |",
+            "| Finished | done earlier | a | done 09:00-10:00 | 09:00 | | S | | merge | | c |"))
+        got = [str(f) for f in al.audit(self.root, "2026-09-17").lanes]
+        self.assertIn("lane: Finished \u2014 stage merge but no lane", got)
+
+    def test_a_stage_with_no_lane_faults_with_no_lanes_table_and_no_settings_file(self):
+        """The card is undrawn whatever the settings say, so the fault does not wait on a `[lanes]` table."""
+        (self.root / "cos.toml").unlink()
+        (self.root / "CLAUDE.md").write_text(CLAUDE)
         report = al.audit(self.root, "2026-09-17")
-        self.assertEqual(report.lanes, [])
-        self.assertNotIn("lanes=", report.lines[-1])
+        self.assertEqual([str(f) for f in report.lanes], ["lane: Drops out \u2014 stage review but no lane"])
 
     def test_the_agent_file_names_the_clause(self):
         rules = (Path(__file__).resolve().parents[1] / "agents/chief-of-stuff.md").read_text()
