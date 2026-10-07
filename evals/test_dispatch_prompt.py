@@ -49,6 +49,29 @@ TRACKER = """# Tracker 2026-09-18
 """
 
 
+def sections(text: str) -> dict:
+    """`## ` heading -> that section's text, heading line included. The one section splitter: a `## `
+    line inside a code fence is content, not a heading, and a repeated heading is an error."""
+    out, current, fenced = {}, None, False
+    for line in re.findall(r"[^\n]*\n|[^\n]+", text):
+        if line.startswith("```"):
+            fenced = not fenced
+        elif not fenced and line.startswith("## "):
+            current = line[3:].strip()
+            if current in out:
+                raise ValueError(f"repeated heading: ## {current}")
+            out[current] = ""
+        if current:
+            out[current] += line
+    return out
+
+
+def one_shot_paragraph(text: str) -> str:
+    found = next((p for p in text.split("\n") if p.startswith('If `[workers] mode = "one-shot"`')), None)
+    assert found, 'the one-shot paragraph no longer opens with: If `[workers] mode = "one-shot"`'
+    return found
+
+
 def workspace(tracker: str = TRACKER, claude_md: str = CLAUDE):
     tmp = tempfile.TemporaryDirectory()
     root = Path(tmp.name)
@@ -673,7 +696,7 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
     SERIAL = re.compile(r"(?i)\bone at a time\b|\bsequential(?:ly)?\b|\bone by one\b|\bone after another\b|\bin the foreground\b|\bin turn\b|\bserial(?:ly|ize)?\b")
 
     def _one_shot_paragraph(self, text):
-        return next(p for p in text.split("\n") if p.startswith('If `[workers] mode = "one-shot"`'))
+        return one_shot_paragraph(text)
 
     def test_one_shot_tasks_with_no_shared_path_launch_together_in_the_background(self):
         # #365, the user: "I literally intend for you to be a COORDINATOR of PARALLEL work, so why serialize?" The review (R8) found two
@@ -734,10 +757,8 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         # Zach, 2026-09-24 14:07: "we should host our own webserver and ensure they are set up as part of the agent's boot loop."
         ensure = "chief-of-stuff pages --ensure"
         for move in ("## Open the day", "## Resume", "## Check"):
-            # Split on the heading line: "## Resume" alone first matches the "`## Resume` block" in Open the day.
-            section = self.content.split(f"\n{move}\n", 1)[1]
-            self.assertTrue(section.startswith("\n"), move)
-            self.assertIn(ensure, section.split("\n## ", 1)[0], move)
+            # By heading, not by substring: "## Resume" alone first matches the "`## Resume` block" in Open the day.
+            self.assertIn(ensure, self._section(move[3:]), move)
         board = self.content.split("## Board", 1)[1].split("\n## ", 1)[0]
         self.assertIn("<url>/all", board)
         for gone in ("publish tool", "`url` argument", "`open` action", "Board: <url>"):
@@ -758,7 +779,7 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         self.assertIn("`<workspace root>` written out as an absolute path", pipeline)
 
     def _section(self, name):
-        return self.content.split(f"## {name}\n", 1)[1].split("\n## ", 1)[0]
+        return sections(self.content)[name].split("\n", 1)[1]
 
     def test_the_coordinator_hands_off_and_asks_only_for_the_users_reasons(self):
         # The user, 2026-09-24 01:35: "You shouldn't be asking me to give things to things - your role is exactly to do that."
