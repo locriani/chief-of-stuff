@@ -140,6 +140,7 @@ class Sources:
     changes: dict[str, Change]     # by ref
     workers: tuple[Worker, ...]
     errors: dict[str, str]         # source -> why it could not be read
+    home: backlog.Backlog | backlog.GitHubBacklog | None = None  # the Backlog the issue keys are relative to
 
 
 EMPTY = Sources({}, {}, {}, (), {})
@@ -157,6 +158,10 @@ def _change_of(v: dict) -> Change:
                      "threads": tuple(ReviewThread(**{**t, "at": _when(t["at"])}) for t in v.get("threads") or ())})
 
 
+def _home_of(d: dict | None):
+    return None if not d else backlog.Backlog(**d) if "host" in d else backlog.GitHubBacklog(**d)
+
+
 def load(pages_dir: Path) -> Sources:
     """The cache, or EMPTY when it is absent or unreadable."""
     try:
@@ -167,7 +172,7 @@ def load(pages_dir: Path) -> Sources:
                        {k: _change_of(v) for k, v in d["changes"].items()},
                        tuple(Worker(**{**w, "started": _when(w["started"]), "last": _when(w["last"])})
                              for w in d["workers"]),
-                       dict(d["errors"]))
+                       dict(d["errors"]), _home_of(d.get("home")))
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return EMPTY
 
@@ -501,8 +506,9 @@ def refresh(root: Path, now: datetime, gh=backlog.run_gh, call=backlog._call) ->
         issues, changes, errors = forge(root, cfg, tracker, datetime.combine(day, time(0), cfg.zone), gh, call)
     except Exception as e:  # a forge answer shaped unlike its schema; the page still renders
         issues, changes, errors = None, None, dict.fromkeys(("kanban", "merge requests"), f"{type(e).__name__}: {e}")
+    home = cfg.backlog
     if issues is None:
-        issues = prev.issues
+        issues, home = prev.issues, prev.home  # the home follows the issues: their keys were written under it
     elif cfg.backlog is not None:
         fetched["kanban"] = now
     if changes is None:
@@ -514,7 +520,7 @@ def refresh(root: Path, now: datetime, gh=backlog.run_gh, call=backlog._call) ->
         fetched["workers"] = now
     except Exception as e:  # a registry or ps that cannot be read
         found, errors["workers"] = prev.workers, f"{type(e).__name__}: {e}"
-    got = Sources(fetched, issues, changes, found, errors)
+    got = Sources(fetched, issues, changes, found, errors, home)
     try:
         _write(pages / CACHE, got)
     except OSError as e:

@@ -21,6 +21,7 @@ sys.path[:0] = [str(Path(__file__).resolve().parents[1] / "scripts"), str(Path(_
 
 import board_sources as bs  # noqa: E402
 import render_board as rb  # noqa: E402
+from tracker import issue_key  # noqa: E402
 from workspace import parse_coordinator  # noqa: E402
 import test_flow_chart as fc_test  # noqa: E402
 
@@ -1104,6 +1105,67 @@ class LoadTest(unittest.TestCase):
         with redirect_stdout(out):
             self.assertEqual(bs.main(["--root", str(root)]), 0)
         self.assertIn("changes: 2", out.getvalue())
+
+
+class CarriedStateKeepsItsHomeTest(unittest.TestCase):
+    """#409 review: a refresh whose forge call fails carries the last good issues and changes forward. Their keys are
+    relative to the Backlog that wrote them, so they keep that home, not the one the config names now."""
+
+    def refreshed(self):
+        root = workspace("GitHub issues; repo o/app")
+        closed = {**gh_issue(115, ()), "state": "CLOSED", "closedAt": "2026-09-25T20:15:00Z"}
+        first = bs.refresh(root, NOW, gh=FakeGh(n115=closed))
+        self.assertEqual(first.issues["#115"].state, "closed")
+        return root, first
+
+    def test_a_failed_refresh_after_the_backlog_changes_keeps_the_old_home(self):
+        root, _ = self.refreshed()
+        claude = root / "CLAUDE.md"
+        claude.write_text(claude.read_text().replace("repo o/app", "repo acme/web"))
+        got = bs.refresh(root, NOW, gh=FakeGh(fail=True))
+        self.assertEqual(got.issues["#115"].state, "closed")  # carried over
+        self.assertEqual(got.home, bs.backlog.GitHubBacklog("o/app"))
+        self.assertEqual(bs.load(root / "pages").home, bs.backlog.GitHubBacklog("o/app"))
+
+    def test_a_cache_with_no_home_gains_none_through_a_failed_refresh(self):
+        root, _ = self.refreshed()
+        cache = root / "pages" / bs.CACHE
+        old = json.loads(cache.read_text())
+        old.pop("home")  # a cache written before the home was stored
+        cache.write_text(json.dumps(old))
+        got = bs.refresh(root, NOW, gh=FakeGh(fail=True))
+        self.assertEqual(got.issues["#115"].state, "closed")
+        self.assertIsNone(got.home)
+        self.assertIsNone(bs.load(root / "pages").home)
+
+    def test_a_good_refresh_stamps_the_current_home(self):
+        root, _ = self.refreshed()
+        claude = root / "CLAUDE.md"
+        claude.write_text(claude.read_text().replace("repo o/app", "repo acme/web"))
+        got = bs.refresh(root, NOW, gh=FakeGh())
+        self.assertEqual(got.home, bs.backlog.GitHubBacklog("acme/web"))
+
+
+class IssueKeyTest(unittest.TestCase):
+    """#409: the key a tracker's issue cell reads its forge state by names the host and project, not the number alone."""
+
+    GITLAB = "https://example.com/o/app/-/issues/8"
+    OTHER_PROJECT = "https://example.com/acme/web/-/issues/8"
+    OTHER_HOST = "https://gitlab.example.org/o/app/-/issues/8"
+
+    def test_the_same_number_in_another_project_or_host_is_another_key(self):
+        cells = (self.GITLAB, self.OTHER_PROJECT, self.OTHER_HOST,
+                 "https://github.com/o/app/issues/8", "https://github.com/acme/web/issues/8")
+        self.assertEqual(len({issue_key(c) for c in cells}), len(cells))
+
+    def test_one_issue_has_one_key(self):
+        self.assertEqual(issue_key(self.GITLAB + "/"), issue_key(self.GITLAB))
+        # a GitHub issue's URL and its `owner/repo#N` cell are the same issue
+        self.assertEqual(issue_key("https://github.com/acme/web/issues/8"), issue_key("acme/web#8"))
+        self.assertNotEqual(issue_key("o/app#8"), issue_key("acme/web#8"))
+
+    def test_a_short_ref_with_no_project_keeps_its_short_key(self):
+        self.assertEqual(issue_key("#8"), "#8")  # the Backlog's own project: how the sources file has always keyed it
 
 
 if __name__ == "__main__":

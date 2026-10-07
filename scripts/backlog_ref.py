@@ -169,9 +169,11 @@ class IssueRef:
         return f"https://{self.host}/{self.repo}/-/issues/{self.number}"
 
     def label(self, home: Backlog | GitHubBacklog | None) -> str:
-        """`#N` in the Backlog, `owner/repo#N` anywhere else."""
-        at_home = home is not None and (self.host, self.repo) == home_of(home)
-        return f"#{self.number}" if at_home else f"{self.repo}#{self.number}"
+        """`#N` in the Backlog, `owner/repo#N` on GitHub, `host/project#N` on any other GitLab: the key an issue is
+        filed and read under, so a project path on two hosts is two keys."""
+        if home is not None and (self.host, self.repo) == home_of(home):
+            return f"#{self.number}"
+        return f"{self.repo}#{self.number}" if self.host == GITHUB else f"{self.host}/{self.repo}#{self.number}"
 
 
 WORKFLOW = "workflow"  # an `issue` cell naming a step the pipeline performs: no issue, never looked up
@@ -181,9 +183,10 @@ _REF_GITLAB = re.compile(r"^https://([\w.-]+)/((?:[\w.-]+/)+[\w.-]+)/-/(?:issues
 _REF_LINK = re.compile(r"^\[[^\]]*\]\((https://[^)\s]+)\)$")
 
 
-def issue_ref(cell: str, home: Backlog | GitHubBacklog | None) -> IssueRef | None:
+def issue_ref(cell: str, home: Backlog | GitHubBacklog | None, *, any_host: bool = False) -> IssueRef | None:
     """`#N` (in the Backlog), `owner/repo#N` (GitHub), a GitHub issue URL, a GitLab issue URL on the
-    Backlog's own host, or a markdown link to one. Anything else is None, and a bare `#N` with no Backlog to resolve it against is None too."""
+    Backlog's own host, or a markdown link to one. Anything else is None, and a bare `#N` with no Backlog to resolve it against is None too.
+    `any_host` admits a GitLab URL on any host: for naming an issue, never for fetching one."""
     text = cell.strip()
     link = _REF_LINK.match(text)
     if link:
@@ -195,7 +198,7 @@ def issue_ref(cell: str, home: Backlog | GitHubBacklog | None) -> IssueRef | Non
     if m:
         # Only the Backlog's own host: a URL is read with the Backlog's token, and a cell naming any other
         # host would send it there (R1 on PR 14).
-        own = isinstance(home, Backlog) and m.group(1) == home_of(home)[0]
+        own = any_host or (isinstance(home, Backlog) and m.group(1) == home_of(home)[0])
         return IssueRef(m.group(2), int(m.group(3)), m.group(1)) if own else None
     m = _REF_SHORT.match(text)
     if not m or not (m.group(1) or home):

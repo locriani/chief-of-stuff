@@ -700,6 +700,17 @@ class GitLabIssueRefTest(unittest.TestCase):
         self.assertEqual(ref.url, "https://gl.example/g/p/-/issues/9")
         self.assertEqual(ref.label(GL), "#9")
 
+    def test_a_ref_outside_the_backlogs_project_is_labelled_with_its_host_and_project(self):
+        # the key an issue is filed under: another project on the home host, and the same path on another host, are two keys
+        other_project = bl.IssueRef("acme/web", 8, "gl.example")
+        other_host = bl.IssueRef("g/p", 8, "gl2.example")
+        self.assertEqual(other_project.label(GL), "gl.example/acme/web#8")
+        self.assertEqual(other_host.label(GL), "gl2.example/g/p#8")
+        self.assertEqual(bl.IssueRef("g/p", 8, "gl.example").label(GL), "#8")
+        # a GitHub repo keeps `owner/repo#N`; with no home, a GitLab ref is keyed by its host and project
+        self.assertEqual(bl.IssueRef("o/n", 8).label(GL), "o/n#8")
+        self.assertEqual(other_project.label(None), "gl.example/acme/web#8")
+
     def test_gitlab_urls(self):
         for cell, want in (("https://gl.example/g/p/-/issues/7", ("g/p", 7, "gl.example")),
                            ("https://gl.example/g/sub/q/-/work_items/3/", ("g/sub/q", 3, "gl.example")),

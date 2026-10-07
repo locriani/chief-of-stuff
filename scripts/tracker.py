@@ -10,7 +10,7 @@ import re
 from dataclasses import dataclass
 from datetime import date, datetime
 
-from backlog_ref import WORKFLOW
+from backlog_ref import WORKFLOW, Backlog, GitHubBacklog, issue_ref
 from clock import DATE, HHMM, RAN, hhmm as _hhmm
 from md import cells as _cells, is_separator as _is_separator, section as _section, split_row as _split_row, unmark as _unmark
 from workspace import Config
@@ -425,8 +425,11 @@ UNASSIGNED = re.compile(r"(?i)^unassigned$")
 TRAILING_NUMBER = re.compile(r"(\d+)\s*$")
 
 
-def issue_key(cell: str) -> str:
-    """The `#N` a board source keys an issue by, from an issue cell: `#118`, `group/app#118` or the issue's URL."""
+def issue_key(cell: str, home: Backlog | GitHubBacklog | None = None) -> str:
+    """The key a board source files an issue under (`IssueRef.label`, as board_sources writes it), from an issue cell:
+    `#118`, `group/app#118` or the issue's URL. A cell that names no issue, or a bare `#N` with no `home`, keeps `#N`."""
+    if ref := issue_ref(cell, home, any_host=True):
+        return ref.label(home)
     m = TRAILING_NUMBER.search(cell)
     return f"#{m[1]}" if m else cell.strip()
 
