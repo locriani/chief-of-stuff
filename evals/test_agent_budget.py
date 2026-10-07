@@ -21,9 +21,9 @@ from evals.skill_fixtures import write_plugin, write_skill  # noqa: E402
 # Each later slice lowers these in a red commit before it trims the text.
 # Slice 2: move 2,101 Asks bytes (Board delivery + JSON schema + fallback page parts).
 # Keep answer ingestion, ask eligibility and exceptions in the agent. Measured bytes:
-# Asks 4,319; agent 81,330; prompts Claude 81,104, Codex 75,765, Cursor 75,873,
-# AGY 75,929 (release/workspace paths removed). These ceilings add about 400 bytes,
-# then round to the next 100 bytes.
+# Asks 4,220; agent 81,231; prompts Claude 81,005, Codex 75,666, Cursor 75,774,
+# AGY 75,830 (release/workspace paths removed). Ceilings stay unchanged; spare
+# headroom is held for the delegated-question rule filed separately.
 TOTAL = 81_700            # whole agent file, bytes
 MAX_LINE = 8_400          # longest single line
 ONE_SHOT_PARAGRAPH = 4_400  # kept: a later slice trims this paragraph

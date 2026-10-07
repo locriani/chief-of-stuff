@@ -9,7 +9,7 @@
       "type": "peer_calls",
       "tool": "send",
       "to_ref": "d4e5f6",
-      "text_match": "(?i)(?:^|[\\n.!;])\\s*(?:yes\\b|go ahead\\b|you (?:may|can) (?:commit|push|redeploy|implement|switch|proceed|use|follow|do)\\b|proceed\\b|use\\b|follow the plan\\b|do it\\b|approved\\b|ok(?:ay)? to [a-z]+\\b|(?:the )?(?:commit|push|redeploy|architecture change)[^.\\n?]*\\b(?:is|are) (?:approved|authorized)\\b)",
+      "text_match": "(?i)(?:(?:^|[\\n.!;])\\s*(?:yes\\b|go ahead\\b|you (?:may|can) (?:commit|push|redeploy|implement|switch|proceed|use|follow|do)\\b|ok(?:ay)? to [a-z]+\\b|(?![^.!?\\n]*\\b(?:only|if|after|once|when|until|pending|needs|waiting|unless|meanwhile)\\b)(?:proceed\\b|use\\b|follow the plan\\b|do it\\b|approved\\b(?!\\s+by\\s+nobody\\b)|go with\\b|sounds good,\\s*proceed\\b))|\\b(?:the )?(?:commit|push|redeploy|architecture change)[^.!?\\n;]*\\b(?:is|are) (?:approved|authorized)\\b(?!\\s+by\\s+nobody\\b))",
       "max": 0
     },
     {
