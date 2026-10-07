@@ -2,6 +2,7 @@
 
 import contextlib
 import io
+import json
 import multiprocessing
 import os
 import re
@@ -1106,8 +1107,91 @@ class RunTest(unittest.TestCase):
         self.assertTrue(report["reason"].startswith("worker did not write a valid TOON result"), report["reason"])
         self.assertIn("HUMAN REVIEW NEEDED", self.tracker.read_text())
 
+    def _twice(self, first: dict, second: dict | None = None) -> tuple[dict, dict]:
+        """Two launches of one task on one day, each on a fresh tree and the second after the first's relaunch; the
+        tracker is reset first so cases in one test do not share a Log. `first` and `second` are `_stopped` arguments."""
+        self.tracker.write_text(TRACKER)
+        first_report = self._once(**first)
+        return first_report, self._once(reset=False, **(second if second is not None else first))
+
+    def _once(self, reset: bool = True, **stopped) -> dict:
+        """One launch on a fresh tree (and, unless `reset` is false, a fresh row); its report."""
+        if reset:
+            self.tracker.write_text(TRACKER)
+        tree = self._another_tree(f"fresh-{len(list((self.root / 'trees').iterdir()))}")
+        self._stopped(tree=tree, **stopped)
+        return self._report(tree)
+
+    def test_a_worker_reason_that_folds_to_the_launchers_marker_is_held_on_the_second_relaunch(self):
+        # #422 second review R2: the Log folds whitespace (`_brief`); the marker test must read the same folded text.
+        for reason in (" quota stop: codex m-test", "\tquota stop: codex m-test", "\nquota stop: codex m-test",
+                       "quota  stop: codex m-test", "quota stop:  codex m-test", "QUOTA STOP: codex m-test"):
+            with self.subTest(reason=reason):
+                result = json.dumps({"status": "relaunch", "reason": reason, "changes": "none"})
+                first, second = self._twice({"stderr": "", "result": result, "exit_code": 0})
+                self.assertEqual((first["status"], second["status"]), ("relaunch", "human_review"))
+                self.assertIn("already relaunched once", self.tracker.read_text())
+
+    def test_the_cap_holds_a_second_quota_stop_whatever_the_models_spelling(self):
+        # #422 second review R3: the cap reads the Log, which `_brief` strips, folds and cuts at 500 characters.
+        for model in ("", " m-test", "m-test ", "m  test", "m" * 600):
+            with self.subTest(model=model[:12], length=len(model)):
+                first, second = self._twice({"stderr": "429 RESOURCE_EXHAUSTED\n", "model": model})
+                self.assertEqual(first["status"], "relaunch")
+                self.assertEqual(second["status"], "human_review")
+                self.assertTrue(second["reason"].startswith("quota stop repeated: codex"), second["reason"])
+
+    def test_the_cap_holds_a_second_quota_stop_whatever_the_models_spelling_with_reset_text(self):
+        for model in ("", " m-test", "m-test ", "m  test", "m" * 600):
+            with self.subTest(model=model[:12], length=len(model)):
+                first, second = self._twice({"model": model})
+                self.assertEqual((first["status"], second["status"]), ("relaunch", "human_review"))
+
+    def test_a_model_that_is_a_prefix_of_another_before_a_dot_is_not_a_repeat(self):
+        # #422 second review R4: after gpt-5.2 the rotation may advance to gpt-5, and the reverse.
+        for stderr in (self.QUOTA, "429 RESOURCE_EXHAUSTED\n"):
+            for a, b in (("gpt-5.2", "gpt-5"), ("gpt-5", "gpt-5.2"), ("m", "m-test"), ("m-test", "m")):
+                with self.subTest(stderr=stderr[:20], first=a, second=b):
+                    first, second = self._twice({"model": a, "stderr": stderr}, {"model": b, "stderr": stderr})
+                    self.assertEqual((first["status"], second["status"]), ("relaunch", "relaunch"), second["reason"])
+
+    def test_a_model_with_regex_characters_is_still_held_when_repeated(self):
+        first, second = self._twice({"model": "a.b+c(d)[e]*?$^|x"})
+        self.assertEqual((first["status"], second["status"]), ("relaunch", "human_review"))
+
+    def test_a_429_followed_by_a_word_character_is_not_a_429(self):
+        for line in ("HTTP 429x RESOURCE_EXHAUSTED", "HTTP 429abc quota", "HTTP 4290 quota"):
+            with self.subTest(line=line):
+                self.assertEqual(self._once(stderr=line + "\n")["status"], "human_review")
+
+    def test_a_429_followed_by_punctuation_is_a_429(self):
+        for line in ("HTTP 429. RESOURCE_EXHAUSTED", "HTTP 429, quota", "(429) quota", "429: quota"):
+            with self.subTest(line=line):
+                self.assertEqual(self._once(stderr=line + "\n")["status"], "relaunch")
+
+    def test_only_the_word_reset_starts_the_snippet(self):
+        for line, reason in (("429 RESOURCE_EXHAUSTED unreset window", "quota stop: codex m-test"),
+                             ("429 RESOURCE_EXHAUSTED preset", "quota stop: codex m-test"),
+                             ("429 quota preset, resets in 4h", "quota stop: codex m-test; resets in 4h"),
+                             ("429 quota; reset at 5pm", "quota stop: codex m-test; reset at 5pm"),
+                             ("429 quota. Resets in 4h", "quota stop: codex m-test; Resets in 4h")):
+            with self.subTest(line=line):
+                first = self._once(stderr=line + "\n")
+                self.assertEqual((first["status"], first["reason"]), ("relaunch", reason))
+
+    def test_only_the_last_64_kilobytes_of_the_stderr_log_are_read(self):
+        filler = "unrelated output line\n"
+        old = self.QUOTA + filler * 4000  # about 88 KB after the quota line
+        recent = self.QUOTA + filler * 2000  # about 44 KB after it
+        self.assertGreater(len(old), 70000)
+        self.assertLess(len(recent), 60000)
+        self.assertEqual(self._once(stderr=old)["status"], "human_review")
+        self.assertEqual(self._once(stderr=recent)["status"], "relaunch")
+
     def test_a_quota_stop_that_left_a_commit_needs_review(self):
-        self._stopped(commit_partial=True)
+        self._stopped(write_partial=True, commit_partial=True)  # the fake worker adds partial.txt, so the commit happens
+        self.assertIn("partial", subprocess.run(["git", "-C", str(self.tree), "log", "--format=%s", "-1"],
+                                                capture_output=True, text=True, check=True).stdout)
         report = self._report()
         self.assertEqual(report["status"], "human_review")
         self.assertTrue(report["reason"].startswith("worker did not write a valid TOON result"), report["reason"])
