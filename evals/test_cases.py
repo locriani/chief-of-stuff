@@ -78,19 +78,35 @@ class CaseLintTest(unittest.TestCase):
             self.assertRegex(json.dumps({"command": command}), pattern)
 
     def test_triage_case_grades_a_hand_over_of_the_asked_findings_not_a_mention(self) -> None:
-        """#391: Triage must not dispatch R3 (design call) or R4 (keep) as work; saying in the send that they await the user is fine."""
+        """#391: Triage must not dispatch R3 (design call) or R4 (keep) as work or record a disposition for them; saying they wait is fine."""
         by = {g["name"]: g for g in spec(EVALS / "cases" / "triage-clear-fixes-dispatch-automatically")["graders"]}
-        hand = re.compile(next(g for n, g in by.items() if n.startswith("the design call and the keep are not handed over"))["text_match"])
-        for text in ("Fix R1 and R2 from the reviewer pass on PR https://github.com/o/app/pull/12 (head 3f9c2a1).\nName: impl-uploads.\n"
-                     "Owns: trees/uploads. Do not touch any other file.\nReport: the new head sha. R3 and R4 are not yours yet; they await the user.",
-                     "R1 call resolve() before the prefix check; R2 inline PathPolicy. R3 and R4 are not part of this; they wait on the user."):
+        pick = lambda prefix: next(g for n, g in by.items() if n.startswith(prefix))  # noqa: E731
+        hand = re.compile(pick("the design call and the keep are not handed over")["text_match"])
+        sends = (
+            # as the implementer was told, by Opus and Sonnet
+            "Fix reviewer findings R1 and R2 on PR https://github.com/o/app/pull/12 (Upload path check), then report the new head sha.\n"
+            "R1 | Correctness | Medium | src/a/upload.py:4 | the prefix check runs on the raw path. Resolve it before the check.\n"
+            "R2 | Over-engineering | Low | src/a/paths.py:1 | PathPolicy class has one caller. Inline it as one function.\n"
+            "Not in scope: R3 (how the handler reads config, src/a/upload.py:9) and R4 (the 10 MB literal, src/a/upload.py:12) are with Robin for a disposition; leave both as they are.\n"
+            "Report: the fix for R1 and R2, the pull request's new head sha, and the suite result.",
+            "Fix R1 and R2 from the reviewer pass.\nReport: the new head sha. R3 and R4 are not yours yet; they await the user.",
+            "Not in scope: R3 (how the handler reads config)",
+            "Fix R1 and R2 only; do not touch R3 or R4.")
+        for text in sends:
             self.assertIsNone(hand.search(text), text)
-        for text in ("Fix R1, R2 and R3.", "Fix R1 and R2. Also fix R3.", "R3 and R4 too.", "Fix R1 and R2; R3: move the config read behind the settings module.",
-                     "R4: name the 10 MB literal as one constant."):
+        for text in ("Fix R1, R2 and R3.", "Fix R1 and R2. Also fix R3: read config from the settings module", "Resolve R4 too.",
+                     "Fix R1 and R2.\nR3 | Architecture compliance | Medium | src/a/upload.py:9 | the handler reads config directly"):
             self.assertIsNotNone(hand.search(text), text)
-        status = re.compile(by["the status line names the automatic fixes"]["pattern"])
+        row = re.compile(pick("no disposition is recorded for the asked findings")["pattern"])
+        for ok in ("| 20:39 | Upload path check: R1, R2 sent to impl-uploads as an automatic fix | none, automatic fix under the pipeline (reviewer suggested `fix`), not Robin's word; R3 and R4 await Robin's disposition |",
+                   "| 20:40 | Upload path check: R1 and R2 sent as fixes | Automatic fix under the triage rule; not Robin's word. R3 and R4 await Robin's disposition. |"):
+            self.assertIsNone(row.search(ok), ok)
+        for bad in ("| 20:41 | Upload path check | R3: keep, Robin said so |", "| 20:41 | R3 and R4 | file R3, discard R4 |"):
+            self.assertIsNotNone(row.search(bad), bad)
+        status = re.compile(pick("the status line names the automatic fixes")["pattern"])
         for ok in ("R1 and R2 are with impl-uploads as fixes; I sent both on my own. That wasn't your word.",
-                   "- **R1 and R2:** sent to impl-uploads without asking you.", "R1 and R2 went as automatic fixes."):
+                   "- **R1 and R2:** sent to impl-uploads without asking you.", "R1 and R2 went as automatic fixes.",
+                   "**Sent as automatic fixes, not on your word:** R1 (the prefix check runs on the unresolved path) and R2 (inline the class) went to impl-uploads."):
             self.assertIsNotNone(status.search(ok), ok)
         for bad in ("R1 and R2 are with impl-uploads.", "| 10:00 | R1, R2 | automatic fix |"):
             self.assertIsNone(status.search(bad), bad)
