@@ -1323,5 +1323,49 @@ class ShaTreesTest(Repo):
         self.assertEqual(self.listed(), ["aaa-live", "bbb-broken", "ccc-broken"])
 
 
+class AuditEnvTest(Repo):
+    """The audit calls read no home, global or system config, and take nothing from the launcher's environment (#442)."""
+
+    def _spied_env(self) -> dict[str, str]:
+        done = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        with patch.object(git_trees.subprocess, "run", return_value=done) as run:
+            git_trees.git(["status", "--porcelain"], self.clone)
+        return run.call_args.kwargs["env"]
+
+    def test_the_audit_call_names_no_home_global_or_system_config(self) -> None:
+        env = self._spied_env()
+        self.assertEqual(git_trees.SAFE_HOME, "/var/empty")
+        self.assertEqual(env["HOME"], git_trees.SAFE_HOME)
+        self.assertNotEqual(env["HOME"], str(self.clone))
+        self.assertEqual((env.get("GIT_CONFIG_GLOBAL"), env.get("GIT_CONFIG_SYSTEM")), ("/dev/null", "/dev/null"))
+        self.assertEqual(env.get("GIT_CONFIG_NOSYSTEM"), "1")
+        self.assertIn(env.get("XDG_CONFIG_HOME"), (None, "/dev/null"))
+
+    def test_the_audit_env_is_built_from_scratch(self) -> None:
+        leaks = {"GIT_CONFIG_PARAMETERS": "'core.fsmonitor=x'", "GIT_CONFIG_COUNT": "1", "GIT_DIR": "/elsewhere",
+                 "AUDIT_ENV_MARKER": "m"}
+        with patch.dict(os.environ, leaks):
+            env = self._spied_env()
+        self.assertEqual(set(env), {"GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS", "GIT_NO_REPLACE_OBJECTS", "PATH", "HOME",
+                                    "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM"})
+
+    def test_the_audit_call_keeps_the_rest_of_its_environment(self) -> None:
+        env = self._spied_env()
+        self.assertEqual(env["GIT_NO_REPLACE_OBJECTS"], "1")
+        self.assertEqual((env["GIT_TERMINAL_PROMPT"], env["GIT_OPTIONAL_LOCKS"]), ("0", "0"))
+        self.assertEqual(env["PATH"], "/usr/bin:/bin:/usr/local/bin")
+
+    def test_a_global_config_the_worker_wrote_does_not_run(self) -> None:
+        tree, marker = self.tree("wt", "feat/wt"), self.root / "marker"
+        hook = f"{sys.executable} -c \\\"import pathlib; pathlib.Path('{marker}').touch()\\\""
+        (tree / ".gitconfig").write_text(f'[core]\n\tfsmonitor = "{hook}"\n')
+        control = {"PATH": ENV["PATH"], "HOME": str(tree)}  # what the audit used to run with
+        subprocess.run(["git", "-C", str(tree), "status"], env=control, capture_output=True, check=False)
+        self.assertTrue(marker.exists(), "the fixture must fire under the old environment, or the test proves nothing")
+        marker.unlink()
+        git_trees.read_state(tree)
+        self.assertFalse(marker.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

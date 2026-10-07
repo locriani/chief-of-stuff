@@ -116,10 +116,13 @@ def quota_stop(log: Path, runtime: str, model: str) -> str:
     return ""
 
 
+GIT_READ_ENV = {**os.environ, "GIT_NO_REPLACE_OBJECTS": "1"}  # a replace ref in a worker's tree must not rewrite what is read
+
+
 def changed_files(cwd: Path) -> str:
     try:
         out = subprocess.run(["git", "status", "--short"], cwd=cwd, capture_output=True,
-                             text=True, timeout=15, check=False)
+                             text=True, timeout=15, check=False, env=GIT_READ_ENV)
         return out.stdout.strip() if out.returncode == 0 else f"git status failed: {out.stderr.strip()}"
     except (OSError, subprocess.TimeoutExpired) as exc:
         return f"git status failed: {exc}"
@@ -128,7 +131,7 @@ def changed_files(cwd: Path) -> str:
 def git_head(cwd: Path) -> str | None:
     try:
         out = subprocess.run(["git", "rev-parse", "HEAD"], cwd=cwd, capture_output=True,
-                             text=True, timeout=15, check=False)
+                             text=True, timeout=15, check=False, env=GIT_READ_ENV)
         return out.stdout.strip() if out.returncode == 0 else None
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -140,7 +143,7 @@ def committed_changes(cwd: Path, before: str | None) -> str:
         return NO_COMMITS
     try:
         out = subprocess.run(["git", "log", "--format=%h %s", "--stat", f"{before}..{after}"],
-                             cwd=cwd, capture_output=True, text=True, timeout=15, check=False)
+                             cwd=cwd, capture_output=True, text=True, timeout=15, check=False, env=GIT_READ_ENV)
         return out.stdout.strip()[:12000] if out.returncode == 0 else f"Could not read commits: {out.stderr.strip()}"
     except (OSError, subprocess.TimeoutExpired) as exc:
         return f"Could not read commits: {exc}"
@@ -184,7 +187,7 @@ def _tree_note(root: Path, cwd: Path) -> str:
     except ValueError:
         tree = str(cwd.resolve())
     branch = subprocess.run(["git", "-C", str(cwd), "branch", "--show-current"],
-                            capture_output=True, text=True, check=False).stdout.strip()
+                            capture_output=True, text=True, check=False, env=GIT_READ_ENV).stdout.strip()
     if any(c in tree + branch for c in "|`()\n"):
         raise ValueError(f"tree {tree!r} on {branch!r} cannot be written into a File ownership row")
     return f"worktree `{tree}` ({branch or 'detached'})"
