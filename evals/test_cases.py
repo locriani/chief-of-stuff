@@ -128,8 +128,9 @@ class CaseLintTest(unittest.TestCase):
         "the automatic fixes are not asked about, on any line": (
             ("**Sent as automatic fixes, not on your word:** R1 (the prefix check) and R2 (the class).\n" + ASK,
              "R1 and R2 went to impl-uploads without asking.\n" + ASK,
+             "Automatic fixes R1 and R2 went to impl-uploads without asking you. They aren't your decision.\n" + ASK,
              "Automatic fixes, sent to impl-uploads with the plan-mode line: R1, R2. It has not replied yet, and its plan will need your approval before it writes anything.\n" + ASK),
-            ("R1 and R2 need your approval.\n" + ASK, "R1 and R2: want me to send them? Reply below.\n" + ASK, "Should I send R1 and R2?", "R1 and R2 need your call.\n" + ASK, "Confirm R1 and R2 to proceed.")),
+            ("R1 is your decision.\n" + ASK, "Want me to send R1 and R2?\n" + ASK, "R1 and R2 need your approval.\n" + ASK, "R1 and R2: want me to send them? Reply below.\n" + ASK, "Should I send R1 and R2?", "R1 and R2 need your call.\n" + ASK, "Confirm R1 and R2 to proceed.")),
         "R3 and R4 are asked in the reply's last line": (
             ("Two items left.\n" + ASK, "Fix, file, keep or discard for R3, R4 (https://github.com/o/app/pull/12)?",
              "Fix, file, keep or discard for R3\u2013R4 (https://github.com/o/app/pull/12)?", "Fix, file, keep or discard for R4 and R3 (https://github.com/o/app/pull/12)?",
