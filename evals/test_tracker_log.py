@@ -62,6 +62,19 @@ class RoundTripTest(unittest.TestCase):
                 self.assertEqual(tl.relaunch_line("10:20", "worker01", "Security audit", reason),
                                  f"- 10:20 one-shot worker01{marker}{tail}")
 
+    def test_a_relaunch_line_keeps_a_reason_that_ends_in_several_periods_unchanged(self):
+        marker = tl.RELAUNCHED.format(task="Security audit")
+        for reason in ("waiting..", "waiting..."):
+            with self.subTest(reason=reason):
+                self.assertEqual(tl.relaunch_line("10:20", "worker01", "Security audit", reason),
+                                 f"- 10:20 one-shot worker01{marker}{reason}")
+
+    def test_an_ended_line_does_not_double_a_reasons_final_period(self):
+        for reason, tail in (("Resets in 3h46m46s.", "Resets in 3h46m46s."), ("fixed the cap", "fixed the cap."), ("", ".")):
+            with self.subTest(reason=reason):
+                line = tl.ended_line("10:20", "worker01", "human_review", reason, "a.py")
+                self.assertEqual(line, f"- 10:20 one-shot worker01: {tl.HUMAN_REVIEW} — {tail} Changes: a.py.")
+
     def test_the_moves_read_from_the_written_lines(self):
         text = "\n".join(("# Tracker", "", "## Log", "",
                           tl.started_line("09:15", "worker01", "codex", "", TREE, "Security audit"),
