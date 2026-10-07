@@ -272,6 +272,13 @@ def _copy_index(source: Path, target: Path) -> None:
         os.utime(target, ns=(info.st_atime_ns, info.st_mtime_ns))
 
 
+def _system_temp_roots() -> tuple[Path, ...]:
+    """Refuse system temp spellings on every host, plus their resolved forms."""
+    roots = tuple(Path(root) for root in ("/tmp", "/var/tmp", "/private/tmp", "/private/var/tmp",
+                                         tempfile.gettempdir()))
+    return (*roots, *(root.resolve() for root in roots))
+
+
 def _base(layout: Layout, base: Path | None) -> Path:
     explicit = base is not None
     if base is None:
@@ -282,7 +289,7 @@ def _base(layout: Layout, base: Path | None) -> Path:
     base = Path(base).resolve()
     forbidden = [layout.tree, layout.common, layout.gitdir]
     if not explicit:
-        forbidden.extend(Path(root).resolve() for root in (tempfile.gettempdir(), "/tmp", "/var/tmp"))
+        forbidden.extend(_system_temp_roots())
     if any(root is not None and base.is_relative_to(root) for root in forbidden):
         raise Unviewable("the view directory would be worker-writable")
     base.mkdir(parents=True, exist_ok=True, mode=0o700)

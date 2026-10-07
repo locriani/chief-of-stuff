@@ -213,8 +213,14 @@ class LocateTest(FixtureCase):
     def test_locate_relative_worktree_paths(self):
         fx = self.fixture()
         relative = fx.root / "relative"
-        taint.git(["worktree", "add", "--relative-paths", "-q", "-b", "relative", str(relative)], fx.clone)
+        taint.git(["worktree", "add", "-q", "-b", "relative", str(relative)], fx.clone)
+        # Git 2.48+ can write these relative pointers with --relative-paths.
+        # Build the same layout by hand so older CI Git exercises it too.
+        gitdir = fx.common / "worktrees" / "relative"
+        (relative / ".git").write_text(f"gitdir: {os.path.relpath(gitdir, relative)}\n")
+        (gitdir / "gitdir").write_text(os.path.relpath(relative / ".git", gitdir) + "\n")
         self.assertFalse(Path((relative / ".git").read_text().removeprefix("gitdir: ").strip()).is_absolute())
+        self.assertFalse(Path((gitdir / "gitdir").read_text().strip()).is_absolute())
         view = self.view
         with patch.object(subprocess, "run", side_effect=AssertionError("locate started git")):
             layout = view.locate(relative)
