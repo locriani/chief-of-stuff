@@ -26,6 +26,19 @@ import git_trees  # noqa: E402
 import git_taint as taint  # noqa: E402
 
 
+# plan-443.md section 1: read calls only (fetch/worktree are write funnels).
+# check-ref-format is the one inventory read outside the object-only set.
+OBJECT_ONLY = frozenset((
+    "rev-parse", "rev-list", "merge-base", "cat-file", "for-each-ref", "log",
+    "show", "ls-tree", "branch", "symbolic-ref", "ls-files",
+))
+READ_ONLY_COMMANDS = OBJECT_ONLY | {"status", "diff", "check-ref-format"}
+SAFE_CALLER_GIT_ENV = frozenset((
+    "GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS", "GIT_NO_REPLACE_OBJECTS",
+    "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM",
+))
+
+
 def raw(fx, args, env=None, path=None):
     return subprocess.run(["git", "-C", str(path or fx.tree), *args],
                           env=git_trees.audit_env() if env is None else env,
@@ -320,6 +333,7 @@ class ContentsTest(FixtureCase):
         expected = {
             "core.repositoryformatversion": "1" if sha256 else "0",
             "core.bare": str(bare).lower(), "core.fsmonitor": "false",
+            "core.usereplacerefs": "false",
             "core.untrackedcache": "false", "core.commitgraph": "false",
             "core.multipackindex": "false", "core.hookspath": os.devnull,
             "core.attributesfile": os.devnull, "core.excludesfile": os.devnull,
@@ -947,6 +961,496 @@ def vector_test(vector):
 
 for _vector in taint.VECTORS:
     setattr(TruthTest, "test_vector_" + _vector, vector_test(_vector))
+
+
+GITLINK_READS = {
+    "status": ["status", "--short"],
+    "diff": ["diff", "--ignore-submodules=none"],
+    "diff_files": ["diff-files", "--ignore-submodules=none"],
+    "diff_index": ["diff-index", "--ignore-submodules=none", "HEAD"],
+    "describe": ["describe", "--always", "--dirty"],
+    "add": ["add", "-n", "."],
+}
+
+
+def object_reads():
+    return {
+        "rev-parse": ["rev-parse", "HEAD"],
+        "rev-list": ["rev-list", "--count", "HEAD"],
+        "merge-base": ["merge-base", "--is-ancestor", "main", "HEAD"],
+        "cat-file": ["cat-file", "-p", "HEAD:README.md"],
+        "for-each-ref": ["for-each-ref", "--format=%(refname) %(objectname)"],
+        "log": ["log", "--format=%H %s"],
+        "show": ["show", "HEAD:README.md"],
+        "ls-tree": ["ls-tree", "HEAD"],
+        "branch": ["branch", "--show-current"],
+        "symbolic-ref": ["symbolic-ref", "HEAD"],
+        "ls-files": ["ls-files", "--stage"],
+    }
+
+
+def gitlink_review_test(name, *, guarded):
+    def test(self):
+        fx = self.fixture()
+        taint.committed_gitlink(fx)
+        args = GITLINK_READS[name]
+        result = raw(fx, args)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("nested-fsmonitor", fx.fired(), "the exact command must enter the nested repo")
+        fx.clear()
+        if guarded:
+            with self.assertRaises(self.view.Unviewable):
+                self.run_view(fx, args)
+            self.assertEqual(fx.fired(), [])
+            self.assertEqual(self.leftovers(), [])
+    return test
+
+
+class ReviewControlsTest(FixtureCase):
+    """Named controls stay green independently of the production fixes."""
+
+
+class ReviewCommandsTest(FixtureCase):
+    def assert_no_git(self, fx, args, *, env=None, path=None):
+        view = self.view
+        # Even the config parser and gitlink preflight must not run when the
+        # command or options themselves have already violated the boundary.
+        with patch.object(subprocess, "run", side_effect=AssertionError("rejected arguments started git")) as start:
+            with self.assertRaises(view.Unviewable):
+                view.run(args, path or fx.tree, env=env or git_trees.audit_env(), base=self.base)
+        start.assert_not_called()
+        self.assertEqual(fx.fired(), [])
+        self.assertEqual(self.leftovers(), [])
+
+    def test_r1_exact_read_only_allowlist_keeps_inventory_commands_working(self):
+        fx = self.fixture()
+        reads = {**object_reads(), "status": ["status", "--short"],
+                 "diff": ["diff", "--no-ext-diff"],
+                 "check-ref-format": ["check-ref-format", "--branch", "candidate"]}
+        self.assertEqual(set(reads), READ_ONLY_COMMANDS)
+        for command, args in reads.items():
+            with self.subTest(command=command):
+                control = raw(fx, args)
+                self.assertEqual(control.returncode, 0, control.stderr)
+                self.assertEqual(answer(self.run_view(fx, args)), answer(control))
+        self.assertEqual(fx.fired(), [])
+
+    def test_r1_commands_outside_allowlist_refuse_before_any_subprocess(self):
+        fx = self.fixture()
+        # A real write control proves that handing arbitrary commands to git
+        # is a live mutation, even though the launcher currently asks for reads.
+        ref = fx.common / "refs/heads/injected"
+        self.assertFalse(ref.exists())
+        self.assertEqual(raw(fx, ["update-ref", "refs/heads/injected", fx.sha["D"]]).returncode, 0)
+        self.assertEqual(ref.read_text(), fx.sha["D"] + "\n")
+        ref.unlink()
+        disallowed = {
+            "add": ["add", "-n", "."], "diff-files": ["diff-files"],
+            "diff-index": ["diff-index", "HEAD"], "describe": ["describe", "--always"],
+            "grep": ["grep", "a", "HEAD"], "config": ["config", "--list"],
+            "update-ref": ["update-ref", "refs/heads/injected", fx.sha["D"]],
+            "tag": ["tag", "injected"], "checkout": ["checkout", "main"],
+            "commit": ["commit", "--allow-empty", "-m", "injected"],
+            "fetch": ["fetch", "origin"], "push": ["push", "origin"],
+            "worktree": ["worktree", "list"], "submodule": ["submodule", "status"],
+            "reset": ["reset", "--hard"], "clean": ["clean", "-fd"],
+            "clone": ["clone", str(fx.clone)], "init": ["init"],
+            "stash": ["stash", "list"], "help": ["help"],
+            "version": ["version"], "not-a-command": ["not-a-command"],
+        }
+        self.assertTrue(READ_ONLY_COMMANDS.isdisjoint(disallowed))
+        for command, args in disallowed.items():
+            with self.subTest(command=command):
+                self.assert_no_git(fx, args)
+
+    def test_r1_object_only_commands_keep_working_with_gitlinks(self):
+        fx = self.fixture()
+        taint.committed_gitlink(fx)
+        prove_control(self, fx, "gitlink")
+        reads = object_reads()
+        self.assertEqual(set(reads), OBJECT_ONLY)
+        for command, args in reads.items():
+            with self.subTest(command=command):
+                control = raw(fx, args)
+                self.assertEqual(control.returncode, 0, control.stderr)
+                self.assertEqual(answer(self.run_view(fx, args)), answer(control))
+                self.assertEqual(fx.fired(), [])
+
+    def test_r1_every_allowed_command_outside_object_only_set_checks_gitlinks(self):
+        fx = self.fixture("gitlink")
+        prove_control(self, fx, "gitlink")
+        self.assertEqual(READ_ONLY_COMMANDS - OBJECT_ONLY, {"status", "diff", "check-ref-format"})
+        args = ["check-ref-format", "--branch", "candidate"]
+        self.assertEqual(answer(raw(fx, args)), (0, "candidate\n"))
+        with self.assertRaises(self.view.Unviewable):
+            self.run_view(fx, args)
+        self.assertEqual(fx.fired(), [])
+
+    def test_r2_leading_options_cannot_hide_status_after_the_first_argument(self):
+        fx = self.fixture("gitlink")
+        args = ["-c", "color.ui=false", "status", "--short"]
+        self.assertEqual(raw(fx, args).returncode, 0)
+        self.assertIn("nested-fsmonitor", fx.fired())
+        fx.clear()
+        self.assert_no_git(fx, args)
+
+    def test_r2_all_leading_options_are_refused(self):
+        fx = self.fixture()
+        taint.config(fx, "core.fsmonitor", fx.command("option-fsmonitor", 1))
+        executable = taint.marker_program(fx, "option-exec", name="git-x")
+        cases = (
+            (["-c", "core.fsmonitor=" + fx.command("option-config", 1), "status"], "option-config", {}),
+            (["-c", "alias.x=!" + fx.command("option-alias"), "x"], "option-alias", {}),
+            (["--git-dir", str(fx.clone / ".git"), "status"], "option-fsmonitor", {}),
+            (["-C", str(fx.clone), "status"], "option-fsmonitor", {}),
+            (["--exec-path=" + str(executable.parent), "x"], "option-exec", {}),
+            (["--work-tree", str(fx.clone), "status"], "option-fsmonitor", {}),
+            (["--namespace", "injected", "rev-parse", "HEAD"], None, {}),
+            (["--config-env", "core.fsmonitor=PROBE_COMMAND", "status"], "option-env",
+             {"PROBE_COMMAND": fx.command("option-env", 1)}),
+            (["--no-pager", "rev-parse", "HEAD"], None, {}),
+        )
+        for args, marker, extra in cases:
+            with self.subTest(option=args[0], command=args[-1]):
+                env = {**git_trees.audit_env(), **extra}
+                control = raw(fx, args, env, path=fx.clone)
+                if marker:
+                    self.assertIn(marker, fx.fired(), control.stderr)
+                else:
+                    self.assertEqual(answer(control), (0, fx.sha["B"] + "\n"))
+                fx.clear()
+                self.assert_no_git(fx, args, env=env, path=fx.clone)
+
+    def test_r2_output_options_cannot_write_a_file(self):
+        fx = self.fixture()
+        output = fx.root / "written.diff"
+        args = ["diff", "--output=" + str(output)]
+        control = raw(fx, args)
+        self.assertEqual(control.returncode, 0, control.stderr)
+        self.assertIn("diff --git", output.read_text())
+        output.unlink()
+        self.assert_no_git(fx, args)
+        self.assertFalse(output.exists())
+
+    def test_r2_repository_and_output_option_prefixes_are_refused_anywhere(self):
+        fx = self.fixture()
+        output = fx.root / "written.diff"
+        # Live output control, then exercise the lexical rule even after --,
+        # where git would ordinarily interpret these tokens as path operands.
+        self.assertEqual(raw(fx, ["diff", "--output", str(output)]).returncode, 0)
+        self.assertIn("diff --git", output.read_text())
+        output.unlink()
+        for prefix in ("--git-dir", "--work-tree", "--output"):
+            for token in (prefix, prefix + "=" + str(fx.clone / ".git"), prefix + "-extra"):
+                for args in (["rev-parse", token, "HEAD"], ["diff", "HEAD", "--", token]):
+                    with self.subTest(args=args):
+                        self.assert_no_git(fx, args)
+        self.assertFalse(output.exists())
+
+
+for _name in GITLINK_READS:
+    setattr(ReviewControlsTest, "test_control_r1_gitlink_" + _name,
+            gitlink_review_test(_name, guarded=False))
+    setattr(ReviewCommandsTest, "test_r1_gitlink_refuses_" + _name,
+            gitlink_review_test(_name, guarded=True))
+
+
+def caller_environment_control(case, name):
+    """Return an attack only after proving its concrete effect with real git."""
+    fx = case.fixture()
+    env = git_trees.audit_env()
+    args = ["status", "--short"]
+    expected = answer(raw(fx, args))
+    if name == "common_dir":
+        taint.config(fx, "core.fsmonitor", fx.command("env-common", 1))
+        env["GIT_COMMON_DIR"] = str(fx.common)
+        control = raw(fx, args, env)
+        case.assertIn("env-common", fx.fired(), control.stderr)
+    elif name == "config_count":
+        env.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.fsmonitor",
+                   GIT_CONFIG_VALUE_0=fx.command("env-count", 1))
+        control = raw(fx, args, env)
+        case.assertIn("env-count", fx.fired(), control.stderr)
+    elif name == "config_parameters":
+        probe = taint.marker_program(fx, "env-parameters")
+        env["GIT_CONFIG_PARAMETERS"] = "'core.fsmonitor=" + str(probe) + "'"
+        control = raw(fx, args, env)
+        case.assertIn("env-parameters", fx.fired(), control.stderr)
+    elif name == "object_directory":
+        empty = fx.root / "empty-objects"
+        empty.mkdir()
+        env["GIT_OBJECT_DIRECTORY"] = str(empty)
+        args = ["cat-file", "-p", "HEAD:README.md"]
+        expected = answer(raw(fx, args))
+        case.assertEqual(expected, (0, "a\n"))
+        control = raw(fx, args, env)
+        case.assertNotEqual(control.returncode, 0)
+        case.assertEqual(control.stdout, "")
+    elif name == "alternate_object_directories":
+        other = case.fixture()
+        payload = other.root / "alternate-only.txt"
+        payload.write_text("alternate-only blob\n")
+        oid = taint.git(["hash-object", "-w", str(payload)], other.clone).stdout.strip()
+        env["GIT_ALTERNATE_OBJECT_DIRECTORIES"] = str(other.common / "objects")
+        args = ["cat-file", "-p", oid]
+        expected = answer(raw(fx, args))
+        case.assertNotEqual(expected[0], 0)
+        case.assertEqual(expected[1], "")
+        case.assertEqual(answer(raw(fx, args, env)), (0, payload.read_text()))
+    elif name == "namespace":
+        taint.git(["update-ref", "refs/namespaces/injected/refs/heads/only", fx.sha["B"]], fx.clone)
+        env["GIT_NAMESPACE"] = "injected"
+        # Ordinary rev-parse need not honour namespaces; upload-pack does.
+        # This makes the env control live without granting upload-pack to run().
+        advertise = ["upload-pack", "--advertise-refs", str(fx.common)]
+        plain = raw(fx, advertise)
+        control = raw(fx, advertise, env)
+        case.assertEqual(control.returncode, 0, control.stderr)
+        case.assertIn(fx.sha["D"], plain.stdout)
+        case.assertIn("refs/heads/only", control.stdout)
+        case.assertNotIn(fx.sha["D"], control.stdout)
+        args = ["rev-parse", "HEAD"]
+        expected = (0, fx.sha["D"] + "\n")
+    else:
+        case.fail("unknown caller env control: " + name)
+    fx.clear()
+    return fx, args, env, expected
+
+
+def caller_environment_test(name, *, guarded):
+    def test(self):
+        fx, args, env, expected = caller_environment_control(self, name)
+        if not guarded:
+            return
+        caller = dict(env)
+        with patch.object(subprocess, "run", wraps=subprocess.run) as started:
+            result = self.view.run(args, fx.tree, env=env, base=self.base)
+        self.assertEqual(answer(result), expected, result.stderr)
+        self.assertEqual(fx.fired(), [])
+        for call in started.call_args_list:
+            child = call.kwargs["env"]
+            self.assertTrue(set(child).isdisjoint(set(env) - SAFE_CALLER_GIT_ENV - {"PATH", "HOME"}),
+                            "caller GIT_* reached a subprocess (including config parsing)")
+        with self.view.opened(fx.tree, env, base=self.base) as v:
+            self.assertEqual({key for key in v.env if key.startswith("GIT_")},
+                             (set(env) & SAFE_CALLER_GIT_ENV) | {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"})
+        self.assertEqual(env, caller, "scrubbing must not mutate the caller's mapping")
+        self.assertEqual(self.leftovers(), [])
+    return test
+
+
+class ReviewEnvironmentTest(FixtureCase):
+    def test_r3_all_non_allowlisted_git_variables_are_dropped_and_view_paths_are_authored(self):
+        fx = self.fixture()
+        trace = fx.root / "caller.trace"
+        env = {**git_trees.audit_env(), "GIT_DIR": str(fx.common),
+               "GIT_WORK_TREE": str(fx.clone), "GIT_INDEX_FILE": str(fx.common / "index"),
+               "GIT_TRACE": str(trace), "GIT_FUTURE_UNTRUSTED_SETTING": "injected"}
+        home = fx.root / "caller-home"
+        home.mkdir()
+        env.update(HOME=str(home), PATH=env["PATH"] + os.pathsep + str(fx.root))
+        # These selectors would choose main's B rather than linked feat's D;
+        # TRACE also proves an otherwise unenumerated GIT_* variable is live.
+        self.assertEqual(answer(raw(fx, ["rev-parse", "HEAD"], env)), (0, fx.sha["B"] + "\n"))
+        self.assertIn("rev-parse HEAD", trace.read_text())
+        trace.unlink()
+        caller = dict(env)
+        with patch.object(subprocess, "run", wraps=subprocess.run) as started:
+            with self.view.opened(fx.tree, env, base=self.base) as v:
+                directory = Path(v.env["GIT_DIR"])
+                self.assertEqual(directory.parent, self.base)
+                self.assertEqual(v.env["GIT_WORK_TREE"], str(fx.tree))
+                self.assertEqual(v.env["GIT_INDEX_FILE"], str(directory / "index"))
+                self.assertEqual(v.env["PATH"], env["PATH"])
+                self.assertEqual(v.env["HOME"], env["HOME"])
+                self.assertEqual({k: value for k, value in v.env.items() if k in SAFE_CALLER_GIT_ENV},
+                                 {k: value for k, value in env.items() if k in SAFE_CALLER_GIT_ENV})
+                self.assertEqual({k for k in v.env if k.startswith("GIT_")},
+                                 (set(env) & SAFE_CALLER_GIT_ENV) | {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"})
+                result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=fx.tree, env=v.env,
+                                        capture_output=True, text=True, timeout=5)
+                self.assertEqual(answer(result), (0, fx.sha["D"] + "\n"))
+        for call in started.call_args_list:
+            self.assertNotIn("GIT_TRACE", call.kwargs["env"])
+            self.assertNotIn("GIT_FUTURE_UNTRUSTED_SETTING", call.kwargs["env"])
+        self.assertFalse(trace.exists())
+        self.assertEqual(env, caller)
+        self.assertEqual(self.leftovers(), [])
+
+    def test_r4_log_uses_true_history_without_caller_no_replace_objects(self):
+        fx = self.fixture("replace")
+        env = git_trees.audit_env()
+        env.pop("GIT_NO_REPLACE_OBJECTS")
+        args = ["log", "--format=%s", "HEAD"]
+        self.assertEqual(answer(raw(fx, args, env)), (0, "B\nA\n"))
+        self.assertEqual(answer(raw(fx, ["-c", "core.useReplaceRefs=false", *args], env)),
+                         (0, "D\nC\nB\nA\n"))
+        result = self.view.run(args, fx.tree, env=env, base=self.base)
+        self.assertEqual(answer(result), (0, "D\nC\nB\nA\n"), result.stderr)
+        with self.view.opened(fx.tree, env, base=self.base) as v:
+            config = taint.git(["config", "--file", str(Path(v.env["GIT_DIR"]) / "config"),
+                                "--get", "core.useReplaceRefs"], fx.root, check=False)
+            self.assertEqual(answer(config), (0, "false\n"))
+        self.assertEqual(self.leftovers(), [])
+
+
+for _name in ("common_dir", "config_count", "config_parameters", "object_directory",
+              "namespace", "alternate_object_directories"):
+    setattr(ReviewControlsTest, "test_control_r3_" + _name,
+            caller_environment_test(_name, guarded=False))
+    setattr(ReviewEnvironmentTest, "test_r3_drops_" + _name,
+            caller_environment_test(_name, guarded=True))
+
+
+class ReviewLayoutsTest(FixtureCase):
+    assert_refused_without_git = LocateTest.assert_refused_without_git
+
+    def test_r5_forged_consistent_triple_inside_tree_cannot_forge_ancestry(self):
+        fx = self.fixture()
+        args = ["merge-base", "--is-ancestor", "HEAD", "main"]
+        self.assertEqual(answer(raw(fx, args)), (1, ""))
+        self.assertEqual(answer(self.run_view(fx, args)), (1, ""))
+        common, gitdir = taint.forged_linked_layout(fx)
+        self.assertTrue(common.is_relative_to(fx.tree))
+        self.assertTrue(gitdir.is_relative_to(fx.tree))
+        self.assertEqual((gitdir / "commondir").read_text(), "../..\n")
+        self.assertEqual((gitdir / "gitdir").read_text(), str(fx.tree / ".git") + "\n")
+        self.assertEqual(answer(raw(fx, args)), (0, ""), "the forged triple must fool unguarded ancestry")
+        self.assert_refused_without_git(fx.tree)
+        with patch.object(subprocess, "run", side_effect=AssertionError("forged ancestry started git")) as start:
+            with self.assertRaises(self.view.Unviewable):
+                self.run_view(fx, args)
+        start.assert_not_called()
+        self.assertEqual(self.leftovers(), [])
+
+    def test_r5_gitdir_inside_tree_is_refused_even_with_common_outside(self):
+        fx = self.fixture()
+        # The worktrees directory can itself contain a forged worktree. Its
+        # gitdir is inside that tree while common remains outside it; all three
+        # pointers still satisfy the old equality checks.
+        tree = fx.common / "worktrees"
+        gitdir = tree / "evil"
+        shutil.copytree(fx.gitdir, gitdir)
+        (gitdir / "commondir").write_text("../..\n")
+        (gitdir / "gitdir").write_text(str(tree / ".git") + "\n")
+        (tree / ".git").write_text(f"gitdir: {gitdir}\n")
+        taint.config(fx, "core.fsmonitor", fx.command("inside-gitdir", 1))
+        control = raw(fx, ["status", "--short"], path=tree)
+        self.assertIn("inside-gitdir", fx.fired(), control.stderr)
+        fx.clear()
+        self.assertFalse(fx.common.is_relative_to(tree))
+        self.assertTrue(gitdir.is_relative_to(tree))
+        self.assert_refused_without_git(tree)
+
+
+class ReviewBaseTest(FixtureCase):
+    def assert_default_cache_refused(self, cache):
+        fx = self.fixture()
+        view = self.view
+        layout = view.locate(fx.tree)
+        candidate = (Path(cache) / "chief-of-stuff/git-views").resolve()
+        # Allocation spies keep /var/tmp and other global locations untouched.
+        # Explicit base is the real guard-bypass control: it must accept the
+        # identical resolved path and attempt allocation. Only default trust
+        # changes between the two calls; no fake resolver or fake predicate.
+        real_scandir = os.scandir
+        with patch.object(Path, "mkdir") as mkdir, patch.object(Path, "chmod"), \
+                patch.object(os, "scandir", side_effect=lambda path: real_scandir(self.base)), \
+                patch.object(tempfile, "gettempdir", return_value=str(self.root / "other-system-temp")), \
+                patch.dict(os.environ, {"XDG_CACHE_HOME": str(cache)}):
+            self.assertEqual(view._base(layout, candidate), candidate)
+            mkdir.assert_called_once()
+            mkdir.reset_mock()
+            with self.assertRaises(view.Unviewable):
+                view._base(layout, None)
+            mkdir.assert_not_called()
+
+    def test_r7_default_cache_refuses_all_system_temp_roots_and_resolved_forms(self):
+        # Include both macOS spellings explicitly, even on systems where /tmp
+        # is a real directory. Do not let tempfile.gettempdir mask this rule.
+        roots = (Path("/tmp"), Path("/var/tmp"), Path("/private/tmp"), Path("/private/var/tmp"))
+        for cache in (*roots, *(root.resolve() for root in roots)):
+            with self.subTest(cache=str(cache)):
+                self.assert_default_cache_refused(cache)
+
+    def test_r7_relative_xdg_cache_home_is_refused(self):
+        self.assert_default_cache_refused(Path("relative-cache"))
+
+    def test_r7_explicit_base_is_trusted_but_resolved_worker_roots_are_refused(self):
+        fx = self.fixture()
+        # A real tmp-based allocation is permitted by explicit launcher trust.
+        self.assertEqual(answer(self.run_view(fx, ["rev-parse", "HEAD"])), (0, fx.sha["D"] + "\n"))
+        for number, parent in enumerate((fx.tree, fx.common, fx.gitdir)):
+            alias = self.root / f"alias-{number}"
+            alias.symlink_to(parent, target_is_directory=True)
+            for base in (parent, parent / "views", alias, alias / "views"):
+                with self.subTest(base=base), patch.object(subprocess, "run", wraps=subprocess.run) as started:
+                    with self.assertRaises(self.view.Unviewable):
+                        self.view.run(["rev-parse", "HEAD"], fx.tree, env=git_trees.audit_env(), base=base)
+                    started.assert_not_called()
+        self.assertEqual(self.leftovers(), [])
+
+
+def object_store(path):
+    return {p.relative_to(path).as_posix(): p.read_bytes() for p in path.rglob("*") if p.is_file()}
+
+
+def partial_clone_review_test(*, guarded):
+    def test(self):
+        fx = self.fixture()
+        try:
+            control, blob = taint.partial_clone(fx, "partial-control")
+        except subprocess.CalledProcessError as error:
+            self.skipTest("could not build a file:// blob:none partial clone: " + error.stderr.strip())
+        missing = taint.git(["rev-list", "--objects", "--missing=print", "HEAD"], control).stdout
+        if "?" + blob not in missing.splitlines():
+            self.skipTest("git ignored blob:none; could not build a missing-blob partial clone")
+        objects = control / ".git/objects"
+        before = object_store(objects)
+        fx.clear()
+        trace = fx.root / "git-child.trace"
+        fetched = taint.git(["cat-file", "-p", blob], control,
+                            env={**git_trees.audit_env(), "GIT_TRACE": str(trace)})
+        self.assertEqual(answer(fetched), (0, "a\n"))
+        self.assertIn("lazy-fetch", fx.fired())
+        self.assertRegex(trace.read_text(), r"\bfetch\b", "trace must observe the control's internal lazy fetch")
+        trace.unlink()
+        self.assertNotEqual(object_store(objects), before)
+        self.assertNotIn("?" + blob, taint.git(["rev-list", "--objects", "--missing=print", "HEAD"], control).stdout)
+        fx.clear()
+        if not guarded:
+            return
+        clone, missing_blob = taint.partial_clone(fx, "partial-view")
+        self.assertEqual(missing_blob, blob)
+        missing = taint.git(["rev-list", "--objects", "--missing=print", "HEAD"], clone).stdout
+        self.assertIn("?" + blob, missing.splitlines())
+        before = object_store(clone / ".git/objects")
+        real_run = subprocess.run
+        def traced_run(argv, **kwargs):
+            # Inject observation AFTER the view has scrubbed caller env. Git's
+            # internal fetch is not visible to a Python subprocess call spy.
+            kwargs["env"] = {**kwargs["env"], "GIT_TRACE": str(trace)}
+            return real_run(argv, **kwargs)
+        with patch.object(subprocess, "run", side_effect=traced_run):
+            result = self.view.run(["cat-file", "-p", blob], clone, env=git_trees.audit_env(), base=self.base)
+        self.assertNotEqual(result.returncode, 0, "the view must not lazily retrieve a missing object")
+        self.assertEqual(result.stdout, "")
+        self.assertTrue(result.stderr)
+        observed = trace.read_text()
+        self.assertIn("cat-file", observed)
+        self.assertNotRegex(observed, r"\b(?:fetch|fetch-pack|upload-pack)\b", "even a failed lazy fetch is forbidden")
+        self.assertEqual(fx.fired(), [])
+        self.assertEqual(object_store(clone / ".git/objects"), before, "nothing may be fetched into the source store")
+        self.assertIn("?" + blob, taint.git(["rev-list", "--objects", "--missing=print", "HEAD"], clone).stdout.splitlines())
+        self.assertEqual(self.leftovers(), [])
+    return test
+
+
+class ReviewPartialCloneTest(FixtureCase):
+    test_r9_partial_clone_missing_blob_fails_closed_without_lazy_fetch = partial_clone_review_test(guarded=True)
+
+
+ReviewControlsTest.test_control_r9_partial_clone_really_lazy_fetches = partial_clone_review_test(guarded=False)
 
 
 class SignalsTest(FixtureCase):

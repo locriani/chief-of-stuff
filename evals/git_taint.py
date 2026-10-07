@@ -224,3 +224,54 @@ def build(tmp: Path, vector=None, packed=False) -> Fx:
 def build_sha256(tmp: Path, vector=None, packed=False) -> Fx:
     """The same fixture with 64-hex object ids, for the object-format allowlist."""
     return _build(tmp, vector, packed, "sha256")
+
+
+def marker_program(fx: Fx, tag: str, *, name=None, upload_pack=False) -> Path:
+    """An executable Python probe; no shell script or workspace-specific data."""
+    program = fx.root / (name or f"probe-{tag}")
+    program.write_text(
+        f"#!{sys.executable}\nfrom pathlib import Path\nimport os, sys\n"
+        f"Path({str(fx.markers / tag)!r}).write_text('fired')\n"
+        + ("os.execvp('git', ['git', 'upload-pack', *sys.argv[1:]])\n" if upload_pack else "sys.exit(1)\n"))
+    program.chmod(0o755)
+    return program
+
+
+def committed_gitlink(fx: Fx) -> None:
+    """Only the nested dirt remains, so describe --dirty must inspect it."""
+    _gitlink(fx)
+    git(["commit", "-qm", "gitlink", "--", "gl"], fx.tree)
+    (fx.tree / "README.md").write_text("a\n")
+    git(["update-index", "--refresh"], fx.tree, check=False)
+    fx.clear()
+
+
+def forged_linked_layout(fx: Fx) -> tuple[Path, Path]:
+    """A mutually consistent gitfile/commondir/backpointer in worker data."""
+    common = fx.tree / "copied-repository"
+    shutil.copytree(fx.common, common)
+    shutil.rmtree(common / "worktrees")
+    gitdir = common / "worktrees" / "evil"
+    gitdir.mkdir(parents=True)
+    (gitdir / "commondir").write_text("../..\n")
+    (gitdir / "gitdir").write_text(str(fx.tree / ".git") + "\n")
+    (gitdir / "HEAD").write_text(fx.sha["D"] + "\n")
+    git(["--git-dir", str(common), "update-ref", "refs/heads/main", fx.sha["D"]], fx.root)
+    (fx.tree / ".git").write_text(f"gitdir: {gitdir}\n")
+    return common, gitdir
+
+
+def partial_clone(fx: Fx, name: str) -> tuple[Path, str]:
+    """A real file:// promisor clone with a known, initially missing blob.
+
+    Callers verify --missing=print themselves: an ignored filter must never
+    silently count as a partial-clone control.
+    """
+    config(fx, "uploadpack.allowFilter", "true")
+    config(fx, "uploadpack.allowAnySHA1InWant", "true")
+    clone = fx.root / name
+    git(["clone", "-q", "--filter=blob:none", "--no-checkout", fx.clone.as_uri(), str(clone)], fx.root)
+    blob = git(["rev-parse", "main:README.md"], fx.clone).stdout.strip()
+    probe = marker_program(fx, "lazy-fetch", upload_pack=True)
+    git(["config", "remote.origin.uploadpack", str(probe)], clone)
+    return clone, blob
