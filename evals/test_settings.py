@@ -125,7 +125,7 @@ class SettingsTest(unittest.TestCase):
             st.load(self.root, self.write('[workers]\nlauncher = "shell"\n'))
 
     def test_worker_launcher_accepts_herdr(self):
-        # #471: interactive workers may share the user's running herdr server.
+        # #471: interactive workers use a dedicated named herdr session, separate from the user's.
         for prefix in ("", '[notify]\nadapter = "off"\n'):
             with self.subTest(notify=bool(prefix)):
                 got = st.load(self.root, self.write(prefix + '[workers]\nlauncher = "herdr"\n'))
