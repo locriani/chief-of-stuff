@@ -37,6 +37,31 @@ BOOTSTRAP = ("Read {dispatch} first. It is your entire one-shot assignment. Work
              "Finish in this invocation and write the requested TOON result before exiting.")
 
 
+def _own_git_dirs(cwd: Path) -> list[str]:
+    """The git directories codex may write: a linked worktree's common dir and own gitdir, or a clone's `.git`."""
+    # The worker can rewrite `.git`, `commondir`, and gitfiles, so a path git reports is granted only when it provably belongs to cwd.
+    def rev(flag: str) -> Path | None:
+        try:
+            out = subprocess.run(["git", "-C", str(cwd), "rev-parse", "--path-format=absolute", flag],
+                                 capture_output=True, text=True, check=False, timeout=15)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        return Path(out.stdout.strip()).resolve() if out.returncode == 0 and out.stdout.strip() else None
+
+    common, gitdir = rev("--git-common-dir"), rev("--absolute-git-dir")
+    here = cwd.resolve()
+    dotgit = next((d / ".git" for d in (here, *here.parents) if (d / ".git").exists()), None)
+    if not (common and gitdir and dotgit):
+        return []
+    if dotgit.is_dir():  # a normal clone, possibly entered from a subdirectory
+        return [str(common)] if dotgit.resolve() == common == gitdir else []
+    commondir = gitdir / "commondir"
+    if gitdir.parent == common / "worktrees" and commondir.is_file() \
+            and (gitdir / commondir.read_text().strip()).resolve() == common:
+        return [str(common), str(gitdir)]
+    return []
+
+
 def command(runtime: str, binary: str, cwd: Path, dispatch: Path, *, agent_type: str | None,
             model: str, effort: str) -> list[str]:
     """A single foreground CLI invocation, without interactive plan or mailbox modes."""
@@ -52,16 +77,7 @@ def command(runtime: str, binary: str, cwd: Path, dispatch: Path, *, agent_type:
         argv = [binary, "-a", "never", "exec", "-C", str(cwd), "--sandbox", "workspace-write",
                 # Network for fetch, push, and forge APIs; file writes stay confined.
                 "-c", "sandbox_workspace_write.network_access=true", "--ephemeral"]
-        # A linked worktree's git metadata lives in the main repo's git dir, outside the sandbox; the
-        # sandbox also keeps the worktree's own gitdir read-only unless it has its own entry.
-        git_dirs: list[str] = []
-        for flag in ("--git-common-dir", "--absolute-git-dir"):
-            git_dir = subprocess.run(["git", "-C", str(cwd), "rev-parse", "--path-format=absolute", flag],
-                                     capture_output=True, text=True, check=False, timeout=15)
-            if git_dir.returncode == 0 and (path := str(Path(git_dir.stdout.strip()).resolve())) not in git_dirs:
-                git_dirs.append(path)
-        for path in git_dirs:
-            argv += ["--add-dir", path]
+        argv += [a for d in _own_git_dirs(cwd) for a in ("--add-dir", d)]
     elif runtime == "cursor":
         argv = [binary, "--print", "--force", "--trust", "--workspace", str(cwd)]
     elif runtime == "agy":
