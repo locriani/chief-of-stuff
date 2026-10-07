@@ -802,7 +802,33 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
     def test_triage_is_the_users(self):
         self.assertIn("## Triage", self.content)
         self.assertIn("every disposition in one reply", self.content)
-        self.assertIn("Never dispose of a finding for the user", self.content)
+
+    # #391, the user, 2026-10-06: a review finding that is a clear fix "should have automatically been a fix". The Triage section must
+    # carry each of these sentences verbatim; the eval case triage-clear-fixes-dispatch-automatically grades the behaviour.
+    #
+    #   AUTO   "A finding the reviewer suggests `fix`, with one obvious fix, is dispatched as a fix at once without asking: send it to the owning session, set `stage` to `fix`, and leave it out of the ask."
+    #   ASKED  "Ask only about a finding that needs a design or architecture call, changes a spec or an acceptance item, the reviewer suggests `keep`, `file` or `discard`, or is severity high or above with no single obvious fix."
+    #   RECORD "Record one Decisions row naming the R-numbers sent this way and saying it was an automatic fix, not the user's word, and list them in one line in your next status."
+    #   NOASK  "When no finding remains for the user, make no ask."
+    # Gone: "Never dispose of a finding for the user".
+    def _triage_has(self, sentence):
+        self.assertIn(sentence, self._section("Triage"), f"Triage must say: {sentence}")
+
+    def test_triage_dispatches_a_clear_fix_at_once_without_asking(self):
+        self._triage_has("A finding the reviewer suggests `fix`, with one obvious fix, is dispatched as a fix at once without asking: send it to the owning session, set `stage` to `fix`, and leave it out of the ask.")
+
+    def test_triage_asks_only_the_four_kinds(self):
+        self._triage_has("Ask only about a finding that needs a design or architecture call, changes a spec or an acceptance item, the reviewer suggests `keep`, `file` or `discard`, or is severity high or above with no single obvious fix.")
+
+    def test_triage_records_one_automatic_fix_row(self):
+        self._triage_has("Record one Decisions row naming the R-numbers sent this way and saying it was an automatic fix, not the user's word, and list them in one line in your next status.")
+
+    def test_triage_makes_no_ask_when_nothing_remains(self):
+        self._triage_has("When no finding remains for the user, make no ask.")
+
+    def test_triage_no_longer_bars_disposing_of_a_finding(self):
+        self.assertNotIn("Never dispose of a finding for the user", self.content,
+                         "the sentence `Never dispose of a finding for the user` is replaced by the automatic-fix rule (#391)")
 
     def test_every_handed_task_opens_plan_mode(self):
         # Zach, 2026-09-23 22:25: "tasks passed to implementers should cause the implementer to enter plan mode for the new task".
