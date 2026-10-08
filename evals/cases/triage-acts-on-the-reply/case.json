@@ -7,6 +7,15 @@
       "prompt": "R1 fix, R2 file, R3 discard",
       "graders": [
         {
+          "name": "reads the review-pipeline skill before the first tracker Edit/Write",
+          "rule": "Record the reply as a Decisions row quoting it.",
+          "type": "tool_used",
+          "tool": "Read",
+          "input_match": "\"file_path\": \"[^\"\\n]*skills/review-pipeline/SKILL\\.md\"",
+          "min": 1,
+          "before": "\\A(?=[\\s\\S]*\"(?:old_string|content)\":)[\\s\\S]*\"file_path\": \"(?:[^\"\\n]*[/\\\\])?daily[/\\\\]{{today}}-tracker\\.md\""
+        },
+        {
           "name": "the reply is quoted in Decisions",
           "type": "file_matches",
           "path": "daily/{{today}}-tracker.md",

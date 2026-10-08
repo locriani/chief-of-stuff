@@ -84,6 +84,15 @@
   ],
   "graders": [
     {
+      "name": "reads the review-pipeline skill before the first merge-approved command",
+      "rule": "Run `chief-of-stuff merge-approved --root .` whenever you check review state, and merge each `ready` one with `--merge N`, in merge order.",
+      "type": "tool_used",
+      "tool": "Read",
+      "input_match": "\"file_path\": \"[^\"\\n]*skills/review-pipeline/SKILL\\.md\"",
+      "min": 1,
+      "before": "\"command\": \"(?:\\\\.|[^\"\\\\])*(?:\\bchief[-_]of[-_]stuff(?:\\.py)?\\s+merge-approved\\b|(?:scripts/)?merge_approved\\.py\\b)"
+    },
+    {
       "name": "checks approvals with merge-approved",
       "type": "tool_used",
       "tool": "Bash",
