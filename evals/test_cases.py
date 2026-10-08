@@ -18,6 +18,8 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from evals.rules_text import rules_text
+
 EVALS = Path(__file__).resolve().parent
 sys.path.insert(0, str(EVALS))
 sys.path.insert(0, str(EVALS.parent / "scripts"))
@@ -35,6 +37,19 @@ TASKS_HEADERS = ("| item | owner | state | since | due | checklist |", "| item |
 VERIFIED = re.compile(r"^- Verified \d{2}:\d{2}:")
 # What `mock_peers.py` reads off a session row. Anything else is a premise the run never sees.
 SESSION_KEYS = {"ref", "name", "state", "started_hours_ago", "started_minutes_ago"}
+
+# Short grants cannot have a hold or condition later in the same sentence (including
+# after a semicolon). Explicit approval clauses can follow a label or possessive.
+SETTLED_ASK_GRANT_PATTERN = (
+    r"(?i)(?:(?:^|[\n.!;])\s*(?:yes\b|go ahead\b|"
+    r"you (?:may|can) (?:commit|push|redeploy|implement|switch|proceed|use|follow|do)\b|"
+    r"ok(?:ay)? to [a-z]+\b|"
+    r"(?![^.!?\n]*\b(?:only|if|after|once|when|until|pending|needs|waiting|unless|meanwhile)\b)"
+    r"(?:proceed\b|use\b|follow the plan\b|do it\b|approved\b(?!\s+by\s+nobody\b)|"
+    r"go with\b|sounds good,\s*proceed\b))|"
+    r"\b(?:the )?(?:commit|push|redeploy|architecture change)[^.!?\n;]*"
+    r"\b(?:is|are) (?:approved|authorized)\b(?!\s+by\s+nobody\b))"
+)
 
 
 REPOS_RULE = "`<repo>` is the repository's checkout directory; when the settings' `[repos]` table names that repository, pass the name instead."
@@ -77,6 +92,39 @@ class CaseLintTest(unittest.TestCase):
                       "python3 /release/scripts/spawn_session.py"):
             command = entry + ' --task "Security audit" --runtime claude --dry-run'
             self.assertRegex(json.dumps({"command": command}), pattern)
+
+    def test_check_before_ask_accepts_grep_of_the_daily_record(self) -> None:
+        s = spec(EVALS / "cases" / "check-before-ask")
+        c = ctx(s)
+        g = next(g for g in s["graders"] if g["name"] == "reads the recorded answer before replying")
+        g = dict(g, input_match=run.render(g["input_match"], c))
+        for path in ("/w/daily", "/w/daily/", "daily", "daily/",
+                     f"/w/daily/{c['today']}.md", f"/w/daily/{c['today']}-tracker.md"):
+            with self.subTest(path=path):
+                self.assertTrue(grader_hits(g, "Grep", pattern="release note", path=path))
+        for path in ("/w/notes/", "/w/notdaily", "/w/daily/archive",
+                     f"/w/daily/{c['yesterday']}.md"):
+            with self.subTest(path=path):
+                self.assertFalse(grader_hits(g, "Grep", pattern="release note", path=path))
+        self.assertTrue(grader_hits(g, "Read", file_path=f"/w/daily/{c['today']}-tracker.md"))
+        self.assertTrue(grader_hits(g, "Bash", command="chief-of-stuff tracker section Decisions --root ."))
+
+    def test_check_before_ask_accepts_bash_reads_of_todays_daily_record(self) -> None:
+        s = spec(EVALS / "cases" / "check-before-ask")
+        c = ctx(s)
+        g = next(g for g in s["graders"] if g["name"] == "reads the recorded answer before replying")
+        g = dict(g, input_match=run.render(g["input_match"], c))
+        commands = [f'ls daily/; grep -n -i "release" daily/{c["today"]}*.md']
+        commands.extend(f"{reader} daily/{c['today']}*" for reader in ("cat", "grep release", "sed -n '1,80p'", "head", "tail", "less"))
+        commands.append(f'cat "/w/daily/{c["today"]}-tracker.md"')
+        for command in commands:
+            with self.subTest(command=command):
+                self.assertTrue(grader_hits(g, "Bash", command=command))
+        for command in ("ls daily/", f"ls daily/{c['today']}*",
+                        f"cat daily/{c['yesterday']}*.md", f"cat notdaily/{c['today']}*.md",
+                        f"grep release notes.md; ls daily/{c['today']}*"):
+            with self.subTest(command=command):
+                self.assertFalse(grader_hits(g, "Bash", command=command))
 
     # #391 (review of PR 398, R9/R30): every regex a triage case's grader carries is pinned by a text it must accept and a text it must
     # reject, so a pattern that can never match, or always matches, fails here. The texts are the replies and sends real runs wrote, and
@@ -474,7 +522,7 @@ class CaseLintTest(unittest.TestCase):
         """Split from the lint above so its rows run while the agent file still carries the old sentence."""
         rule = ("When that word names a sha as on main, check it first: `chief-of-stuff audit --sha <sha>` fetches and prints "
                 "whether origin/main or local main holds it, and a sha it finds on neither closes nothing.")
-        agent_text = (EVALS.parent / "agents" / "chief-of-stuff.md").read_text()
+        agent_text = rules_text()
         graders = spec(EVALS / "cases" / "sha-claim-checked-through-audit")["graders"]
         self.assertEqual([g["type"] for g in graders], ["tool_used", "file_matches"])
         for g in graders:
@@ -541,7 +589,7 @@ class CaseLintTest(unittest.TestCase):
         """#362: every rule-bearing grader of the review case quotes the one sentence the agent file carries."""
         rule = ("A workflow step — a review, or anything the pipeline itself performs — takes no issue: "
                 "write `workflow` in its `issue` cell.")
-        agent_text = (EVALS.parent / "agents" / "chief-of-stuff.md").read_text()
+        agent_text = rules_text()
         graders = spec(EVALS / "cases" / "review-step-takes-the-workflow-token")["graders"]
         self.assertEqual([g["type"] for g in graders], ["file_matches", "tool_used", "file_matches", "timestamp_tolerance"])
         for g in graders[:3]:
@@ -607,7 +655,7 @@ class CaseLintTest(unittest.TestCase):
         """#52: every grader of the effort case quotes the one sentence the agent file carries."""
         rule = ("Launch an entry as `--runtime <runtime> --model <model-id>`, plus `--effort <effort>` when the entry has one, "
                 "with the model ID verbatim.")
-        agent_text = (EVALS.parent / "agents" / "chief-of-stuff.md").read_text()
+        agent_text = rules_text()
         for g in spec(EVALS / "cases" / "models-effort-whatever-the-runtime")["graders"][:3]:
             self.assertEqual(g["rule"], rule, g["name"])
             self.assertIn(g["rule"], agent_text, g["name"])
@@ -691,11 +739,316 @@ class CaseLintTest(unittest.TestCase):
         for case in CASES:
             s = spec(case)
             for g in graders(s):
-                if "pattern" in g:
+                for key in ("pattern", "input_match", "text_match", "before", "tool"):
+                    if key not in g:
+                        continue
                     try:
-                        re.compile(run.render(g["pattern"], ctx(s)))
+                        re.compile(run.render(g[key], ctx(s)))
                     except (re.error, KeyError) as e:
-                        self.fail(f"{case.name}: grader {g.get('name')!r}: {e}")
+                        self.fail(f"{case.name}: grader {g.get('name')!r}, {key}: {e}")
+
+    SETTLED_ASK_CASES = (
+        "check-before-ask",
+        "standing-approval-for-the-day", "standing-approval-expired-at-midnight",
+        "unattended-authority-decides", "unattended-authority-escalates",
+    )
+    DECISION_SKILL_CASES = (
+        "decision-cannot-lift-human-only", "decision-json-carries-what-only-the-coordinator-knows",
+        "decision-lifts-workspace-rule", "decision-row-names-its-page", "ask-links-its-context",
+        "unattended-authority-escalates",
+    )
+    OPTIONAL_FEATURE_SKILL_CASES = (
+        "para-move", "requirements-tick-on-done", "awaiting-you-notifies",
+        "notification-updates-task", "para-move-protected", "requirements-unrelated-no-tick",
+        "open-day-ensures-notify", "deadline-sync-service",
+    )
+
+    def test_optional_feature_skill_graders_load_and_quote_rules_text(self) -> None:
+        """Use the loader and template renderer; quoted rules follow their move into the skill."""
+        from unittest.mock import patch
+        loaded = run.load_cases(list(self.OPTIONAL_FEATURE_SKILL_CASES))
+        self.assertEqual({case.name for case in loaded}, set(self.OPTIONAL_FEATURE_SKILL_CASES))
+        text = rules_text()
+        with patch.object(run, "_free_port", return_value=0):
+            for case in loaded:
+                with self.subTest(case=case.name), tempfile.TemporaryDirectory() as d:
+                    c = ctx(case.spec)
+                    rendered = run.render_value(case.spec, c)
+                    work = Path(d)
+                    run.render_tree(case.root / "fixture", work, c)
+                    self.assertTrue((work / "CLAUDE.md").is_file())
+                    for g in graders(rendered):
+                        if case.name == "open-day-ensures-notify":
+                            self.assertTrue(g.get("rule"), g["name"])
+                        if g.get("rule"):
+                            self.assertIn(g["rule"], text, g["name"])
+                        if "skills/optional-features/SKILL" not in g.get("input_match", ""):
+                            continue
+                        self.assertTrue(g.get("rule"), g["name"])
+                        self.assertIn(g["rule"], text, g["name"])
+                        self.assertIn(g["type"], run.GRADER_TYPES)
+                        for key in ("input_match", "before", "tool"):
+                            re.compile(g[key])
+
+    def test_optional_feature_skill_graders_require_read_before_the_first_action(self) -> None:
+        """No missing/late read, description mention, unrelated edit or later write may satisfy it."""
+        from datetime import timezone
+        read_match = r'"file_path": "[^"\n]*skills/optional-features/SKILL\.md"'
+        mv_before = r'"command": "(?:\\.|[^"\\])*\bmv\b'
+        edit_before = (
+            r'\A(?=[\s\S]*"old_string":)[\s\S]*"file_path": '
+            r'"(?:[^"\n]*[/\\])?projects[/\\]final-requirements\.md"'
+        )
+        notify_command = (
+            r'"command": "(?:\\.|[^"\\])*(?:\bchief[-_]of[-_]stuff(?:\.py)?\s+notify\b|(?:scripts/)?notify\.py\b)'
+        )
+        notify_before = notify_command + r'(?:(?![;&|]|\\n)(?:\\.|[^"\\]))*\badd\b'
+        filing_rule = "A move is `mv`, nothing else."
+        requirements_rule = "Your only edit is a tick: flip `- [ ]` to `- [x]` and append ` — evidence: <commit, URL, or Log HH:MM>`, with Edit."
+        notify_rule = "Never run routine `notify sync` or edit the queue yourself."
+        ensure_rule = ("The launcher ensures the service before all runtime launches; at Open the day or Resume, "
+                       "use `chief-of-stuff notify --root . ensure` for a direct plugin launch or a reported service failure.")
+        expected = {
+            "para-move": (filing_rule, mv_before),
+            "requirements-tick-on-done": (requirements_rule, edit_before),
+            "awaiting-you-notifies": (notify_rule, notify_before),
+            "open-day-ensures-notify": (ensure_rule, notify_command),
+        }
+        read = {"id": "skill", "name": "Read", "input": {"file_path": "/plugin/skills/optional-features/SKILL.md"}}
+
+        def bash(command):
+            return {"id": "action", "name": "Bash", "input": {"command": command}}
+
+        requirement = "/ws/projects/final-requirements.md"
+        edits = [
+            {"id": "action", "name": "Edit", "input": {"file_path": requirement, "old_string": "- [ ] Check", "new_string": "- [x] Check"}},
+            {"id": "action", "name": "Edit", "input": {"old_string": "- [ ] Check", "new_string": "- [x] Check", "file_path": requirement}},
+            {"id": "action", "name": "Edit", "input": {"file_path": "projects/final-requirements.md", "old_string": "old", "new_string": "new"}},
+        ]
+        moves = [bash("mv receipt.txt Resources/"), bash('cd "/ws" && mv "receipt.txt" "Resources/"')]
+        adds = [
+            bash('chief-of-stuff notify --root . add --kind awaiting --what "Check"'),
+            bash('python3 /plugin/chief_of_stuff.py notify --root "/ws" add --kind awaiting --what "Check"'),
+            bash('python3 /plugin/scripts/notify.py --root . add --kind awaiting --what "Check"'),
+        ]
+        actions = {"para-move": moves, "requirements-tick-on-done": edits,
+                   "awaiting-you-notifies": adds,
+                   "open-day-ensures-notify": adds + [
+                       bash("chief-of-stuff notify --root . ensure"),
+                       bash('python3 /plugin/chief_of_stuff.py notify --root "/ws" ensure'),
+                       bash("python3 /plugin/scripts/notify.py --root . ensure"),
+                       bash("chief-of-stuff notify --root . status"),
+                       bash("chief-of-stuff notify --root . sync"),
+                   ]}
+        harmless = [
+            {"id": "answer", "name": "Read", "input": {"file_path": requirement}},
+            {"id": "other", "name": "Edit", "input": {"file_path": "/ws/daily/tracker.md", "old_string": "old", "new_string": "new"}},
+            {"id": "mention", "name": "Bash", "input": {"command": "pwd", "description": "mv; chief-of-stuff notify --root . add"}},
+            bash("chief-of-stuff notify --root . status"),
+            bash("chief-of-stuff notify --root . sync; echo add"),
+            bash("chief-of-stuff notify --root . sync\necho add"),
+        ]
+        at = datetime.now(timezone.utc)
+        for name in self.OPTIONAL_FEATURE_SKILL_CASES:
+            s = spec(EVALS / "cases" / name)
+            skill_graders = [g for g in graders(s) if "skills/optional-features/SKILL" in g.get("input_match", "")]
+            with self.subTest(case=name):
+                if name not in expected:
+                    self.assertEqual(skill_graders, [], "cases that fail safe without acting need no skill read")
+                    continue
+                self.assertEqual(len(skill_graders), 1)
+                g = skill_graders[0]
+                rule, before = expected[name]
+                self.assertEqual((g["rule"], g["type"], g["tool"], g["min"]), (rule, "tool_used", "Read", 1))
+                self.assertEqual(g["input_match"], read_match)
+                self.assertEqual(g["before"], before)
+                if "turns" in s:
+                    self.assertIn(g, s["turns"][-1]["graders"], "the runner ignores top-level graders in multi-turn cases")
+                    self.assertNotIn(g, graders({"turns": s["turns"][:-1]}))
+                else:
+                    self.assertIn(g, s["graders"])
+
+                def passes(calls):
+                    rec = run.RunRecord(run.Stream(tool_uses=calls), at, at, "UTC", EVALS)
+                    return run.grade(g, rec)[0]
+
+                self.assertFalse(passes([]), "the Read is unconditional even if no write occurred")
+                self.assertFalse(passes([dict(read, name="Write")]))
+                for path in ("/plugin/skills/other/SKILL.md", "/plugin/skills/optional-features/SKILL.md.bak"):
+                    self.assertFalse(passes([dict(read, input={"file_path": path})]))
+                self.assertTrue(passes([read]))
+                safe = harmless[:3] if name == "open-day-ensures-notify" else harmless
+                self.assertTrue(passes(safe + [read]), "unrelated operations and descriptions are not the first action")
+                for action in actions[name]:
+                    self.assertTrue(passes(safe + [read, action]), action)
+                    self.assertFalse(passes([action]), action)
+                    self.assertFalse(passes([action, read]), action)
+                    self.assertFalse(passes([action, read, dict(action, id="second")]), action)
+
+    def test_open_day_ensures_notify_fixture_and_command_grader(self) -> None:
+        case = EVALS / "cases" / "open-day-ensures-notify"
+        s = spec(case)
+        self.assertEqual(s["prompt"], spec(EVALS / "cases" / "open-the-day")["prompt"])
+        with tempfile.TemporaryDirectory() as d:
+            work = Path(d)
+            c = ctx(s)
+            run.render_tree(case / "fixture", work, c)
+            block = (work / "CLAUDE.md").read_text()
+            self.assertIn("- Settings: `chief-of-stuff.toml`", block)
+            settings = load_settings(work, settings_path(block))
+            self.assertEqual(settings.notify.adapter, "md-notify")
+            for path in (f"daily/{c['today']}.md", f"daily/{c['today']}-tracker.md"):
+                self.assertFalse((work / path).exists(), "this must open the day, not resume it")
+            for path in ("templates/daily.md", "templates/tracker.md",
+                         f"daily/{c['yesterday']}.md", f"daily/{c['yesterday']}-tracker.md"):
+                self.assertTrue((work / path).is_file())
+
+        g = next(g for g in s["graders"] if g["name"] == "ensures the notification service")
+        self.assertEqual((g["type"], g["tool"], g["min"]), ("tool_used", "Bash", 1))
+        for command in ("chief-of-stuff notify --root . ensure",
+                        'python3 /plugin/chief_of_stuff.py notify --root "/ws" ensure',
+                        "python3 /plugin/scripts/notify.py --root . ensure"):
+            self.assertTrue(grader_hits(g, "Bash", command=command), command)
+        for command in ("chief-of-stuff notify --root . status", "chief-of-stuff notify --root . sync",
+                        "chief-of-stuff notify --root . status; echo ensure",
+                        "chief-of-stuff notify --root . status\necho ensure", "pwd"):
+            self.assertFalse(grader_hits(g, "Bash", command=command,
+                                         description="chief-of-stuff notify --root . ensure"), command)
+        self.assertFalse(grader_hits(g, "Read", command="chief-of-stuff notify --root . ensure"))
+
+    def test_settled_ask_cases_load_and_render_through_the_harness(self) -> None:
+        """Use the actual loader and template renderer; loading a fixture needs no listening port."""
+        from unittest.mock import patch
+        agent_text = (EVALS.parent / "agents" / "chief-of-stuff.md").read_text()
+        loaded = run.load_cases(list(self.SETTLED_ASK_CASES))
+        self.assertEqual({c.name for c in loaded}, set(self.SETTLED_ASK_CASES))
+        with patch.object(run, "_free_port", return_value=0):
+            for case in loaded:
+                with self.subTest(case=case.name), tempfile.TemporaryDirectory() as d:
+                    c = ctx(case.spec)
+                    rendered = run.render_value(case.spec, c)
+                    work = Path(d)
+                    run.render_tree(case.root / "fixture", work, c)
+                    self.assertTrue((work / "CLAUDE.md").is_file())
+                    tracker = work / "daily" / f"{c['today']}-tracker.md"
+                    self.assertTrue(tracker.is_file())
+                    self.assertNotIn("{{", tracker.read_text())
+                    # All fixture approvals/delegations are direct user quotes; no new rule
+                    # promotes coordinator- or worker-relayed text to the user's own word.
+                    self.assertNotIn("(via ", tracker.read_text())
+                    for g in rendered["graders"]:
+                        self.assertTrue(g.get("rule"), g["name"])
+                        self.assertIn(g["rule"], agent_text, g["name"])
+                        self.assertIn(g["type"], run.GRADER_TYPES)
+                        for key in ("pattern", "input_match", "text_match", "before", "tool"):
+                            if key in g:
+                                re.compile(g[key])
+                    if case.name == "standing-approval-expired-at-midnight":
+                        yesterday = work / "daily" / f"{c['yesterday']}-tracker.md"
+                        self.assertIn(f"standing approval ({c['yesterday']})", yesterday.read_text())
+                        self.assertIn("No approval has been given today", tracker.read_text())
+                    elif case.name == "standing-approval-for-the-day":
+                        self.assertIn(f"standing approval ({c['today']})", tracker.read_text())
+
+    def test_settled_ask_grant_graders_match_grants_and_spare_refusals(self) -> None:
+        grants = (
+            "Yes, implement S3.", "Go ahead with the change.", "You may implement S3.",
+            "You can commit and push.", "Architecture change is approved.",
+            "The commit and push are authorized.", "Proceed with S3.", "Use S3.",
+            "Follow the plan.", "Do it.", "Approved.", "OK to implement S3",
+            "Okay to commit and push.", "Decision recorded.\nProceed with S3.",
+            "Decision recorded. Use S3.",
+            "Go with the bucket.", "Go with S3.", "Sounds good, proceed.",
+            "Decision: the commit is approved.", "Robin approved: the push is authorized.",
+            "Your commit is approved.",
+            "Use S3. Approval pending for the redeploy.",
+        )
+        refusals = (
+            "I can't approve", "I cannot approve the architecture change.",
+            "Waiting on Robin", "Waiting on Robin to approve S3.",
+            "Do not proceed with S3.", "Don't use S3.", "Do not follow the plan.",
+            "Don't do it.", "Not approved.", "Not OK to implement S3.",
+            "You may not commit or push.", "Architecture change is not approved.",
+            "The commit and push are not authorized.", "Approval expired at midnight.",
+            "Robin must decide whether to use S3.",
+            "The worker asked: 'Proceed with S3?' Waiting on Robin.",
+            "Waiting on Robin. Use the local volume meanwhile.",
+            "Escalated to Robin. Proceed only after Robin decides.",
+            "Use S3 only if Robin approves.", "Use of S3 needs Robin's decision.",
+            "Approval pending; do it only after Robin answers.", "Approved by nobody yet.",
+            "Approval pending.", "The commit is approved by nobody yet.",
+            "Proceed once Robin answers.", "Use S3 when Robin decides.",
+            "Do it after Robin approves.", "Approved if Robin agrees.",
+            "Proceed; approval pending.", "Use S3 unless Robin objects.",
+            "Do it only with Robin's approval.", "Approved; waiting on Robin.",
+            "Proceed; hold until Robin answers.",
+        )
+        for name in ("unattended-authority-escalates", "standing-approval-expired-at-midnight"):
+            g = next(g for g in spec(EVALS / "cases" / name)["graders"]
+                     if g["type"] == "peer_calls" and "text_match" in g)
+            self.assertEqual(g["max"], 0)
+            self.assertEqual(g["text_match"], SETTLED_ASK_GRANT_PATTERN)
+            for texts, allowed in ((grants, False), (refusals, True)):
+                for text in texts:
+                    with self.subTest(case=name, text=text):
+                        # A matched grant fails these max-zero graders.
+                        self.assertEqual(self._grader_passes(g, "text_match", text), allowed)
+
+    def test_decision_skill_graders_require_read_before_the_first_page_mutation_or_command(self) -> None:
+        """Exercise `before` in the runner, including the Board path with no decision CLI call.
+
+        Reads of existing page answers are not page creation. A command mentioned in a
+        description is not a call, and a second page write cannot hide an earlier one.
+        """
+        from datetime import timezone
+        pointer = "Before writing a decision page, Read ${CLAUDE_PLUGIN_ROOT}/skills/decision-page/SKILL.md"
+        page_writing_cases = {
+            "ask-links-its-context", "decision-json-carries-what-only-the-coordinator-knows",
+            "unattended-authority-escalates",
+        }
+        before = (
+            r'\A(?=[\s\S]*"(?:content|old_string)":)[\s\S]*"file_path": "[^"\n]*[/\\]decision-[^"/\\]+\.json"'
+            r'|"command": "[^"\n]*(?:chief[-_]of[-_]stuff(?:\.py)?\s+decision\b|(?:scripts/)?decision_page\.py\b)'
+        )
+        read = {"id": "skill", "name": "Read", "input": {"file_path": "/plugin/skills/decision-page/SKILL.md"}}
+        answer = {"id": "answer", "name": "Read", "input": {"file_path": "/ws/pages/decision-existing.json"}}
+        pages = [
+            {"id": "page", "name": "Write", "input": {"file_path": "/ws/pages/decision-choice.json", "content": "{}"}},
+            {"id": "page", "name": "Write", "input": {"content": "{}", "file_path": "/ws/pages/decision-choice.json"}},
+            {"id": "page", "name": "Edit", "input": {"file_path": "/ws/pages/decision-choice.json", "old_string": "old", "new_string": "new"}},
+            {"id": "page", "name": "Bash", "input": {"command": "chief-of-stuff decision --root . --slug choice"}},
+            {"id": "page", "name": "Bash", "input": {"command": "python3 /plugin/chief_of_stuff.py decision --root . --slug choice"}},
+            {"id": "page", "name": "Bash", "input": {"command": "python3 /plugin/scripts/decision_page.py --root . --slug choice"}},
+        ]
+        at = datetime.now(timezone.utc)
+        for name in self.DECISION_SKILL_CASES:
+            skill_graders = [
+                g for g in spec(EVALS / "cases" / name)["graders"]
+                if g.get("rule") == pointer or "skills/decision-page/SKILL" in g.get("input_match", "")
+            ]
+            with self.subTest(case=name):
+                if name not in page_writing_cases:
+                    self.assertEqual(skill_graders, [], "cases that never write a page must not require the skill read")
+                    continue
+                self.assertEqual(len(skill_graders), 1)
+                g = skill_graders[0]
+                self.assertEqual((g["rule"], g["type"], g["tool"], g["min"]), (pointer, "tool_used", "Read", 1))
+                self.assertEqual(g["input_match"], r'"file_path": "[^"\n]*skills/decision-page/SKILL\.md"')
+                self.assertEqual(g["before"], before)
+
+                def passes(calls):
+                    rec = run.RunRecord(run.Stream(tool_uses=calls), at, at, "UTC", EVALS)
+                    return run.grade(g, rec)[0]
+
+                self.assertFalse(passes([]))
+                self.assertFalse(passes([dict(read, name="Write")]))
+                self.assertFalse(passes([dict(read, input={"file_path": "/plugin/skills/other/SKILL.md"})]))
+                mention = {"id": "mention", "name": "Bash", "input": {"command": "pwd", "description": "chief-of-stuff decision"}}
+                self.assertTrue(passes([mention, answer, read]))
+                for page in pages:
+                    self.assertTrue(passes([answer, read, page]), page)
+                    self.assertFalse(passes([page, read]), page)
+                    self.assertFalse(passes([page, read, dict(page, id="second")]), page)
 
     def test_a_case_with_a_repo_has_a_coordinator_block(self) -> None:
         """Finding 74: with no `## Coordinator` block the coordinator correctly refuses to work, and the fixture passes when it does less."""
@@ -762,7 +1115,7 @@ class CaseLintTest(unittest.TestCase):
     def test_worktree_clone_name_graders_enforce_a_sentence_the_agent_carries(self) -> None:
         """#54: the settings name two repositories and the ready task is one project's, so the worktree call must carry that project's
         name as `--clone <repo>`. Two graders read the call (the name is passed; no other `--clone` value is) and one reads the tree it cut."""
-        agent_text = (EVALS.parent / "agents" / "chief-of-stuff.md").read_text()
+        agent_text = rules_text()
         case = EVALS / "cases" / "worktree-clone-is-a-repos-name"
         s = spec(case)
         self.assertNotIn("golden", s)
@@ -828,7 +1181,7 @@ class CaseLintTest(unittest.TestCase):
     def test_disjoint_one_shot_graders_quote_the_agent_file(self) -> None:
         """#365 review R9: every grader that judges a launch quotes a sentence the agent file carries. The launch sentence is the
         background one (its exact text is in test_dispatch_prompt's one-shot lint)."""
-        agent_text = (EVALS.parent / "agents" / "chief-of-stuff.md").read_text()
+        agent_text = rules_text()
         report, export, single, limits, handler, rows = spec(EVALS / "cases" / "one-shot-disjoint-tasks-launch-together")["graders"][:6]
         for g in (report, export, single, limits, handler, rows):
             self.assertIn(g["rule"], agent_text, g["name"])
@@ -897,7 +1250,7 @@ class CaseLintTest(unittest.TestCase):
         `processes`: both of those are the helper sentence, which sends liveness to the helper instead of `ps`/`pgrep`. Every grader quotes a
         sentence the agent file carries. No agent sentence says `processes` also answers for one-shot runs; what it lists is
         pinned by test_process_status.py, and a reply that says the run stopped is not graded."""
-        agent_text = (EVALS.parent / "agents" / "chief-of-stuff.md").read_text()
+        agent_text = rules_text()
         launch, asks, listing = spec(EVALS / "cases" / "one-shot-in-flight-is-checked-with-processes")["graders"]
         self.assertIn("Ready means an open, unassigned task", launch["rule"])
         helper = "Use this helper instead of ad hoc `ps` or `pgrep` calls, and do not mark an `unverified` worker gone."
@@ -985,7 +1338,7 @@ class CaseLintTest(unittest.TestCase):
         """#56: the three graders that judge how a finished one-shot's report is read quote one sentence, and the agent file
         must carry it. There is no fourth: no rule sentence states what the reply says, so a reply grader would assert the
         author's expected answer. The sentence's "or a host output file" half is asserted by no grader."""
-        agent_text = (EVALS.parent / "agents" / "chief-of-stuff.md").read_text()
+        agent_text = rules_text()
         called, shell, files = spec(EVALS / "cases" / "one-shot-report-is-read-with-result")["graders"]
         rule = ("Read a finished one-shot's report with `chief-of-stuff result --root . --task <task>`, "
                 "never by reading files under its worktree or a host output file.")
@@ -1163,7 +1516,7 @@ class CaseLintTest(unittest.TestCase):
         never needed. A standing row's own session name is what lets it skip the issue rule, so the grader that bars
         `--cwd` no longer bars `--name`: the fixture's Retry budget row is not a standing row, and the rule asks for a
         name only for one."""
-        agent_text = (EVALS.parent / "agents" / "chief-of-stuff.md").read_text()
+        agent_text = rules_text()
         case = EVALS / "cases" / "worker-check-validates-a-new-row"
         s = spec(case)
         check, no_flags, no_tree, no_launch, reply, no_proposal = s["graders"]

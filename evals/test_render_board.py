@@ -17,6 +17,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from evals.rules_text import rules_text
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import estimate  # noqa: E402
 import md  # noqa: E402
@@ -1255,7 +1257,7 @@ class DecisionDeadlineTest(unittest.TestCase):
         self.assertIn("horizon=Review cutoff", output.getvalue())
 
     def test_agent_rules_name_the_precise_decision_format(self) -> None:
-        rules = (Path(__file__).resolve().parents[1] / "agents/chief-of-stuff.md").read_text()
+        rules = rules_text()
         self.assertIn("deadline: <name> YYYY-MM-DD HH:MM", rules)
         self.assertIn("deadline: <name> HH:MM", rules)
 
@@ -1266,7 +1268,7 @@ class DecisionDeadlineTest(unittest.TestCase):
         #   "A workflow step \u2014 a review, or anything the pipeline itself performs \u2014 takes no issue: write `workflow` in its `issue` cell."
         #   "A change of state \u2014 a kanban stage, a hold label, a review or merge step \u2014 is recorded on the issue it concerns, in the stage column and the Log, never as a new issue."
         # "A standing session's placeholder is not a task and takes no issue" stays.
-        rules = (Path(__file__).resolve().parents[1] / "agents/chief-of-stuff.md").read_text()
+        rules = rules_text()
         for required in (
             "A workflow step \u2014 a review, or anything the pipeline itself performs \u2014 takes no issue: write `workflow` in its `issue` cell.",
             "A change of state \u2014 a kanban stage, a hold label, a review or merge step \u2014 is recorded on the issue it concerns, in the stage column and the Log, never as a new issue.",
@@ -1286,7 +1288,7 @@ class DecisionDeadlineTest(unittest.TestCase):
         #     "a `workflow` row has no issue and takes no sync"
         #   Tasks bullet, one sentence, whole:
         #     "A review you are asked to do is a workflow step with its own `workflow` row; a review stage on a task is a change of state on that task's own issue."
-        rules = (Path(__file__).resolve().parents[1] / "agents/chief-of-stuff.md").read_text()
+        rules = rules_text()
         for anchor, required in (
             ("file its issue where the block names a `Backlog:`", "unless it is a workflow step, which takes the token `workflow`"),
             ("4. Carry over:", "every carried task with no issue, other than a workflow step, gets one filed now"),
@@ -1311,7 +1313,7 @@ class DecisionDeadlineTest(unittest.TestCase):
             "`est. i/N → <deadline>`",                                       # the `est.` label before any task has closed
             'open to the deadline labelled "no estimate"',                   # the bar drawn open to the deadline
         )
-        rules = (Path(__file__).resolve().parents[1] / "agents/chief-of-stuff.md").read_text()
+        rules = rules_text()
         for phrase in stale:
             with self.subTest(phrase=phrase):
                 self.assertFalse(phrase in rules, f"the agent file still says {phrase!r}")
@@ -1321,7 +1323,7 @@ class DecisionDeadlineTest(unittest.TestCase):
         # remaining stages as forecast bars; only an unowned task gets none. The Tasks bullet must carry this sentence:
         #   "a blank `due` leaves the board to derive an end from the owner's queue and draw the remaining stages as forecast"
         # The clauses "it stays blank until a person fills it" and "you never fill it in to make the board look complete" stay.
-        rules = (Path(__file__).resolve().parents[1] / "agents/chief-of-stuff.md").read_text()
+        rules = rules_text()
         self.assertFalse("blank means no estimate" in rules, "the agent file still says a blank `due` means no estimate")
         required = "a blank `due` leaves the board to derive an end from the owner's queue and draw the remaining stages as forecast"
         self.assertTrue(required in rules, f"the agent file does not say {required!r}")
@@ -1334,7 +1336,7 @@ class DecisionDeadlineTest(unittest.TestCase):
         # board" for a task with no tree. The Tasks `lane`/`stage` sentence must read exactly:
         #   "A task with no tree (a decision, a relay, a console action) leaves both cells blank and draws no card in BUILD."
         # (the header, the tiles and the Flow charts still count it; the sentence need not say so).
-        rules = (Path(__file__).resolve().parents[1] / "agents/chief-of-stuff.md").read_text()
+        rules = rules_text()
         required = "leaves both cells blank and draws no card in BUILD"
         self.assertTrue(required in rules, f"the agent file does not say {required!r}")
 
@@ -1342,14 +1344,14 @@ class DecisionDeadlineTest(unittest.TestCase):
         # #350: board-on-open-the-day's graders pin `build | implement` on the carried rows, and a carried task with no lane
         # and stage has no card in BUILD. So the Open the day carry-over sentence must name both. It must read exactly:
         #   "becomes a row in today's tracker Tasks, same item, owner, lane, stage, and checklist reference, with today's date as `since`"
-        rules = (Path(__file__).resolve().parents[1] / "agents/chief-of-stuff.md").read_text()
+        rules = rules_text()
         required = "same item, owner, lane, stage, and checklist reference"
         self.assertTrue(required in rules, f"the agent file does not say {required!r}")
 
     def test_agent_rules_do_not_say_the_board_draws_an_arrow_to_the_waiting_on_who(self) -> None:
         # Sessions are gone (#259), so the board draws no arrow. The `waiting on` bullet keeps its order (who first, then why)
         # and loses the clause "The who is what the board draws an arrow to".
-        rules = (Path(__file__).resolve().parents[1] / "agents/chief-of-stuff.md").read_text()
+        rules = rules_text()
         self.assertFalse("The who is what the board draws an arrow to" in rules, "the agent file still says the board draws an arrow to the who")
         kept = "`waiting on` names who first, then why"
         self.assertTrue(kept in rules, f"the agent file lost {kept!r}")
@@ -1834,7 +1836,7 @@ class FlowRefReviewTest(unittest.TestCase):
         for url in self.CHANGE_URLS:
             with self.subTest(url=url):
                 flow = self.flow("workflow", f"Review {url} and check diagnostics")
-                self.assertEqual(set(re.findall(r'class="gantt-ref">([^<]*)<', flow)), {"!51"})
+                self.assertEqual(set(re.findall(r'class="gantt-ref"[^>]*>([^<]*)<', flow)), {"!51"})
 
     def test_issue_key_and_issue_url_flow_refs_still_link_to_the_issue_page(self) -> None:
         for ref in ("group/project#7", "https://forge.example/group/project/-/issues/7",
@@ -1842,6 +1844,46 @@ class FlowRefReviewTest(unittest.TestCase):
             with self.subTest(ref=ref):
                 flow = self.flow(ref, "Build the parser")
                 self.assertEqual(set(re.findall(r'href="(/issues/[^"]*)"', flow)), {"/issues/7"})
+
+    def test_forge_issue_url_flow_labels_show_only_the_issue_number(self) -> None:
+        # #459: display is #N, independent of the full key used to merge passes.
+        for url in ("https://forge.example/group/project/-/issues/7",
+                    "https://github.com/group/project/issues/7"):
+            with self.subTest(url=url):
+                flow = self.flow(url, "Build the parser")
+                self.assertEqual(re.findall(r'class="gantt-ref"[^>]*>([^<]*)<', flow), ["#7", "#7"])
+
+    def test_forge_issue_url_flow_ref_titles_keep_the_full_url(self) -> None:
+        # #459 decision: the short label's title retains the tracker cell's full URL.
+        for url in ("https://forge.example/group/project/-/issues/7",
+                    "https://github.com/group/project/issues/7"):
+            with self.subTest(url=url):
+                flow = self.flow(url, "Build the parser")
+                refs = re.findall(r'<a\b([^>]*\bclass="gantt-ref"[^>]*)>', flow)
+                self.assertEqual(len(refs), 2)
+                for attrs in refs:
+                    self.assertIn(f'title="{url}"', attrs)
+
+    def test_bare_issue_flow_labels_and_task_page_links_stay_unchanged(self) -> None:
+        flow = self.flow("#7", "Build the parser")
+        refs = re.findall(r'<a\b([^>]*\bclass="gantt-ref"[^>]*)>([^<]*)</a>', flow)
+        self.assertEqual(len(refs), 2)
+        for attrs, label in refs:
+            self.assertEqual(label, "#7")
+            self.assertIn('href="/issues/7"', attrs)
+
+    def test_markdown_issue_flow_ref_titles_escape_quotes_and_angle_brackets(self) -> None:
+        # PR 469 R1: the issue cell's markdown label must not become HTML attributes.
+        url = "https://forge.example/group/project/-/issues/7"
+        issue = f'[x" onmouseover="alert(1)<b>]({url})'
+        flow = self.flow(issue, "Build the parser")
+        rows = re.findall(r'<div class="gantt-row">[^\n]+', flow)
+        self.assertEqual(len(rows), 2)
+        for row in rows:
+            self.assertIn(f'title="[x&quot; onmouseover=&quot;alert(1)&lt;b&gt;]({url})"', row)
+            # Checking the entire row covers every attribute, including malformed ones.
+            self.assertNotIn('" onmouseover=', row)
+            self.assertNotIn("<b>", row)
 
 
 class SettingsLineTest(unittest.TestCase):

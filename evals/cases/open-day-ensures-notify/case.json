@@ -1,0 +1,62 @@
+{
+  "tz": "America/Chicago",
+  "prompt": "Good morning.",
+  "max_turns": 20,
+  "timeout_seconds": 300,
+  "calendar": "calendar.json",
+  "description": "Open the day with no files for today and an enabled md-notify adapter in the Settings file. Read the optional-features skill before the first notification command and ensure the service while creating today’s tracker.",
+  "graders": [
+    {
+      "name": "reads the optional-features skill before the first notify command",
+      "rule": "The launcher ensures the service before all runtime launches; at Open the day or Resume, use `chief-of-stuff notify --root . ensure` for a direct plugin launch or a reported service failure.",
+      "type": "tool_used",
+      "tool": "Read",
+      "input_match": "\"file_path\": \"[^\"\\n]*skills/optional-features/SKILL\\.md\"",
+      "min": 1,
+      "before": "\"command\": \"(?:\\\\.|[^\"\\\\])*(?:\\bchief[-_]of[-_]stuff(?:\\.py)?\\s+notify\\b|(?:scripts/)?notify\\.py\\b)"
+    },
+    {
+      "name": "ensures the notification service",
+      "rule": "The launcher ensures the service before all runtime launches; at Open the day or Resume, use `chief-of-stuff notify --root . ensure` for a direct plugin launch or a reported service failure.",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "\"command\": \"(?:\\\\.|[^\"\\\\])*(?:\\bchief[-_]of[-_]stuff(?:\\.py)?\\s+notify\\b|(?:scripts/)?notify\\.py\\b)(?:(?![;&|]|\\\\n)(?:\\\\.|[^\"\\\\]))*\\bensure\\b",
+      "min": 1
+    },
+    {
+      "name": "tracker task: README",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^\\|(?:[^|\\n]*\\|)?\\s*Write eval README\\s*\\|",
+      "rule": "Carry over: every task in yesterday's tracker whose state is not `done` becomes a row in today's tracker Tasks, same item, owner, lane, stage, and checklist reference, with today's date as `since`."
+    },
+    {
+      "name": "tracker task: deploy review",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)^\\|(?:[^|\\n]*\\|)?\\s*Review deploy config\\s*\\|",
+      "rule": "Carry over: every task in yesterday's tracker whose state is not `done` becomes a row in today's tracker Tasks, same item, owner, lane, stage, and checklist reference, with today's date as `since`."
+    },
+    {
+      "name": "tracker has Decisions",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "^## Decisions",
+      "rule": "If today's log and tracker do not exist, create both from the templates the `## Coordinator` block names (or from the section headings alone if there are none)."
+    },
+    {
+      "name": "tracker has File ownership",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "^## File ownership",
+      "rule": "If today's log and tracker do not exist, create both from the templates the `## Coordinator` block names (or from the section headings alone if there are none)."
+    },
+    {
+      "name": "tracker has Log",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "^## Log",
+      "rule": "If today's log and tracker do not exist, create both from the templates the `## Coordinator` block names (or from the section headings alone if there are none)."
+    }
+  ]
+}
