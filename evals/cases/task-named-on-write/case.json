@@ -4,6 +4,15 @@
   "prompt": "New item for the tracker: rewrite the upload endpoint's README \u2014 the auth section, the three curl examples, and the error table \u2014 mine, no rush.",
   "graders": [
     {
+      "name": "reads the tracker-rows skill before the first tracker Edit/Write",
+      "rule": "`name` is what the task is called: a short noun phrase, yours to write when you write the task and to rewrite when the item changes, and never more than a line.",
+      "type": "tool_used",
+      "tool": "Read",
+      "input_match": "\"file_path\": \"[^\"\\n]*skills/tracker-rows/SKILL\\.md\"",
+      "min": 1,
+      "before": "\\A(?=[\\s\\S]*\"(?:old_string|content)\":)[\\s\\S]*\"file_path\": \"(?:[^\"\\n]*[/\\\\])?daily[/\\\\]{{today}}-tracker\\.md\""
+    },
+    {
       "name": "the new row opens with a short name of its own",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",

@@ -19,29 +19,26 @@ from evals.rules_text import one_shot_paragraph, rules_text, sections, skill_bod
 from evals.skill_fixtures import write_plugin, write_skill  # noqa: E402
 
 # Each later slice lowers these in a red commit before it trims the text.
-# Skills are read on demand on every host (#511); prompts retain pinned pointer lines.
-# With the raised ceilings below, measured spare bytes before the adapter sentence are
-# Claude 15, Codex 143, Cursor 135, AGY 129; after its 89 B, non-Claude spare is 54/46/40.
-TOTAL = 77_700            # whole agent file, bytes
+# Slice 4 (#488): move Tasks-row column rules to tracker-rows; keep state,
+# done evidence, ownership and Open the day widening rules in the agent.
+TOTAL = 72_000            # whole agent file, bytes
 MAX_LINE = 8_400          # longest single line
 ONE_SHOT_PARAGRAPH = 4_400  # kept: a later slice trims this paragraph
-# #511: current rendered sizes minus appended skill sections (body + named header):
-# decision-page 2,139 B + optional-features 4,795 B = 6,934 B per non-Claude host.
-# Claude carries neither section. With release/workspace paths removed, the remaining
-# sizes are Claude 76,685, Codex 69,207, Cursor 69,315, AGY 69,371; round up to 50 B.
-# Read-pointer adapter guidance adds 88 B plus a joining space: raise each non-Claude
-# ceiling by 100 B (89 B rounded up to the next 50 B). Claude's ceiling is unchanged.
-PROMPT = {"claude": 76_700, "codex": 69_350, "cursor": 69_450, "agy": 69_500}  # rendered, path bytes removed
+# Skills are read on demand; no host's prompt appends their bodies.
+# rendered_sizes(1), with release/workspace paths removed: Claude 71,475 B,
+# Codex 64,086 B, Cursor 64,194 B, AGY 64,250 B (non-Claude include the 89 B read
+# adapter sentence, #511 review); each ceiling rounds up to 50 B.
+PROMPT = {"claude": 71_500, "codex": 64_100, "cursor": 64_200, "agy": 64_250}  # rendered, path bytes removed
 CEILING = {  # `## ` section -> bytes, heading line included
     "Role": 1600, "Dispatch authority": 1100, "Browser safety": 410, "Writing": 780,
     "Config": 1400, "Clock": 1850, "Calendar": 910, "Open the day": 2000, "Resume": 4830,
     "Write authority": 2310, "Filing": 360, "Human-only actions": 1280, "Dispatch": 15210,
     "Assign": 2560, "Brief": 730, "Pipeline": 6150, "Triage": 3770, "Check": 2780,
-    "Sessions": 7380, "Relay": 2510, "Tracker": 10930, "Notices": 740, "Board": 1750,
+    "Sessions": 7380, "Relay": 2510, "Tracker": 5_500, "Notices": 740, "Board": 1750,
     "Requirements": 360, "Share": 460, "Asks": 4700, "Notify": 360,
 }
-SKILL_CEILING = {"decision-page": 2_700, "optional-features": 5_200}  # moved bytes + metadata/organization/headroom
-SKILLS_TOTAL = 7_900  # all SKILL.md files, bytes
+SKILL_CEILING = {"decision-page": 2_700, "optional-features": 5_200, "tracker-rows": 5_400}  # moved bytes + metadata/organization/headroom
+SKILLS_TOTAL = 13_300  # all SKILL.md files, bytes
 DESCRIPTION_CAP = 300  # frontmatter description characters, not bytes
 SKILL_POINTER = re.compile(r"\$\{CLAUDE_PLUGIN_ROOT\}/skills/([^/\s`]+)/SKILL\.md")
 DECISION_PAGE_POINTER = "Before writing a decision page, Read ${CLAUDE_PLUGIN_ROOT}/skills/decision-page/SKILL.md"
@@ -67,6 +64,71 @@ OPTIONAL_FEATURE_RULES = {
         "Once per ask, in the same move as the ask.",
     ),
 }
+
+TRACKER_ROWS_POINTER = "Before writing or changing a Tasks row, filing or closing its issue, or moving its stage, Read ${CLAUDE_PLUGIN_ROOT}/skills/tracker-rows/SKILL.md"
+# Verbatim sentences from the Tasks bullet, pinned before slice 4 moves them.
+TRACKER_ROW_RULES = {
+    'pipe and name': (
+        'A `|` inside any cell is written `\\|`, backticks or not: a raw one is a column delimiter, and the board reads every column right of it one place over.',
+        '`name` is what the task is called: a short noun phrase, yours to write when you write the task and to rewrite when the item changes, and never more than a line.',
+        'It is the label the board draws for a task; `item` keeps the wording, the history you append, and the status note, and is read only when someone opens the task.',
+        'Write the name because you know which words are the task and which are its history — the board cannot tell, and before this column it guessed by splitting the item cell on its first sentence, which is why tasks drew as `**Deploy main.**…` with the asterisks showing.',
+        'A task whose row has no name still draws: the board falls back to that guess, so an older tracker keeps working and is not to be rewritten wholesale to add the column.',
+    ),
+    'sha': (
+        "The optional `<sha>` is the commit that carried THIS task's change onto main — the one you already reported in `Verified`, written here so a machine can read it.",
+        "`audit_tasks.py` clears a task from `git merge-base --is-ancestor <sha> main` when it is there, and falls back to asking whether the owner's TREE is on main when it is not; a sha it cannot parse or cannot find is treated as absent, never as a clear.",
+        'Write it only when you have it, and never one you did not verify: a task reopened in error is noisy and self-clearing, and a task cleared in error is silent and permanent.',
+    ),
+    'size': (
+        '`size` is your judgement of the item as written, `S`, `M`, `L` or `XL`, made when you write the task and remade when the item changes: `S` is one edit, one file, one fact to check; `M` is one item a session finishes in a sitting, a few files, one suite run; `L` is a plan with bullets, several files, its own pull request; `XL` is a task that spawns other tasks or spans sessions.',
+        'It is not a guess at hours — the board measures those from closed tasks of each size — and a value a person wrote stands.',
+        'A size arrives when you write the row or its item changes, never in a move about another task: a tracker you inherit with six columns is widened, with every size blank, at Open the day, and until then it is read as it is — the board parses each width.',
+    ),
+    'due, issue, lane and stage': (
+        "`since` and `due` are what the board draws from: `due` is `HH:MM`, a date, a deadline name from the block, or blank: a blank `due` leaves the board to derive an end from the owner's queue and draw the remaining stages as forecast; it stays blank until a person fills it, and you never fill it in to make the board look complete.",
+        '`issue` is the issue that backs the task, when the `## Coordinator` block has a `Backlog:` line: `#N` in that backlog, `owner/repo#N` on GitHub, or the issue\'s URL (GitHub or GitLab) (the user, 2026-09-22 22:20: "each entry in the task tracker is actually backed by an entry in github").',
+        'A workflow step — a review, or anything the pipeline itself performs — takes no issue: write `workflow` in its `issue` cell.',
+        "A review you are asked to do is a workflow step with its own `workflow` row; a review stage on a task is a change of state on that task's own issue.",
+        'Otherwise file it **before** you write the row.',
+        'On GitLab (the user, 2026-09-23 22:40: "make everything use gitlab now that we have that going"): `chief-of-stuff backlog --create <the name> --body <outcome, why, acceptance> --commit`, which prints the new number.',
+        'On GitHub: `chief-of-stuff backlog --create <the name> --body <outcome, why, acceptance> --commit`; use `--parent <issue-number>` or repeated `--blocked-by <issue-number>` for native relationships rather than writing issue numbers in prose.',
+        'The body goes to `gh` on stdin, and the created issue number is printed.',
+        'Writing `done` on a task closes its issue in the same move: `chief-of-stuff backlog --close N --commit`, and one Log line.',
+        "A standing session's placeholder is not a task and takes no issue, and neither does a row that went `done` before the rule.",
+        'A change of state — a kanban stage, a hold label, a review or merge step — is recorded on the issue it concerns, in the stage column and the Log, never as a new issue.',
+        '`lane` names a lane from the `[lanes]` table of the block\'s `Settings:` file, and `stage` is where the task stands in it (the user, 2026-09-23: "A lane: the sequence that a task has to move through").',
+        'A lane is its stages in order; a gate is a stage only the user\'s word passes, and the board marks a task at one "waiting on you".',
+        'A task with no tree (a decision, a relay, a console action) leaves both cells blank and draws no card in BUILD.',
+        'Move `stage` with `chief-of-stuff log --root . --stage "<name>" <stage>` when the task moves, once for every stage it enters, even two in one move: it sets the cell and writes the `stage: <name> → <stage>` Log line the board\'s Flow charts read, under the tracker lock.',
+        'Never set the cell by hand or write that line as free text.',
+    ),
+}
+TRACKER_RETAINED_RULES = (
+    '- **Tasks**: one row per item: `| name | item | owner | state | since | due | size | lane | stage | issue | checklist |`.',
+    "Owner is the user's name, a working session, a dispatched context, or `unassigned`.",
+    'State is one of `open`, `running HH:MM`, `waiting`, `orphaned`, `done`, `done HH:MM`, `done HH:MM–HH:MM`, `done HH:MM–HH:MM <sha>`; no other words.',
+    '`done` keeps the running start — `running 21:16` closes as `done 21:16–22:05`.',
+    'The start is the one duration the tracker ever records, and `done 22:05` alone throws it away.',
+    '`unassigned` is not the user: an item is theirs only when they took it, and only an `unassigned` task may be proposed for dispatch or assignment.',
+    "A task is `done` only when its change is integrated into main **and the suite has been run on main after integration**: work sitting on a branch, in a worktree, in an open pull request, or uncommitted is `waiting`, however green its suites, and merged-but-untested-on-main is `waiting` too — except a task closed because its issue closed on the forge, `done` at the close time regardless, since the forge closure is someone's decision that the task is over.",
+    "An open pull request's URL goes in the item when `[workflow] delivery` is `pull-request`.",
+    "The configured delivery and merge owner govern how code reaches main, and the reason the suite runs on main after it is that a merge can break main without either side's branch suite noticing.",
+    'No script can watch a suite run, so the evidence is a claim with a citation: the owner reports the suite result and the commit main was at, and that sha goes in `Verified`.',
+    "`audit_tasks.py` prints main's current sha on every run — when it no longer matches the one in `Verified`, the evidence is about a main that no longer exists and the task is not closed on it.",
+    'Before writing `done` on a task whose File ownership names a worktree, run `chief-of-stuff audit --date <today>`, check `chief-of-stuff inbox list --recipient coordinator --unread` for any pending worker reports or stops on that task, and believe the audit and verified evidence over any unverified claim.',
+    'Tasks with no tree — a decision, a relay, a deletion, a console action — are unaffected: there is nothing to merge, and the rule never sends you looking.',
+    "A task whose File ownership names no worktree closes on its owner's or its reporter's word; going through the workspace for a file a session says it wrote is checking their work, which is not yours to do.",
+    'When that word names a sha as on main, check it first: `chief-of-stuff audit --sha <sha>` fetches and prints whether origin/main or local main holds it, and a sha it finds on neither closes nothing.',
+    'Main not yet pushed is a `Verified` fact, not a state.',
+    "A task going to `done` ticks its checklist item in today's log.",
+    'A tracker with eight columns is widened to nine at Open the day, the `issue` cell blank until it is filed.',
+    'A tracker with nine columns is widened to eleven at Open the day, both cells blank.',
+)
+TRACKER_DELETED_RULES = (
+    "`audit_tasks.py` reads every issue's state and reports an open task with no issue, a cell that is not an issue or `workflow`, an issue that is closed or missing under an open task, and an issue still open under a done one; its `issue: unknown` line is a check that did not run, never a pass.",
+    "`audit_tasks.py` reports a lane the settings file does not name, a stage that is not one of its lane's, a lane with no stage, and a stage with no lane.",
+)
 
 
 def rendered_sizes(pad: int, source: Path = ROOT) -> dict:
@@ -230,6 +292,70 @@ class AgentBudgetTest(unittest.TestCase):
                 with self.subTest(section=name, sentence=sentence):
                     self.assertEqual(body.count(sentence), 1, "preserve the verbatim rule in the skill body")
                     self.assertNotIn(sentence, self.text, "moved rules must no longer live in the agent")
+
+    def test_tracker_rows_pointer_occurs_once_as_its_own_paragraph_in_tracker(self):
+        self.assertEqual(self.text.count(TRACKER_ROWS_POINTER), 1)
+        self.assertEqual(self.text.splitlines().count(TRACKER_ROWS_POINTER), 1,
+                         "pointer must be a standalone imperative with no final period")
+        self.assertIn(TRACKER_ROWS_POINTER, sections(self.text)["Tracker"].split("\n\n"),
+                      "the pointer must be its own paragraph inside Tracker")
+
+    def test_tracker_lane_stage_fragment_is_absent_from_agent_and_rules_text(self):
+        for source, text in (("agent", self.text), ("rules_text", rules_text())):
+            with self.subTest(source=source):
+                self.assertNotIn("New: `lane`, `stage`.", text)
+
+    def test_tracker_rows_skill_exists_with_portable_frontmatter(self):
+        path = ROOT / "skills" / "tracker-rows" / "SKILL.md"
+        self.assertTrue(path.is_file(), "tracker-rows skill is missing")
+        text = path.read_text()
+        front = re.match(r"\A---\r?\n(.*?)\r?\n---(?:\r?\n|\Z)", text, flags=re.S)
+        self.assertIsNotNone(front, "tracker-rows needs leading YAML frontmatter")
+        self.assertRegex(front[1], r"(?m)^name:[ \t]*(?:tracker-rows|\"tracker-rows\"|'tracker-rows')[ \t]*$")
+        self.assertNotRegex(front[1], r"(?m)^\s*hosts\s*:")
+        prose = description(text)
+        self.assertTrue(prose, "tracker-rows needs a description")
+        self.assertLessEqual(len(prose), DESCRIPTION_CAP)
+
+    def test_tracker_row_rule_sentences_are_single_sourced_in_the_skill_body(self):
+        path = ROOT / "skills" / "tracker-rows" / "SKILL.md"
+        self.assertTrue(path.is_file(), "tracker-rows skill is missing")
+        body, combined = skill_body(path.read_text()), rules_text()
+        for opening in (
+            "A `|` inside any cell is written", "A task whose row has no name still draws",
+            "The optional `<sha>` is the commit", "Write it only when you have it",
+            "`size` is your judgement", "A size arrives when you write the row",
+            "`since` and `due` are what the board draws from",
+            "Never set the cell by hand or write that line as free text",
+        ):
+            with self.subTest(opening=opening):
+                self.assertNotIn(opening, self.text)
+                self.assertIn(opening, body)
+                self.assertIn(opening, combined)
+        for topic, sentences in TRACKER_ROW_RULES.items():
+            for sentence in sentences:
+                with self.subTest(topic=topic, sentence=sentence):
+                    self.assertEqual(body.count(sentence), 1, "preserve the verbatim rule in the skill body")
+                    self.assertNotIn(sentence, self.text, "moved rules must no longer live in the agent")
+                    self.assertIn(sentence, combined)
+
+    def test_tracker_state_done_and_widening_rules_stay_in_the_agent(self):
+        tracker = sections(self.text)["Tracker"]
+        for sentence in TRACKER_RETAINED_RULES:
+            with self.subTest(sentence=sentence):
+                self.assertIn(sentence, tracker)
+
+    def test_resume_step_2_names_the_audits_issue_state_read(self):
+        # PR #514 removed Tracker's issue-state audit sentence; live Sonnet skipped
+        # the audit in 2/3 resume-closes-task-with-closed-issue runs. Pin it in step 2.
+        resume = sections(self.text)["Resume"]
+        self.assertEqual(resume.count("and from the audit, which reads every issue's state (see Tracker);"), 1)
+
+    def test_tracker_redundant_audit_sentences_are_absent_from_rules_text(self):
+        text = rules_text()
+        for sentence in TRACKER_DELETED_RULES:
+            with self.subTest(sentence=sentence):
+                self.assertNotIn(sentence, text)
 
     def test_skill_budget_controls_reject_unbudgeted_and_oversized_skills(self):
         with tempfile.TemporaryDirectory() as tmp:

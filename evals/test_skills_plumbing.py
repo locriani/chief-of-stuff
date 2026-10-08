@@ -169,6 +169,7 @@ class SkillsPlumbingTest(unittest.TestCase):
         markers = {
             "decision-page": "Never publish a decision page as an artifact, and never open it.",
             "optional-features": "Notifications are off by default, including an empty `[notify]` table.",
+            "tracker-rows": "Never set the cell by hand or write that line as free text.",
         }
         release = start.install(root, self.base / "install")
         agent = (release / "agents" / "chief-of-stuff.md").read_text()
@@ -191,7 +192,8 @@ class SkillsPlumbingTest(unittest.TestCase):
         release = start.install(root, self.base / "install")
         for runtime in (*NON_CLAUDE, "claude"):
             with self.subTest(runtime=runtime):
-                self.assert_pinned_skill_pointers(runtime, release, {"decision-page", "optional-features"})
+                self.assert_pinned_skill_pointers(runtime, release,
+                                                  {"decision-page", "optional-features", "tracker-rows"})
 
     def test_no_skills_prompt_preserves_legacy_bytes_except_non_claude_read_guidance(self):
         for empty_dir in (False, True):

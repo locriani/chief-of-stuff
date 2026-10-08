@@ -4,6 +4,15 @@
   "prompt": "New item for the tracker: rewrite the upload endpoint's README — the auth section, the three curl examples, and the error table — mine, no rush.",
   "graders": [
     {
+      "name": "reads the tracker-rows skill before the first tracker Edit/Write",
+      "rule": "`size` is your judgement of the item as written, `S`, `M`, `L` or `XL`, made when you write the task and remade when the item changes: `S` is one edit, one file, one fact to check; `M` is one item a session finishes in a sitting, a few files, one suite run; `L` is a plan with bullets, several files, its own pull request; `XL` is a task that spawns other tasks or spans sessions.",
+      "type": "tool_used",
+      "tool": "Read",
+      "input_match": "\"file_path\": \"[^\"\\n]*skills/tracker-rows/SKILL\\.md\"",
+      "min": 1,
+      "before": "\\A(?=[\\s\\S]*\"(?:old_string|content)\":)[\\s\\S]*\"file_path\": \"(?:[^\"\\n]*[/\\\\])?daily[/\\\\]{{today}}-tracker\\.md\""
+    },
+    {
       "name": "new row carries a size in the size column",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",
