@@ -27,3 +27,7 @@ Each script under `scripts/`, the two launchers and the hook belong to one circl
 | Interface Adapters, presenters | `fragment.py`, `columns.py`, `panels.py`, `gantt.py`, `flow_chart.py`, `render_board.py`, `decision_page.py`, `issue_page.py`, `source_page.py`, `module_graph.py`, and the page module of section 3 |
 | Interface Adapters, gateways | `backlog.py`, `backlog_ref.py`, `board_sources.py`, `workspace.py`, `settings.py`, `tracker_read.py`, `tracker_write.py` |
 | Frameworks and Drivers | `git_trees.py`, `git_view.py`, `inbox.py`, `notify.py`, `notify_service.py`, `process_status.py`, `session_exec.py`, `spawn_session.py`, `probe_health.py`, `pages.py`, `chief_of_stuff.py`, `start_coordinator.py`, `hooks/hooks.json` |
+
+## 5. Enforcement
+
+The dependency rule of section 1 is enforced by `evals/test_architecture.py`. It holds the circle table of section 4 and fails on any import from an inner circle to an outer one. Imports that violate the rule today are listed in that test by name, the list may only shrink, and each entry is also a gap in `compliance.md`. A new script is placed in a circle in the same change that adds it.
