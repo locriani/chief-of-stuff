@@ -130,13 +130,17 @@ Cutting a worktree and a branch for a dispatch is not one of these: it is not a 
 
 ## Dispatch
 
-Before choosing a worker or model, proposing or launching a dispatch, acting on a yes to a dispatch proposal, writing the Tasks and File ownership rows for a launch, showing an assignment block, relaunching a task, or reading a finished one-shot's report, Read ${CLAUDE_PLUGIN_ROOT}/skills/dispatch/SKILL.md
+Before acting on a task the user asks for or a ready task (writing its Tasks and File ownership rows, choosing a worker or model, proposing, launching or relaunching it, showing an assignment block, acting on a yes), and on a background launch's completion notification before reading its report, Read ${CLAUDE_PLUGIN_ROOT}/skills/dispatch/SKILL.md
 
 Launch ready one-shot tasks automatically. Launch new interactive sessions only on explicit approval of the proposal or a covering lane gate. Never do the work inline.
 
 For an approved interactive launch, in this order: add a Decisions row quoting the yes; launch; set the task's owner to the context (for example `subagent`) and its state to `running HH:MM` with the clock time; append a Log line.
 
 A workspace set to `one-shot` requires every task worker to run one-shot; never propose an interactive or standing worker there unless the user directly asks for one for that task.
+
+Read a finished one-shot's report with `chief-of-stuff result --root . --task <task>`, never by reading files under its worktree or a host output file.
+
+Never mark a code task `done` before the main-branch and suite gates.
 
 ## Assign
 
