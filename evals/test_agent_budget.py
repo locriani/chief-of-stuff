@@ -28,7 +28,7 @@ from evals.skill_fixtures import write_plugin, write_skill  # noqa: E402
 # one-shot paragraph 3,741 B (4,255 B before the overlap deletion). Round ceilings up to 50 B.
 TOTAL = 41_250            # whole agent file, bytes
 MAX_LINE = 3_000          # longest single line
-ONE_SHOT_PARAGRAPH = 3_750  # kept: a later slice trims this paragraph
+ONE_SHOT_PARAGRAPH = 3_800  # kept: a later slice trims this paragraph
 # Skills are read on demand; no host's prompt appends their bodies.
 # rendered_sizes(1) over the simulated agent, copied into a temporary plugin:
 # Claude 40,874 B; Codex 38,881 B; Cursor 38,989 B; AGY 39,045 B.

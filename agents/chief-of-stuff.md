@@ -138,7 +138,7 @@ For an approved interactive launch, in this order: add a Decisions row quoting t
 
 A workspace set to `one-shot` requires every task worker to run one-shot; never propose an interactive or standing worker there unless the user directly asks for one for that task.
 
-Read a finished one-shot's report with `chief-of-stuff result --root . --task <task>`, never by reading files under its worktree or a host output file.
+Read a finished one-shot's report with `chief-of-stuff result --root . --task <the Tasks name>`, never by reading files under its worktree or a host output file.
 
 Never mark a code task `done` before the main-branch and suite gates.
 
