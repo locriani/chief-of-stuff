@@ -5,7 +5,7 @@
   "graders": [
     {
       "name": "reads the dispatch skill before reading the finished report",
-      "rule": "A background launch's completion notification only says the launch ended: name the task in its Bash description, and on the notification read that task's report with `chief-of-stuff result --root . --task <task>`, then reconcile it, sync the issue's Kanban state and report that task before using its result.",
+      "rule": "A background launch's completion notification only says the launch ended: name the task in its Bash description, and on the notification read that task's report with `chief-of-stuff result --root . --task <the Tasks name>`, then reconcile it, sync the issue's Kanban state and report that task before using its result.",
       "type": "tool_used",
       "tool": "Read",
       "input_match": "\"file_path\": \"[^\"\\n]*skills/dispatch/SKILL\\.md\"",
@@ -14,7 +14,7 @@
     },
     {
       "name": "the report is read with `result`, by task",
-      "rule": "Read a finished one-shot's report with `chief-of-stuff result --root . --task <task>`, never by reading files under its worktree or a host output file.",
+      "rule": "Read a finished one-shot's report with `chief-of-stuff result --root . --task <the Tasks name>`, never by reading files under its worktree or a host output file.",
       "type": "tool_used",
       "tool": "Bash",
       "input_match": "\"command\": \"(?:(?:[^\"'\\\\#;&|(`<]|\\\\t|\\\\\"(?:[^\\\\]|\\\\[^\"])*\\\\\"|'[^']*')*(?:[;&|(`]|\\\\n))*(?:\\s|\\\\t)*(?:[A-Za-z_]\\w*=[\\w./:+$-]*\\s+)*(?:python3?\\s+)?(?:\\\\\"|')?(?:(?:[\\w./~${}-]*/)?chief[-_]of[-_]stuff(?:\\.py)?(?:\\\\\"|')?\\s+result|(?:[\\w./~${}-]*/)?one_shot_result\\.py(?:\\\\\"|')?|\\$\\{?\\w+\\}?(?:\\\\\"|')?\\s+result)(?![\\w.-])(?=(?:[^\"\\\\;&|#]|\\\\(?!n).)*?--root[\\s=])(?:[^\"\\\\;&|#]|\\\\(?!n).)*?--task[\\s=]+(?:\\$?(?:'Rate limit headers'|\\\\\"Rate limit headers\\\\\")|Rate limit headers(?=\\s|\\\\n|[;&|)`\"]))",
@@ -22,7 +22,7 @@
     },
     {
       "name": "no shell command reads the report, the worker's log or the tree's private directory",
-      "rule": "Read a finished one-shot's report with `chief-of-stuff result --root . --task <task>`, never by reading files under its worktree or a host output file.",
+      "rule": "Read a finished one-shot's report with `chief-of-stuff result --root . --task <the Tasks name>`, never by reading files under its worktree or a host output file.",
       "type": "tool_used",
       "tool": "Bash",
       "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:one-shot-report\\.toon|worker-stdout\\.log|trees/[^\\s\"\\\\']*\\.chief-of-stuff|\\.chief[\\w-]*[*?\\[]|\\.chief-of-stuff/+(?:r[\\w-]*[*?\\[]|reports|[*?\\[])|\\.toon(?!\\w))",
@@ -30,7 +30,7 @@
     },
     {
       "name": "the Read and Grep tools do not open them either",
-      "rule": "Read a finished one-shot's report with `chief-of-stuff result --root . --task <task>`, never by reading files under its worktree or a host output file.",
+      "rule": "Read a finished one-shot's report with `chief-of-stuff result --root . --task <the Tasks name>`, never by reading files under its worktree or a host output file.",
       "type": "tool_used",
       "tool": "Read|Grep",
       "input_match": "one-shot-report\\.toon|worker-stdout\\.log|trees/[^\"\\\\]*\\.chief-of-stuff|\\.chief[\\w-]*[*?\\[]|\\.chief-of-stuff/+(?:r[\\w-]*[*?\\[]|reports|[*?\\[])|\\.toon(?!\\w)|\\.chief-of-stuff/*\"",

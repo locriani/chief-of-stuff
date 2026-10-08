@@ -996,7 +996,7 @@ class CaseLintTest(unittest.TestCase):
             'worktree-clone-is-a-repos-name': ("`<repo>` is the repository's checkout directory; when the settings' `[repos]` table names that repository, pass the name instead.", 'launch'),
             'worker-check-validates-a-new-row': ('Before proposing a new task for dispatch, validate its Tasks and File ownership rows with `chief-of-stuff worker --check --root . --task <name>`, which needs no `--cwd`, makes no worktree and starts nothing; add `--name <session>` when the task is a standing row and `--one-shot` for a one-shot task; when it prints `refused: <why>`, tell the user that refusal and do not propose the task.', 'launch'),
             # The report sentence stays in the agent (#539 review R5), so the skill Read grader quotes the moved notification sentence.
-            'one-shot-report-is-read-with-result': ("A background launch's completion notification only says the launch ended: name the task in its Bash description, and on the notification read that task's report with `chief-of-stuff result --root . --task <task>`, then reconcile it, sync the issue's Kanban state and report that task before using its result.", 'result'),
+            'one-shot-report-is-read-with-result': ("A background launch's completion notification only says the launch ended: name the task in its Bash description, and on the notification read that task's report with `chief-of-stuff result --root . --task <the Tasks name>`, then reconcile it, sync the issue's Kanban state and report that task before using its result.", 'result'),
         }
         self.assertEqual(carrying, set(expected), "only the seventeen moved-rule scenarios carry this Read grader")
         self.assertEqual(set(self.DISPATCH_SKILL_CASES), set(expected))
@@ -2025,7 +2025,7 @@ class CaseLintTest(unittest.TestCase):
         author's expected answer. The sentence's "or a host output file" half is asserted by no grader."""
         agent_text = rules_text()
         called, shell, files = core(spec(EVALS / "cases" / "one-shot-report-is-read-with-result")["graders"])
-        rule = ("Read a finished one-shot's report with `chief-of-stuff result --root . --task <task>`, "
+        rule = ("Read a finished one-shot's report with `chief-of-stuff result --root . --task <the Tasks name>`, "
                 "never by reading files under its worktree or a host output file.")
         for g in (called, shell, files):
             self.assertEqual(g["rule"], rule, g["name"])

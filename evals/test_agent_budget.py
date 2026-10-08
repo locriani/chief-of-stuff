@@ -24,14 +24,14 @@ from evals.skill_fixtures import write_plugin, write_skill  # noqa: E402
 # origin/main. After the #539 review the Dispatch section is the new pointer plus five kept units
 # (the three original, the report-read sentence, the done-gate sentence); 13,883 B moves verbatim
 # minus the two code-enforced deletions, with the overlap-order clause (about 115 B) put back and the two kept
-# sentences taken out. Simulated: agent 41,237 B; Dispatch 1,169 B; longest line 2,969 B;
+# sentences taken out. Simulated: agent 41,247 B; Dispatch 1,179 B; longest line 2,969 B;
 # one-shot paragraph 3,741 B (4,255 B before the overlap deletion). Round ceilings up to 50 B.
 TOTAL = 41_250            # whole agent file, bytes
 MAX_LINE = 3_000          # longest single line
 ONE_SHOT_PARAGRAPH = 3_750  # kept: a later slice trims this paragraph
 # Skills are read on demand; no host's prompt appends their bodies.
 # rendered_sizes(1) over the simulated agent, copied into a temporary plugin:
-# Claude 40,864 B; Codex 38,871 B; Cursor 38,979 B; AGY 39,035 B.
+# Claude 40,874 B; Codex 38,881 B; Cursor 38,989 B; AGY 39,045 B.
 PROMPT = {"claude": 40_900, "codex": 38_900, "cursor": 39_000, "agy": 39_050}
 CEILING = {  # `## ` section -> bytes, heading line included
     "Role": 1600, "Dispatch authority": 1100, "Browser safety": 410, "Writing": 780,
@@ -44,9 +44,9 @@ CEILING = {  # `## ` section -> bytes, heading line included
 # coordinator-sessions: 8,587 B moved prose; projected frontmatter/topics yield
 # 8,875 B, leaving 425 B headroom under its 9,300 B ceiling.
 # dispatch: the simulated skill (frontmatter, six topics, overlap-order clause back, report-read sentence and
-# done-gate clause out) is 14,126 B, leaving 74 B under its 14,200 B ceiling (room for a description tweak that names the notification).
+# done-gate clause out) is 14,136 B, leaving 64 B under its 14,200 B ceiling (room for a description tweak that names the notification).
 SKILL_CEILING = {"decision-page": 2_700, "optional-features": 5_200, "tracker-rows": 5_400, "review-pipeline": 9_677, "coordinator-sessions": 9_300, "dispatch": 14_200}  # moved bytes + metadata/organization/headroom
-SKILLS_TOTAL = 46_477  # all SKILL.md files, bytes; the sum of the ceilings above (real total 44,549 B simulated)
+SKILLS_TOTAL = 46_477  # all SKILL.md files, bytes; the sum of the ceilings above (real total 44,559 B simulated)
 DESCRIPTION_CAP = 300  # frontmatter description characters, not bytes
 SKILL_POINTER = re.compile(r"\$\{CLAUDE_PLUGIN_ROOT\}/skills/([^/\s`]+)/SKILL\.md")
 DECISION_PAGE_POINTER = "Before writing a decision page, Read ${CLAUDE_PLUGIN_ROOT}/skills/decision-page/SKILL.md"
@@ -398,7 +398,7 @@ DISPATCH_KEPT = (
     "Log line.",
     "A workspace set to `one-shot` requires every task worker to run one-shot; never propose an interactive or "
     "standing worker there unless the user directly asks for one for that task.",
-    "Read a finished one-shot's report with `chief-of-stuff result --root . --task <task>`, never by reading files "
+    "Read a finished one-shot's report with `chief-of-stuff result --root . --task <the Tasks name>`, never by reading files "
     "under its worktree or a host output file.",
     "Never mark a code task `done` before the main-branch and suite gates.",
 )
@@ -488,7 +488,7 @@ DISPATCH_RULES = {
         'Launch every ready one-shot task whose File ownership paths overlap no running task at once, in the same turn, each as its own launcher call started in the background (Bash `run_in_background: true`)' + DISPATCH_OVERLAP_ORDER + '.',
         'Give each launch its own Bash call with `run_in_background: true`; never chain launches with `;` or `&&`, never pipe a launch, and never start one without the flag.',
         "Add no `| head`, `| tail` or `| cut` to a launch: its whole output is read from the notification's output file.",
-        "A background launch's completion notification only says the launch ended: name the task in its Bash description, and on the notification read that task's report with `chief-of-stuff result --root . --task <task>`, then reconcile it, sync the issue's Kanban state and report that task before using its result.",
+        "A background launch's completion notification only says the launch ended: name the task in its Bash description, and on the notification read that task's report with `chief-of-stuff result --root . --task <the Tasks name>`, then reconcile it, sync the issue's Kanban state and report that task before using its result.",
         'A launcher refusal for overlap, or for the concurrency cap (`max_concurrency` under `[workers]`), is not a blocker: leave the task `open` and launch it when a running task returns.',
         'When one launch fails mid-batch the others keep running; do not retry a held or failed task without resolving its blocker.',
         'Explain that the worker may edit, commit, and open a PR according to the workspace workflow in that one run.',
