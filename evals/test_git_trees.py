@@ -55,6 +55,36 @@ def commit(tree: Path, name: str) -> None:
     git("commit", "-m", name, cwd=tree)
 
 
+def raw_git_dir(tree: Path) -> tuple[int, str]:
+    """`(exit code, output)` of plain `git -C <tree> rev-parse --git-dir`: the oracle that git itself can, or cannot, open
+    this layout. It is the test's own question to git, never the code's (#443 slice 4 deleted `git_trees._raw_git`)."""
+    out = subprocess.run(["git", "-C", str(tree), "rev-parse", "--git-dir"], capture_output=True, text=True,
+                         errors="backslashreplace", env=taint.ENV, timeout=15)
+    return out.returncode, (out.stdout or out.stderr).strip()
+
+
+@contextlib.contextmanager
+def git_calls():
+    """Every `git` process started inside the block, as `(argv, env)`: `Popen` is what `subprocess.run` and the view both use."""
+    calls, real = [], subprocess.Popen
+
+    class Spy(real):
+        def __init__(self, args, *a, **kw):
+            if isinstance(args, (list, tuple)) and args and args[0] == "git":
+                calls.append((list(args), kw.get("env") or {}))
+            super().__init__(args, *a, **kw)
+
+    with patch.object(subprocess, "Popen", Spy):
+        yield calls
+
+
+def unsanitised(call: tuple[list[str], dict[str, str]]) -> bool:
+    """A git process that is neither the fetch (a write, legitimately the user's) nor one of the view's own: those run with
+    `GIT_DIR` pointing at the private view, or read the explicit config file (`config --file`) before there is one."""
+    argv, env = call
+    return "fetch" not in argv and argv[1:3] != ["config", "--file"] and "GIT_DIR" not in env
+
+
 class Repo(unittest.TestCase):
     def setUp(self) -> None:
         tmp = tempfile.TemporaryDirectory()
@@ -484,9 +514,14 @@ class CheckShaTest(Repo):
         self.assertEqual(git("rev-parse", "--is-shallow-repository", cwd=shallow), "true")
         self.assertEqual(git_trees.check_sha(older, shallow),
                          (2, f"sha {older}: unknown \u2014 shallow clone, so history is cut off", False))
-        # a yes is still a yes: the commit is reachable from the tip whatever was cut off
-        tip = git("rev-parse", "--short", "origin/main", cwd=shallow)
-        self.assertEqual(git_trees.check_sha(head, shallow), (0, f"sha {head}: on origin/main {tip} (fetched)", True))
+        # D2 (#443 slice 4): a shallow clone never answers yes either. The view has no `shallow` file, so ancestry past the
+        # boundary cannot be asked there and the answer is decided before any comparison. The "; local main holds it" note is
+        # best effort: the view cannot read a real shallow clone's parent, so the note is absent and not required.
+        code, line, _ = git_trees.check_sha(head, shallow)
+        self.assertEqual(code, 2)
+        self.assertTrue(line.startswith(f"sha {head}: unknown \u2014 shallow clone, so history is cut off"), line)
+        for definite in ("not on origin/main", "no such commit", "on origin/main"):
+            self.assertNotIn(definite, line)
 
     def test_a_commit_on_local_main_not_pushed_is_said_so(self) -> None:
         """#49 G: distinct from a commit on no main at all (`not on origin/main`), since the row audit reports an
@@ -598,23 +633,28 @@ class CheckShaTest(Repo):
             self.assertEqual(git_trees.check_sha(sha, self.clone),
                              (2, f"sha {sha}: unknown \u2014 this repository has grafts, so ancestry cannot be trusted", True))
 
-    def test_a_grafts_lookup_that_fails_is_unknown_not_no_grafts(self) -> None:
-        """#49 round 8, 1: only the `--git-path` call fails (128); every other git call is real, on a commit that is on
-        origin/main. A repository whose grafts cannot be looked up is unknown, with `held` as already known."""
+    def test_a_repository_the_view_cannot_locate_is_unknown_not_no_grafts(self) -> None:
+        """#49 round 8, 1, restated (#443 slice 4): grafts and shallow are read from the repository's real files, found by
+        `git_view.locate`, not by a `git rev-parse --git-path` call. A layout `locate` refuses (here a `.git` directory
+        with no `HEAD`) is unknown, never "no grafts", with `held` as the commit lookup already said. `_verdict` is called
+        directly with the lookup's answer, since the commit lookup itself cannot read such a layout."""
         sha = git("rev-parse", "HEAD", cwd=self.clone)
-        real = git_trees.git
-
-        def lookup_fails(args, cwd, *rest, **kw):
-            return (128, "") if "--git-path" in args else real(args, cwd, *rest, **kw)
-
-        with patch.object(git_trees, "git", lookup_fails):
-            self.assertEqual(git_trees.check_sha(sha, self.clone),
-                             (2, f"sha {sha}: unknown \u2014 git could not read this repository", True))
+        broken = self.trees / "broken"
+        broken.mkdir()
+        git("init", "--initial-branch=main", ".", cwd=broken)
+        (broken / ".git" / "HEAD").unlink()
+        with self.assertRaises(git_view.Unviewable):
+            git_view.locate(broken)
+        self.assertEqual(git_trees._verdict(sha, broken, "", [sha]),
+                         (2, f"sha {sha}: unknown \u2014 git could not read this repository", True))
+        self.assertEqual(git_trees._verdict(sha, broken, "", None),
+                         (2, f"sha {sha}: unknown \u2014 git could not read this repository", True))
 
     def test_a_grafts_file_that_cannot_be_examined_is_unknown_not_no_grafts(self) -> None:
-        """#49 round 8, 1: `os.stat` (which `Path.stat`, `is_file` and `exists` all go through) raises PermissionError,
-        for the grafts path only; every other stat is real. The file exists and is empty, so a reader that can examine
-        it finds no grafts (exit 0)."""
+        """#49 round 8, 1, restated (#443 slice 4): `os.stat` (which `Path.stat`, `is_file` and `exists` all go through)
+        raises PermissionError, for the grafts path only; every other stat is real. The file exists and is empty, so a reader
+        that can examine it finds no grafts (exit 0). `git_view.signals` fails closed on a file it cannot stat, and says
+        what it fears: grafts. It used to say `could not read this repository`."""
         sha = git("rev-parse", "HEAD", cwd=self.clone)
         grafts = self.clone / ".git" / "info" / "grafts"
         grafts.parent.mkdir(exist_ok=True)
@@ -629,7 +669,7 @@ class CheckShaTest(Repo):
         self.assertEqual(git_trees.check_sha(sha, self.clone)[0], 0)
         with patch.object(os, "stat", denied):
             self.assertEqual(git_trees.check_sha(sha, self.clone),
-                             (2, f"sha {sha}: unknown \u2014 git could not read this repository", True))
+                             (2, f"sha {sha}: unknown \u2014 this repository has grafts, so ancestry cannot be trusted", True))
 
     COULD_NOT_READ = "unknown \u2014 git could not read this repository"
 
@@ -639,7 +679,7 @@ class CheckShaTest(Repo):
     def assert_answered_by_its_repository(self, sha: str, tree: Path) -> tuple[int, str, bool]:
         """#294 round 7: a pruned worktree is answered by its repository, so `check_sha` on it is exactly `check_sha` on the
         main clone (git run in `<common>`, which still has the objects and both `main` refs). Returns that answer."""
-        self.assertEqual(git_trees._raw_git(["rev-parse", "--git-dir"], tree)[0], 128)  # the tree itself is dead to git
+        self.assertEqual(raw_git_dir(tree)[0], 128)  # the tree itself is dead to git
         expected = git_trees.check_sha(sha, self.clone)
         self.assertEqual(git_trees.check_sha(sha, tree), expected)
         return expected
@@ -683,7 +723,7 @@ class CheckShaTest(Repo):
         as a git directory (`rev-parse` exits 128). Unknown, `held` True: it blocks a yes, it is not `not a repository`."""
         sha, tree = self.pruned()
         (self.clone / ".git" / "HEAD").write_text("this is not a ref\n")
-        self.assertEqual(git_trees._raw_git(["rev-parse", "--git-dir"], self.clone / ".git")[0], 128)
+        self.assertEqual(raw_git_dir(self.clone / ".git")[0], 128)
         self.assert_could_not_read(sha, tree)
 
     def test_a_dot_git_file_pointing_at_a_repository_that_is_gone_could_not_be_read_and_may_hold_it(self) -> None:
@@ -693,7 +733,7 @@ class CheckShaTest(Repo):
         broken = self.trees / "broken"
         broken.mkdir()
         (broken / ".git").write_text("gitdir: /nonexistent/path\n")
-        self.assertEqual(git_trees._raw_git(["rev-parse", "--git-dir"], broken)[0], 128)
+        self.assertEqual(raw_git_dir(broken)[0], 128)
         self.assert_could_not_read(sha, broken)
 
     def test_a_linked_worktree_whose_main_clone_was_moved_could_not_be_read_and_may_hold_it(self) -> None:
@@ -702,7 +742,7 @@ class CheckShaTest(Repo):
         sha = git("rev-parse", "HEAD", cwd=self.clone)
         tree = self.tree("wt-a", "feat/a")
         self.clone.rename(self.root / "repo-moved")
-        self.assertEqual(git_trees._raw_git(["rev-parse", "--git-dir"], tree)[0], 128)
+        self.assertEqual(raw_git_dir(tree)[0], 128)
         self.assert_could_not_read(sha, tree)
 
     def tree_naming(self, name: str, common: Path) -> Path:
@@ -721,9 +761,11 @@ class CheckShaTest(Repo):
         self.assertEqual(git_trees.check_sha(sha, outer)[0], 0)  # outer says yes
         sub = outer / "sub"
         (sub / "worktrees").mkdir(parents=True)
-        self.assertEqual(git_trees.check_sha(sha, sub)[0], 0)  # and so does git run in sub: it found outer
+        # git run in sub walks up and finds outer (the premise; the view refuses `sub`, which is no repository, so
+        # `check_sha(sha, sub)` is no longer the way to show it)
+        self.assertEqual(Path(taint.git(["rev-parse", "--show-toplevel"], sub).stdout.strip()).resolve(), outer.resolve())
         tree = self.tree_naming("wt-outer", sub)
-        self.assertEqual(git_trees._raw_git(["rev-parse", "--git-dir"], tree)[0], 128)
+        self.assertEqual(raw_git_dir(tree)[0], 128)
         self.assert_could_not_read(sha, tree)
 
     def test_a_tree_made_by_init_separate_git_dir_whose_git_dir_is_gone_inside_another_repository_is_not_answered_by_it(self) -> None:
@@ -739,7 +781,7 @@ class CheckShaTest(Repo):
         written = (tree / ".git").read_text().strip().removeprefix("gitdir: ")  # git writes the resolved path
         self.assertEqual(Path(written), gitdir.resolve())
         shutil.rmtree(gitdir)
-        self.assertEqual(git_trees._raw_git(["rev-parse", "--git-dir"], tree)[0], 128)
+        self.assertEqual(raw_git_dir(tree)[0], 128)
         self.assert_could_not_read(sha, tree)
 
     def promptly(self, sha: str, tree: Path) -> tuple[int, str, bool]:
@@ -879,7 +921,7 @@ class CheckShaTest(Repo):
         for what, line in (("no space", "gitdir:{}"), ("leading spaces", "  gitdir: {}")):
             with self.subTest(what):
                 (live_tree / ".git").write_text(line.format(live) + "\n")
-                code, out = git_trees._raw_git(["rev-parse", "--git-dir"], live_tree)
+                code, out = raw_git_dir(live_tree)
                 self.assertEqual(code, 128, out)
                 self.assertIn("invalid gitfile format", out)
                 (tree / ".git").write_text(line.format(gone) + "\n")
@@ -900,7 +942,7 @@ class CheckShaTest(Repo):
         self.assertFalse((self.root / "x" / "HEAD").exists())  # `<x>` is just a directory, not a git directory
         shutil.rmtree(separate)
         self.assertTrue((self.root / "x").is_dir())
-        self.assertEqual(git_trees._raw_git(["rev-parse", "--git-dir"], tree)[0], 128)
+        self.assertEqual(raw_git_dir(tree)[0], 128)
         self.assert_could_not_read(sha, tree)
 
     def test_a_common_dir_that_is_an_empty_directory_could_not_be_read_and_may_hold_it(self) -> None:
@@ -947,7 +989,7 @@ class CheckShaTest(Repo):
         gone = self.clone / ".git" / "worktrees" / "wt-dead"
         live_tree = self.tree("wt-live", "feat/wt-live")
         (live_tree / ".git").write_text(f"gitdir:  {self.clone / '.git' / 'worktrees' / 'wt-live'}\n")
-        self.assertEqual(git_trees._raw_git(["rev-parse", "--git-dir"], live_tree)[0], 128)
+        self.assertEqual(raw_git_dir(live_tree)[0], 128)
         (tree / ".git").write_text(f"gitdir:  {gone}\n")
         self.assert_could_not_read(git("rev-parse", "HEAD", cwd=self.clone), tree)
 
@@ -959,7 +1001,7 @@ class CheckShaTest(Repo):
         named = self.clone / ".git" / "worktrees" / "wt-dead "
         named.mkdir()
         (tree / ".git").write_text(f"gitdir: {named}\n")
-        self.assertEqual(git_trees._raw_git(["rev-parse", "--git-dir"], tree)[0], 128)  # git cannot open it either
+        self.assertEqual(raw_git_dir(tree)[0], 128)  # git cannot open it either
         self.assertIsNone(git_trees._pruned_common(tree))
         self.assert_could_not_read(sha, tree)
 
@@ -984,7 +1026,7 @@ class CheckShaTest(Repo):
                            ("a junk line and a trailing blank", b"\njunk\n\n"), ("a lone CR then junk", b"\rjunk\n")):
             with self.subTest(what):
                 (live_tree / ".git").write_bytes(f"gitdir: {live}".encode() + tail)
-                self.assertEqual(git_trees._raw_git(["rev-parse", "--git-dir"], live_tree)[0], 128)  # git rejects it too
+                self.assertEqual(raw_git_dir(live_tree)[0], 128)  # git rejects it too
                 (tree / ".git").write_bytes(f"gitdir: {gone}".encode() + tail)
                 self.assertIsNone(git_trees._pruned_common(tree))
                 self.assert_could_not_read(sha, tree)
@@ -999,7 +1041,7 @@ class CheckShaTest(Repo):
         for what, tail in (("CRLF", b"\r\n"), ("no newline", b""), ("a blank line", b"\n\n"), ("CR CR LF", b"\r\r\n")):
             with self.subTest(what):
                 (live_tree / ".git").write_bytes(f"gitdir: {live}".encode() + tail)
-                self.assertEqual(git_trees._raw_git(["rev-parse", "--git-dir"], live_tree)[0], 0)
+                self.assertEqual(raw_git_dir(live_tree)[0], 0)
                 (tree / ".git").write_bytes(f"gitdir: {gone}".encode() + tail)
                 self.assertEqual(git_trees._pruned_common(tree).resolve(), (self.clone / ".git").resolve())
                 self.assertEqual(git_trees.check_sha(sha, tree), git_trees.check_sha(sha, self.clone))
@@ -1014,7 +1056,7 @@ class CheckShaTest(Repo):
         live_tree, live = self.tree("wt-live", "feat/wt-live"), self.clone / ".git" / "worktrees" / "wt-live"
         padding = b"\r\n" * 3000  # 6000 characters, past any 4096 bound
         (live_tree / ".git").write_bytes(f"gitdir: {live}".encode() + padding + b"junk")
-        self.assertEqual(git_trees._raw_git(["rev-parse", "--git-dir"], live_tree)[0], 128)  # git rejects it too
+        self.assertEqual(raw_git_dir(live_tree)[0], 128)  # git rejects it too
         (tree / ".git").write_bytes(f"gitdir: {gone}".encode() + padding + b"junk")
         self.assertIsNone(git_trees._pruned_common(tree))
         self.assert_could_not_read(sha, tree)
@@ -1035,7 +1077,7 @@ class CheckShaTest(Repo):
         gone = self.clone / ".git" / "worktrees" / "gøne"
         live_tree, live = self.tree("lïve", "feat/live"), self.clone / ".git" / "worktrees" / "lïve"
         (live_tree / ".git").write_bytes(self.padded_past_the_byte_bound(f"gitdir: {live}"))
-        self.assertEqual(git_trees._raw_git(["rev-parse", "--git-dir"], live_tree)[0], 128)  # git rejects it too
+        self.assertEqual(raw_git_dir(live_tree)[0], 128)  # git rejects it too
         data = self.padded_past_the_byte_bound(f"gitdir: {gone}")
         self.assertLessEqual(len(data[:4097].decode(errors="ignore")), 4096)  # a character count sees under the bound
         self.assertGreaterEqual(data.index(b"junk"), 4097)  # and junk lies beyond the bytes read
@@ -1060,7 +1102,7 @@ class CheckShaTest(Repo):
         gone = self.clone / ".git" / "worktrees" / "wt-dead"
         live_tree, live = self.tree("wt-live", "feat/wt-live"), self.clone / ".git" / "worktrees" / "wt-live"
         (live_tree / ".git").write_bytes(f"gitdir: {live}".encode() + b"\n" * 300)
-        self.assertEqual(git_trees._raw_git(["rev-parse", "--git-dir"], live_tree)[0], 0)
+        self.assertEqual(raw_git_dir(live_tree)[0], 0)
         (tree / ".git").write_bytes(f"gitdir: {gone}".encode() + b"\n" * 300)
         self.assertEqual(git_trees._pruned_common(tree).resolve(), (self.clone / ".git").resolve())
         self.assertEqual(git_trees.check_sha(sha, tree), git_trees.check_sha(sha, self.clone))
@@ -1142,7 +1184,7 @@ class CheckShaTest(Repo):
         broken.mkdir()
         git("init", "--initial-branch=main", ".", cwd=broken)
         (broken / ".git" / "HEAD").unlink()
-        code, out = git_trees._raw_git(["rev-parse", "--git-dir"], broken)
+        code, out = raw_git_dir(broken)
         self.assertEqual(code, 128, out)
         self.assert_could_not_read(sha, broken)
 
@@ -1154,7 +1196,7 @@ class CheckShaTest(Repo):
         sha = git("rev-parse", "HEAD", cwd=self.clone)
         tree = self.tree("wt-a", "feat/a")
         real = git_trees.git
-        self.assertEqual(git_trees._raw_git(["rev-parse", "--git-dir"], tree)[0], 0)
+        self.assertEqual(raw_git_dir(tree)[0], 0)
         for what, broken in (("disambiguate", lambda a: a[0] == "rev-parse" and a[1].startswith("--disambiguate=")),
                              ("cat-file -t", lambda a: a[:2] == ["cat-file", "-t"])):
             def fake(args, cwd, *rest, broken=broken, **kw):
@@ -1202,7 +1244,6 @@ class CheckShaTest(Repo):
         is_lookup = lambda args: args[:1] == ["rev-parse"] and "--verify" in args and "refs/heads/main" in args
         self.assertEqual(real(["rev-parse", "--verify", "-q", "refs/heads/main"], tree)[0], 0)
         fails = {
-            "the shallow check": lambda args: args[:2] == ["rev-parse", "--is-shallow-repository"],
             "the local main ancestry check": lambda args: args[:2] == ["merge-base", "--is-ancestor"] and args[-1] == "refs/heads/main",
             "the local main ref lookup": is_lookup,
         }
@@ -1358,6 +1399,42 @@ class ShaTreesTest(Repo):
             (self.trees / name / ".git").write_text("gitdir: /nonexistent/path\n")
             self.assertIsNone(git_trees._pruned_common(self.trees / name))
         self.assertEqual(self.listed(), ["aaa-live", "bbb-broken", "ccc-broken"])
+
+
+    def test_sha_trees_asks_git_nothing(self) -> None:
+        """#443 slice 4: the repository of a tree is found by `git_view.locate` (files only), the pruned fallback by the
+        `.git` file, so listing the trees starts no git process and never calls `git()`. Before, one `rev-parse` per tree."""
+        self.tree("aaa-live", "feat/aaa-live")
+        self.tree("bbb-live", "feat/bbb-live")
+        self.pruned("ccc-dead")
+        self.other_repository_pruned("ddd-dead")
+        with patch.object(git_trees, "git", side_effect=AssertionError("git() was called")), git_calls() as calls:
+            listed = self.listed()
+        self.assertEqual(listed, ["aaa-live", "ddd-dead"])
+        self.assertEqual(calls, [])
+
+    def test_two_linked_trees_of_one_clone_are_one_repository_keyed_on_locate(self) -> None:
+        a, b = self.tree("aaa-live", "feat/aaa-live"), self.tree("bbb-live", "feat/bbb-live")
+        self.assertEqual(git_view.locate(a).common, git_view.locate(b).common)
+        self.assertEqual(git_trees.sha_trees(self.root, "trees/"), [("aaa-live", a.resolve())])
+
+    def test_a_redirected_commondir_does_not_make_a_tree_share_a_victims_key(self) -> None:
+        """`<common>/worktrees/<name>/commondir` is worker-writable. Pointed at another repository's git directory it made
+        `git rev-parse --git-common-dir` (which believes it) give that repository's key, so the victim's own tree, sorting
+        after, was dropped as a duplicate and never asked. `locate` refuses the forged layout, and a tree it refuses is its
+        own repository (its `.git` target is present, so it is not a pruned worktree either)."""
+        victim = self.root / "victim"
+        victim.mkdir()
+        git("init", "--initial-branch=main", ".", cwd=victim)
+        commit(victim, "v.txt")
+        git("worktree", "add", "-b", "feat/zzz", str(self.trees / "zzz-victim-live"), "main", cwd=victim)
+        forged = self.tree("aaa-forged", "feat/aaa-forged")
+        (self.clone / ".git" / "worktrees" / "aaa-forged" / "commondir").write_text(f"{victim / '.git'}\n")
+        common = taint.git(["rev-parse", "--path-format=absolute", "--git-common-dir"], forged).stdout.strip()
+        self.assertEqual(Path(common).resolve(), (victim / ".git").resolve(), "the premise: git follows the forged commondir")
+        with self.assertRaises(git_view.Unviewable):
+            git_view.locate(forged)
+        self.assertEqual(self.listed(), ["aaa-forged", "zzz-victim-live"])
 
 
 class AuditEnvTest(Repo):
@@ -1612,22 +1689,22 @@ class GitViewFunnelTest(unittest.TestCase):
                 self.assertIn(tree_state.UNCOMMITTED_UNKNOWN, at_risk(state), state)
                 self.assertEqual(fx.fired(), [])
 
-    def test_a_git_dir_token_in_the_arguments_does_not_select_the_raw_reader(self) -> None:
-        """R5: `git()` chose the unsanitised reader on argv text, and argv is reachable from the tracker (`branch_candidates`
-        appends a tree name, and a name may begin with a dash). Only `_raw_reads` selects it. Control: inside it, the same
-        call is the raw read."""
+    def test_a_git_dir_token_in_the_arguments_does_not_select_an_unsanitised_reader(self) -> None:
+        """R5, restated (#443 slice 4): `git()` chose the unsanitised reader on argv text, and argv is reachable from the
+        tracker (`branch_candidates` appends a tree name, and a name may begin with a dash). Now there is no unsanitised
+        reader to choose: `_raw_reads`, `_raw_git` and the `_raw` switch are gone, and every call, whatever its argv, is a
+        `git_view.run` call that starts no git process of its own."""
         fx = self.fixture()
+        for name in ("_raw_git", "_raw_reads", "_raw", "_has_grafts"):
+            self.assertFalse(hasattr(git_trees, name), f"git_trees.{name} is still there")
         argvs = (["rev-parse", "--git-dir"], ["merge-base", "--is-ancestor", "--git-dir", "main"],
                  ["rev-parse", "--verify", "--quiet", "--git-dir"])
-        with patch.object(git_trees, "_raw_git", wraps=git_trees._raw_git) as raw:
-            with git_trees._raw_reads():
-                git_trees.git(["rev-parse", "--git-dir"], fx.tree)
-            self.assertEqual(raw.call_count, 1, "the sha path must still read raw")
-            raw.reset_mock()
+        with patch.object(git_view, "run", wraps=git_view.run) as viewed, git_calls() as calls:
             for args in argvs:
                 with self.subTest(args=args):
                     git_trees.git(args, fx.tree)
-            raw.assert_not_called()
+        self.assertEqual([c.args[0] for c in viewed.call_args_list], list(argvs))
+        self.assertEqual([c for c in calls if unsanitised(c)], [])
 
     def test_a_home_python_cannot_find_is_an_unreadable_read_not_a_crash(self) -> None:
         """R6: the view's default base asks for the home directory, and `Path.home()` raises `RuntimeError` when HOME is unset
@@ -1720,6 +1797,234 @@ class GitViewFunnelTest(unittest.TestCase):
                 code, text = git_trees.git(["status", "--porcelain"], fx.tree)
                 self.assertEqual(code, 128)
                 self.assertTrue(text.startswith("unreadable:"), text)
+                self.assertEqual(fx.fired(), [])
+
+
+class ShaViewTest(Repo):
+    """#443 slice 4: the `--sha` path reads through the sanitised view like every other reader, and takes grafts and shallow
+    from the repository's real files (`git_view.locate` + `git_view.signals`), never from the view and never from git."""
+
+    SHALLOW = "unknown \u2014 shallow clone, so history is cut off"
+    GRAFTS = "unknown \u2014 this repository has grafts, so ancestry cannot be trusted"
+
+    def head(self) -> str:
+        return git("rev-parse", "HEAD", cwd=self.clone)
+
+    def tip(self) -> str:
+        return git("rev-parse", "--short", "refs/remotes/origin/main", cwd=self.clone)
+
+    # a. no unsanitised git
+    def test_the_unsanitised_readers_are_gone(self) -> None:
+        for name in ("_raw_git", "_raw_reads", "_raw", "_has_grafts"):
+            self.assertFalse(hasattr(git_trees, name), f"git_trees.{name} is still there")
+
+    def test_no_sha_read_starts_an_unsanitised_git_process(self) -> None:
+        """A normal clone, a linked worktree and a pruned one (the redirect): every git process the sha path starts is the
+        fetch (a write, `fetch_base`, still real) or one of the view's. `_raw_git` was `git -C <tree> ...` with no `GIT_DIR`."""
+        sha = self.head()
+        tree = self.tree("wt-a", "feat/a")
+        _, dead = self.pruned("wt-dead")
+        with git_calls() as calls:
+            asked = git_trees.sha_trees(self.root, "trees/")
+            answers = [git_trees.check_sha(sha, t) for t in (self.clone, tree, dead)]
+        self.assertEqual([code for code, _, _ in answers], [0, 0, 0])
+        self.assertEqual([name for name, _ in asked], ["wt-a"])
+        self.assertTrue([c for c in calls if "fetch" in c[0]], "the fetch stays real")
+        self.assertTrue([c for c in calls if "GIT_DIR" in c[1]], "the reads ran in views")
+        self.assertEqual([c[0] for c in calls if unsanitised(c)], [])
+
+    # c. grafts and shallow come from files
+    def test_a_non_empty_info_grafts_is_unknown_and_an_empty_one_is_not(self) -> None:
+        sha, tip, tree = self.head(), self.tip(), self.tree("wt-a", "feat/a")
+        grafts = self.clone / ".git" / "info" / "grafts"
+        grafts.parent.mkdir(exist_ok=True)
+
+        def as_file(text: str) -> None:
+            if grafts.is_dir():
+                grafts.rmdir()
+            grafts.write_text(text)
+
+        def as_directory() -> None:
+            grafts.unlink(missing_ok=True)
+            grafts.mkdir()
+
+        unknown = (2, f"sha {sha}: {self.GRAFTS}", True)
+        yes = (0, f"sha {sha}: on origin/main {tip} (fetched)", True)
+        # fetch_base is patched: it is a write that runs git with the user's environment, and a planted graft is not its subject
+        with patch.object(git_trees, "fetch_base", return_value=""):
+            for what, plant, want in (("a graft", lambda: as_file(f"{sha} {sha}\n"), unknown),
+                                      ("an empty file", lambda: as_file(""), yes),
+                                      ("a directory, which is no file git would honour but is not nothing", as_directory, unknown)):
+                plant()
+                for place in (self.clone, tree):
+                    with self.subTest(what, place=place.name):
+                        self.assertEqual(git_trees.check_sha(sha, place), want)
+
+    def test_grafts_are_said_before_shallow(self) -> None:
+        sha, tree = self.head(), self.tree("wt-a", "feat/a")
+        (self.clone / ".git" / "info").mkdir(exist_ok=True)
+        (self.clone / ".git" / "info" / "grafts").write_text(f"{sha} {sha}\n")
+        (self.clone / ".git" / "shallow").write_text(f"{sha}\n")
+        with patch.object(git_trees, "fetch_base", return_value=""):
+            for place in (self.clone, tree):
+                self.assertEqual(git_trees.check_sha(sha, place), (2, f"sha {sha}: {self.GRAFTS}", True))
+
+    def test_a_forged_shallow_file_in_a_clone_that_is_not_shallow_is_unknown(self) -> None:
+        """A worker writes `<common>/shallow` into a full clone. The commit is on origin/main, which used to answer yes (the
+        `--is-shallow-repository` question was only asked after a no). It fails closed: a shallow file at all, empty or not,
+        is unknown. The note is built from local main, so a commit local main lacks has none."""
+        on_main = self.head()
+        tree = self.tree("wt-a", "feat/a")
+        commit(tree, "a.txt")
+        on_branch = git("rev-parse", "HEAD", cwd=tree)
+        self.assertEqual(git("rev-parse", "--is-shallow-repository", cwd=self.clone), "false")
+        shallow = self.clone / ".git" / "shallow"
+        with patch.object(git_trees, "fetch_base", return_value=""):
+            for what, content in (("a commit id", f"{on_main}\n"), ("an empty file", "")):
+                shallow.write_text(content)
+                for place in (self.clone, tree):
+                    with self.subTest(what, place=place.name):
+                        self.assertEqual(git_trees.check_sha(on_main, place),
+                                         (2, f"sha {on_main}: {self.SHALLOW}; local main holds it", True))
+                        self.assertEqual(git_trees.check_sha(on_branch, place), (2, f"sha {on_branch}: {self.SHALLOW}", True))
+
+    def test_a_shallow_clone_is_decided_before_any_ancestry_read_and_a_failed_local_read_only_drops_the_note(self) -> None:
+        """D2: with a `shallow` file the answer is the shallow line whatever the ancestry reads say: a fault comparing with
+        origin/main, or with local main, is not `could not compare` / `could not read this repository`. The note
+        (`; local main holds it`) is best effort: a failed local read drops it."""
+        on_main = self.head()
+        tree = self.tree("wt-a", "feat/a")
+        commit(tree, "a.txt")
+        on_branch = git("rev-parse", "HEAD", cwd=tree)
+        (self.clone / ".git" / "shallow").write_text(f"{on_main}\n")
+        real = git_trees.git
+        faults = {
+            "origin/main ancestry": lambda a: a[:2] == ["merge-base", "--is-ancestor"] and a[-1] == git_trees.REF,
+            "local main ancestry": lambda a: a[:2] == ["merge-base", "--is-ancestor"] and a[-1] == "refs/heads/main",
+            "local main ref lookup": lambda a: a[:1] == ["rev-parse"] and "--verify" in a and "refs/heads/main" in a,
+        }
+        for what, named in faults.items():
+            def fake(args, cwd, *rest, named=named, **kw):
+                return (128, "") if named(args) else real(args, cwd, *rest, **kw)
+
+            local = what.startswith("local")  # the note needs the local read, so a fault in it drops the note
+            for sha, note in ((on_main, "" if local else "; local main holds it"), (on_branch, "")):
+                with self.subTest(what, sha=sha[:7]), patch.object(git_trees, "fetch_base", return_value=""), \
+                        patch.object(git_trees, "git", fake):
+                    self.assertEqual(git_trees.check_sha(sha, tree), (2, f"sha {sha}: {self.SHALLOW}{note}", True))
+
+    def test_more_than_one_commit_is_said_before_shallow(self) -> None:
+        (self.clone / ".git" / "shallow").write_text(f"{self.head()}\n")
+
+        def fake(args, cwd):
+            if args[0] == "rev-parse" and args[1].startswith("--disambiguate="):
+                return 0, "9f3c1e7aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n9f3c1e7bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            return (0, "commit") if args[:2] == ["cat-file", "-t"] else (0, "abc1234") if args[:2] == ["rev-parse", "--short"] else (1, "")
+
+        with patch.object(git_trees, "fetch_base", return_value=""), patch.object(git_trees, "git", fake):
+            self.assertEqual(git_trees.check_sha("9f3c1e7", self.clone),
+                             (2, "sha 9f3c1e7: unknown \u2014 more than one commit starts with it", True))
+
+    # d. rule A
+    def test_a_pruned_worktree_of_a_bare_repository_is_answered_by_it(self) -> None:
+        """Rule A, with a `<common>` that is a bare git directory: `locate` gives a layout with no work tree, which is itself
+        the git directory, so the redirect is followed (once) exactly as it was when `rev-parse --git-dir` printed `.`."""
+        sha = self.head()
+        bare = self.root / "bare.git"
+        git("clone", "-q", "--bare", f"file://{self.root / 'origin.git'}", str(bare), cwd=self.root)
+        tree = self.trees / "wt-bare"
+        git("worktree", "add", "-b", "feat/bare", str(tree), "main", cwd=bare)
+        shutil.rmtree(bare / "worktrees" / "wt-bare")
+        self.assertEqual(raw_git_dir(tree)[0], 128)  # the tree is dead to git
+        self.assertIsNone(git_view.locate(bare).tree)
+        want = git_trees.check_sha(sha, bare)
+        self.assertEqual(want[0], 0, want)
+        self.assertEqual(git_trees.check_sha(sha, tree), want)
+
+    def test_a_pruned_worktree_naming_a_work_tree_as_its_common_dir_is_not_answered_by_that_clone(self) -> None:
+        """Rule A: `<common>` is a clone's WORK TREE, not its git directory (`locate` gives it a tree; `rev-parse --git-dir`
+        there printed `.git`, not `.`). The clone holds the commit on origin/main, and its yes must not be imported."""
+        sha = self.head()
+        self.assertEqual(git_trees.check_sha(sha, self.clone)[0], 0)
+        tree = self.trees / "wt-root"
+        tree.mkdir()
+        (tree / ".git").write_text(f"gitdir: {self.clone}/worktrees/gone\n")
+        self.assertEqual(git_trees._pruned_common(tree).resolve(), self.clone.resolve())
+        self.assertIsNotNone(git_view.locate(self.clone).tree)
+        self.assertEqual(git_trees.check_sha(sha, tree), (2, f"sha {sha}: unknown \u2014 git could not read this repository", True))
+
+
+class ShaTaintTest(unittest.TestCase):
+    """#443 slice 4: hostile control files in the clone or its common dir never run on the `--sha` reads, and a forged layout
+    is neither followed nor given another repository's answer.
+
+    `fetch_base` is patched to report success in every test here: it is a WRITE that legitimately runs git with the user's
+    own environment (and config), and is a follow-up outside this slice. The reads are what is asserted. The controls are
+    the former reader's own: `bites` runs `git -C <tree> status` under the audit environment and the canary fires, so the
+    fixture is armed. None of the commands the sha path ran (`rev-parse`, `cat-file`, `merge-base`) fired any of these
+    canaries, so there is no honest control that the OLD sha reads executed one; what the old reads got wrong was the
+    ANSWER on a forged layout, a forged `shallow` and a directory `info/grafts` (the reds elsewhere in this file).
+    """
+
+    setUp = GitViewFunnelTest.setUp
+    fixture = GitViewFunnelTest.fixture
+    bites = GitViewFunnelTest.bites
+    # config keys that run a program, none of which a read should reach: (key, marker)
+    EXTRA = {"sshcommand": ("core.sshCommand", "ssh"), "gitproxy": ("core.gitProxy", "proxy"),
+             "alternaterefs": ("core.alternateRefsCommand", "alt-refs"), "packobjects": ("uploadpack.packObjectsHook", "pack"),
+             "pager": ("core.pager", "pager"), "askpass": ("core.askPass", "askpass")}
+
+    def planted(self, vector: str) -> taint.Fx:
+        if vector in self.EXTRA:
+            fx = self.fixture()
+            key, tag = self.EXTRA[vector]
+            taint.config(fx, key, fx.command(tag))
+            return fx
+        return self.fixture(vector)
+
+    def tip(self, fx: taint.Fx) -> str:
+        return taint.git(["rev-parse", "--short", "refs/remotes/origin/main"], fx.clone).stdout.strip()
+
+    def test_hostile_control_files_never_run_and_the_answer_is_the_clean_one(self) -> None:
+        for vector in (*GitViewFunnelTest.FIRES, *self.EXTRA):
+            with self.subTest(vector):
+                fx = self.planted(vector)
+                if vector in GitViewFunnelTest.FIRES:
+                    self.bites(fx, GitViewFunnelTest.FIRES[vector], vector)
+                sha = fx.sha["A"]  # on origin/main, and on local main
+                want = (0, f"sha {sha}: on origin/main {self.tip(fx)} (fetched)", True)
+                with patch.object(git_trees, "fetch_base", return_value=""):
+                    for tree in (fx.clone, fx.tree):
+                        self.assertEqual(git_trees.check_sha(sha, tree), want)
+                    self.assertEqual(git_trees.sha_trees(fx.root, "."), [("repo", fx.clone.resolve())])
+                self.assertEqual(fx.fired(), [])
+
+    def test_the_fixtures_grafts_and_shallow_are_unknown_from_their_files(self) -> None:
+        a_line = "this repository has grafts, so ancestry cannot be trusted"
+        for vector, why in (("grafts", a_line), ("grafts_yes", a_line),
+                            ("shallow", "shallow clone, so history is cut off; local main holds it")):
+            with self.subTest(vector):
+                fx = self.fixture(vector)
+                sha = fx.sha["A"]
+                with patch.object(git_trees, "fetch_base", return_value=""):
+                    for tree in (fx.clone, fx.tree):
+                        self.assertEqual(git_trees.check_sha(sha, tree), (2, f"sha {sha}: unknown \u2014 {why}", True))
+
+    def test_a_forged_layout_is_unknown_and_never_followed_or_given_another_repositorys_answer(self) -> None:
+        """A tainted `commondir` (a decoy repository) or a forged gitfile target (a copy of the worktree entry, itself
+        pointing at the real common dir). Today's raw read follows both: the decoy answers `no origin/main`, `held` False,
+        which cannot veto another repository's yes; the forged copy answers like the real one, a yes. Both are unknown, and
+        `held` True so they do block a yes. The tree's `.git` target is present, so it is not a pruned worktree: no redirect."""
+        for vector, marker in (("commondir", "decoy-fsmonitor"), ("gitfile", "gitfile-fsmonitor")):
+            with self.subTest(vector):
+                fx = self.fixture(vector)
+                self.bites(fx, marker, vector)
+                sha = fx.sha["A"]
+                self.assertIsNone(git_trees._pruned_common(fx.tree))
+                with patch.object(git_trees, "fetch_base", return_value=""):
+                    self.assertEqual(git_trees.check_sha(sha, fx.tree),
+                                     (2, f"sha {sha}: unknown \u2014 git could not read this repository", True))
+                    self.assertEqual(git_trees.check_sha(sha, fx.clone)[0], 0)  # the real repository still answers for itself
                 self.assertEqual(fx.fired(), [])
 
 
