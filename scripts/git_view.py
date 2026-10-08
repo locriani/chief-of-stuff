@@ -25,6 +25,10 @@ class Unviewable(Exception):
     """A short, path-free reason why the repository cannot supply a safe view."""
 
 
+class NotARepository(Unviewable):
+    """A plain folder: no `.git` entry and none of HEAD, objects, refs."""
+
+
 @dataclass(frozen=True)
 class Layout:
     tree: Path | None
@@ -74,6 +78,8 @@ def locate(path: Path) -> Layout:
         try:
             mode = dotgit.lstat().st_mode
         except FileNotFoundError:
+            if tree.is_dir() and not any(os.path.lexists(tree / name) for name in ("HEAD", "objects", "refs")):
+                raise NotARepository("not a git repository") from None
             _repository(tree)
             return Layout(None, tree, tree)
         if stat.S_ISDIR(mode):
