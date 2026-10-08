@@ -850,6 +850,81 @@ class GitlinksTest(FixtureCase):
         self.assertEqual(fx.fired(), [])
 
 
+class SymbolicHeadBranchNamesTest(FixtureCase):
+    ACCEPTED = (
+        "feature+foo", "feat@x", "fix/ü", "a,b", "v1.0+build.5",
+        "x=y", "x#y", "x%y", "x!y", "x$y",
+    )
+
+    def fixture_on_branch(self, name):
+        # Pin the table to this machine's Git before creating the branch.
+        valid = subprocess.run(["git", "check-ref-format", "--branch", name],
+                               cwd=self.root, env=taint.ENV, capture_output=True,
+                               text=True, timeout=5)
+        self.assertEqual(valid.returncode, 0, valid.stderr)
+        self.assertEqual(valid.stdout, name + "\n")
+        fx = self.fixture()
+        taint.git(["branch", "-m", name], fx.tree)
+        return fx
+
+    def test_git_accepted_branch_names_read_status_branch_and_head(self):
+        for name in self.ACCEPTED:
+            with self.subTest(branch=name):
+                fx = self.fixture_on_branch(name)
+                reads = (
+                    (["status", "--short"], " M README.md\n?? .gitattributes\n?? new.txt\n"),
+                    (["branch", "--show-current"], name + "\n"),
+                    (["rev-parse", "HEAD"], fx.sha["D"] + "\n"),
+                    (["symbolic-ref", "HEAD"], "refs/heads/" + name + "\n"),
+                    (["rev-parse", "--abbrev-ref", "HEAD"], name + "\n"),
+                )
+                for args, stdout in reads:
+                    with self.subTest(command=args):
+                        control = raw(fx, args)
+                        self.assertEqual(answer(control), (0, stdout), control.stderr)
+                        got = self.run_view(fx, args)
+                        self.assertEqual(answer(got), (0, stdout), got.stderr)
+                self.assertEqual(fx.fired(), [])
+                self.assertEqual(self.leftovers(), [])
+
+    def test_git_accepted_branch_names_do_not_refuse_one_shot_tree_note(self):
+        import one_shot
+
+        view_run = self.view.run
+
+        def run_at_base(*args, **kwargs):
+            kwargs.setdefault("base", self.base)
+            return view_run(*args, **kwargs)
+
+        for name in self.ACCEPTED:
+            with self.subTest(branch=name):
+                fx = self.fixture_on_branch(name)
+                (fx.root / "CLAUDE.md").write_text("# Workspace\n\n- Worktrees: `.`\n")
+                with patch.object(self.view, "run", side_effect=run_at_base), \
+                     patch.dict(os.environ, taint.ENV, clear=True):
+                    self.assertEqual(one_shot._tree_note(fx.root, fx.tree),
+                                     f"worktree `wt` ({name})")
+                self.assertEqual(fx.fired(), [])
+                self.assertEqual(self.leftovers(), [])
+
+    def test_unsafe_symbolic_head_branch_bytes_are_unviewable(self):
+        fx = self.fixture()
+        names = (
+            b"space name", b"x\\y", b"x~y", b"x^y", b"x:y", b"x?y",
+            b"x*y", b"x[y", b"@{u}", b"x@{u}", b"a..b", b"a//b",
+            b".hidden/x", b"x/.hidden", b"x.lock", b"x.lock/y", b"x/y.lock",
+            b"x/", b"x.", b"-x", b"x\xffy",
+        ) + tuple(b"x" + bytes([c]) + b"y" for c in (*range(32), 127))
+        for name in names:
+            with self.subTest(branch_bytes=name):
+                # Git cannot create these branches; emulate worker-written HEAD.
+                (fx.gitdir / "HEAD").write_bytes(b"ref: refs/heads/" + name + b"\n")
+                with self.assertRaises(self.view.Unviewable):
+                    self.run_view(fx, ["branch", "--show-current"])
+                self.assertEqual(fx.fired(), [])
+                self.assertEqual(self.leftovers(), [])
+
+
 class TruthTest(FixtureCase):
     """One named test per vector, with loose/packed x ten command subtests."""
 
