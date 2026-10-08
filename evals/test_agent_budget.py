@@ -4,6 +4,7 @@ The agent file is loaded whole at every session start, so its size is a recurrin
 ceilings, not targets.
 """
 
+import hashlib
 import re
 import sys
 import tempfile
@@ -19,28 +20,29 @@ from evals.rules_text import one_shot_paragraph, rules_text, sections, skill_bod
 from evals.skill_fixtures import write_plugin, write_skill  # noqa: E402
 
 # Each later slice lowers these in a red commit before it trims the text.
-# Slice 6 (#489), review pass 1: measured agent 62,807 B + R1's 171 B
-# sentence and 1 B separator + P's 86 B pointer growth + R7's 237 B
-# verbatim merge restoration = 63,302 B. Pipeline is 794 + 495 = 1,289 B.
-# TOTAL and Pipeline round up to 50 B; the R8 shorthand omits R7's growth.
-TOTAL = 63_350            # whole agent file, bytes
+# Slice 7 (#490): simulated verbatim move from origin/main, retaining only
+# processes, listing-is-not-roster and orphan paragraphs in Sessions.
+# Agent 54,973 B; Assign 283 B; Sessions 1,663 B. Round ceilings up to 50 B.
+TOTAL = 55_000            # whole agent file, bytes
 MAX_LINE = 8_400          # longest single line
 ONE_SHOT_PARAGRAPH = 4_400  # kept: a later slice trims this paragraph
 # Skills are read on demand; no host's prompt appends their bodies.
-# rendered_sizes(1) with P/R1/R7's projected agent text: Claude 62,971 B,
-# Codex 55,582 B, Cursor 55,690 B, AGY 55,746 B (each current prompt + 495 B).
-# Each ceiling rounds up to 50 B; skill bodies remain on demand.
-PROMPT = {"claude": 63_000, "codex": 55_600, "cursor": 55_700, "agy": 55_750}  # rendered, path bytes removed
+# rendered_sizes(1) over the intended agent in a temporary generic plugin:
+# Claude 54,621 B; Codex 52,628 B; Cursor 52,736 B; AGY 52,792 B.
+# Paths removed; each ceiling rounds up to 50 B. Skills remain on demand.
+PROMPT = {"claude": 54_650, "codex": 52_650, "cursor": 52_750, "agy": 52_800}
 CEILING = {  # `## ` section -> bytes, heading line included
     "Role": 1600, "Dispatch authority": 1100, "Browser safety": 410, "Writing": 780,
     "Config": 1400, "Clock": 1850, "Calendar": 910, "Open the day": 2000, "Resume": 4830,
     "Write authority": 2310, "Filing": 360, "Human-only actions": 1280, "Dispatch": 15210,
-    "Assign": 2560, "Brief": 730, "Pipeline": 1_300, "Check": 2780,
-    "Sessions": 7380, "Relay": 2510, "Tracker": 5_500, "Notices": 740, "Board": 1750,
+    "Assign": 300, "Pipeline": 1_300, "Check": 2780,
+    "Sessions": 1_700, "Relay": 2510, "Tracker": 5_500, "Notices": 740, "Board": 1750,
     "Requirements": 360, "Share": 460, "Asks": 4700, "Notify": 360,
 }
-SKILL_CEILING = {"decision-page": 2_700, "optional-features": 5_200, "tracker-rows": 5_400, "review-pipeline": 9_677}  # moved bytes + metadata/organization/headroom
-SKILLS_TOTAL = 22_977  # all SKILL.md files, bytes; slice 6 adds 8,977 + 700
+# coordinator-sessions: 8,587 B moved prose; projected frontmatter/topics yield
+# 8,875 B, leaving 425 B headroom under its 9,300 B ceiling.
+SKILL_CEILING = {"decision-page": 2_700, "optional-features": 5_200, "tracker-rows": 5_400, "review-pipeline": 9_677, "coordinator-sessions": 9_300}  # moved bytes + metadata/organization/headroom
+SKILLS_TOTAL = 32_277  # all SKILL.md files, bytes; slice 7 adds the same 9,300 B ceiling
 DESCRIPTION_CAP = 300  # frontmatter description characters, not bytes
 SKILL_POINTER = re.compile(r"\$\{CLAUDE_PLUGIN_ROOT\}/skills/([^/\s`]+)/SKILL\.md")
 DECISION_PAGE_POINTER = "Before writing a decision page, Read ${CLAUDE_PLUGIN_ROOT}/skills/decision-page/SKILL.md"
@@ -221,6 +223,152 @@ REVIEW_PIPELINE_DELETED_RULES = ()
 REVIEW_PIPELINE_REFERENCES = {'Asks': ("A page that already exists is used, not rewritten: a reviewer's findings comment is the page for triage (see Triage), with or without a `Backlog:`.",)}
 
 
+# Captured once from git show origin/main:agents/chief-of-stuff.md for slice 7.
+# Strip list prefixes, then split sentence punctuation outside inline code;
+# these static pins must never be regenerated from the current agent or skill.
+COORDINATOR_SESSIONS_POINTER = "Before polling, assigning to, briefing, or sending to a session, spawning one, writing a Sessions row, reading a session's registration or report, or telling the user a session is ready for decommissioning, Read ${CLAUDE_PLUGIN_ROOT}/skills/coordinator-sessions/SKILL.md"
+SESSIONS_RETAINED_PARAGRAPHS = ('For registered workers, check process state with `chief-of-stuff processes --root <workspace> [PID ...]`. '
+ 'Omit PIDs to check every registered worker; pass a space- or comma-separated batch when reconciling '
+ "tracker PIDs. The TOON result gives each PID's assigned name, runtime and status. `running` verifies a "
+ "registered worker's command and worktree; `gone` means the PID no longer exists; `pid_reused` means it "
+ 'belongs to another process; `unverified` means its identity could not be checked. A running PID without a '
+ 'registration proves only that a process exists. Use this helper instead of ad hoc `ps` or `pgrep` calls, '
+ 'and do not mark an `unverified` worker gone. Claude native sessions still use their native listing when '
+ 'available.',
+ '- A listing is not a roster. A Sessions row exists for a session you spawned or handed work to, and for no '
+ "other: a listing also shows sessions that are nobody's business here, and tooling that mints short-lived "
+ 'sessions of its own. Those rows own no task, answer no poll, and vanish like departed sessions. The orphan '
+ 'check below starts from task owners for this reason, and never from the listing.',
+ "- Every time you list, check each task's owner against the list. An owner that is listed nowhere and has a "
+ "ref is gone: set that task's state to `orphaned`, add a Log line naming the session, and tell the user "
+ 'once, with what is at risk — the worktree and paths from File ownership, and whether they hold uncommitted '
+ 'work. An orphaned task keeps its owner column as a record. Never send to a session that is not listed, and '
+ "never re-dispatch an orphaned task on your own: its owner is the user's to decide.")
+COORDINATOR_SESSIONS_RULES = {'Assign': ('In a one-shot workspace, use Dispatch for every task, including reviews and follow-up fixes; '
+            'never hand a new task to a continuing session.',
+            'The rules below apply only to interactive work.',
+            'Assigning work to a live session is not a dispatch: the session already exists and runs under '
+            "the user's own rules.",
+            'Who takes a task is yours to decide, never a question for the user (see Asks): a live session '
+            'whose last task is closed and whose role, as its name gives it, fits the task — or the session '
+            'the user names.',
+            'Only an `unassigned` task — one with its issue filed, where the block names a backlog (see '
+            'Tracker).',
+            'When you pick, never hand: anything with a decision inside it (a rename is a naming call, not a '
+            'cleanup); anything touching a file a live session owns; anything on the human-only list; '
+            "today's log, tracker or board; and any `orphaned` task whose tree holds uncommitted work.",
+            'That last one reads small on the board and is not — picking it up is a rebase and an ownership '
+            "call, and it is the user's.",
+            'A task the user hands to a session they name is their call already made.',
+            'Poll that session first and stop there.',
+            'Say nothing about the item in that message; its answer may be that it is busy or constrained.',
+            'On its reply — idle, or its last task closed — send the assignment (when the user named the '
+            'session, add the Decisions row quoting them first): the whole ask in the first line, then '
+            '`Name: <its name>. Use it everywhere; never take another.`, `Plan: enter plan mode '
+            '(EnterPlanMode) for this task before anything else; write nothing until the user approves the '
+            'plan.` (the user, 2026-09-23 22:25: "tasks passed to implementers should cause the implementer '
+            'to enter plan mode for the new task"), `Lands by: follow [workflow] delivery: open a pull '
+            'request and report its URL and head sha, or report the branch and head sha when delivery is '
+            'branch.`, `Works under: follow the configured reviewer and merge policy.`, `Tracker: <path>`, '
+            '`Owns: <paths>. Do not touch any other file.`, `Report: <what to reply with when done>`.',
+            'Nothing about your own limits, and no "write only" line: what that session may run is between '
+            'it and the user.',
+            "Set the task's owner to the session and its state to `running HH:MM`, fill its Sessions row, "
+            'and append a Log line.',
+            'A reply that says the session is busy hands it nothing; the next check polls it again (see '
+            'Check).',
+            'The poll is how you know the last task closed — handing work to a session mid-task is the '
+            'failure it exists for.'),
+ 'Brief': ('A brief is context, not an instruction to start: use it when the user asks you to bring a '
+           'session up to speed.',
+           'One message.',
+           'Its first line is the whole ask ("brief on X so you can pick it up if the user says so"), its '
+           'second is `Name: <its name>. Use it everywhere; never take another.`, and its third is `Works '
+           'under: follow the configured reviewer and merge policy.` Context is file paths — the tracker, '
+           "the design, the plan — never their contents pasted in, and never the coordinator's own limits.",
+           'Then a Tasks row if the work is not already one, and a Log line naming who was briefed and on '
+           'what.',
+           'A brief is not a dispatch proposal and needs no yes: it hands over reading, not work.'),
+ 'Sessions': ("When the block has a `Sessions:` line naming a list tool and a send tool, the user's other "
+              'Claude sessions are working sessions, and the tracker has a `## Sessions` table: `| ref | '
+              'name | state | doing | waiting on | free at | constraints | children | last reply |`.',
+              'The ref is the six hex characters in `name [ref]` from the list; it is the key.',
+              'The name is the one the session was given — at launch with `--name`, or by the user with '
+              "`/rename` — and it does not change: the row's `name` cell and every task owner are written "
+              'with it and never rewritten to a name a listing shows.',
+              "A session's worktree is a different string, and so is its ref.",
+              "Update a session's row from its direct replies only; `last reply` is your clock read when the "
+              'reply arrived, never a time the reply states.',
+              '`state` is one of `planning`, `working`, `waiting`, `idle` and nothing else.',
+              'It is what the session says about itself, so write only what it reported.',
+              'Three more states are yours to work out for your reply and for the board, and never for the '
+              'cell: a row with no ref yet is `starting`, a `doing` carrying `ready for decommissioning` is '
+              '`ready`, and an owner the listing no longer shows is `gone`.',
+              "The cell keeps the session's last report, blank if none; the board derives `gone` from the "
+              'orphaned task.',
+              '`waiting on` names who first, then why, separated by a dash: `<user> — the yes on S2`.',
+              'A cell that only says why waits on nobody.',
+              '`children` is what that session reports about its own subagents, and `none` when it says it '
+              'has none.',
+              'Blank means you have not asked.',
+              'A subagent has no ref, is in no listing, answers no poll and cannot be sent to, so it never '
+              'gets a row of its own — a row would say it can be reached.',
+              'List before every send.',
+              'Send to the name as listed, or `name [ref]`.',
+              "A listing, or a message's sender, that shows a session under a name other than the one it was "
+              'given is the harness titling it from its first task, not a rename.',
+              'Keep the row and the owner cells as they are and send by `name [ref]` as listed.',
+              "In the move where you first see it — list to match the ref if a sender's name is all you have "
+              '— do two things once, and ask nobody first, because neither changes anything but what the '
+              'session calls itself: send the session `Name: <its name>. Use it everywhere; never take '
+              'another.`, and tell the user in that reply that its tab needs `/rename <name>` — a session '
+              'cannot rename itself, and only the user can.',
+              'Dual-transport sending: When sending to a session (poll, assignment, instruction, or reply), '
+              'attempt direct messaging (`send`) first.',
+              "If the send tool is missing, denied, or returns an error ('no agent reachable'), fall back "
+              'immediately to the mailbox: `chief-of-stuff inbox send --to <recipient> --from coordinator '
+              '--type <type> --body "<message>"`.',
+              'A status poll is one message: `Reply in 6 lines: current task, and one of planning, working, '
+              'waiting, idle; waiting on whom, and for what; when free; blocked by a permission prompt or '
+              'classifier, on what; standing constraints <user> has given you; any subagents you have '
+              'running now, and what each is doing.` The lines fill `doing` and `state`, `waiting on`, `free '
+              'at`, the block relay, `constraints`, and `children` in that order.',
+              "When a session's state is in question, poll it; do not ask the user.",
+              'A session you spawned gets its Sessions row at once, with the spawn time in `last reply` and '
+              '`ref` empty.',
+              "The ref arrives in that session's **registration**: its assignment tells it to look itself up "
+              'and send you one message carrying its ref, its worktree and branch, its task, and that it is '
+              'planning with nothing written yet.',
+              'Write the ref into the row from that message, set `doing` to what it said and `state` to '
+              '`planning`, and leave its task where it is — registering is not progress.',
+              'A row that has never carried a ref is not gone, it is not there yet: leave its task alone.',
+              'If it still has no ref an hour later it never registered — say that, which is a different '
+              'fact from `orphaned`, and the tree it was given is still on disk.',
+              "Dual-transport registration: A session's registration may arrive via direct peer messaging "
+              '(IPC) OR via the coordinator inbox (`chief-of-stuff inbox`).',
+              'When polling or reviewing sessions, check `chief-of-stuff inbox list --recipient coordinator '
+              '--unread`.',
+              'If a registration message is present, write the ref into `## Sessions`, set `doing` to what '
+              'it said, `state` to `planning`, and acknowledge the message with `chief-of-stuff inbox read '
+              '<id> --ack`.',
+              '`doing` carries `ready for decommissioning HH:MM` when a `task` session reports its task '
+              'finished.',
+              'It is not a task state and never becomes one.',
+              'Before you tell the user, run the task audit for that tree: closing the terminal ends the '
+              'only session that can merge that branch, so the reply says what is unmerged or uncommitted '
+              'there.',
+              'Closing it is theirs; you never close a session, remove a tree, or delete a branch.',
+              'An agy session is in no native listing and cannot be sent to or polled directly.',
+              'Its row carries `agy` in `ref`, and its ref is its name; it registers, asks, reports and '
+              'stops only through the inbox, and everything you send it goes through `inbox.py send --to '
+              '<its name>`.',
+              'Check its registered PID with `process_status.py` for the orphan check.',
+              "A poll to it is a mailbox message, and its row's `waiting on` reads `<its name> — its mailbox "
+              'reply` until the reply arrives.')}
+CHECK_RELAY_SHA256 = {'Check': 'b3f92c4dcf9abe5f37ca9d7ba713ab10b8a56fb89e2c81bfcd742acbf3dd1ef9',
+ 'Relay': 'c053b7a3de53d53870a2fe3475cc3cc8777916dc8c5d9dc43db9adb543b6fef1'}
+
+
 def rendered_sizes(pad: int, source: Path = ROOT) -> dict:
     """Each host's prompt size with the release and workspace paths taken out, so a short CI path
     and a long checkout path budget the same. `pad` lengthens both paths."""
@@ -351,6 +499,105 @@ class AgentBudgetTest(unittest.TestCase):
                 lines = [line for line in found[name].splitlines() if line.strip()]
                 self.assertEqual(lines, [f"## {name}", pointer],
                                  "keep the heading and exactly one pointer line, with nothing else")
+
+    def test_assign_keeps_only_the_standalone_sessions_pointer(self):
+        pointer = COORDINATOR_SESSIONS_POINTER
+        self.assertEqual(self.text.count(pointer), 1)
+        self.assertEqual(self.text.splitlines().count(pointer), 1)
+        self.assertIn(pointer, sections(self.text)["Assign"].split("\n\n"))
+        self.assertEqual([line for line in sections(self.text)["Assign"].splitlines() if line.strip()],
+                         ["## Assign", pointer])
+        self.assertNotIn("Brief", sections(self.text))
+        for anchor in ("list sessions;", "list sessions,"):
+            self.assertNotIn(anchor, pointer, "host replacement anchors must never consume the pointer")
+
+    def test_sessions_keeps_exactly_the_three_retained_paragraphs_in_order(self):
+        expected = "## Sessions\n\n" + "\n\n".join(SESSIONS_RETAINED_PARAGRAPHS)
+        self.assertEqual(sections(self.text)["Sessions"].strip(), expected)
+
+    def test_check_sessions_relay_stay_adjacent_and_check_relay_are_untouched(self):
+        names = list(sections(self.text))
+        index = names.index("Check")
+        self.assertEqual(names[index:index + 3], ["Check", "Sessions", "Relay"],
+                         "start_coordinator.py replaces Check/Sessions using these adjacent headings")
+        for name, digest in CHECK_RELAY_SHA256.items():
+            self.assertEqual(hashlib.sha256(sections(self.text)[name].encode()).hexdigest(), digest,
+                             f"slice 7 must leave {name} verbatim")
+
+    def test_coordinator_sessions_skill_has_portable_frontmatter_and_topics(self):
+        path = ROOT / "skills" / "coordinator-sessions" / "SKILL.md"
+        self.assertTrue(path.is_file(), "coordinator-sessions skill is missing")
+        text = path.read_text()
+        front = re.match(r"\A---\r?\n(.*?)\r?\n---(?:\r?\n|\Z)", text, flags=re.S)
+        self.assertIsNotNone(front, "coordinator-sessions needs leading YAML frontmatter")
+        self.assertRegex(front[1], r'''(?m)^name:[ \t]*(?:coordinator-sessions|"coordinator-sessions"|'coordinator-sessions')[ \t]*$''')
+        self.assertNotRegex(front[1], r"(?m)^\s*hosts\s*:")
+        prose = description(text)
+        self.assertTrue(prose)
+        self.assertLessEqual(len(prose), DESCRIPTION_CAP)
+        for moment in (r"poll", r"assign", r"brief", r"send", r"spawn", r"Sessions row", r"registration", r"report", r"decommission"):
+            with self.subTest(moment=moment):
+                self.assertRegex(prose, re.compile(moment, re.I))
+        body = skill_body(text)
+        self.assertEqual(re.findall(r"(?m)^### (.*)$", body), ["Sessions", "Assign", "Brief"])
+        self.assertNotRegex(body, r"(?m)^## (?:Sessions|Assign|Brief)$")
+
+    def test_every_sessions_assign_brief_sentence_moves_once_into_the_skill(self):
+        path = ROOT / "skills" / "coordinator-sessions" / "SKILL.md"
+        self.assertTrue(path.is_file(), "coordinator-sessions skill is missing")
+        body, combined = skill_body(path.read_text()), rules_text()
+        for topic, sentences in COORDINATOR_SESSIONS_RULES.items():
+            for sentence in sentences:
+                with self.subTest(topic=topic, sentence=sentence):
+                    self.assertEqual(body.count(sentence), 1)
+                    self.assertEqual(combined.count(sentence), 1)
+                    self.assertNotIn(sentence, self.text)
+        for paragraph in SESSIONS_RETAINED_PARAGRAPHS:
+            self.assertEqual(self.text.count(paragraph), 1)
+            self.assertEqual(combined.count(paragraph), 1)
+            self.assertNotIn(paragraph, body)
+
+    def test_sessions_and_check_cross_references_resolve_and_reject_broken_copies(self):
+        path = ROOT / "skills" / "coordinator-sessions" / "SKILL.md"
+        self.assertTrue(path.is_file(), "coordinator-sessions skill is missing")
+        body = skill_body(path.read_text())
+
+        def resolve(agent, skill):
+            found = sections(agent)
+            for target in re.findall(r"\(see (Sessions|Check)\)", agent + "\n" + skill):
+                self.assertIn(target, found, f"(see {target}) needs ## {target}")
+                if target == "Sessions":
+                    self.assertIn(SESSIONS_RETAINED_PARAGRAPHS[2], found[target],
+                                  "(see Sessions) needs the retained orphan rule")
+            if "Assign step 1" in agent:
+                self.assertIn(COORDINATOR_SESSIONS_POINTER, found.get("Assign", ""),
+                              "Assign step 1 needs the Assign pointer")
+                self.assertIn("### Assign", skill.splitlines(), "Assign step 1 needs ### Assign")
+                self.assertIn("1. Poll that session first and stop there.", skill,
+                              "Assign step 1 needs the moved first step")
+            if "orphan check below" in agent:
+                session = found.get("Sessions", "")
+                self.assertIn(SESSIONS_RETAINED_PARAGRAPHS[2], session, "orphan check below needs the orphan rule")
+                self.assertLess(session.index("orphan check below"), session.index("Every time you list,"))
+
+        for reference, count in {"(see Sessions)": 2, "(see Check)": 4,
+                                 "Assign step 1": 1, "orphan check below": 1}.items():
+            self.assertEqual(self.text.count(reference), count, "keep the agent references verbatim")
+        mutations = (
+            (self.text.replace("## Sessions\n", "## Registry\n"), body),
+            (self.text.replace("## Check\n", "## Schedule\n"), body),
+            (self.text.replace(COORDINATOR_SESSIONS_POINTER, "Read elsewhere"), body),
+            (self.text, body.replace("### Assign\n", "### Hand-off\n")),
+            (self.text, body.replace("1. Poll that session first and stop there.", "1. Send immediately.")),
+            (self.text.replace(SESSIONS_RETAINED_PARAGRAPHS[2], "Orphans omitted."), body),
+            (self.text.replace("\n\n".join(SESSIONS_RETAINED_PARAGRAPHS[1:]),
+                               "\n\n".join(reversed(SESSIONS_RETAINED_PARAGRAPHS[1:]))), body),
+        )
+        for agent, skill in mutations:
+            with self.subTest(mutation=agent != self.text, skill_mutation=skill != body):
+                with self.assertRaises(AssertionError):
+                    resolve(agent, skill)
+        resolve(self.text, body)
 
     def test_state_report_requirements_file_refers_to_requirements_section(self):
         authority = sections(self.text)["Write authority"]

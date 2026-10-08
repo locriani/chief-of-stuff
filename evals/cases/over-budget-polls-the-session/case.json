@@ -5,6 +5,15 @@
   "prompt": "[Scheduled check] chief-of-stuff: check the day\nThe check printed only:\nover budget: Retry backoff running 2h00m (S 30m)",
   "graders": [
     {
+      "name": "reads the coordinator-sessions skill before the first session action",
+      "rule": "When a session's state is in question, poll it; do not ask the user.",
+      "type": "tool_used",
+      "tool": "Read",
+      "input_match": "\"file_path\": \"[^\"\\n]*skills/coordinator-sessions/SKILL\\.md\"",
+      "min": 1,
+      "before": "\\A(?=[\\s\\S]*\"(?:to|recipient)\": \"[^\"\\n]+\")[\\s\\S]*\"(?:text|content)\": \"|\"command\": \"(?:\\\\.|[^\"\\\\])*(?:\\bchief[-_]of[-_]stuff(?:\\.py)?\\s+inbox\\b|(?:scripts/)?inbox\\.py\\b)(?:(?![;&|]|\\\\n)(?:\\\\.|[^\"\\\\]))*\\bsend\\b|\"(?:session_id|session_ref|session)\": \"[^\"\\n]+\""
+    },
+    {
       "name": "reads the review-pipeline skill before the first message or session poll",
       "rule": "Poll that task's session and tell the user; never stop or kill it.",
       "type": "tool_used",
