@@ -31,3 +31,7 @@ Each script under `scripts/`, the two launchers and the hook belong to one circl
 ## 5. Enforcement
 
 The dependency rule of section 1 is enforced by `evals/test_architecture.py`. It holds the circle table of section 4 and fails on any import from an inner circle to an outer one. Imports that violate the rule today are listed in that test by name, the list may only shrink, and each entry is also a gap in `compliance.md`. A new script is placed in a circle in the same change that adds it.
+
+## 6. Reviewers
+
+chief-of-stuff stores no persona text and no review panel logic. A review is done by running the `extras:code-review` skill, which chooses the personas, including the Clean Architecture expert for the style section 1 declares. This is the current choice and may be revised.
