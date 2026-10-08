@@ -156,6 +156,7 @@ class SkillsPlumbingTest(unittest.TestCase):
         markers = {
             "decision-page": "Never publish a decision page as an artifact, and never open it.",
             "optional-features": "Notifications are off by default, including an empty `[notify]` table.",
+            "tracker-rows": "Never set the cell by hand or write that line as free text.",
         }
         release = start.install(root, self.base / "install")
         agent = (release / "agents" / "chief-of-stuff.md").read_text()
@@ -178,23 +179,8 @@ class SkillsPlumbingTest(unittest.TestCase):
         release = start.install(root, self.base / "install")
         for runtime in (*NON_CLAUDE, "claude"):
             with self.subTest(runtime=runtime):
-                self.assert_pinned_skill_pointers(runtime, release, {"decision-page", "optional-features"})
-
-    def test_shipped_tracker_rows_body_is_appended_only_for_non_claude_hosts(self):
-        root = Path(__file__).resolve().parent.parent
-        path = root / "skills" / "tracker-rows" / "SKILL.md"
-        self.assertTrue(path.is_file(), "tracker-rows skill is missing")
-        body = skill_body(path.read_text())
-        self.assertTrue(body)
-        for runtime in NON_CLAUDE:
-            with self.subTest(runtime=runtime):
-                prompt = start.prompt(runtime, root, self.workspace)
-                rendered_body = body.replace("${CLAUDE_PLUGIN_ROOT}", str(root))
-                self.assertIn("\n\n## tracker-rows\n\n" + rendered_body + "\n\n", prompt)
-                self.assertEqual(prompt.count(rendered_body), 1)
-        claude = start.prompt("claude", root, self.workspace)
-        self.assertNotIn(body.replace("${CLAUDE_PLUGIN_ROOT}", str(root)), claude)
-        self.assertNotIn("\n\n## tracker-rows\n\n", claude)
+                self.assert_pinned_skill_pointers(runtime, release,
+                                                  {"decision-page", "optional-features", "tracker-rows"})
 
     def test_no_skills_prompt_is_byte_identical_to_the_legacy_prompt(self):
         for empty_dir in (False, True):
