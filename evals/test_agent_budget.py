@@ -20,21 +20,20 @@ from evals.skill_fixtures import write_plugin, write_skill  # noqa: E402
 
 # Each later slice lowers these in a red commit before it trims the text.
 # Slice 6 (#489): Pipeline + Triage are 9,772 B; the retained Pipeline is
-# 795 B including heading, bullets and pointer. Net moved: 8,977 B.
-# TOTAL drops by floor(8,977 / 100) * 100 - 200 = 8,700 B.
-TOTAL = 63_300            # whole agent file, bytes
+# 845 B with the expanded budget/kanban pointer. The projected agent is 62,858 B;
+# Pipeline and TOTAL ceilings round up to 50 B.
+TOTAL = 62_900            # whole agent file, bytes
 MAX_LINE = 8_400          # longest single line
 ONE_SHOT_PARAGRAPH = 4_400  # kept: a later slice trims this paragraph
 # Skills are read on demand; no host's prompt appends their bodies.
-# rendered_sizes(1) projected after the 8,977 B reduction: Claude 62,498 B,
-# Codex 55,109 B, Cursor 55,217 B, AGY 55,273 B (non-Claude include the 89 B read
-# adapter sentence, #511 review); each ceiling rounds up to 50 B.
-PROMPT = {"claude": 62_500, "codex": 55_150, "cursor": 55_250, "agy": 55_300}  # rendered, path bytes removed
+# rendered_sizes(1) with the expanded pointer: Claude 62,527 B, Codex 55,138 B,
+# Cursor 55,246 B, AGY 55,302 B; each ceiling rounds up to 50 B.
+PROMPT = {"claude": 62_550, "codex": 55_150, "cursor": 55_250, "agy": 55_350}  # rendered, path bytes removed
 CEILING = {  # `## ` section -> bytes, heading line included
     "Role": 1600, "Dispatch authority": 1100, "Browser safety": 410, "Writing": 780,
     "Config": 1400, "Clock": 1850, "Calendar": 910, "Open the day": 2000, "Resume": 4830,
     "Write authority": 2310, "Filing": 360, "Human-only actions": 1280, "Dispatch": 15210,
-    "Assign": 2560, "Brief": 730, "Pipeline": 800, "Check": 2780,
+    "Assign": 2560, "Brief": 730, "Pipeline": 850, "Check": 2780,
     "Sessions": 7380, "Relay": 2510, "Tracker": 5_500, "Notices": 740, "Board": 1750,
     "Requirements": 360, "Share": 460, "Asks": 4700, "Notify": 360,
 }
@@ -132,7 +131,7 @@ TRACKER_DELETED_RULES = (
 )
 
 
-REVIEW_PIPELINE_POINTER = 'Before advancing a task past a gate, handling a Reviewer pass report, checking review state, or merging, Read ${CLAUDE_PLUGIN_ROOT}/skills/review-pipeline/SKILL.md'
+REVIEW_PIPELINE_POINTER = 'Before advancing a task past a gate, handling a Reviewer pass report or an over budget line, running the kanban command, checking review state, or merging, Read ${CLAUDE_PLUGIN_ROOT}/skills/review-pipeline/SKILL.md'
 REVIEW_GATE_BULLET = "- A gate yes covers every stage up to the next gate in that task's lane. For a lane that starts past its first gate, as `build` does, interactive dispatch approval, or one-shot Dispatch authority for a ready task, is the entry authorization. A gate passes only on the user's word in chat, quoted in a Decisions row; the one exception is the `triage` gate, which a Triage pass that leaves nothing for the user passes by the automatic-fix rule, recorded in the Log."
 REVIEW_NO_CLI_MERGE = 'Never merge one it lists as blocked, never merge or approve with `gh` or `glab` directly, and name what blocks the rest.'
 REVIEW_DEFAULT_MERGE = "The user merges by default."
