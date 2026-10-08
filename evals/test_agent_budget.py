@@ -136,6 +136,7 @@ TRACKER_DELETED_RULES = (
 
 
 REVIEW_PIPELINE_POINTER = "Before moving a task's stage, sending its pull request to the reviewer, handling a Reviewer pass report or an over budget line, running the kanban command, checking review state, or merging, Read ${CLAUDE_PLUGIN_ROOT}/skills/review-pipeline/SKILL.md"
+SESSIONS_XREF = "To poll it, Read ../coordinator-sessions/SKILL.md next to this file first."
 REVIEW_GATE_BULLET = "- A gate yes covers every stage up to the next gate in that task's lane. For a lane that starts past its first gate, as `build` does, interactive dispatch approval, or one-shot Dispatch authority for a ready task, is the entry authorization. A gate passes only on the user's word in chat, quoted in a Decisions row; the one exception is the `triage` gate, which a Triage pass that leaves nothing for the user passes by the automatic-fix rule, recorded in the Log."
 REVIEW_NO_CLI_MERGE = 'Never merge one it lists as blocked, never merge or approve with `gh` or `glab` directly, and name what blocks the rest.'
 # Minimal adjacent sentences from origin/main's Pipeline: keep the listing that
@@ -754,6 +755,28 @@ class AgentBudgetTest(unittest.TestCase):
                 with self.subTest(topic=topic, sentence=sentence):
                     self.assertEqual(body.count(sentence), 1, "preserve the verbatim sentence in the skill")
                     self.assertNotIn(sentence, self.text, "moved prose must leave the agent")
+
+    def test_review_pipeline_budget_bullet_points_to_the_sessions_skill_once(self):
+        budget = "Poll that task's session and tell the user; never stop or kill it."
+        skills = ROOT / "skills"
+        text = (skills / "review-pipeline" / "SKILL.md").read_text()
+        bullet = next(line for line in text.splitlines() if line.startswith("- Budgets:"))
+        self.assertTrue(bullet.endswith(f"{budget} {SESSIONS_XREF}"), "xref directly after the budget sentence")
+        self.assertEqual(text.count(SESSIONS_XREF), 1)
+        self.assertNotIn(SESSIONS_XREF, self.text)
+        self.assertNotIn(SESSIONS_XREF, (skills / "coordinator-sessions" / "SKILL.md").read_text())
+
+    def test_review_pipeline_sessions_xref_resolves_to_a_real_file_and_rejects_a_missing_one(self):
+        def resolves(skill_dir):
+            self.assertTrue((skill_dir / "../coordinator-sessions/SKILL.md").resolve().is_file())
+
+        resolves(ROOT / "skills" / "review-pipeline")
+        with tempfile.TemporaryDirectory() as tmp:
+            lone = Path(tmp) / "review-pipeline"
+            lone.mkdir()
+            (lone / "SKILL.md").write_text((ROOT / "skills" / "review-pipeline" / "SKILL.md").read_text())
+            with self.assertRaises(AssertionError):
+                resolves(lone)
 
     def test_other_sections_keep_pipeline_and_triage_references_that_resolve(self):
         found = sections(self.text)
