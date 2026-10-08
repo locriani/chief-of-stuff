@@ -9,14 +9,17 @@ fetched objects behind, for `check_sha` and `make_worktree`.
 
 from __future__ import annotations
 
+import contextvars
 import os
 import stat
 import subprocess
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import git_view
 from shell_setup import clean_env
-from tree_state import TreeState
+from tree_state import UNREADABLE_BRANCH, TreeState
 
 # Replace refs and grafts both rewrite parents, so neither may make a yes.
 GIT_ENV = {"GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0", "GIT_NO_REPLACE_OBJECTS": "1"}
@@ -47,7 +50,34 @@ def user_env() -> dict[str, str]:
 
 
 def git(args: list[str], cwd: Path) -> tuple[int, str]:
-    """One git call that reads. Never a shell, always a list, always bounded."""
+    """One git call that reads, through the sanitised view (#443). Never a shell, always a list, always bounded.
+    Inside `_raw_reads` (the sha path) it is the old unsanitised read; nothing in `args` selects it."""
+    if _raw.get():
+        return _raw_git(args, cwd)
+    try:
+        out = git_view.run(args, cwd, env=audit_env(), timeout=GIT_TIMEOUT)
+    except (git_view.Unviewable, RuntimeError, ValueError) as exc:  # RuntimeError: no home to put the view in; ValueError: a path it cannot write
+        return 128, f"unreadable: {exc}"
+    except (OSError, subprocess.SubprocessError) as exc:
+        return 128, f"{type(exc).__name__}: {exc}"  # git's own failure code: 1 is a real answer to `--is-ancestor`
+    return out.returncode, (out.stdout or out.stderr).strip()
+
+
+# slice 4 (#443) moves the sha path onto git_view.locate/signals; _raw_reads then goes
+_raw = contextvars.ContextVar("raw_reads", default=False)
+
+
+@contextmanager
+def _raw_reads() -> Iterator[None]:
+    token = _raw.set(True)
+    try:
+        yield
+    finally:
+        _raw.reset(token)
+
+
+def _raw_git(args: list[str], cwd: Path) -> tuple[int, str]:
+    """The unsanitised read the sha-path questions still use."""
     try:
         out = subprocess.run(
             ["git", "-C", str(cwd), *args],
@@ -67,14 +97,21 @@ def _count(rev_range: str, tree: Path) -> int | None:
     return int(out) if code == 0 and out.isdecimal() else None
 
 
+def branch_of(tree: Path) -> str:
+    """The branch HEAD is on; one fixed placeholder when git cannot say, never its error text (it is printed everywhere)."""
+    code, branch = git(["rev-parse", "--abbrev-ref", "HEAD"], tree)
+    return branch if code == 0 else UNREADABLE_BRANCH
+
+
 def read_state(tree: Path) -> TreeState:
-    _, branch = git(["rev-parse", "--abbrev-ref", "HEAD"], tree)
+    branch = branch_of(tree)
     code, dirty = git(["status", "--porcelain"], tree)
+    readable = code == 0  # an unreadable status cannot rule out uncommitted work: leave the counts unknown, so the tree stays at risk
     return TreeState(
         branch=branch,
-        dirty=len(dirty.splitlines()) if code == 0 else 0,
-        off_origin=_count(f"{BASE}..HEAD", tree),
-        unpushed=_count("@{u}..HEAD", tree),
+        dirty=len(dirty.splitlines()) if readable else None,
+        off_origin=_count(f"{BASE}..HEAD", tree) if readable else None,
+        unpushed=_count("@{u}..HEAD", tree) if readable else None,
     )
 
 
@@ -92,6 +129,7 @@ def discover(root: Path, trees: str) -> list[Path]:
     return found
 
 
+@_raw_reads()
 def sha_trees(root: Path, trees: str) -> list[tuple[str, Path]]:
     """(name, tree) for each repository `--sha` should ask: the first tree by name of each repository `discover`
     finds (trees sharing a common git dir are one, as is a pruned
@@ -226,6 +264,7 @@ def _pruned_common(tree: Path) -> Path | None:
     return None
 
 
+@_raw_reads()
 def check_sha(sha: str, tree: Path) -> tuple[int, str, bool]:
     """One repository's `(exit code, line, held)`; `held` is whether it has a commit with that id, or may have one (git
     cannot read it). A pruned worktree (`_pruned_common`: its `.git` file names a `<common>/worktrees/<name>` known gone) is

@@ -28,6 +28,7 @@ import board_sources  # noqa: E402
 import kanban as kanban_tool  # noqa: E402
 import ownership  # noqa: E402
 import git_trees  # noqa: E402
+from tree_state import UNCOMMITTED_UNKNOWN  # noqa: E402
 from orphans import Claim, Orphan, Unclaimed, judge  # noqa: E402
 from tree_claims import Claims, one_shot_claims, registry_claims  # noqa: E402
 
@@ -44,6 +45,8 @@ ANY_REF = re.compile(r"\[([0-9a-f]{4,})\]")
 # Accept abbreviated or full Git hashes in done states.
 SHA = re.compile(r"^[0-9a-f]{7,64}$")
 LANDED, NOT_LANDED, UNKNOWN_SHA = "landed", "not-landed", "unknown"
+# Git exit 1 is its real "no"; any other code is git unable to say, and is never worded as a no.
+UNREADABLE_PHRASE = "unknown (git could not read the tree)"
 PAREN = re.compile(r"\((.*?)\)")
 TOKEN = re.compile(r"[A-Za-z0-9]+")
 STOP = NOT_A_NAME | {"done", "from", "to", "on", "by", "worktree", "worktrees", "off", "main", "new"}
@@ -121,19 +124,26 @@ def _closed_hhmm(closed_at: str, zone) -> str:
         return ""
 
 
-def _tree_unlanded(root: Path | None, trees: str, owners: list, task, roster=(), refs=()) -> bool:
-    """Does this task's File-ownership worktree carry a commit `main` never got? Reuses `_state`'s own
-    merge-base check — the same signal `reopen` already reads off a done task's tree (#221). No
-    resolvable tree (none owns the task, or it is missing) answers False: nothing is there to unland."""
+def _tree_unlanded(root: Path | None, trees: str, owners: list, task, roster=(), refs=()) -> str:
+    """Does this task's File-ownership worktree carry a commit `main` never got? "unlanded" when git says
+    so (merge-base exit 1), "unknown" when git could not say (any other exit) and no tree is unlanded,
+    else "". Reads `_merged`, the same check `_state` words, never `_state`'s prose (#221). No resolvable
+    tree (none owns the task, or it is missing) answers "": nothing is there to unland."""
     if root is None:
-        return False
+        return ""
+    answer = ""
     rows, _ = rows_for(task.item, task.owner, owners or [], key_name(task, roster, refs))
     for row in rows:
         for name in row.worktrees:
             path, _, _ = _resolve(root, trees, name)
-            if path is not None and "not on main" in _state(path)[1]:
-                return True
-    return False
+            if path is None:
+                continue
+            merged = _merged(path)
+            if merged == 1:
+                return "unlanded"
+            if merged != 0:
+                answer = "unknown"
+    return answer
 
 
 def _config_for(home: Backlog | GitHubBacklog, host: str, repo: str) -> Backlog | GitHubBacklog:
@@ -176,10 +186,15 @@ def issue_faults(tasks, home: Backlog | GitHubBacklog, gh=None, lanes: dict | No
         if task.needs_issue and found is None:
             faults.append(IssueFault(name, f"{tag} not found in {ref.repo}"))
         elif task.needs_issue and found.state == CLOSED:
-            if _tree_unlanded(root, trees, owners, task, roster, session_refs):
+            unlanded = _tree_unlanded(root, trees, owners, task, roster, session_refs)
+            if unlanded == "unlanded":
                 faults.append(IssueFault(
                     name, f"{tag} is closed but its tree has work not on main; ask the user: "
                     "reopen the issue or drop the work"))
+            elif unlanded:
+                faults.append(IssueFault(
+                    name, f"{tag} is closed and whether its tree has unlanded work is {UNREADABLE_PHRASE}; "
+                    "ask the user"))
             else:
                 when = _closed_hhmm(found.closed_at, zone)
                 at = f" {when}" if when else ""
@@ -519,14 +534,11 @@ def _resolve(root: Path, trees: str, name: str) -> tuple[Path | None, str, str]:
 
 
 def _handle(root: Path, trees: str, seen: list[Path]) -> Path | None:
-    """Somewhere to ask git about a branch whose tree is gone: any tree still on disk."""
-    if seen:
-        return seen[0]
+    """Somewhere to ask git about a branch whose tree is gone: a tree still on disk that git can read."""
     base = (root / trees) if trees else root
-    for child in sorted(base.glob("*")) if base.is_dir() else []:
-        if (child / ".git").exists():
-            return child
-    return root if (root / ".git").exists() else None
+    kids = [c for c in sorted(base.glob("*")) if (c / ".git").exists()] if base.is_dir() else []
+    found = [*seen, *kids, *([root] if (root / ".git").exists() else [])]
+    return next((c for c in found if git_trees.git(["rev-parse", "HEAD"], c)[0] == 0), found[0] if found else None)
 
 
 def missing_tree(handle: Path | None, name: str, detail: str) -> str:
@@ -534,29 +546,44 @@ def missing_tree(handle: Path | None, name: str, detail: str) -> str:
 
     A branch that is an ancestor of main is a session that tidied up after itself. A branch that is
     not is work that exists nowhere else. A name with no branch behind it never existed: the row
-    carried a planned name and the tree was made under a different one.
+    carried a planned name and the tree was made under a different one. Git unable to say is none of these.
     """
     if handle is None:
         return f"{name}: no worktree, and no tree left on disk to ask git in"
     for cand in branch_candidates(name, detail):
-        if git_trees.git(["rev-parse", "--verify", "--quiet", f"refs/heads/{cand}"], handle)[0] != 0:
+        code = git_trees.git(["rev-parse", "--verify", "--quiet", f"refs/heads/{cand}"], handle)[0]
+        if code == 1:
             continue
-        if git_trees.git(["merge-base", "--is-ancestor", cand, "main"], handle)[0] == 0:
+        if code != 0:
+            return f"{name}: no worktree — whether it has a branch is {UNREADABLE_PHRASE}"
+        merged = git_trees.git(["merge-base", "--is-ancestor", cand, "main"], handle)[0]
+        if merged == 0:
             return f"{name}: no worktree — branch {cand} is on main; merged and cleaned up"
+        if merged != 1:
+            return f"{name}: no worktree — branch {cand} exists; whether it is on main is {UNREADABLE_PHRASE}"
         return f"{name}: no worktree — branch {cand} is not on main, so the work is only on that branch"
     return f"{name}: no worktree and no branch by that name — the row names a tree that was never created"
 
 
+def _merged(worktree: Path) -> int:
+    """git's exit code for "is HEAD on main": 0 yes, 1 no, anything else git could not say."""
+    return git_trees.git(["merge-base", "--is-ancestor", "HEAD", "main"], worktree)[0]
+
+
 def _state(worktree: Path) -> tuple[str, str]:
     """(branch, why it is not done), where the why is empty when the work is on main and committed."""
-    _, branch = git_trees.git(["rev-parse", "--abbrev-ref", "HEAD"], worktree)
+    branch = git_trees.branch_of(worktree)
     code, dirty = git_trees.git(["status", "--porcelain"], worktree)
     reasons = []
-    if code == 0 and dirty:
+    if code != 0:
+        reasons.append(UNCOMMITTED_UNKNOWN)
+    elif dirty:
         reasons.append(f"{len(dirty.splitlines())} uncommitted file(s)")
-    merged, _ = git_trees.git(["merge-base", "--is-ancestor", "HEAD", "main"], worktree)
-    if merged != 0:
+    merged = _merged(worktree)
+    if merged == 1:
         reasons.append("not on main")
+    elif merged != 0:
+        reasons.append(f"on main: {UNREADABLE_PHRASE}")
     return branch, "; ".join(reasons)
 
 
@@ -634,6 +661,8 @@ def landed(sha: str, worktree: Path) -> tuple[str, str]:
     if git_trees.git(["cat-file", "-e", f"{sha}^{{commit}}"], worktree)[0] != 0:
         return UNKNOWN_SHA, f"no commit {sha} here, so the citation cannot be checked"
     code, _ = git_trees.git(["merge-base", "--is-ancestor", sha, "main"], worktree)
+    if code not in (0, 1):
+        return UNKNOWN_SHA, f"whether {sha} is on main is {UNREADABLE_PHRASE}"
     return (LANDED if code == 0 else NOT_LANDED), ""
 
 
