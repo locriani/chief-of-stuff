@@ -23,7 +23,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import git_trees  # noqa: E402
-import git_taint as taint  # noqa: E402
+from evals import git_taint as taint  # noqa: E402
 
 
 # plan-443.md section 1: read calls only (fetch/worktree are write funnels).
