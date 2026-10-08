@@ -3428,12 +3428,19 @@ class UnreadableTreeTest(unittest.TestCase):
         tracker.write_text(tracker.read_text().replace(
             "| robin | worktree wt-dirty (feat/dirty), worktree wt-unmerged (feat/open) |",
             "| robin | worktree wt-dirty (feat/dirty), worktree wt-unmerged (feat/open), worktree `--git-dir` (feat/x) |"))
-        with patch.object(git_view, "run", wraps=git_view.run) as viewed, \
-                patch.object(git_trees, "_raw_git", wraps=git_trees._raw_git) as raw:
+        real, plain = subprocess.run, []
+
+        def watch(argv, *a, **kw):
+            if argv and argv[0] == "git" and argv[1:2] == ["-C"]:  # the former raw reader's shape: `git -C <tree> ...`
+                plain.append(argv)
+            return real(argv, *a, **kw)
+
+        with patch.object(git_view, "run", wraps=git_view.run) as viewed, patch.object(subprocess, "run", watch):
             report = al.audit(self.root, "2026-09-17")
         self.assertIn("--git-dir", " ".join(" ".join(c.args[0]) for c in viewed.call_args_list if c.args),
                       "the premise: the audit asked about the option-shaped name")
-        raw.assert_not_called()
+        self.assertEqual(plain, [], "#443 slice 4 deleted `_raw_git`: no read starts `git -C <tree>` itself")
+        self.assertFalse(hasattr(git_trees, "_raw_git"))
         self.assertTrue(report.lines)
 
     # R6
