@@ -2167,6 +2167,111 @@ class SanitisedTreeReadTest(unittest.TestCase):
         self.assertTrue(copy.exists())
         self.assertFalse((fx.tree / dispatch_prompt.DISPATCH_FILE).exists())
 
+    # A plain folder (no .git at all) is not a repository: before the sanitised view, `git rev-parse HEAD` failed
+    # and git_head returned None (no head, a launch allowed), and `git branch --show-current` printed nothing, so
+    # _tree_note named the tree "detached". Only a layout that is unreadable, not absent, refuses a launch.
+    def plain_folder(self, fx, name="plain"):
+        plain = fx.root / name
+        plain.mkdir()
+        (plain / "notes.txt").write_text("generic\n")
+        return plain
+
+    def test_plain_folder_note_is_detached_and_head_is_none(self):
+        fx = self.fixture()
+        plain = self.plain_folder(fx)
+        with mock.patch.object(subprocess, "run", side_effect=AssertionError("a plain folder started git")):
+            self.assertEqual(one_shot._tree_note(fx.root, plain), "worktree `plain` (detached)")
+            self.assertIsNone(one_shot.git_head(plain, strict=True))
+            self.assertIsNone(one_shot.git_head(plain))
+        self.assertEqual(list(self.base.glob("view-*")), [])
+
+    def test_plain_folder_launch_runs_the_worker_and_records_the_row(self):
+        fx = self.fixture()
+        day, tracker, copy, cfg = self.launch_fixture(fx)
+        plain = self.plain_folder(fx)
+        process = mock.Mock(return_value=subprocess.CompletedProcess(["fixture-worker"], 0))
+        with mock.patch.object(one_shot, "login_argv", side_effect=lambda argv: argv), \
+             mock.patch.object(subprocess, "run", side_effect=process), \
+             mock.patch.object(one_shot, "reconcile", return_value={"status": "done", "errors": []}) as reconcile, \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(one_shot._launch(fx.root, cfg, day, "Security audit", plain, "worker01", "codex", "", "",
+                                              "Generic assignment\n", ["fixture-worker"], 1), 0)
+        process.assert_called_once()
+        self.assertEqual(process.call_args.kwargs["cwd"], plain)
+        text = tracker.read_text()
+        self.assertIn("| worker01 | running ", text)
+        self.assertIn("worktree `plain` (detached)", text)
+        self.assertTrue((plain / dispatch_prompt.DISPATCH_FILE).exists())
+        self.assertIsNone(reconcile.call_args.args[6], "a plain folder has no pre-run head")
+
+    def test_plain_folder_launch_that_fails_to_write_its_row_leaves_nothing_behind(self):
+        fx = self.fixture()
+        day, tracker, copy, cfg = self.launch_fixture(fx)
+        plain = self.plain_folder(fx)
+        before, previous = tracker.read_bytes(), copy.read_bytes()
+        process = mock.Mock(side_effect=AssertionError("a refused row started a worker"))
+        with mock.patch.object(one_shot, "login_argv", side_effect=lambda argv: argv), \
+             mock.patch.object(subprocess, "run", side_effect=process), \
+             mock.patch.object(one_shot, "record_launch", side_effect=ValueError("stop at row boundary")), \
+             self.assertRaisesRegex(ValueError, "stop at row boundary"):
+            one_shot._launch(fx.root, cfg, day, "Security audit", plain, "worker01", "codex", "", "",
+                             "Generic assignment\n", ["fixture-worker"], 1)
+        process.assert_not_called()
+        self.assertEqual(tracker.read_bytes(), before)
+        self.assertEqual(copy.read_bytes(), previous)
+        self.assertFalse((plain / dispatch_prompt.DISPATCH_FILE).exists())
+
+    def unreadable_folder(self, fx, kind):
+        path = self.plain_folder(fx, kind)
+        dotgit = path / ".git"
+        if kind == "garbage-file":
+            dotgit.write_bytes(b"\x00garbage\xff not a gitfile\n")
+        elif kind == "symlink":
+            dotgit.symlink_to(fx.root / "missing")
+        elif kind == "fifo":
+            os.mkfifo(dotgit)
+        elif kind == "empty-dotgit-directory":
+            dotgit.mkdir()
+        elif kind == "bare-with-empty-head":
+            taint.git(["init", "--bare", "-q", "-b", "main"], path)
+            (path / "HEAD").write_text("")
+        return path
+
+    KINDS = ("garbage-file", "symlink", "fifo", "empty-dotgit-directory", "bare-with-empty-head")
+
+    def test_an_unreadable_layout_still_refuses_note_and_strict_head(self):
+        fx = self.fixture()
+        for kind in self.KINDS:
+            with self.subTest(kind=kind):
+                path = self.unreadable_folder(fx, kind)
+                with self.assertRaisesRegex(ValueError, "tree is unreadable"):
+                    one_shot._tree_note(fx.root, path)
+                with self.assertRaisesRegex(ValueError, "tree is unreadable"):
+                    one_shot.git_head(path, strict=True)
+                self.assertIsNone(one_shot.git_head(path))
+
+    def test_an_unreadable_layout_launch_refuses_and_writes_nothing(self):
+        fx = self.fixture()
+        day, tracker, copy, cfg = self.launch_fixture(fx)
+        before, previous = tracker.read_bytes(), copy.read_bytes()
+        for kind in self.KINDS:
+            with self.subTest(kind=kind):
+                path = self.unreadable_folder(fx, kind)
+                process = mock.Mock(side_effect=AssertionError("an unreadable tree started a worker"))
+                with mock.patch.object(one_shot, "login_argv", side_effect=lambda argv: argv), \
+                     mock.patch.object(subprocess, "run", side_effect=process), \
+                     mock.patch.object(one_shot, "record_launch") as row, \
+                     mock.patch.object(dispatch_prompt, "write_dispatch") as dispatch:
+                    with self.assertRaisesRegex(ValueError, "tree is unreadable"):
+                        one_shot._launch(fx.root, cfg, day, "Security audit", path, "worker01", "codex", "", "",
+                                         "Generic assignment\n", ["fixture-worker"], 1)
+                row.assert_not_called()
+                dispatch.assert_not_called()
+                process.assert_not_called()
+                self.assertEqual(tracker.read_bytes(), before)
+                self.assertEqual(copy.read_bytes(), previous)
+                self.assertFalse((path / dispatch_prompt.DISPATCH_FILE).exists())
+
 
 def sanitised_read_test(site, vector):
     def test(self):
