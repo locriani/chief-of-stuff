@@ -132,6 +132,19 @@ class ServeTest(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(get(self.port, path).status, 404)
 
+    def test_the_full_graph_page_is_served_sandboxed(self):
+        name = "a" * 40 + "-" + "b" * 8
+        out = self.dir / ".graphs" / name
+        out.mkdir(parents=True)
+        (out / "page.html").write_text("<p>full graph marker</p>")
+        resp = get(self.port, f"/graphs/{name}/page.html")
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(resp.getheader("Content-Security-Policy"), "sandbox allow-scripts")
+
+        resp = get(self.port, "/")
+        self.assertEqual(resp.status, 200)
+        self.assertIsNone(resp.getheader("Content-Security-Policy"))
+
 
 def snippet() -> str:
     """The shared reload check. Imported here, not at the top, so only the tests of it are red while it is missing."""
