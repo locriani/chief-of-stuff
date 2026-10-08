@@ -362,6 +362,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def end_headers(self):
         self.send_header("Cache-Control", "no-cache")
+        if self.path.startswith("/.graphs/"):
+            # The graph page holds a change's code; sandboxed, its requests carry Origin null, which do_POST refuses.
+            self.send_header("Content-Security-Policy", "sandbox allow-scripts")
         super().end_headers()
 
     def log_message(self, *_args):
