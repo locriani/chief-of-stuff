@@ -1052,6 +1052,45 @@ class TruthTest(FixtureCase):
         self.assertEqual(answer(result), (0, " M README.md\n"))
         self.assertEqual(fx.fired(), [])
 
+    def test_same_second_same_size_edit_with_fsmonitor_valid_index_shows_modified(self):
+        # A tracked file changed in the same second as the index write, with the
+        # same size and an fsmonitor-valid index, still shows as modified in the
+        # view. Every timestamp is pinned, so no sleep or clock luck is involved.
+        for fsmonitor in (True, False):
+            with self.subTest(fsmonitor_valid=fsmonitor):
+                fx = self.fixture()
+                readme = fx.tree / "README.md"
+                index = fx.gitdir / "index"
+                (fx.tree / "new.txt").unlink()
+                (fx.tree / ".gitattributes").unlink()
+                stamp = (time.time_ns() // 10**9 - 10) * 10**9 + 250_000_000
+                for _ in range(20):  # ctime (not settable) must stay in one second
+                    readme.write_text("a\n")
+                    os.utime(readme, ns=(stamp, stamp))
+                    taint.git(["update-index", "--refresh"], fx.tree)
+                    before = readme.stat().st_ctime_ns // 10**9
+                    if fsmonitor:
+                        code = (f"from pathlib import Path; import sys; "
+                                f"Path({str(fx.markers / 'fsmonitor-lie')!r}).write_text('fired'); "
+                                "sys.stdout.buffer.write(b'token\\0')")
+                        taint.config(fx, "core.fsmonitor", shlex.join([sys.executable, "-c", code]))
+                        taint.git(["update-index", "--fsmonitor"], fx.tree)
+                    os.utime(index, ns=(stamp, stamp))
+                    readme.write_text("z\n")
+                    os.utime(readme, ns=(stamp, stamp))
+                    if readme.stat().st_ctime_ns // 10**9 == before:
+                        break
+                else:
+                    self.fail("could not keep the edit in the index's ctime second")
+                fx.clear()
+                # Plain Git, fsmonitor off, never rewrites the index: the entry is racy.
+                plain = raw(fx, ["-c", "core.fsmonitor=false", "status", "--short"],
+                            git_trees.audit_env())
+                self.assertEqual(answer(plain), (0, " M README.md\n"))
+                result = self.run_view(fx, ["status", "--short"])
+                self.assertEqual(answer(result), (0, " M README.md\n"))
+                self.assertEqual(fx.fired(), [])
+
 
 def vector_test(vector):
     def test(self):
