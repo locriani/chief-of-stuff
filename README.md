@@ -55,8 +55,11 @@ Set the workspace worker mode in TOML:
 ```toml
 [workers]
 mode = "one-shot" # or "interactive" (the default)
-launcher = "ghostty" # used for interactive workers
+launcher = "ghostty" # ghostty, tmux, or herdr for interactive workers
+herdr_session = "chief-of-stuff" # herdr only: the dedicated session workers run in
 ```
+
+With `launcher = "herdr"`, each interactive worker starts in its own tab of a dedicated herdr session (default `chief-of-stuff`, session name rule `[a-z0-9][a-z0-9_-]{0,31}`), which must already be running with an active workspace. After creating the tab, the launcher uses its returned root pane id with `herdr --session <session> pane run <pane-id> <command words>` to run the same worker wrapper as tmux through the pane's shell, quoting each command word with `shlex.quote`. The launcher's own herdr calls carry no `HERDR_*` variables; herdr sets its own variables inside each pane, and isolation comes from the dedicated session's own socket. Any launch failure after a valid tab id is received attempts to close that tab.
 
 The settings' `[repos]` table maps a repository name to a path relative to the workspace root (`alder = "repo"`). `chief-of-stuff worktree --clone <name>` cuts from that entry; a `--clone` that is no entry's name is a path, as before. The coordinator passes the name when the table names the repository, otherwise the path. Settings that cannot be read are a refusal.
 
