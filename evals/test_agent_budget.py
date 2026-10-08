@@ -21,32 +21,32 @@ from evals.skill_fixtures import write_plugin, write_skill  # noqa: E402
 
 # Each later slice lowers these in a red commit before it trims the text.
 # Slice 8 (#491), measured by simulating the intended agent and skill in memory from
-# origin/main (Dispatch becomes the pointer plus three kept units; 13,883 B moves
-# verbatim minus the two code-enforced deletions): agent 40,972 B; Dispatch 904 B;
-# longest line 2,969 B; one-shot paragraph 3,862 B (4,255 B before the overlap deletion).
-# Round ceilings up to 50 B.
-TOTAL = 41_000            # whole agent file, bytes
+# origin/main. After the #539 review the Dispatch section is the new pointer plus five kept units
+# (the three original, the report-read sentence, the done-gate sentence); 13,883 B moves verbatim
+# minus the two code-enforced deletions, with the overlap-order clause (about 115 B) put back and the two kept
+# sentences taken out. Simulated: agent 41,237 B; Dispatch 1,169 B; longest line 2,969 B;
+# one-shot paragraph 3,741 B (4,255 B before the overlap deletion). Round ceilings up to 50 B.
+TOTAL = 41_250            # whole agent file, bytes
 MAX_LINE = 3_000          # longest single line
-ONE_SHOT_PARAGRAPH = 3_900  # kept: a later slice trims this paragraph
+ONE_SHOT_PARAGRAPH = 3_750  # kept: a later slice trims this paragraph
 # Skills are read on demand; no host's prompt appends their bodies.
 # rendered_sizes(1) over the simulated agent, copied into a temporary plugin:
-# Claude 40,599 B; Codex 38,606 B; Cursor 38,714 B; AGY 38,770 B.
-# Paths removed; each ceiling rounds up to 50 B (Claude to 40,650, since 40,600 leaves 1 B).
-PROMPT = {"claude": 40_650, "codex": 38_650, "cursor": 38_750, "agy": 38_800}
+# Claude 40,864 B; Codex 38,871 B; Cursor 38,979 B; AGY 39,035 B.
+PROMPT = {"claude": 40_900, "codex": 38_900, "cursor": 39_000, "agy": 39_050}
 CEILING = {  # `## ` section -> bytes, heading line included
     "Role": 1600, "Dispatch authority": 1100, "Browser safety": 410, "Writing": 780,
     "Config": 1400, "Clock": 1850, "Calendar": 910, "Open the day": 2000, "Resume": 4830,
-    "Write authority": 2310, "Filing": 360, "Human-only actions": 1280, "Dispatch": 950,
+    "Write authority": 2310, "Filing": 360, "Human-only actions": 1280, "Dispatch": 1_200,
     "Assign": 300, "Pipeline": 1_300, "Check": 2780,
     "Sessions": 1_700, "Relay": 2510, "Tracker": 5_500, "Notices": 740, "Board": 1750,
     "Requirements": 360, "Share": 460, "Asks": 4700, "Notify": 360,
 }
 # coordinator-sessions: 8,587 B moved prose; projected frontmatter/topics yield
 # 8,875 B, leaving 425 B headroom under its 9,300 B ceiling.
-# dispatch: 13,883 B moved prose; the simulated skill (frontmatter, six topics) is
-# 14,270 B, leaving 630 B headroom under its 14,900 B ceiling.
-SKILL_CEILING = {"decision-page": 2_700, "optional-features": 5_200, "tracker-rows": 5_400, "review-pipeline": 9_677, "coordinator-sessions": 9_300, "dispatch": 14_900}  # moved bytes + metadata/organization/headroom
-SKILLS_TOTAL = 47_177  # all SKILL.md files, bytes; slice 8 adds the same 14,900 B ceiling
+# dispatch: the simulated skill (frontmatter, six topics, overlap-order clause back, report-read sentence and
+# done-gate clause out) is 14,126 B, leaving 74 B under its 14,200 B ceiling (room for a description tweak that names the notification).
+SKILL_CEILING = {"decision-page": 2_700, "optional-features": 5_200, "tracker-rows": 5_400, "review-pipeline": 9_677, "coordinator-sessions": 9_300, "dispatch": 14_200}  # moved bytes + metadata/organization/headroom
+SKILLS_TOTAL = 46_477  # all SKILL.md files, bytes; the sum of the ceilings above (real total 44,549 B simulated)
 DESCRIPTION_CAP = 300  # frontmatter description characters, not bytes
 SKILL_POINTER = re.compile(r"\$\{CLAUDE_PLUGIN_ROOT\}/skills/([^/\s`]+)/SKILL\.md")
 DECISION_PAGE_POINTER = "Before writing a decision page, Read ${CLAUDE_PLUGIN_ROOT}/skills/decision-page/SKILL.md"
@@ -376,12 +376,20 @@ CHECK_RELAY_SHA256 = {'Check': 'b3f92c4dcf9abe5f37ca9d7ba713ab10b8a56fb89e2c81bf
 # Slice 8 (#491): captured once from git show origin/main:agents/chief-of-stuff.md
 # (## Dispatch, 14,905 B). Split like slice 7: strip list prefixes and fences, split at
 # sentence punctuation outside inline code. Static pins; never regenerate from the
-# current agent or skill. Three kept units stay in the agent; the rest moves verbatim,
-# minus the two deletions below (code enforces them).
-DISPATCH_POINTER = ("Before choosing a worker or model, proposing or launching a dispatch, acting on a yes to a dispatch "
-                    "proposal, writing the Tasks and File ownership rows for a launch, showing an assignment block, "
-                    "relaunching a task, or reading a finished one-shot's report, Read "
-                    "${CLAUDE_PLUGIN_ROOT}/skills/dispatch/SKILL.md")
+# current agent or skill. Five kept units stay in the agent; the rest moves verbatim,
+# minus the two deletions below (code enforces them). #539 review: the report-read sentence (R5) and the
+# done-gate clause (R3) stay because no pointer moment reaches the Tracker `done` step or a bare `result` call.
+# Review of #539 (R4, R5): the pointer fires on the entry moment (a task the user asks for, a ready task) and on the
+# completion notification, not only on the coordinator's own launch-side actions.
+DISPATCH_POINTER = ("Before acting on a task the user asks for or a ready task (writing its Tasks and File ownership rows, "
+                    "choosing a worker or model, proposing, launching or relaunching it, showing an assignment block, "
+                    "acting on a yes), and on a background launch's completion notification before reading its report, "
+                    "Read ${CLAUDE_PLUGIN_ROOT}/skills/dispatch/SKILL.md")
+DISPATCH_POINTER_MOMENTS = ("task the user asks for", "a ready task", "a yes", "completion notification",
+                            "relaunching", "assignment block", "choosing a worker or model")
+# Restored (#539 review R2): code does not order two ready tasks that overlap each other (refuse_overlap compares only
+# running rows), so this clause stays in the skill's launch sentence and nowhere in the agent.
+DISPATCH_OVERLAP_ORDER = "; when two ready tasks overlap each other, launch the earlier row first and the other when it returns"
 DISPATCH_KEPT = (
     "Launch ready one-shot tasks automatically. Launch new interactive sessions only on explicit approval of the "
     "proposal or a covering lane gate. Never do the work inline.",
@@ -390,6 +398,9 @@ DISPATCH_KEPT = (
     "Log line.",
     "A workspace set to `one-shot` requires every task worker to run one-shot; never propose an interactive or "
     "standing worker there unless the user directly asks for one for that task.",
+    "Read a finished one-shot's report with `chief-of-stuff result --root . --task <task>`, never by reading files "
+    "under its worktree or a host output file.",
+    "Never mark a code task `done` before the main-branch and suite gates.",
 )
 DISPATCH_RULES = {
     'Rows': (
@@ -474,7 +485,7 @@ DISPATCH_RULES = {
         'The workspace setting authorizes routine launches without per-task approval; a task-specific one-shot request authorizes that launch.',
         "The launcher writes the tracker itself, under the lock `chief-of-stuff log` takes: when it starts, the task's owner becomes the worker's name and its state `running HH:MM`, the task's File ownership row gains `; worktree `<tree>` (<branch>)`, and a Log line names the runtime, model, tree and task.",
         'Write none of these yourself, before or during the run; it changes the row again when it returns.',
-        'Launch every ready one-shot task whose File ownership paths overlap no running task at once, in the same turn, each as its own launcher call started in the background (Bash `run_in_background: true`).',
+        'Launch every ready one-shot task whose File ownership paths overlap no running task at once, in the same turn, each as its own launcher call started in the background (Bash `run_in_background: true`)' + DISPATCH_OVERLAP_ORDER + '.',
         'Give each launch its own Bash call with `run_in_background: true`; never chain launches with `;` or `&&`, never pipe a launch, and never start one without the flag.',
         "Add no `| head`, `| tail` or `| cut` to a launch: its whole output is read from the notification's output file.",
         "A background launch's completion notification only says the launch ended: name the task in its Bash description, and on the notification read that task's report with `chief-of-stuff result --root . --task <task>`, then reconcile it, sync the issue's Kanban state and report that task before using its result.",
@@ -483,8 +494,7 @@ DISPATCH_RULES = {
         'Explain that the worker may edit, commit, and open a PR according to the workspace workflow in that one run.',
         'Do not dispatch a standing placeholder this way; a launcher call starts exactly one task.',
         'The launcher writes a TOON report at `<worktree>/.chief-of-stuff/one-shot-report.toon` and prints it.',
-        "Read a finished one-shot's report with `chief-of-stuff result --root . --task <task>`, never by reading files under its worktree or a host output file.",
-        'On completion it sets the tracker row to `waiting` under the configured user for normal integration or review; never mark a code task `done` before the main-branch and suite gates.',
+        'On completion it sets the tracker row to `waiting` under the configured user for normal integration or review.',
         'On an unfinished run, including a failed process, timeout, or missing worker result, it also adds the configured human-review hold to the issue without changing its numbered stage and comments with the reason and partial changes.',
         'A report with `status: relaunch` means the worker stopped before changing anything because its premise moved, such as its base or target pull request merging; the launcher set the row back to `unassigned` and `open` with no hold.',
         "That is not a held or failed task and not the user's to decide: relaunch it now in a fresh worktree from current main, without asking, and log why.",
@@ -524,9 +534,9 @@ DISPATCH_LAUNCH_CALLS = (
 # Deleted, not moved. The launcher refuses overlap itself (scripts/dispatch_prompt.py refuse_overlap, called under the
 # lock in scripts/one_shot.py and from compose); the assignment header already carries the commit rule
 # (scripts/dispatch_prompt.py COMMITS). Everything else in those lines stays.
+# Compared lowercased on both sides (#539 review R6). "launch the earlier row first" is restored, see DISPATCH_OVERLAP_ORDER.
 DISPATCH_DELETED = (
     "a read-only task overlaps nothing",
-    "launch the earlier row first",
     "Overlap is decided by",
     "run overlapping tasks one after the other",
     "Write only:",
@@ -785,13 +795,12 @@ class AgentBudgetTest(unittest.TestCase):
         for anchor in ("list sessions;", "list sessions,"):
             self.assertNotIn(anchor, pointer, "host replacement anchors must never consume the pointer")
         # Every moment the pointer must fire on.
-        for moment in ("choosing a worker or model", "proposing or launching a dispatch",
-                       "acting on a yes to a dispatch proposal", "writing the Tasks and File ownership rows for a launch",
-                       "showing an assignment block", "relaunching a task", "reading a finished one-shot's report"):
+        for moment in DISPATCH_POINTER_MOMENTS:
             with self.subTest(moment=moment):
                 self.assertIn(moment, pointer)
+        self.assertFalse(pointer.endswith("."), "no final period")
 
-    def test_dispatch_keeps_only_the_pointer_and_three_kept_units(self):
+    def test_dispatch_keeps_only_the_pointer_and_five_kept_units(self):
         found = sections(self.text)["Dispatch"]
         for unit in DISPATCH_KEPT:
             with self.subTest(unit=unit[:40]):
@@ -836,7 +845,7 @@ class AgentBudgetTest(unittest.TestCase):
         for unit in DISPATCH_KEPT:
             with self.subTest(kept=unit[:40]):
                 self.assertEqual(combined.count(unit), 1)
-                self.assertNotIn(unit, body)
+                self.assertNotIn(unit.rstrip(".").lower(), body.lower(), "a kept unit is not in the skill, in any case")
         for line in (*DISPATCH_ASSIGNMENT_BLOCK, *DISPATCH_LAUNCH_CALLS):
             with self.subTest(fenced=line):
                 self.assertEqual([x.strip() for x in body.splitlines()].count(line), 1)
@@ -846,7 +855,7 @@ class AgentBudgetTest(unittest.TestCase):
         combined = rules_text()
         for fragment in DISPATCH_DELETED:
             with self.subTest(fragment=fragment):
-                self.assertNotIn(fragment, combined)
+                self.assertNotIn(fragment.lower(), combined.lower())
         # The sentence that tells the model what to do after a refusal stays, with the two output-piping sentences.
         self.assertEqual(combined.count("A launcher refusal for overlap, or for the concurrency cap (`max_concurrency` "
                                         "under `[workers]`), is not a blocker: leave the task `open` and launch it "
@@ -857,6 +866,14 @@ class AgentBudgetTest(unittest.TestCase):
                 if path.is_file() and path.suffix in {".md", ".json", ".txt", ".toml", ".py", ".toon"}:
                     with self.subTest(path=str(path.relative_to(ROOT))):
                         self.assertNotIn(NO_COMMIT_PROHIBITION, path.read_text(errors="ignore"))
+
+    def test_the_overlap_order_clause_is_restored_in_the_skill_only(self):
+        # #539 review R2: refuse_overlap compares only running rows, so nothing but this clause orders two ready tasks that
+        # overlap each other.
+        body = skill_body(self.dispatch_skill().read_text())
+        self.assertEqual(body.count(DISPATCH_OVERLAP_ORDER), 1)
+        self.assertNotIn(DISPATCH_OVERLAP_ORDER.lower(), self.text.lower())
+        self.assertEqual(rules_text().count(DISPATCH_OVERLAP_ORDER), 1)
 
     def test_the_shown_assignment_block_has_exactly_the_six_labeled_lines_and_no_commit_prohibition(self):
         body = skill_body(self.dispatch_skill().read_text())
@@ -883,6 +900,9 @@ class AgentBudgetTest(unittest.TestCase):
         mutations = (
             (self.text.replace("## Dispatch\n", "## Hand-off\n"), body),
             (self.text.replace(DISPATCH_POINTER, "Read elsewhere"), body),
+            (self.text.replace(DISPATCH_POINTER, DISPATCH_POINTER + "."), body),
+            (self.text.replace(DISPATCH_POINTER, DISPATCH_POINTER.replace(
+                ", and on a background launch's completion notification before reading its report", "")), body),
             (self.text, body.replace("### Launch\n", "### Start\n")),
             (self.text, body.replace("### Rows\n", "")),
         )

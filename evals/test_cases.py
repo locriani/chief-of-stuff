@@ -982,7 +982,8 @@ class CaseLintTest(unittest.TestCase):
             'worker-task-by-name': ("Pass the row's `name` cell as `--task`; it resolves to the one row with that name.", 'launch'),
             'worktree-clone-is-a-repos-name': ("`<repo>` is the repository's checkout directory; when the settings' `[repos]` table names that repository, pass the name instead.", 'launch'),
             'worker-check-validates-a-new-row': ('Before proposing a new task for dispatch, validate its Tasks and File ownership rows with `chief-of-stuff worker --check --root . --task <name>`, which needs no `--cwd`, makes no worktree and starts nothing; add `--name <session>` when the task is a standing row and `--one-shot` for a one-shot task; when it prints `refused: <why>`, tell the user that refusal and do not propose the task.', 'launch'),
-            'one-shot-report-is-read-with-result': ("Read a finished one-shot's report with `chief-of-stuff result --root . --task <task>`, never by reading files under its worktree or a host output file.", 'result'),
+            # The report sentence stays in the agent (#539 review R5), so the skill Read grader quotes the moved notification sentence.
+            'one-shot-report-is-read-with-result': ("A background launch's completion notification only says the launch ended: name the task in its Bash description, and on the notification read that task's report with `chief-of-stuff result --root . --task <task>`, then reconcile it, sync the issue's Kanban state and report that task before using its result.", 'result'),
         }
         self.assertEqual(carrying, set(expected), "only the seventeen moved-rule scenarios carry this Read grader")
         self.assertEqual(set(self.DISPATCH_SKILL_CASES), set(expected))
@@ -1839,17 +1840,20 @@ class CaseLintTest(unittest.TestCase):
         """#365 review R9: every grader that judges a launch quotes a sentence the agent file carries. The launch sentence is the
         background one (its exact text is in test_dispatch_prompt's one-shot lint)."""
         agent_text = rules_text()
-        report, export, single, limits, handler, rows = core(spec(EVALS / "cases" / "one-shot-disjoint-tasks-launch-together")["graders"])[:6]
-        for g in (report, export, single, limits, handler, rows):
+        report, export, single, handler, rows = core(spec(EVALS / "cases" / "one-shot-disjoint-tasks-launch-together")["graders"])[:5]
+        for g in (report, export, single, handler, rows):
             self.assertIn(g["rule"], agent_text, g["name"])
-        # The graders that count launches quote the BACKGROUND sentence (one call each, background, no chain, no pipe); the one that
-        # holds back an overlapping task quotes REFUSAL. Both are pinned verbatim in test_dispatch_prompt's one-shot lint.
+        # The graders that count launches quote the BACKGROUND sentence (one call each, background, no chain, no pipe), pinned
+        # verbatim in test_dispatch_prompt's one-shot lint.
         self.assertEqual({g["rule"] for g in (report, export, single)}, {report["rule"]})
         self.assertEqual(report["rule"], "Give each launch its own Bash call with `run_in_background: true`; never chain launches with `;` or `&&`, "
                                           "never pipe a launch, and never start one without the flag. "
                                           "Add no `| head`, `| tail` or `| cut` to a launch: its whole output is read from the notification's output file.")
-        self.assertEqual(limits["rule"], "A launcher refusal for overlap, or for the concurrency cap (`max_concurrency` under `[workers]`), "
-                                         "is not a blocker: leave the task `open` and launch it when a running task returns.")
+        # #539 review R1: the grader that read the tracker for "Add upload limits | unassigned | open" could not fail (the case
+        # forces --dry-run, which returns before the launcher writes any row), so it is gone and the description says so.
+        grader_names = [g["name"] for g in spec(EVALS / "cases" / "one-shot-disjoint-tasks-launch-together")["graders"]]
+        self.assertFalse([n for n in grader_names if "overlaps a running row" in n or "left open" in n], grader_names)
+        self.assertIn("The launcher owns overlap", spec(EVALS / "cases" / "one-shot-disjoint-tasks-launch-together")["description"])
         for gone in ("overlap no running task", "launch the earlier row first", "a read-only task overlaps nothing"):
             self.assertNotIn(gone, json.dumps(spec(EVALS / "cases" / "one-shot-disjoint-tasks-launch-together")))
 
@@ -1857,13 +1861,12 @@ class CaseLintTest(unittest.TestCase):
         """#365 review R1-R3: what the graders count. `worker --check` and a `--dry-run` after `;` are not launches, a launch is one
         simple command run in the background (the harness records `run_in_background` in the call's input), and a running or
         overlapping task is graded by any launch of it, foreground or not. Cannot see: a loop over a shell variable."""
-        report, export, single, limits, handler, rows = core(spec(EVALS / "cases" / "one-shot-disjoint-tasks-launch-together")["graders"])[:6]
+        report, export, single, handler, rows = core(spec(EVALS / "cases" / "one-shot-disjoint-tasks-launch-together")["graders"])[:5]
         # #491: the overlap clause left the agent. The launcher refuses an overlapping task itself, dry run included
         # (compose calls refuse_overlap), so a coordinator that tries it and is refused started nothing. DECISION: a refused attempt
-        # passes. `limits` reads the tracker, where an attempt leaves no trace, instead of counting calls.
+        # passes. #539 review R1: the tracker grader that stood in for it could not fail under --dry-run, so no grader judges that task.
         self.assertEqual([(g["type"], g["tool"], g.get("min"), g.get("max")) for g in (report, export, single, handler)],
                          [("tool_used", "Bash", 1, None)] * 2 + [("tool_used", "Bash", None, 0)] * 2)
-        self.assertEqual((limits["type"], limits["path"], "match" in limits), ("file_matches", "daily/{{today}}-tracker.md", False))
         said = "chief-of-stuff worker --task 'Fix report writer' --dry-run"  # the model's prose about a call decides nothing
 
         def hit(g: dict, command: str, background: bool = True) -> bool:
@@ -1902,18 +1905,12 @@ class CaseLintTest(unittest.TestCase):
             for command in (f"chief-of-stuff worker --check --root . --task '{name}' --one-shot", f"chief-of-stuff worker --task '{name}' --one-shot --check",
                             f"chief-of-stuff worker --check --task '{name}' --one-shot --dry-run"):
                 self.assertFalse(hit(g, command), command)
-        # The refused attempt: no tool_used grader of the case counts a launch of the overlapping task, and the tracker grader
-        # passes while the row stays open and fails when the row moves.
+        # The refused attempt: no tool_used grader of the case counts a launch of the overlapping task.
         overlapping = "Add upload limits"
         for command, background in ((f"chief-of-stuff worker --task '{overlapping}' --dry-run", True), (f"chief-of-stuff worker --task '{overlapping}' --dry-run", False),
                                      (f"chief-of-stuff worker --one-shot --task \"{overlapping}\" --cwd t", True)):
             for g in (report, export, single, handler):
                 self.assertFalse(hit(g, command, background), (g["name"], command))
-        row = lambda state: f"| {overlapping} | unassigned | {state} | 09:00 |  |  |\n"
-        self.assertRegex(row("open"), limits["pattern"])
-        for state in ("running 09:05", "waiting", "blocked", "done"):
-            self.assertNotRegex(row(state), limits["pattern"], state)
-        self.assertNotRegex(f"| {overlapping} | worker07 | running 09:05 |\n", limits["pattern"])
         # One call launches one task: two `--task` arguments in one command that is not a check.
         self.assertTrue(hit(single, "chief-of-stuff worker --task 'Fix report writer' --dry-run; chief-of-stuff worker --task 'Fix export header' --dry-run"))
         self.assertFalse(hit(single, "chief-of-stuff worker --task 'Fix report writer' --dry-run"))

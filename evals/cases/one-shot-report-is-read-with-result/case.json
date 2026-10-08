@@ -5,7 +5,7 @@
   "graders": [
     {
       "name": "reads the dispatch skill before reading the finished report",
-      "rule": "Read a finished one-shot's report with `chief-of-stuff result --root . --task <task>`, never by reading files under its worktree or a host output file.",
+      "rule": "A background launch's completion notification only says the launch ended: name the task in its Bash description, and on the notification read that task's report with `chief-of-stuff result --root . --task <task>`, then reconcile it, sync the issue's Kanban state and report that task before using its result.",
       "type": "tool_used",
       "tool": "Read",
       "input_match": "\"file_path\": \"[^\"\\n]*skills/dispatch/SKILL\\.md\"",

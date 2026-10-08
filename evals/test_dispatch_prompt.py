@@ -692,7 +692,7 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         # against Bash's 10-minute cap, so "in the same turn" alone serializes. Each of these sentences must stand verbatim in the
         # one-shot paragraph (the line that starts `If `[workers] mode = "one-shot"``), and the eval graders quote the first.
         #
-        #   LAUNCH   "Launch every ready one-shot task whose File ownership paths overlap no running task at once, in the same turn, each as its own launcher call started in the background (Bash `run_in_background: true`)." (#491: the clause "a read-only task overlaps nothing; when two ready tasks overlap each other, launch the earlier row first ..." is gone; the launcher refuses overlap itself)
+        #   LAUNCH   "Launch every ready one-shot task whose File ownership paths overlap no running task at once, in the same turn, each as its own launcher call started in the background (Bash `run_in_background: true`)." (#491: the clause "a read-only task overlaps nothing" is gone; the launcher refuses overlap itself. #539 review R2: "; when two ready tasks overlap each other, launch the earlier row first and the other when it returns" is back, because refuse_overlap compares only running rows)
         #   BACKGROUND "Give each launch its own Bash call with `run_in_background: true`; never chain launches with `;` or `&&`, never pipe a launch, and never start one without the flag."
         #   NOPIPE   "Add no `| head`, `| tail` or `| cut` to a launch: its whole output is read from the notification's output file." (the eval graders quote BACKGROUND and NOPIPE together, as the file has them: NOPIPE straight after BACKGROUND)
         #   NOTIFY   "A background launch's completion notification only says the launch ended: name the task in its Bash description, and on the notification read that task's report with `chief-of-stuff result --root . --task <task>`, then reconcile it, sync the issue's Kanban state and report that task before using its result."
@@ -704,7 +704,7 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         # Gone: "Run tasks sequentially in the foreground", "more than one task this way", "before selecting the next ready task".
         paragraph = self._one_shot_paragraph(self.content)
         for required in (
-            "Launch every ready one-shot task whose File ownership paths overlap no running task at once, in the same turn, each as its own launcher call started in the background (Bash `run_in_background: true`).",
+            "Launch every ready one-shot task whose File ownership paths overlap no running task at once, in the same turn, each as its own launcher call started in the background (Bash `run_in_background: true`); when two ready tasks overlap each other, launch the earlier row first and the other when it returns.",
             "Give each launch its own Bash call with `run_in_background: true`; never chain launches with `;` or `&&`, never pipe a launch, and never start one without the flag.",
             "Add no `| head`, `| tail` or `| cut` to a launch: its whole output is read from the notification's output file.",
             "A background launch's completion notification only says the launch ended: name the task in its Bash description, and on the notification read that task's report with `chief-of-stuff result --root . --task <task>`, then reconcile it, sync the issue's Kanban state and report that task before using its result.",
@@ -716,7 +716,7 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
             with self.subTest(required=required):
                 self.assertIn(required, paragraph)
         for gone in ("Run tasks sequentially in the foreground", "more than one task this way", "before selecting the next ready task",
-                     "a read-only task overlaps nothing", "launch the earlier row first", "Overlap is decided by",
+                     "a read-only task overlaps nothing", "Overlap is decided by",
                      "run overlapping tasks one after the other"):
             self.assertNotIn(gone, paragraph)
         self.assertEqual(self.SERIAL.findall(paragraph), [], "the one-shot paragraph serializes launches")
