@@ -760,6 +760,7 @@ class CaseLintTest(unittest.TestCase):
     OPTIONAL_FEATURE_SKILL_CASES = (
         "para-move", "requirements-tick-on-done", "awaiting-you-notifies",
         "notification-updates-task", "para-move-protected", "requirements-unrelated-no-tick",
+        "open-day-ensures-notify", "deadline-sync-service",
     )
 
     def test_optional_feature_skill_graders_load_and_quote_rules_text(self) -> None:
@@ -777,6 +778,10 @@ class CaseLintTest(unittest.TestCase):
                     run.render_tree(case.root / "fixture", work, c)
                     self.assertTrue((work / "CLAUDE.md").is_file())
                     for g in graders(rendered):
+                        if case.name == "open-day-ensures-notify":
+                            self.assertTrue(g.get("rule"), g["name"])
+                        if g.get("rule"):
+                            self.assertIn(g["rule"], text, g["name"])
                         if "skills/optional-features/SKILL" not in g.get("input_match", ""):
                             continue
                         self.assertTrue(g.get("rule"), g["name"])
@@ -785,7 +790,7 @@ class CaseLintTest(unittest.TestCase):
                         for key in ("input_match", "before", "tool"):
                             re.compile(g[key])
 
-    def test_optional_feature_skill_graders_require_read_before_the_first_write_action(self) -> None:
+    def test_optional_feature_skill_graders_require_read_before_the_first_action(self) -> None:
         """No missing/late read, description mention, unrelated edit or later write may satisfy it."""
         from datetime import timezone
         read_match = r'"file_path": "[^"\n]*skills/optional-features/SKILL\.md"'
@@ -794,17 +799,20 @@ class CaseLintTest(unittest.TestCase):
             r'\A(?=[\s\S]*"old_string":)[\s\S]*"file_path": '
             r'"(?:[^"\n]*[/\\])?projects[/\\]final-requirements\.md"'
         )
-        notify_before = (
+        notify_command = (
             r'"command": "(?:\\.|[^"\\])*(?:\bchief[-_]of[-_]stuff(?:\.py)?\s+notify\b|(?:scripts/)?notify\.py\b)'
-            r'(?:(?![;&|]|\\n)(?:\\.|[^"\\]))*\badd\b'
         )
+        notify_before = notify_command + r'(?:(?![;&|]|\\n)(?:\\.|[^"\\]))*\badd\b'
         filing_rule = "A move is `mv`, nothing else."
         requirements_rule = "Your only edit is a tick: flip `- [ ]` to `- [x]` and append ` — evidence: <commit, URL, or Log HH:MM>`, with Edit."
         notify_rule = "Never run routine `notify sync` or edit the queue yourself."
+        ensure_rule = ("The launcher ensures the service before all runtime launches; at Open the day or Resume, "
+                       "use `chief-of-stuff notify --root . ensure` for a direct plugin launch or a reported service failure.")
         expected = {
             "para-move": (filing_rule, mv_before),
             "requirements-tick-on-done": (requirements_rule, edit_before),
             "awaiting-you-notifies": (notify_rule, notify_before),
+            "open-day-ensures-notify": (ensure_rule, notify_command),
         }
         read = {"id": "skill", "name": "Read", "input": {"file_path": "/plugin/skills/optional-features/SKILL.md"}}
 
@@ -824,7 +832,14 @@ class CaseLintTest(unittest.TestCase):
             bash('python3 /plugin/scripts/notify.py --root . add --kind awaiting --what "Check"'),
         ]
         actions = {"para-move": moves, "requirements-tick-on-done": edits,
-                   "awaiting-you-notifies": adds}
+                   "awaiting-you-notifies": adds,
+                   "open-day-ensures-notify": adds + [
+                       bash("chief-of-stuff notify --root . ensure"),
+                       bash('python3 /plugin/chief_of_stuff.py notify --root "/ws" ensure'),
+                       bash("python3 /plugin/scripts/notify.py --root . ensure"),
+                       bash("chief-of-stuff notify --root . status"),
+                       bash("chief-of-stuff notify --root . sync"),
+                   ]}
         harmless = [
             {"id": "answer", "name": "Read", "input": {"file_path": requirement}},
             {"id": "other", "name": "Edit", "input": {"file_path": "/ws/daily/tracker.md", "old_string": "old", "new_string": "new"}},
@@ -862,12 +877,44 @@ class CaseLintTest(unittest.TestCase):
                 for path in ("/plugin/skills/other/SKILL.md", "/plugin/skills/optional-features/SKILL.md.bak"):
                     self.assertFalse(passes([dict(read, input={"file_path": path})]))
                 self.assertTrue(passes([read]))
-                self.assertTrue(passes(harmless + [read]), "read-only operations and descriptions are not the first write")
+                safe = harmless[:3] if name == "open-day-ensures-notify" else harmless
+                self.assertTrue(passes(safe + [read]), "unrelated operations and descriptions are not the first action")
                 for action in actions[name]:
-                    self.assertTrue(passes(harmless + [read, action]), action)
+                    self.assertTrue(passes(safe + [read, action]), action)
                     self.assertFalse(passes([action]), action)
                     self.assertFalse(passes([action, read]), action)
                     self.assertFalse(passes([action, read, dict(action, id="second")]), action)
+
+    def test_open_day_ensures_notify_fixture_and_command_grader(self) -> None:
+        case = EVALS / "cases" / "open-day-ensures-notify"
+        s = spec(case)
+        self.assertEqual(s["prompt"], spec(EVALS / "cases" / "open-the-day")["prompt"])
+        with tempfile.TemporaryDirectory() as d:
+            work = Path(d)
+            c = ctx(s)
+            run.render_tree(case / "fixture", work, c)
+            block = (work / "CLAUDE.md").read_text()
+            self.assertIn("- Settings: `chief-of-stuff.toml`", block)
+            settings = load_settings(work, settings_path(block))
+            self.assertEqual(settings.notify.adapter, "md-notify")
+            for path in (f"daily/{c['today']}.md", f"daily/{c['today']}-tracker.md"):
+                self.assertFalse((work / path).exists(), "this must open the day, not resume it")
+            for path in ("templates/daily.md", "templates/tracker.md",
+                         f"daily/{c['yesterday']}.md", f"daily/{c['yesterday']}-tracker.md"):
+                self.assertTrue((work / path).is_file())
+
+        g = next(g for g in s["graders"] if g["name"] == "ensures the notification service")
+        self.assertEqual((g["type"], g["tool"], g["min"]), ("tool_used", "Bash", 1))
+        for command in ("chief-of-stuff notify --root . ensure",
+                        'python3 /plugin/chief_of_stuff.py notify --root "/ws" ensure',
+                        "python3 /plugin/scripts/notify.py --root . ensure"):
+            self.assertTrue(grader_hits(g, "Bash", command=command), command)
+        for command in ("chief-of-stuff notify --root . status", "chief-of-stuff notify --root . sync",
+                        "chief-of-stuff notify --root . status; echo ensure",
+                        "chief-of-stuff notify --root . status\necho ensure", "pwd"):
+            self.assertFalse(grader_hits(g, "Bash", command=command,
+                                         description="chief-of-stuff notify --root . ensure"), command)
+        self.assertFalse(grader_hits(g, "Read", command="chief-of-stuff notify --root . ensure"))
 
     def test_settled_ask_cases_load_and_render_through_the_harness(self) -> None:
         """Use the actual loader and template renderer; loading a fixture needs no listening port."""

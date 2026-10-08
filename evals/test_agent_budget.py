@@ -39,14 +39,14 @@ CEILING = {  # `## ` section -> bytes, heading line included
     "Requirements": 360, "Share": 460, "Asks": 4700, "Notify": 360,
 }
 SKILL_CEILING = {"decision-page": 2_700, "optional-features": 5_200}  # moved bytes + metadata/organization/headroom
-SKILLS_TOTAL = sum(SKILL_CEILING.values())  # all SKILL.md files, bytes
+SKILLS_TOTAL = 7_900  # all SKILL.md files, bytes
 DESCRIPTION_CAP = 300  # frontmatter description characters, not bytes
 SKILL_POINTER = re.compile(r"\$\{CLAUDE_PLUGIN_ROOT\}/skills/([^/\s`]+)/SKILL\.md")
 DECISION_PAGE_POINTER = "Before writing a decision page, Read ${CLAUDE_PLUGIN_ROOT}/skills/decision-page/SKILL.md"
 OPTIONAL_FEATURE_POINTERS = {
     "Filing": "Before moving a file into a PARA home, Read ${CLAUDE_PLUGIN_ROOT}/skills/optional-features/SKILL.md",
     "Requirements": "Before ticking or editing a requirements file, and when a task goes done and the Coordinator block names one, Read ${CLAUDE_PLUGIN_ROOT}/skills/optional-features/SKILL.md",
-    "Notify": "When the Coordinator block has a Settings line whose notify adapter is not off, Read ${CLAUDE_PLUGIN_ROOT}/skills/optional-features/SKILL.md",
+    "Notify": "When the Coordinator block has a Settings line, Read ${CLAUDE_PLUGIN_ROOT}/skills/optional-features/SKILL.md",
 }
 OPTIONAL_FEATURE_RULES = {
     "Filing": (

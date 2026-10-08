@@ -20,14 +20,16 @@
       "type": "tool_used",
       "tool": "Bash",
       "input_match": "(?:notify\\.py|chief-of-stuff\\s+notify|chief_of_stuff\\.py\\s+notify)[^\\n]*\\bsync\\b",
-      "max": 0
+      "max": 0,
+      "rule": "Never run routine `notify sync` or edit the queue yourself."
     },
     {
       "name": "queue not edited by agent",
       "type": "tool_used",
       "tool": "Write|Edit",
       "input_match": "NOTIFICATIONS",
-      "max": 0
+      "max": 0,
+      "rule": "Never write the queue file with Write or Edit, and never add rows by hand: the user taps Complete, Ignore or Snooze on a banner, and the app edits the same file."
     }
   ],
   "max_turns": 12,
