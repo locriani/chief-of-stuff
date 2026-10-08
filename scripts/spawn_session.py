@@ -153,12 +153,12 @@ def worker_tokens(*, cwd: str, agent_type: str | None, binary: Path | None, titl
     if runtime == "claude":
         rest = ["--plugin-dir", str(Path(__file__).resolve().parent.parent), *rest]
         tokens = [sys.executable, str(Path(__file__).resolve().parent / "session_exec.py"),
-                   "exec-login", "--"]
+                  "exec-login", "--"]
     else:
         tokens = [sys.executable, str(Path(__file__).resolve().parent / "session_exec.py"),
                   "--registry", str(Path(os.path.abspath(workspace)) / PROMPT_DIR / "sessions" / f"{title}.json"),
-                   "--runtime", runtime, "--name", title or "", "--worktree", root,
-                   "--login-shell", "--"]
+                  "--runtime", runtime, "--name", title or "", "--worktree", root,
+                  "--login-shell", "--"]
     return tokens + [str(binary)] + rest
 
 

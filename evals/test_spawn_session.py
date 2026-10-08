@@ -1367,8 +1367,6 @@ with open({str(self.log)!r}, 'a') as log:
         self.assertNotIn("-C", words)
         self.assertNotIn(self.env["PATH"], line)
         self.assertEqual(words[0], sys.executable)
-        # A typed line past ~1024 bytes is cut by the tty; the limit leaves margin.
-        self.assertLessEqual(len(line.encode()), 900)
 
     def test_the_typed_line_is_short_and_carries_no_env_or_path_under_a_20kb_path(self):
         self.env["PATH"] = self.long_path()
@@ -1431,32 +1429,45 @@ with open({str(self.log)!r}, 'a') as log:
     def test_the_limit_is_900_bytes(self):
         self.assertEqual(ss.HERDR_LINE_LIMIT, 900)
 
-    def test_a_claude_line_passes_the_guard(self):
-        self.assertLessEqual(self.line_bytes(), 900)
-        self.assertEqual(self.invoke().returncode, 0)
+    # No test below depends on how long the real lines are (that varies with the checkout and temp paths): a refusal
+    # sets the limit just under the measured line, a pass sets it to the line or above.
+    def test_a_claude_line_with_short_paths_passes_the_real_limit(self):
+        # Only the paths of session_exec.py and the plugin dir come from the checkout; the rest is fixed and short.
+        with unittest.mock.patch.dict(os.environ, self.env, clear=True):
+            _, run = ss.herdr_commands(herdr=self.herdr, session="chief-of-stuff", cwd="/t/w",
+                                       agent_type=None, binary=Path("/b/claude"), title="w1",
+                                       runtime="claude", workspace="/t")
+        self.assertLess(len(self.typed(run, built=True).encode()), ss.HERDR_LINE_LIMIT)
 
     def test_the_guard_counts_utf8_bytes_and_refuses_only_past_the_limit(self):
+        limit = self.line_bytes(title="x") + 60
         for char in ("a", "\u00e9"):
-            with self.subTest(char=char):
-                n = next(n for n in range(1, 400) if self.line_bytes(title=char * n) > 900)
-                self.assertLessEqual(self.line_bytes(title=char * (n - 1)), 900)
+            with self.subTest(char=char), unittest.mock.patch.object(ss, "HERDR_LINE_LIMIT", limit):
+                n = next(n for n in range(1, 400) if self.line_bytes(title=char * n) > limit)
+                self.assertLessEqual(self.line_bytes(title=char * (n - 1)), limit)
                 self.commands(title=char * (n - 1))  # at or under the limit: built
-                with self.assertRaisesRegex(ss.RefusedError, "900"):
+                with self.assertRaisesRegex(ss.RefusedError, str(limit)):
                     self.commands(title=char * n)
                 if char != "a":
                     chars = len(" ".join(shlex.quote(t) for t in self.worker_tokens(herdr=True, title=char * n)))
-                    self.assertLessEqual(chars, 900, "bytes, not characters, are counted")
+                    self.assertLessEqual(chars, limit, "bytes, not characters, are counted")
 
-    def test_other_runtimes_lines_are_over_the_limit_and_refused_before_any_herdr_call(self):
-        for runtime, model in (("codex", "gpt-test"), ("cursor", "cursor-test"), ("agy", "agy-test")):
+    RUNTIMES = (("claude", ""), ("codex", "gpt-test"), ("cursor", "cursor-test"), ("agy", "agy-test"))
+
+    def launch(self, runtime, model, limit, extra=()):
+        self.log.unlink(missing_ok=True)
+        self.dispatch.unlink(missing_ok=True)
+        return self.invoke(limit=limit, runtime=runtime, extra=[*(["--model", model] if model else []), *extra])
+
+    def test_a_line_over_the_limit_is_refused_before_any_herdr_call(self):
+        for runtime, model in self.RUNTIMES:
             with self.subTest(runtime=runtime):
                 size = self.line_bytes(runtime=runtime, model=model)
-                self.assertGreater(size, 900)
-                out = self.invoke(runtime=runtime, extra=["--model", model])
+                out = self.launch(runtime, model, size - 1)
                 self.assertEqual(out.returncode, 1, out.stdout)
                 self.assertRegex(out.stderr, r"(?m)^refused: ")
                 self.assertIn(str(size), out.stderr)
-                self.assertIn("900", out.stderr)
+                self.assertIn(str(size - 1), out.stderr)
                 self.assertRegex(out.stderr, r"pane shell cannot take a line that long")
                 self.assertNotIn(str(self.root), out.stderr)
                 self.assertNotIn(str(self.tree), out.stderr)
@@ -1465,16 +1476,23 @@ with open({str(self.log)!r}, 'a') as log:
                 self.assertFalse(self.runtime_log.exists())
                 self.assertNotIn("started", out.stdout)
 
+    def test_a_line_exactly_at_the_limit_is_launched(self):
+        for runtime, model in self.RUNTIMES:
+            with self.subTest(runtime=runtime):
+                out = self.launch(runtime, model, self.line_bytes(runtime=runtime, model=model))
+                self.assertEqual(out.returncode, 0, out.stderr)
+                self.assertEqual([call["argv"][2:4] for call in self.calls()], [["tab", "create"], ["pane", "run"]])
+
     def test_the_guard_also_refuses_the_dry_run_it_would_have_printed(self):
-        out = self.invoke(runtime="codex", extra=["--dry-run", "--model", "gpt-test"])
+        out = self.launch("codex", "gpt-test", 50, extra=["--dry-run"])
         self.assertEqual(out.returncode, 1)
         self.assertNotIn("would run:", out.stdout)
         self.assertEqual(self.calls(), [])
 
     def test_a_refused_launch_leaves_the_tree_reusable_for_a_relaunch(self):
-        refused = self.invoke(runtime="codex", extra=["--model", "gpt-test"])
+        refused = self.launch("codex", "gpt-test", 50)
         self.assertEqual(refused.returncode, 1)
-        again = self.invoke()
+        again = self.invoke(limit=10_000)
         self.assertEqual(again.returncode, 0, again.stderr)
         self.assertEqual([call["argv"] for call in self.calls()], [self.tab_argv(), self.pane_argv()])
         self.assertTrue(self.dispatch.is_file())
@@ -1484,10 +1502,9 @@ with open({str(self.log)!r}, 'a') as log:
 with open({str(self.log)!r}, 'a') as log:
     log.write(json.dumps({{'argv': sys.argv[1:]}}) + '\\n')
 """)
-        self.assertGreater(len(" ".join(shlex.quote(t) for t in self.worker_tokens(runtime="codex", model="m"))), 900)
-        out = self.invoke(launcher="tmux", runtime="codex", extra=["--model", "m"])
+        out = self.invoke(limit=50, launcher="tmux", runtime="codex", extra=["--model", "m"])
         self.assertEqual(out.returncode, 0, out.stderr)
-        out = self.invoke(launcher="ghostty", runtime="codex", extra=["--dry-run", "--model", "m"])
+        out = self.invoke(limit=50, launcher="ghostty", runtime="codex", extra=["--dry-run", "--model", "m"])
         self.assertEqual(out.returncode, 0, out.stderr)
 
     def test_control_tmux_and_ghostty_keep_env_cwd_and_the_launching_path(self):
