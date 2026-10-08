@@ -19,6 +19,7 @@ import sys
 import tempfile
 import unittest
 import unittest.mock
+from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
@@ -536,6 +537,20 @@ class LaunchEnvironmentTest(unittest.TestCase):
         env = ss.launch_env(dict(os.environ, CLAUDE_CODE_CHILD_SESSION="1"))
         self.assertNotIn("CLAUDE_CODE_CHILD_SESSION", env)
 
+    def test_herdr_variables_follow_the_existing_launch_env_whitelist(self):
+        # #471: the socket has no access control; even an unknown HERDR_* name must be scrubbed.
+        parent = {"PATH": "/usr/bin:/bin", "HOME": "/tmp/worker", "HERDR_SOCKET_PATH": "/tmp/parent.sock",
+                  "HERDR_BIN_PATH": "/tmp/herdr", "HERDR_PANE_ID": "parent-pane", "HERDR_ENV": "parent",
+                  "HERDR_WORKSPACE_ID": "parent-workspace", "HERDR_TAB_ID": "parent-tab",
+                  "HERDR_FUTURE_CAPABILITY": "parent-only"}
+        expected = {key: value for key, value in parent.items() if key in ss.KEEP}
+        self.assertEqual(ss.launch_env(parent), expected)
+
+    def test_a_herdr_variable_explicitly_approved_by_keep_still_survives(self):
+        parent = {"PATH": "/usr/bin", "HERDR_SOCKET_PATH": "/tmp/approved.sock", "HERDR_PANE_ID": "parent-pane"}
+        with unittest.mock.patch.object(ss, "KEEP", (*ss.KEEP, "HERDR_SOCKET_PATH")):
+            self.assertEqual(ss.launch_env(parent), {"PATH": "/usr/bin", "HERDR_SOCKET_PATH": "/tmp/approved.sock"})
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -846,6 +861,605 @@ class TmuxLauncherTest(unittest.TestCase):
                                                         return_value=subprocess.CompletedProcess([], 0, "", "")):
                             self.assertEqual(ss.main(args), 0)
                     self.assertIn("Task: Security audit", (tree / ss.PROMPT_FILE).read_text())
+
+
+class HerdrLauncherTest(unittest.TestCase):
+    """#471: exact argv, JSON pane handoff, and refusal cleanup; no real herdr or agent runs.
+
+    Every CLI call selects a dedicated named session before its subcommand. Dry runs use
+    <root-pane>, since tab creation has not happened. The pane shell receives the same
+    wrapper as tmux, with each word shell-quoted. Assignment, registry and label keep one name.
+    The fake tab-created response follows the installed herdr v0.9.3 API schema.
+    """
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.day = date.today().isoformat()
+        (self.root / "CLAUDE.md").write_text(CLAUDE + '- Settings: `chief-of-stuff.toml`\n')
+        (self.root / "daily").mkdir()
+        (self.root / "daily" / f"{self.day}-tracker.md").write_text(re.sub(r"\d{4}-\d{2}-\d{2}", self.day, TRACKER))
+        self.tree = self.root / "trees" / "audit tree"
+        self.tree.mkdir(parents=True)
+        self.dispatch = self.tree / ss.PROMPT_FILE
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        self.log = self.root / "calls.jsonl"
+        self.runtime_log = self.root / "agent-was-executed"
+        self.response = self.root / "herdr-response.json"
+        self.workspace_id, self.tab_id, self.pane_id = "w53", "w53:t29", "w53:p97"
+        self.configure_fake()
+        # Embedded paths survive launch_env's whitelist; no special fake-only environment is needed.
+        self.herdr = self.executable("herdr", f"""import json, os, re, sys
+from pathlib import Path
+args = sys.argv[1:]
+with open({str(self.log)!r}, 'a') as log:
+    log.write(json.dumps({{'argv': args, 'env': dict(os.environ),
+                          'dispatch_exists': Path({str(self.dispatch)!r}).is_file()}}) + '\\n')
+if len(args) < 4 or args[0] != '--session' or not re.fullmatch(r'[a-z0-9][a-z0-9_-]{{0,31}}', args[1]):
+    print('missing or invalid dedicated herdr session', file=sys.stderr)
+    sys.exit(92)
+args = args[2:]
+config = json.loads(Path({str(self.response)!r}).read_text())
+if args[:2] == ['tab', 'create']:
+    if config['failure'] == 'tab':
+        print('no running herdr server', file=sys.stderr)
+        sys.exit(7)
+    print(json.dumps(config['reply']))
+elif args[:2] == ['pane', 'run']:
+    if config['failure'] == 'pane':
+        print('pane command was rejected', file=sys.stderr)
+        sys.exit(8)
+    print(json.dumps({{'result': {{'started': True}}}}))
+elif args[:2] == ['tab', 'close']:
+    tab = config['reply'].get('result', {{}}).get('tab', {{}})
+    if not isinstance(tab, dict) or args != ['tab', 'close', tab.get('tab_id')]:
+        print('cleanup did not use the returned tab id', file=sys.stderr)
+        sys.exit(91)
+    if config['cleanup_failure']:
+        print('tab is still open: cleanup denied', file=sys.stderr)
+        sys.exit(9)
+    print(json.dumps({{'result': {{'closed': True}}}}))
+else:
+    print('unexpected herdr argv', file=sys.stderr)
+    sys.exit(91)
+""")
+        for name in ("claude", "codex", "agent", "agy"):
+            self.executable(name, f"from pathlib import Path\nPath({str(self.runtime_log)!r}).touch()\n")
+        # As in test_shell_setup, only lookups use this Python stand-in. Its PATH has only fakes.
+        lookup = self.executable("lookup", """import shutil, sys
+args = sys.argv[1:]
+if len(args) != 2 or args[0] != '-lic' or not args[1].startswith('command -v '):
+    sys.exit(90)
+found = shutil.which(args[1].removeprefix('command -v '))
+if not found:
+    sys.exit(1)
+print(found)
+""")
+        self.env = {"PATH": str(self.bin), "HOME": str(self.root), "SHELL": "/bin/zsh",
+                    "CHIEF_OF_STUFF_SHELL": str(lookup)}
+
+    def executable(self, name, source):
+        path = self.bin / name
+        path.write_text(f"#!{sys.executable}\n" + source)
+        path.chmod(0o755)
+        return path
+
+    def tab_reply(self):
+        # Required fields of SuccessResponse / tab_created / TabInfo / PaneInfo.
+        return {"id": "eval-tab-create", "result": {
+            "type": "tab_created",
+            "tab": {"tab_id": self.tab_id, "workspace_id": self.workspace_id, "number": 29,
+                    "label": "audit-01", "focused": False, "pane_count": 1, "agent_status": "idle"},
+            "root_pane": {"pane_id": self.pane_id, "terminal_id": "eval-terminal-97",
+                          "workspace_id": self.workspace_id, "tab_id": self.tab_id,
+                          "focused": False, "agent_status": "idle", "revision": 0}}}
+
+    def configure_fake(self, *, failure="", reply=None, cleanup_failure=False):
+        if reply is None:
+            reply = self.tab_reply()
+        self.response.write_text(json.dumps({"failure": failure, "reply": reply,
+                                             "cleanup_failure": cleanup_failure}))
+
+    def args(self, *, title="audit-01", runtime="claude", launcher="herdr", extra=()):
+        # Relative input must become absolute in both the tab argv and runtime_tokens.
+        args = ["--cwd", os.path.relpath(self.tree), f"--title={title}", "--root", str(self.root),
+                "--date", self.day, "--task", "Security audit", "--runtime", runtime]
+        if launcher is not None:
+            args += ["--launcher", launcher]
+        return args + list(extra)
+
+    def invoke(self, **kw):
+        return subprocess.run([sys.executable, str(Path(ss.__file__)), *self.args(**kw)],
+                              capture_output=True, text=True, timeout=30, env=self.env)
+
+    def calls(self):
+        return [json.loads(line) for line in self.log.read_text().splitlines()] if self.log.exists() else []
+
+    def worker_tokens(self, *, title="audit-01", runtime="claude", model="", effort=""):
+        binary = self.bin / {"claude": "claude", "codex": "codex", "cursor": "agent", "agy": "agy"}[runtime]
+        with unittest.mock.patch.dict(os.environ, self.env, clear=True):
+            return ss.runtime_tokens(cwd=str(self.tree), agent_type=None, binary=binary, title=title,
+                                     runtime=runtime, model=model, effort=effort, workspace=str(self.root))
+
+    def tab_argv(self, title="audit-01", *, session="chief-of-stuff"):
+        return ["--session", session, "tab", "create", "--cwd", str(self.tree), "--label", title, "--no-focus"]
+
+    def pane_argv(self, *, title="audit-01", runtime="claude", pane=None, model="", effort="",
+                  session="chief-of-stuff"):
+        # herdr joins these words for the pane's shell; quote every wrapper token independently.
+        return ["--session", session, "pane", "run", pane or self.pane_id,
+                *[shlex.quote(token) for token in self.worker_tokens(
+                    title=title, runtime=runtime, model=model, effort=effort)]]
+
+    def commands(self, *, title="audit-01", runtime="claude", session="chief-of-stuff", model="", effort=""):
+        binary = self.bin / {"claude": "claude", "codex": "codex", "cursor": "agent", "agy": "agy"}[runtime]
+        with unittest.mock.patch.dict(os.environ, self.env, clear=True):
+            return ss.herdr_commands(herdr=self.herdr, session=session, cwd=str(self.tree),
+                                     agent_type=None, binary=binary, title=title, runtime=runtime,
+                                     model=model, effort=effort, workspace=str(self.root))
+
+    def close_argv(self, *, session="chief-of-stuff"):
+        return ["--session", session, "tab", "close", self.tab_id]
+
+    def assert_refused(self, out, *details):
+        self.assertNotEqual(out.returncode, 0, out.stdout)
+        self.assertRegex(out.stderr, r"(?m)^refused: .+")
+        self.assertIn("herdr", out.stderr.lower())
+        for detail in details:
+            self.assertIn(detail, out.stderr.lower())
+        self.assertFalse(self.dispatch.exists(), "a refused launch must leave the tree retryable")
+        self.assertFalse(self.runtime_log.exists(), "a fake must never execute the interactive runtime")
+
+    def test_dry_run_prints_exact_two_herdr_argv_and_runs_nothing_for_every_runtime(self):
+        for runtime, model, effort in (("claude", "sonnet", "high"), ("codex", "gpt-test", "low"),
+                                       ("cursor", "cursor-test", ""), ("agy", "agy-test", "medium")):
+            with self.subTest(runtime=runtime):
+                extra = ["--dry-run", "--model", model] + (["--effort", effort] if effort else [])
+                out = self.invoke(runtime=runtime, extra=extra)
+                self.assertEqual(out.returncode, 0, out.stderr)
+                lines = out.stdout.splitlines()
+                self.assertEqual(len(lines), 3, out.stdout)
+                create = [str(self.herdr), *self.tab_argv()]
+                self.assertEqual(lines[0], "would run: " + shlex.join(create))
+                expected = [str(self.herdr), *self.pane_argv(runtime=runtime,
+                                                           pane="<root-pane>", model=model, effort=effort)]
+                self.assertEqual(lines[1], "would run: " + shlex.join(expected))
+                self.assertEqual(lines[2], f"would write: {self.dispatch}")
+                self.assertEqual(self.calls(), [])
+                self.assertFalse(self.dispatch.exists())
+                self.assertFalse(self.runtime_log.exists())
+
+    def test_real_run_hands_json_root_pane_to_pane_run_and_keeps_dispatch(self):
+        for pane in ("w53:p97", "w208:p413"):
+            with self.subTest(pane=pane):
+                self.pane_id = pane
+                self.configure_fake()
+                self.log.unlink(missing_ok=True)
+                self.dispatch.unlink(missing_ok=True)
+                out = self.invoke()
+                self.assertEqual(out.returncode, 0, out.stderr)
+                calls = self.calls()
+                self.assertEqual([call["argv"] for call in calls], [self.tab_argv(), self.pane_argv()])
+                self.assertTrue(all(call["dispatch_exists"] for call in calls))
+                self.assertIn("Task: Security audit", self.dispatch.read_text())
+                self.assertIn("started", out.stdout)
+                self.assertIn("herdr", out.stdout.lower())
+                self.assertFalse(self.runtime_log.exists())
+
+    def test_workspace_herdr_setting_selects_the_launcher_without_a_flag(self):
+        (self.root / "chief-of-stuff.toml").write_text('[workers]\nlauncher = "herdr"\n')
+        out = self.invoke(launcher=None)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual([call["argv"] for call in self.calls()], [self.tab_argv(), self.pane_argv()])
+
+    def test_configured_herdr_session_is_used_by_tab_create_and_pane_run(self):
+        session = "review_workers-471"
+        # The setting also applies when herdr is selected by --launcher rather than TOML.
+        (self.root / "chief-of-stuff.toml").write_text(f'[workers]\nherdr_session = "{session}"\n')
+        out = self.invoke()
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual([call["argv"] for call in self.calls()],
+                         [self.tab_argv(session=session), self.pane_argv(session=session)])
+        self.assertTrue(self.dispatch.is_file())
+
+    def test_configured_herdr_session_is_printed_in_both_dry_run_argv(self):
+        session = "review_workers-471"
+        (self.root / "chief-of-stuff.toml").write_text(
+            f'[workers]\nlauncher = "herdr"\nherdr_session = "{session}"\n')
+        out = self.invoke(launcher=None, extra=["--dry-run"])
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(out.stdout.splitlines(),
+                         ["would run: " + shlex.join([str(self.herdr), *self.tab_argv(session=session)]),
+                          "would run: " + shlex.join([str(self.herdr), *self.pane_argv(
+                              session=session, pane="<root-pane>")]),
+                          f"would write: {self.dispatch}"])
+        self.assertEqual(self.calls(), [])
+        self.assertFalse(self.dispatch.exists())
+
+    def test_failed_pane_run_closes_tab_in_configured_herdr_session(self):
+        session = "review_workers-471"
+        (self.root / "chief-of-stuff.toml").write_text(
+            f'[workers]\nlauncher = "herdr"\nherdr_session = "{session}"\n')
+        self.configure_fake(failure="pane")
+        out = self.invoke(launcher=None)
+        self.assert_refused(out, "pane run", "pane command was rejected")
+        self.assertEqual([call["argv"] for call in self.calls()],
+                         [self.tab_argv(session=session), self.pane_argv(session=session),
+                          self.close_argv(session=session)])
+
+    def test_invalid_herdr_session_refuses_before_dispatch_or_cli_calls(self):
+        for value in ('""', '"Chief-of-stuff"', '"two words"', '"-workers"', '"_workers"',
+                      '"workers.main"', '"../workers"', '"' + 'a' * 33 + '"',
+                      '"workers;touch marker"', '"workers\\n"', "17", "true", '["workers"]'):
+            with self.subTest(value=value):
+                (self.root / "chief-of-stuff.toml").write_text(f'[workers]\nherdr_session = {value}\n')
+                out = self.invoke()
+                self.assert_refused(out, "[workers] herdr_session")
+                self.assertEqual(self.calls(), [])
+                self.assertNotIn("would run:", out.stdout)
+
+    def add_herdr_environment_bait(self):
+        self.env.update({"HERDR_SOCKET_PATH": str(self.root / "parent.sock"),
+                         "HERDR_BIN_PATH": str(self.herdr), "HERDR_PANE_ID": "parent-pane",
+                         "HERDR_ENV": "parent", "HERDR_WORKSPACE_ID": "parent-workspace",
+                         "HERDR_TAB_ID": "parent-tab", "HERDR_FUTURE_CAPABILITY": "parent-only"})
+
+    def assert_cli_environment_matches_launch_env(self, calls):
+        # Workers run in herdr's own environment. Observe the CLI process the launcher actually
+        # creates, just as for tmux; executing a worker from the fake would test the wrong boundary.
+        self.assertTrue(calls, "the fake CLI must run to prove its environment was scrubbed")
+        for call in calls:
+            with self.subTest(argv=call["argv"]):
+                inherited = {key: value for key, value in call["env"].items() if key.startswith("HERDR_")}
+                self.assertEqual(inherited, {})
+                for key in ("PATH", "HOME", "SHELL"):
+                    self.assertEqual(call["env"][key], self.env[key])
+
+    def test_herdr_tab_create_and_pane_run_scrub_parent_herdr_environment(self):
+        self.add_herdr_environment_bait()
+        out = self.invoke()
+        self.assertEqual(out.returncode, 0, out.stderr)
+        calls = self.calls()
+        self.assertEqual([call["argv"] for call in calls], [self.tab_argv(), self.pane_argv()])
+        self.assert_cli_environment_matches_launch_env(calls)
+        self.assertFalse(self.runtime_log.exists())
+
+    def test_herdr_failure_cleanup_also_scrubs_parent_herdr_environment(self):
+        self.add_herdr_environment_bait()
+        self.configure_fake(failure="pane")
+        out = self.invoke()
+        self.assert_refused(out, "pane run", "pane command was rejected")
+        calls = self.calls()
+        self.assertEqual([call["argv"] for call in calls],
+                         [self.tab_argv(), self.pane_argv(), self.close_argv()])
+        self.assert_cli_environment_matches_launch_env(calls)
+
+    def test_control_tmux_scrubs_parent_herdr_environment_using_launch_env(self):
+        self.add_herdr_environment_bait()
+        self.executable("tmux", f"""import json, os, sys
+with open({str(self.log)!r}, 'a') as log:
+    log.write(json.dumps({{'argv': sys.argv[1:], 'env': dict(os.environ)}}) + '\\n')
+""")
+        out = self.invoke(launcher="tmux")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        calls = self.calls()
+        self.assertEqual([call["argv"] for call in calls],
+                         [["new-window", "-d", "-c", str(self.tree), "-n", "audit-01", *self.worker_tokens()]])
+        self.assert_cli_environment_matches_launch_env(calls)
+        self.assertFalse(self.runtime_log.exists())
+
+    def test_missing_herdr_on_isolated_path_refuses_without_dispatch_or_calls(self):
+        self.herdr.unlink()
+        out = self.invoke()
+        self.assert_refused(out, "path")
+        self.assertEqual(self.calls(), [])
+
+    def test_failed_tab_create_refuses_and_removes_dispatch(self):
+        self.configure_fake(failure="tab")
+        out = self.invoke()
+        self.assert_refused(out, "tab", "no running herdr server")
+        self.assertEqual([call["argv"] for call in self.calls()], [self.tab_argv()])
+        self.assertTrue(self.calls()[0]["dispatch_exists"])
+
+    def test_json_without_root_pane_closes_known_tab_and_never_runs_a_pane(self):
+        self.tab_id = "w53:t113"  # Cleanup must use the received id, not an assumed first tab.
+        reply = self.tab_reply()
+        del reply["result"]["root_pane"]
+        self.configure_fake(reply=reply)
+        out = self.invoke()
+        self.assert_refused(out, "pane")
+        self.assertEqual([call["argv"] for call in self.calls()], [self.tab_argv(), self.close_argv()])
+
+    def test_failed_pane_run_closes_created_tab_and_removes_dispatch(self):
+        self.configure_fake(failure="pane")
+        out = self.invoke()
+        self.assert_refused(out, "pane run", "pane command was rejected")
+        self.assertEqual([call["argv"] for call in self.calls()],
+                         [self.tab_argv(), self.pane_argv(), self.close_argv()])
+
+    def test_missing_or_malformed_pane_id_refuses_and_closes_the_created_tab(self):
+        for pane in ({}, {"pane_id": None}, {"pane_id": ""}, {"pane_id": "--x"},
+                     {"pane_id": "w1:p1 extra"}, {"pane_id": "w1:p1\n"},
+                     {"pane_id": "p" * 65}, {"pane_id": 97}, {"pane_id": True},
+                     {"pane_id": {"pane_id": self.pane_id}}, {"pane_id": [self.pane_id]},
+                     None, [], self.pane_id):
+            with self.subTest(root_pane=pane):
+                self.log.unlink(missing_ok=True)
+                reply = self.tab_reply()
+                reply["result"]["root_pane"] = pane
+                self.configure_fake(reply=reply)
+                out = self.invoke()
+                self.assert_refused(out, "pane")
+                self.assertEqual([call["argv"] for call in self.calls()],
+                                 [self.tab_argv(), self.close_argv()])
+
+    def test_missing_or_malformed_tab_id_refuses_without_starting_or_closing(self):
+        for tab in ({}, {"tab_id": None}, {"tab_id": ""}, {"tab_id": "--x"},
+                    {"tab_id": "w1:t1 extra"}, {"tab_id": "w1:t1\n"},
+                    {"tab_id": "t" * 65}, {"tab_id": 29}, {"tab_id": True},
+                    {"tab_id": {"tab_id": self.tab_id}}, {"tab_id": [self.tab_id]},
+                    None, [], self.tab_id):
+            with self.subTest(tab=tab):
+                self.log.unlink(missing_ok=True)
+                reply = self.tab_reply()
+                reply["result"]["tab"] = tab
+                self.configure_fake(reply=reply)
+                out = self.invoke()
+                self.assert_refused(out, "tab id")
+                self.assertEqual([call["argv"] for call in self.calls()], [self.tab_argv()])
+        self.log.unlink(missing_ok=True)
+        reply = self.tab_reply()
+        del reply["result"]["tab"]
+        self.configure_fake(reply=reply)
+        self.assert_refused(self.invoke(), "tab id")
+        self.assertEqual([call["argv"] for call in self.calls()], [self.tab_argv()])
+
+    def test_pane_failure_reports_cleanup_failure_without_hiding_original_error(self):
+        self.configure_fake(failure="pane", cleanup_failure=True)
+        out = self.invoke()
+        self.assert_refused(out, "pane command was rejected")
+        self.assertRegex(out.stderr, r"(?m)^cleanup: .*herdr tab close.*cleanup denied")
+        self.assertEqual([call["argv"] for call in self.calls()],
+                         [self.tab_argv(), self.pane_argv(), self.close_argv()])
+
+    def test_commands_refuse_invalid_dedicated_session_even_without_settings_loader(self):
+        # Exercise the builder's own check; settings validation cannot kill its mutant.
+        for session in ("", "Chief", "two words", "-workers", "_workers", "a" * 33,
+                        "workers\n", "../workers", "workers;touch marker"):
+            with self.subTest(session=session), self.assertRaisesRegex(ss.RefusedError, "herdr_session"):
+                self.commands(session=session)
+        self.assertEqual(self.calls(), [])
+
+    def invoke_with_cli_probe(self, *, hang=None):
+        """Intercept only our fake herdr; never wait 30 seconds or resolve a real server.
+
+        A simulated hung subprocess raises immediately, but only after asserting the caller
+        supplied a deadline. Removing timeout= must fail instead of making this eval hang.
+        """
+        real_run = subprocess.run
+        cli_calls = []
+
+        def run(command, **kw):
+            if command[0] != str(self.herdr):
+                return real_run(command, **kw)
+            action = " ".join(command[3:5])
+            cli_calls.append(command[1:])
+            timeout = kw.get("timeout")
+            self.assertIsInstance(timeout, (int, float), "every herdr CLI call needs a subprocess timeout")
+            self.assertEqual(timeout, 30, "every CLI operation keeps the 30 s subprocess timeout")
+            if action == hang:
+                raise subprocess.TimeoutExpired(command, timeout)
+            return real_run(command, **kw)
+
+        with unittest.mock.patch.dict(os.environ, self.env, clear=True), \
+                unittest.mock.patch.object(ss.subprocess, "run", side_effect=run), \
+                contextlib.redirect_stdout(io.StringIO()) as output, \
+                contextlib.redirect_stderr(io.StringIO()) as errors:
+            code = ss.main(self.args())
+        return subprocess.CompletedProcess([], code, output.getvalue(), errors.getvalue()), cli_calls
+
+    def test_hung_tab_create_is_refused_with_30_second_timeout_and_no_close(self):
+        out, calls = self.invoke_with_cli_probe(hang="tab create")
+        self.assert_refused(out, "tab create", "timed out")
+        self.assertEqual(calls, [self.tab_argv()])
+
+    def test_hung_pane_run_is_refused_and_closes_created_tab(self):
+        out, calls = self.invoke_with_cli_probe(hang="pane run")
+        self.assert_refused(out, "pane run", "timed out")
+        self.assertEqual(calls, [self.tab_argv(), self.pane_argv(), self.close_argv()])
+
+    def test_hung_cleanup_is_reported_and_original_pane_error_is_preserved(self):
+        self.configure_fake(failure="pane")
+        out, calls = self.invoke_with_cli_probe(hang="tab close")
+        self.assert_refused(out, "pane command was rejected")
+        self.assertRegex(out.stderr, r"(?m)^cleanup: .*herdr tab close.*timed out")
+        self.assertEqual(calls, [self.tab_argv(), self.pane_argv(), self.close_argv()])
+
+    def test_every_cli_call_filters_even_explicitly_kept_herdr_variables(self):
+        self.add_herdr_environment_bait()
+        self.env["herdr_future_token"] = "parent-only"
+        # Ordinary whitelist tests cannot catch removal of the HERDR_* filter. An approved
+        # variable must still be stripped from create, run and close (case-insensitively).
+        approved = (*ss.KEEP, *[key for key in self.env if key.upper().startswith("HERDR_")])
+        self.configure_fake(failure="pane")
+        real_run = subprocess.run
+        calls = []
+
+        def run(command, **kw):
+            if command[0] == str(self.herdr):
+                calls.append(command[1:])
+                inherited = {k: v for k, v in kw["env"].items() if k.upper().startswith("HERDR_")}
+                self.assertEqual(inherited, {}, f"parent identity reached {command[3:5]}")
+                self.assertEqual(kw["env"]["PATH"], self.env["PATH"])
+            return real_run(command, **kw)
+
+        with unittest.mock.patch.dict(os.environ, self.env, clear=True), \
+                unittest.mock.patch.object(ss, "KEEP", approved), \
+                unittest.mock.patch.object(ss.subprocess, "run", side_effect=run), \
+                contextlib.redirect_stdout(io.StringIO()) as output, \
+                contextlib.redirect_stderr(io.StringIO()) as errors:
+            # Green control: the injected whitelist really does keep the bait.
+            self.assertEqual(ss.launch_env()["HERDR_SOCKET_PATH"], self.env["HERDR_SOCKET_PATH"])
+            code = ss.main(self.args())
+        out = subprocess.CompletedProcess([], code, output.getvalue(), errors.getvalue())
+        self.assert_refused(out, "pane command was rejected")
+        self.assertEqual(calls, [self.tab_argv(), self.pane_argv(), self.close_argv()])
+
+    def test_pane_run_uses_quoted_tmux_wrapper_without_agent_start_options(self):
+        create, run = self.commands(runtime="codex", model="gpt-test", effort="high")
+        self.assertEqual(create, [str(self.herdr), *self.tab_argv()])
+        self.assertEqual(run, [str(self.herdr), *self.pane_argv(
+            runtime="codex", pane="<root-pane>", model="gpt-test", effort="high")])
+        self.assertEqual(run[3:6], ["pane", "run", "<root-pane>"])
+        self.assertNotIn("--timeout", run)
+        self.assertNotIn("--kind", run)
+        with unittest.mock.patch.dict(os.environ, self.env, clear=True):
+            tmux = ss.tmux_command(tmux=self.bin / "tmux", binary=self.bin / "codex",
+                                   cwd=str(self.tree), agent_type=None, title="audit-01",
+                                   runtime="codex", model="gpt-test", effort="high", workspace=str(self.root))
+        self.assertEqual(shlex.split(" ".join(run[6:])), tmux[7:])
+
+    def test_hostile_titles_and_paths_round_trip_through_the_pane_shell(self):
+        # The command builder must quote even inputs rejected by the assignment's name policy.
+        # No shell is executed: shlex.split checks exactly the literal words herdr's shell sees.
+        original_root, original_tree, original_bin = self.root, self.tree, self.bin
+        original_path = self.env["PATH"]
+        hostile = ("two words", "single'quote", 'double"quote', "$(touch marker)",
+                   "`touch marker`", "semi; touch marker", "first\nsecond")
+        for runtime, model, effort in (("claude", "sonnet", "high"), ("codex", "gpt-test", "low"),
+                                       ("cursor", "cursor-test", ""), ("agy", "agy-test", "medium")):
+            for value in hostile:
+                with self.subTest(runtime=runtime, value=value):
+                    self.root = original_root / value
+                    self.tree = original_tree / value
+                    self.bin = original_bin / value
+                    self.env["PATH"] = str(self.bin)
+                    create, run = self.commands(title=value, runtime=runtime, model=model, effort=effort)
+                    tokens = self.worker_tokens(title=value, runtime=runtime, model=model, effort=effort)
+                    self.assertEqual(create, [str(self.herdr), *self.tab_argv(value)])
+                    self.assertEqual(run[:6], [str(self.herdr), "--session", "chief-of-stuff",
+                                              "pane", "run", "<root-pane>"])
+                    self.assertEqual(run[6:], [shlex.quote(token) for token in tokens])
+                    self.assertEqual(shlex.split(" ".join(run[6:])), tokens)
+                    self.assertIn(str(self.tree), tokens)
+                    self.assertIn(f"PATH={self.bin}", tokens)
+                    self.assertIn(f"CHIEF_OF_STUFF_WORKSPACE={self.root}", tokens)
+        self.root, self.tree, self.bin = original_root, original_tree, original_bin
+        self.env["PATH"] = original_path
+        self.assertEqual(self.calls(), [])
+        self.assertFalse(self.runtime_log.exists())
+
+    def test_valid_names_are_verbatim_in_assignment_registry_and_pane_run(self):
+        for title in ("a", "audit-team", "audit_team-01", "AUDIT-01", "audit.team", "0", "7-day", "a" * 64):
+            with self.subTest(title=title):
+                self.log.unlink(missing_ok=True)
+                self.dispatch.unlink(missing_ok=True)
+                out = self.invoke(title=title, runtime="codex")
+                self.assertEqual(out.returncode, 0, out.stderr)
+                self.assertEqual([call["argv"] for call in self.calls()],
+                                 [self.tab_argv(title), self.pane_argv(title=title, runtime="codex")])
+                self.assertIn(f"name `{title}`;", self.dispatch.read_text())
+                start = shlex.split(" ".join(self.calls()[1]["argv"][5:]))
+                # session_exec registers this --name; do not execute the worker in the fake.
+                registry = start.index("--registry")
+                self.assertEqual(start[registry + 1],
+                                 str(self.root / ss.PROMPT_DIR / "sessions" / f"{title}.json"))
+                name_flag = start.index("--name", registry)
+                self.assertEqual(start[name_flag + 1], title)
+
+    def test_control_valid_session_names_stay_verbatim_in_dry_run(self):
+        for title in ("a", "audit-team", "audit_team-01", "AUDIT-01", "audit.team", "0", "7-day", "a" * 64):
+            with self.subTest(title=title):
+                out = self.invoke(title=title, runtime="codex", extra=["--dry-run"])
+                self.assertEqual(out.returncode, 0, out.stderr)
+                lines = out.stdout.splitlines()
+                self.assertEqual(lines[0], "would run: " + shlex.join([str(self.herdr), *self.tab_argv(title)]))
+                start = shlex.split(lines[1].removeprefix("would run: "))
+                self.assertEqual(start[:6], [str(self.herdr), "--session", "chief-of-stuff",
+                                              "pane", "run", "<root-pane>"])
+                start = shlex.split(" ".join(start[6:]))
+                registry = start.index("--registry")
+                self.assertEqual(start[registry + 1],
+                                 str(self.root / ss.PROMPT_DIR / "sessions" / f"{title}.json"))
+                self.assertEqual(start[start.index("--name", registry) + 1], title)
+                self.assertEqual(self.calls(), [])
+                self.assertFalse(self.dispatch.exists())
+
+    def test_eval_argv_override_wins_over_explicit_herdr_without_resolving_it(self):
+        self.assert_override_wins("herdr")
+
+    def test_control_eval_argv_override_still_wins_over_ghostty_and_tmux(self):
+        for launcher in ("ghostty", "tmux"):
+            with self.subTest(launcher=launcher):
+                self.assert_override_wins(launcher)
+
+    def assert_override_wins(self, launcher):
+        override = [sys.executable, "fixture.py", "{cwd}", "{title}"]
+        with unittest.mock.patch.dict(os.environ, {**self.env, ss.ENV: json.dumps(override)}, clear=True), \
+                unittest.mock.patch.object(ss, "resolve", side_effect=AssertionError("override resolved a terminal")), \
+                contextlib.redirect_stdout(io.StringIO()) as output, contextlib.redirect_stderr(io.StringIO()) as errors:
+            try:
+                code = ss.main(self.args(launcher=launcher, extra=["--dry-run"]))
+            except SystemExit as exc:
+                code = exc.code
+        self.assertEqual(code, 0, errors.getvalue())
+        self.assertEqual(output.getvalue().splitlines(),
+                         ["would run: " + shlex.join([sys.executable, "fixture.py", str(self.tree), "audit-01"]),
+                          f"would write: {self.dispatch}"])
+        self.assertFalse(self.dispatch.exists())
+
+    def test_control_tmux_fake_still_receives_exact_runtime_tokens(self):
+        self.executable("tmux", f"""import json, sys
+with open({str(self.log)!r}, 'a') as log:
+    log.write(json.dumps({{'argv': sys.argv[1:]}}) + '\\n')
+""")
+        out = self.invoke(launcher="tmux")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual([call["argv"] for call in self.calls()],
+                         [["new-window", "-d", "-c", str(self.tree), "-n", "audit-01", *self.worker_tokens()]])
+        self.assertIn("tmux", out.stdout)
+        self.assertTrue(self.dispatch.is_file())
+        self.assertFalse(self.runtime_log.exists())
+
+    def test_control_ghostty_still_prints_its_tab_script_without_running_it(self):
+        out = self.invoke(launcher="ghostty", extra=["--dry-run"])
+        self.assertEqual(out.returncode, 0, out.stderr)
+        with unittest.mock.patch.dict(os.environ, self.env, clear=True):
+            script = ss.ghostty_script(cwd=str(self.tree), agent_type=None, claude=self.bin / "claude",
+                                       title="audit-01", workspace=str(self.root))
+        self.assertEqual(out.stdout, f"would run: {ss.OSASCRIPT} -\nwould ask Ghostty for a tab:\n"
+                                    f"{script.rstrip()}\nwould write: {self.dispatch}\n")
+        self.assertEqual(self.calls(), [])
+        self.assertFalse(self.dispatch.exists())
+
+    def test_control_one_shot_still_delegates_without_a_terminal(self):
+        for launcher in ("ghostty", "tmux"):
+            with self.subTest(launcher=launcher):
+                (self.root / "chief-of-stuff.toml").write_text(f'[workers]\nlauncher = "{launcher}"\n')
+                with unittest.mock.patch.dict(os.environ, self.env, clear=True), \
+                        unittest.mock.patch.object(one_shot, "run", return_value=0) as runner, \
+                        unittest.mock.patch.object(ss, "resolve", side_effect=AssertionError("one-shot resolved a terminal")):
+                    self.assertEqual(ss.main(self.args(launcher=None, extra=["--one-shot", "--dry-run"])), 0)
+                self.assertEqual(runner.call_args.kwargs["cwd"], self.tree)
+                self.assertEqual(runner.call_args.kwargs["name"], "audit-01")
+                self.assertTrue(runner.call_args.kwargs["dry_run"])
+        self.assertEqual(self.calls(), [])
+        self.assertFalse(self.dispatch.exists())
+
+    def test_one_shot_ignores_configured_herdr_and_uses_the_existing_runner(self):
+        (self.root / "chief-of-stuff.toml").write_text('[workers]\nlauncher = "herdr"\nmode = "one-shot"\n')
+        with unittest.mock.patch.dict(os.environ, self.env, clear=True), \
+                unittest.mock.patch.object(one_shot, "run", return_value=0) as runner, \
+                unittest.mock.patch.object(ss, "resolve", side_effect=AssertionError("one-shot resolved herdr")), \
+                contextlib.redirect_stderr(io.StringIO()) as errors:
+            code = ss.main(self.args(launcher=None, extra=["--dry-run"]))
+        self.assertEqual(code, 0, errors.getvalue())
+        runner.assert_called_once()
+        self.assertEqual(runner.call_args.kwargs["cwd"], self.tree)
+        self.assertEqual(self.calls(), [])
+        self.assertFalse(self.dispatch.exists())
 
 
 class WorkerModeTest(unittest.TestCase):
