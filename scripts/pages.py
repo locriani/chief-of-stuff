@@ -56,6 +56,7 @@ REFRESH = 60  # seconds between forge reads
 RENDERED = re.compile(r"\d{4}-\d{2}-\d{2}-board\.html|workers\.html|decisions\.html|decision-[a-z0-9]+(?:-[a-z0-9]+)*\.html|issue-\d+(?:-source)?\.html")
 ROUTE = re.compile(r"/decisions/([a-z0-9]+(?:-[a-z0-9]+)*)")
 ISSUE = re.compile(r"/issues/(\d+)(/source)?")
+GRAPH = re.compile(r"/graphs/([0-9a-f]{40,64}-[0-9a-f]{8})/page\.html")
 MAX_BODY = 16 * 1024  # a write-in is a sentence or a paragraph
 # ponytail: a lock per page (never freed; a workspace has tens of pages) under the server's `[pages] workers` slots.
 # An answer saved mid-render of another page (the board) can leave that page stale until the next forge refresh.
@@ -191,7 +192,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def _allowed(self) -> bool:
         """Refuse a foreign Host or a dotfile; map `/` to today's (else the newest) board, `/all` to the listing and
-        `/workers`, `/decisions[/<slug>]` and `/issues/<n>` to its file; refuse a rendered page's file name; re-render a page its sources outdate."""
+        `/workers`, `/decisions[/<slug>]`, `/issues/<n>` and `/graphs/<name>/page.html` to its file; refuse a rendered page's file name; re-render a page its sources outdate."""
         port = self.server.server_address[1]
         if self.headers.get("Host", "") not in (f"127.0.0.1:{port}", f"localhost:{port}"):
             self.send_error(403, "Host is not this machine")
@@ -231,6 +232,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.send_error(404, "no such issue")
                 return False
             self.path = f"/issue-{int(m[1])}{'-source' if m[2] else ''}.html"
+        elif path.startswith("/graphs/"):
+            m = GRAPH.fullmatch(path)
+            if not m or not (Path(self.directory) / ".graphs" / m[1] / "page.html").is_file():
+                self.send_error(404)
+                return False
+            self.path = f"/.graphs/{m[1]}/page.html"
         elif RENDERED.fullmatch(Path(self.translate_path(path)).name.lower()):
             # A rendered page is a route only. The resolved name, lowercased: `//x` and a case-insensitive disk reach it too.
             self.send_error(404)

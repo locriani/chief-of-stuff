@@ -53,11 +53,16 @@ def fetch(change: board_sources.Change, clone: Path) -> str:
     return run(["git", "-C", str(clone), "merge-base", "--end-of-options", f"origin/{change.base}", change.head]).strip()
 
 
+def graph_name(change: board_sources.Change, g: Graph) -> str:
+    """The graph directory's name, keyed by the change's head and drawing settings."""
+    key = hashlib.sha256(json.dumps([g.exclude, g.max_nodes]).encode()).hexdigest()[:8]
+    return f"{change.head}-{key}"
+
+
 def draw(change: board_sources.Change, g: Graph, clone: Path, pages: Path) -> tuple[list[str], str]:
     """(mermaid views, summary) from branch-graph for the change's head against its merge base, drawn once per commit
     and settings."""
-    key = hashlib.sha256(json.dumps([g.exclude, g.max_nodes]).encode()).hexdigest()[:8]
-    out = pages / ".graphs" / f"{change.head}-{key}"
+    out = pages / ".graphs" / graph_name(change, g)
     summary = out / "summary.txt"
     if not summary.is_file():
         base = fetch(change, clone)
@@ -109,4 +114,5 @@ def section(change: board_sources.Change | None, graph: Graph | None, pages: Pat
     # Decision.dc.html's caption: "nodes +1 −1 ~1 · edges +2 −1 · drift 1".
     caption = re.sub(r" (?:excluded|views)=\S*", "", summary).replace(" edges", " · edges").replace(" drift=", " · drift ")
     return wrap('    <figure class="graph"><div class="views">\n' + "\n".join(figures) + "\n    </div>\n"
-                f'    <figcaption>{chips}<span class="sum">{escape(caption)}</span>{rest}</figcaption></figure>\n    {MERMAID}')
+                f'    <figcaption>{chips}<span class="sum">{escape(caption)}</span>{rest}'
+                f'<a href="/graphs/{escape(graph_name(change, graph))}/page.html">Open the full graph</a></figcaption></figure>\n    {MERMAID}')
