@@ -215,12 +215,14 @@ def _pruned_common(tree: Path) -> Path | None:
 
 
 def _is_git_dir(common: Path) -> bool:
-    """Whether `common` is itself a bare-style git directory (no tree), by files only."""
+    """Whether `common` is itself a bare-style git directory (no tree) real git would use, by files only: the view's layout
+    check plus its HEAD check (an empty or garbage HEAD is no repository to git)."""
     try:
         lay = git_view.locate(common)
+        git_view._head(lay)
     except git_view.Unviewable:
         return False
-    return lay.tree is None and lay.common == common.resolve()
+    return lay.tree is None
 
 
 def check_sha(sha: str, tree: Path) -> tuple[int, str, bool]:
@@ -233,8 +235,8 @@ def check_sha(sha: str, tree: Path) -> tuple[int, str, bool]:
     cannot use) may hold the commit and blocks a yes. The commit is the one whose object id starts with `sha`, never a tag or
     branch named like it, and the question is about `refs/remotes/origin/main` only. Exit 0 only when the fetch worked and
     origin/main holds it; 1 when it does not; 2 (unknown, never a no) for every cause: the fetch
-    failed (a stale ref cannot say yes), git cannot read the repository (the commit lookup, the grafts lookup or file,
-    the shallow check, or, when origin/main does not hold it, the local main lookup or ancestry), there are grafts
+    failed (a stale ref cannot say yes), git cannot read the repository (the commit lookup, the signals from files that
+    decide grafts and shallow, or, when origin/main does not hold it, the local main lookup or ancestry), there are grafts
     (checked after the fetch, which a hook may have written one in), no origin/main, two commits share the prefix, git
     cannot compare, or the clone is shallow and the commit may be in what was cut off. A repository with no
     `refs/heads/main` is simply not on local main. The unknown lines say `; local main holds it` when it has the
