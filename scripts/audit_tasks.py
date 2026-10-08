@@ -124,19 +124,26 @@ def _closed_hhmm(closed_at: str, zone) -> str:
         return ""
 
 
-def _tree_unlanded(root: Path | None, trees: str, owners: list, task, roster=(), refs=()) -> bool:
-    """Does this task's File-ownership worktree carry a commit `main` never got? Reuses `_state`'s own
-    merge-base check — the same signal `reopen` already reads off a done task's tree (#221). No
-    resolvable tree (none owns the task, or it is missing) answers False: nothing is there to unland."""
+def _tree_unlanded(root: Path | None, trees: str, owners: list, task, roster=(), refs=()) -> str:
+    """Does this task's File-ownership worktree carry a commit `main` never got? "unlanded" when git says
+    so (merge-base exit 1), "unknown" when git could not say (any other exit) and no tree is unlanded,
+    else "". Reads `_merged`, the same check `_state` words, never `_state`'s prose (#221). No resolvable
+    tree (none owns the task, or it is missing) answers "": nothing is there to unland."""
     if root is None:
-        return False
+        return ""
+    answer = ""
     rows, _ = rows_for(task.item, task.owner, owners or [], key_name(task, roster, refs))
     for row in rows:
         for name in row.worktrees:
             path, _, _ = _resolve(root, trees, name)
-            if path is not None and "not on main" in _state(path)[1]:
-                return True
-    return False
+            if path is None:
+                continue
+            merged = _merged(path)
+            if merged == 1:
+                return "unlanded"
+            if merged != 0:
+                answer = "unknown"
+    return answer
 
 
 def _config_for(home: Backlog | GitHubBacklog, host: str, repo: str) -> Backlog | GitHubBacklog:
@@ -179,10 +186,15 @@ def issue_faults(tasks, home: Backlog | GitHubBacklog, gh=None, lanes: dict | No
         if task.needs_issue and found is None:
             faults.append(IssueFault(name, f"{tag} not found in {ref.repo}"))
         elif task.needs_issue and found.state == CLOSED:
-            if _tree_unlanded(root, trees, owners, task, roster, session_refs):
+            unlanded = _tree_unlanded(root, trees, owners, task, roster, session_refs)
+            if unlanded == "unlanded":
                 faults.append(IssueFault(
                     name, f"{tag} is closed but its tree has work not on main; ask the user: "
                     "reopen the issue or drop the work"))
+            elif unlanded:
+                faults.append(IssueFault(
+                    name, f"{tag} is closed and whether its tree has unlanded work is {UNREADABLE_PHRASE}; "
+                    "ask the user"))
             else:
                 when = _closed_hhmm(found.closed_at, zone)
                 at = f" {when}" if when else ""
@@ -553,6 +565,11 @@ def missing_tree(handle: Path | None, name: str, detail: str) -> str:
     return f"{name}: no worktree and no branch by that name — the row names a tree that was never created"
 
 
+def _merged(worktree: Path) -> int:
+    """git's exit code for "is HEAD on main": 0 yes, 1 no, anything else git could not say."""
+    return git_trees.git(["merge-base", "--is-ancestor", "HEAD", "main"], worktree)[0]
+
+
 def _state(worktree: Path) -> tuple[str, str]:
     """(branch, why it is not done), where the why is empty when the work is on main and committed."""
     branch = git_trees.branch_of(worktree)
@@ -562,7 +579,7 @@ def _state(worktree: Path) -> tuple[str, str]:
         reasons.append(UNCOMMITTED_UNKNOWN)
     elif dirty:
         reasons.append(f"{len(dirty.splitlines())} uncommitted file(s)")
-    merged, _ = git_trees.git(["merge-base", "--is-ancestor", "HEAD", "main"], worktree)
+    merged = _merged(worktree)
     if merged == 1:
         reasons.append("not on main")
     elif merged != 0:
