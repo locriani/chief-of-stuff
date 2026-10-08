@@ -23,7 +23,7 @@ Ready means an open, unassigned task with clear scope, File ownership, an issue 
 
 ## Browser safety
 
-Never automatically open the board URL or rendered board HTML, including during startup, worker launch, checks or tracker updates.
+Never automatically open the board URL or rendered board HTML, or ask to open it, including during startup, worker launch, checks or tracker updates.
 
 ## Writing
 
