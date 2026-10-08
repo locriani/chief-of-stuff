@@ -82,8 +82,8 @@ def check_type(claude_md: str, agent_type: str) -> None:
         raise RefusedError(f"no agent type {agent_type!r} in the Coordinator block; it lists {', '.join(sorted(types))}")
 
 
-def check_branch(branch: str, clone: Path | None = None) -> None:
-    """Validate a branch with Git after rejecting option-like names. `clone` is accepted for callers and not read: the check needs no repository."""
+def check_branch(branch: str) -> None:
+    """Validate a branch with Git after rejecting option-like names. The check needs no repository."""
     if not branch or branch.startswith("-"):
         raise RefusedError(f"branch name {branch!r} is empty or would be read as an option")
     code, detail = _run(["check-ref-format", "--branch", branch], Path("/"), git_trees.audit_env())  # needs no repository
@@ -138,10 +138,12 @@ def build(root: Path, clone: Path, trees: str, name: str, branch: str, agent_typ
     check_type((root / "CLAUDE.md").read_text() if (root / "CLAUDE.md").is_file() else "", agent_type)
     if not clone.is_dir():
         raise RefusedError(f"{clone} is not a directory; --clone names a [repos] entry or the repository's path")
-    check_branch(branch, clone)
+    check_branch(branch)
     path = resolve(root, trees, name)
     with clone_lock(clone):
         no_main, local = git(["log", "-1", "--format=%h %cr", "refs/heads/main"], clone)  # git would quietly fall back to origin/main
+        if no_main == 1:  # 128 is git's "no such ref"; 1 is git() failing to view or run, which is not "no main"
+            raise RefusedError(f"cannot read {clone}: {local}")
         if from_local and no_main:
             raise RefusedError("no local main to cut from; drop --from-local")
         try:

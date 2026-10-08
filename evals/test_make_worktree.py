@@ -785,10 +785,13 @@ class ConcurrentDispatchTest(CloneCase):
 CHILD_DISPATCH = """
 import sys, time
 from pathlib import Path
-scripts, root, clone, marks = sys.argv[1:5]
-sys.path.insert(0, scripts)
+scripts, root, clone, marks, repo, base = sys.argv[1:7]
+sys.path[:0] = [scripts, repo]
 import git_trees
 import make_worktree as mw
+from evals import git_taint as taint
+views = taint.private_git_views(Path(base))
+views.__enter__()  # the child reads the clone through the same private view base as the parent
 real_fetch, real_add = git_trees.fetch_base, mw.git_trusted
 def fetch(*a, **k):
     Path(marks, "started").touch()
@@ -873,9 +876,10 @@ class SerializedDispatchTest(CloneCase):
         marks.mkdir()
         scripts = Path(mw.__file__).resolve().parent
         child = subprocess.Popen(
-            [sys.executable, "-c", CHILD_DISPATCH, str(scripts), str(self.root), str(self.clone), str(marks)],
+            [sys.executable, "-c", CHILD_DISPATCH, str(scripts), str(self.root), str(self.clone), str(marks),
+             str(Path(__file__).resolve().parent.parent), str(self.root / "child-views")],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            env={**os.environ, "XDG_CACHE_HOME": str(self.root / "child-cache")},  # the child has no private view base: never the user's cache
+            env={**os.environ, "XDG_CACHE_HOME": str(self.root / "child-cache")},  # never the user's cache; the child's view base is the explicit one above
         )
         self.addCleanup(child.kill)
         deadline = time.monotonic() + 30
