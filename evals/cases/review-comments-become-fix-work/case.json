@@ -91,6 +91,15 @@
   },
   "graders": [
     {
+      "name": "reads the review-pipeline skill before the first review-threads command",
+      "rule": "Whenever you check review state, run `chief-of-stuff review-threads --root .`.",
+      "type": "tool_used",
+      "tool": "Read",
+      "input_match": "\"file_path\": \"[^\"\\n]*skills/review-pipeline/SKILL\\.md\"",
+      "min": 1,
+      "before": "\"command\": \"(?:\\\\.|[^\"\\\\])*(?:\\bchief[-_]of[-_]stuff(?:\\.py)?\\s+review-threads\\b|(?:scripts/)?review_threads\\.py\\b)"
+    },
+    {
       "name": "reads the threads with review-threads",
       "type": "tool_used",
       "tool": "Bash",
