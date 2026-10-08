@@ -11,9 +11,10 @@ from evals.rules_text import skill_body
 from evals.skill_fixtures import AGENT, write_plugin, write_skill
 
 NON_CLAUDE = ("codex", "cursor", "agy")
+READ_POINTER_GUIDANCE = 'A rule that says "Read <path>" means open that file with your host\'s read tool or `cat`.'
 # No-skills baseline from AGENT in skill_fixtures, refreshed for main's Check adaptation.
-# Only temporary paths are normalized; whitespace, substitutions, adapter text and START
-# all remain byte-sensitive.
+# Only temporary paths and the new non-Claude Read guidance are normalized;
+# whitespace, substitutions, other adapter text and START all remain byte-sensitive.
 LEGACY_SHA256 = {
     "claude": "e03c9850cccd6c80db8e038cf10672f1c54afc1c48945098d958e958d6b1000d",
     "codex": "92e8307a069a35a4ca56e13b95acc0ff76749dfef69e7aca9b64971eaa39dc2a",
@@ -73,6 +74,18 @@ class SkillsPlumbingTest(unittest.TestCase):
         for name in ("agents/chief-of-stuff.md", "scripts/tool.py", "assets/example.txt"):
             self.assertEqual((release / name).read_bytes(), (self.plugin / name).read_bytes())
         self.assertFalse((release / "skills").exists())
+
+    def test_host_adapter_explains_read_pointers_once_only_for_non_claude_hosts(self):
+        write_skill(self.plugin, "alpha", "ALPHA_ON_DEMAND_ONLY_511")
+        release = start.install(self.plugin, self.base / "install")
+        for runtime in (*NON_CLAUDE, "claude"):
+            with self.subTest(runtime=runtime):
+                prompt = start.prompt(runtime, release, self.workspace)
+                self.assertEqual(prompt.count(READ_POINTER_GUIDANCE),
+                                 0 if runtime == "claude" else 1)
+                if runtime != "claude":
+                    adapter = prompt.split("## Host adapter\n", 1)[1]
+                    self.assertIn(READ_POINTER_GUIDANCE, adapter)
 
     def test_non_claude_prompts_exclude_fixture_skill_text_and_named_headings(self):
         bodies = {
@@ -180,13 +193,15 @@ class SkillsPlumbingTest(unittest.TestCase):
             with self.subTest(runtime=runtime):
                 self.assert_pinned_skill_pointers(runtime, release, {"decision-page", "optional-features"})
 
-    def test_no_skills_prompt_is_byte_identical_to_the_legacy_prompt(self):
+    def test_no_skills_prompt_preserves_legacy_bytes_except_non_claude_read_guidance(self):
         for empty_dir in (False, True):
             if empty_dir:
                 (self.plugin / "skills").mkdir()
             for runtime, digest in LEGACY_SHA256.items():
                 with self.subTest(runtime=runtime, empty_dir=empty_dir):
                     prompt = start.prompt(runtime, self.plugin, self.workspace)
+                    if runtime in NON_CLAUDE:
+                        prompt = prompt.replace(READ_POINTER_GUIDANCE + " ", "", 1)
                     normalized = prompt.replace(str(self.plugin), "<release>").replace(str(self.workspace), "<workspace>")
                     self.assertEqual(hashlib.sha256(normalized.encode()).hexdigest(), digest)
 
