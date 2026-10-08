@@ -133,10 +133,12 @@ def changed_files(cwd: Path) -> str:
 
 
 def git_head(cwd: Path, *, strict: bool = False) -> str | None:
-    out, _ = _git(["rev-parse", "HEAD"], cwd)
+    out, error = _git(["rev-parse", "HEAD"], cwd)
     if out is not None and out.returncode == 0:
         return out.stdout.strip()
     if strict:
+        if isinstance(error, git_view.NotARepository):  # a plain folder has no HEAD to lose
+            return None
         # A missing symbolic branch is unborn; other failures cannot authorize a launch.
         if out is not None:
             ref, _ = _git(["symbolic-ref", "-q", "HEAD"], cwd)
@@ -197,10 +199,13 @@ def _tree_note(root: Path, cwd: Path) -> str:
         tree = str(cwd.resolve().relative_to(base))
     except ValueError:
         tree = str(cwd.resolve())
-    out, _ = _git(["branch", "--show-current"], cwd)
-    if out is None or out.returncode:
+    out, error = _git(["branch", "--show-current"], cwd)
+    if isinstance(error, git_view.NotARepository):
+        branch = ""
+    elif out is None or out.returncode:
         raise ValueError("tree is unreadable")
-    branch = out.stdout.strip()
+    else:
+        branch = out.stdout.strip()
     if any(c in tree + branch for c in "|`()\n"):
         raise ValueError(f"tree {tree!r} on {branch!r} cannot be written into a File ownership row")
     return f"worktree `{tree}` ({branch or 'detached'})"

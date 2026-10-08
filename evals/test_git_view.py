@@ -323,6 +323,109 @@ class LocateTest(FixtureCase):
         self.assert_refused_without_git(fx.clone)
 
 
+class NotARepositoryTest(FixtureCase):
+    """A plain folder is its own named case; every other unreadable layout stays a plain Unviewable."""
+
+    def plain(self, name="plain"):
+        path = self.root / name
+        path.mkdir()
+        return path
+
+    def test_not_a_repository_is_an_unviewable_subclass(self):
+        self.assertTrue(issubclass(self.view.NotARepository, self.view.Unviewable))
+
+    def test_locate_and_run_name_a_plain_folder_not_a_repository(self):
+        view = self.view
+        empty, filled = self.plain("empty"), self.plain("filled")
+        (filled / "notes.txt").write_text("generic\n")
+        (filled / "sub").mkdir()
+        for path in (empty, filled):
+            with self.subTest(path=path.name):
+                with patch.object(subprocess, "run", side_effect=AssertionError("started git")) as start:
+                    with self.assertRaises(view.NotARepository) as located:
+                        view.locate(path)
+                    with self.assertRaises(view.NotARepository):
+                        view.run(["branch", "--show-current"], path, env=git_trees.audit_env(), base=self.base)
+                start.assert_not_called()
+                self.assertNotIn(str(path), str(located.exception))
+                self.assertTrue(str(located.exception))
+        self.assertEqual(self.leftovers(), [])
+
+    def test_a_plain_folder_is_still_caught_as_unviewable(self):
+        with self.assertRaises(self.view.Unviewable):
+            self.view.locate(self.plain())
+
+    def assert_unviewable_only(self, path, *, locate=True):
+        view = self.view
+        calls = [lambda: view.run(["rev-parse", "HEAD"], path, env=git_trees.audit_env(), base=self.base)]
+        if locate:
+            calls.append(lambda: view.locate(path))
+        for call in calls:
+            with deadline(), self.assertRaises(view.Unviewable) as caught:
+                call()
+            self.assertNotIsInstance(caught.exception, view.NotARepository)
+        self.assertEqual(self.leftovers(), [])
+
+    def test_a_dotgit_that_is_not_a_directory_or_gitfile_is_not_a_plain_folder(self):
+        for kind in ("symlink", "dangling-symlink", "fifo", "garbage", "empty", "huge"):
+            with self.subTest(kind=kind):
+                path = self.plain(kind)
+                dotgit = path / ".git"
+                if kind == "symlink":
+                    (self.root / f"{kind}-target").write_text("gitdir: nowhere\n")
+                    dotgit.symlink_to(self.root / f"{kind}-target")
+                elif kind == "dangling-symlink":
+                    dotgit.symlink_to(self.root / "missing")
+                elif kind == "fifo":
+                    os.mkfifo(dotgit)
+                elif kind == "garbage":
+                    dotgit.write_bytes(b"\x00garbage\xff not a gitfile\n")
+                elif kind == "empty":
+                    dotgit.write_bytes(b"")
+                else:
+                    dotgit.write_bytes(b"gitdir: x\n" + b"\n" * 8192)
+                self.assert_unviewable_only(path)
+
+    def test_a_dotgit_directory_missing_pieces_is_not_a_plain_folder(self):
+        for missing in ("HEAD", "objects", "refs", "everything"):
+            with self.subTest(missing=missing):
+                fx = self.fixture()
+                gone = ("HEAD", "objects", "refs") if missing == "everything" else (missing,)
+                for entry in gone:
+                    target = fx.clone / ".git" / entry
+                    shutil.rmtree(target) if target.is_dir() else target.unlink()
+                self.assert_unviewable_only(fx.clone)
+
+    def test_a_dotgit_directory_without_head_in_a_plain_folder_is_not_a_plain_folder(self):
+        path = self.plain()
+        (path / ".git").mkdir()
+        self.assert_unviewable_only(path)
+
+    def test_partial_bare_layouts_without_dotgit_are_not_a_plain_folder(self):
+        for present in ("HEAD", "objects", "refs"):
+            with self.subTest(present=present):
+                path = self.plain(f"partial-{present}")
+                if present == "HEAD":
+                    (path / "HEAD").write_text("ref: refs/heads/main\n")
+                else:
+                    (path / present).mkdir()
+                self.assert_unviewable_only(path)
+
+    def test_a_bare_layout_with_an_empty_or_unsafe_head_is_not_a_plain_folder(self):
+        for text in ("", "not a ref\n", "ref: ../outside\n"):
+            with self.subTest(head=text):
+                bare = self.plain("bare-" + str(abs(hash(text))))
+                taint.git(["init", "--bare", "-q", "-b", "main"], bare)
+                (bare / "HEAD").write_text(text)
+                self.assert_unviewable_only(bare, locate=False)  # locate accepts it; the head read refuses
+
+    def test_pointers_into_another_tree_are_not_a_plain_folder(self):
+        for vector in ("commondir", "gitfile"):
+            with self.subTest(vector=vector):
+                fx = self.fixture(vector)
+                self.assert_unviewable_only(fx.tree)
+
+
 class ContentsTest(FixtureCase):
     def config_values(self, directory):
         out = taint.git(["config", "--file", str(directory / "config"), "-z", "--list"], self.root)
