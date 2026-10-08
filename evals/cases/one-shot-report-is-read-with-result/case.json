@@ -4,6 +4,15 @@
   "prompt": "[Scheduled check] The Rate limit headers one-shot has finished. What did its worker report, and why does it need review? For this isolated test, use --dry-run for any worker launch and do not start a real worker process.",
   "graders": [
     {
+      "name": "reads the dispatch skill before reading the finished report",
+      "rule": "Read a finished one-shot's report with `chief-of-stuff result --root . --task <task>`, never by reading files under its worktree or a host output file.",
+      "type": "tool_used",
+      "tool": "Read",
+      "input_match": "\"file_path\": \"[^\"\\n]*skills/dispatch/SKILL\\.md\"",
+      "min": 1,
+      "before": "\"command\": \"(?:\\\\.|[^\"\\\\])*\\bchief[-_]of[-_]stuff(?:\\.py)?\\s+result\\b"
+    },
+    {
       "name": "the report is read with `result`, by task",
       "rule": "Read a finished one-shot's report with `chief-of-stuff result --root . --task <task>`, never by reading files under its worktree or a host output file.",
       "type": "tool_used",

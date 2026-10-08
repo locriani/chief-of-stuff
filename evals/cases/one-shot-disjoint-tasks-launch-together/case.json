@@ -16,9 +16,18 @@
       "tests/c/.keep": ""
     }
   },
-  "description": "Four tracker rows. Fix upload handler is running (a live launcher pid in its tree) and owns `src/a/`. Add upload limits is ready and owns `src/a/upload.py`, inside the running row's paths. Fix report writer and Fix export header are ready and own `src/b/` and `src/c/`. The coordinator starts the two disjoint tasks, each as its own launcher call and each in the background, and starts neither the running task again nor the one that overlaps it. What it sees: the harness records every tool call's whole input, so `run_in_background: true` is graded. A coordinator that launches in the foreground, or chains launches in one command, cannot show this behaviour: origin/main's agent file says 'Run tasks sequentially in the foreground' and goes red on the background graders. What it cannot see: two calls in one assistant message look like two in consecutive ones (background calls return at once, so the difference does not matter), a dry run returns at once, and a loop over a shell variable launching several tasks in one command. `worker --check` starts nothing and is never counted as a launch.",
+  "description": "Four tracker rows. Fix upload handler is running (a live launcher pid in its tree) and owns `src/a/`. Add upload limits is ready and owns `src/a/upload.py`, inside the running row's paths. Fix report writer and Fix export header are ready and own `src/b/` and `src/c/`. The coordinator starts the two disjoint tasks, each as its own launcher call and each in the background, does not start the running task again, and leaves the one that overlaps it open. A launch attempt on the overlapping task passes: the launcher refuses it, dry runs included (scripts/dispatch_prompt.py refuse_overlap, called from compose), nothing starts and the row stays open, so the grader reads the tracker rather than counting calls. What it sees: the harness records every tool call's whole input, so `run_in_background: true` is graded. A coordinator that launches in the foreground, or chains launches in one command, cannot show this behaviour: origin/main's agent file says 'Run tasks sequentially in the foreground' and goes red on the background graders. What it cannot see: two calls in one assistant message look like two in consecutive ones (background calls return at once, so the difference does not matter), a dry run returns at once, and a loop over a shell variable launching several tasks in one command. `worker --check` starts nothing and is never counted as a launch.",
   "prompt": "Start the ready tasks. For this isolated test, use --dry-run for every worker launch and do not start a real worker process.",
   "graders": [
+    {
+      "name": "reads the dispatch skill before the first launch, worktree, models call or tracker write",
+      "rule": "Give each launch its own Bash call with `run_in_background: true`; never chain launches with `;` or `&&`, never pipe a launch, and never start one without the flag.",
+      "type": "tool_used",
+      "tool": "Read",
+      "input_match": "\"file_path\": \"[^\"\\n]*skills/dispatch/SKILL\\.md\"",
+      "min": 1,
+      "before": "\\A(?=[\\s\\S]*\"(?:old_string|content)\":)[\\s\\S]*\"file_path\": \"(?:[^\"\\n]*[/\\\\])?daily[/\\\\][^\"\\n/\\\\]*-tracker\\.md\"|\"command\": \"(?:\\\\.|[^\"\\\\])*(?:\\bchief[-_]of[-_]stuff(?:\\.py)?\\s+(?:worker|worktree|models)\\b|(?:scripts/)?(?:spawn_session|make_worktree)\\.py\\b)"
+    },
     {
       "name": "Fix report writer launched in the background",
       "rule": "Give each launch its own Bash call with `run_in_background: true`; never chain launches with `;` or `&&`, never pipe a launch, and never start one without the flag. Add no `| head`, `| tail` or `| cut` to a launch: its whole output is read from the notification's output file.",
@@ -44,12 +53,11 @@
       "max": 0
     },
     {
-      "name": "the task that overlaps a running row is not launched",
-      "rule": "Launch every ready one-shot task whose File ownership paths overlap no running task at once, in the same turn, each as its own launcher call started in the background (Bash `run_in_background: true`); a read-only task overlaps nothing; when two ready tasks overlap each other, launch the earlier row first and the other when it returns.",
-      "type": "tool_used",
-      "tool": "Bash",
-      "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:spawn_session\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+worker)\\b(?!(?:(?![;|]|&(?!\\d)|\\\\n)(?:[^\"\\\\]|\\\\.))*--check)(?:(?![;|]|&(?!\\d)|\\\\n)(?:[^\"\\\\]|\\\\.))*?--task[=\\s]+\\$?\\\\?[\"\\']?Add upload limits\\b",
-      "max": 0
+      "name": "the task that overlaps a running row is left open",
+      "rule": "A launcher refusal for overlap, or for the concurrency cap (`max_concurrency` under `[workers]`), is not a blocker: leave the task `open` and launch it when a running task returns.",
+      "type": "file_matches",
+      "path": "daily/{{today}}-tracker.md",
+      "pattern": "(?m)\\| Add upload limits \\| unassigned \\| open \\|"
     },
     {
       "name": "the running task is not launched again",

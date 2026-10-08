@@ -269,7 +269,7 @@ class AssignmentTest(unittest.TestCase):
         self.assertNotIn("\u2026", str(e.exception))
 
     def test_it_says_to_commit_and_not_to_merge(self):
-        """Superseded 0.12.0: this pinned `Write only: do not commit or push.`, which contradicted the
+        """Superseded 0.12.0: this pinned a "write only" line that forbade commits, which contradicted the
         workspace rule the assignment exists to carry — every session makes meaningful small commits,
         because uncommitted work is how work gets lost (Zach, 2026-09-18 23:00). The gate is the merge."""
         self.assertRegex(self.body(), r"(?m)^Commits: Commit small and often\b")
@@ -692,11 +692,11 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         # against Bash's 10-minute cap, so "in the same turn" alone serializes. Each of these sentences must stand verbatim in the
         # one-shot paragraph (the line that starts `If `[workers] mode = "one-shot"``), and the eval graders quote the first.
         #
-        #   LAUNCH   "Launch every ready one-shot task whose File ownership paths overlap no running task at once, in the same turn, each as its own launcher call started in the background (Bash `run_in_background: true`); a read-only task overlaps nothing; when two ready tasks overlap each other, launch the earlier row first and the other when it returns."
+        #   LAUNCH   "Launch every ready one-shot task whose File ownership paths overlap no running task at once, in the same turn, each as its own launcher call started in the background (Bash `run_in_background: true`)." (#491: the clause "a read-only task overlaps nothing; when two ready tasks overlap each other, launch the earlier row first ..." is gone; the launcher refuses overlap itself)
         #   BACKGROUND "Give each launch its own Bash call with `run_in_background: true`; never chain launches with `;` or `&&`, never pipe a launch, and never start one without the flag."
         #   NOPIPE   "Add no `| head`, `| tail` or `| cut` to a launch: its whole output is read from the notification's output file." (the eval graders quote BACKGROUND and NOPIPE together, as the file has them: NOPIPE straight after BACKGROUND)
         #   NOTIFY   "A background launch's completion notification only says the launch ended: name the task in its Bash description, and on the notification read that task's report with `chief-of-stuff result --root . --task <task>`, then reconcile it, sync the issue's Kanban state and report that task before using its result."
-        #   DECIDE   "Overlap is decided by `chief-of-stuff worker --check --root . --task <name> --one-shot` and by the launcher's own refusal, which compares File ownership with every running row (`scripts/ownership.py`), not by eye; run overlapping tasks one after the other."
+        #   DECIDE   (#491: deleted. `refuse_overlap` in scripts/dispatch_prompt.py decides, under the lock in scripts/one_shot.py; REFUSAL below tells the model what to do after it refuses.)
         #   REFUSAL  "A launcher refusal for overlap, or for the concurrency cap (`max_concurrency` under `[workers]`), is not a blocker: leave the task `open` and launch it when a running task returns."
         #   FAILURE  "When one launch fails mid-batch the others keep running; do not retry a held or failed task without resolving its blocker."
         #   PLACE    "Do not dispatch a standing placeholder this way; a launcher call starts exactly one task."
@@ -704,11 +704,10 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         # Gone: "Run tasks sequentially in the foreground", "more than one task this way", "before selecting the next ready task".
         paragraph = self._one_shot_paragraph(self.content)
         for required in (
-            "Launch every ready one-shot task whose File ownership paths overlap no running task at once, in the same turn, each as its own launcher call started in the background (Bash `run_in_background: true`); a read-only task overlaps nothing; when two ready tasks overlap each other, launch the earlier row first and the other when it returns.",
+            "Launch every ready one-shot task whose File ownership paths overlap no running task at once, in the same turn, each as its own launcher call started in the background (Bash `run_in_background: true`).",
             "Give each launch its own Bash call with `run_in_background: true`; never chain launches with `;` or `&&`, never pipe a launch, and never start one without the flag.",
             "Add no `| head`, `| tail` or `| cut` to a launch: its whole output is read from the notification's output file.",
             "A background launch's completion notification only says the launch ended: name the task in its Bash description, and on the notification read that task's report with `chief-of-stuff result --root . --task <task>`, then reconcile it, sync the issue's Kanban state and report that task before using its result.",
-            "Overlap is decided by `chief-of-stuff worker --check --root . --task <name> --one-shot` and by the launcher's own refusal, which compares File ownership with every running row (`scripts/ownership.py`), not by eye; run overlapping tasks one after the other.",
             "A launcher refusal for overlap, or for the concurrency cap (`max_concurrency` under `[workers]`), is not a blocker: leave the task `open` and launch it when a running task returns.",
             "When one launch fails mid-batch the others keep running; do not retry a held or failed task without resolving its blocker.",
             "Do not dispatch a standing placeholder this way; a launcher call starts exactly one task.",
@@ -716,7 +715,9 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         ):
             with self.subTest(required=required):
                 self.assertIn(required, paragraph)
-        for gone in ("Run tasks sequentially in the foreground", "more than one task this way", "before selecting the next ready task"):
+        for gone in ("Run tasks sequentially in the foreground", "more than one task this way", "before selecting the next ready task",
+                     "a read-only task overlaps nothing", "launch the earlier row first", "Overlap is decided by",
+                     "run overlapping tasks one after the other"):
             self.assertNotIn(gone, paragraph)
         self.assertEqual(self.SERIAL.findall(paragraph), [], "the one-shot paragraph serializes launches")
 
@@ -772,6 +773,11 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
             if path.is_file():
                 body = skill_body(path.read_text())
                 return body.split(f"### {name}\n", 1)[1].split("\n### ", 1)[0]
+        # Slice 8 keeps a pointer and three sentences under ## Dispatch; the rest follows the prose into the skill.
+        if name == "Dispatch":
+            path = self.agent_file.parent.parent / "skills" / "dispatch" / "SKILL.md"
+            if path.is_file():
+                return sections(self.content)["Dispatch"].split("\n", 1)[1] + "\n\n" + skill_body(path.read_text())
         # Slice 6 retains merge guardrails in Pipeline; other behavioural pins
         # follow the prose into the skill's ### topics.
         if name in ("Pipeline", "Triage"):

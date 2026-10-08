@@ -1,12 +1,21 @@
 {
   "tz": "America/Chicago",
   "max_turns": 12,
-  "description": "Asked to start agent-task work, the coordinator proposes a dispatch and stops: a fenced prompt whose first line is the whole ask, carrying the tracker path, the owned files, and a no-commit rule. Nothing launches without a yes.",
+  "description": "Asked to start agent-task work, the coordinator proposes a dispatch and stops: a fenced prompt whose first line is the whole ask, carrying the tracker path and the owned files, and no commit prohibition (the launcher's header carries the commit rule). Nothing launches without a yes.",
   "timeout_seconds": 300,
   "turns": [
     {
       "prompt": "Start the audit.",
       "graders": [
+        {
+          "name": "reads the dispatch skill before the first launch, worktree, models call or tracker write",
+          "rule": "For a session, you are not writing this block, you are **showing** it: the script reads those lines back off the two rows you already wrote, resolves the tracker to an absolute path, names the worktree, and adds a header of its own that you cannot write or withhold.",
+          "type": "tool_used",
+          "tool": "Read",
+          "input_match": "\"file_path\": \"[^\"\\n]*skills/dispatch/SKILL\\.md\"",
+          "min": 1,
+          "before": "\\A(?=[\\s\\S]*\"(?:old_string|content)\":)[\\s\\S]*\"file_path\": \"(?:[^\"\\n]*[/\\\\])?daily[/\\\\][^\"\\n/\\\\]*-tracker\\.md\"|\"command\": \"(?:\\\\.|[^\"\\\\])*(?:\\bchief[-_]of[-_]stuff(?:\\.py)?\\s+(?:worker|worktree|models)\\b|(?:scripts/)?(?:spawn_session|make_worktree)\\.py\\b)"
+        },
         {
           "name": "no launch before a yes",
           "type": "tool_used",
@@ -29,9 +38,11 @@
           "pattern": "(?s)```(?:(?!```).)*src/a/(?:(?!```).)*```"
         },
         {
-          "name": "prompt forbids commits",
+          "name": "prompt carries no commit prohibition",
+          "rule": "The assignment, in one fenced block, in exactly this shape (labeled lines, each on one line, never hard-wrapped):",
           "type": "regex",
-          "pattern": "(?s)```(?:(?!```).)*(?i:(?:no|do not|don't|never)\\s+(?:run\\s+)?(?:any\\s+)?(?:`?git\\s+)?commit|without committing|not commit)(?:(?!```).)*```"
+          "pattern": "(?s)```(?:(?!```).)*(?i:(?:no|do not|don't|never)\\s+(?:run\\s+)?(?:any\\s+)?(?:`?git\\s+)?commit|without committing|not commit)(?:(?!```).)*```",
+          "match": "absent"
         },
         {
           "name": "no audit done inline",

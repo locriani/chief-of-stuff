@@ -172,6 +172,7 @@ class SkillsPlumbingTest(unittest.TestCase):
             "tracker-rows": "Never set the cell by hand or write that line as free text.",
             "review-pipeline": "A verify pass with nothing open moves the task to `merge`.",
             "coordinator-sessions": "When a session's state is in question, poll it; do not ask the user.",
+            "dispatch": "Those two rows are the dispatch.",
         }
         release = start.install(root, self.base / "install")
         agent = (release / "agents" / "chief-of-stuff.md").read_text()
@@ -189,6 +190,23 @@ class SkillsPlumbingTest(unittest.TestCase):
                     self.assertFalse(f"## {name}" in prompt.splitlines(),
                                      f"{runtime} starts with a named {name} skill section")
 
+    def test_every_host_prompt_points_at_the_dispatch_skill_without_its_body_or_headings(self):
+        from evals.test_agent_budget import DISPATCH_POINTER, DISPATCH_TOPICS
+        root = Path(__file__).resolve().parent.parent
+        release = start.install(root, self.base / "install")
+        pointer = DISPATCH_POINTER.replace("${CLAUDE_PLUGIN_ROOT}", str(release))
+        for runtime in (*NON_CLAUDE, "claude"):
+            prompt = start.prompt(runtime, release, self.workspace)
+            lines = prompt.splitlines()
+            with self.subTest(runtime=runtime, check="pointer"):
+                self.assertIn(f"Read {release}/skills/dispatch/SKILL.md", prompt)
+                self.assertEqual(lines.count(pointer), 1, "the whole pointer, once, as its own line")
+            with self.subTest(runtime=runtime, check="agent heading"):
+                self.assertEqual(lines.count("## Dispatch"), 1, "only the agent's own ## Dispatch heading")
+            for topic in DISPATCH_TOPICS:
+                with self.subTest(runtime=runtime, check="skill topic", topic=topic):
+                    self.assertNotIn(f"### {topic}", lines)
+
     def test_non_claude_shipped_prompts_have_no_brief_heading(self):
         root = Path(__file__).resolve().parent.parent
         release = start.install(root, self.base / "install")
@@ -202,7 +220,7 @@ class SkillsPlumbingTest(unittest.TestCase):
         for runtime in (*NON_CLAUDE, "claude"):
             with self.subTest(runtime=runtime):
                 self.assert_pinned_skill_pointers(runtime, release,
-                                                  {"decision-page", "optional-features", "tracker-rows", "review-pipeline", "coordinator-sessions"})
+                                                  {"decision-page", "optional-features", "tracker-rows", "review-pipeline", "coordinator-sessions", "dispatch"})
 
     def test_review_pipeline_description_names_every_read_moment(self):
         from evals.test_agent_budget import DESCRIPTION_CAP, description
