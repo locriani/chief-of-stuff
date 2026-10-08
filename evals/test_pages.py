@@ -113,6 +113,20 @@ class ServeTest(unittest.TestCase):
         (out / "page.html").write_text("<p>full graph marker</p>")
         self.assertEqual(get(self.port, f"/.graphs/{name}/page.html").status, 404)
 
+    def test_percent_encoded_dot_segments_are_refused(self):
+        (self.dir / ".sources.json").write_text('{"private": true}')
+        name = "a" * 40 + "-" + "b" * 8
+        out = self.dir / ".graphs" / name
+        out.mkdir(parents=True)
+        (out / "page.html").write_text("<p>full graph marker</p>")
+        for path in ("/%2esources.json", "/%2Esources.json", "/%252esources.json",
+                     f"/%2egraphs/{name}/page.html", f"/%2Egraphs/{name}/page.html",
+                     f"/%252egraphs/{name}/page.html",
+                     f"/graphs/{name}/%2e%2e/%2e%2e/.sources.json"):
+            with self.subTest(path=path):
+                self.assertEqual(get(self.port, path).status, 404)
+        self.assertEqual(get(self.port, f"/graphs/{name}/page.html").status, 200)
+
     def test_only_the_full_graph_page_is_served_through_the_graphs_route(self):
         name = "a" * 40 + "-" + "b" * 8
         out = self.dir / ".graphs" / name
