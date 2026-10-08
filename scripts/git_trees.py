@@ -9,9 +9,12 @@ fetched objects behind, for `check_sha` and `make_worktree`.
 
 from __future__ import annotations
 
+import contextvars
 import os
 import stat
 import subprocess
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import git_view
@@ -47,7 +50,35 @@ def user_env() -> dict[str, str]:
 
 
 def git(args: list[str], cwd: Path) -> tuple[int, str]:
-    """One git call that reads. Never a shell, always a list, always bounded."""
+    """One git call that reads, through the sanitised view (#443). Never a shell, always a list, always bounded.
+    Inside `_raw_reads` (the sha path) it is the old unsanitised read, and so is `--git-dir`, which the view refuses and
+    the sha tests use to ask the real git."""
+    if _raw.get() or "--git-dir" in args:
+        return _raw_git(args, cwd)
+    try:
+        out = git_view.run(args, cwd, env=audit_env(), timeout=GIT_TIMEOUT)
+    except git_view.Unviewable as exc:
+        return 128, f"unreadable: {exc}"
+    except (OSError, subprocess.SubprocessError) as exc:
+        return 128, f"{type(exc).__name__}: {exc}"  # git's own failure code: 1 is a real answer to `--is-ancestor`
+    return out.returncode, (out.stdout or out.stderr).strip()
+
+
+# slice 4 (#443) moves the sha path onto git_view.locate/signals; _raw_reads then goes
+_raw = contextvars.ContextVar("raw_reads", default=False)
+
+
+@contextmanager
+def _raw_reads() -> Iterator[None]:
+    token = _raw.set(True)
+    try:
+        yield
+    finally:
+        _raw.reset(token)
+
+
+def _raw_git(args: list[str], cwd: Path) -> tuple[int, str]:
+    """The unsanitised read the sha-path questions still use."""
     try:
         out = subprocess.run(
             ["git", "-C", str(cwd), *args],
@@ -70,11 +101,12 @@ def _count(rev_range: str, tree: Path) -> int | None:
 def read_state(tree: Path) -> TreeState:
     _, branch = git(["rev-parse", "--abbrev-ref", "HEAD"], tree)
     code, dirty = git(["status", "--porcelain"], tree)
+    readable = code == 0  # an unreadable status cannot rule out uncommitted work: leave the counts unknown, so the tree stays at risk
     return TreeState(
         branch=branch,
-        dirty=len(dirty.splitlines()) if code == 0 else 0,
-        off_origin=_count(f"{BASE}..HEAD", tree),
-        unpushed=_count("@{u}..HEAD", tree),
+        dirty=len(dirty.splitlines()) if readable else 0,
+        off_origin=_count(f"{BASE}..HEAD", tree) if readable else None,
+        unpushed=_count("@{u}..HEAD", tree) if readable else None,
     )
 
 
@@ -92,6 +124,7 @@ def discover(root: Path, trees: str) -> list[Path]:
     return found
 
 
+@_raw_reads()
 def sha_trees(root: Path, trees: str) -> list[tuple[str, Path]]:
     """(name, tree) for each repository `--sha` should ask: the first tree by name of each repository `discover`
     finds (trees sharing a common git dir are one, as is a pruned
@@ -226,6 +259,7 @@ def _pruned_common(tree: Path) -> Path | None:
     return None
 
 
+@_raw_reads()
 def check_sha(sha: str, tree: Path) -> tuple[int, str, bool]:
     """One repository's `(exit code, line, held)`; `held` is whether it has a commit with that id, or may have one (git
     cannot read it). A pruned worktree (`_pruned_common`: its `.git` file names a `<common>/worktrees/<name>` known gone) is

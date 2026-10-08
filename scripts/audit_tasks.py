@@ -552,7 +552,9 @@ def _state(worktree: Path) -> tuple[str, str]:
     _, branch = git_trees.git(["rev-parse", "--abbrev-ref", "HEAD"], worktree)
     code, dirty = git_trees.git(["status", "--porcelain"], worktree)
     reasons = []
-    if code == 0 and dirty:
+    if code != 0:
+        reasons.append("uncommitted work unknown (status unreadable)")
+    elif dirty:
         reasons.append(f"{len(dirty.splitlines())} uncommitted file(s)")
     merged, _ = git_trees.git(["merge-base", "--is-ancestor", "HEAD", "main"], worktree)
     if merged != 0:
