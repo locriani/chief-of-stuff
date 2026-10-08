@@ -1354,17 +1354,18 @@ with open({str(self.log)!r}, 'a') as log:
         return value
 
     @staticmethod
-    def typed(argv):
-        """The line herdr types into the pane's shell: the words after the pane id, joined."""
-        return " ".join(argv[5:])
+    def typed(argv, *, built=False):
+        """The line herdr types into the pane's shell: the words after the pane id, joined.
+        A recorded call is [--session, s, pane, run, PANE, ...]; herdr_commands output starts with the binary."""
+        return " ".join(argv[6 if built else 5:])
 
     def assert_short_line_without_env(self, line):
         self.assertNotIn("/opt/seg", line)
-        self.assertNotIn(str(self.bin), line)
         self.assertNotIn("/usr/bin/env", line)
         words = shlex.split(line)
         self.assertEqual([w for w in words if w.startswith(("PATH=", "CHIEF_OF_STUFF_WORKSPACE="))], [])
-        self.assertNotIn("--workspace", words)
+        self.assertNotIn("-C", words)
+        self.assertNotIn(self.env["PATH"], line)
         self.assertEqual(words[0], sys.executable)
         # A typed line past ~1024 bytes is cut by the tty; the limit leaves margin.
         self.assertLessEqual(len(line.encode()), 900)
@@ -1372,16 +1373,16 @@ with open({str(self.log)!r}, 'a') as log:
     def test_the_typed_line_is_short_and_carries_no_env_or_path_under_a_20kb_path(self):
         self.env["PATH"] = self.long_path()
         _, run = self.commands()
-        self.assert_short_line_without_env(self.typed(run))
+        self.assert_short_line_without_env(self.typed(run, built=True))
         self.env["PATH"] = str(self.bin)
 
     def test_the_typed_line_does_not_grow_with_the_path(self):
         for runtime in ("claude", "codex", "cursor", "agy"):
             with self.subTest(runtime=runtime):
                 model = "" if runtime == "claude" else "m"
-                short = self.typed(self.commands(runtime=runtime, model=model, limit=10_000)[1])
+                short = self.typed(self.commands(runtime=runtime, model=model, limit=10_000)[1], built=True)
                 self.env["PATH"] = self.long_path()
-                long = self.typed(self.commands(runtime=runtime, model=model, limit=10_000)[1])
+                long = self.typed(self.commands(runtime=runtime, model=model, limit=10_000)[1], built=True)
                 self.env["PATH"] = str(self.bin)
                 self.assertEqual(long, short)
 
@@ -1410,7 +1411,7 @@ with open({str(self.log)!r}, 'a') as log:
             create, run = ss.herdr_commands(herdr=self.herdr, session="chief-of-stuff", cwd=str(gone),
                                             agent_type=None, binary=self.bin / "claude", title="audit-01",
                                             runtime="claude", workspace=str(self.root))
-        words = shlex.split(self.typed(run))
+        words = shlex.split(self.typed(run, built=True))
         self.assertEqual(words[0], sys.executable)
         self.assertNotIn(ss.ENV_BIN, words)
         self.assertEqual(create[-2:], ["--env", f"CHIEF_OF_STUFF_WORKSPACE={self.root}"])
@@ -1533,8 +1534,10 @@ with open({str(self.log)!r}, 'a') as log:
                                               "pane", "run", "<root-pane>"])
                     self.assertEqual(run[6:], [shlex.quote(token) for token in tokens])
                     self.assertEqual(shlex.split(" ".join(run[6:])), tokens)
-                    self.assertIn(str(self.tree), tokens)
-                    self.assertNotIn("--workspace", tokens)
+                    self.assertTrue(any(str(self.tree) in t for t in tokens), "the prompt token names the tree")
+                    self.assertEqual(create[create.index("--cwd") + 1], str(self.tree))
+                    script = next(i for i, t in enumerate(tokens) if t.endswith("session_exec.py"))
+                    self.assertNotIn("--workspace", tokens[script:tokens.index("--", script)])
                     self.assertNotIn(ss.ENV_BIN, tokens)
                     self.assertFalse([t for t in tokens if t.startswith(("PATH=", "CHIEF_OF_STUFF_WORKSPACE="))])
         self.root, self.tree, self.bin = original_root, original_tree, original_bin
