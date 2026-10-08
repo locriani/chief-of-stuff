@@ -35,3 +35,11 @@ The dependency rule of section 1 is enforced by `evals/test_architecture.py`. It
 ## 6. Reviewers
 
 chief-of-stuff stores no persona text and no review panel logic. A review is done by running the `extras:code-review` skill, which chooses the personas, including the Clean Architecture expert for the style section 1 declares. This is the current choice and may be revised.
+
+## 7. Assignments
+
+An implementer's assignment tells the worker about the architecture: it names the canonical architecture document of the workspace the task belongs to, and the worker reads it before changing code. The work is held to that document.
+
+## 8. Single responsibility
+
+A module has one reason to change. `inbox.py` and `audit_tasks.py`, the two largest, each carry more than one and are split by responsibility, each part landing in one circle of section 4.
