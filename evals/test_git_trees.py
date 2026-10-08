@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import git_trees  # noqa: E402
 import git_view  # noqa: E402
 from evals import git_taint as taint  # noqa: E402
+import tree_state  # noqa: E402
 from tree_state import TreeState, at_risk  # noqa: E402
 
 ENV = {"PATH": "/usr/bin:/bin:/usr/local/bin", "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_GLOBAL": "/dev/null",
@@ -381,8 +382,8 @@ class NonUtf8OutputTest(Repo):
         self.assertEqual(code, 128)
         self.assertTrue(text.startswith("unreadable:"), text)
         state = git_trees.read_state(self.clone)
-        self.assertEqual((state.dirty, state.off_origin, state.unpushed), (0, None, None))
-        self.assertTrue(at_risk(state))
+        self.assertEqual((state.dirty, state.off_origin, state.unpushed), (None, None, None))
+        self.assertIn(tree_state.UNCOMMITTED_UNKNOWN, at_risk(state))
 
 
 class ShaExitTest(unittest.TestCase):
@@ -638,7 +639,7 @@ class CheckShaTest(Repo):
     def assert_answered_by_its_repository(self, sha: str, tree: Path) -> tuple[int, str, bool]:
         """#294 round 7: a pruned worktree is answered by its repository, so `check_sha` on it is exactly `check_sha` on the
         main clone (git run in `<common>`, which still has the objects and both `main` refs). Returns that answer."""
-        self.assertEqual(git_trees.git(["rev-parse", "--git-dir"], tree)[0], 128)  # the tree itself is dead to git
+        self.assertEqual(git_trees._raw_git(["rev-parse", "--git-dir"], tree)[0], 128)  # the tree itself is dead to git
         expected = git_trees.check_sha(sha, self.clone)
         self.assertEqual(git_trees.check_sha(sha, tree), expected)
         return expected
@@ -682,7 +683,7 @@ class CheckShaTest(Repo):
         as a git directory (`rev-parse` exits 128). Unknown, `held` True: it blocks a yes, it is not `not a repository`."""
         sha, tree = self.pruned()
         (self.clone / ".git" / "HEAD").write_text("this is not a ref\n")
-        self.assertEqual(git_trees.git(["rev-parse", "--git-dir"], self.clone / ".git")[0], 128)
+        self.assertEqual(git_trees._raw_git(["rev-parse", "--git-dir"], self.clone / ".git")[0], 128)
         self.assert_could_not_read(sha, tree)
 
     def test_a_dot_git_file_pointing_at_a_repository_that_is_gone_could_not_be_read_and_may_hold_it(self) -> None:
@@ -692,7 +693,7 @@ class CheckShaTest(Repo):
         broken = self.trees / "broken"
         broken.mkdir()
         (broken / ".git").write_text("gitdir: /nonexistent/path\n")
-        self.assertEqual(git_trees.git(["rev-parse", "--git-dir"], broken)[0], 128)
+        self.assertEqual(git_trees._raw_git(["rev-parse", "--git-dir"], broken)[0], 128)
         self.assert_could_not_read(sha, broken)
 
     def test_a_linked_worktree_whose_main_clone_was_moved_could_not_be_read_and_may_hold_it(self) -> None:
@@ -701,7 +702,7 @@ class CheckShaTest(Repo):
         sha = git("rev-parse", "HEAD", cwd=self.clone)
         tree = self.tree("wt-a", "feat/a")
         self.clone.rename(self.root / "repo-moved")
-        self.assertEqual(git_trees.git(["rev-parse", "--git-dir"], tree)[0], 128)
+        self.assertEqual(git_trees._raw_git(["rev-parse", "--git-dir"], tree)[0], 128)
         self.assert_could_not_read(sha, tree)
 
     def tree_naming(self, name: str, common: Path) -> Path:
@@ -722,7 +723,7 @@ class CheckShaTest(Repo):
         (sub / "worktrees").mkdir(parents=True)
         self.assertEqual(git_trees.check_sha(sha, sub)[0], 0)  # and so does git run in sub: it found outer
         tree = self.tree_naming("wt-outer", sub)
-        self.assertEqual(git_trees.git(["rev-parse", "--git-dir"], tree)[0], 128)
+        self.assertEqual(git_trees._raw_git(["rev-parse", "--git-dir"], tree)[0], 128)
         self.assert_could_not_read(sha, tree)
 
     def test_a_tree_made_by_init_separate_git_dir_whose_git_dir_is_gone_inside_another_repository_is_not_answered_by_it(self) -> None:
@@ -738,7 +739,7 @@ class CheckShaTest(Repo):
         written = (tree / ".git").read_text().strip().removeprefix("gitdir: ")  # git writes the resolved path
         self.assertEqual(Path(written), gitdir.resolve())
         shutil.rmtree(gitdir)
-        self.assertEqual(git_trees.git(["rev-parse", "--git-dir"], tree)[0], 128)
+        self.assertEqual(git_trees._raw_git(["rev-parse", "--git-dir"], tree)[0], 128)
         self.assert_could_not_read(sha, tree)
 
     def promptly(self, sha: str, tree: Path) -> tuple[int, str, bool]:
@@ -878,7 +879,7 @@ class CheckShaTest(Repo):
         for what, line in (("no space", "gitdir:{}"), ("leading spaces", "  gitdir: {}")):
             with self.subTest(what):
                 (live_tree / ".git").write_text(line.format(live) + "\n")
-                code, out = git_trees.git(["rev-parse", "--git-dir"], live_tree)
+                code, out = git_trees._raw_git(["rev-parse", "--git-dir"], live_tree)
                 self.assertEqual(code, 128, out)
                 self.assertIn("invalid gitfile format", out)
                 (tree / ".git").write_text(line.format(gone) + "\n")
@@ -899,7 +900,7 @@ class CheckShaTest(Repo):
         self.assertFalse((self.root / "x" / "HEAD").exists())  # `<x>` is just a directory, not a git directory
         shutil.rmtree(separate)
         self.assertTrue((self.root / "x").is_dir())
-        self.assertEqual(git_trees.git(["rev-parse", "--git-dir"], tree)[0], 128)
+        self.assertEqual(git_trees._raw_git(["rev-parse", "--git-dir"], tree)[0], 128)
         self.assert_could_not_read(sha, tree)
 
     def test_a_common_dir_that_is_an_empty_directory_could_not_be_read_and_may_hold_it(self) -> None:
@@ -946,7 +947,7 @@ class CheckShaTest(Repo):
         gone = self.clone / ".git" / "worktrees" / "wt-dead"
         live_tree = self.tree("wt-live", "feat/wt-live")
         (live_tree / ".git").write_text(f"gitdir:  {self.clone / '.git' / 'worktrees' / 'wt-live'}\n")
-        self.assertEqual(git_trees.git(["rev-parse", "--git-dir"], live_tree)[0], 128)
+        self.assertEqual(git_trees._raw_git(["rev-parse", "--git-dir"], live_tree)[0], 128)
         (tree / ".git").write_text(f"gitdir:  {gone}\n")
         self.assert_could_not_read(git("rev-parse", "HEAD", cwd=self.clone), tree)
 
@@ -958,7 +959,7 @@ class CheckShaTest(Repo):
         named = self.clone / ".git" / "worktrees" / "wt-dead "
         named.mkdir()
         (tree / ".git").write_text(f"gitdir: {named}\n")
-        self.assertEqual(git_trees.git(["rev-parse", "--git-dir"], tree)[0], 128)  # git cannot open it either
+        self.assertEqual(git_trees._raw_git(["rev-parse", "--git-dir"], tree)[0], 128)  # git cannot open it either
         self.assertIsNone(git_trees._pruned_common(tree))
         self.assert_could_not_read(sha, tree)
 
@@ -983,7 +984,7 @@ class CheckShaTest(Repo):
                            ("a junk line and a trailing blank", b"\njunk\n\n"), ("a lone CR then junk", b"\rjunk\n")):
             with self.subTest(what):
                 (live_tree / ".git").write_bytes(f"gitdir: {live}".encode() + tail)
-                self.assertEqual(git_trees.git(["rev-parse", "--git-dir"], live_tree)[0], 128)  # git rejects it too
+                self.assertEqual(git_trees._raw_git(["rev-parse", "--git-dir"], live_tree)[0], 128)  # git rejects it too
                 (tree / ".git").write_bytes(f"gitdir: {gone}".encode() + tail)
                 self.assertIsNone(git_trees._pruned_common(tree))
                 self.assert_could_not_read(sha, tree)
@@ -998,7 +999,7 @@ class CheckShaTest(Repo):
         for what, tail in (("CRLF", b"\r\n"), ("no newline", b""), ("a blank line", b"\n\n"), ("CR CR LF", b"\r\r\n")):
             with self.subTest(what):
                 (live_tree / ".git").write_bytes(f"gitdir: {live}".encode() + tail)
-                self.assertEqual(git_trees.git(["rev-parse", "--git-dir"], live_tree)[0], 0)
+                self.assertEqual(git_trees._raw_git(["rev-parse", "--git-dir"], live_tree)[0], 0)
                 (tree / ".git").write_bytes(f"gitdir: {gone}".encode() + tail)
                 self.assertEqual(git_trees._pruned_common(tree).resolve(), (self.clone / ".git").resolve())
                 self.assertEqual(git_trees.check_sha(sha, tree), git_trees.check_sha(sha, self.clone))
@@ -1013,7 +1014,7 @@ class CheckShaTest(Repo):
         live_tree, live = self.tree("wt-live", "feat/wt-live"), self.clone / ".git" / "worktrees" / "wt-live"
         padding = b"\r\n" * 3000  # 6000 characters, past any 4096 bound
         (live_tree / ".git").write_bytes(f"gitdir: {live}".encode() + padding + b"junk")
-        self.assertEqual(git_trees.git(["rev-parse", "--git-dir"], live_tree)[0], 128)  # git rejects it too
+        self.assertEqual(git_trees._raw_git(["rev-parse", "--git-dir"], live_tree)[0], 128)  # git rejects it too
         (tree / ".git").write_bytes(f"gitdir: {gone}".encode() + padding + b"junk")
         self.assertIsNone(git_trees._pruned_common(tree))
         self.assert_could_not_read(sha, tree)
@@ -1034,7 +1035,7 @@ class CheckShaTest(Repo):
         gone = self.clone / ".git" / "worktrees" / "gøne"
         live_tree, live = self.tree("lïve", "feat/live"), self.clone / ".git" / "worktrees" / "lïve"
         (live_tree / ".git").write_bytes(self.padded_past_the_byte_bound(f"gitdir: {live}"))
-        self.assertEqual(git_trees.git(["rev-parse", "--git-dir"], live_tree)[0], 128)  # git rejects it too
+        self.assertEqual(git_trees._raw_git(["rev-parse", "--git-dir"], live_tree)[0], 128)  # git rejects it too
         data = self.padded_past_the_byte_bound(f"gitdir: {gone}")
         self.assertLessEqual(len(data[:4097].decode(errors="ignore")), 4096)  # a character count sees under the bound
         self.assertGreaterEqual(data.index(b"junk"), 4097)  # and junk lies beyond the bytes read
@@ -1059,7 +1060,7 @@ class CheckShaTest(Repo):
         gone = self.clone / ".git" / "worktrees" / "wt-dead"
         live_tree, live = self.tree("wt-live", "feat/wt-live"), self.clone / ".git" / "worktrees" / "wt-live"
         (live_tree / ".git").write_bytes(f"gitdir: {live}".encode() + b"\n" * 300)
-        self.assertEqual(git_trees.git(["rev-parse", "--git-dir"], live_tree)[0], 0)
+        self.assertEqual(git_trees._raw_git(["rev-parse", "--git-dir"], live_tree)[0], 0)
         (tree / ".git").write_bytes(f"gitdir: {gone}".encode() + b"\n" * 300)
         self.assertEqual(git_trees._pruned_common(tree).resolve(), (self.clone / ".git").resolve())
         self.assertEqual(git_trees.check_sha(sha, tree), git_trees.check_sha(sha, self.clone))
@@ -1141,7 +1142,7 @@ class CheckShaTest(Repo):
         broken.mkdir()
         git("init", "--initial-branch=main", ".", cwd=broken)
         (broken / ".git" / "HEAD").unlink()
-        code, out = git_trees.git(["rev-parse", "--git-dir"], broken)
+        code, out = git_trees._raw_git(["rev-parse", "--git-dir"], broken)
         self.assertEqual(code, 128, out)
         self.assert_could_not_read(sha, broken)
 
@@ -1153,7 +1154,7 @@ class CheckShaTest(Repo):
         sha = git("rev-parse", "HEAD", cwd=self.clone)
         tree = self.tree("wt-a", "feat/a")
         real = git_trees.git
-        self.assertEqual(real(["rev-parse", "--git-dir"], tree)[0], 0)
+        self.assertEqual(git_trees._raw_git(["rev-parse", "--git-dir"], tree)[0], 0)
         for what, broken in (("disambiguate", lambda a: a[0] == "rev-parse" and a[1].startswith("--disambiguate=")),
                              ("cat-file -t", lambda a: a[:2] == ["cat-file", "-t"])):
             def fake(args, cwd, *rest, broken=broken, **kw):
@@ -1594,8 +1595,10 @@ class GitViewFunnelTest(unittest.TestCase):
         self.assertEqual(git_trees.git(["rev-list", "--count", "origin/main..HEAD"], fx.tree), (0, "3"))
 
     def test_a_submodule_tree_is_never_read_as_safe(self) -> None:
-        """`dirty` stays 0 when `status` is unreadable, which is harmless only because `off_origin` is None keeps `at_risk`
-        non-empty. Pinned for a tree whose commits are all on origin/main too: there nothing else would say it is at risk."""
+        """`dirty` is None when `status` is unreadable (R8), and the history counts with it: a tree whose commits are all on
+        origin/main and whose branch is pushed (an upstream that would say `unpushed` 0) is still at risk, for the one reason
+        that is true. Pinned for that tree too: there nothing else would say it is at risk, and nulling `unpushed` and
+        `off_origin` is the `if readable` guard (R3)."""
         for label, on_origin in (("ahead of origin/main", False), ("all commits on origin/main", True)):
             with self.subTest(label):
                 fx = self.fixture("gitlink")
@@ -1605,9 +1608,74 @@ class GitViewFunnelTest(unittest.TestCase):
                     taint.git(["update-ref", "refs/heads/main", fx.sha["D"]], fx.clone)
                     self.assertEqual(git_trees.git(["rev-list", "--count", "origin/main..HEAD"], fx.tree), (0, "0"))
                 state = git_trees.read_state(fx.tree)
-                self.assertEqual((state.dirty, state.off_origin), (0, None))
-                self.assertTrue(at_risk(state), state)
+                self.assertEqual((state.dirty, state.off_origin, state.unpushed), (None, None, None))
+                self.assertIn(tree_state.UNCOMMITTED_UNKNOWN, at_risk(state), state)
                 self.assertEqual(fx.fired(), [])
+
+    def test_a_git_dir_token_in_the_arguments_does_not_select_the_raw_reader(self) -> None:
+        """R5: `git()` chose the unsanitised reader on argv text, and argv is reachable from the tracker (`branch_candidates`
+        appends a tree name, and a name may begin with a dash). Only `_raw_reads` selects it. Control: inside it, the same
+        call is the raw read."""
+        fx = self.fixture()
+        argvs = (["rev-parse", "--git-dir"], ["merge-base", "--is-ancestor", "--git-dir", "main"],
+                 ["rev-parse", "--verify", "--quiet", "--git-dir"])
+        with patch.object(git_trees, "_raw_git", wraps=git_trees._raw_git) as raw:
+            with git_trees._raw_reads():
+                git_trees.git(["rev-parse", "--git-dir"], fx.tree)
+            self.assertEqual(raw.call_count, 1, "the sha path must still read raw")
+            raw.reset_mock()
+            for args in argvs:
+                with self.subTest(args=args):
+                    git_trees.git(args, fx.tree)
+            raw.assert_not_called()
+
+    def test_a_home_python_cannot_find_is_an_unreadable_read_not_a_crash(self) -> None:
+        """R6: the view's default base asks for the home directory, and `Path.home()` raises `RuntimeError` when HOME is unset
+        and the uid has no passwd entry (a container run `--user`). That is one more tree git cannot be asked in."""
+        fx = self.fixture()
+        real = git_view._base
+
+        def homeless(layout, base):  # the default base, as `run` builds it when no caller passes one
+            return real(layout, None)
+
+        with patch.dict(os.environ), patch.object(git_view, "_base", homeless), \
+                patch.object(Path, "home", side_effect=RuntimeError("Could not determine home directory.")):
+            os.environ.pop("XDG_CACHE_HOME", None)
+            code, text = git_trees.git(["rev-parse", "HEAD"], fx.tree)
+        self.assertEqual(code, 128)
+        self.assertTrue(text.startswith("unreadable:"), text)
+
+    def test_a_value_or_runtime_error_out_of_the_view_is_an_unreadable_read(self) -> None:
+        """R6, `ValueError` (a non-UTF-8 object path written into the view on Linux; macOS refuses to create one, so this
+        is the exception injected, not the path)."""
+        for exc in (RuntimeError("Could not determine home directory."), ValueError("embedded null byte")):
+            with self.subTest(type(exc).__name__), patch.object(git_view, "run", side_effect=exc):
+                code, text = git_trees.git(["rev-parse", "HEAD"], self.root)
+                self.assertEqual(code, 128)
+                self.assertTrue(text.startswith("unreadable:"), text)
+
+    def test_the_branch_of_a_tree_git_cannot_read_is_one_placeholder_not_the_error_text(self) -> None:
+        """R8: the branch is printed in every finding and keys reopen grouping, so it must not carry git's reason."""
+        seen = {}
+        for kind in ("symlink", "huge"):
+            fx = self.fixture()
+            dotgit = fx.tree / ".git"
+            content = dotgit.read_bytes()
+            dotgit.unlink()
+            if kind == "symlink":
+                (fx.root / "gitfile").write_bytes(content)
+                dotgit.symlink_to(fx.root / "gitfile")
+            else:
+                dotgit.write_bytes(content + b"\n" * 4096)
+            code, error = git_trees.git(["rev-parse", "--abbrev-ref", "HEAD"], fx.tree)
+            self.assertEqual(code, 128)
+            seen[kind] = (git_trees.read_state(fx.tree).branch, error)
+        (branch, error), (other, other_error) = seen["symlink"], seen["huge"]
+        self.assertNotEqual(error, other_error, "the premise: two different reasons")
+        self.assertEqual(branch, other, "one placeholder, or reopen grouping splits by reason")
+        self.assertTrue(branch)
+        self.assertNotIn(error, branch)
+        self.assertNotIn("unreadable:", branch)
 
     def test_a_hostile_dot_git_is_128_unreadable_and_never_hangs(self) -> None:
         for kind in ("symlink", "fifo", "huge"):
@@ -1630,8 +1698,8 @@ class GitViewFunnelTest(unittest.TestCase):
                         self.assertEqual(code, 128)
                         self.assertTrue(text.startswith("unreadable:"), text)
                     state = git_trees.read_state(fx.tree)
-                self.assertEqual((state.dirty, state.off_origin, state.unpushed), (0, None, None))
-                self.assertTrue(at_risk(state))
+                self.assertEqual((state.dirty, state.off_origin, state.unpushed), (None, None, None))
+                self.assertIn(tree_state.UNCOMMITTED_UNKNOWN, at_risk(state))
 
     def test_a_directory_that_is_not_a_repository_is_128_unreadable(self) -> None:
         """The former read also answered 128 here (`fatal: not a git repository`): the code is kept, the text now names the view."""
@@ -1641,8 +1709,8 @@ class GitViewFunnelTest(unittest.TestCase):
         self.assertEqual(code, 128)
         self.assertTrue(text.startswith("unreadable:"), text)
         state = git_trees.read_state(empty)
-        self.assertEqual((state.dirty, state.off_origin, state.unpushed), (0, None, None))
-        self.assertTrue(at_risk(state))
+        self.assertEqual((state.dirty, state.off_origin, state.unpushed), (None, None, None))
+        self.assertIn(tree_state.UNCOMMITTED_UNKNOWN, at_risk(state))
 
     def test_a_redirected_common_dir_is_unreadable_and_runs_nothing(self) -> None:
         for vector, marker in (("commondir", "decoy-fsmonitor"), ("gitfile", "gitfile-fsmonitor")):
