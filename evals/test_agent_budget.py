@@ -45,7 +45,7 @@ SKILL_POINTER = re.compile(r"\$\{CLAUDE_PLUGIN_ROOT\}/skills/([^/\s`]+)/SKILL\.m
 DECISION_PAGE_POINTER = "Before writing a decision page, Read ${CLAUDE_PLUGIN_ROOT}/skills/decision-page/SKILL.md"
 OPTIONAL_FEATURE_POINTERS = {
     "Filing": "Before moving a file into a PARA home, Read ${CLAUDE_PLUGIN_ROOT}/skills/optional-features/SKILL.md",
-    "Requirements": "When a task goes done and the Coordinator block names a requirements file, Read ${CLAUDE_PLUGIN_ROOT}/skills/optional-features/SKILL.md",
+    "Requirements": "Before ticking or editing a requirements file, and when a task goes done and the Coordinator block names one, Read ${CLAUDE_PLUGIN_ROOT}/skills/optional-features/SKILL.md",
     "Notify": "When the Coordinator block has a Settings line whose notify adapter is not off, Read ${CLAUDE_PLUGIN_ROOT}/skills/optional-features/SKILL.md",
 }
 OPTIONAL_FEATURE_RULES = {
@@ -197,6 +197,12 @@ class AgentBudgetTest(unittest.TestCase):
                 lines = [line for line in found[name].splitlines() if line.strip()]
                 self.assertEqual(lines, [f"## {name}", pointer],
                                  "keep the heading and exactly one pointer line, with nothing else")
+
+    def test_state_report_requirements_file_refers_to_requirements_section(self):
+        authority = sections(self.text)["Write authority"]
+        state_report = next(paragraph for paragraph in authority.split("\n\n")
+                            if paragraph.startswith("A state report is "))
+        self.assertIn("a requirements file (see Requirements)", state_report)
 
     def test_optional_features_skill_exists_with_portable_frontmatter(self):
         path = ROOT / "skills" / "optional-features" / "SKILL.md"
