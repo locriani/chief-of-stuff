@@ -47,3 +47,15 @@ The path is read from the `Canonical document:` bullet of the workspace's own `#
 ## 8. Single responsibility
 
 A module has one reason to change. `inbox.py` and `audit_tasks.py`, the two largest, each carry more than one and are split by responsibility, each part landing in one circle of section 4.
+
+| Module today | Responsibility | Circle |
+|---|---|---|
+| `inbox.py` | The message format and its validation rules | Entities |
+| `inbox.py` | The mailbox storage: send, list, read, ack, drain and wait | Interface Adapters, gateways |
+| `inbox.py` | The command line | Frameworks and Drivers |
+| `audit_tasks.py` | The finding types | Entities |
+| `audit_tasks.py` | The ownership rules and the pure judgements | Use Cases |
+| `audit_tasks.py` | Gathering facts from git and the forge | Interface Adapters, gateways |
+| `audit_tasks.py` | The audit orchestration and the command line | Frameworks and Drivers |
+
+Each module keeps re-exporting the names its callers import until they import from the new modules. Where the module boundaries and their names fall is decided when the work is assigned.
