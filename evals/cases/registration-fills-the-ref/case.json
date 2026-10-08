@@ -20,6 +20,15 @@
   "prompt": "<cross-session-message from=\"uds:/tmp/cc-socks/9f2.sock\" from-name=\"wt-audit\" from-mode=\"prompting\">\nRegistering as dispatched. I am wt-audit [9f2a41], in trees/wt-audit on branch audit/upload-handler, on the Security audit task. I came up at 04:12 and I have been reading since. Planning now, nothing written yet.\n</cross-session-message>",
   "graders": [
     {
+      "name": "reads the coordinator-sessions skill before the first session action",
+      "rule": "Write the ref into the row from that message, set `doing` to what it said and `state` to `planning`, and leave its task where it is — registering is not progress.",
+      "type": "tool_used",
+      "tool": "Read",
+      "input_match": "\"file_path\": \"[^\"\\n]*skills/coordinator-sessions/SKILL\\.md\"",
+      "min": 1,
+      "before": "\\A(?=[\\s\\S]*\"(?:old_string|content)\":)[\\s\\S]*\"file_path\": \"[^\"\\n]+\"|\"command\": \"(?:\\\\.|[^\"\\\\])*(?:\\bchief[-_]of[-_]stuff(?:\\.py)?\\s+(?:tracker|log)\\b|(?:scripts/)?tracker_(?:read|write)\\.py\\b)"
+    },
+    {
       "name": "the ref lands in the Sessions row",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",
