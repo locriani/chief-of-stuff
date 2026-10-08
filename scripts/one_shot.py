@@ -117,22 +117,35 @@ def quota_stop(log: Path, runtime: str, model: str) -> str:
     return ""
 
 
+def _git(args: list[str], tree: Path) -> tuple[subprocess.CompletedProcess[str] | None, Exception | None]:
+    """Keep a refused or failed view separate from Git's own exit status."""
+    try:
+        return git_view.run(args, tree, env=git_trees.audit_env(), timeout=15), None
+    except (git_view.Unviewable, OSError, subprocess.TimeoutExpired) as exc:
+        return None, exc
+
+
 def changed_files(cwd: Path) -> str:
-    try:
-        out = git_view.run(["status", "--short"], cwd, env=git_trees.audit_env(), timeout=15)
-        return out.stdout.strip() if out.returncode == 0 else f"git status failed: {out.stderr.strip()}"
-    except git_view.Unviewable as exc:
-        return f"git status failed: unreadable: {exc}"
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return f"git status failed: {exc}"
+    out, error = _git(["status", "--short"], cwd)
+    if out is None:
+        return f"git status failed: {'unreadable: ' if isinstance(error, git_view.Unviewable) else ''}{error}"
+    return out.stdout.strip() if out.returncode == 0 else f"git status failed: {out.stderr.strip()}"
 
 
-def git_head(cwd: Path) -> str | None:
-    try:
-        out = git_view.run(["rev-parse", "HEAD"], cwd, env=git_trees.audit_env(), timeout=15)
-        return out.stdout.strip() if out.returncode == 0 else None
-    except (git_view.Unviewable, OSError, subprocess.TimeoutExpired):
-        return None
+def git_head(cwd: Path, *, strict: bool = False) -> str | None:
+    out, _ = _git(["rev-parse", "HEAD"], cwd)
+    if out is not None and out.returncode == 0:
+        return out.stdout.strip()
+    if strict:
+        # A missing symbolic branch is unborn; other failures cannot authorize a launch.
+        if out is not None:
+            ref, _ = _git(["symbolic-ref", "-q", "HEAD"], cwd)
+            if ref is not None and ref.returncode == 0 and ref.stdout.strip():
+                refs, _ = _git(["for-each-ref", "--format=%(refname)", ref.stdout.strip()], cwd)
+                if refs is not None and refs.returncode == 0 and not refs.stdout.strip():
+                    return None
+        raise ValueError("tree is unreadable")
+    return None
 
 
 def committed_changes(cwd: Path, before: str | None) -> str:
@@ -141,14 +154,10 @@ def committed_changes(cwd: Path, before: str | None) -> str:
         return NO_COMMITS
     if after is None:
         return "Could not read commits: tree unreadable"
-    try:
-        out = git_view.run(["log", "--format=%h %s", "--stat", f"{before}..{after}"],
-                           cwd, env=git_trees.audit_env(), timeout=15)
-        return out.stdout.strip()[:12000] if out.returncode == 0 else f"Could not read commits: {out.stderr.strip()}"
-    except git_view.Unviewable:
-        return "Could not read commits: tree unreadable"
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return f"Could not read commits: {exc}"
+    out, error = _git(["log", "--format=%h %s", "--stat", f"{before}..{after}"], cwd)
+    if out is None:
+        return "Could not read commits: tree unreadable" if isinstance(error, git_view.Unviewable) else f"Could not read commits: {error}"
+    return out.stdout.strip()[:12000] if out.returncode == 0 else f"Could not read commits: {out.stderr.strip()}"
 
 
 def _brief(value: str) -> str:
@@ -188,11 +197,10 @@ def _tree_note(root: Path, cwd: Path) -> str:
         tree = str(cwd.resolve().relative_to(base))
     except ValueError:
         tree = str(cwd.resolve())
-    try:
-        branch = git_view.run(["branch", "--show-current"], cwd,
-                              env=git_trees.audit_env(), timeout=15).stdout.strip()
-    except (git_view.Unviewable, OSError, subprocess.TimeoutExpired):
-        raise ValueError("tree is unreadable") from None
+    out, _ = _git(["branch", "--show-current"], cwd)
+    if out is None or out.returncode:
+        raise ValueError("tree is unreadable")
+    branch = out.stdout.strip()
     if any(c in tree + branch for c in "|`()\n"):
         raise ValueError(f"tree {tree!r} on {branch!r} cannot be written into a File ownership row")
     return f"worktree `{tree}` ({branch or 'detached'})"
@@ -404,9 +412,9 @@ def _launch(root: Path, cfg, chosen_day: str, task: str, cwd: Path, name: str, r
     # Same clean login-shell path as interactive sessions; auth and user PATH come from shell setup.
     # Everything that can refuse runs before anything is written; a refused row takes its dispatch back.
     launch_argv, tree = login_argv(argv), _tree_note(root, cwd)
+    before_head = git_head(cwd, strict=True)
     written = dispatch_prompt.write_dispatch(cwd, body)
     logs = cwd / dispatch_prompt.PROMPT_DIR
-    before_head = git_head(cwd)
     try:
         record_launch(root / cfg.tracker_path(chosen_day), task, name, tree, runtime, model,
                       tracker_write.stamp(cfg.zone), effort)
