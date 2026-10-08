@@ -10,6 +10,7 @@ import io
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -24,10 +25,25 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import audit_tasks as al  # noqa: E402
 import git_trees  # noqa: E402
+import git_view  # noqa: E402
 import board_sources as bs  # noqa: E402
 import test_git_trees as tgt  # noqa: E402  (module-qualified: don't re-collect its TestCases)
 import test_board_sources as tbs  # noqa: E402  (module-qualified: don't re-collect its TestCases)
 from tracker import Task, short_name  # noqa: E402
+import tree_state  # noqa: E402
+from evals import git_taint as taint  # noqa: E402
+
+_views = contextlib.ExitStack()
+
+
+def setUpModule() -> None:
+    """Reads go through git_view.run (#443): give them a private base, never the user's cache."""
+    _views.enter_context(taint.private_git_views(Path(_views.enter_context(tempfile.TemporaryDirectory()))))
+
+
+def tearDownModule() -> None:
+    _views.close()
+
 
 CLAUDE = """# Workspace
 
@@ -135,6 +151,41 @@ def workspace(rows: str, ownership: str, sessions: str = "") -> tuple[tempfile.T
         TRACKER.format(rows=rows, ownership=ownership, sessions=sessions))
     build(root)
     return tmp, root
+
+
+def refuse(tree: Path, how: str = "symlink") -> None:
+    """Make the view refuse `tree` (#443): a worker-made `.git` that is a symlink, or one far past the size bound. Every read
+    of it is then `(128, "unreadable: ...")`, with a different reason for each `how`."""
+    dotgit = tree / ".git"
+    content = dotgit.read_bytes()
+    dotgit.unlink()
+    if how == "symlink":
+        target = tree.parent.parent / f"{tree.name}.gitfile"
+        target.write_bytes(content)
+        dotgit.symlink_to(target)
+    else:
+        dotgit.write_bytes(content + b"\n" * 4096)
+    assert git_trees.git(["rev-parse", "HEAD"], tree)[0] == 128
+
+
+def refusing(*words: str):
+    """`git_trees.git` as it is, except a call whose arguments start with `words` is refused: git could not say (128), which
+    is not git's real `no` (1). The rest of the tree reads as it did."""
+    real = git_trees.git
+
+    def fake(args, cwd, *rest, **kw):
+        return (128, "unreadable: refused") if list(args[:len(words)]) == list(words) else real(args, cwd, *rest, **kw)
+
+    return patch.object(git_trees, "git", fake)
+
+
+def unreadable_phrase() -> str:
+    """R7: the one wording for "git could not say", defined once by the code (it must contain `unknown`), in audit_tasks
+    or tree_state."""
+    for module in (al, tree_state):
+        if hasattr(module, "UNREADABLE_PHRASE"):
+            return module.UNREADABLE_PHRASE
+    raise AssertionError("define UNREADABLE_PHRASE in scripts/audit_tasks.py or scripts/tree_state.py")
 
 
 class ConfigTest(unittest.TestCase):
@@ -1462,6 +1513,58 @@ class ClosedIssueOnOpenTaskTest(unittest.TestCase):
             "issue: Unlanded work — #6 is closed but its tree has work not on main; "
             "ask the user: reopen the issue or drop the work",
             [str(f) for f in report.issues])
+
+    def unreadable_fault(self, root: Path, patched=None) -> str:
+        gh = FakeGh({"o/backlog": {5: "CLOSED", 6: "CLOSED", 7: "CLOSED"}})
+        with patched or contextlib.nullcontext():
+            report = al.audit(root, "2026-09-17", gh=gh)
+        [fault] = [str(f) for f in report.issues if "#6" in str(f)]
+        return fault
+
+    def assert_asks_the_user_it_is_unknown(self, fault: str) -> None:
+        """V1: git could not read the tree, so the audit knows neither that work is unlanded nor that nothing is. It asks
+        the user, in the audit's one wording for "git could not say", and says neither of the two things it does not know."""
+        self.assertIn("Unlanded work — #6 is closed", fault)
+        self.assertIn(unreadable_phrase(), fault)
+        self.assertIn("ask the user", fault)
+        self.assertNotIn("write the task done", fault)
+        self.assertNotIn("work not on main", fault)
+        self.assertNotIn("reopen the issue or drop the work", fault)
+
+    def test_a_tree_git_cannot_read_is_not_work_not_on_main(self):
+        """R7 + V1: `_tree_unlanded` matched the text "not on main", which an unreadable tree (128, not git's `no`) also printed, so a
+        closed issue told the user to reopen it or drop work nobody had seen; once that text went, the gate answered "not unlanded"
+        and the same issue was told to write the task done. Neither: it asks the user, saying git could not read the tree.
+        Exit 1 stays the real `no` (the test above)."""
+        for label, patched in (("a tree the view refuses", None), ("a merge-base git cannot answer", refusing("merge-base"))):
+            with self.subTest(label):
+                root = self.workspace()
+                if patched is None:
+                    refuse(root / "trees" / "wt-unmerged")
+                self.assert_asks_the_user_it_is_unknown(self.unreadable_fault(root, patched))
+
+    def test_the_unlanded_gate_does_not_read_the_prose_of_the_tree_state(self):
+        """V1: the gate searched the wording `_state` prints. Reword whatever string `_state` reports and each of the three
+        trees still gets its own answer: unmerged asks the user about unlanded work, landed writes the task done, unreadable asks
+        the user with the unknown wording."""
+        real = al._state
+
+        def reworded(*args, **kw):
+            result = real(*args, **kw)
+            if isinstance(result, tuple):
+                return tuple(re.sub(r"not on main|on main", "elsewhere", x) if isinstance(x, str) else x for x in result)
+            return result
+
+        gh = FakeGh({"o/backlog": {5: "CLOSED", 6: "CLOSED", 7: "CLOSED"}})
+        with patch.object(al, "_state", reworded):
+            readable = [str(f) for f in al.audit(self.workspace(), "2026-09-17", gh=gh).issues]
+            unreadable_root = self.workspace()
+            refuse(unreadable_root / "trees" / "wt-unmerged")
+            unreadable = self.unreadable_fault(unreadable_root, patch.object(al, "_state", reworded))
+        self.assertIn("issue: Unlanded work — #6 is closed but its tree has work not on main; "
+                      "ask the user: reopen the issue or drop the work", readable)
+        self.assertIn("issue: Landed work — #7 is closed; write the task done", readable)
+        self.assert_asks_the_user_it_is_unknown(unreadable)
 
     def test_an_unlanded_worktree_keyed_on_the_tasks_name_asks_the_user_too(self):
         """#51: a prefix-less item whose File ownership row is keyed on the task's `name` — `_tree_unlanded`
@@ -3073,3 +3176,282 @@ class OwnershipRowKeyedOnNameTest(unittest.TestCase):
             with self.subTest(context=repr(context)):
                 row = al.OwnerRow(context, ["wt-a"])
                 self.assertFalse(self.claim(row, [self.task("", "sam"), self.task("  ", "sam")], {"sam"}).live)
+
+
+class AuditThroughTheViewTest(unittest.TestCase):
+    """#443 slice 3: an audit pass reads the trees through `git_view`, so what a worker plants in a tree's `.git` is data.
+
+    The workspace is `build()`'s: a clone, and the trees `wt-merged`, `wt-unmerged` and `wt-dirty` off it. The worker's
+    plant goes into the clone's own config, which every linked tree reads.
+    """
+
+    ROWS = ("| Unsaved work | robin | done 10:00 | 09:00 |  | Checklist: Unsaved work |\n"
+            "| Open branch work | robin | done 10:00 | 09:00 |  | Checklist: Open branch work |",
+            "| robin | worktree wt-dirty (feat/dirty), worktree wt-unmerged (feat/open) |")
+
+    def setUp(self) -> None:
+        tmp, self.root = workspace(*self.ROWS)
+        self.addCleanup(tmp.cleanup)
+        self.canary = self.root / "canary"
+        self.config = self.root / "repo" / ".git" / "config"
+
+    def command(self) -> str:
+        code = f"from pathlib import Path; import sys; Path({str(self.canary)!r}).write_text('fired'); sys.exit(1)"
+        return shlex.join([sys.executable, "-c", code])
+
+    def plant(self, how: str) -> None:
+        if how == "fsmonitor":
+            git("config", "--file", str(self.config), "core.fsmonitor", self.command(), cwd=self.root)
+        else:  # an include behind a condition that matches the branch of `wt-dirty`
+            included = self.root / "conditional.cfg"
+            git("config", "--file", str(included), "core.fsmonitor", self.command(), cwd=self.root)
+            git("config", "--file", str(self.config), "includeIf.onbranch:feat/dirty.path", str(included), cwd=self.root)
+
+    # What the pass says about the three trees of `build()`, read through the view. Without these a pass that skipped every
+    # tree, or read every tree as unreadable, would agree with itself and pass (R1).
+    FACTS = ("wt-dirty (feat/dirty): 1 uncommitted file(s)", "wt-unmerged (feat/open): not on main",
+             "wt-merged (landed): on main, committed")
+
+    def test_a_worker_planted_program_does_not_run_in_an_audit_pass(self) -> None:
+        clean, original = al.audit(self.root, "2026-09-17"), self.config.read_text()
+        self.assertTrue(clean.reopen and clean.lines, "the pass must have something to say, or it proves nothing")
+        for fact in self.FACTS:
+            self.assertIn(fact, clean.lines, "the pass did not read the trees")
+        self.assertFalse(self.canary.exists())
+        for how in ("fsmonitor", "includeif"):
+            with self.subTest(how):
+                self.plant(how)
+                subprocess.run(["git", "-C", str(self.root / "trees" / "wt-dirty"), "status", "--porcelain"],
+                               env=git_trees.audit_env(), capture_output=True, timeout=15, check=False)
+                self.assertTrue(self.canary.exists(), "the plant must fire under the former read, or the test proves nothing")
+                self.canary.unlink()
+                audited = al.audit(self.root, "2026-09-17")
+                self.assertFalse(self.canary.exists(), "the audit ran a program the worker planted")
+                self.assertEqual((audited.lines, audited.reopen), (clean.lines, clean.reopen))
+                for fact in self.FACTS:
+                    self.assertIn(fact, audited.lines)
+                self.config.write_text(original)
+
+    def submodule_tree(self) -> Path:
+        """`wt-merged` with a gitlink (a nested repository with changes of its own), on a branch that is on main."""
+        tree = self.root / "trees" / "wt-merged"
+        nested = tree / "gl"
+        nested.mkdir()
+        git("init", "-q", "-b", "main", cwd=nested)
+        git("config", "user.email", "n@example.test", cwd=nested)
+        git("config", "user.name", "Nested", cwd=nested)
+        (nested / "file.txt").write_text("a\n")
+        git("add", "file.txt", cwd=nested)
+        git("commit", "-q", "-m", "nested", cwd=nested)
+        oid = git("rev-parse", "HEAD", cwd=nested)
+        git("update-index", "--add", "--cacheinfo", f"160000,{oid},gl", cwd=tree)
+        git("commit", "-q", "-m", "gitlink", cwd=tree)
+        head = git("rev-parse", "HEAD", cwd=tree)
+        for ref in ("refs/heads/main", "refs/remotes/origin/main"):  # the tree's HEAD is on main and on origin/main
+            git("update-ref", ref, head, cwd=self.root / "repo")
+        (nested / "file.txt").write_text("changed in the nested repository\n")
+        return tree
+
+    def test_a_submodule_tree_is_never_read_as_done(self) -> None:
+        """`status` is unreadable there (`unreadable: submodules are not inspected`), so uncommitted work cannot be ruled
+        out: `_state` must not say `on main, committed`. Control: the same tree without the submodule says exactly that."""
+        tree = self.root / "trees" / "wt-merged"
+        self.assertEqual(al._state(tree), ("landed", ""))
+        self.submodule_tree()
+        self.assertEqual(git_trees.git(["merge-base", "--is-ancestor", "HEAD", "main"], tree)[0], 0, "on main, as arranged")
+        self.assertEqual(git_trees.git(["status", "--porcelain"], tree)[1], "unreadable: submodules are not inspected")
+        branch, why = al._state(tree)
+        self.assertEqual(branch, "landed")
+        self.assertEqual(why, "uncommitted work unknown (status unreadable)")
+
+    def test_a_tree_git_cannot_read_at_all_is_never_read_as_done(self) -> None:
+        """R2: the same reason for a `.git` the view refuses, not only a submodule: the status is unreadable there too."""
+        tree = self.root / "trees" / "wt-merged"
+        refuse(tree)
+        branch, why = al._state(tree)
+        self.assertTrue(why.startswith("uncommitted work unknown (status unreadable)"), (branch, why))
+
+    def test_a_submodule_tree_is_at_risk_in_the_pass(self) -> None:
+        self.submodule_tree()
+        state = git_trees.read_state(self.root / "trees" / "wt-merged")
+        self.assertEqual((state.dirty, state.off_origin, state.unpushed), (None, None, None))
+        self.assertIn(tree_state.UNCOMMITTED_UNKNOWN, tree_state.at_risk(state))
+
+    def test_a_submodule_trees_counts_are_unknown_even_when_it_has_an_upstream_that_holds_it(self) -> None:
+        """R3: the pass reads `unpushed` and `off_origin` as None, not as the 0 an upstream on origin/main would give, because
+        a tree whose status is unreadable proves nothing. Without the upstream, None is legitimate and the test would pass
+        with the guard gone. Then R8: the finding says the one true thing."""
+        tree = self.submodule_tree()
+        git("branch", "--set-upstream-to=origin/main", "landed", cwd=self.root / "repo")
+        for counted in (["rev-list", "--count", "@{u}..HEAD"], ["rev-list", "--count", "origin/main..HEAD"]):
+            self.assertEqual(git_trees.git(counted, tree), (0, "0"), "the premise: git counts 0 here")
+        report = al.audit(self.root, "2026-09-17")
+        [found] = [u for u in report.unclaimed if "wt-merged" in str(u)]
+        text = str(found)
+        self.assertIn("wt-merged (landed)", text)  # the branch read fine: only the status did not
+        self.assertNotIn("no upstream", text)
+        self.assertNotIn("0 uncommitted", text)
+        self.assertIn(tree_state.UNCOMMITTED_UNKNOWN, text)
+        self.assertEqual(git_trees.read_state(tree), tree_state.TreeState("landed", None, None, None))
+
+
+class UnreadableTreeTest(unittest.TestCase):
+    """#443 slice 3 review: a tree git could not read (128) is not git's `no` (1). Exit 1 keeps the wording it had; 128 gets
+    the one `UNREADABLE_PHRASE` (it contains `unknown`) and never the false text: "not on main", "never created", NOT_LANDED.
+    """
+
+    ROWS = AuditThroughTheViewTest.ROWS
+
+    def setUp(self) -> None:
+        tmp, self.root = workspace(*self.ROWS)
+        self.addCleanup(tmp.cleanup)
+        self.trees = self.root / "trees"
+        self.clone = self.root / "repo"
+
+    # _state
+    def test_exit_1_is_still_not_on_main(self) -> None:
+        self.assertEqual(al._state(self.trees / "wt-unmerged"), ("feat/open", "not on main"))
+
+    def test_a_merge_base_git_cannot_answer_is_unknown_not_on_main(self) -> None:
+        for name, expect in (("wt-unmerged", ""), ("wt-dirty", "1 uncommitted file(s)")):
+            with self.subTest(name), refusing("merge-base"):
+                _, why = al._state(self.trees / name)
+                self.assertNotIn("not on main", why)
+                self.assertNotIn("uncommitted work unknown", why, "the status was readable")
+                self.assertIn("unknown", unreadable_phrase())
+                self.assertIn(unreadable_phrase(), why)
+                self.assertIn(expect, why)
+
+    def test_a_tree_the_view_refuses_is_unknown_in_both_facts_and_not_on_main_in_neither(self) -> None:
+        refuse(self.trees / "wt-unmerged")
+        _, why = al._state(self.trees / "wt-unmerged")
+        self.assertNotIn("not on main", why)
+        self.assertIn(unreadable_phrase(), why)
+        self.assertIn(tree_state.UNCOMMITTED_UNKNOWN, why)
+
+    # landed
+    def test_a_sha_whose_merge_base_git_cannot_answer_is_not_not_landed(self) -> None:
+        unmerged, merged = self.trees / "wt-unmerged", self.trees / "wt-merged"
+        sha, landed_sha = git("rev-parse", "HEAD", cwd=unmerged), git("rev-parse", "HEAD", cwd=merged)
+        self.assertEqual(al.landed(sha, unmerged), (al.NOT_LANDED, ""), "exit 1 is still the real no")
+        self.assertEqual(al.landed(landed_sha, merged), (al.LANDED, ""))
+        with refusing("merge-base"):
+            verdict, complaint = al.landed(sha, unmerged)
+        self.assertNotEqual(verdict, al.NOT_LANDED)
+        self.assertEqual(verdict, al.UNKNOWN_SHA)
+        self.assertIn(unreadable_phrase(), complaint)
+
+    def test_a_done_task_whose_sha_git_cannot_place_is_not_told_its_sha_is_not_on_main(self) -> None:
+        sha = git("rev-parse", "--short", "HEAD", cwd=self.trees / "wt-unmerged")
+        tracker = self.root / "daily" / "2026-09-17-tracker.md"
+        tracker.write_text(tracker.read_text().replace("| Open branch work | robin | done 10:00 |", f"| Open branch work | robin | done 10:00 {sha} |"))
+        self.assertIn(f"its sha {sha} is not on main", [r.why for r in al.audit(self.root, "2026-09-17").reopen], "exit 1 is still the real no")
+        with refusing("merge-base"):
+            report = al.audit(self.root, "2026-09-17")
+        [reopen] = [r for r in report.reopen if "wt-unmerged" in r.worktree and r.task == "Open branch work"]
+        self.assertNotIn("is not on main", reopen.why)
+        self.assertIn(unreadable_phrase(), reopen.why)
+
+    # missing_tree and its handle
+    def test_a_branch_lookup_git_cannot_answer_is_not_a_tree_never_created(self) -> None:
+        handle = self.trees / "wt-merged"
+        never = al.missing_tree(handle, "wt-never-made", "feat/planned")
+        self.assertIn("never created", never, "exit 1 is still the real no")
+        for words in (("rev-parse", "--verify"), ("merge-base",)):
+            with self.subTest(words), refusing(*words):
+                line = al.missing_tree(handle, "wt-unmerged", "feat/open")
+                self.assertNotIn("never created", line)
+                self.assertNotIn("no branch by that name", line)
+                self.assertNotIn("not on main", line)
+                self.assertIn(unreadable_phrase(), line)
+
+    def test_a_handle_the_view_refuses_reads_as_unknown_not_as_a_tree_never_created(self) -> None:
+        refuse(self.trees / "wt-merged")
+        line = al.missing_tree(self.trees / "wt-merged", "wt-unmerged", "feat/open")
+        self.assertNotIn("never created", line)
+        self.assertNotIn("no branch by that name", line)
+        self.assertIn(unreadable_phrase(), line)
+
+    def gone(self, refused: tuple[str, ...]):
+        """`wt-unmerged` (branch feat/open, work only there) removed, and each of `refused` unreadable."""
+        git("worktree", "remove", "--force", str(self.trees / "wt-unmerged"), cwd=self.clone)
+        for name in refused:
+            refuse(self.trees / name)
+        return al.audit(self.root, "2026-09-17")
+
+    def test_the_handle_is_a_tree_that_can_be_read(self) -> None:
+        """`wt-dirty` is the first tree the pass visits and the view refuses it; `wt-merged` is fine. The branch is only on
+        itself, and the line must say so rather than that the tree was never created."""
+        line = next(ln for ln in self.gone(("wt-dirty",)).lines if ln.startswith("wt-unmerged: no worktree"))
+        self.assertNotIn("never created", line)
+        self.assertIn("feat/open", line)
+        self.assertIn("not on main", line)
+
+    def test_with_every_tree_unreadable_the_missing_one_is_not_called_never_created(self) -> None:
+        line = next(ln for ln in self.gone(("wt-dirty", "wt-merged")).lines if ln.startswith("wt-unmerged: no worktree"))
+        self.assertNotIn("never created", line)
+        self.assertNotIn("no branch by that name", line)
+        self.assertTrue(unreadable_phrase() in line or "no tree left on disk to ask git in" in line, line)
+
+    # the finding and the reopen line
+    def test_a_refused_trees_branch_is_one_placeholder_in_every_line(self) -> None:
+        """R8: `wt-merged (unreadable: .git is neither a directory...)` split reopen grouping by reason and put git's text in
+        the tree line. The branch is a fixed placeholder, the same whatever the reason."""
+        refuse(self.trees / "wt-merged")
+        refuse(self.trees / "wt-unmerged", "huge")
+        report = al.audit(self.root, "2026-09-17")
+        self.assertEqual(al._state(self.trees / "wt-merged")[0], al._state(self.trees / "wt-unmerged")[0])
+        self.assertFalse([ln for ln in report.lines if "unreadable:" in ln], report.lines)
+        self.assertFalse([r for r in report.reopen if "unreadable:" in r.worktree], report.reopen)
+        [found] = [u for u in report.unclaimed if "wt-merged" in str(u)]
+        self.assertNotIn("no upstream", str(found))
+        self.assertNotIn("0 uncommitted", str(found))
+        self.assertIn(tree_state.UNCOMMITTED_UNKNOWN, str(found))
+
+    def test_a_done_task_over_a_refused_tree_reopens_as_unknown_not_as_not_on_main(self) -> None:
+        refuse(self.trees / "wt-unmerged")
+        report = al.audit(self.root, "2026-09-17")
+        why = {r.why for r in report.reopen if "wt-unmerged" in r.worktree}
+        self.assertEqual(len(why), 1, report.reopen)
+        [why] = why
+        self.assertNotIn("not on main", why)
+        self.assertIn(unreadable_phrase(), why)
+        self.assertIn(tree_state.UNCOMMITTED_UNKNOWN, why)
+
+    # R5
+    def test_a_tracker_named_tree_that_looks_like_an_option_is_still_read_through_the_view(self) -> None:
+        """R5: a File ownership row naming `--git-dir`, and a ref of that name, made `missing_tree` pass the token to `git()`,
+        which read the worker's tree outside the view because the argument list held `--git-dir`. Every audit read goes through
+        the view, whatever the tracker says."""
+        git("update-ref", "refs/heads/--git-dir", git("rev-parse", "HEAD", cwd=self.clone), cwd=self.clone)
+        tracker = self.root / "daily" / "2026-09-17-tracker.md"
+        tracker.write_text(tracker.read_text().replace(
+            "| robin | worktree wt-dirty (feat/dirty), worktree wt-unmerged (feat/open) |",
+            "| robin | worktree wt-dirty (feat/dirty), worktree wt-unmerged (feat/open), worktree `--git-dir` (feat/x) |"))
+        with patch.object(git_view, "run", wraps=git_view.run) as viewed, \
+                patch.object(git_trees, "_raw_git", wraps=git_trees._raw_git) as raw:
+            report = al.audit(self.root, "2026-09-17")
+        self.assertIn("--git-dir", " ".join(" ".join(c.args[0]) for c in viewed.call_args_list if c.args),
+                      "the premise: the audit asked about the option-shaped name")
+        raw.assert_not_called()
+        self.assertTrue(report.lines)
+
+    # R6
+    def test_a_home_python_cannot_find_costs_one_tree_not_the_pass(self) -> None:
+        """R6: `Path.home()` raises `RuntimeError` out of the view's default base. The pass finishes, and the trees whose reads
+        did not hit it are reported as they were."""
+        real = git_view._base
+
+        def homeless_for_wt_dirty(layout, base):
+            if layout.tree is not None and layout.tree.name == "wt-dirty":
+                with patch.dict(os.environ), patch.object(Path, "home", side_effect=RuntimeError("Could not determine home directory.")):
+                    os.environ.pop("XDG_CACHE_HOME", None)
+                    return real(layout, None)
+            return real(layout, base)
+
+        with patch.object(git_view, "_base", homeless_for_wt_dirty):
+            report = al.audit(self.root, "2026-09-17")
+        self.assertIn("wt-unmerged (feat/open): not on main", report.lines)
+        self.assertIn("wt-merged (landed): on main, committed", report.lines)
+        [line] = [ln for ln in report.lines if ln.startswith("wt-dirty")]
+        self.assertIn(tree_state.UNCOMMITTED_UNKNOWN, line)

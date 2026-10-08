@@ -18,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from evals import git_taint as taint
 from evals.rules_text import rules_text
 
 EVALS = Path(__file__).resolve().parent
@@ -29,6 +30,18 @@ import render_board as rb  # noqa: E402
 from settings import load as load_settings  # noqa: E402
 from test_dispatch_prompt import SILENT_CHECK_RULE, sections  # noqa: E402
 from workspace import settings_path  # noqa: E402
+
+_views = contextlib.ExitStack()
+
+
+def setUpModule() -> None:
+    """Audit reads go through git_view.run (#443): give them a private base, never the user's cache."""
+    _views.enter_context(taint.private_git_views(Path(_views.enter_context(tempfile.TemporaryDirectory()))))
+
+
+def tearDownModule() -> None:
+    _views.close()
+
 
 CASES = sorted(p for p in (EVALS / "cases").iterdir() if (p / "case.json").exists())
 SESSIONS_HEADER = "| ref | name | state | doing | waiting on | free at | constraints | children | last reply |"
