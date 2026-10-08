@@ -436,11 +436,21 @@ class ResumeCodexGrantTest(unittest.TestCase):
             (base / ".git/worktrees/tree/gitdir").write_text(f"{sub / '.git'}\n")
             self.assertEqual(self.resume(tmp, sub), self.old(sub))
 
-    def test_a_hung_git_resumes_with_the_six_old_elements_and_does_not_raise(self):
+    def test_the_resume_grant_spawns_no_git_process(self):
+        """#443: the grant is read from the tree's pointer files (`git_view.locate`), so a git that hangs or is missing cannot touch it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            base, tree = self._repo_with_linked_tree(tmp)
+            with mock.patch.object(git_trees.subprocess, "run", side_effect=AssertionError("git spawned")), \
+                 mock.patch.object(git_trees.subprocess, "Popen", side_effect=AssertionError("git spawned")):
+                self.assertEqual(self.resume(tmp, tree), [
+                    *self.old(tree), "--add-dir", str((base / ".git").resolve()),
+                    "--add-dir", str((base / ".git/worktrees/tree").resolve())])
+
+    def test_an_unviewable_tree_resumes_with_the_six_old_elements_and_does_not_raise(self):
         with tempfile.TemporaryDirectory() as tmp:
             _, tree = self._repo_with_linked_tree(tmp)
-            with mock.patch.object(git_trees.subprocess, "run", side_effect=subprocess.TimeoutExpired(["git"], 15)):
-                self.assertEqual(self.resume(tmp, tree), self.old(tree))
+            (tree / ".git").write_text("gitdir: " + str(Path(tmp) / "no-such-gitdir") + "\n")
+            self.assertEqual(self.resume(tmp, tree), self.old(tree))
 
     def test_a_damaged_or_hostile_gitfile_resumes_with_the_six_old_elements_and_does_not_raise(self):
         with tempfile.TemporaryDirectory() as tmp:
