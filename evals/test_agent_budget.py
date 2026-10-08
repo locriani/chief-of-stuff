@@ -344,6 +344,12 @@ class AgentBudgetTest(unittest.TestCase):
             with self.subTest(sentence=sentence):
                 self.assertIn(sentence, tracker)
 
+    def test_resume_step_2_names_the_audits_issue_state_read(self):
+        # PR #514 removed Tracker's issue-state audit sentence; live Sonnet skipped
+        # the audit in 2/3 resume-closes-task-with-closed-issue runs. Pin it in step 2.
+        resume = sections(self.text)["Resume"]
+        self.assertEqual(resume.count("and from the audit, which reads every issue's state (see Tracker);"), 1)
+
     def test_tracker_redundant_audit_sentences_are_absent_from_rules_text(self):
         text = rules_text()
         for sentence in TRACKER_DELETED_RULES:
