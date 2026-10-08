@@ -118,6 +118,7 @@ def prompt(runtime: str, release: Path, root: Path) -> str:
                     "Preserve tracker `## Sessions` states: planning, working, waiting, idle.\n\n")
         rules = re.sub(r"## Sessions\n.*?(?=## Relay\n)", sessions, rules, flags=re.S)
         rules += ("\n\n## Host adapter\n\nYou run in " + runtime + ". Use your host's tools to read, edit and run the pinned scripts. "
+                  "A rule that says \"Read <path>\" means open that file with your host's read tool or `cat`. "
                   "When these rules say Write or Edit, use your host's own file-edit tool directly (in Codex, "
                   "`apply_patch` with a patch you write yourself); never generate file content or a patch with a "
                   "script, and never pipe command output into the edit tool. "

@@ -25,9 +25,10 @@ TOTAL = 72_000            # whole agent file, bytes
 MAX_LINE = 8_400          # longest single line
 ONE_SHOT_PARAGRAPH = 4_400  # kept: a later slice trims this paragraph
 # Skills are read on demand; no host's prompt appends their bodies.
-# rendered_sizes(1), with release/workspace paths removed: Claude 71,453 B,
-# Codex 63,975 B, Cursor 64,083 B, AGY 64,139 B; each ceiling rounds up to 50 B.
-PROMPT = {"claude": 71_500, "codex": 64_000, "cursor": 64_100, "agy": 64_150}  # rendered, path bytes removed
+# rendered_sizes(1), with release/workspace paths removed: Claude 71,475 B,
+# Codex 64,086 B, Cursor 64,194 B, AGY 64,250 B (non-Claude include the 89 B read
+# adapter sentence, #511 review); each ceiling rounds up to 50 B.
+PROMPT = {"claude": 71_500, "codex": 64_100, "cursor": 64_200, "agy": 64_250}  # rendered, path bytes removed
 CEILING = {  # `## ` section -> bytes, heading line included
     "Role": 1600, "Dispatch authority": 1100, "Browser safety": 410, "Writing": 780,
     "Config": 1400, "Clock": 1850, "Calendar": 910, "Open the day": 2000, "Resume": 4830,
