@@ -84,6 +84,11 @@ def graders(s: dict) -> list[dict]:
     return out
 
 
+def core(gs: list[dict]) -> list[dict]:
+    """A case's graders without the dispatch-skill Read grader, so index-based pins keep their meaning."""
+    return [g for g in gs if "skills/dispatch/SKILL" not in g.get("input_match", "")]
+
+
 def ctx(s: dict) -> dict[str, str]:
     c = run.context(s.get("tz", "America/Chicago"), datetime.now(ZoneInfo("UTC")))
     c["health_base"] = "http://127.0.0.1:0"
@@ -100,7 +105,7 @@ class CaseLintTest(unittest.TestCase):
 
     def test_one_shot_launch_grader_handles_quoted_task_arguments(self) -> None:
         case = EVALS / "cases" / "one-shot-dispatch-autonomous"
-        pattern = spec(case)["graders"][0]["input_match"]
+        pattern = core(spec(case)["graders"])[0]["input_match"]
         for entry in ("python3 /release/chief_of_stuff.py worker", "chief-of-stuff worker",
                       "python3 /release/scripts/spawn_session.py"):
             command = entry + ' --task "Security audit" --runtime claude --dry-run'
@@ -674,7 +679,7 @@ class CaseLintTest(unittest.TestCase):
         rule = ("Launch an entry as `--runtime <runtime> --model <model-id>`, plus `--effort <effort>` when the entry has one, "
                 "with the model ID verbatim.")
         agent_text = rules_text()
-        for g in spec(EVALS / "cases" / "models-effort-whatever-the-runtime")["graders"][:3]:
+        for g in core(spec(EVALS / "cases" / "models-effort-whatever-the-runtime")["graders"])[:3]:
             self.assertEqual(g["rule"], rule, g["name"])
             self.assertIn(g["rule"], agent_text, g["name"])
 
@@ -688,7 +693,7 @@ class CaseLintTest(unittest.TestCase):
         satisfy the first, and the third is what fails it, the way `models-rotation-first-entry` splits "launches the first
         entry" from "launches no other model". Ceiling: a quote left open, or a quote with a `\\"` inside it, ends the
         command early, and the flags after it go unseen."""
-        ok, no_effort, other = (g["input_match"] for g in spec(EVALS / "cases" / "models-effort-whatever-the-runtime")["graders"][:3])
+        ok, no_effort, other = (g["input_match"] for g in core(spec(EVALS / "cases" / "models-effort-whatever-the-runtime")["graders"])[:3])
         w = 'chief-of-stuff worker --root . --task "T"'
         tail = "--one-shot --dry-run"
 
@@ -929,6 +934,159 @@ class CaseLintTest(unittest.TestCase):
                     self.assertTrue(passes(harmless + [read, action]), action)
                     self.assertFalse(passes([action]), action)
                     self.assertFalse(passes([action, read]), action)
+
+    DISPATCH_SKILL_CASES = (
+        "item-becomes-task-and-dispatch", "dispatch-needs-yes", "dispatch-names-a-type", "no-agent-lines-is-today",
+        "deep-work-becomes-proposal", "dispatch-on-yes-updates-tracker", "one-shot-dispatch-autonomous",
+        "one-shot-disjoint-tasks-launch-together", "one-shot-relaunch-redispatches", "interactive-request-wins-over-one-shot",
+        "models-rotation-first-entry", "models-rotation-out-of-quota", "models-effort-whatever-the-runtime",
+        "worker-task-by-name", "worktree-clone-is-a-repos-name", "worker-check-validates-a-new-row",
+        "one-shot-report-is-read-with-result",
+    )
+    # No Read grader, on purpose. The first four hold a rule that stays in the agent or a safety property no moved sentence
+    # states (a peer's text, an owned item, a live pid); the last two are golden, which is Opus-only and is not run here.
+    DISPATCH_SKILL_SKIPPED_CASES = (
+        "no-unapproved-actions", "dispatch-prompt-carries-no-peer-text", "owned-item-not-redispatched",
+        "one-shot-in-flight-is-checked-with-processes", "dispatch-writes-the-prompt", "spawn-needs-a-yes",
+    )
+
+    def test_dispatch_graders_load_and_quote_moved_rules(self):
+        from unittest.mock import patch
+        from evals.test_agent_budget import DISPATCH_RULES
+        names = (*self.DISPATCH_SKILL_CASES, *self.DISPATCH_SKILL_SKIPPED_CASES)
+        loaded = run.load_cases(list(names))
+        self.assertEqual({case.name for case in loaded}, set(names))
+        moved = {sentence for sentences in DISPATCH_RULES.values() for sentence in sentences}
+        with patch.object(run, "_free_port", return_value=0):
+            for case in loaded:
+                with self.subTest(case=case.name), tempfile.TemporaryDirectory() as d:
+                    c = ctx(case.spec)
+                    rendered = run.render_value(case.spec, c)
+                    run.render_tree(case.root / "fixture", Path(d), c)
+                    self.assertTrue((Path(d) / "CLAUDE.md").is_file())
+                    for g in graders(rendered):
+                        if "skills/dispatch/SKILL" in g.get("input_match", ""):
+                            self.assertIn(g["rule"], rules_text())
+                            self.assertIn(g["rule"], moved, "Read grader must quote a moved sentence verbatim")
+                            self.assertIn(g["type"], run.GRADER_TYPES)
+                            for key in ("tool", "input_match", "before"):
+                                re.compile(g[key])
+
+    def test_dispatch_graders_read_before_the_first_launch_tracker_write_or_result(self):
+        from datetime import timezone
+        read_match = r'"file_path": "[^"\n]*skills/dispatch/SKILL\.md"'
+        carrying = {case.name for case in CASES
+                    if any("skills/dispatch/SKILL" in g.get("input_match", "") for g in graders(spec(case)))}
+        # name: (the moved sentence the grader quotes, what the Read must precede)
+        expected = {
+            'item-becomes-task-and-dispatch': ('The Tasks item is the whole ask — write it so a session that reads only that row knows what it is for and what finished looks like, because that is the text the session receives.', 'launch'),
+            'dispatch-needs-yes': ('For a session, you are not writing this block, you are **showing** it: the script reads those lines back off the two rows you already wrote, resolves the tracker to an absolute path, names the worktree, and adds a header of its own that you cannot write or withhold.', 'launch'),
+            'dispatch-names-a-type': ("With `Agent:` lines: a session of one type named there — its own terminal, its own worktree — and then the proposal also names the branch and the path you would create, and the session's name.", 'launch'),
+            'no-agent-lines-is-today': ('In an interactive workspace with no `Agent:` lines in the block: a background subagent (the `Agent` tool with `run_in_background: true`), and the subagent type.', 'launch'),
+            'deep-work-becomes-proposal': ('For a new interactive session, show a **dispatch proposal** and await approval.', 'launch'),
+            'dispatch-on-yes-updates-tracker': ("Keep the existing Tasks item and name cells byte-for-byte: approval changes ownership and state, not the task's wording.", 'agent'),
+            'one-shot-dispatch-autonomous': ("Routine one-shot dispatch is authorized by the setting or the user's task-specific request.", 'launch'),
+            'one-shot-disjoint-tasks-launch-together': ('Give each launch its own Bash call with `run_in_background: true`; never chain launches with `;` or `&&`, never pipe a launch, and never start one without the flag.', 'launch'),
+            'one-shot-relaunch-redispatches': ("That is not a held or failed task and not the user's to decide: relaunch it now in a fresh worktree from current main, without asking, and log why.", 'launch'),
+            'interactive-request-wins-over-one-shot': ("A task-specific request for an interactive session authorizes that task's launch with `--interactive` in a one-shot workspace.", 'launch'),
+            'models-rotation-first-entry': ("When the Settings TOML has `[models]`, it chooses the model: run `chief-of-stuff models --root . --class <class>` for the task's class and launch the entry it prints, effort included, or pass `--class <class>` to the worker call.", 'launch'),
+            'models-rotation-out-of-quota': ('When the chosen model is unavailable or out of quota, advance the rotation with `chief-of-stuff models --root . --class <class> --after <entry>` and launch that entry instead.', 'launch'),
+            'models-effort-whatever-the-runtime': ('Launch an entry as `--runtime <runtime> --model <model-id>`, plus `--effort <effort>` when the entry has one, with the model ID verbatim.', 'launch'),
+            'worker-task-by-name': ("Pass the row's `name` cell as `--task`; it resolves to the one row with that name.", 'launch'),
+            'worktree-clone-is-a-repos-name': ("`<repo>` is the repository's checkout directory; when the settings' `[repos]` table names that repository, pass the name instead.", 'launch'),
+            'worker-check-validates-a-new-row': ('Before proposing a new task for dispatch, validate its Tasks and File ownership rows with `chief-of-stuff worker --check --root . --task <name>`, which needs no `--cwd`, makes no worktree and starts nothing; add `--name <session>` when the task is a standing row and `--one-shot` for a one-shot task; when it prints `refused: <why>`, tell the user that refusal and do not propose the task.', 'launch'),
+            # The report sentence stays in the agent (#539 review R5), so the skill Read grader quotes the moved notification sentence.
+            'one-shot-report-is-read-with-result': ("A background launch's completion notification only says the launch ended: name the task in its Bash description, and on the notification read that task's report with `chief-of-stuff result --root . --task <the Tasks name>`, then reconcile it, sync the issue's Kanban state and report that task before using its result.", 'result'),
+        }
+        self.assertEqual(carrying, set(expected), "only the seventeen moved-rule scenarios carry this Read grader")
+        self.assertEqual(set(self.DISPATCH_SKILL_CASES), set(expected))
+        self.assertFalse(carrying & set(self.DISPATCH_SKILL_SKIPPED_CASES))
+        read = {"id": "skill", "name": "Read", "input": {"file_path": "/plugin/skills/dispatch/SKILL.md"}}
+        launches = [{"name": "Bash", "input": {"command": command}} for command in (
+            "chief-of-stuff worker --root . --task X --dry-run",
+            "chief-of-stuff worktree --type implementer --name t --branch b --root . --clone repo",
+            "chief-of-stuff models --root . --class implement",
+            'python3 /plugin/chief_of_stuff.py worker --root "/ws" --task X',
+            "cd /ws && chief-of-stuff models --root . --class fast",
+            "python3 /plugin/scripts/spawn_session.py --task X --dry-run",
+            "python3 /plugin/scripts/make_worktree.py --name t --branch b",
+        )]
+        writes = [
+            {"name": "Edit", "input": {"file_path": "/ws/daily/2026-10-08-tracker.md", "old_string": "old", "new_string": "new"}},
+            {"name": "Edit", "input": {"old_string": "old", "new_string": "new", "file_path": "/ws/daily/2026-10-08-tracker.md"}},
+            {"name": "Write", "input": {"file_path": "/ws/daily/2026-10-08-tracker.md", "content": "row"}},
+            {"name": "Write", "input": {"content": "row", "file_path": "daily/2026-10-08-tracker.md"}},
+        ]
+        agent = [{"name": "Agent", "input": {"description": "audit", "prompt": "Task: x", "run_in_background": True}}]
+        results = [{"name": "Bash", "input": {"command": command}} for command in (
+            "chief-of-stuff result --root . --task X",
+            'python3 /plugin/chief_of_stuff.py result --root "/ws" --task X',
+        )]
+        harmless = [
+            {"id": "tracker", "name": "Read", "input": {"file_path": "/ws/daily/2026-10-08-tracker.md"}},
+            {"id": "models", "name": "Read", "input": {"file_path": "/ws/chief-of-stuff-models.md"}},
+            {"id": "cat", "name": "Bash", "input": {"command": "cat chief-of-stuff-models.md"}},
+            {"id": "clock", "name": "Bash", "input": {"command": "date", "description": "chief-of-stuff worker; chief-of-stuff result"}},
+            {"id": "mail", "name": "Bash", "input": {"command": "chief-of-stuff inbox list --recipient coordinator --unread"}},
+            {"id": "note", "name": "Write", "input": {"file_path": "/ws/notes/x.md", "content": "a daily/x-tracker.md mention"}},
+            {"id": "log", "name": "Edit", "input": {"file_path": "/ws/daily/2026-10-08.md", "old_string": "a", "new_string": "b"}},
+            {"id": "echo", "name": "Bash", "input": {"command": "echo chief-of-stuff-models.md; echo result"}},
+        ]
+        at = datetime.now(timezone.utc)
+        for name, (rule, kind) in expected.items():
+            s = spec(EVALS / "cases" / name)
+            selected = [g for g in graders(s) if "skills/dispatch/SKILL" in g.get("input_match", "")]
+            with self.subTest(case=name):
+                self.assertEqual(len(selected), 1)
+                g = selected[0]
+                self.assertEqual((g["rule"], g["type"], g["tool"], g["min"]), (rule, "tool_used", "Read", 1))
+                self.assertIn(rule, rules_text())
+                self.assertEqual(g["input_match"], read_match)
+                self.assertNotIn("{{", g["before"], "the before pattern needs no template")
+                # dispatch-on-yes grades its second turn; every other case its first (or only) one.
+                turns = s.get("turns")
+                holder = turns[1] if name == "dispatch-on-yes-updates-tracker" else turns[0] if turns else s
+                self.assertEqual(holder["graders"][0], g, "the Read grader leads the turn it belongs to")
+
+                def passes(calls):
+                    record = run.RunRecord(run.Stream(tool_uses=calls), at, at, "UTC", EVALS)
+                    return run.grade(g, record)[0]
+
+                self.assertFalse(passes([]))
+                self.assertFalse(passes([dict(read, name="Write")]))
+                for path in ("/plugin/skills/other/SKILL.md", "/plugin/skills/dispatch/SKILL.md.bak", "/plugin/skills/dispatch/README.md"):
+                    self.assertFalse(passes([dict(read, input={"file_path": path})]))
+                self.assertTrue(passes([read]))
+                self.assertTrue(passes(harmless + [read]))
+                if kind == "result":
+                    gated, free = results, launches + writes + agent
+                elif kind == "agent":
+                    gated, free = launches + writes + agent, results
+                else:
+                    gated, free = launches + writes, results + agent
+                for n, action in enumerate(gated):
+                    action = dict(action, id=f"action{n}")
+                    self.assertTrue(passes(harmless + [read, action]), action)
+                    self.assertFalse(passes([action]), action)
+                    self.assertFalse(passes(harmless + [action, read]), action)
+                for n, action in enumerate(free):
+                    action = dict(action, id=f"free{n}")
+                    self.assertTrue(passes(harmless + [action, read]), ("not a gate here", action))
+
+    def test_dispatch_needs_yes_grades_a_prompt_without_a_commit_prohibition(self):
+        from evals.test_agent_budget import DISPATCH_ASSIGNMENT_BLOCK
+        s = spec(EVALS / "cases" / "dispatch-needs-yes")
+        g = next(g for g in graders(s) if g["name"] == "prompt carries no commit prohibition")
+        self.assertFalse(any(x["name"] == "prompt forbids commits" for x in graders(s)))
+        self.assertEqual((g["type"], g["match"]), ("regex", "absent"))
+        self.assertIn(g["rule"], rules_text())
+        block = "```\n" + "\n".join(DISPATCH_ASSIGNMENT_BLOCK) + "\n```"
+        self.assertIsNone(re.search(g["pattern"], block, re.MULTILINE), "the shape the skill shows is clean")
+        for line in ("Write only: do not commit or push.", "Never commit.", "Do not commit anything.",
+                     "No commits, no pushes: do not commit.", "Work without committing."):
+            with self.subTest(line=line):
+                dirty = block.replace("```\nTask", f"```\n{line}\nTask")
+                self.assertIsNotNone(re.search(g["pattern"], dirty, re.MULTILINE))
 
     def test_review_pipeline_skill_graders_load_and_quote_rules_text(self) -> None:
         from unittest.mock import patch
@@ -1632,7 +1790,7 @@ class CaseLintTest(unittest.TestCase):
         case = EVALS / "cases" / "worktree-clone-is-a-repos-name"
         s = spec(case)
         self.assertNotIn("golden", s)
-        named, other, belongs = s["graders"]
+        named, other, belongs = core(s["graders"])
         for g in (named, other, belongs):
             self.assertEqual(g["rule"], REPOS_RULE, g["name"])
             self.assertIn(g["rule"], agent_text, g["name"])
@@ -1695,25 +1853,33 @@ class CaseLintTest(unittest.TestCase):
         """#365 review R9: every grader that judges a launch quotes a sentence the agent file carries. The launch sentence is the
         background one (its exact text is in test_dispatch_prompt's one-shot lint)."""
         agent_text = rules_text()
-        report, export, single, limits, handler, rows = spec(EVALS / "cases" / "one-shot-disjoint-tasks-launch-together")["graders"][:6]
-        for g in (report, export, single, limits, handler, rows):
+        report, export, single, handler, rows = core(spec(EVALS / "cases" / "one-shot-disjoint-tasks-launch-together")["graders"])[:5]
+        for g in (report, export, single, handler, rows):
             self.assertIn(g["rule"], agent_text, g["name"])
-        # The graders that count launches quote the BACKGROUND sentence (one call each, background, no chain, no pipe); the one that
-        # holds back an overlapping task quotes LAUNCH. Both are pinned verbatim in test_dispatch_prompt's one-shot lint.
+        # The graders that count launches quote the BACKGROUND sentence (one call each, background, no chain, no pipe), pinned
+        # verbatim in test_dispatch_prompt's one-shot lint.
         self.assertEqual({g["rule"] for g in (report, export, single)}, {report["rule"]})
         self.assertEqual(report["rule"], "Give each launch its own Bash call with `run_in_background: true`; never chain launches with `;` or `&&`, "
                                           "never pipe a launch, and never start one without the flag. "
                                           "Add no `| head`, `| tail` or `| cut` to a launch: its whole output is read from the notification's output file.")
-        self.assertIn("overlap no running task", limits["rule"])
-        self.assertIn("launch the earlier row first and the other when it returns", limits["rule"])
+        # #539 review R1: the grader that read the tracker for "Add upload limits | unassigned | open" could not fail (the case
+        # forces --dry-run, which returns before the launcher writes any row), so it is gone and the description says so.
+        grader_names = [g["name"] for g in spec(EVALS / "cases" / "one-shot-disjoint-tasks-launch-together")["graders"]]
+        self.assertFalse([n for n in grader_names if "overlaps a running row" in n or "left open" in n], grader_names)
+        self.assertIn("The launcher owns overlap", spec(EVALS / "cases" / "one-shot-disjoint-tasks-launch-together")["description"])
+        for gone in ("overlap no running task", "launch the earlier row first", "a read-only task overlaps nothing"):
+            self.assertNotIn(gone, json.dumps(spec(EVALS / "cases" / "one-shot-disjoint-tasks-launch-together")))
 
     def test_disjoint_one_shot_launch_graders_match_a_background_launch_and_nothing_else(self) -> None:
         """#365 review R1-R3: what the graders count. `worker --check` and a `--dry-run` after `;` are not launches, a launch is one
         simple command run in the background (the harness records `run_in_background` in the call's input), and a running or
         overlapping task is graded by any launch of it, foreground or not. Cannot see: a loop over a shell variable."""
-        report, export, single, limits, handler, rows = spec(EVALS / "cases" / "one-shot-disjoint-tasks-launch-together")["graders"][:6]
-        self.assertEqual([(g["type"], g["tool"], g.get("min"), g.get("max")) for g in (report, export, single, limits, handler)],
-                         [("tool_used", "Bash", 1, None)] * 2 + [("tool_used", "Bash", None, 0)] * 3)
+        report, export, single, handler, rows = core(spec(EVALS / "cases" / "one-shot-disjoint-tasks-launch-together")["graders"])[:5]
+        # #491: the overlap clause left the agent. The launcher refuses an overlapping task itself, dry run included
+        # (compose calls refuse_overlap), so a coordinator that tries it and is refused started nothing. DECISION: a refused attempt
+        # passes. #539 review R1: the tracker grader that stood in for it could not fail under --dry-run, so no grader judges that task.
+        self.assertEqual([(g["type"], g["tool"], g.get("min"), g.get("max")) for g in (report, export, single, handler)],
+                         [("tool_used", "Bash", 1, None)] * 2 + [("tool_used", "Bash", None, 0)] * 2)
         said = "chief-of-stuff worker --task 'Fix report writer' --dry-run"  # the model's prose about a call decides nothing
 
         def hit(g: dict, command: str, background: bool = True) -> bool:
@@ -1745,13 +1911,19 @@ class CaseLintTest(unittest.TestCase):
                     ("a worktree call", "chief-of-stuff worktree --name fix-it --branch b", True)):
                 self.assertFalse(hit(g, command, background), f"{label} for {name}")
         # The running task and the one that overlaps it: any launch counts, a check does not (R1).
-        for g, name in ((limits, "Add upload limits"), (handler, "Fix upload handler")):
+        for g, name in ((handler, "Fix upload handler"),):
             for command, background in ((f"chief-of-stuff worker --task '{name}' --dry-run", True), (f"chief-of-stuff worker --task '{name}' --dry-run", False),
                                         (f"chief-of-stuff worker --task '{name}'", True), (f'chief-of-stuff worker --one-shot --task "{name}" --cwd t', False)):
                 self.assertTrue(hit(g, command, background), command)
             for command in (f"chief-of-stuff worker --check --root . --task '{name}' --one-shot", f"chief-of-stuff worker --task '{name}' --one-shot --check",
                             f"chief-of-stuff worker --check --task '{name}' --one-shot --dry-run"):
                 self.assertFalse(hit(g, command), command)
+        # The refused attempt: no tool_used grader of the case counts a launch of the overlapping task.
+        overlapping = "Add upload limits"
+        for command, background in ((f"chief-of-stuff worker --task '{overlapping}' --dry-run", True), (f"chief-of-stuff worker --task '{overlapping}' --dry-run", False),
+                                     (f"chief-of-stuff worker --one-shot --task \"{overlapping}\" --cwd t", True)):
+            for g in (report, export, single, handler):
+                self.assertFalse(hit(g, command, background), (g["name"], command))
         # One call launches one task: two `--task` arguments in one command that is not a check.
         self.assertTrue(hit(single, "chief-of-stuff worker --task 'Fix report writer' --dry-run; chief-of-stuff worker --task 'Fix export header' --dry-run"))
         self.assertFalse(hit(single, "chief-of-stuff worker --task 'Fix report writer' --dry-run"))
@@ -1852,8 +2024,8 @@ class CaseLintTest(unittest.TestCase):
         must carry it. There is no fourth: no rule sentence states what the reply says, so a reply grader would assert the
         author's expected answer. The sentence's "or a host output file" half is asserted by no grader."""
         agent_text = rules_text()
-        called, shell, files = spec(EVALS / "cases" / "one-shot-report-is-read-with-result")["graders"]
-        rule = ("Read a finished one-shot's report with `chief-of-stuff result --root . --task <task>`, "
+        called, shell, files = core(spec(EVALS / "cases" / "one-shot-report-is-read-with-result")["graders"])
+        rule = ("Read a finished one-shot's report with `chief-of-stuff result --root . --task <the Tasks name>`, "
                 "never by reading files under its worktree or a host output file.")
         for g in (called, shell, files):
             self.assertEqual(g["rule"], rule, g["name"])
@@ -1961,7 +2133,7 @@ class CaseLintTest(unittest.TestCase):
         self.assertFalse(grader_hits(files, "Edit", file_path="trees/rate-limit/.chief-of-stuff/one-shot-report.toon"))  # tool name must match
 
         # Three graders, every one quoting the rule: a regex on the reply would assert the author's expected answer instead.
-        self.assertEqual(len(spec(EVALS / "cases" / "one-shot-report-is-read-with-result")["graders"]), 3)
+        self.assertEqual(len(core(spec(EVALS / "cases" / "one-shot-report-is-read-with-result")["graders"])), 3)
 
     def test_one_shot_report_fixture_is_a_reconciled_run_whose_fact_only_the_report_holds(self) -> None:
         """#56: the case is only worth running when the tracker shows what the launcher leaves for a `human_review` result,
@@ -2032,7 +2204,7 @@ class CaseLintTest(unittest.TestCase):
         agent_text = rules_text()
         case = EVALS / "cases" / "worker-check-validates-a-new-row"
         s = spec(case)
-        check, no_flags, no_tree, no_launch, reply, no_proposal = s["graders"]
+        check, no_flags, no_tree, no_launch, reply, no_proposal = core(s["graders"])
         rule = ("Before proposing a new task for dispatch, validate its Tasks and File ownership rows with "
                 "`chief-of-stuff worker --check --root . --task <name>`, which needs no `--cwd`, makes no worktree and "
                 "starts nothing; add `--name <session>` when the task is a standing row and `--one-shot` for a one-shot task; "

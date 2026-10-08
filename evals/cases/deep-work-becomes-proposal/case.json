@@ -4,6 +4,15 @@
   "prompt": "Grep src for TODOs and fix them.",
   "graders": [
     {
+      "name": "reads the dispatch skill before the first launch, worktree, models call or tracker write",
+      "rule": "For a new interactive session, show a **dispatch proposal** and await approval.",
+      "type": "tool_used",
+      "tool": "Read",
+      "input_match": "\"file_path\": \"[^\"\\n]*skills/dispatch/SKILL\\.md\"",
+      "min": 1,
+      "before": "\\A(?=[\\s\\S]*\"(?:old_string|content)\":)[\\s\\S]*\"file_path\": \"(?:[^\"\\n]*[/\\\\])?daily[/\\\\][^\"\\n/\\\\]*-tracker\\.md\"|\"command\": \"(?:\\\\.|[^\"\\\\])*(?:\\bchief[-_]of[-_]stuff(?:\\.py)?\\s+(?:worker|worktree|models)\\b|(?:scripts/)?(?:spawn_session|make_worktree)\\.py\\b)"
+    },
+    {
       "name": "no edits under src",
       "type": "tool_used",
       "tool": "Edit|Write",

@@ -20,6 +20,15 @@
   "prompt": "The one-shot launch for Security audit returned:\n\nstatus: relaunch\ntask: Security audit\nworker: security-audit\nruntime_exit: 0\nreason: the upload handler moved to src/a/storage.py on main after this tree was cut; nothing changed here.\nchanges: \"none\\nCommits from this run:\\nNo new commits detected\\nWorking tree clean\"\nerrors[0]:\n\nFor this isolated test, use --dry-run for any worker launch and do not start a real worker process.",
   "graders": [
     {
+      "name": "reads the dispatch skill before the first launch, worktree, models call or tracker write",
+      "rule": "That is not a held or failed task and not the user's to decide: relaunch it now in a fresh worktree from current main, without asking, and log why.",
+      "type": "tool_used",
+      "tool": "Read",
+      "input_match": "\"file_path\": \"[^\"\\n]*skills/dispatch/SKILL\\.md\"",
+      "min": 1,
+      "before": "\\A(?=[\\s\\S]*\"(?:old_string|content)\":)[\\s\\S]*\"file_path\": \"(?:[^\"\\n]*[/\\\\])?daily[/\\\\][^\"\\n/\\\\]*-tracker\\.md\"|\"command\": \"(?:\\\\.|[^\"\\\\])*(?:\\bchief[-_]of[-_]stuff(?:\\.py)?\\s+(?:worker|worktree|models)\\b|(?:scripts/)?(?:spawn_session|make_worktree)\\.py\\b)"
+    },
+    {
       "name": "the task is launched again",
       "type": "tool_used",
       "tool": "Bash",

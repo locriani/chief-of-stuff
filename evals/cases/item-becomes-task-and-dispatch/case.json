@@ -4,6 +4,15 @@
   "prompt": "Make sure the .gitignore is reasonable.",
   "graders": [
     {
+      "name": "reads the dispatch skill before the first launch, worktree, models call or tracker write",
+      "rule": "The Tasks item is the whole ask — write it so a session that reads only that row knows what it is for and what finished looks like, because that is the text the session receives.",
+      "type": "tool_used",
+      "tool": "Read",
+      "input_match": "\"file_path\": \"[^\"\\n]*skills/dispatch/SKILL\\.md\"",
+      "min": 1,
+      "before": "\\A(?=[\\s\\S]*\"(?:old_string|content)\":)[\\s\\S]*\"file_path\": \"(?:[^\"\\n]*[/\\\\])?daily[/\\\\][^\"\\n/\\\\]*-tracker\\.md\"|\"command\": \"(?:\\\\.|[^\"\\\\])*(?:\\bchief[-_]of[-_]stuff(?:\\.py)?\\s+(?:worker|worktree|models)\\b|(?:scripts/)?(?:spawn_session|make_worktree)\\.py\\b)"
+    },
+    {
       "name": "task recorded",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",

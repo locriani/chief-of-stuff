@@ -110,6 +110,7 @@ class CoordinatorLaunchTest(unittest.TestCase):
                 self.assertIn("chief-of-stuff processes --root", rendered)
                 self.assertIn(f"Read {release}/skills/review-pipeline/SKILL.md", rendered)
                 self.assertIn(f"Read {release}/skills/coordinator-sessions/SKILL.md", rendered)
+                self.assertIn(f"Read {release}/skills/dispatch/SKILL.md", rendered)
         # Kanban sync is read on demand when reconciliation advances a stage.
         pipeline = skill_body((release / "skills/review-pipeline/SKILL.md").read_text())
         self.assertIn(

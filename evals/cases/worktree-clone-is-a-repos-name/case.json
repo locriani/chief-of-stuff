@@ -15,6 +15,15 @@
   "prompt": "Start the birch security audit. For this isolated test, use --dry-run for the worker launch and do not start a real worker process.",
   "graders": [
     {
+      "name": "reads the dispatch skill before the first launch, worktree, models call or tracker write",
+      "rule": "`<repo>` is the repository's checkout directory; when the settings' `[repos]` table names that repository, pass the name instead.",
+      "type": "tool_used",
+      "tool": "Read",
+      "input_match": "\"file_path\": \"[^\"\\n]*skills/dispatch/SKILL\\.md\"",
+      "min": 1,
+      "before": "\\A(?=[\\s\\S]*\"(?:old_string|content)\":)[\\s\\S]*\"file_path\": \"(?:[^\"\\n]*[/\\\\])?daily[/\\\\][^\"\\n/\\\\]*-tracker\\.md\"|\"command\": \"(?:\\\\.|[^\"\\\\])*(?:\\bchief[-_]of[-_]stuff(?:\\.py)?\\s+(?:worker|worktree|models)\\b|(?:scripts/)?(?:spawn_session|make_worktree)\\.py\\b)"
+    },
+    {
       "name": "a worktree call passes the project's name",
       "rule": "`<repo>` is the repository's checkout directory; when the settings' `[repos]` table names that repository, pass the name instead.",
       "type": "tool_used",

@@ -20,29 +20,33 @@ from evals.rules_text import one_shot_paragraph, rules_text, sections, skill_bod
 from evals.skill_fixtures import write_plugin, write_skill  # noqa: E402
 
 # Each later slice lowers these in a red commit before it trims the text.
-# Slice 7 (#490): simulated verbatim move from origin/main, retaining only
-# processes, listing-is-not-roster and orphan paragraphs in Sessions.
-# Agent 54,973 B; Assign 283 B; Sessions 1,663 B. Round ceilings up to 50 B.
-TOTAL = 55_000            # whole agent file, bytes
-MAX_LINE = 8_400          # longest single line
-ONE_SHOT_PARAGRAPH = 4_400  # kept: a later slice trims this paragraph
+# Slice 8 (#491), measured by simulating the intended agent and skill in memory from
+# origin/main. After the #539 review the Dispatch section is the new pointer plus five kept units
+# (the three original, the report-read sentence, the done-gate sentence); 13,883 B moves verbatim
+# minus the two code-enforced deletions, with the overlap-order clause (about 115 B) put back and the two kept
+# sentences taken out. Simulated: agent 41,247 B; Dispatch 1,179 B; longest line 2,969 B;
+# one-shot paragraph 3,741 B (4,255 B before the overlap deletion). Round ceilings up to 50 B.
+TOTAL = 41_250            # whole agent file, bytes
+MAX_LINE = 3_000          # longest single line
+ONE_SHOT_PARAGRAPH = 3_800  # kept: a later slice trims this paragraph
 # Skills are read on demand; no host's prompt appends their bodies.
-# rendered_sizes(1) over the intended agent in a temporary generic plugin:
-# Claude 54,621 B; Codex 52,628 B; Cursor 52,736 B; AGY 52,792 B.
-# Paths removed; each ceiling rounds up to 50 B. Skills remain on demand.
-PROMPT = {"claude": 54_650, "codex": 52_650, "cursor": 52_750, "agy": 52_800}
+# rendered_sizes(1) over the simulated agent, copied into a temporary plugin:
+# Claude 40,874 B; Codex 38,881 B; Cursor 38,989 B; AGY 39,045 B.
+PROMPT = {"claude": 40_900, "codex": 38_900, "cursor": 39_000, "agy": 39_050}
 CEILING = {  # `## ` section -> bytes, heading line included
     "Role": 1600, "Dispatch authority": 1100, "Browser safety": 410, "Writing": 780,
     "Config": 1400, "Clock": 1850, "Calendar": 910, "Open the day": 2000, "Resume": 4830,
-    "Write authority": 2310, "Filing": 360, "Human-only actions": 1280, "Dispatch": 15210,
+    "Write authority": 2310, "Filing": 360, "Human-only actions": 1280, "Dispatch": 1_200,
     "Assign": 300, "Pipeline": 1_300, "Check": 2780,
     "Sessions": 1_700, "Relay": 2510, "Tracker": 5_500, "Notices": 740, "Board": 1750,
     "Requirements": 360, "Share": 460, "Asks": 4700, "Notify": 360,
 }
 # coordinator-sessions: 8,587 B moved prose; projected frontmatter/topics yield
 # 8,875 B, leaving 425 B headroom under its 9,300 B ceiling.
-SKILL_CEILING = {"decision-page": 2_700, "optional-features": 5_200, "tracker-rows": 5_400, "review-pipeline": 9_677, "coordinator-sessions": 9_300}  # moved bytes + metadata/organization/headroom
-SKILLS_TOTAL = 32_277  # all SKILL.md files, bytes; slice 7 adds the same 9,300 B ceiling
+# dispatch: the simulated skill (frontmatter, six topics, overlap-order clause back, report-read sentence and
+# done-gate clause out) is 14,136 B, leaving 64 B under its 14,200 B ceiling (room for a description tweak that names the notification).
+SKILL_CEILING = {"decision-page": 2_700, "optional-features": 5_200, "tracker-rows": 5_400, "review-pipeline": 9_677, "coordinator-sessions": 9_300, "dispatch": 14_200}  # moved bytes + metadata/organization/headroom
+SKILLS_TOTAL = 46_477  # all SKILL.md files, bytes; the sum of the ceilings above (real total 44,559 B simulated)
 DESCRIPTION_CAP = 300  # frontmatter description characters, not bytes
 SKILL_POINTER = re.compile(r"\$\{CLAUDE_PLUGIN_ROOT\}/skills/([^/\s`]+)/SKILL\.md")
 DECISION_PAGE_POINTER = "Before writing a decision page, Read ${CLAUDE_PLUGIN_ROOT}/skills/decision-page/SKILL.md"
@@ -369,6 +373,182 @@ COORDINATOR_SESSIONS_RULES = {'Assign': ('In a one-shot workspace, use Dispatch 
 CHECK_RELAY_SHA256 = {'Check': 'b3f92c4dcf9abe5f37ca9d7ba713ab10b8a56fb89e2c81bfcd742acbf3dd1ef9',
  'Relay': 'c053b7a3de53d53870a2fe3475cc3cc8777916dc8c5d9dc43db9adb543b6fef1'}
 
+# Slice 8 (#491): captured once from git show origin/main:agents/chief-of-stuff.md
+# (## Dispatch, 14,905 B). Split like slice 7: strip list prefixes and fences, split at
+# sentence punctuation outside inline code. Static pins; never regenerate from the
+# current agent or skill. Five kept units stay in the agent; the rest moves verbatim,
+# minus the two deletions below (code enforces them). #539 review: the report-read sentence (R5) and the
+# done-gate clause (R3) stay because no pointer moment reaches the Tracker `done` step or a bare `result` call.
+# Review of #539 (R4, R5): the pointer fires on the entry moment (a task the user asks for, a ready task) and on the
+# completion notification, not only on the coordinator's own launch-side actions.
+DISPATCH_POINTER = ("Before acting on a task the user asks for or a ready task (writing its Tasks and File ownership rows, "
+                    "choosing a worker or model, proposing, launching or relaunching it, showing an assignment block, "
+                    "acting on a yes), and on a background launch's completion notification before reading its report, "
+                    "Read ${CLAUDE_PLUGIN_ROOT}/skills/dispatch/SKILL.md")
+DISPATCH_POINTER_MOMENTS = ("task the user asks for", "a ready task", "a yes", "completion notification",
+                            "relaunching", "assignment block", "choosing a worker or model")
+# Restored (#539 review R2): code does not order two ready tasks that overlap each other (refuse_overlap compares only
+# running rows), so this clause stays in the skill's launch sentence and nowhere in the agent.
+DISPATCH_OVERLAP_ORDER = "; when two ready tasks overlap each other, launch the earlier row first and the other when it returns"
+DISPATCH_KEPT = (
+    "Launch ready one-shot tasks automatically. Launch new interactive sessions only on explicit approval of the "
+    "proposal or a covering lane gate. Never do the work inline.",
+    "For an approved interactive launch, in this order: add a Decisions row quoting the yes; launch; set the task's "
+    "owner to the context (for example `subagent`) and its state to `running HH:MM` with the clock time; append a "
+    "Log line.",
+    "A workspace set to `one-shot` requires every task worker to run one-shot; never propose an interactive or "
+    "standing worker there unless the user directly asks for one for that task.",
+    "Read a finished one-shot's report with `chief-of-stuff result --root . --task <the Tasks name>`, never by reading files "
+    "under its worktree or a host output file.",
+    "Never mark a code task `done` before the main-branch and suite gates.",
+)
+DISPATCH_RULES = {
+    'Rows': (
+        'You do not do the work: writing documents, editing source, auditing or checking code or config, research.',
+        'A look at a file to judge it is work; a look to find its path or its owner is routing.',
+        'Work goes to a new context or a working session.',
+        'When the user asks for it, or when a checklist item needs it, file its issue where the block names a `Backlog:`, unless it is a workflow step, which takes the token `workflow` (see Tracker), write the Tasks row (state `open`, owner `unassigned`, the issue in `issue`), the File ownership row for it, and a Log line.',
+        'For one-shot, launch when ready without another question.',
+        'For a new interactive session, show a **dispatch proposal** and await approval.',
+        'Those two rows are the dispatch.',
+        'The Tasks item is the whole ask — write it so a session that reads only that row knows what it is for and what finished looks like, because that is the text the session receives.',
+        'The File ownership row names the paths it may edit, keyed on the task, and it is written **before** launch or proposal so the worker receives a defined scope.',
+        'A task name alone is enough for a session to find its way and not enough for it to act, and a session given too little invents plausible work or stops — the second is what this asks for, and only the first is a silent failure.',
+    ),
+    'Worker and model': (
+        'The dispatch record, or interactive proposal, carries:',
+        'Name the runtime (`claude`, `agy`, `codex`, or `cursor`), exact model, worktree and task in the dispatch Log or interactive proposal.',
+        'A model class alone does not determine the runtime.',
+        'Before choosing a worker, read `chief-of-stuff-models.md` in the workspace root when it exists.',
+        "It is the workspace's editable provider and model routing guidance, copied there by the initializer.",
+        'It chooses models; Dispatch authority governs launch approval even if an older copy says every launch needs a yes.',
+        'Follow an explicit user choice first, then this guidance; verify an exact model ID and runtime through the configured interactive login shell before naming them.',
+        'Do not silently substitute another model or provider.',
+        'Read `[workers] mode` in the Settings TOML and record the execution mode.',
+        "Routine one-shot dispatch is authorized by the setting or the user's task-specific request.",
+        'That request is the approval, so do not ask again; the launch follows the interactive launch steps and registers its session.',
+        "In an interactive workspace, a user's request for one-shot applies to that task only.",
+        "When the Settings TOML has `[models]`, it chooses the model: run `chief-of-stuff models --root . --class <class>` for the task's class and launch the entry it prints, effort included, or pass `--class <class>` to the worker call.",
+        'Each `[models.<class>]` table holds a `rotation` of `runtime:model-id@effort` entries: the first is the suggested model, the rest the fallback order, and `@effort` is optional.',
+        "Class names are the workspace's own, such as `deep`, `implement`, `fast` and `review`.",
+        'Launch an entry as `--runtime <runtime> --model <model-id>`, plus `--effort <effort>` when the entry has one, with the model ID verbatim.',
+        'An explicit user choice still wins.',
+        'When the chosen model is unavailable or out of quota, advance the rotation with `chief-of-stuff models --root . --class <class> --after <entry>` and launch that entry instead.',
+        'The dispatch Log records the entry used and why.',
+        "Review of a change takes `--not-family <the implementer's runtime>`, so the reviewer comes from another family.",
+        'Without `[models]`, `chief-of-stuff-models.md` applies as before.',
+    ),
+    'Assignment': (
+        'The channel.',
+        'In an interactive workspace with no `Agent:` lines in the block: a background subagent (the `Agent` tool with `run_in_background: true`), and the subagent type.',
+        'In a one-shot workspace with no `Agent:` lines, use a one-shot CLI worker in its own worktree and omit `--type` from the worker call.',
+        "With `Agent:` lines: a session of one type named there — its own terminal, its own worktree — and then the proposal also names the branch and the path you would create, and the session's name.",
+        'The name is the one the user gave, or `<role>-<runtime>-<NN>`: the role is what it does (`implementer`, `reviewer`, `researcher`), runtime is `claude`, `agy`, `codex`, or `cursor`, and `NN` is the lowest available two-digit number for that role and runtime.',
+        'Never infer the runtime or model from a name.',
+        'Never reuse a live session name; a stopped name may be reused.',
+        'Record the runtime and model explicitly; an interactive approval covers those choices.',
+        "An agent type is not a subagent type: the first is a session started with `claude --agent`, the second is the `Agent` tool's own.",
+        'The assignment, in one fenced block, in exactly this shape (labeled lines, each on one line, never hard-wrapped):',
+        'For a session, you are not writing this block, you are **showing** it: the script reads those lines back off the two rows you already wrote, resolves the tracker to an absolute path, names the worktree, and adds a header of its own that you cannot write or withhold.',
+        'If what you show differs from the rows, the session receives the rows.',
+        'So the way to change the assignment is to fix the row and show it again, never to reword the block.',
+        'One dispatch is one task.',
+        'A prompt that names a second Tasks item is two dispatches; split it.',
+        'A `task` type reports that it is ready for decommissioning when its task is finished and then stops; a `standing` type reports and waits for the next item.',
+    ),
+    'Launch': (
+        'For a new interactive session only, ask whether to launch.',
+        "Keep the existing Tasks item and name cells byte-for-byte: approval changes ownership and state, not the task's wording.",
+        'The launcher reads the assignment back from the item, so do not rewrite it to clarify scope during launch.',
+        "Pass the row's `name` cell as `--task`; it resolves to the one row with that name.",
+        'Pass the item exactly as the row spells it only when the row has no name or shares its name with another row, which the launcher refuses.',
+        'Launching a session of a named type is two calls in one message, and neither is improvised:',
+        'Before proposing a new task for dispatch, validate its Tasks and File ownership rows with `chief-of-stuff worker --check --root . --task <name>`, which needs no `--cwd`, makes no worktree and starts nothing; add `--name <session>` when the task is a standing row and `--one-shot` for a one-shot task; when it prints `refused: <why>`, tell the user that refusal and do not propose the task.',
+        "`<repo>` is the repository's checkout directory; when the settings' `[repos]` table names that repository, pass the name instead.",
+        'When the block names no `Agent:` lines, use `--type implementer` on the worktree call (its required role label) and omit `--type` on the worker call; the worker then runs the default agent and its skills.',
+        'An agy session adds `--runtime agy --model <the id from agy models>` to the second call; it has no agent types, so `--type` does nothing there.',
+        'A Claude session passes its explicitly chosen `--model <id>` and optional `--effort <high|medium|low>`; neither is derived from the session name.',
+        "A standing session's placeholder row (`<name>: standing <role> …`, launched as that name) needs no issue.",
+        'Codex sessions add `--runtime codex` and optionally `--model <id>`; Cursor sessions add `--runtime cursor` and optionally `--model <id>`.',
+        'They start with a plan gate, use the mailbox, and register their process.',
+        'Their `--type` is ignored.',
+        'Codex starts read-only and the user resumes the same session with write access after approving its plan.',
+    ),
+    'One-shot': (
+        'If `[workers] mode = "one-shot"` in the workspace TOML, every task dispatch runs one-shot; the launcher enforces this without a flag.',
+        "A task-specific request for an interactive session authorizes that task's launch with `--interactive` in a one-shot workspace.",
+        'If the workspace is interactive and the user requests one-shot for a particular task, pass `--one-shot` for that launch.',
+        'Do not edit the workspace TOML to satisfy a task-specific request.',
+        'Choose `--runtime claude|agy|codex|cursor` as usual.',
+        'One-shot runs one CLI turn in the worktree, and the launcher returns when it exits.',
+        'It does not open a terminal tab, register a continuing session, poll a mailbox, or ask for plan approval inside the worker.',
+        'The workspace setting authorizes routine launches without per-task approval; a task-specific one-shot request authorizes that launch.',
+        "The launcher writes the tracker itself, under the lock `chief-of-stuff log` takes: when it starts, the task's owner becomes the worker's name and its state `running HH:MM`, the task's File ownership row gains `; worktree `<tree>` (<branch>)`, and a Log line names the runtime, model, tree and task.",
+        'Write none of these yourself, before or during the run; it changes the row again when it returns.',
+        'Launch every ready one-shot task whose File ownership paths overlap no running task at once, in the same turn, each as its own launcher call started in the background (Bash `run_in_background: true`)' + DISPATCH_OVERLAP_ORDER + '.',
+        'Give each launch its own Bash call with `run_in_background: true`; never chain launches with `;` or `&&`, never pipe a launch, and never start one without the flag.',
+        "Add no `| head`, `| tail` or `| cut` to a launch: its whole output is read from the notification's output file.",
+        "A background launch's completion notification only says the launch ended: name the task in its Bash description, and on the notification read that task's report with `chief-of-stuff result --root . --task <the Tasks name>`, then reconcile it, sync the issue's Kanban state and report that task before using its result.",
+        'A launcher refusal for overlap, or for the concurrency cap (`max_concurrency` under `[workers]`), is not a blocker: leave the task `open` and launch it when a running task returns.',
+        'When one launch fails mid-batch the others keep running; do not retry a held or failed task without resolving its blocker.',
+        'Explain that the worker may edit, commit, and open a PR according to the workspace workflow in that one run.',
+        'Do not dispatch a standing placeholder this way; a launcher call starts exactly one task.',
+        'The launcher writes a TOON report at `<worktree>/.chief-of-stuff/one-shot-report.toon` and prints it.',
+        'On completion it sets the tracker row to `waiting` under the configured user for normal integration or review.',
+        'On an unfinished run, including a failed process, timeout, or missing worker result, it also adds the configured human-review hold to the issue without changing its numbered stage and comments with the reason and partial changes.',
+        'A report with `status: relaunch` means the worker stopped before changing anything because its premise moved, such as its base or target pull request merging; the launcher set the row back to `unassigned` and `open` with no hold.',
+        "That is not a held or failed task and not the user's to decide: relaunch it now in a fresh worktree from current main, without asking, and log why.",
+        'A second stop on the same task comes back as human review.',
+        'Read and reconcile any errors in the report; a failed issue update is not a successful hold.',
+        'No coordinator or worker mailbox messages are part of this mode.',
+        'The default time limit is 60 minutes; `--timeout-minutes N` changes it.',
+    ),
+    'After launch': (
+        'The second call writes the assignment into the tree and prints where.',
+        'You do not type the assignment into that command: the script reads it back from the two rows you named, so they have to exist and to say what they need to say **before** you launch or propose.',
+        'A task the tracker does not carry is refused; so is a task whose owner is not `unassigned`, a task with no File ownership row, a task with no issue (or a cell that is neither one nor `workflow`) where the block names a backlog, and a row carrying `(via ` — nothing starts, and the refusal says which.',
+        '`--name` is the session\'s name for its whole life: the listing, the prompt box, the tab and its assignment all carry it, and the harness never retitles a name given at launch (the user, 2026-09-22 16:18: "the NUMERIC NAMES I ASSIGN ARE THE ONLY NAMES THEY ARE ALLOWED TO KEEP").',
+        'A session started without one is named after its directory and then retitled from its first task, which is why it is never left out.',
+        '`--coordinator` is how a session learns who to register with.',
+        'It has no ref of its own to report until it looks itself up, and you have no way to reach it until it does.',
+        'Your own name is the one in the tracker header, or the one a listing shows beside your ref.',
+        "Pass it when you have it and drop it when you do not: a name you guessed at is worse than the assignment's own wording, which already says to register with the chief-of-stuff coordinator.",
+        "Then, for an interactive session, update the File ownership row's context cell to name the tree the first call printed (a one-shot launch records it itself), never the one you asked for: a row naming a tree that was never created sat in the tracker for eight hours.",
+        'If either call refuses, the task stays `open`, say what was refused, and create nothing by hand.',
+    ),
+}
+# The fenced lines of the moved Dispatch text, minus the deleted commit-prohibition line. Compared stripped.
+DISPATCH_ASSIGNMENT_BLOCK = (
+    "Task: <the Tasks item, in full>",
+    "Requirement: <the task's checklist cell; leave the line out when it is blank>",
+    "Issue: <the issue's URL; only where the block names a backlog>",
+    "Tracker: <tracker path from the Coordinator block, e.g. daily/2026-09-16-tracker.md>",
+    'Owns: <the File ownership paths for this task; "none" if it only reads or replies>. Do not touch any other file.',
+    "Report: <what to reply with when done>",
+)
+DISPATCH_LAUNCH_CALLS = (
+    "chief-of-stuff worktree --type <type> --name <tree> --branch <branch> --root . --clone <repo>",
+    "chief-of-stuff worker --type <type> --cwd <the path the first printed> --name <the session's name> --root . "
+    "--task <the Tasks name> --coordinator <your own name, as a listing spells it>",
+)
+# Deleted, not moved. The launcher refuses overlap itself (scripts/dispatch_prompt.py refuse_overlap, called under the
+# lock in scripts/one_shot.py and from compose); the assignment header already carries the commit rule
+# (scripts/dispatch_prompt.py COMMITS). Everything else in those lines stays.
+# Compared lowercased on both sides (#539 review R6). "launch the earlier row first" is restored, see DISPATCH_OVERLAP_ORDER.
+DISPATCH_DELETED = (
+    "a read-only task overlaps nothing",
+    "Overlap is decided by",
+    "run overlapping tasks one after the other",
+    "Write only:",
+)
+NO_COMMIT_PROHIBITION = "Write only: do not commit " + "or push"
+# A moved sentence that ## Dispatch authority also says, verbatim, and keeps saying: it stays once in the agent there.
+DISPATCH_ALSO_IN_AUTHORITY = (
+    "A task-specific request for an interactive session authorizes that task's launch with `--interactive` in a one-shot workspace.",
+)
+DISPATCH_AUTHORITY_SHA256 = "eb55aa106aa9e645a8e11c76f2ea027f4610d1898711e1b4f414eed5fffb3530"
+DISPATCH_TOPICS = ["Rows", "Worker and model", "Assignment", "Launch", "One-shot", "After launch"]
+
 
 def rendered_sizes(pad: int, source: Path = ROOT) -> dict:
     """Each host's prompt size with the release and workspace paths taken out, so a short CI path
@@ -596,6 +776,138 @@ class AgentBudgetTest(unittest.TestCase):
         )
         for agent, skill in mutations:
             with self.subTest(mutation=agent != self.text, skill_mutation=skill != body):
+                with self.assertRaises(AssertionError):
+                    resolve(agent, skill)
+        resolve(self.text, body)
+
+    def dispatch_skill(self):
+        path = ROOT / "skills" / "dispatch" / "SKILL.md"
+        self.assertTrue(path.is_file(), "dispatch skill is missing")
+        return path
+
+    def test_dispatch_pointer_occurs_once_as_its_own_paragraph_and_is_the_only_one_in_dispatch(self):
+        pointer = DISPATCH_POINTER
+        self.assertEqual(self.text.count(pointer), 1)
+        self.assertEqual(self.text.splitlines().count(pointer), 1, "a standalone line with no final period")
+        found = sections(self.text)["Dispatch"]
+        self.assertIn(pointer, found.split("\n\n"))
+        self.assertEqual(SKILL_POINTER.findall(found), ["dispatch"], "the only pointer inside ## Dispatch")
+        for anchor in ("list sessions;", "list sessions,"):
+            self.assertNotIn(anchor, pointer, "host replacement anchors must never consume the pointer")
+        # Every moment the pointer must fire on.
+        for moment in DISPATCH_POINTER_MOMENTS:
+            with self.subTest(moment=moment):
+                self.assertIn(moment, pointer)
+        self.assertFalse(pointer.endswith("."), "no final period")
+
+    def test_dispatch_keeps_only_the_pointer_and_five_kept_units(self):
+        found = sections(self.text)["Dispatch"]
+        for unit in DISPATCH_KEPT:
+            with self.subTest(unit=unit[:40]):
+                self.assertEqual(self.text.count(unit), 1)
+                self.assertIn(unit, found)
+        residue = found.replace("## Dispatch", "", 1).replace(DISPATCH_POINTER, "")
+        for unit in DISPATCH_KEPT:
+            residue = residue.replace(unit, "")
+        self.assertEqual(residue.split(), [], "nothing else stays under ## Dispatch")
+        authority = sections(self.text)["Dispatch authority"]
+        self.assertEqual(hashlib.sha256(authority.encode()).hexdigest(), DISPATCH_AUTHORITY_SHA256,
+                         "## Dispatch authority stays untouched")
+
+    def test_dispatch_skill_has_portable_frontmatter_and_topics(self):
+        text = self.dispatch_skill().read_text()
+        front = re.match(r"\A---\r?\n(.*?)\r?\n---(?:\r?\n|\Z)", text, flags=re.S)
+        self.assertIsNotNone(front, "dispatch needs leading YAML frontmatter")
+        self.assertRegex(front[1], r"""(?m)^name:[ \t]*(?:dispatch|"dispatch"|'dispatch')[ \t]*$""")
+        self.assertNotRegex(front[1], r"(?m)^\s*hosts\s*:")
+        prose = description(text)
+        self.assertTrue(prose.startswith("Use before "), prose)
+        self.assertLessEqual(len(prose), DESCRIPTION_CAP)
+        for moment in (r"worker", r"model", r"propos", r"launch", r"\byes\b", r"Tasks", r"File ownership",
+                       r"assignment", r"relaunch", r"report"):
+            with self.subTest(moment=moment):
+                self.assertRegex(prose, re.compile(moment, re.I))
+        body = skill_body(text)
+        self.assertEqual(re.findall(r"(?m)^### (.*)$", body), DISPATCH_TOPICS)
+        self.assertNotRegex(body, r"(?m)^## ", "a ## heading in the skill would repeat an agent section in rules_text()")
+
+    def test_every_dispatch_sentence_moves_once_into_the_skill_and_the_kept_ones_stay(self):
+        body, combined = skill_body(self.dispatch_skill().read_text()), rules_text()
+        for topic, sentences in DISPATCH_RULES.items():
+            for sentence in sentences:
+                with self.subTest(topic=topic, sentence=sentence):
+                    twice = sentence in DISPATCH_ALSO_IN_AUTHORITY
+                    self.assertEqual(body.count(sentence), 1)
+                    self.assertEqual(combined.count(sentence), 2 if twice else 1)
+                    self.assertEqual(self.text.count(sentence), 1 if twice else 0)
+                    if twice:
+                        self.assertIn(sentence, sections(self.text)["Dispatch authority"])
+        for unit in DISPATCH_KEPT:
+            with self.subTest(kept=unit[:40]):
+                self.assertEqual(combined.count(unit), 1)
+                self.assertNotIn(unit.rstrip(".").lower(), body.lower(), "a kept unit is not in the skill, in any case")
+        for line in (*DISPATCH_ASSIGNMENT_BLOCK, *DISPATCH_LAUNCH_CALLS):
+            with self.subTest(fenced=line):
+                self.assertEqual([x.strip() for x in body.splitlines()].count(line), 1)
+                self.assertNotIn(line, self.text)
+
+    def test_the_two_code_enforced_dispatch_texts_are_deleted_everywhere(self):
+        combined = rules_text()
+        for fragment in DISPATCH_DELETED:
+            with self.subTest(fragment=fragment):
+                self.assertNotIn(fragment.lower(), combined.lower())
+        # The sentence that tells the model what to do after a refusal stays, with the two output-piping sentences.
+        self.assertEqual(combined.count("A launcher refusal for overlap, or for the concurrency cap (`max_concurrency` "
+                                        "under `[workers]`), is not a blocker: leave the task `open` and launch it "
+                                        "when a running task returns."), 1)
+        # The commit prohibition is gone from every shipped rule and every fixture; PROGRESS.md and docs/archive are history.
+        for folder in ("agents", "skills", "evals/cases", "evals/fixtures"):
+            for path in sorted((ROOT / folder).rglob("*")):
+                if path.is_file() and path.suffix in {".md", ".json", ".txt", ".toml", ".py", ".toon"}:
+                    with self.subTest(path=str(path.relative_to(ROOT))):
+                        self.assertNotIn(NO_COMMIT_PROHIBITION, path.read_text(errors="ignore"))
+
+    def test_the_overlap_order_clause_is_restored_in_the_skill_only(self):
+        # #539 review R2: refuse_overlap compares only running rows, so nothing but this clause orders two ready tasks that
+        # overlap each other.
+        body = skill_body(self.dispatch_skill().read_text())
+        self.assertEqual(body.count(DISPATCH_OVERLAP_ORDER), 1)
+        self.assertNotIn(DISPATCH_OVERLAP_ORDER.lower(), self.text.lower())
+        self.assertEqual(rules_text().count(DISPATCH_OVERLAP_ORDER), 1)
+
+    def test_the_shown_assignment_block_has_exactly_the_six_labeled_lines_and_no_commit_prohibition(self):
+        body = skill_body(self.dispatch_skill().read_text())
+        fences = re.findall(r"(?ms)^[ \t]*```[^\n]*\n(.*?)^[ \t]*```", body)
+        blocks = [[line.strip() for line in fence.splitlines() if line.strip()] for fence in fences]
+        shown = [lines for lines in blocks if any(line.startswith("Task:") for line in lines)]
+        self.assertEqual(shown, [list(DISPATCH_ASSIGNMENT_BLOCK)], "one assignment block, exactly Task to Report")
+        self.assertIn(list(DISPATCH_LAUNCH_CALLS), blocks, "the two launch calls stay one fenced block")
+        for fence in fences:
+            self.assertNotRegex(fence, r"(?i)\b(?:write only|do not commit|don't commit|never commit)\b")
+
+    def test_dispatch_cross_references_resolve_and_reject_broken_copies(self):
+        body = skill_body(self.dispatch_skill().read_text())
+        corpus = {path: path.read_text() for path in (ROOT / "skills").glob("*/SKILL.md")}
+
+        def resolve(agent, skill):
+            found = sections(agent)
+            for _ in re.findall(r"\(see Dispatch\)", agent + "\n" + "\n".join(corpus.values())):
+                self.assertIn("Dispatch", found, "(see Dispatch) needs ## Dispatch")
+                self.assertIn(DISPATCH_POINTER, found["Dispatch"].split("\n\n"), "(see Dispatch) needs the pointer")
+            self.assertEqual(re.findall(r"(?m)^### (.*)$", skill), DISPATCH_TOPICS)
+
+        self.assertGreater(self.text.count("(see Dispatch)"), 0, "the mutations must exercise a reference")
+        mutations = (
+            (self.text.replace("## Dispatch\n", "## Hand-off\n"), body),
+            (self.text.replace(DISPATCH_POINTER, "Read elsewhere"), body),
+            (self.text.replace(DISPATCH_POINTER, DISPATCH_POINTER + "."), body),
+            (self.text.replace(DISPATCH_POINTER, DISPATCH_POINTER.replace(
+                ", and on a background launch's completion notification before reading its report", "")), body),
+            (self.text, body.replace("### Launch\n", "### Start\n")),
+            (self.text, body.replace("### Rows\n", "")),
+        )
+        for agent, skill in mutations:
+            with self.subTest(agent_mutation=agent != self.text, skill_mutation=skill != body):
                 with self.assertRaises(AssertionError):
                     resolve(agent, skill)
         resolve(self.text, body)

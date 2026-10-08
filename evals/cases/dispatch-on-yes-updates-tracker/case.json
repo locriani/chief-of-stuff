@@ -19,6 +19,15 @@
       "prompt": "Yes.",
       "graders": [
         {
+          "name": "reads the dispatch skill before the first launch, worktree, models call or tracker write",
+          "rule": "Keep the existing Tasks item and name cells byte-for-byte: approval changes ownership and state, not the task's wording.",
+          "type": "tool_used",
+          "tool": "Read",
+          "input_match": "\"file_path\": \"[^\"\\n]*skills/dispatch/SKILL\\.md\"",
+          "min": 1,
+          "before": "\\A(?=[\\s\\S]*\"(?:old_string|content)\":)[\\s\\S]*\"file_path\": \"(?:[^\"\\n]*[/\\\\])?daily[/\\\\][^\"\\n/\\\\]*-tracker\\.md\"|\"command\": \"(?:\\\\.|[^\"\\\\])*(?:\\bchief[-_]of[-_]stuff(?:\\.py)?\\s+(?:worker|worktree|models)\\b|(?:scripts/)?(?:spawn_session|make_worktree)\\.py\\b)|\"run_in_background\": true"
+        },
+        {
           "name": "launches in background",
           "type": "tool_used",
           "tool": "Agent|Task",
