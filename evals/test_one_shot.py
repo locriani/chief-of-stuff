@@ -34,18 +34,13 @@ from evals import git_taint as taint  # noqa: E402
 @contextlib.contextmanager
 def private_git_views(base):
     """Supply the view API's trusted test base without writing the user's cache."""
-    run, opened = git_view.run, git_view.opened
+    run = git_view.run
 
     def run_at_base(*args, **kwargs):
         kwargs.setdefault("base", base)
         return run(*args, **kwargs)
 
-    def open_at_base(path, env, base=None):
-        return opened(path, env, base=base or private_base)
-
-    private_base = base
-    with mock.patch.object(git_view, "run", side_effect=run_at_base), \
-         mock.patch.object(git_view, "opened", side_effect=open_at_base):
+    with mock.patch.object(git_view, "run", side_effect=run_at_base):
         yield
 
 
@@ -1907,6 +1902,58 @@ class SanitisedTreeReadTest(unittest.TestCase):
     def test_git_read_env_is_deleted(self):
         self.assertFalse(hasattr(one_shot, "git_read_env"))
 
+    def test_r6_four_public_reads_reach_git_view_only_through_git_helper(self):
+        helper = getattr(one_shot, "_git", None)
+        self.assertTrue(callable(helper), "one_shot._git must exist")
+        fx = self.fixture()
+        inside_helper = False
+
+        def through_helper(*args, **kwargs):
+            nonlocal inside_helper
+            inside_helper = True
+            try:
+                return helper(*args, **kwargs)
+            finally:
+                inside_helper = False
+
+        real_view_run = git_view.run
+
+        def view_read(*args, **kwargs):
+            self.assertTrue(inside_helper, "a public read bypassed one_shot._git")
+            return real_view_run(*args, **kwargs)
+
+        commands = {
+            "changed_files": [["status", "--short"]],
+            "git_head": [["rev-parse", "HEAD"]],
+            "committed_changes": [["rev-parse", "HEAD"],
+                                  ["log", "--format=%h %s", "--stat", f"{fx.sha['B']}..{fx.sha['D']}"]],
+            "_tree_note": [["branch", "--show-current"]],
+        }
+        for site in self.SITES:
+            with self.subTest(site=site):
+                expected = self.truth(fx, site)
+                with mock.patch.object(one_shot, "_git", side_effect=through_helper), \
+                     mock.patch.object(git_view, "run", side_effect=view_read) as view:
+                    self.assertEqual(self.call(fx, site), expected)
+                self.assertEqual(view.call_args_list,
+                                 [mock.call(args, fx.tree, env=git_trees.audit_env(), timeout=15)
+                                  for args in commands[site]])
+
+    def test_r9_failed_branch_read_refuses_instead_of_naming_tree_detached(self):
+        fx = self.fixture()
+        failed = subprocess.CompletedProcess(["git", "branch", "--show-current"], 128,
+                                             stdout="", stderr="fatal: cannot read branch")
+        with mock.patch.object(git_view, "run", return_value=failed) as view, \
+             self.assertRaisesRegex(ValueError, "tree is unreadable"):
+            one_shot._tree_note(fx.root, fx.tree)
+        view.assert_called_once_with(["branch", "--show-current"], fx.tree,
+                                     env=git_trees.audit_env(), timeout=15)
+
+    def test_r9_successful_empty_branch_read_still_names_detached_tree(self):
+        fx = self.fixture()
+        taint.git(["checkout", "--detach", "-q"], fx.tree)
+        self.assertEqual(one_shot._tree_note(fx.root, fx.tree), "worktree `wt` (detached)")
+
     def test_changed_files_refuses_a_gitlink_instead_of_reporting_it_clean(self):
         fx = self.fixture()
         taint.apply(fx, "gitlink")
@@ -2002,6 +2049,88 @@ class SanitisedTreeReadTest(unittest.TestCase):
 
     def test_unviewable_relaunched_gitfile_tree_refuses_before_a_row_is_written(self):
         self.check_refused_launch("gitfile")
+
+    def check_r4_head_refused_launch(self, failure, relaunched=False):
+        fx = self.fixture()
+        day, tracker, copy, cfg = self.launch_fixture(fx)
+        if relaunched:
+            copy.write_text(toon_encode({"status": "relaunch", "task": "Security audit", "worker": "earlier",
+                                        "runtime_exit": 1, "reason": "quota", "changes": "", "errors": []}))
+        before, previous = tracker.read_bytes(), copy.read_bytes()
+        real_view_run, real_run = git_view.run, subprocess.run
+
+        def view_read(args, tree, **kwargs):
+            if args == ["rev-parse", "HEAD"]:
+                if isinstance(failure, BaseException):
+                    raise failure
+                return failure
+            return real_view_run(args, tree, **kwargs)
+
+        process = mock.Mock(side_effect=AssertionError("an unreadable pre-run HEAD started a worker"))
+
+        def execute(argv, *args, **kwargs):
+            if argv[0] == "git":
+                return real_run(argv, *args, **kwargs)
+            return process(argv, *args, **kwargs)
+
+        with mock.patch.object(one_shot, "login_argv", side_effect=lambda argv: argv), \
+             mock.patch.object(git_view, "run", side_effect=view_read), \
+             mock.patch.object(one_shot, "record_launch", wraps=one_shot.record_launch) as row, \
+             mock.patch.object(dispatch_prompt, "write_dispatch", wraps=dispatch_prompt.write_dispatch) as dispatch, \
+             mock.patch.object(subprocess, "run", side_effect=execute):
+            with self.assertRaisesRegex(ValueError, "tree is unreadable"):
+                self.launch(fx, cfg, day)
+        row.assert_not_called()
+        dispatch.assert_not_called()
+        process.assert_not_called()
+        self.assertEqual(tracker.read_bytes(), before)
+        self.assertEqual(copy.read_bytes(), previous)
+        self.assertFalse((fx.tree / dispatch_prompt.DISPATCH_FILE).exists())
+        self.assertEqual(fx.fired(), [])
+
+    def test_r4_unreadable_pre_run_head_refuses_reused_tree_before_any_write(self):
+        failures = (git_view.Unviewable("tree unreadable"), OSError("cannot execute git"),
+                    subprocess.TimeoutExpired(["git", "rev-parse", "HEAD"], 15),
+                    subprocess.CompletedProcess(["git", "rev-parse", "HEAD"], 128,
+                                                stdout="", stderr="fatal: cannot read object"))
+        for failure in failures:
+            with self.subTest(failure=type(failure).__name__):
+                self.check_r4_head_refused_launch(failure)
+
+    def test_r4_unreadable_pre_run_head_refuses_relaunched_tree_before_any_write(self):
+        failures = (git_view.Unviewable("tree unreadable"), OSError("cannot execute git"),
+                    subprocess.TimeoutExpired(["git", "rev-parse", "HEAD"], 15),
+                    subprocess.CompletedProcess(["git", "rev-parse", "HEAD"], 128,
+                                                stdout="", stderr="fatal: cannot read object"))
+        for failure in failures:
+            with self.subTest(failure=type(failure).__name__):
+                self.check_r4_head_refused_launch(failure, relaunched=True)
+
+    def test_r4_unborn_head_allows_launch_and_keeps_no_commits_without_a_commit(self):
+        fx = self.fixture()
+        taint.git(["checkout", "--orphan", "unborn", "-q"], fx.tree)
+        before = one_shot.git_head(fx.tree)
+        self.assertIsNone(before)
+        self.assertEqual(one_shot.committed_changes(fx.tree, before), one_shot.NO_COMMITS)
+        day, tracker, copy, cfg = self.launch_fixture(fx)
+        real_run = subprocess.run
+        process = mock.Mock(return_value=subprocess.CompletedProcess(["fixture-worker"], 0))
+
+        def execute(argv, *args, **kwargs):
+            if argv[0] == "git":
+                return real_run(argv, *args, **kwargs)
+            return process(argv, *args, **kwargs)
+
+        with mock.patch.object(one_shot, "login_argv", side_effect=lambda argv: argv), \
+             mock.patch.object(subprocess, "run", side_effect=execute), \
+             mock.patch.object(one_shot, "reconcile", return_value={"status": "done", "errors": []}) as reconcile, \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.launch(fx, cfg, day), 0)
+        process.assert_called_once()
+        self.assertIn("| worker01 | running ", tracker.read_text())
+        self.assertTrue((fx.tree / dispatch_prompt.DISPATCH_FILE).exists())
+        self.assertIsNone(reconcile.call_args.args[6])
+        self.assertEqual(one_shot.committed_changes(fx.tree, before), one_shot.NO_COMMITS)
 
     def test_git_head_before_run_uses_view_before_the_row_is_written(self):
         fx = self.fixture()
