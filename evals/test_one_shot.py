@@ -144,22 +144,20 @@ class CommandTest(unittest.TestCase):
                                     agent_type=None, model="", effort="")
             self.assertEqual(self._add_dirs(args), [])
 
-    def test_codex_grants_nothing_when_a_git_lookup_fails(self):
-        # The pair cannot be validated without both answers, so a failing lookup grants nothing, not even the
-        # common dir (it used to keep it): no flag, no exception.
-        real_run = subprocess.run
-        for failing in ("--git-common-dir", "--absolute-git-dir"):
-            def run(argv, *a, _failing=failing, **kw):
-                if _failing in argv:
-                    return subprocess.CompletedProcess(argv, 128, stdout="", stderr="fatal")
-                return real_run(argv, *a, **kw)
-
-            with self.subTest(failing=failing), tempfile.TemporaryDirectory() as tmp:
-                _, tree = self._repo_with_linked_tree(tmp)
-                with mock.patch.object(one_shot.subprocess, "run", side_effect=run):
-                    args = one_shot.command("codex", "/bin/fake", tree, tree / "d.md",
-                                            agent_type=None, model="", effort="")
-                self.assertEqual(self._add_dirs(args), [])
+    def test_codex_grants_nothing_when_a_linked_trees_pointer_is_missing_or_damaged(self):
+        # #443: the grant is read from files (`git_view.locate`); a pointer it cannot read grants nothing, not even
+        # the common dir, and nothing raises out of command().
+        damage = {"back-pointer missing": lambda base, tree: (base / ".git/worktrees/tree/gitdir").unlink(),
+                  "commondir missing": lambda base, tree: (base / ".git/worktrees/tree/commondir").unlink(),
+                  "back-pointer empty": lambda base, tree: (base / ".git/worktrees/tree/gitdir").write_text(""),
+                  "gitfile empty": lambda base, tree: (tree / ".git").write_text(""),
+                  "gitfile garbage": lambda base, tree: (tree / ".git").write_text("not a gitfile\n"),
+                  "gitfile target missing": lambda base, tree: (tree / ".git").write_text(f"gitdir: {tree}/../absent\n")}
+        for label, hurt in damage.items():
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as tmp:
+                base, tree = self._repo_with_linked_tree(tmp)
+                hurt(base, tree)
+                self.assertEqual(self._codex_dirs(tree), [])
 
     def _codex_dirs(self, cwd):
         return self._add_dirs(one_shot.command("codex", "/bin/fake", cwd, cwd / "d.md",
@@ -281,44 +279,17 @@ class CommandTest(unittest.TestCase):
                 with self.subTest(case=label):
                     self.assertEqual(self._codex_dirs(cwd), [])
 
-    def _patched_rev_parse(self, answers):
-        real_run = subprocess.run
-
-        def run(argv, *a, **kw):
-            for flag, path in answers.items():
-                if flag in argv:
-                    return subprocess.CompletedProcess(argv, 0, stdout=f"{path}\n", stderr="")
-            return real_run(argv, *a, **kw)
-
-        return mock.patch.object(one_shot.subprocess, "run", side_effect=run)
-
-    def test_codex_clone_grant_needs_its_common_dir_to_be_its_dot_git(self):
-        # R2: `<clone>/.git/commondir` rewritten to another repo: git reports the other repo as the common dir.
+    def test_codex_clone_grant_stays_its_own_dot_git_when_commondir_is_rewritten(self):
+        # R2: `<clone>/.git/commondir` rewritten to another repo. A clone's grant is its own `.git`, whatever that
+        # file says: the other repo's path must never appear.
         with tempfile.TemporaryDirectory() as tmp:
             clone, victim = Path(tmp) / "clone", Path(tmp) / "victim"
             for repo in (clone, victim):
                 subprocess.run(["git", "init", "-q", str(repo)], check=True)
             (clone / ".git/commondir").write_text(f"{victim / '.git'}\n")
-            self.assertEqual(self._codex_dirs(clone), [])
-
-    def test_codex_clone_grant_needs_its_gitdir_to_equal_its_common_dir(self):
-        # R2, one term at a time: dot-git == common, but git reports another gitdir.
-        with tempfile.TemporaryDirectory() as tmp:
-            clone, other = Path(tmp) / "clone", Path(tmp) / "other"
-            for repo in (clone, other):
-                subprocess.run(["git", "init", "-q", str(repo)], check=True)
-            with self._patched_rev_parse({"--absolute-git-dir": other / ".git"}):
-                self.assertEqual(self._codex_dirs(clone), [])
-
-    def test_codex_clone_grant_needs_its_dot_git_to_equal_the_reported_dirs(self):
-        # R2, one term at a time: gitdir == common (both another repo), but `<clone>/.git` is not that.
-        with tempfile.TemporaryDirectory() as tmp:
-            clone, other = Path(tmp) / "clone", Path(tmp) / "other"
-            for repo in (clone, other):
-                subprocess.run(["git", "init", "-q", str(repo)], check=True)
-            with self._patched_rev_parse({"--absolute-git-dir": other / ".git",
-                                          "--git-common-dir": other / ".git"}):
-                self.assertEqual(self._codex_dirs(clone), [])
+            dirs = self._codex_dirs(clone)
+            self.assertEqual(dirs, [str((clone / ".git").resolve())])
+            self.assertFalse(any(str(victim.resolve()) in d for d in dirs))
 
     def test_codex_never_raises_on_a_corrupt_commondir(self):
         # R7: a NUL byte or an unreadable `commondir` grants nothing and does not raise out of command().
@@ -334,7 +305,7 @@ class CommandTest(unittest.TestCase):
                     commondir.chmod(0o644)
 
     def test_codex_grants_a_linked_worktree_despite_git_environment_variables(self):
-        # R9: GIT_DIR and friends in the launcher's environment must not redirect the rev-parse calls.
+        # R9: GIT_DIR and friends in the launcher's environment must not redirect the grant (no git process reads them).
         with tempfile.TemporaryDirectory() as tmp:
             base, tree = self._repo_with_linked_tree(tmp)
             other, _ = self._other_repo_with_worktree(tmp)
@@ -495,8 +466,7 @@ class CodexAddDirArgsTest(unittest.TestCase):
             self.assertEqual(git_trees.codex_add_dir_args(tree), [])
 
     def test_a_subdirectory_with_a_forged_back_pointer_is_refused_by_the_toplevel_guard(self):
-        # The toplevel check is the only guard here: git reports the common dir and gitdir of the tree above, and
-        # a back-pointer rewritten to `<sub>/.git` would otherwise agree with the missing `<sub>/.git`.
+        # A subdirectory has no `.git` of its own: locate raises, so a back-pointer rewritten to `<sub>/.git` grants nothing.
         with tempfile.TemporaryDirectory() as tmp:
             base, tree = self._repo_with_linked_tree(tmp)
             sub = tree / "sub"
@@ -541,8 +511,8 @@ class CodexAddDirArgsTest(unittest.TestCase):
                         self.assertEqual(git_trees.codex_add_dir_args(refused), [])
 
     def test_hostile_git_config_is_never_executed_or_trusted(self):
-        # Characterization: `rev-parse` does not run these keys today, so this is green before and after #443; it pins that
-        # worker-written config command keys (clone `.git/config`, linked tree's common config) never run.
+        # Pins that worker-written config command keys (clone `.git/config`, linked tree's common config) never run:
+        # the grant reads files only and spawns no git.
         with tempfile.TemporaryDirectory() as tmp:
             marker = Path(tmp) / "ran"
             touch = f"python3 -c \"open('{marker}', 'w').close()\""
