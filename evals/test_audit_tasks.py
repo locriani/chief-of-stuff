@@ -10,6 +10,7 @@ import io
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -28,6 +29,20 @@ import board_sources as bs  # noqa: E402
 import test_git_trees as tgt  # noqa: E402  (module-qualified: don't re-collect its TestCases)
 import test_board_sources as tbs  # noqa: E402  (module-qualified: don't re-collect its TestCases)
 from tracker import Task, short_name  # noqa: E402
+import tree_state  # noqa: E402
+from evals import git_taint as taint  # noqa: E402
+
+_views = contextlib.ExitStack()
+
+
+def setUpModule() -> None:
+    """Reads go through git_view.run (#443): give them a private base, never the user's cache."""
+    _views.enter_context(taint.private_git_views(Path(_views.enter_context(tempfile.TemporaryDirectory()))))
+
+
+def tearDownModule() -> None:
+    _views.close()
+
 
 CLAUDE = """# Workspace
 
@@ -3073,3 +3088,88 @@ class OwnershipRowKeyedOnNameTest(unittest.TestCase):
             with self.subTest(context=repr(context)):
                 row = al.OwnerRow(context, ["wt-a"])
                 self.assertFalse(self.claim(row, [self.task("", "sam"), self.task("  ", "sam")], {"sam"}).live)
+
+
+class AuditThroughTheViewTest(unittest.TestCase):
+    """#443 slice 3: an audit pass reads the trees through `git_view`, so what a worker plants in a tree's `.git` is data.
+
+    The workspace is `build()`'s: a clone, and the trees `wt-merged`, `wt-unmerged` and `wt-dirty` off it. The worker's
+    plant goes into the clone's own config, which every linked tree reads.
+    """
+
+    ROWS = ("| Unsaved work | robin | done 10:00 | 09:00 |  | Checklist: Unsaved work |\n"
+            "| Open branch work | robin | done 10:00 | 09:00 |  | Checklist: Open branch work |",
+            "| robin | worktree wt-dirty (feat/dirty), worktree wt-unmerged (feat/open) |")
+
+    def setUp(self) -> None:
+        tmp, self.root = workspace(*self.ROWS)
+        self.addCleanup(tmp.cleanup)
+        self.canary = self.root / "canary"
+        self.config = self.root / "repo" / ".git" / "config"
+
+    def command(self) -> str:
+        code = f"from pathlib import Path; import sys; Path({str(self.canary)!r}).write_text('fired'); sys.exit(1)"
+        return shlex.join([sys.executable, "-c", code])
+
+    def plant(self, how: str) -> None:
+        if how == "fsmonitor":
+            git("config", "--file", str(self.config), "core.fsmonitor", self.command(), cwd=self.root)
+        else:  # an include behind a condition that matches the branch of `wt-dirty`
+            included = self.root / "conditional.cfg"
+            git("config", "--file", str(included), "core.fsmonitor", self.command(), cwd=self.root)
+            git("config", "--file", str(self.config), "includeIf.onbranch:feat/dirty.path", str(included), cwd=self.root)
+
+    def test_a_worker_planted_program_does_not_run_in_an_audit_pass(self) -> None:
+        clean, original = al.audit(self.root, "2026-09-17"), self.config.read_text()
+        self.assertTrue(clean.reopen and clean.lines, "the pass must have something to say, or it proves nothing")
+        self.assertFalse(self.canary.exists())
+        for how in ("fsmonitor", "includeif"):
+            with self.subTest(how):
+                self.plant(how)
+                subprocess.run(["git", "-C", str(self.root / "trees" / "wt-dirty"), "status", "--porcelain"],
+                               env=git_trees.audit_env(), capture_output=True, timeout=15, check=False)
+                self.assertTrue(self.canary.exists(), "the plant must fire under the former read, or the test proves nothing")
+                self.canary.unlink()
+                audited = al.audit(self.root, "2026-09-17")
+                self.assertFalse(self.canary.exists(), "the audit ran a program the worker planted")
+                self.assertEqual((audited.lines, audited.reopen), (clean.lines, clean.reopen))
+                self.config.write_text(original)
+
+    def submodule_tree(self) -> Path:
+        """`wt-merged` with a gitlink (a nested repository with changes of its own), on a branch that is on main."""
+        tree = self.root / "trees" / "wt-merged"
+        nested = tree / "gl"
+        nested.mkdir()
+        git("init", "-q", "-b", "main", cwd=nested)
+        git("config", "user.email", "n@example.test", cwd=nested)
+        git("config", "user.name", "Nested", cwd=nested)
+        (nested / "file.txt").write_text("a\n")
+        git("add", "file.txt", cwd=nested)
+        git("commit", "-q", "-m", "nested", cwd=nested)
+        oid = git("rev-parse", "HEAD", cwd=nested)
+        git("update-index", "--add", "--cacheinfo", f"160000,{oid},gl", cwd=tree)
+        git("commit", "-q", "-m", "gitlink", cwd=tree)
+        head = git("rev-parse", "HEAD", cwd=tree)
+        for ref in ("refs/heads/main", "refs/remotes/origin/main"):  # the tree's HEAD is on main and on origin/main
+            git("update-ref", ref, head, cwd=self.root / "repo")
+        (nested / "file.txt").write_text("changed in the nested repository\n")
+        return tree
+
+    def test_a_submodule_tree_is_never_read_as_done(self) -> None:
+        """`status` is unreadable there (`unreadable: submodules are not inspected`), so uncommitted work cannot be ruled
+        out: `_state` must not say `on main, committed`. Control: the same tree without the submodule says exactly that."""
+        tree = self.root / "trees" / "wt-merged"
+        self.assertEqual(al._state(tree), ("landed", ""))
+        self.submodule_tree()
+        self.assertEqual(git_trees.git(["merge-base", "--is-ancestor", "HEAD", "main"], tree)[0], 0, "on main, as arranged")
+        self.assertEqual(git_trees.git(["status", "--porcelain"], tree)[1], "unreadable: submodules are not inspected")
+        branch, why = al._state(tree)
+        self.assertEqual(branch, "landed")
+        self.assertTrue(why, "a tree whose status cannot be read was reported as on main and committed")
+
+    def test_a_submodule_tree_is_at_risk_in_the_pass(self) -> None:
+        self.submodule_tree()
+        state = git_trees.read_state(self.root / "trees" / "wt-merged")
+        self.assertEqual((state.dirty, state.off_origin), (0, None))
+        self.assertTrue(tree_state.at_risk(state))
+

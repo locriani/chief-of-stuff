@@ -6,6 +6,7 @@ environment, never through workspace data or a fixture file.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shlex
@@ -14,6 +15,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from unittest import mock
 
 ENV = {
     "PATH": "/usr/bin:/bin:/usr/local/bin", "HOME": "/var/empty",
@@ -465,3 +467,21 @@ def launcher_stdin(fx: Fx, base: Path, env: dict[str, str], payload: str,
             process.wait()
         for stream in (process.stdin, process.stdout, process.stderr):
             stream.close()
+
+
+@contextlib.contextmanager
+def private_git_views(base: Path):
+    """Give every `git_view.run` a trusted view base, so a test never writes the user's cache.
+
+    Inert until a caller routes through `git_view.run`; a caller that passes its own `base` wins.
+    """
+    import git_view  # the scripts directory is on the importing test's path
+
+    run = git_view.run
+
+    def run_at_base(*args, **kwargs):
+        kwargs.setdefault("base", base)
+        return run(*args, **kwargs)
+
+    with mock.patch.object(git_view, "run", side_effect=run_at_base):
+        yield

@@ -4,6 +4,8 @@ Real repos, as in test_audit_tasks: a bare origin, a clone, and worktrees off it
 have no useful fake.
 """
 
+import contextlib
+import inspect
 import os
 import shlex
 import shutil
@@ -17,10 +19,28 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import git_trees  # noqa: E402
+import git_view  # noqa: E402
+from evals import git_taint as taint  # noqa: E402
+from tree_state import TreeState, at_risk  # noqa: E402
 
 ENV = {"PATH": "/usr/bin:/bin:/usr/local/bin", "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_GLOBAL": "/dev/null",
        "GIT_AUTHOR_NAME": "T", "GIT_AUTHOR_EMAIL": "t@example.test",
        "GIT_COMMITTER_NAME": "T", "GIT_COMMITTER_EMAIL": "t@example.test"}
+
+
+_views = contextlib.ExitStack()
+_base: Path  # where this module's views are built
+
+
+def setUpModule() -> None:
+    """Reads go through git_view.run (#443): give them a private base, never the user's cache."""
+    global _base
+    _base = Path(_views.enter_context(tempfile.TemporaryDirectory()))
+    _views.enter_context(taint.private_git_views(_base))
+
+
+def tearDownModule() -> None:
+    _views.close()
 
 
 def git(*args: str, cwd: Path) -> str:
@@ -324,19 +344,33 @@ class FetchBaseTest(Repo):
 class GitReaderTest(unittest.TestCase):
     def test_git_that_cannot_run_or_times_out_is_128_not_1(self) -> None:
         """`merge-base --is-ancestor` answers a no with exit 1, so a failed run must not look like one: 128 is git's own
-        failure code. The text is what went wrong, for a caller that prints it."""
+        failure code. The text is what went wrong, for a caller that prints it. The failure is the view's (#443): `git()`
+        is `git_view.run` and nothing else."""
         for exc in (OSError("no git"), subprocess.TimeoutExpired(["git"], 15)):
-            with self.subTest(type(exc).__name__), patch.object(git_trees.subprocess, "run", side_effect=exc):
+            with self.subTest(type(exc).__name__), patch.object(git_view, "run", side_effect=exc):
                 code, text = git_trees.git(["rev-parse", "HEAD"], Path("."))
                 self.assertEqual(code, 128)
                 self.assertTrue(text.strip())
 
 
 class NonUtf8OutputTest(Repo):
-    def test_a_ref_name_with_a_non_utf8_byte_is_read_not_a_traceback(self) -> None:
-        """#49 round 11: `git()` also decodes output as text. A checkout on a filesystem that allows any byte in a name (Linux)
-        can be on a branch like `b\\xff`; macOS refuses to create one, so it is written as git would store it: a packed ref
-        and a HEAD that names it. `git rev-parse --abbrev-ref HEAD` then prints the byte. Real repository, no fake."""
+    def test_a_path_with_a_non_utf8_byte_is_read_not_a_traceback(self) -> None:
+        """#49 round 11: `git()` decodes output as text, and a byte that is not UTF-8 reads as `\\xff`, never raises. A Linux
+        checkout can hold such a name; macOS refuses to create one, so it is written as git would store it: an index entry.
+        Real repository, no fake."""
+        (self.root / "blob.txt").write_text("odd name\n")
+        blob = git("hash-object", "-w", str(self.root / "blob.txt"), cwd=self.clone)
+        subprocess.run([b"git", b"update-index", b"--add", b"--cacheinfo", b"100644," + blob.encode() + b",b\xff"],
+                       cwd=self.clone, env={**ENV, "HOME": str(self.clone)}, check=True)
+        raw = subprocess.run(["git", "-C", str(self.clone), "ls-files", "-z"], capture_output=True)
+        self.assertIn(b"b\xff\0", raw.stdout)  # the premise: git itself prints the byte
+        code, text = git_trees.git(["ls-files", "-z"], self.clone)
+        self.assertEqual(code, 0)
+        self.assertIn("b\\xff", text)
+
+    def test_a_head_naming_a_ref_with_a_non_utf8_byte_is_unreadable_not_a_traceback(self) -> None:
+        """#49 round 11 read this branch (`git rev-parse --abbrev-ref HEAD` printed the byte). Through the view (#443) a HEAD
+        that is not UTF-8 is metadata it refuses, so the tree reads `unreadable` and `read_state` leaves it at risk."""
         sha = git("rev-parse", "HEAD", cwd=self.clone)
         git_dir = self.clone / ".git"
         (git_dir / "packed-refs").write_bytes(b"# pack-refs with: peeled fully-peeled sorted \n" + sha.encode() + b" refs/heads/b\xff\n")
@@ -344,9 +378,11 @@ class NonUtf8OutputTest(Repo):
         raw = subprocess.run(["git", "-C", str(self.clone), "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True)
         self.assertEqual(raw.stdout, b"b\xff\n")  # the premise: git itself prints the byte
         code, text = git_trees.git(["rev-parse", "--abbrev-ref", "HEAD"], self.clone)
-        self.assertEqual(code, 0)
-        self.assertTrue(text.startswith("b"), repr(text))
-        self.assertEqual(git_trees.read_state(self.clone).branch[:1], "b")
+        self.assertEqual(code, 128)
+        self.assertTrue(text.startswith("unreadable:"), text)
+        state = git_trees.read_state(self.clone)
+        self.assertEqual((state.dirty, state.off_origin, state.unpushed), (0, None, None))
+        self.assertTrue(at_risk(state))
 
 
 class ShaExitTest(unittest.TestCase):
@@ -1327,10 +1363,25 @@ class AuditEnvTest(Repo):
     """The audit calls read no home, global or system config, and take nothing from the launcher's environment (#442)."""
 
     def _spied_env(self) -> dict[str, str]:
+        """The `env` handed to the view: `git()` no longer starts git itself (#443), `git_view.run` does."""
         done = subprocess.CompletedProcess([], 0, stdout="", stderr="")
-        with patch.object(git_trees.subprocess, "run", return_value=done) as run:
+        with patch.object(git_view, "run", return_value=done) as run:
             git_trees.git(["status", "--porcelain"], self.clone)
+        run.assert_called_once()
         return run.call_args.kwargs["env"]
+
+    def _child_envs(self, **leaks: str) -> list[dict[str, str]]:
+        """The environment of every git process one real `git()` read starts, the view's own included."""
+        real, envs = subprocess.run, []
+
+        def spy(argv, *args, **kwargs):
+            if argv[0] == "git":
+                envs.append(kwargs.get("env"))
+            return real(argv, *args, **kwargs)
+
+        with patch.dict(os.environ, leaks), patch.object(git_view.subprocess, "run", side_effect=spy):
+            self.assertEqual(git_trees.git(["status", "--porcelain"], self.clone)[0], 0)
+        return envs
 
     def test_the_audit_call_names_no_home_global_or_system_config(self) -> None:
         env = self._spied_env()
@@ -1348,12 +1399,27 @@ class AuditEnvTest(Repo):
             env = self._spied_env()
         self.assertEqual(set(env), {"GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS", "GIT_NO_REPLACE_OBJECTS", "PATH", "HOME",
                                     "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM"})
+        self.assertEqual(env, git_trees.audit_env())
 
     def test_the_audit_call_keeps_the_rest_of_its_environment(self) -> None:
         env = self._spied_env()
         self.assertEqual(env["GIT_NO_REPLACE_OBJECTS"], "1")
         self.assertEqual((env["GIT_TERMINAL_PROMPT"], env["GIT_OPTIONAL_LOCKS"]), ("0", "0"))
         self.assertEqual(env["PATH"], "/usr/bin:/bin:/usr/local/bin")
+
+    def test_every_git_process_of_a_read_has_the_scrubbed_environment(self) -> None:
+        """The view adds only the three variables that name its own repository; nothing of the launcher's leaks in."""
+        envs = self._child_envs(GIT_CONFIG_PARAMETERS="'core.fsmonitor=x'", GIT_CONFIG_COUNT="1", AUDIT_ENV_MARKER="m",
+                                GIT_EXEC_PATH="/elsewhere", GIT_SSH_COMMAND="ssh -i key")
+        self.assertGreaterEqual(len(envs), 2, "the view's own git calls are among those spied")
+        own = {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"}
+        for env in envs:
+            self.assertIsNotNone(env)
+            self.assertLessEqual(set(env), set(git_trees.audit_env()) | own)
+            self.assertEqual({k: v for k, v in env.items() if k not in own},
+                             {k: v for k, v in git_trees.audit_env().items() if k in env})
+            self.assertEqual((env["HOME"], env["GIT_CONFIG_GLOBAL"], env["GIT_CONFIG_SYSTEM"], env["GIT_CONFIG_NOSYSTEM"]),
+                             (git_trees.SAFE_HOME, "/dev/null", "/dev/null", "1"))
 
     def test_audit_env_is_the_one_definition(self) -> None:
         self.assertEqual(git_trees.audit_env(), {
@@ -1379,6 +1445,214 @@ class AuditEnvTest(Repo):
         marker.unlink()
         git_trees.read_state(tree)
         self.assertFalse(marker.exists())
+
+
+class GitViewFunnelTest(unittest.TestCase):
+    """#443 slice 3: `git()` is `git_view.run` and nothing else, so every read in `read_state` gets the sanitised view.
+
+    A worker writes the tree's own `.git`, so its config, hooks, aliases and `.git` file are data, never a program to run.
+    Each red case has a control in the same test: the former call shape, run on the same fixture, proves the canary bites.
+    """
+
+    # vector -> the marker its former read fires (`taint.apply` plants the vector; the rest are planted below).
+    FIRES = {"fsmonitor": "fsmonitor", "filter": "filter-clean", "include": "include-fsmonitor",
+             "wtconfig": "wtconfig-fsmonitor", "includeif": "includeif-fsmonitor", "hooks": "hook-post-index-change",
+             "hooks_in_common": "hook-in-common"}
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+
+    def fixture(self, vector: str | None = None) -> taint.Fx:
+        """Common repo + linked tree `wt` on `feat` (3 not on origin/main, 1 unpushed, 3 dirty paths), with one vector planted."""
+        fx = taint.build(Path(tempfile.mkdtemp(prefix="fx-", dir=self.root)))
+        if vector == "includeif":  # an include behind a condition that matches the tree's branch
+            included = fx.root / "conditional.cfg"
+            taint.config(fx, "core.fsmonitor", fx.command("includeif-fsmonitor", 1), file=included)
+            taint.config(fx, "includeIf.onbranch:feat.path", str(included))
+        elif vector == "alias":
+            taint.config(fx, "alias.st", "!" + fx.command("alias"))
+        elif vector is not None:
+            taint.apply(fx, vector)
+        return fx
+
+    def bites(self, fx: taint.Fx, marker: str, vector: str) -> None:
+        """Control: the former read of this tree (`git -C <tree> status` under the audit environment) runs the canary."""
+        env = git_trees.audit_env()
+        if vector.startswith("hooks"):  # audit_env's GIT_OPTIONAL_LOCKS=0 already keeps index-refresh hooks quiet; a caller without it is bitten
+            del env["GIT_OPTIONAL_LOCKS"]
+        fx.clear()
+        args = ["st"] if vector == "alias" else ["status", "--porcelain"]
+        subprocess.run(["git", "-C", str(fx.tree), *args], env=env, capture_output=True, timeout=15, check=False)
+        self.assertIn(marker, fx.fired(), "the fixture must fire under the former read, or the test proves nothing")
+        fx.clear()
+        for name in ("README.md", "b.txt", "c.txt", "d.txt"):  # the control may have refreshed the real index: stale it again
+            os.utime(fx.tree / name, (1_900_000_000, 1_900_000_000))
+
+    def test_the_call_is_git_view_run_with_the_audit_env_and_the_git_timeout(self) -> None:
+        """The whole change: same name, signature and return shape; the body is one call into the view."""
+        tree = self.root / "any"
+        done = subprocess.CompletedProcess([], 0, stdout=" out\n", stderr="ignored")
+        with patch.object(git_view, "run", return_value=done) as run, \
+                patch.object(subprocess, "run", side_effect=AssertionError("git() started git itself")):
+            self.assertEqual(git_trees.git(["status", "--porcelain"], tree), (0, "out"))
+        self.assertEqual(run.call_args.args, (["status", "--porcelain"], tree))
+        self.assertEqual(run.call_args.kwargs, {"env": git_trees.audit_env(), "timeout": git_trees.GIT_TIMEOUT})
+
+    def test_stderr_is_the_text_when_stdout_is_empty_and_the_exit_code_is_git_s(self) -> None:
+        failed = subprocess.CompletedProcess([], 1, stdout="", stderr=" fatal: no\n")
+        with patch.object(git_view, "run", return_value=failed):
+            self.assertEqual(git_trees.git(["merge-base", "--is-ancestor", "a", "b"], self.root), (1, "fatal: no"))
+
+    def test_the_timeout_is_read_when_called(self) -> None:
+        done = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        with patch.object(git_view, "run", return_value=done) as run, patch.object(git_trees, "GIT_TIMEOUT", 3):
+            git_trees.git(["rev-parse", "HEAD"], self.root)
+        run.assert_called_once()
+        self.assertEqual(run.call_args.kwargs["timeout"], 3)
+
+    def test_an_unviewable_tree_is_128_with_the_reason_after_unreadable(self) -> None:
+        with patch.object(git_view, "run", side_effect=git_view.Unviewable("metadata is not a bounded regular file")):
+            self.assertEqual(git_trees.git(["status", "--porcelain"], self.root),
+                             (128, "unreadable: metadata is not a bounded regular file"))
+
+    def test_os_and_timeout_failures_keep_their_128_and_their_text(self) -> None:
+        for exc in (OSError("no git"), subprocess.TimeoutExpired(["git"], 15)):
+            with self.subTest(type(exc).__name__), patch.object(git_view, "run", side_effect=exc):
+                code, text = git_trees.git(["rev-parse", "HEAD"], self.root)
+                self.assertEqual((code, text), (128, f"{type(exc).__name__}: {exc}"))
+
+    def test_a_hung_git_inside_the_view_is_bounded_by_git_timeout(self) -> None:
+        """The whole view build plus the read shares one budget, and a hang there is a 128, not a stall."""
+        fx = self.fixture()
+        seen = []
+
+        def hang(argv, **kwargs):
+            seen.append((argv, kwargs.get("timeout")))
+            raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+        with patch.object(git_trees, "GIT_TIMEOUT", 2), patch.object(git_view.subprocess, "run", side_effect=hang):
+            code, text = git_trees.git(["status", "--porcelain"], fx.tree)
+        self.assertEqual(code, 128)
+        self.assertIn("TimeoutExpired", text)
+        self.assertEqual(seen[0][0][:3], ["git", "config", "--file"], "the first git process is the view's own")
+        self.assertTrue(all(0 < timeout <= 2 for _, timeout in seen), seen)
+
+    def test_git_does_not_start_a_process_itself(self) -> None:
+        source = inspect.getsource(git_trees.git)
+        self.assertIn("git_view.run(", source)
+        self.assertNotIn("subprocess.run", source)
+        self.assertNotIn('"-C"', source)
+
+    def test_a_clean_tree_reads_through_the_view_as_before(self) -> None:
+        """Control: nothing is planted, the answers are git's own and no view is left behind."""
+        fx = self.fixture()
+        views = sorted(_base.iterdir())
+        self.assertEqual(git_trees.git(["rev-parse", "--abbrev-ref", "HEAD"], fx.tree), (0, "feat"))
+        self.assertEqual(git_trees.git(["status", "--porcelain"], fx.tree), (0, "M README.md\n?? .gitattributes\n?? new.txt"))
+        self.assertEqual(git_trees.git(["rev-list", "--count", "origin/main..HEAD"], fx.tree), (0, "3"))
+        self.assertEqual(git_trees.git(["merge-base", "--is-ancestor", fx.sha["D"], "main"], fx.tree)[0], 1)
+        self.assertEqual(fx.fired(), [])
+        self.assertEqual(sorted(_base.iterdir()), views, "the view was not cleaned up")
+
+    def test_a_worker_planted_program_does_not_run_through_git(self) -> None:
+        want = git_trees.git(["status", "--porcelain"], self.fixture().tree)
+        for vector, marker in self.FIRES.items():
+            with self.subTest(vector):
+                fx = self.fixture(vector)
+                self.bites(fx, marker, vector)
+                self.assertEqual(git_trees.git(["status", "--porcelain"], fx.tree), want)
+                self.assertEqual(fx.fired(), [])
+
+    def test_a_worker_planted_alias_does_not_run_through_git(self) -> None:
+        fx = self.fixture("alias")
+        self.bites(fx, "alias", "alias")
+        code, text = git_trees.git(["st"], fx.tree)
+        self.assertNotEqual(code, 0)
+        self.assertTrue(text.startswith("unreadable:"), text)
+        self.assertEqual(fx.fired(), [])
+
+    def test_read_state_runs_no_worker_program_and_reads_what_a_clean_tree_reads(self) -> None:
+        want = git_trees.read_state(self.fixture().tree)
+        self.assertEqual(want, TreeState("feat", 3, 3, 1))
+        for vector, marker in self.FIRES.items():
+            with self.subTest(vector):
+                fx = self.fixture(vector)
+                self.bites(fx, marker, vector)
+                self.assertEqual(git_trees.read_state(fx.tree), want)
+                self.assertEqual(fx.fired(), [])
+
+    def test_a_tree_with_a_submodule_reads_unreadable_for_status_and_still_answers_history(self) -> None:
+        fx = self.fixture("gitlink")
+        self.bites(fx, "nested-fsmonitor", "gitlink")
+        code, text = git_trees.git(["status", "--porcelain"], fx.tree)
+        self.assertNotEqual(code, 0)
+        self.assertEqual(text, "unreadable: submodules are not inspected")
+        self.assertEqual(fx.fired(), [])
+        self.assertEqual(git_trees.git(["rev-parse", "HEAD"], fx.tree), (0, fx.sha["D"]))  # control: object reads are unaffected
+        self.assertEqual(git_trees.git(["rev-list", "--count", "origin/main..HEAD"], fx.tree), (0, "3"))
+
+    def test_a_submodule_tree_is_never_read_as_safe(self) -> None:
+        """`dirty` stays 0 when `status` is unreadable, which is harmless only because `off_origin` is None keeps `at_risk`
+        non-empty. Pinned for a tree whose commits are all on origin/main too: there nothing else would say it is at risk."""
+        for label, on_origin in (("ahead of origin/main", False), ("all commits on origin/main", True)):
+            with self.subTest(label):
+                fx = self.fixture("gitlink")
+                if on_origin:
+                    taint.git(["update-ref", "refs/remotes/origin/main", fx.sha["D"]], fx.clone)
+                    taint.git(["update-ref", "refs/remotes/origin/feat", fx.sha["D"]], fx.clone)
+                    taint.git(["update-ref", "refs/heads/main", fx.sha["D"]], fx.clone)
+                    self.assertEqual(git_trees.git(["rev-list", "--count", "origin/main..HEAD"], fx.tree), (0, "0"))
+                state = git_trees.read_state(fx.tree)
+                self.assertEqual((state.dirty, state.off_origin), (0, None))
+                self.assertTrue(at_risk(state), state)
+                self.assertEqual(fx.fired(), [])
+
+    def test_a_hostile_dot_git_is_128_unreadable_and_never_hangs(self) -> None:
+        for kind in ("symlink", "fifo", "huge"):
+            with self.subTest(kind):
+                fx = self.fixture()
+                dotgit = fx.tree / ".git"
+                content = dotgit.read_bytes()
+                dotgit.unlink()
+                if kind == "symlink":
+                    target = fx.root / "gitfile"
+                    target.write_bytes(content)
+                    dotgit.symlink_to(target)
+                elif kind == "fifo":
+                    os.mkfifo(dotgit)
+                else:
+                    dotgit.write_bytes(content + b"\n" * 4096)
+                with patch.object(git_trees, "GIT_TIMEOUT", 2):  # a former read of a FIFO `.git` may block until this
+                    for args in (["rev-parse", "HEAD"], ["status", "--porcelain"]):
+                        code, text = git_trees.git(args, fx.tree)
+                        self.assertEqual(code, 128)
+                        self.assertTrue(text.startswith("unreadable:"), text)
+                    state = git_trees.read_state(fx.tree)
+                self.assertEqual((state.dirty, state.off_origin, state.unpushed), (0, None, None))
+                self.assertTrue(at_risk(state))
+
+    def test_a_directory_that_is_not_a_repository_is_128_unreadable(self) -> None:
+        """The former read also answered 128 here (`fatal: not a git repository`): the code is kept, the text now names the view."""
+        empty = self.root / "empty"
+        empty.mkdir()
+        code, text = git_trees.git(["rev-parse", "HEAD"], empty)
+        self.assertEqual(code, 128)
+        self.assertTrue(text.startswith("unreadable:"), text)
+        state = git_trees.read_state(empty)
+        self.assertEqual((state.dirty, state.off_origin, state.unpushed), (0, None, None))
+        self.assertTrue(at_risk(state))
+
+    def test_a_redirected_common_dir_is_unreadable_and_runs_nothing(self) -> None:
+        for vector, marker in (("commondir", "decoy-fsmonitor"), ("gitfile", "gitfile-fsmonitor")):
+            with self.subTest(vector):
+                fx = self.fixture(vector)
+                self.bites(fx, marker, vector)
+                code, text = git_trees.git(["status", "--porcelain"], fx.tree)
+                self.assertEqual(code, 128)
+                self.assertTrue(text.startswith("unreadable:"), text)
+                self.assertEqual(fx.fired(), [])
 
 
 if __name__ == "__main__":
