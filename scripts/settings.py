@@ -24,6 +24,7 @@ ADAPTERS = ("md-notify", "off")
 HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 OFFSET = re.compile(r"^(\d+)([hm])$")
 WORKER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+HERDR_NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
 DEFAULT_WARNINGS = ("24h", "3h", "1h")
 EFFORTS = ("high", "medium", "low")
 
@@ -83,6 +84,7 @@ class Workers:
     mode: str = "interactive"
     # #100: one-shots running at once across every session in the workspace; None is no cap.
     max_concurrency: int | None = None
+    herdr_session: str = "chief-of-stuff"
 
 
 @dataclass(frozen=True)
@@ -201,15 +203,18 @@ def _workers(table) -> Workers:
     if not isinstance(table, dict):
         raise SettingsError("[workers] must be a table")
     launcher = table.get("launcher", "ghostty")
-    if launcher not in ("ghostty", "tmux"):
-        raise SettingsError("[workers] launcher must be `ghostty` or `tmux`")
+    if launcher not in ("ghostty", "tmux", "herdr"):
+        raise SettingsError("[workers] launcher must be `ghostty`, `tmux` or `herdr`")
+    session = table.get("herdr_session", Workers.herdr_session)
+    if not isinstance(session, str) or not HERDR_NAME.fullmatch(session):
+        raise SettingsError("[workers] herdr_session must match [a-z0-9][a-z0-9_-]{0,31}")
     mode = table.get("mode", "interactive")
     if mode not in ("interactive", "one-shot"):
         raise SettingsError("[workers] mode must be `interactive` or `one-shot`")
     cap = table.get("max_concurrency")
     if cap is not None and (type(cap) is not int or cap < 1):
         raise SettingsError("[workers] max_concurrency must be a positive whole number")
-    return Workers(launcher=launcher, mode=mode, max_concurrency=cap)
+    return Workers(launcher=launcher, mode=mode, max_concurrency=cap, herdr_session=session)
 
 
 def _repos(table) -> dict[str, str]:
