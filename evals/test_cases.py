@@ -757,6 +757,164 @@ class CaseLintTest(unittest.TestCase):
         "decision-lifts-workspace-rule", "decision-row-names-its-page", "ask-links-its-context",
         "unattended-authority-escalates",
     )
+    OPTIONAL_FEATURE_SKILL_CASES = (
+        "para-move", "requirements-tick-on-done", "awaiting-you-notifies",
+        "notification-updates-task", "para-move-protected", "requirements-unrelated-no-tick",
+        "open-day-ensures-notify", "deadline-sync-service",
+    )
+
+    def test_optional_feature_skill_graders_load_and_quote_rules_text(self) -> None:
+        """Use the loader and template renderer; quoted rules follow their move into the skill."""
+        from unittest.mock import patch
+        loaded = run.load_cases(list(self.OPTIONAL_FEATURE_SKILL_CASES))
+        self.assertEqual({case.name for case in loaded}, set(self.OPTIONAL_FEATURE_SKILL_CASES))
+        text = rules_text()
+        with patch.object(run, "_free_port", return_value=0):
+            for case in loaded:
+                with self.subTest(case=case.name), tempfile.TemporaryDirectory() as d:
+                    c = ctx(case.spec)
+                    rendered = run.render_value(case.spec, c)
+                    work = Path(d)
+                    run.render_tree(case.root / "fixture", work, c)
+                    self.assertTrue((work / "CLAUDE.md").is_file())
+                    for g in graders(rendered):
+                        if case.name == "open-day-ensures-notify":
+                            self.assertTrue(g.get("rule"), g["name"])
+                        if g.get("rule"):
+                            self.assertIn(g["rule"], text, g["name"])
+                        if "skills/optional-features/SKILL" not in g.get("input_match", ""):
+                            continue
+                        self.assertTrue(g.get("rule"), g["name"])
+                        self.assertIn(g["rule"], text, g["name"])
+                        self.assertIn(g["type"], run.GRADER_TYPES)
+                        for key in ("input_match", "before", "tool"):
+                            re.compile(g[key])
+
+    def test_optional_feature_skill_graders_require_read_before_the_first_action(self) -> None:
+        """No missing/late read, description mention, unrelated edit or later write may satisfy it."""
+        from datetime import timezone
+        read_match = r'"file_path": "[^"\n]*skills/optional-features/SKILL\.md"'
+        mv_before = r'"command": "(?:\\.|[^"\\])*\bmv\b'
+        edit_before = (
+            r'\A(?=[\s\S]*"old_string":)[\s\S]*"file_path": '
+            r'"(?:[^"\n]*[/\\])?projects[/\\]final-requirements\.md"'
+        )
+        notify_command = (
+            r'"command": "(?:\\.|[^"\\])*(?:\bchief[-_]of[-_]stuff(?:\.py)?\s+notify\b|(?:scripts/)?notify\.py\b)'
+        )
+        notify_before = notify_command + r'(?:(?![;&|]|\\n)(?:\\.|[^"\\]))*\badd\b'
+        filing_rule = "A move is `mv`, nothing else."
+        requirements_rule = "Your only edit is a tick: flip `- [ ]` to `- [x]` and append ` — evidence: <commit, URL, or Log HH:MM>`, with Edit."
+        notify_rule = "Never run routine `notify sync` or edit the queue yourself."
+        ensure_rule = ("The launcher ensures the service before all runtime launches; at Open the day or Resume, "
+                       "use `chief-of-stuff notify --root . ensure` for a direct plugin launch or a reported service failure.")
+        expected = {
+            "para-move": (filing_rule, mv_before),
+            "requirements-tick-on-done": (requirements_rule, edit_before),
+            "awaiting-you-notifies": (notify_rule, notify_before),
+            "open-day-ensures-notify": (ensure_rule, notify_command),
+        }
+        read = {"id": "skill", "name": "Read", "input": {"file_path": "/plugin/skills/optional-features/SKILL.md"}}
+
+        def bash(command):
+            return {"id": "action", "name": "Bash", "input": {"command": command}}
+
+        requirement = "/ws/projects/final-requirements.md"
+        edits = [
+            {"id": "action", "name": "Edit", "input": {"file_path": requirement, "old_string": "- [ ] Check", "new_string": "- [x] Check"}},
+            {"id": "action", "name": "Edit", "input": {"old_string": "- [ ] Check", "new_string": "- [x] Check", "file_path": requirement}},
+            {"id": "action", "name": "Edit", "input": {"file_path": "projects/final-requirements.md", "old_string": "old", "new_string": "new"}},
+        ]
+        moves = [bash("mv receipt.txt Resources/"), bash('cd "/ws" && mv "receipt.txt" "Resources/"')]
+        adds = [
+            bash('chief-of-stuff notify --root . add --kind awaiting --what "Check"'),
+            bash('python3 /plugin/chief_of_stuff.py notify --root "/ws" add --kind awaiting --what "Check"'),
+            bash('python3 /plugin/scripts/notify.py --root . add --kind awaiting --what "Check"'),
+        ]
+        actions = {"para-move": moves, "requirements-tick-on-done": edits,
+                   "awaiting-you-notifies": adds,
+                   "open-day-ensures-notify": adds + [
+                       bash("chief-of-stuff notify --root . ensure"),
+                       bash('python3 /plugin/chief_of_stuff.py notify --root "/ws" ensure'),
+                       bash("python3 /plugin/scripts/notify.py --root . ensure"),
+                       bash("chief-of-stuff notify --root . status"),
+                       bash("chief-of-stuff notify --root . sync"),
+                   ]}
+        harmless = [
+            {"id": "answer", "name": "Read", "input": {"file_path": requirement}},
+            {"id": "other", "name": "Edit", "input": {"file_path": "/ws/daily/tracker.md", "old_string": "old", "new_string": "new"}},
+            {"id": "mention", "name": "Bash", "input": {"command": "pwd", "description": "mv; chief-of-stuff notify --root . add"}},
+            bash("chief-of-stuff notify --root . status"),
+            bash("chief-of-stuff notify --root . sync; echo add"),
+            bash("chief-of-stuff notify --root . sync\necho add"),
+        ]
+        at = datetime.now(timezone.utc)
+        for name in self.OPTIONAL_FEATURE_SKILL_CASES:
+            s = spec(EVALS / "cases" / name)
+            skill_graders = [g for g in graders(s) if "skills/optional-features/SKILL" in g.get("input_match", "")]
+            with self.subTest(case=name):
+                if name not in expected:
+                    self.assertEqual(skill_graders, [], "cases that fail safe without acting need no skill read")
+                    continue
+                self.assertEqual(len(skill_graders), 1)
+                g = skill_graders[0]
+                rule, before = expected[name]
+                self.assertEqual((g["rule"], g["type"], g["tool"], g["min"]), (rule, "tool_used", "Read", 1))
+                self.assertEqual(g["input_match"], read_match)
+                self.assertEqual(g["before"], before)
+                if "turns" in s:
+                    self.assertIn(g, s["turns"][-1]["graders"], "the runner ignores top-level graders in multi-turn cases")
+                    self.assertNotIn(g, graders({"turns": s["turns"][:-1]}))
+                else:
+                    self.assertIn(g, s["graders"])
+
+                def passes(calls):
+                    rec = run.RunRecord(run.Stream(tool_uses=calls), at, at, "UTC", EVALS)
+                    return run.grade(g, rec)[0]
+
+                self.assertFalse(passes([]), "the Read is unconditional even if no write occurred")
+                self.assertFalse(passes([dict(read, name="Write")]))
+                for path in ("/plugin/skills/other/SKILL.md", "/plugin/skills/optional-features/SKILL.md.bak"):
+                    self.assertFalse(passes([dict(read, input={"file_path": path})]))
+                self.assertTrue(passes([read]))
+                safe = harmless[:3] if name == "open-day-ensures-notify" else harmless
+                self.assertTrue(passes(safe + [read]), "unrelated operations and descriptions are not the first action")
+                for action in actions[name]:
+                    self.assertTrue(passes(safe + [read, action]), action)
+                    self.assertFalse(passes([action]), action)
+                    self.assertFalse(passes([action, read]), action)
+                    self.assertFalse(passes([action, read, dict(action, id="second")]), action)
+
+    def test_open_day_ensures_notify_fixture_and_command_grader(self) -> None:
+        case = EVALS / "cases" / "open-day-ensures-notify"
+        s = spec(case)
+        self.assertEqual(s["prompt"], spec(EVALS / "cases" / "open-the-day")["prompt"])
+        with tempfile.TemporaryDirectory() as d:
+            work = Path(d)
+            c = ctx(s)
+            run.render_tree(case / "fixture", work, c)
+            block = (work / "CLAUDE.md").read_text()
+            self.assertIn("- Settings: `chief-of-stuff.toml`", block)
+            settings = load_settings(work, settings_path(block))
+            self.assertEqual(settings.notify.adapter, "md-notify")
+            for path in (f"daily/{c['today']}.md", f"daily/{c['today']}-tracker.md"):
+                self.assertFalse((work / path).exists(), "this must open the day, not resume it")
+            for path in ("templates/daily.md", "templates/tracker.md",
+                         f"daily/{c['yesterday']}.md", f"daily/{c['yesterday']}-tracker.md"):
+                self.assertTrue((work / path).is_file())
+
+        g = next(g for g in s["graders"] if g["name"] == "ensures the notification service")
+        self.assertEqual((g["type"], g["tool"], g["min"]), ("tool_used", "Bash", 1))
+        for command in ("chief-of-stuff notify --root . ensure",
+                        'python3 /plugin/chief_of_stuff.py notify --root "/ws" ensure',
+                        "python3 /plugin/scripts/notify.py --root . ensure"):
+            self.assertTrue(grader_hits(g, "Bash", command=command), command)
+        for command in ("chief-of-stuff notify --root . status", "chief-of-stuff notify --root . sync",
+                        "chief-of-stuff notify --root . status; echo ensure",
+                        "chief-of-stuff notify --root . status\necho ensure", "pwd"):
+            self.assertFalse(grader_hits(g, "Bash", command=command,
+                                         description="chief-of-stuff notify --root . ensure"), command)
+        self.assertFalse(grader_hits(g, "Read", command="chief-of-stuff notify --root . ensure"))
 
     def test_settled_ask_cases_load_and_render_through_the_harness(self) -> None:
         """Use the actual loader and template renderer; loading a fixture needs no listening port."""

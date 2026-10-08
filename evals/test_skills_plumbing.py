@@ -173,6 +173,22 @@ class SkillsPlumbingTest(unittest.TestCase):
         self.assertNotIn(body, claude)
         self.assertNotIn("\n\n## decision-page\n\n", claude)
 
+    def test_shipped_optional_features_body_is_appended_only_for_non_claude_hosts(self):
+        root = Path(__file__).resolve().parent.parent
+        path = root / "skills" / "optional-features" / "SKILL.md"
+        self.assertTrue(path.is_file(), "optional-features skill is missing")
+        body = skill_body(path.read_text())
+        self.assertTrue(body)
+        for runtime in NON_CLAUDE:
+            with self.subTest(runtime=runtime):
+                prompt = start.prompt(runtime, root, self.workspace)
+                rendered_body = body.replace("${CLAUDE_PLUGIN_ROOT}", str(root))
+                self.assertIn("\n\n## optional-features\n\n" + rendered_body + "\n\n", prompt)
+                self.assertEqual(prompt.count(rendered_body), 1)
+        claude = start.prompt("claude", root, self.workspace)
+        self.assertNotIn(body.replace("${CLAUDE_PLUGIN_ROOT}", str(root)), claude)
+        self.assertNotIn("\n\n## optional-features\n\n", claude)
+
     def test_no_skills_prompt_is_byte_identical_to_the_legacy_prompt(self):
         for empty_dir in (False, True):
             if empty_dir:

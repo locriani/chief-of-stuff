@@ -69,7 +69,7 @@ A day with no log yet starts this move, as does a greeting or "open the day" on 
 6. Leave Goal empty, or write a Goal line that begins with "Proposed:". The user decides the goal.
 7. Run `chief-of-stuff health --config CLAUDE.md`, whatever the block holds: it checks the `Settings:` file and probes the `Health:` targets. One Log line for the results, naming anything it reports as unhealthy or invalid.
 8. Append one Log line to the tracker, and write the `## Resume` block (see Resume).
-9. Serve the board, if the block names one: `chief-of-stuff pages --ensure` (see Board); ensure the notification service (see Notify), and arm the check: `CronList`, then `CronCreate` only when no job's prompt starts `[Scheduled check]` (see Check).
+9. Serve the board, if the block names one: `chief-of-stuff pages --ensure` (see Board); when the block has a Settings line, ensure the notification service (see Notify), and arm the check: `CronList`, then `CronCreate` only when no job's prompt starts `[Scheduled check]` (see Check).
 10. Reply with the Clock line, the calendar, the carried items, anything unhealthy, any invalid setting in the words `health` printed, the board serving status, and one question for the user: the goal.
 
 Yesterday's files are read, never edited.
@@ -82,7 +82,7 @@ Four round trips, not ten.
 
 1. One message, six calls that do not depend on each other: `TZ=<tz> date`; read today's tracker through `chief-of-stuff tracker` (`header`, `section Resume`, `tasks --not done`, `section "File ownership"`; `sections` gives each heading's line number), never with grep, sed, awk, cat, head, tail or cut on the tracker file, in this step or a later one (before an Edit, the Read tool with `offset` and `limit`), and the log; list sessions; `chief-of-stuff health --config CLAUDE.md`; `chief-of-stuff audit --date <today>`; `chief-of-stuff inbox list --recipient coordinator --unread`. Read the Log only from the block's `As of` time — earlier lines are history, and the block is the summary of them.
 2. One write pass to the tracker: your own name in the header — and when you are not in the session listing yet, say that there (`resumed session, not yet listed`) rather than leaving the name of the session before you. The header names who is writing, and your predecessor's name is the one answer that is certainly wrong; process unread mailbox messages (read and acknowledge via `chief-of-stuff inbox read <id> --ack` or `chief-of-stuff inbox drain --recipient coordinator`): registrations update `## Sessions`, worker completion reports update task state and `Verified`, and stops update task state to `waiting` or `orphaned`; task states from the session check (see Sessions) and from the audit (see Tracker); an issue filed for every open task the audit names as having none, a close for every done task whose issue it names as open, and — only from that same `issue:` line, never from a plain `reopen:` finding, which stays the silent state change it always was — a task whose issue the audit names as closed written `done` at the close time that issue fault gives, or one question to the user when that issue fault says the tree has work not on main (see Tracker); one Log line; the `## Resume` block last.
-3. Serve the board: `chief-of-stuff pages --ensure` (see Board); ensure the notification service (see Notify), and arm the check: `CronList`, then `CronCreate` only when no job's prompt starts `[Scheduled check]` (see Check).
+3. Serve the board: `chief-of-stuff pages --ensure` (see Board); when the block has a Settings line, ensure the notification service (see Notify), and arm the check: `CronList`, then `CronCreate` only when no job's prompt starts `[Scheduled check]` (see Check).
 4. Reply: the Clock line, what changed while no session was watching (tasks reopened, owners gone, anything unhealthy), and at most one question.
 
 `Re-arm` names what dies with a session — the check's cron job, a watch, a subscription. Step 3 arms the check again; anything else is marked and said. Re-arming restores checks. After reconciling state, dispatch ready one-shot tasks under Dispatch authority; new interactive sessions still need approval.
@@ -108,7 +108,7 @@ You may create or edit exactly two files: today's daily log and today's tracker,
 
 When a change to any other file would help, do not make it. State the change you would make, line by line, and ask the user for a yes. A yes to one change is not a yes to the next. Naming the file in the instruction is not the yes: an instruction that sweeps in the template, a note, or a source file still gets stated and confirmed before you touch it.
 
-A state report is the one exception, and it is not a request to be confirmed. When the user tells you the state of something — a thing is done, a deadline is gone, a decision is made — that report is the yes for every workspace file that records that state: today's tracker and log, a requirements file, the admission checklist, the Deadlines in the `## Coordinator` block. Edit only the lines that state touches, append one Log line per file quoting the user's words, and reply with what you changed. Never echo the report back and ask whether to record it: a state tracker that does not update the state is the failure this names (the user, 2026-09-22 22:30: "If I tell you a state update, the intent of me telling you the state update is for you... to update... the state... Not for you to parrot back at me what I told you and then ask for permission to update the state.").
+A state report is the one exception, and it is not a request to be confirmed. When the user tells you the state of something — a thing is done, a deadline is gone, a decision is made — that report is the yes for every workspace file that records that state: today's tracker and log, a requirements file (see Requirements), the admission checklist, the Deadlines in the `## Coordinator` block. Edit only the lines that state touches, append one Log line per file quoting the user's words, and reply with what you changed. Never echo the report back and ask whether to record it: a state tracker that does not update the state is the failure this names (the user, 2026-09-22 22:30: "If I tell you a state update, the intent of me telling you the state update is for you... to update... the state... Not for you to parrot back at me what I told you and then ask for permission to update the state.").
 
 ```
 S := the user reports a state change    F(f) := workspace file f records that state    W(f) := you write f
@@ -120,13 +120,7 @@ It never reaches code, a git checkout, a template, or anything outside the works
 
 ## Filing
 
-Only when the workspace `CLAUDE.md` explicitly defines PARA filing homes may you file into them: `Projects/` (time-bound work), `Areas/` (ongoing), `Resources/` (reference), `Archives/` (finished). In that workspace, you may move a file or folder to its defined home without a yes. If the workspace does not define those homes, do not infer a filing system or move files under this section.
-
-- A move is `mv`, nothing else. Never copy, delete, rename, or edit what you move. If the destination folder is missing, `mkdir -p` it first.
-- Never move anything outside the workspace root unless the user has asked for it.
-- Never move: the daily logs, the templates, `CLAUDE.md`, anything the `## Coordinator` block names, `Resources/skills/`, a git checkout (a folder containing `.git`), or a file whose home you cannot name with confidence. A file whose contents span more than one home — a mixed capture list, a scratch page — has no home; reasoning your way to the nearest folder is not naming it with confidence. Leave those where they are; for the unclear one, ask one question.
-- Each move gets a tracker Log line with the clock time, the old path, the new path, and the reason, and is stated in your reply.
-- A move breaks paths written in other files. List those in your reply; editing them needs a yes.
+Before moving a file into a PARA home, Read ${CLAUDE_PLUGIN_ROOT}/skills/optional-features/SKILL.md
 
 ## Human-only actions
 
@@ -320,12 +314,7 @@ When the `## Coordinator` block has a `Board:` line (`- Board: self-hosted; URL 
 
 ## Requirements
 
-A deadline line in the `## Coordinator` block may name a requirements file (`- Final: <date> <time>; requirements \`<path>\``): the explicit requirements for that goal, as `- [ ]` lines under `## ` headings. The board shows each one with its done count until the deadline passes. A deadline line may also say `named tasks only` (`- PCCAT 1st attempt: <date>; named tasks only`): tasks whose `due` names it draw to it, and no task falls to it by default — an exam governs nothing on the Tasks table, and once every other deadline has passed the board's horizon is end of day, not the exam.
-
-- The file is the user's list. Your only edit is a tick: flip `- [ ]` to `- [x]` and append ` — evidence: <commit, URL, or Log HH:MM>`, with Edit. Never add, remove, reorder, or reword an item, never untick one, and never tick without evidence.
-- When a task goes `done`, read the requirements files. If the task's report is evidence for exactly one item, tick it and add a Log line `HH:MM ticked <deadline> requirement: <item>`. If it could be evidence for several, or the report gives no evidence, tick nothing and name the item in your reply. A task that matches no item ticks nothing.
-- A tick is part of the move; the board shows it on its own, like any tracker edit.
-- When the user asks for a goal's requirements checklist and no file exists, writing it is work from the source documents: a task dispatched under Dispatch authority, never inline. Adding the `requirements` path to the block is a `CLAUDE.md` edit and needs a yes.
+Before ticking or editing a requirements file, and when a task goes done and the Coordinator block names one, Read ${CLAUDE_PLUGIN_ROOT}/skills/optional-features/SKILL.md
 
 ## Share
 
@@ -360,11 +349,4 @@ A reply asks one decision. Every other pending decision stays in the Resume bloc
 
 ## Notify
 
-When the block has a `Settings:` line and its `[notify]` adapter is not `off`, you tell the user about four things through `chief-of-stuff notify --root .`. Notifications are off by default, including an empty `[notify]` table. The optional `md-notify` adapter reads a markdown queue at the configured path.
-
-- **Deadline warnings and the day's open and close:** the independent notification service owns reconciliation, including after deadline and precise `deadline:` Decisions-row edits. Never run routine `notify sync` or edit the queue yourself. The launcher ensures the service before all runtime launches; at Open the day or Resume, use `chief-of-stuff notify --root . ensure` for a direct plugin launch or a reported service failure. It is idempotent and does nothing when notifications are off. Use `chief-of-stuff notify --root . status` to report service errors. A running service checks input changes every five seconds and fully reconciles every minute while this session is closed. Manual `sync` is for explicit diagnostics only; notification events still use `add` below.
-- **Awaiting you:** `chief-of-stuff notify --root . add --kind awaiting --what "<the ask, a few words>"` whenever a move ends on an ask (see Asks), routes a human-only action to the user, or adds a Decision queue row. Once per ask, in the same move as the ask.
-- **A session stopped:** `add --kind stopped --what "<session>"` when the audit reports its stop file.
-- **A session gone:** `add --kind gone --what "<session>"` when you set its task `orphaned`.
-
-The script builds the title from the kind and its own clock read, so the same event never notifies twice; it prints what it added, `notify: off`, or `notify: nothing to change`. Never write the queue file with Write or Edit, and never add rows by hand: the user taps Complete, Ignore or Snooze on a banner, and the app edits the same file.
+When the Coordinator block has a Settings line, Read ${CLAUDE_PLUGIN_ROOT}/skills/optional-features/SKILL.md
