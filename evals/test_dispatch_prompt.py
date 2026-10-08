@@ -17,7 +17,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import dispatch_prompt as dp  # noqa: E402
 import inbox  # noqa: E402
-from evals.rules_text import one_shot_paragraph, rules_text, sections  # noqa: E402
+from evals.rules_text import one_shot_paragraph, rules_text, sections, skill_body  # noqa: E402
 
 CLAUDE = """# Workspace
 
@@ -269,7 +269,7 @@ class AssignmentTest(unittest.TestCase):
         self.assertNotIn("\u2026", str(e.exception))
 
     def test_it_says_to_commit_and_not_to_merge(self):
-        """Superseded 0.12.0: this pinned `Write only: do not commit or push.`, which contradicted the
+        """Superseded 0.12.0: this pinned a "write only" line that forbade commits, which contradicted the
         workspace rule the assignment exists to carry — every session makes meaningful small commits,
         because uncommitted work is how work gets lost (Zach, 2026-09-18 23:00). The gate is the merge."""
         self.assertRegex(self.body(), r"(?m)^Commits: Commit small and often\b")
@@ -692,11 +692,11 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         # against Bash's 10-minute cap, so "in the same turn" alone serializes. Each of these sentences must stand verbatim in the
         # one-shot paragraph (the line that starts `If `[workers] mode = "one-shot"``), and the eval graders quote the first.
         #
-        #   LAUNCH   "Launch every ready one-shot task whose File ownership paths overlap no running task at once, in the same turn, each as its own launcher call started in the background (Bash `run_in_background: true`); a read-only task overlaps nothing; when two ready tasks overlap each other, launch the earlier row first and the other when it returns."
+        #   LAUNCH   "Launch every ready one-shot task whose File ownership paths overlap no running task at once, in the same turn, each as its own launcher call started in the background (Bash `run_in_background: true`)." (#491: the clause "a read-only task overlaps nothing" is gone; the launcher refuses overlap itself. #539 review R2: "; when two ready tasks overlap each other, launch the earlier row first and the other when it returns" is back, because refuse_overlap compares only running rows)
         #   BACKGROUND "Give each launch its own Bash call with `run_in_background: true`; never chain launches with `;` or `&&`, never pipe a launch, and never start one without the flag."
         #   NOPIPE   "Add no `| head`, `| tail` or `| cut` to a launch: its whole output is read from the notification's output file." (the eval graders quote BACKGROUND and NOPIPE together, as the file has them: NOPIPE straight after BACKGROUND)
-        #   NOTIFY   "A background launch's completion notification only says the launch ended: name the task in its Bash description, and on the notification read that task's report with `chief-of-stuff result --root . --task <task>`, then reconcile it, sync the issue's Kanban state and report that task before using its result."
-        #   DECIDE   "Overlap is decided by `chief-of-stuff worker --check --root . --task <name> --one-shot` and by the launcher's own refusal, which compares File ownership with every running row (`scripts/ownership.py`), not by eye; run overlapping tasks one after the other."
+        #   NOTIFY   "A background launch's completion notification only says the launch ended: name the task in its Bash description, and on the notification read that task's report with `chief-of-stuff result --root . --task <the Tasks name>`, then reconcile it, sync the issue's Kanban state and report that task before using its result."
+        #   DECIDE   (#491: deleted. `refuse_overlap` in scripts/dispatch_prompt.py decides, under the lock in scripts/one_shot.py; REFUSAL below tells the model what to do after it refuses.)
         #   REFUSAL  "A launcher refusal for overlap, or for the concurrency cap (`max_concurrency` under `[workers]`), is not a blocker: leave the task `open` and launch it when a running task returns."
         #   FAILURE  "When one launch fails mid-batch the others keep running; do not retry a held or failed task without resolving its blocker."
         #   PLACE    "Do not dispatch a standing placeholder this way; a launcher call starts exactly one task."
@@ -704,11 +704,10 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         # Gone: "Run tasks sequentially in the foreground", "more than one task this way", "before selecting the next ready task".
         paragraph = self._one_shot_paragraph(self.content)
         for required in (
-            "Launch every ready one-shot task whose File ownership paths overlap no running task at once, in the same turn, each as its own launcher call started in the background (Bash `run_in_background: true`); a read-only task overlaps nothing; when two ready tasks overlap each other, launch the earlier row first and the other when it returns.",
+            "Launch every ready one-shot task whose File ownership paths overlap no running task at once, in the same turn, each as its own launcher call started in the background (Bash `run_in_background: true`); when two ready tasks overlap each other, launch the earlier row first and the other when it returns.",
             "Give each launch its own Bash call with `run_in_background: true`; never chain launches with `;` or `&&`, never pipe a launch, and never start one without the flag.",
             "Add no `| head`, `| tail` or `| cut` to a launch: its whole output is read from the notification's output file.",
-            "A background launch's completion notification only says the launch ended: name the task in its Bash description, and on the notification read that task's report with `chief-of-stuff result --root . --task <task>`, then reconcile it, sync the issue's Kanban state and report that task before using its result.",
-            "Overlap is decided by `chief-of-stuff worker --check --root . --task <name> --one-shot` and by the launcher's own refusal, which compares File ownership with every running row (`scripts/ownership.py`), not by eye; run overlapping tasks one after the other.",
+            "A background launch's completion notification only says the launch ended: name the task in its Bash description, and on the notification read that task's report with `chief-of-stuff result --root . --task <the Tasks name>`, then reconcile it, sync the issue's Kanban state and report that task before using its result.",
             "A launcher refusal for overlap, or for the concurrency cap (`max_concurrency` under `[workers]`), is not a blocker: leave the task `open` and launch it when a running task returns.",
             "When one launch fails mid-batch the others keep running; do not retry a held or failed task without resolving its blocker.",
             "Do not dispatch a standing placeholder this way; a launcher call starts exactly one task.",
@@ -716,7 +715,9 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         ):
             with self.subTest(required=required):
                 self.assertIn(required, paragraph)
-        for gone in ("Run tasks sequentially in the foreground", "more than one task this way", "before selecting the next ready task"):
+        for gone in ("Run tasks sequentially in the foreground", "more than one task this way", "before selecting the next ready task",
+                     "a read-only task overlaps nothing", "Overlap is decided by",
+                     "run overlapping tasks one after the other"):
             self.assertNotIn(gone, paragraph)
         self.assertEqual(self.SERIAL.findall(paragraph), [], "the one-shot paragraph serializes launches")
 
@@ -760,13 +761,30 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
 
     def test_the_reviewer_hand_off_names_its_mailbox(self):
         # autonomous-review-pipeline-design, 22:45: without --mailbox-dir the reviewer's report landed in the reviewed repo.
-        pipeline = self.content.split("## Pipeline", 1)[1].split("\n## ", 1)[0]
+        pipeline = self._section("Pipeline")
         self.assertIn("`Report by: chief-of-stuff inbox --mailbox-dir <workspace root>/.chief-of-stuff/mailbox send --to coordinator --from <reviewer session> --type review --task \"<task>\"`", pipeline)
         self.assertNotIn("`inbox.py send --to reviewer", pipeline)
         # A sonnet run sent the placeholder itself; the reviewer runs in another tree, so only an absolute path lands.
         self.assertIn("`<workspace root>` written out as an absolute path", pipeline)
 
     def _section(self, name):
+        if name in ("Sessions", "Assign", "Brief"):
+            path = self.agent_file.parent.parent / "skills" / "coordinator-sessions" / "SKILL.md"
+            if path.is_file():
+                body = skill_body(path.read_text())
+                return body.split(f"### {name}\n", 1)[1].split("\n### ", 1)[0]
+        # Slice 8 keeps a pointer and three sentences under ## Dispatch; the rest follows the prose into the skill.
+        if name == "Dispatch":
+            path = self.agent_file.parent.parent / "skills" / "dispatch" / "SKILL.md"
+            if path.is_file():
+                return sections(self.content)["Dispatch"].split("\n", 1)[1] + "\n\n" + skill_body(path.read_text())
+        # Slice 6 retains merge guardrails in Pipeline; other behavioural pins
+        # follow the prose into the skill's ### topics.
+        if name in ("Pipeline", "Triage"):
+            path = self.agent_file.parent.parent / "skills" / "review-pipeline" / "SKILL.md"
+            if path.is_file():
+                retained = sections(self.content)["Pipeline"] if name == "Pipeline" else ""
+                return retained + "\n\n" + skill_body(path.read_text())
         return sections(self.content)[name].split("\n", 1)[1]
 
     def test_the_coordinator_hands_off_and_asks_only_for_the_users_reasons(self):
@@ -788,7 +806,7 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
     def test_the_issue_rule_is_for_any_backlog_and_gitlab_files_with_backlog_py(self):
         # The user, 2026-09-23 22:40: "remove the github issue remote and make everything use gitlab now that we have that going".
         self.assertNotRegex(self.content, r"GitHub `?[Bb]acklog")
-        self.assertIn("chief-of-stuff backlog --create", self._section("Tracker"))
+        self.assertIn("chief-of-stuff backlog --create", rules_text())
 
     def test_the_check_is_armed_every_fifteen_minutes(self):
         # The user, 2026-09-24 01:35: "a 15 minute timer loop that kicks you to check, evaluate state each time and hand off things again if needed".
@@ -825,7 +843,14 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
     def test_the_word_mergeable_comes_only_from_the_merge_ready_verdict(self):
         for name, sentence, section in self.MERGE_READY_RULE:
             with self.subTest(name):
-                self.assertTrue(sentence in self._section(section), f"{section} must say ({name}): {sentence}")
+                if name == "the word comes only from the verdict":
+                    agent = self.agent_file.read_text()
+                    self.assertEqual(agent.count(sentence), 1, "wording ban stays once in the agent")
+                    self.assertIn(sentence, sections(agent)["Pipeline"])
+                    skill = self.agent_file.parent.parent / "skills" / "review-pipeline" / "SKILL.md"
+                    self.assertNotIn(sentence, skill.read_text(), "wording ban must leave the skill")
+                else:
+                    self.assertTrue(sentence in self._section(section), f"{section} must say ({name}): {sentence}")
 
     def test_the_coordinator_tells_the_worker_to_merge_after_naming_who_merges(self):
         pipeline = self._section("Pipeline")
@@ -881,7 +906,7 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
 
     def test_a_clean_verify_pass_goes_to_merge(self):
         # An opus run read a clean verify pass as a new triage and asked for R1's disposition again.
-        triage = self.content.split("## Triage", 1)[1].split("\n## ", 1)[0]
+        triage = self._section("Triage")
         self.assertIn("A verify pass with nothing open moves the task to `merge`", triage)
 
     def test_github_issue_writes_use_the_pinned_backlog_script(self):
@@ -892,8 +917,7 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         self.assertNotIn("Zach", self.content)
 
     def test_triage_is_the_users(self):
-        self.assertIn("## Triage", self.content)
-        self.assertIn("every disposition in one reply", self.content)
+        self.assertIn("every disposition in one reply", self._section("Triage"))
 
     # #391, the user, 2026-10-06: a review finding that is a clear fix "should have automatically been a fix". The rule is gated (review of
     # PR 398): eligible only when clear, Important or Minor, off the security axis and about nothing the user specified; the Plan line stays
@@ -983,8 +1007,8 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
     def test_every_handed_task_opens_plan_mode(self):
         # Zach, 2026-09-23 22:25: "tasks passed to implementers should cause the implementer to enter plan mode for the new task".
         line = "`Plan: enter plan mode (EnterPlanMode) for this task before anything else; write nothing until the user approves the plan.`"
-        assign = self.content.split("## Assign", 1)[1].split("\n## ", 1)[0]
-        triage = self.content.split("## Triage", 1)[1].split("\n## ", 1)[0]
+        assign = self._section("Assign")
+        triage = self._section("Triage")
         self.assertIn(line, assign)
         self.assertIn(line, triage)
 

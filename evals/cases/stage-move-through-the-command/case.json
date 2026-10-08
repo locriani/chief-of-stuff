@@ -4,6 +4,15 @@
   "prompt": "impl-uploads opened the pull request for Upload path check: https://github.com/o/app/pull/14, head 3f9c2a1.",
   "graders": [
     {
+      "name": "reads the tracker-rows skill before the first log --stage",
+      "rule": "Never set the cell by hand or write that line as free text.",
+      "type": "tool_used",
+      "tool": "Read",
+      "input_match": "\"file_path\": \"[^\"\\n]*skills/tracker-rows/SKILL\\.md\"",
+      "min": 1,
+      "before": "\"command\": \"(?:\\\\.|[^\"\\\\])*(?:\\bchief[-_]of[-_]stuff(?:\\.py)?\\s+log\\b|(?:scripts/)?tracker_write\\.py\\b)(?:(?![;&|]|\\\\n)(?:\\\\.|[^\"\\\\]))*--stage(?:[ =]|\\\\\")"
+    },
+    {
       "name": "the move goes through log --stage",
       "type": "tool_used",
       "tool": "Bash",

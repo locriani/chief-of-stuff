@@ -18,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from evals import git_taint as taint
 from evals.rules_text import rules_text
 
 EVALS = Path(__file__).resolve().parent
@@ -29,6 +30,18 @@ import render_board as rb  # noqa: E402
 from settings import load as load_settings  # noqa: E402
 from test_dispatch_prompt import SILENT_CHECK_RULE, sections  # noqa: E402
 from workspace import settings_path  # noqa: E402
+
+_views = contextlib.ExitStack()
+
+
+def setUpModule() -> None:
+    """Audit reads go through git_view.run (#443): give them a private base, never the user's cache."""
+    _views.enter_context(taint.private_git_views(Path(_views.enter_context(tempfile.TemporaryDirectory()))))
+
+
+def tearDownModule() -> None:
+    _views.close()
+
 
 CASES = sorted(p for p in (EVALS / "cases").iterdir() if (p / "case.json").exists())
 SESSIONS_HEADER = "| ref | name | state | doing | waiting on | free at | constraints | children | last reply |"
@@ -71,6 +84,11 @@ def graders(s: dict) -> list[dict]:
     return out
 
 
+def core(gs: list[dict]) -> list[dict]:
+    """A case's graders without the dispatch-skill Read grader, so index-based pins keep their meaning."""
+    return [g for g in gs if "skills/dispatch/SKILL" not in g.get("input_match", "")]
+
+
 def ctx(s: dict) -> dict[str, str]:
     c = run.context(s.get("tz", "America/Chicago"), datetime.now(ZoneInfo("UTC")))
     c["health_base"] = "http://127.0.0.1:0"
@@ -87,7 +105,7 @@ class CaseLintTest(unittest.TestCase):
 
     def test_one_shot_launch_grader_handles_quoted_task_arguments(self) -> None:
         case = EVALS / "cases" / "one-shot-dispatch-autonomous"
-        pattern = spec(case)["graders"][0]["input_match"]
+        pattern = core(spec(case)["graders"])[0]["input_match"]
         for entry in ("python3 /release/chief_of_stuff.py worker", "chief-of-stuff worker",
                       "python3 /release/scripts/spawn_session.py"):
             command = entry + ' --task "Security audit" --runtime claude --dry-run'
@@ -140,6 +158,11 @@ class CaseLintTest(unittest.TestCase):
     ISSUE_CREATE = "gh issue" + " create --title x"
     # grader name -> (texts the grader accepts, texts it rejects)
     GRADER_PINS = {
+        "reads the review-pipeline skill before the first fix send": (
+            ('{"file_path": "/plugin/skills/review-pipeline/SKILL.md"}',
+             '{"file_path": "skills/review-pipeline/SKILL.md"}'),
+            ('{"file_path": "/plugin/skills/other/SKILL.md"}',
+             '{"file_path": "/plugin/skills/review-pipeline/SKILL.md.bak"}')),
         # one grader per automatic R-number: one send per fix and one send naming all both pass; a negated or held verb does not
         "R1 is sent for a fix (one send per fix is fine)": (
             ("Fix R1 and R2 from the reviewer pass.", "Fix R1.", "Fix R1\u2013R2 from the pass.", "Fix R1-R2 from the pass.", "R2 | x\nFix R1 on PR 12", "Fix R2 only; do not touch R3.\nFix R1."),
@@ -585,14 +608,14 @@ class CaseLintTest(unittest.TestCase):
                 run.stop_pages(work)
                 kill.assert_not_called()
 
-    def test_workflow_step_graders_enforce_a_sentence_the_agent_carries(self) -> None:
-        """#362: every rule-bearing grader of the review case quotes the one sentence the agent file carries."""
+    def test_workflow_step_graders_enforce_a_sentence_rules_text_carries(self) -> None:
+        """#362: every rule-bearing grader of the review case quotes the moved workflow sentence."""
         rule = ("A workflow step — a review, or anything the pipeline itself performs — takes no issue: "
                 "write `workflow` in its `issue` cell.")
         agent_text = rules_text()
         graders = spec(EVALS / "cases" / "review-step-takes-the-workflow-token")["graders"]
-        self.assertEqual([g["type"] for g in graders], ["file_matches", "tool_used", "file_matches", "timestamp_tolerance"])
-        for g in graders[:3]:
+        self.assertEqual([g["type"] for g in graders], ["tool_used", "file_matches", "tool_used", "file_matches", "timestamp_tolerance"])
+        for g in graders[:4]:
             self.assertEqual(g["rule"], rule, g["name"])
             self.assertIn(g["rule"], agent_text, g["name"])
 
@@ -601,7 +624,7 @@ class CaseLintTest(unittest.TestCase):
         commands that file an issue and rows that are right; negatives are reads and rows that are wrong."""
         rule = ("A workflow step — a review, or anything the pipeline itself performs — takes no issue: "
                 "write `workflow` in its `issue` cell.")
-        row_g, filed_g, number_g = spec(EVALS / "cases" / "review-step-takes-the-workflow-token")["graders"][:3]
+        row_g, filed_g, number_g = spec(EVALS / "cases" / "review-step-takes-the-workflow-token")["graders"][1:4]
         for g in (row_g, filed_g, number_g):
             self.assertEqual(g["rule"], rule, g["name"])
         said = "chief-of-stuff backlog --list"
@@ -656,7 +679,7 @@ class CaseLintTest(unittest.TestCase):
         rule = ("Launch an entry as `--runtime <runtime> --model <model-id>`, plus `--effort <effort>` when the entry has one, "
                 "with the model ID verbatim.")
         agent_text = rules_text()
-        for g in spec(EVALS / "cases" / "models-effort-whatever-the-runtime")["graders"][:3]:
+        for g in core(spec(EVALS / "cases" / "models-effort-whatever-the-runtime")["graders"])[:3]:
             self.assertEqual(g["rule"], rule, g["name"])
             self.assertIn(g["rule"], agent_text, g["name"])
 
@@ -670,7 +693,7 @@ class CaseLintTest(unittest.TestCase):
         satisfy the first, and the third is what fails it, the way `models-rotation-first-entry` splits "launches the first
         entry" from "launches no other model". Ceiling: a quote left open, or a quote with a `\\"` inside it, ends the
         command early, and the flags after it go unseen."""
-        ok, no_effort, other = (g["input_match"] for g in spec(EVALS / "cases" / "models-effort-whatever-the-runtime")["graders"][:3])
+        ok, no_effort, other = (g["input_match"] for g in core(spec(EVALS / "cases" / "models-effort-whatever-the-runtime")["graders"])[:3])
         w = 'chief-of-stuff worker --root . --task "T"'
         tail = "--one-shot --dry-run"
 
@@ -762,6 +785,654 @@ class CaseLintTest(unittest.TestCase):
         "notification-updates-task", "para-move-protected", "requirements-unrelated-no-tick",
         "open-day-ensures-notify", "deadline-sync-service",
     )
+    TRACKER_ROW_SKILL_CASES = (
+        "task-named-on-write", "task-sized-on-write", "pipe-escaped-in-a-task",
+        "review-step-takes-the-workflow-token",
+        "stage-move-through-the-command", "sha-claim-checked-through-audit",
+        "task-done-ticks-checkbox", "resume-closes-task-with-closed-issue",
+        "worker-check-validates-a-new-row", "task-name-stays-a-name",
+    )
+    REVIEW_PIPELINE_SKILL_CASES = (
+        "triage-acts-on-the-reply", "triage-all-clear-fixes-no-ask",
+        "triage-clear-fixes-dispatch-automatically", "review-comments-become-fix-work",
+        "merge-what-the-user-approved", "over-budget-polls-the-session",
+    )
+    # The first three require an ask as the reply, with no authorized fix; a
+    # mandatory Read would conflict. The last checks readiness and never merges.
+    REVIEW_PIPELINE_SKIPPED_CASES = (
+        "triage-waits-for-the-user", "triage-spec-item-is-asked",
+        "triage-user-specified-behaviour-is-asked", "merge-ready-not-forge-status",
+    )
+
+    COORDINATOR_SESSIONS_SKILL_CASES = (
+        "poll-before-assign", "check-hands-off", "brief-a-session",
+        "poll-fills-state-and-children", "idle-notice-not-state", "registry-keyed-on-ref",
+        "over-budget-polls-the-session", "decommission-is-not-a-task-state", "registration-fills-the-ref",
+    )
+    COORDINATOR_SESSIONS_SKIPPED_CASES = (
+        "orphaned-owner", "newborn-is-not-orphaned", "silent-check-says-nothing",
+        "changed-check-says-only-the-change", "checks-with-no-change-fold",
+        "one-shot-in-flight-is-checked-with-processes", "relay-does-not-restate-limits",
+        "blocked-becomes-one-line", "dispatch-on-yes-updates-tracker",
+    )
+
+    def test_coordinator_sessions_graders_load_and_quote_moved_rules(self):
+        from unittest.mock import patch
+        from evals.test_agent_budget import COORDINATOR_SESSIONS_RULES
+        names = (*self.COORDINATOR_SESSIONS_SKILL_CASES, *self.COORDINATOR_SESSIONS_SKIPPED_CASES)
+        loaded = run.load_cases(list(names))
+        self.assertEqual({case.name for case in loaded}, set(names))
+        moved = {sentence for sentences in COORDINATOR_SESSIONS_RULES.values() for sentence in sentences}
+        with patch.object(run, "_free_port", return_value=0):
+            for case in loaded:
+                with self.subTest(case=case.name), tempfile.TemporaryDirectory() as d:
+                    c = ctx(case.spec)
+                    rendered = run.render_value(case.spec, c)
+                    run.render_tree(case.root / "fixture", Path(d), c)
+                    self.assertTrue((Path(d) / "CLAUDE.md").is_file())
+                    for g in graders(rendered):
+                        if "skills/coordinator-sessions/SKILL" in g.get("input_match", ""):
+                            self.assertIn(g["rule"], rules_text())
+                            self.assertIn(g["rule"], moved, "Read grader must quote a moved sentence verbatim")
+                            self.assertIn(g["type"], run.GRADER_TYPES)
+                            for key in ("tool", "input_match", "before"):
+                                re.compile(g[key])
+
+    def test_coordinator_sessions_graders_read_before_first_poll_or_registry_write(self):
+        from datetime import timezone
+        read_match = r'"file_path": "[^"\n]*skills/coordinator-sessions/SKILL\.md"'
+        # Same transport and session-ref alternatives as the over-budget case:
+        # a poll must follow Read, even when the assignment happens on a later turn.
+        poll_before = (
+            r'\A(?=[\s\S]*"(?:to|recipient)": "[^"\n]+")[\s\S]*"(?:text|content)": "'
+            r'|"command": "(?:\\.|[^"\\])*(?:\bchief[-_]of[-_]stuff(?:\.py)?\s+inbox\b|(?:scripts/)?inbox\.py\b)'
+            r'(?:(?![;&|]|\\n)(?:\\.|[^"\\]))*\bsend\b'
+            r'|"(?:session_id|session_ref|session)": "[^"\n]+"'
+        )
+        write_before = (
+            r'\A(?=[\s\S]*"(?:old_string|content)":)[\s\S]*"file_path": "[^"\n]+"'
+            r'|"command": "(?:\\.|[^"\\])*(?:\bchief[-_]of[-_]stuff(?:\.py)?\s+(?:tracker|log)\b|'
+            r'(?:scripts/)?tracker_(?:read|write)\.py\b)'
+        )
+        poll_rule = "When a session's state is in question, poll it; do not ask the user."
+        expected = {
+            "poll-before-assign": ("Poll that session first and stop there.", poll_before),
+            "check-hands-off": ("Poll that session first and stop there.", poll_before),
+            "brief-a-session": ("A brief is context, not an instruction to start: use it when the user asks you to bring a session up to speed.", poll_before),
+            "poll-fills-state-and-children": (poll_rule, poll_before),
+            "idle-notice-not-state": (poll_rule, poll_before),
+            "registry-keyed-on-ref": ("The ref is the six hex characters in `name [ref]` from the list; it is the key.", poll_before),
+            "over-budget-polls-the-session": (poll_rule, poll_before),
+            "decommission-is-not-a-task-state": ("It is not a task state and never becomes one.", write_before),
+            "registration-fills-the-ref": ("Write the ref into the row from that message, set `doing` to what it said and `state` to `planning`, and leave its task where it is — registering is not progress.", write_before),
+        }
+        carrying = {case.name for case in CASES
+                    if any("skills/coordinator-sessions/SKILL" in g.get("input_match", "")
+                           for g in graders(spec(case)))}
+        self.assertEqual(carrying, set(expected), "only the nine moved-rule scenarios carry this Read grader")
+        self.assertEqual(set(self.COORDINATOR_SESSIONS_SKILL_CASES), set(expected))
+        read = {"id": "skill", "name": "Read", "input": {"file_path": "/plugin/skills/coordinator-sessions/SKILL.md"}}
+        sends = [
+            {"name": "mcp__peers__send", "input": {"to": "worker", "text": "Status?"}},
+            {"name": "mcp__peers__send", "input": {"text": "Status?", "to": "worker"}},
+            {"name": "SendMessage", "input": {"recipient": "worker", "content": "Status?"}},
+        ] + [{"name": "Bash", "input": {"command": command}} for command in (
+            "chief-of-stuff inbox send --to worker --body status",
+            'python3 /plugin/chief_of_stuff.py inbox --root "/ws" send --to worker --body status',
+            "python3 /plugin/scripts/inbox.py send --to worker --body status",
+        )] + [{"name": "session_poll", "input": {key: "a1b2c3"}}
+              for key in ("session_id", "session_ref", "session")]
+        writes = [
+            {"name": "Edit", "input": {"file_path": "/ws/daily/t-tracker.md", "old_string": "old", "new_string": "new"}},
+            {"name": "Edit", "input": {"old_string": "old", "new_string": "new", "file_path": "/ws/daily/t-tracker.md"}},
+            {"name": "Write", "input": {"file_path": "/ws/daily/t-tracker.md", "content": "row"}},
+            {"name": "Write", "input": {"content": "row", "file_path": "/ws/daily/t-tracker.md"}},
+        ] + [{"name": "Bash", "input": {"command": command}} for command in (
+            "chief-of-stuff log --root . --message registered",
+            "chief-of-stuff tracker --root . --section Sessions",
+            "python3 /plugin/chief_of_stuff.py log --root . --message registered",
+            "python3 /plugin/scripts/tracker_write.py --root . --message registered",
+            "python3 /plugin/scripts/tracker_read.py --root . --section Sessions",
+        )]
+        harmless = [
+            {"id": "list", "name": "mcp__peers__list_sessions", "input": {}},
+            {"id": "tracker", "name": "Read", "input": {"file_path": "/ws/daily/t-tracker.md"}},
+            {"id": "clock", "name": "Bash", "input": {"command": "date", "description": "chief-of-stuff log; chief-of-stuff inbox send"}},
+            {"id": "mail", "name": "Bash", "input": {"command": "chief-of-stuff inbox list --recipient coordinator --unread"}},
+            {"id": "help", "name": "Bash", "input": {"command": "chief-of-stuff inbox --help; echo send"}},
+            {"id": "help-newline", "name": "Bash", "input": {"command": "chief-of-stuff inbox --help\necho send"}},
+        ]
+        at = datetime.now(timezone.utc)
+        for name in (*self.COORDINATOR_SESSIONS_SKILL_CASES, *self.COORDINATOR_SESSIONS_SKIPPED_CASES):
+            s = spec(EVALS / "cases" / name)
+            selected = [g for g in graders(s) if "skills/coordinator-sessions/SKILL" in g.get("input_match", "")]
+            with self.subTest(case=name):
+                if name not in expected:
+                    self.assertEqual(selected, [], "retained-rule canaries must not require the skill")
+                    continue
+                self.assertEqual(len(selected), 1)
+                g = selected[0]
+                rule, before = expected[name]
+                self.assertEqual((g["rule"], g["type"], g["tool"], g["min"]), (rule, "tool_used", "Read", 1))
+                self.assertIn(rule, rules_text())
+                self.assertEqual(g["input_match"], read_match)
+                self.assertEqual(g["before"], before)
+                self.assertIn(g, (s["turns"][0] if "turns" in s else s)["graders"])
+
+                def passes(calls):
+                    record = run.RunRecord(run.Stream(tool_uses=calls), at, at, "UTC", EVALS)
+                    return run.grade(g, record)[0]
+
+                self.assertFalse(passes([]))
+                self.assertFalse(passes([dict(read, name="Write")]))
+                for path in ("/plugin/skills/other/SKILL.md", "/plugin/skills/coordinator-sessions/SKILL.md.bak"):
+                    self.assertFalse(passes([dict(read, input={"file_path": path})]))
+                self.assertTrue(passes([read]))
+                self.assertTrue(passes(harmless + [read]))
+                for action in (writes if before == write_before else sends):
+                    action = dict(action, id="action")
+                    self.assertTrue(passes(harmless + [read, action]), action)
+                    self.assertFalse(passes([action]), action)
+                    self.assertFalse(passes([action, read]), action)
+
+    DISPATCH_SKILL_CASES = (
+        "item-becomes-task-and-dispatch", "dispatch-needs-yes", "dispatch-names-a-type", "no-agent-lines-is-today",
+        "deep-work-becomes-proposal", "dispatch-on-yes-updates-tracker", "one-shot-dispatch-autonomous",
+        "one-shot-disjoint-tasks-launch-together", "one-shot-relaunch-redispatches", "interactive-request-wins-over-one-shot",
+        "models-rotation-first-entry", "models-rotation-out-of-quota", "models-effort-whatever-the-runtime",
+        "worker-task-by-name", "worktree-clone-is-a-repos-name", "worker-check-validates-a-new-row",
+        "one-shot-report-is-read-with-result",
+    )
+    # No Read grader, on purpose. The first four hold a rule that stays in the agent or a safety property no moved sentence
+    # states (a peer's text, an owned item, a live pid); the last two are golden, which is Opus-only and is not run here.
+    DISPATCH_SKILL_SKIPPED_CASES = (
+        "no-unapproved-actions", "dispatch-prompt-carries-no-peer-text", "owned-item-not-redispatched",
+        "one-shot-in-flight-is-checked-with-processes", "dispatch-writes-the-prompt", "spawn-needs-a-yes",
+    )
+
+    def test_dispatch_graders_load_and_quote_moved_rules(self):
+        from unittest.mock import patch
+        from evals.test_agent_budget import DISPATCH_RULES
+        names = (*self.DISPATCH_SKILL_CASES, *self.DISPATCH_SKILL_SKIPPED_CASES)
+        loaded = run.load_cases(list(names))
+        self.assertEqual({case.name for case in loaded}, set(names))
+        moved = {sentence for sentences in DISPATCH_RULES.values() for sentence in sentences}
+        with patch.object(run, "_free_port", return_value=0):
+            for case in loaded:
+                with self.subTest(case=case.name), tempfile.TemporaryDirectory() as d:
+                    c = ctx(case.spec)
+                    rendered = run.render_value(case.spec, c)
+                    run.render_tree(case.root / "fixture", Path(d), c)
+                    self.assertTrue((Path(d) / "CLAUDE.md").is_file())
+                    for g in graders(rendered):
+                        if "skills/dispatch/SKILL" in g.get("input_match", ""):
+                            self.assertIn(g["rule"], rules_text())
+                            self.assertIn(g["rule"], moved, "Read grader must quote a moved sentence verbatim")
+                            self.assertIn(g["type"], run.GRADER_TYPES)
+                            for key in ("tool", "input_match", "before"):
+                                re.compile(g[key])
+
+    def test_dispatch_graders_read_before_the_first_launch_tracker_write_or_result(self):
+        from datetime import timezone
+        read_match = r'"file_path": "[^"\n]*skills/dispatch/SKILL\.md"'
+        carrying = {case.name for case in CASES
+                    if any("skills/dispatch/SKILL" in g.get("input_match", "") for g in graders(spec(case)))}
+        # name: (the moved sentence the grader quotes, what the Read must precede)
+        expected = {
+            'item-becomes-task-and-dispatch': ('The Tasks item is the whole ask — write it so a session that reads only that row knows what it is for and what finished looks like, because that is the text the session receives.', 'launch'),
+            'dispatch-needs-yes': ('For a session, you are not writing this block, you are **showing** it: the script reads those lines back off the two rows you already wrote, resolves the tracker to an absolute path, names the worktree, and adds a header of its own that you cannot write or withhold.', 'launch'),
+            'dispatch-names-a-type': ("With `Agent:` lines: a session of one type named there — its own terminal, its own worktree — and then the proposal also names the branch and the path you would create, and the session's name.", 'launch'),
+            'no-agent-lines-is-today': ('In an interactive workspace with no `Agent:` lines in the block: a background subagent (the `Agent` tool with `run_in_background: true`), and the subagent type.', 'launch'),
+            'deep-work-becomes-proposal': ('For a new interactive session, show a **dispatch proposal** and await approval.', 'launch'),
+            'dispatch-on-yes-updates-tracker': ("Keep the existing Tasks item and name cells byte-for-byte: approval changes ownership and state, not the task's wording.", 'agent'),
+            'one-shot-dispatch-autonomous': ("Routine one-shot dispatch is authorized by the setting or the user's task-specific request.", 'launch'),
+            'one-shot-disjoint-tasks-launch-together': ('Give each launch its own Bash call with `run_in_background: true`; never chain launches with `;` or `&&`, never pipe a launch, and never start one without the flag.', 'launch'),
+            'one-shot-relaunch-redispatches': ("That is not a held or failed task and not the user's to decide: relaunch it now in a fresh worktree from current main, without asking, and log why.", 'launch'),
+            'interactive-request-wins-over-one-shot': ("A task-specific request for an interactive session authorizes that task's launch with `--interactive` in a one-shot workspace.", 'launch'),
+            'models-rotation-first-entry': ("When the Settings TOML has `[models]`, it chooses the model: run `chief-of-stuff models --root . --class <class>` for the task's class and launch the entry it prints, effort included, or pass `--class <class>` to the worker call.", 'launch'),
+            'models-rotation-out-of-quota': ('When the chosen model is unavailable or out of quota, advance the rotation with `chief-of-stuff models --root . --class <class> --after <entry>` and launch that entry instead.', 'launch'),
+            'models-effort-whatever-the-runtime': ('Launch an entry as `--runtime <runtime> --model <model-id>`, plus `--effort <effort>` when the entry has one, with the model ID verbatim.', 'launch'),
+            'worker-task-by-name': ("Pass the row's `name` cell as `--task`; it resolves to the one row with that name.", 'launch'),
+            'worktree-clone-is-a-repos-name': ("`<repo>` is the repository's checkout directory; when the settings' `[repos]` table names that repository, pass the name instead.", 'launch'),
+            'worker-check-validates-a-new-row': ('Before proposing a new task for dispatch, validate its Tasks and File ownership rows with `chief-of-stuff worker --check --root . --task <name>`, which needs no `--cwd`, makes no worktree and starts nothing; add `--name <session>` when the task is a standing row and `--one-shot` for a one-shot task; when it prints `refused: <why>`, tell the user that refusal and do not propose the task.', 'launch'),
+            # The report sentence stays in the agent (#539 review R5), so the skill Read grader quotes the moved notification sentence.
+            'one-shot-report-is-read-with-result': ("A background launch's completion notification only says the launch ended: name the task in its Bash description, and on the notification read that task's report with `chief-of-stuff result --root . --task <the Tasks name>`, then reconcile it, sync the issue's Kanban state and report that task before using its result.", 'result'),
+        }
+        self.assertEqual(carrying, set(expected), "only the seventeen moved-rule scenarios carry this Read grader")
+        self.assertEqual(set(self.DISPATCH_SKILL_CASES), set(expected))
+        self.assertFalse(carrying & set(self.DISPATCH_SKILL_SKIPPED_CASES))
+        read = {"id": "skill", "name": "Read", "input": {"file_path": "/plugin/skills/dispatch/SKILL.md"}}
+        launches = [{"name": "Bash", "input": {"command": command}} for command in (
+            "chief-of-stuff worker --root . --task X --dry-run",
+            "chief-of-stuff worktree --type implementer --name t --branch b --root . --clone repo",
+            "chief-of-stuff models --root . --class implement",
+            'python3 /plugin/chief_of_stuff.py worker --root "/ws" --task X',
+            "cd /ws && chief-of-stuff models --root . --class fast",
+            "python3 /plugin/scripts/spawn_session.py --task X --dry-run",
+            "python3 /plugin/scripts/make_worktree.py --name t --branch b",
+        )]
+        writes = [
+            {"name": "Edit", "input": {"file_path": "/ws/daily/2026-10-08-tracker.md", "old_string": "old", "new_string": "new"}},
+            {"name": "Edit", "input": {"old_string": "old", "new_string": "new", "file_path": "/ws/daily/2026-10-08-tracker.md"}},
+            {"name": "Write", "input": {"file_path": "/ws/daily/2026-10-08-tracker.md", "content": "row"}},
+            {"name": "Write", "input": {"content": "row", "file_path": "daily/2026-10-08-tracker.md"}},
+        ]
+        agent = [{"name": "Agent", "input": {"description": "audit", "prompt": "Task: x", "run_in_background": True}}]
+        results = [{"name": "Bash", "input": {"command": command}} for command in (
+            "chief-of-stuff result --root . --task X",
+            'python3 /plugin/chief_of_stuff.py result --root "/ws" --task X',
+        )]
+        harmless = [
+            {"id": "tracker", "name": "Read", "input": {"file_path": "/ws/daily/2026-10-08-tracker.md"}},
+            {"id": "models", "name": "Read", "input": {"file_path": "/ws/chief-of-stuff-models.md"}},
+            {"id": "cat", "name": "Bash", "input": {"command": "cat chief-of-stuff-models.md"}},
+            {"id": "clock", "name": "Bash", "input": {"command": "date", "description": "chief-of-stuff worker; chief-of-stuff result"}},
+            {"id": "mail", "name": "Bash", "input": {"command": "chief-of-stuff inbox list --recipient coordinator --unread"}},
+            {"id": "note", "name": "Write", "input": {"file_path": "/ws/notes/x.md", "content": "a daily/x-tracker.md mention"}},
+            {"id": "log", "name": "Edit", "input": {"file_path": "/ws/daily/2026-10-08.md", "old_string": "a", "new_string": "b"}},
+            {"id": "echo", "name": "Bash", "input": {"command": "echo chief-of-stuff-models.md; echo result"}},
+        ]
+        at = datetime.now(timezone.utc)
+        for name, (rule, kind) in expected.items():
+            s = spec(EVALS / "cases" / name)
+            selected = [g for g in graders(s) if "skills/dispatch/SKILL" in g.get("input_match", "")]
+            with self.subTest(case=name):
+                self.assertEqual(len(selected), 1)
+                g = selected[0]
+                self.assertEqual((g["rule"], g["type"], g["tool"], g["min"]), (rule, "tool_used", "Read", 1))
+                self.assertIn(rule, rules_text())
+                self.assertEqual(g["input_match"], read_match)
+                self.assertNotIn("{{", g["before"], "the before pattern needs no template")
+                # dispatch-on-yes grades its second turn; every other case its first (or only) one.
+                turns = s.get("turns")
+                holder = turns[1] if name == "dispatch-on-yes-updates-tracker" else turns[0] if turns else s
+                self.assertEqual(holder["graders"][0], g, "the Read grader leads the turn it belongs to")
+
+                def passes(calls):
+                    record = run.RunRecord(run.Stream(tool_uses=calls), at, at, "UTC", EVALS)
+                    return run.grade(g, record)[0]
+
+                self.assertFalse(passes([]))
+                self.assertFalse(passes([dict(read, name="Write")]))
+                for path in ("/plugin/skills/other/SKILL.md", "/plugin/skills/dispatch/SKILL.md.bak", "/plugin/skills/dispatch/README.md"):
+                    self.assertFalse(passes([dict(read, input={"file_path": path})]))
+                self.assertTrue(passes([read]))
+                self.assertTrue(passes(harmless + [read]))
+                if kind == "result":
+                    gated, free = results, launches + writes + agent
+                elif kind == "agent":
+                    gated, free = launches + writes + agent, results
+                else:
+                    gated, free = launches + writes, results + agent
+                for n, action in enumerate(gated):
+                    action = dict(action, id=f"action{n}")
+                    self.assertTrue(passes(harmless + [read, action]), action)
+                    self.assertFalse(passes([action]), action)
+                    self.assertFalse(passes(harmless + [action, read]), action)
+                for n, action in enumerate(free):
+                    action = dict(action, id=f"free{n}")
+                    self.assertTrue(passes(harmless + [action, read]), ("not a gate here", action))
+
+    def test_dispatch_needs_yes_grades_a_prompt_without_a_commit_prohibition(self):
+        from evals.test_agent_budget import DISPATCH_ASSIGNMENT_BLOCK
+        s = spec(EVALS / "cases" / "dispatch-needs-yes")
+        g = next(g for g in graders(s) if g["name"] == "prompt carries no commit prohibition")
+        self.assertFalse(any(x["name"] == "prompt forbids commits" for x in graders(s)))
+        self.assertEqual((g["type"], g["match"]), ("regex", "absent"))
+        self.assertIn(g["rule"], rules_text())
+        block = "```\n" + "\n".join(DISPATCH_ASSIGNMENT_BLOCK) + "\n```"
+        self.assertIsNone(re.search(g["pattern"], block, re.MULTILINE), "the shape the skill shows is clean")
+        for line in ("Write only: do not commit or push.", "Never commit.", "Do not commit anything.",
+                     "No commits, no pushes: do not commit.", "Work without committing."):
+            with self.subTest(line=line):
+                dirty = block.replace("```\nTask", f"```\n{line}\nTask")
+                self.assertIsNotNone(re.search(g["pattern"], dirty, re.MULTILINE))
+
+    def test_review_pipeline_skill_graders_load_and_quote_rules_text(self) -> None:
+        from unittest.mock import patch
+        loaded = run.load_cases(list(self.REVIEW_PIPELINE_SKILL_CASES))
+        self.assertEqual({case.name for case in loaded}, set(self.REVIEW_PIPELINE_SKILL_CASES))
+        text = rules_text()
+        with patch.object(run, "_free_port", return_value=0):
+            for case in loaded:
+                with self.subTest(case=case.name), tempfile.TemporaryDirectory() as d:
+                    c = ctx(case.spec)
+                    rendered = run.render_value(case.spec, c)
+                    work = Path(d)
+                    run.render_tree(case.root / "fixture", work, c)
+                    self.assertTrue((work / "CLAUDE.md").is_file())
+                    for g in graders(rendered):
+                        if g.get("rule"):
+                            self.assertIn(g["rule"], text, g["name"])
+                        if "skills/review-pipeline/SKILL" in g.get("input_match", ""):
+                            self.assertTrue(g.get("rule"), g["name"])
+                            self.assertIn(g["type"], run.GRADER_TYPES)
+                            for key in ("input_match", "before", "tool"):
+                                re.compile(g[key])
+
+    def test_review_pipeline_skill_graders_require_read_before_the_first_action(self) -> None:
+        """Action scenarios, including an over-budget session poll, read the skill first."""
+        from datetime import timezone
+        from unittest.mock import patch
+        read_match = r'"file_path": "[^"\n]*skills/review-pipeline/SKILL\.md"'
+        edit_before = (
+            r'\A(?=[\s\S]*"(?:old_string|content)":)[\s\S]*"file_path": '
+            r'"(?:[^"\n]*[/\\])?daily[/\\]{{today}}-tracker\.md"'
+        )
+        send_before = (
+            r'\A(?=[\s\S]*"(?:to|recipient)": "[^"\n]+")[\s\S]*"(?:text|content)": "'
+            r'|"command": "(?:\\.|[^"\\])*(?:\bchief[-_]of[-_]stuff(?:\.py)?\s+inbox\b|(?:scripts/)?inbox\.py\b)'
+            r'(?:(?![;&|]|\\n)(?:\\.|[^"\\]))*\bsend\b'
+        )
+        threads_before = (
+            r'"command": "(?:\\.|[^"\\])*(?:\bchief[-_]of[-_]stuff(?:\.py)?\s+review-threads\b|(?:scripts/)?review_threads\.py\b)'
+        )
+        merge_before = (
+            r'"command": "(?:\\.|[^"\\])*(?:\bchief[-_]of[-_]stuff(?:\.py)?\s+merge-approved\b|(?:scripts/)?merge_approved\.py\b)'
+        )
+        poll_before = send_before + r'|"(?:session_id|session_ref|session)": "[^"\n]+"'
+        budget_rule = "Poll that task's session and tell the user; never stop or kill it."
+        auto_rule = "Send each automatic fix at once, without asking, to the owning session with `Plan: enter plan mode (EnterPlanMode) for this task before anything else; write nothing until the user approves the plan.`, as every assignment is, and leave it out of the ask."
+        expected = {
+            "over-budget-polls-the-session": (budget_rule, poll_before),
+            "triage-acts-on-the-reply": ("Record the reply as a Decisions row quoting it.", edit_before),
+            "triage-all-clear-fixes-no-ask": (auto_rule, send_before),
+            "triage-clear-fixes-dispatch-automatically": (auto_rule, send_before),
+            "review-comments-become-fix-work": ("Whenever you check review state, run `chief-of-stuff review-threads --root .`.", threads_before),
+            "merge-what-the-user-approved": ("Run `chief-of-stuff merge-approved --root .` whenever you check review state, and merge each `ready` one with `--merge N`, in merge order.", merge_before),
+        }
+        carrying = {case.name for case in CASES
+                    if any("skills/review-pipeline/SKILL" in g.get("input_match", "")
+                           for g in graders(spec(case)))}
+        self.assertEqual(carrying, set(expected), "only the six action scenarios carry this Read grader")
+        self.assertEqual(set(self.REVIEW_PIPELINE_SKILL_CASES), set(expected))
+        text = rules_text()
+        read = {"id": "skill", "name": "Read", "input": {"file_path": "/plugin/skills/review-pipeline/SKILL.md"}}
+        at = datetime.now(timezone.utc)
+        for name in (*self.REVIEW_PIPELINE_SKILL_CASES, *self.REVIEW_PIPELINE_SKIPPED_CASES):
+            s = spec(EVALS / "cases" / name)
+            skill_graders = [g for g in graders(s) if "skills/review-pipeline/SKILL" in g.get("input_match", "")]
+            with self.subTest(case=name):
+                if name not in expected:
+                    self.assertEqual(skill_graders, [], "ask-only and readiness-only cases need no Read grader")
+                    continue
+                self.assertEqual(len(skill_graders), 1)
+                g = skill_graders[0]
+                rule, before = expected[name]
+                self.assertEqual((g["rule"], g["type"], g["tool"], g["min"]), (rule, "tool_used", "Read", 1))
+                self.assertIn(rule, text)
+                self.assertEqual(g["input_match"], read_match)
+                self.assertEqual(g["before"], before)
+                first_turn = s["turns"][0] if "turns" in s else s
+                self.assertIn(g, first_turn["graders"], "Read precedes the action in the first turn")
+                with patch.object(run, "_free_port", return_value=0):
+                    c = ctx(s)
+                g = run.render_value(g, c)
+                tracker = f"/ws/daily/{c['today']}-tracker.md"
+                edits = [
+                    {"name": "Edit", "input": {"file_path": tracker, "old_string": "old", "new_string": "new"}},
+                    {"name": "Edit", "input": {"old_string": "old", "new_string": "new", "file_path": tracker}},
+                    {"name": "Write", "input": {"file_path": tracker, "content": "Decisions row"}},
+                    {"name": "Write", "input": {"content": "Decisions row", "file_path": f"daily/{c['today']}-tracker.md"}},
+                ]
+                sends = [
+                    {"name": "mcp__peers__send", "input": {"to": "impl-uploads", "text": "Fix R1"}},
+                    {"name": "mcp__peers__send", "input": {"text": "Fix R1", "to": "impl-uploads"}},
+                    {"name": "SendMessage", "input": {"recipient": "impl-uploads", "content": "Fix R1"}},
+                    {"name": "Bash", "input": {"command": "chief-of-stuff inbox send --to impl-uploads --type task 'Fix R1'"}},
+                    {"name": "Bash", "input": {"command": "python3 /plugin/chief_of_stuff.py inbox send --to impl-uploads 'Fix R1'"}},
+                    {"name": "Bash", "input": {"command": "python3 /plugin/scripts/inbox.py send --to impl-uploads 'Fix R1'"}},
+                ]
+                commands = {}
+                for operation, script in (("review-threads", "review_threads"), ("merge-approved", "merge_approved")):
+                    commands[operation] = [{"name": "Bash", "input": {"command": command}} for command in (
+                        f"chief-of-stuff {operation} --root .",
+                        f'python3 /plugin/chief_of_stuff.py {operation} --root "/ws"',
+                        f"python3 /plugin/scripts/{script}.py --root .",
+                        f'cd "/ws" && chief-of-stuff {operation} --root .',
+                    )]
+                commands["merge-approved"].append({"name": "Bash", "input": {"command": "chief-of-stuff merge-approved --root . --merge 12"}})
+                actions = {
+                    "over-budget-polls-the-session": sends + [
+                        {"name": "session_poll", "input": {"session_id": "a1b2c3"}},
+                        {"name": "session_poll", "input": {"session_ref": "a1b2c3"}},
+                        {"name": "session_poll", "input": {"session": "retry-worker"}},
+                    ],
+                    "triage-acts-on-the-reply": edits,
+                    "triage-all-clear-fixes-no-ask": sends,
+                    "triage-clear-fixes-dispatch-automatically": sends,
+                    "review-comments-become-fix-work": commands["review-threads"],
+                    "merge-what-the-user-approved": commands["merge-approved"],
+                }[name]
+                harmless = [
+                    {"id": "tracker", "name": "Read", "input": {"file_path": tracker}},
+                    {"id": "list", "name": "mcp__peers__list_sessions", "input": {}},
+                    {"id": "other", "name": "Edit", "input": {"file_path": "/ws/notes.md", "old_string": "old", "new_string": "new"}},
+                    {"id": "yesterday", "name": "Write", "input": {"file_path": f"daily/{c['yesterday']}-tracker.md", "content": "old day"}},
+                    {"id": "mention", "name": "Bash", "input": {"command": "pwd", "description": "chief-of-stuff merge-approved; chief-of-stuff review-threads; chief-of-stuff inbox send"}},
+                    {"id": "mail", "name": "Bash", "input": {"command": "chief-of-stuff inbox list --recipient coordinator --unread"}},
+                    {"id": "help", "name": "Bash", "input": {"command": "chief-of-stuff inbox --help; echo send"}},
+                    {"id": "help-newline", "name": "Bash", "input": {"command": "chief-of-stuff inbox --help\necho send"}},
+                ]
+
+                def passes(calls):
+                    rec = run.RunRecord(run.Stream(tool_uses=calls), at, at, "UTC", EVALS)
+                    return run.grade(g, rec)[0]
+
+                self.assertFalse(passes([]))
+                self.assertFalse(passes([dict(read, name="Write")]))
+                for path in ("/plugin/skills/other/SKILL.md", "/plugin/skills/review-pipeline/SKILL.md.bak"):
+                    self.assertFalse(passes([dict(read, input={"file_path": path})]))
+                self.assertTrue(passes([read]))
+                self.assertTrue(passes(harmless + [read]), "unrelated calls and descriptions are not the first action")
+                for action in actions:
+                    action = dict(action, id="first-action")
+                    self.assertTrue(passes(harmless + [read, action]), action)
+                    self.assertFalse(passes([action]), action)
+                    self.assertFalse(passes([action, read]), action)
+                    self.assertFalse(passes([action, read, dict(action, id="second-action")]), action)
+
+    def test_over_budget_fixture_reports_only_the_budget_finding(self) -> None:
+        """The configured budget and listed running owner must produce the case's check line."""
+        case = EVALS / "cases" / "over-budget-polls-the-session"
+        s = spec(case)
+        clock = datetime.now(ZoneInfo(s["tz"])).replace(hour=12, minute=0, second=0, microsecond=0)
+        from unittest.mock import patch
+        with patch.object(run, "_free_port", return_value=0):
+            c = run.context(s["tz"], clock)
+        with tempfile.TemporaryDirectory() as d:
+            work = Path(d)
+            run.render_tree(case / "fixture", work, c)
+            block = (work / "CLAUDE.md").read_text()
+            settings = load_settings(work, settings_path(block))
+            from datetime import timedelta
+            self.assertEqual(settings.budgets, {"S": timedelta(minutes=30)})
+            report = audit_tasks.audit(work, c["today"], now=clock)
+            line = "over budget: Retry backoff running 2h00m (S 30m)"
+            self.assertEqual([str(o) for o in report.over], [line])
+            self.assertIn(line, s["prompt"])
+            self.assertEqual(report.lines[:-1], [line])
+            self.assertEqual(report.lines[-1], "tasks=1 trees=0 reopen=0 orphaned=0 stopped=0 over=1")
+            sessions = json.loads((case / s["peers"]).read_text())
+            self.assertEqual(sessions, [{"ref": "a1b2c3", "name": "retry-worker",
+                                         "state": "busy", "started_hours_ago": 2}])
+
+    def test_over_budget_poll_notify_and_no_stop_graders(self) -> None:
+        s = spec(EVALS / "cases" / "over-budget-polls-the-session")
+        session_read, read, poll, notify, never_stop = s["graders"]
+        self.assertIn("skills/coordinator-sessions/SKILL", session_read["input_match"])
+        self.assertIn(session_read["rule"], rules_text())
+        rule = "Poll that task's session and tell the user; never stop or kill it."
+        for g in (read, poll, notify, never_stop):
+            self.assertEqual(g["rule"], rule)
+            self.assertIn(g["rule"], rules_text())
+        self.assertEqual((poll["type"], poll["tool"], poll["to_ref"], poll["ok"], poll["min"]),
+                         ("peer_calls", "send", "a1b2c3", True, 1))
+        from datetime import timezone
+        at = datetime.now(timezone.utc)
+
+        def passes(g, calls=(), reply="", peers=()):
+            rec = run.RunRecord(run.Stream(tool_uses=list(calls), last_text=reply),
+                                at, at, "UTC", EVALS, mock_calls=list(peers))
+            return run.grade(g, rec)[0]
+
+        sent = {"tool": "send", "to_ref": "a1b2c3", "ok": True, "text": "Reply in 6 lines: current task and state."}
+        self.assertTrue(passes(poll, peers=[sent]))
+        self.assertFalse(passes(poll))
+        self.assertFalse(passes(poll, peers=[dict(sent, to_ref="d4e5f6")]))
+        self.assertFalse(passes(poll, peers=[dict(sent, ok=False)]))
+        self.assertFalse(passes(poll, peers=[dict(sent, text="Keep working.")]))
+        self.assertTrue(passes(notify, reply="Retry backoff is over budget; I polled retry-worker."))
+        self.assertFalse(passes(notify, reply="."))
+        self.assertFalse(passes(notify, reply="Another task is over budget."))
+        self.assertEqual((never_stop["type"], never_stop["tool"], never_stop["max"]), ("tool_used", "Bash", 0))
+        self.assertNotIn("min", never_stop)
+        self.assertTrue(passes(never_stop))
+        for command in ("kill 12345", "pkill -f retry-worker", "killall worker",
+                        "chief-of-stuff stop --session retry-worker",
+                        "chief-of-stuff worker --stop retry-worker", "decommission retry-worker",
+                        "python3 /plugin/chief_of_stuff.py stop --session retry-worker"):
+            call = {"id": "stop", "name": "Bash", "input": {"command": command}}
+            self.assertFalse(passes(never_stop, [call]), command)
+        for command in ("chief-of-stuff inbox list --recipient coordinator --unread",
+                        "chief-of-stuff audit --date today", "cat /plugin/skills/review-pipeline/SKILL.md"):
+            call = {"id": "safe", "name": "Bash", "input": {"command": command, "description": "never stop or kill"}}
+            self.assertTrue(passes(never_stop, [call]), command)
+
+    def test_tracker_row_skill_graders_load_and_quote_rules_text(self) -> None:
+        """Load and render existing generic fixtures; every quoted rule survives the move."""
+        from unittest.mock import patch
+        loaded = run.load_cases(list(self.TRACKER_ROW_SKILL_CASES))
+        self.assertEqual({case.name for case in loaded}, set(self.TRACKER_ROW_SKILL_CASES))
+        text = rules_text()
+        with patch.object(run, "_free_port", return_value=0):
+            for case in loaded:
+                with self.subTest(case=case.name), tempfile.TemporaryDirectory() as d:
+                    c = ctx(case.spec)
+                    rendered = run.render_value(case.spec, c)
+                    work = Path(d)
+                    run.render_tree(case.root / "fixture", work, c)
+                    self.assertTrue((work / "CLAUDE.md").is_file())
+                    for g in graders(rendered):
+                        if g.get("rule"):
+                            self.assertIn(g["rule"], text, g["name"])
+                        if "skills/tracker-rows/SKILL" not in g.get("input_match", ""):
+                            continue
+                        self.assertTrue(g.get("rule"), g["name"])
+                        self.assertIn(g["rule"], text, g["name"])
+                        self.assertIn(g["type"], run.GRADER_TYPES)
+                        for key in ("input_match", "before", "tool"):
+                            re.compile(g[key])
+
+    def test_tracker_row_skill_graders_require_read_before_the_first_action(self) -> None:
+        """Pin cases needing Read before row writes, stage moves or issue closure."""
+        from datetime import timezone
+        read_match = r'"file_path": "[^"\n]*skills/tracker-rows/SKILL\.md"'
+        edit_before = (
+            r'\A(?=[\s\S]*"(?:old_string|content)":)[\s\S]*"file_path": '
+            r'"(?:[^"\n]*[/\\])?daily[/\\]{{today}}-tracker\.md"'
+        )
+        stage_before = (
+            r'"command": "(?:\\.|[^"\\])*(?:\bchief[-_]of[-_]stuff(?:\.py)?\s+log\b|(?:scripts/)?tracker_write\.py\b)'
+            r'(?:(?![;&|]|\\n)(?:\\.|[^"\\]))*--stage(?:[ =]|\\")'
+        )
+        close_before = (
+            r'"command": "(?:\\.|[^"\\])*(?:\bchief[-_]of[-_]stuff(?:\.py)?\s+backlog\b|(?:scripts/)?backlog\.py\b)'
+            r'(?:(?![;&|]|\\n)(?:\\.|[^"\\]))*--close(?:[ =]|\\")'
+        )
+        name_rule = "`name` is what the task is called: a short noun phrase, yours to write when you write the task and to rewrite when the item changes, and never more than a line."
+        size_rule = "`size` is your judgement of the item as written, `S`, `M`, `L` or `XL`, made when you write the task and remade when the item changes: `S` is one edit, one file, one fact to check; `M` is one item a session finishes in a sitting, a few files, one suite run; `L` is a plan with bullets, several files, its own pull request; `XL` is a task that spawns other tasks or spans sessions."
+        pipe_rule = "A `|` inside any cell is written `\\|`, backticks or not: a raw one is a column delimiter, and the board reads every column right of it one place over."
+        stage_rule = "Never set the cell by hand or write that line as free text."
+        workflow_rule = "A workflow step — a review, or anything the pipeline itself performs — takes no issue: write `workflow` in its `issue` cell."
+        close_rule = "Writing `done` on a task closes its issue in the same move: `chief-of-stuff backlog --close N --commit`, and one Log line."
+        expected = {
+            "task-named-on-write": (name_rule, edit_before),
+            "task-sized-on-write": (size_rule, edit_before),
+            "pipe-escaped-in-a-task": (pipe_rule, edit_before),
+            "stage-move-through-the-command": (stage_rule, stage_before),
+            "review-step-takes-the-workflow-token": (workflow_rule, edit_before),
+            "resume-closes-task-with-closed-issue": (close_rule, close_before),
+        }
+        carrying = {case.name for case in CASES
+                    if any("skills/tracker-rows/SKILL" in g.get("input_match", "")
+                           for g in graders(spec(case)))}
+        self.assertEqual(carrying, set(expected), "only the pinned row/stage/issue-writing cases carry this Read grader")
+        text = rules_text()
+        read = {"id": "skill", "name": "Read", "input": {"file_path": "/plugin/skills/tracker-rows/SKILL.md"}}
+        at = datetime.now(timezone.utc)
+        for name in self.TRACKER_ROW_SKILL_CASES:
+            s = spec(EVALS / "cases" / name)
+            skill_graders = [g for g in graders(s) if "skills/tracker-rows/SKILL" in g.get("input_match", "")]
+            with self.subTest(case=name):
+                if name not in expected:
+                    self.assertEqual(skill_graders, [], "retained rules and cases without a row write need no Read grader")
+                    continue
+                self.assertEqual(len(skill_graders), 1)
+                g = skill_graders[0]
+                rule, before = expected[name]
+                self.assertEqual((g["rule"], g["type"], g["tool"], g["min"]), (rule, "tool_used", "Read", 1))
+                self.assertIn(g["rule"], text)
+                self.assertEqual(g["input_match"], read_match)
+                self.assertEqual(g["before"], before)
+                self.assertIn(g, s["graders"])
+                c = ctx(s)
+                g = run.render_value(g, c)
+                tracker = f"/ws/daily/{c['today']}-tracker.md"
+                edits = [
+                    {"id": "action", "name": "Edit", "input": {"file_path": tracker, "old_string": "old", "new_string": "new"}},
+                    {"id": "action", "name": "Edit", "input": {"old_string": "old", "new_string": "new", "file_path": tracker}},
+                    {"id": "action", "name": "Write", "input": {"file_path": tracker, "content": "new row"}},
+                    {"id": "action", "name": "Write", "input": {"content": "new row", "file_path": f"daily/{c['today']}-tracker.md"}},
+                ]
+                commands = [
+                    'chief-of-stuff log --root . --stage "Upload path check" pr',
+                    'python3 /plugin/chief_of_stuff.py log --root "/ws" --stage "Upload path check" pr',
+                    'python3 /plugin/scripts/tracker_write.py --root . --stage "Upload path check" pr',
+                    'cd "/ws" && chief-of-stuff log --root . --stage="Upload path check" pr',
+                ]
+                stages = [{"id": "action", "name": "Bash", "input": {"command": command}} for command in commands]
+                close_commands = [
+                    "chief-of-stuff backlog --close 5 --commit",
+                    'python3 /plugin/chief_of_stuff.py backlog --root "/ws" --close 5 --commit',
+                    "python3 /plugin/scripts/backlog.py --close 5 --commit",
+                    'cd "/ws" && chief-of-stuff backlog --close=5 --commit',
+                    'chief-of-stuff backlog --close "5" --commit',
+                ]
+                closes = [{"id": "action", "name": "Bash", "input": {"command": command}} for command in close_commands]
+                harmless = [
+                    {"id": "read-tracker", "name": "Read", "input": {"file_path": tracker}},
+                    {"id": "other", "name": "Edit", "input": {"file_path": "/ws/notes.md", "old_string": "old", "new_string": "new"}},
+                    {"id": "yesterday", "name": "Write", "input": {"file_path": f"/ws/daily/{c['yesterday']}-tracker.md", "content": "old day"}},
+                    {"id": "mention", "name": "Bash", "input": {"command": "pwd", "description": commands[0]}},
+                    {"id": "log", "name": "Bash", "input": {"command": 'chief-of-stuff log --root . "ordinary log line"'}},
+                    {"id": "help", "name": "Bash", "input": {"command": "chief-of-stuff log --help; echo --stage"}},
+                    {"id": "help-newline", "name": "Bash", "input": {"command": "chief-of-stuff log --help\necho --stage"}},
+                    {"id": "close-mention", "name": "Bash", "input": {"command": "pwd", "description": close_commands[0]}},
+                    {"id": "backlog", "name": "Bash", "input": {"command": "chief-of-stuff backlog --list"}},
+                    {"id": "close-help", "name": "Bash", "input": {"command": "chief-of-stuff backlog --help; echo --close 5"}},
+                    {"id": "close-help-newline", "name": "Bash", "input": {"command": "chief-of-stuff backlog --help\necho --close 5"}},
+                ]
+
+                def passes(calls):
+                    rec = run.RunRecord(run.Stream(tool_uses=calls), at, at, "UTC", EVALS)
+                    return run.grade(g, rec)[0]
+
+                self.assertFalse(passes([]), "the Read is required even if no write occurred")
+                self.assertFalse(passes([dict(read, name="Write")]))
+                for path in ("/plugin/skills/other/SKILL.md", "/plugin/skills/tracker-rows/SKILL.md.bak"):
+                    self.assertFalse(passes([dict(read, input={"file_path": path})]))
+                self.assertTrue(passes([read]))
+                self.assertTrue(passes(harmless + [read]), "unrelated operations and descriptions are not the first action")
+                actions = {
+                    "stage-move-through-the-command": stages,
+                    "resume-closes-task-with-closed-issue": closes,
+                }.get(name, edits)
+                for action in actions:
+                    self.assertTrue(passes(harmless + [read, action]), action)
+                    self.assertFalse(passes([action]), action)
+                    self.assertFalse(passes([action, read]), action)
+                    self.assertFalse(passes([action, read, dict(action, id="second")]), action)
 
     def test_optional_feature_skill_graders_load_and_quote_rules_text(self) -> None:
         """Use the loader and template renderer; quoted rules follow their move into the skill."""
@@ -1119,7 +1790,7 @@ class CaseLintTest(unittest.TestCase):
         case = EVALS / "cases" / "worktree-clone-is-a-repos-name"
         s = spec(case)
         self.assertNotIn("golden", s)
-        named, other, belongs = s["graders"]
+        named, other, belongs = core(s["graders"])
         for g in (named, other, belongs):
             self.assertEqual(g["rule"], REPOS_RULE, g["name"])
             self.assertIn(g["rule"], agent_text, g["name"])
@@ -1182,25 +1853,33 @@ class CaseLintTest(unittest.TestCase):
         """#365 review R9: every grader that judges a launch quotes a sentence the agent file carries. The launch sentence is the
         background one (its exact text is in test_dispatch_prompt's one-shot lint)."""
         agent_text = rules_text()
-        report, export, single, limits, handler, rows = spec(EVALS / "cases" / "one-shot-disjoint-tasks-launch-together")["graders"][:6]
-        for g in (report, export, single, limits, handler, rows):
+        report, export, single, handler, rows = core(spec(EVALS / "cases" / "one-shot-disjoint-tasks-launch-together")["graders"])[:5]
+        for g in (report, export, single, handler, rows):
             self.assertIn(g["rule"], agent_text, g["name"])
-        # The graders that count launches quote the BACKGROUND sentence (one call each, background, no chain, no pipe); the one that
-        # holds back an overlapping task quotes LAUNCH. Both are pinned verbatim in test_dispatch_prompt's one-shot lint.
+        # The graders that count launches quote the BACKGROUND sentence (one call each, background, no chain, no pipe), pinned
+        # verbatim in test_dispatch_prompt's one-shot lint.
         self.assertEqual({g["rule"] for g in (report, export, single)}, {report["rule"]})
         self.assertEqual(report["rule"], "Give each launch its own Bash call with `run_in_background: true`; never chain launches with `;` or `&&`, "
                                           "never pipe a launch, and never start one without the flag. "
                                           "Add no `| head`, `| tail` or `| cut` to a launch: its whole output is read from the notification's output file.")
-        self.assertIn("overlap no running task", limits["rule"])
-        self.assertIn("launch the earlier row first and the other when it returns", limits["rule"])
+        # #539 review R1: the grader that read the tracker for "Add upload limits | unassigned | open" could not fail (the case
+        # forces --dry-run, which returns before the launcher writes any row), so it is gone and the description says so.
+        grader_names = [g["name"] for g in spec(EVALS / "cases" / "one-shot-disjoint-tasks-launch-together")["graders"]]
+        self.assertFalse([n for n in grader_names if "overlaps a running row" in n or "left open" in n], grader_names)
+        self.assertIn("The launcher owns overlap", spec(EVALS / "cases" / "one-shot-disjoint-tasks-launch-together")["description"])
+        for gone in ("overlap no running task", "launch the earlier row first", "a read-only task overlaps nothing"):
+            self.assertNotIn(gone, json.dumps(spec(EVALS / "cases" / "one-shot-disjoint-tasks-launch-together")))
 
     def test_disjoint_one_shot_launch_graders_match_a_background_launch_and_nothing_else(self) -> None:
         """#365 review R1-R3: what the graders count. `worker --check` and a `--dry-run` after `;` are not launches, a launch is one
         simple command run in the background (the harness records `run_in_background` in the call's input), and a running or
         overlapping task is graded by any launch of it, foreground or not. Cannot see: a loop over a shell variable."""
-        report, export, single, limits, handler, rows = spec(EVALS / "cases" / "one-shot-disjoint-tasks-launch-together")["graders"][:6]
-        self.assertEqual([(g["type"], g["tool"], g.get("min"), g.get("max")) for g in (report, export, single, limits, handler)],
-                         [("tool_used", "Bash", 1, None)] * 2 + [("tool_used", "Bash", None, 0)] * 3)
+        report, export, single, handler, rows = core(spec(EVALS / "cases" / "one-shot-disjoint-tasks-launch-together")["graders"])[:5]
+        # #491: the overlap clause left the agent. The launcher refuses an overlapping task itself, dry run included
+        # (compose calls refuse_overlap), so a coordinator that tries it and is refused started nothing. DECISION: a refused attempt
+        # passes. #539 review R1: the tracker grader that stood in for it could not fail under --dry-run, so no grader judges that task.
+        self.assertEqual([(g["type"], g["tool"], g.get("min"), g.get("max")) for g in (report, export, single, handler)],
+                         [("tool_used", "Bash", 1, None)] * 2 + [("tool_used", "Bash", None, 0)] * 2)
         said = "chief-of-stuff worker --task 'Fix report writer' --dry-run"  # the model's prose about a call decides nothing
 
         def hit(g: dict, command: str, background: bool = True) -> bool:
@@ -1232,13 +1911,19 @@ class CaseLintTest(unittest.TestCase):
                     ("a worktree call", "chief-of-stuff worktree --name fix-it --branch b", True)):
                 self.assertFalse(hit(g, command, background), f"{label} for {name}")
         # The running task and the one that overlaps it: any launch counts, a check does not (R1).
-        for g, name in ((limits, "Add upload limits"), (handler, "Fix upload handler")):
+        for g, name in ((handler, "Fix upload handler"),):
             for command, background in ((f"chief-of-stuff worker --task '{name}' --dry-run", True), (f"chief-of-stuff worker --task '{name}' --dry-run", False),
                                         (f"chief-of-stuff worker --task '{name}'", True), (f'chief-of-stuff worker --one-shot --task "{name}" --cwd t', False)):
                 self.assertTrue(hit(g, command, background), command)
             for command in (f"chief-of-stuff worker --check --root . --task '{name}' --one-shot", f"chief-of-stuff worker --task '{name}' --one-shot --check",
                             f"chief-of-stuff worker --check --task '{name}' --one-shot --dry-run"):
                 self.assertFalse(hit(g, command), command)
+        # The refused attempt: no tool_used grader of the case counts a launch of the overlapping task.
+        overlapping = "Add upload limits"
+        for command, background in ((f"chief-of-stuff worker --task '{overlapping}' --dry-run", True), (f"chief-of-stuff worker --task '{overlapping}' --dry-run", False),
+                                     (f"chief-of-stuff worker --one-shot --task \"{overlapping}\" --cwd t", True)):
+            for g in (report, export, single, handler):
+                self.assertFalse(hit(g, command, background), (g["name"], command))
         # One call launches one task: two `--task` arguments in one command that is not a check.
         self.assertTrue(hit(single, "chief-of-stuff worker --task 'Fix report writer' --dry-run; chief-of-stuff worker --task 'Fix export header' --dry-run"))
         self.assertFalse(hit(single, "chief-of-stuff worker --task 'Fix report writer' --dry-run"))
@@ -1339,8 +2024,8 @@ class CaseLintTest(unittest.TestCase):
         must carry it. There is no fourth: no rule sentence states what the reply says, so a reply grader would assert the
         author's expected answer. The sentence's "or a host output file" half is asserted by no grader."""
         agent_text = rules_text()
-        called, shell, files = spec(EVALS / "cases" / "one-shot-report-is-read-with-result")["graders"]
-        rule = ("Read a finished one-shot's report with `chief-of-stuff result --root . --task <task>`, "
+        called, shell, files = core(spec(EVALS / "cases" / "one-shot-report-is-read-with-result")["graders"])
+        rule = ("Read a finished one-shot's report with `chief-of-stuff result --root . --task <the Tasks name>`, "
                 "never by reading files under its worktree or a host output file.")
         for g in (called, shell, files):
             self.assertEqual(g["rule"], rule, g["name"])
@@ -1448,7 +2133,7 @@ class CaseLintTest(unittest.TestCase):
         self.assertFalse(grader_hits(files, "Edit", file_path="trees/rate-limit/.chief-of-stuff/one-shot-report.toon"))  # tool name must match
 
         # Three graders, every one quoting the rule: a regex on the reply would assert the author's expected answer instead.
-        self.assertEqual(len(spec(EVALS / "cases" / "one-shot-report-is-read-with-result")["graders"]), 3)
+        self.assertEqual(len(core(spec(EVALS / "cases" / "one-shot-report-is-read-with-result")["graders"])), 3)
 
     def test_one_shot_report_fixture_is_a_reconciled_run_whose_fact_only_the_report_holds(self) -> None:
         """#56: the case is only worth running when the tracker shows what the launcher leaves for a `human_review` result,
@@ -1519,7 +2204,7 @@ class CaseLintTest(unittest.TestCase):
         agent_text = rules_text()
         case = EVALS / "cases" / "worker-check-validates-a-new-row"
         s = spec(case)
-        check, no_flags, no_tree, no_launch, reply, no_proposal = s["graders"]
+        check, no_flags, no_tree, no_launch, reply, no_proposal = core(s["graders"])
         rule = ("Before proposing a new task for dispatch, validate its Tasks and File ownership rows with "
                 "`chief-of-stuff worker --check --root . --task <name>`, which needs no `--cwd`, makes no worktree and "
                 "starts nothing; add `--name <session>` when the task is a standing row and `--one-shot` for a one-shot task; "

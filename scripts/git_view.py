@@ -187,14 +187,19 @@ def _run(args: list[str], *, cwd: Path, env: dict[str, str], timeout: float,
 
 def _head(layout: Layout) -> tuple[bytes, str | None]:
     data = _read(layout.gitdir / "HEAD", 1024)
-    text = data.decode(errors="replace").rstrip("\r\n")
+    try:
+        text = data.decode("utf-8").removesuffix("\n").removesuffix("\r")
+    except UnicodeDecodeError:
+        raise Unviewable("HEAD is not UTF-8") from None
     if re.fullmatch(_OID, text):
         return data, None
     if text.startswith("ref: refs/"):
         ref = text.removeprefix("ref: ")
-        if (re.fullmatch(_NAME, ref) and ".." not in ref and "//" not in ref
+        # Git ref syntax excludes these bytes, not non-ASCII or punctuation in general.
+        if (not re.search(r"[\x00-\x20\x7f\\~^:?*\[]", ref)
+                and ".." not in ref and "//" not in ref and "@{" not in ref
                 and not any(part.startswith(".") or part.endswith(".lock") for part in ref.split("/"))
-                and not ref.endswith(("/", "."))):
+                and not ref.endswith(("/", ".")) and not ref.startswith("refs/heads/-")):
             branch = ref.removeprefix("refs/heads/") if ref.startswith("refs/heads/") else None
             return data, branch
     raise Unviewable("HEAD is neither a safe symbolic ref nor an object id")
@@ -222,7 +227,8 @@ def _config(layout: Layout, branch: str | None, env: dict[str, str], timeout: fl
             raise Unviewable("unsupported ref storage")
         elif branch and key in (f"branch.{branch}.remote", f"branch.{branch}.merge"):
             if re.fullmatch(_NAME, value) and ".." not in value:
-                facts[(f'branch "{branch}"', key.rsplit(".", 1)[1])] = [value]
+                quoted_branch = branch.replace('"', '\\"')
+                facts[(f'branch "{quoted_branch}"', key.rsplit(".", 1)[1])] = [value]
         else:
             remote = re.fullmatch(r"remote\.([A-Za-z0-9._-]+)\.fetch", key)
             if (remote and ".." not in remote[1] and ".." not in value
@@ -338,10 +344,14 @@ def _opened(path: Path, env: dict[str, str], base: Path | None, deadline: float)
         if layout.tree is not None:
             child_env.update(GIT_WORK_TREE=str(layout.tree), GIT_INDEX_FILE=str(directory / "index"))
             # Older Git can trust copied fsmonitor-valid bits despite core.fsmonitor=false.
+            stamp = (directory / "index").stat() if (directory / "index").is_file() else None  # an unborn tree has none
             index = _run(["update-index", "--no-fsmonitor"], cwd=directory, env=child_env,
                          timeout=_remaining(deadline))
             if index.returncode:
                 raise Unviewable("index fsmonitor state cannot be cleared")
+            # The rewrite moves the copy's mtime to now, so an edit made in the original's second stops looking racy.
+            if stamp is not None:
+                os.utime(directory / "index", ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
         view = View(layout, child_env)
     except BaseException:
         shutil.rmtree(directory, ignore_errors=True)

@@ -9,6 +9,15 @@
       "prompt": "Ask 4821-audit for a status.",
       "graders": [
         {
+          "name": "reads the coordinator-sessions skill before the first session action",
+          "rule": "The ref is the six hex characters in `name [ref]` from the list; it is the key.",
+          "type": "tool_used",
+          "tool": "Read",
+          "input_match": "\"file_path\": \"[^\"\\n]*skills/coordinator-sessions/SKILL\\.md\"",
+          "min": 1,
+          "before": "\\A(?=[\\s\\S]*\"(?:to|recipient)\": \"[^\"\\n]+\")[\\s\\S]*\"(?:text|content)\": \"|\"command\": \"(?:\\\\.|[^\"\\\\])*(?:\\bchief[-_]of[-_]stuff(?:\\.py)?\\s+inbox\\b|(?:scripts/)?inbox\\.py\\b)(?:(?![;&|]|\\\\n)(?:\\\\.|[^\"\\\\]))*\\bsend\\b|\"(?:session_id|session_ref|session)\": \"[^\"\\n]+\""
+        },
+        {
           "name": "polls by ref",
           "type": "peer_calls",
           "tool": "send",

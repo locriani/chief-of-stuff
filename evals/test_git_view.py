@@ -23,7 +23,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import git_trees  # noqa: E402
-import git_taint as taint  # noqa: E402
+from evals import git_taint as taint  # noqa: E402
 
 
 # plan-443.md section 1: read calls only (fetch/worktree are write funnels).
@@ -850,6 +850,160 @@ class GitlinksTest(FixtureCase):
         self.assertEqual(fx.fired(), [])
 
 
+class SymbolicHeadBranchNamesTest(FixtureCase):
+    ACCEPTED = (
+        "feature+foo", "feat@x", "fix/ü", "a,b", "v1.0+build.5",
+        "x=y", "x#y", "x%y", "x!y", "x$y",
+    )
+
+    def fixture_on_branch(self, name):
+        # Pin the table to this machine's Git before creating the branch.
+        valid = subprocess.run(["git", "check-ref-format", "--branch", name],
+                               cwd=self.root, env=taint.ENV, capture_output=True,
+                               text=True, timeout=5)
+        self.assertEqual(valid.returncode, 0, valid.stderr)
+        self.assertEqual(valid.stdout, name + "\n")
+        fx = self.fixture()
+        taint.git(["branch", "-m", name], fx.tree)
+        return fx
+
+    def test_special_character_branch_upstream_config_is_quoted(self):
+        for name in ('a"b', "x]y", "a;b"):
+            valid = taint.git(["check-ref-format", "--branch", name], self.root, check=False)
+            if valid.returncode == 0:
+                self.assertEqual(answer(valid), (0, name + "\n"), valid.stderr)
+                break
+        else:
+            self.fail("Git rejected every special-character branch name")
+
+        fx = self.fixture_on_branch(name)
+        upstream = {f"branch.{name}.remote": "origin",
+                    f"branch.{name}.merge": "refs/heads/feat"}
+        for key, value in upstream.items():
+            taint.config(fx, key, value)
+
+        with self.view.opened(fx.tree, git_trees.audit_env(), base=self.base) as v:
+            config = Path(v.env["GIT_DIR"]) / "config"
+            parsed = taint.git(["config", "-f", str(config), "--list"], self.root, check=False)
+            self.assertEqual(parsed.returncode, 0, parsed.stderr)
+            for key, value in upstream.items():
+                got = taint.git(["config", "-f", str(config), "--get", key],
+                                self.root, check=False)
+                self.assertEqual(answer(got), (0, value + "\n"), got.stderr)
+
+        for args in (["branch", "--show-current"], ["status", "--short"],
+                     ["rev-parse", "--abbrev-ref", "@{u}"]):
+            with self.subTest(command=args):
+                control = raw(fx, args)
+                self.assertEqual(control.returncode, 0, control.stderr)
+                got = self.run_view(fx, args)
+                self.assertEqual(answer(got), answer(control), got.stderr)
+        self.assertEqual(fx.fired(), [])
+        self.assertEqual(self.leftovers(), [])
+
+    def test_git_accepted_branch_names_read_status_branch_and_head(self):
+        for name in self.ACCEPTED:
+            with self.subTest(branch=name):
+                fx = self.fixture_on_branch(name)
+                reads = (
+                    (["status", "--short"], " M README.md\n?? .gitattributes\n?? new.txt\n"),
+                    (["branch", "--show-current"], name + "\n"),
+                    (["rev-parse", "HEAD"], fx.sha["D"] + "\n"),
+                    (["symbolic-ref", "HEAD"], "refs/heads/" + name + "\n"),
+                    (["rev-parse", "--abbrev-ref", "HEAD"], name + "\n"),
+                )
+                for args, stdout in reads:
+                    with self.subTest(command=args):
+                        control = raw(fx, args)
+                        self.assertEqual(answer(control), (0, stdout), control.stderr)
+                        got = self.run_view(fx, args)
+                        self.assertEqual(answer(got), (0, stdout), got.stderr)
+                self.assertEqual(fx.fired(), [])
+                self.assertEqual(self.leftovers(), [])
+
+    def test_git_accepted_branch_names_do_not_refuse_one_shot_tree_note(self):
+        import one_shot
+
+        view_run = self.view.run
+
+        def run_at_base(*args, **kwargs):
+            kwargs.setdefault("base", self.base)
+            return view_run(*args, **kwargs)
+
+        for name in self.ACCEPTED:
+            with self.subTest(branch=name):
+                fx = self.fixture_on_branch(name)
+                (fx.root / "CLAUDE.md").write_text("# Workspace\n\n- Worktrees: `.`\n")
+                with patch.object(self.view, "run", side_effect=run_at_base), \
+                     patch.dict(os.environ, taint.ENV, clear=True):
+                    self.assertEqual(one_shot._tree_note(fx.root, fx.tree),
+                                     f"worktree `wt` ({name})")
+                self.assertEqual(fx.fired(), [])
+                self.assertEqual(self.leftovers(), [])
+
+    def test_unsafe_symbolic_head_branch_bytes_are_unviewable(self):
+        fx = self.fixture()
+        names = (
+            b"space name", b"x\\y", b"x~y", b"x^y", b"x:y", b"x?y",
+            b"x*y", b"x[y", b"@{u}", b"x@{u}", b"a..b", b"a//b",
+            b".hidden/x", b"x/.hidden", b"x.lock", b"x.lock/y", b"x/y.lock",
+            b"x/", b"x.", b"-x", b"x\xffy",
+        ) + tuple(b"x" + bytes([c]) + b"y" for c in (*range(32), 127))
+        for name in names:
+            with self.subTest(branch_bytes=name):
+                # Git cannot create these branches; emulate worker-written HEAD.
+                (fx.gitdir / "HEAD").write_bytes(b"ref: refs/heads/" + name + b"\n")
+                with self.assertRaises(self.view.Unviewable):
+                    self.run_view(fx, ["branch", "--show-current"])
+                self.assertEqual(fx.fired(), [])
+                self.assertEqual(self.leftovers(), [])
+
+
+def edit_readme(case, fx, fsmonitor, racy=True):
+    """Leave README.md edited to the same size, with every timestamp pinned.
+
+    racy: the edit lands in the index's own mtime second, so only a content
+    compare can see it. Otherwise it lands one second after the cached mtime
+    and well before the index's, so a stat compare sees it unless fsmonitor
+    lies. With `fsmonitor`, the index is also marked fsmonitor-valid by a
+    planted monitor that always reports no change.
+    """
+    readme = fx.tree / "README.md"
+    index = fx.gitdir / "index"
+    (fx.tree / "new.txt").unlink()
+    (fx.tree / ".gitattributes").unlink()
+    stamp = (time.time_ns() // 10**9 - 10) * 10**9 + 250_000_000
+    for _ in range(20):  # ctime (not settable) must stay in one second
+        readme.write_text("a\n")
+        os.utime(readme, ns=(stamp, stamp))
+        taint.git(["update-index", "--refresh"], fx.tree)
+        before = readme.stat().st_ctime_ns // 10**9
+        if fsmonitor:
+            code = (f"from pathlib import Path; import sys; "
+                    f"Path({str(fx.markers / 'fsmonitor-lie')!r}).write_text('fired'); "
+                    "sys.stdout.buffer.write(b'token\\0')")
+            taint.config(fx, "core.fsmonitor", shlex.join([sys.executable, "-c", code]))
+            taint.git(["update-index", "--fsmonitor"], fx.tree)
+            # Only a status with the monitor on marks the entries valid.
+            env = git_trees.audit_env()
+            env.pop("GIT_OPTIONAL_LOCKS")
+            case.assertEqual(answer(raw(fx, ["status", "--short"], env)), (0, ""))
+        if racy:
+            os.utime(index, ns=(stamp, stamp))
+        readme.write_text("z\n")
+        edited = stamp if racy else stamp + 10**9
+        os.utime(readme, ns=(edited, edited))
+        if not racy or readme.stat().st_ctime_ns // 10**9 == before:
+            break
+    else:
+        case.fail("could not keep the edit in the index's ctime second")
+    # Precondition: the index carries fsmonitor-valid bits exactly when asked
+    # (`ls-files -f` tags those entries in lowercase).
+    tags = raw(fx, ["ls-files", "-f"]).stdout.split("\n")
+    case.assertEqual(any(t[:1].islower() for t in tags), fsmonitor, tags)
+    fx.clear()
+
+
 class TruthTest(FixtureCase):
     """One named test per vector, with loose/packed x ten command subtests."""
 
@@ -923,25 +1077,31 @@ class TruthTest(FixtureCase):
         fx = self.fixture()
         # Start clean, let a real fsmonitor protocol response mark all entries
         # valid, then change a file while the monitor reports no changes.
-        (fx.tree / "README.md").write_text("a\n")
-        (fx.tree / "new.txt").unlink()
-        (fx.tree / ".gitattributes").unlink()
-        taint.git(["update-index", "--refresh"], fx.tree)
-        code = (f"from pathlib import Path; import sys; "
-                f"Path({str(fx.markers / 'fsmonitor-lie')!r}).write_text('fired'); "
-                "sys.stdout.buffer.write(b'token\\0')")
-        taint.config(fx, "core.fsmonitor", shlex.join([sys.executable, "-c", code]))
-        taint.git(["update-index", "--fsmonitor"], fx.tree)
+        edit_readme(self, fx, fsmonitor=True, racy=False)
         env = git_trees.audit_env()
         env.pop("GIT_OPTIONAL_LOCKS")
-        self.assertEqual(answer(raw(fx, ["status", "--short"], env)), (0, ""))
-        (fx.tree / "README.md").write_text("z\n")
         self.assertEqual(answer(raw(fx, ["status", "--short"], env)), (0, ""))
         self.assertIn("fsmonitor-lie", fx.fired())
         fx.clear()
         result = self.run_view(fx, ["status", "--short"])
         self.assertEqual(answer(result), (0, " M README.md\n"))
         self.assertEqual(fx.fired(), [])
+
+    def test_same_second_same_size_edit_with_fsmonitor_valid_index_shows_modified(self):
+        # A tracked file changed in the same second as the index write, with the
+        # same size and an fsmonitor-valid index, still shows as modified in the
+        # view. Every timestamp is pinned, so no sleep or clock luck is involved.
+        for fsmonitor in (True, False):
+            with self.subTest(fsmonitor_valid=fsmonitor):
+                fx = self.fixture()
+                edit_readme(self, fx, fsmonitor)
+                # Plain Git, fsmonitor off, never rewrites the index: the entry is racy.
+                plain = raw(fx, ["-c", "core.fsmonitor=false", "status", "--short"],
+                            git_trees.audit_env())
+                self.assertEqual(answer(plain), (0, " M README.md\n"))
+                result = self.run_view(fx, ["status", "--short"])
+                self.assertEqual(answer(result), (0, " M README.md\n"))
+                self.assertEqual(fx.fired(), [])
 
 
 def vector_test(vector):

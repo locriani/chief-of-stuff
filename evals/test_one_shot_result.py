@@ -17,6 +17,7 @@ import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
+from functools import partial
 from pathlib import Path
 from unittest import mock
 
@@ -26,6 +27,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import chief_of_stuff  # noqa: E402
 import dispatch_prompt  # noqa: E402
 import one_shot  # noqa: E402
+from evals import make_repo  # noqa: E402
 from _vendor.toon_format import ToonDecodeError, decode as toon_decode, encode as toon_encode  # noqa: E402
 
 CLAUDE = ("# Workspace\n\n## Coordinator\n\n- User: Robin\n- Timezone: UTC\n- Daily log dir: `daily/`\n"
@@ -39,6 +41,7 @@ LIMIT = 1 << 20  # the most a report may be: spelled out here, so a change of th
 SITES = (("the normal one", False), ("the task row changed one", True))  # the launcher's two writes of a report
 # `reconcile` run in a child whose locale encoding is not UTF-8: what `open()` uses when no encoding is named.
 LOCALE_DRIVER = ("import sys; sys.path.insert(0, sys.argv[1]); import one_shot; from datetime import datetime, timezone; from pathlib import Path; "
+                 "from functools import partial; import git_view; git_view.run = partial(git_view.run, base=Path(sys.argv[2]) / 'private-views'); "
                  "one_shot.reconcile(Path(sys.argv[2]), datetime.now(timezone.utc).date().isoformat(), 'Rate limit headers', 'rate-limit', Path(sys.argv[3]), 0)")
 
 
@@ -65,6 +68,8 @@ class ResultTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
+        self.enterContext(mock.patch.object(one_shot.git_view, "run",
+                                           side_effect=partial(one_shot.git_view.run, base=self.root / "private-views")))
         self.reports = self.root / ".chief-of-stuff" / "reports"  # the launcher's own copies
         (self.root / "CLAUDE.md").write_text(CLAUDE)
         self.tracker(*TASKS)
@@ -107,6 +112,11 @@ class ResultTests(unittest.TestCase):
         `result` what the worker wrote (as JSON, which any text survives)."""
         self.tracker(*TASKS)  # open again, as a relaunch finds it
         cwd = self.root / "trees" / tree
+        if not (cwd / ".git").exists():
+            # Keep planted report paths and symlinks outside the fixture commit.
+            # Relaunches reuse this real repository and its existing worker data.
+            make_repo.build(self.root / "git-fixtures" / tree,
+                            {"clone": str(cwd), "files": {".gitignore": ".chief-of-stuff/\n"}})
         (cwd / ".chief-of-stuff").mkdir(parents=True, exist_ok=True)
         path = self.tracker_path()
         one_shot.record_launch(path, item, "rate-limit", one_shot._tree_note(self.root, cwd), "codex", "gpt-5.1-codex", "09:00")

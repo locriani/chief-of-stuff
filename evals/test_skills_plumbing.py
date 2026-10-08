@@ -1,18 +1,20 @@
-"""Slice 1 of #484: release and host prompt plumbing, using only temporary plugin roots."""
+"""Pinned skill files and on-demand host prompts (#511), with generic temporary fixtures."""
 
 import hashlib
+import re
 import tempfile
 import unittest
 from pathlib import Path
 
 import start_coordinator as start
 from evals.rules_text import skill_body
-from evals.skill_fixtures import write_plugin, write_skill
+from evals.skill_fixtures import AGENT, write_plugin, write_skill
 
 NON_CLAUDE = ("codex", "cursor", "agy")
+READ_POINTER_GUIDANCE = 'A rule that says "Read <path>" means open that file with your host\'s read tool or `cat`.'
 # No-skills baseline from AGENT in skill_fixtures, refreshed for main's Check adaptation.
-# Only temporary paths are normalized; whitespace, substitutions, adapter text and START
-# all remain byte-sensitive.
+# Only temporary paths and the new non-Claude Read guidance are normalized;
+# whitespace, substitutions, other adapter text and START all remain byte-sensitive.
 LEGACY_SHA256 = {
     "claude": "e03c9850cccd6c80db8e038cf10672f1c54afc1c48945098d958e958d6b1000d",
     "codex": "92e8307a069a35a4ca56e13b95acc0ff76749dfef69e7aca9b64971eaa39dc2a",
@@ -73,129 +75,172 @@ class SkillsPlumbingTest(unittest.TestCase):
             self.assertEqual((release / name).read_bytes(), (self.plugin / name).read_bytes())
         self.assertFalse((release / "skills").exists())
 
-    def test_non_claude_hosts_append_all_bodies_in_sorted_order_under_named_headings(self):
-        # Deliberately misleading frontmatter name: the skill's path name identifies its pointer.
-        zeta_body = "ZETA_BODY\n\n---\n\nhosts: claude\nZETA_AFTER_BREAK"
-        # A hosts key in body/example text is not a frontmatter host restriction.
-        bodies = {"alpha": "\n \tALPHA_BODY\t \n\n", "zeta": "\n\t" + zeta_body + " \t\n\n"}
+    def test_host_adapter_explains_read_pointers_once_only_for_non_claude_hosts(self):
+        write_skill(self.plugin, "alpha", "ALPHA_ON_DEMAND_ONLY_511")
+        release = start.install(self.plugin, self.base / "install")
+        for runtime in (*NON_CLAUDE, "claude"):
+            with self.subTest(runtime=runtime):
+                prompt = start.prompt(runtime, release, self.workspace)
+                self.assertEqual(prompt.count(READ_POINTER_GUIDANCE),
+                                 0 if runtime == "claude" else 1)
+                if runtime != "claude":
+                    adapter = prompt.split("## Host adapter\n", 1)[1]
+                    self.assertIn(READ_POINTER_GUIDANCE, adapter)
+
+    def test_non_claude_prompts_exclude_fixture_skill_text_and_named_headings(self):
+        bodies = {
+            "alpha": "\n \tALPHA_ON_DEMAND_ONLY_511\t \n\n",
+            "zeta": ("## Check\n\nZETA_ON_DEMAND_ONLY_511: ${CLAUDE_PLUGIN_ROOT}/scripts/tool.py\n\n"
+                     "## Sessions\n\nSKILL_SESSIONS\n\n## Relay\n\nSKILL_RELAY"),
+        }
+        # The path name identifies the skill; metadata and support files are not prompt text either.
         write_skill(self.plugin, "zeta", bodies["zeta"])
-        write_skill(self.plugin, "alpha", bodies["alpha"], "description: FRONTMATTER_ONLY\nname: not-the-path")
+        write_skill(self.plugin, "alpha", bodies["alpha"],
+                    "description: FRONTMATTER_ONLY\nname: not-the-path")
         (self.plugin / "skills" / "alpha" / "README.md").write_text("SUPPORT_ONLY")
+        release = start.install(self.plugin, self.base / "install")
+        for runtime in NON_CLAUDE:
+            prompt = start.prompt(runtime, release, self.workspace)
+            for name, marker in (("alpha", "ALPHA_ON_DEMAND_ONLY_511"),
+                                 ("zeta", "ZETA_ON_DEMAND_ONLY_511")):
+                with self.subTest(runtime=runtime, skill=name, check="body"):
+                    self.assertFalse(marker in prompt, f"{runtime} starts with the {name} skill body")
+                with self.subTest(runtime=runtime, skill=name, check="heading"):
+                    self.assertFalse(f"## {name}" in prompt.splitlines(),
+                                     f"{runtime} starts with a named {name} skill section")
+            for excluded in ("FRONTMATTER_ONLY", "name: not-the-path", "SUPPORT_ONLY"):
+                with self.subTest(runtime=runtime, excluded=excluded):
+                    self.assertNotIn(excluded, prompt)
+
+    def assert_pinned_skill_pointers(self, runtime, release, expected_names):
+        agent = (release / "agents" / "chief-of-stuff.md").read_text()
+        pointer_lines = [line for line in agent.splitlines()
+                         if "${CLAUDE_PLUGIN_ROOT}/skills/" in line]
+        names = re.findall(r"\$\{CLAUDE_PLUGIN_ROOT\}/skills/([^/\s`]+)/SKILL\.md", agent)
+        self.assertEqual(set(names), expected_names, "exercise every expected skill pointer")
+        self.assertTrue(pointer_lines, "the fixture must include an on-demand pointer")
+        prompt = start.prompt(runtime, release, self.workspace)
+        self.assertNotIn("${CLAUDE_PLUGIN_ROOT}", prompt)
+        for line in pointer_lines:
+            with self.subTest(runtime=runtime, pointer=line):
+                self.assertIn(line.replace("${CLAUDE_PLUGIN_ROOT}", str(release)), prompt.splitlines(),
+                              "preserve the whole pointer line with its pinned release path")
+        for name in names:
+            with self.subTest(runtime=runtime, skill=name):
+                self.assertTrue((release / "skills" / name / "SKILL.md").is_file(),
+                                "the host must be able to read the named file from the release")
+
+    def test_non_claude_fixture_pointers_resolve_to_installed_skill_files(self):
+        agent = AGENT.replace(
+            "Run python3 ${CLAUDE_PLUGIN_ROOT}/scripts/tool.py.",
+            "Before another generic task, Read ${CLAUDE_PLUGIN_ROOT}/skills/zeta/SKILL.md.\n"
+            "Run python3 ${CLAUDE_PLUGIN_ROOT}/scripts/tool.py.")
+        write_plugin(self.plugin, agent)
+        write_skill(self.plugin, "alpha", "ALPHA_ON_DEMAND_ONLY_511")
+        write_skill(self.plugin, "zeta", "ZETA_ON_DEMAND_ONLY_511")
+        release = start.install(self.plugin, self.base / "install")
+        self.assertNotEqual(release, self.plugin)
+        for runtime in NON_CLAUDE:
+            with self.subTest(runtime=runtime):
+                self.assert_pinned_skill_pointers(runtime, release, {"alpha", "zeta"})
+
+    def test_non_claude_host_section_replacement_preserves_other_agent_rules(self):
+        write_skill(self.plugin, "alpha", "ON_DEMAND_ONLY_511")
         for runtime in NON_CLAUDE:
             with self.subTest(runtime=runtime):
                 prompt = start.prompt(runtime, self.plugin, self.workspace)
-                headings = []
-                for name, raw_body in bodies.items():
-                    body = raw_body.strip()
-                    self.assertEqual(prompt.count(body), 1, f"{runtime} must append the {name} body once")
-                    heading = f"\n\n## {name}\n\n"
-                    self.assertIn(heading + body + "\n\n", prompt,
-                                  f"{name} needs an exact level-two heading immediately before its stripped body")
-                    self.assertNotIn(raw_body, prompt, f"{name} body must have surrounding whitespace stripped")
-                    headings.append(prompt.index(heading))
-                self.assertLess(headings[0], headings[1], "skills must be sorted by path name")
-                self.assertGreater(headings[0], prompt.index("RELAY_KEPT"), "skills follow the agent rules")
-                self.assertNotIn("FRONTMATTER_ONLY", prompt)
-                self.assertNotIn("name: not-the-path", prompt)
-                self.assertNotIn("SUPPORT_ONLY", prompt)
-
-    def test_hosts_line_in_body_with_frontmatter_is_not_a_restriction(self):
-        body = "BODY_WITH_FRONTMATTER\n\nhosts: claude\n\nAFTER_BODY_HOSTS"
-        write_skill(self.plugin, "alpha", body, "description: Use for all hosts.\nname: alpha")
-        for runtime in NON_CLAUDE:
-            with self.subTest(runtime=runtime):
-                self.assertIn("\n\n## alpha\n\n" + body + "\n\n",
-                              start.prompt(runtime, self.plugin, self.workspace))
-
-    def test_unsupported_frontmatter_hosts_forms_refuse_non_claude(self):
-        for hosts in ('hosts: "claude"', "hosts: [claude]", "hosts: claude # note",
-                      "hosts: Claude", "hosts: claude, codex", "hosts: codex", "hosts:"):
-            write_skill(self.plugin, "restricted", "RESTRICTED_BODY",
-                        "description: A restricted skill.\n" + hosts)
-            for runtime in NON_CLAUDE:
-                with self.subTest(hosts=hosts, runtime=runtime):
-                    with self.assertRaisesRegex(start.Refused, "restricted"):
-                        start.prompt(runtime, self.plugin, self.workspace)
-
-    def test_unsupported_frontmatter_hosts_forms_leave_claude_prompt_unchanged(self):
-        before = start.prompt("claude", self.plugin, self.workspace)
-        for hosts in ('hosts: "claude"', "hosts: [claude]", "hosts: claude # note",
-                      "hosts: Claude", "hosts: claude, codex", "hosts: codex", "hosts:"):
-            with self.subTest(hosts=hosts):
-                write_skill(self.plugin, "restricted", "RESTRICTED_BODY",
-                            "description: A restricted skill.\n" + hosts)
-                self.assertEqual(start.prompt("claude", self.plugin, self.workspace), before)
-
-    def test_appended_bodies_rewrite_plugin_root_and_survive_host_section_replacement(self):
-        body = ("## Check\n\nSKILL_CHECK: ${CLAUDE_PLUGIN_ROOT}/scripts/tool.py\n\n"
-                "## Sessions\n\nSKILL_SESSIONS\n\n## Relay\n\nSKILL_RELAY")
-        write_skill(self.plugin, "alpha", body, "description: Use for a generic check.")
-        for runtime in NON_CLAUDE:
-            with self.subTest(runtime=runtime):
-                prompt = start.prompt(runtime, self.plugin, self.workspace)
-                self.assertIn(body.replace("${CLAUDE_PLUGIN_ROOT}", str(self.plugin)), prompt,
-                              "host adapter regexes must not swallow or rewrite appended skill sections")
-                self.assertNotIn("${CLAUDE_PLUGIN_ROOT}", prompt)
-                self.assertIn(str(self.plugin / "skills" / "alpha" / "SKILL.md"), prompt)
                 self.assertNotIn("CLAUDE_CHECK_ONLY", prompt)
                 check = prompt.split("## Check\n", 1)[1].split("## Sessions\n", 1)[0]
                 self.assertIn("\n\nThe standing waiting-on list stays generic.\n\n", check)
                 self.assertNotIn("CLAUDE_SESSIONS_ONLY", prompt)
                 self.assertIn("RELAY_KEPT", prompt)
 
-    def test_claude_only_skills_do_not_change_non_claude_prompts(self):
-        write_skill(self.plugin, "alpha", "PUBLIC_BODY", "description: Use for a generic task.")
-        before = {runtime: start.prompt(runtime, self.plugin, self.workspace) for runtime in NON_CLAUDE}
-        write_skill(self.plugin, "private", "CLAUDE_PRIVATE_BODY", "description: Use for Claude tasks.\nhosts: claude")
-        for runtime in NON_CLAUDE:
-            with self.subTest(runtime=runtime):
-                self.assertEqual(start.prompt(runtime, self.plugin, self.workspace), before[runtime])
-
     def test_claude_keeps_on_demand_skills_out_of_its_prompt(self):
         before = start.prompt("claude", self.plugin, self.workspace)
-        write_skill(self.plugin, "alpha", "PUBLIC_BODY", "description: Use for a generic task.")
-        write_skill(self.plugin, "private", "CLAUDE_PRIVATE_BODY", "hosts: claude")
+        write_skill(self.plugin, "alpha", "ALPHA_ON_DEMAND_ONLY_511", "description: A generic task.")
+        write_skill(self.plugin, "zeta", "ZETA_ON_DEMAND_ONLY_511")
         self.assertEqual(start.prompt("claude", self.plugin, self.workspace), before)
+        # prompt() already substitutes this variable for Claude; preserve that behavior.
         self.assertIn(str(self.plugin / "skills" / "alpha" / "SKILL.md"), before)
         self.assertNotIn("${CLAUDE_PLUGIN_ROOT}", before)
 
-    def test_shipped_decision_page_body_is_appended_only_for_non_claude_hosts(self):
+    def test_shipped_skill_bodies_and_named_headings_are_absent_from_host_prompts(self):
         root = Path(__file__).resolve().parent.parent
-        body = skill_body((root / "skills" / "decision-page" / "SKILL.md").read_text())
-        self.assertTrue(body)
-        headed_body = "\n\n## decision-page\n\n" + body + "\n\n"
+        markers = {
+            "decision-page": "Never publish a decision page as an artifact, and never open it.",
+            "optional-features": "Notifications are off by default, including an empty `[notify]` table.",
+            "tracker-rows": "Never set the cell by hand or write that line as free text.",
+            "review-pipeline": "A verify pass with nothing open moves the task to `merge`.",
+            "coordinator-sessions": "When a session's state is in question, poll it; do not ask the user.",
+            "dispatch": "Those two rows are the dispatch.",
+        }
+        release = start.install(root, self.base / "install")
+        agent = (release / "agents" / "chief-of-stuff.md").read_text()
+        for name, marker in markers.items():
+            path = release / "skills" / name / "SKILL.md"
+            self.assertTrue(path.is_file(), f"{name} skill is missing")
+            self.assertIn(marker, skill_body(path.read_text()), "marker must identify shipped skill prose")
+            self.assertNotIn(marker, agent, "marker must distinguish the skill from agent rules")
+        for runtime in (*NON_CLAUDE, "claude"):
+            prompt = start.prompt(runtime, release, self.workspace)
+            for name, marker in markers.items():
+                with self.subTest(runtime=runtime, skill=name, check="body"):
+                    self.assertFalse(marker in prompt, f"{runtime} starts with the {name} skill body")
+                with self.subTest(runtime=runtime, skill=name, check="heading"):
+                    self.assertFalse(f"## {name}" in prompt.splitlines(),
+                                     f"{runtime} starts with a named {name} skill section")
+
+    def test_every_host_prompt_points_at_the_dispatch_skill_without_its_body_or_headings(self):
+        from evals.test_agent_budget import DISPATCH_POINTER, DISPATCH_TOPICS
+        root = Path(__file__).resolve().parent.parent
+        release = start.install(root, self.base / "install")
+        pointer = DISPATCH_POINTER.replace("${CLAUDE_PLUGIN_ROOT}", str(release))
+        for runtime in (*NON_CLAUDE, "claude"):
+            prompt = start.prompt(runtime, release, self.workspace)
+            lines = prompt.splitlines()
+            with self.subTest(runtime=runtime, check="pointer"):
+                self.assertIn(f"Read {release}/skills/dispatch/SKILL.md", prompt)
+                self.assertEqual(lines.count(pointer), 1, "the whole pointer, once, as its own line")
+            with self.subTest(runtime=runtime, check="agent heading"):
+                self.assertEqual(lines.count("## Dispatch"), 1, "only the agent's own ## Dispatch heading")
+            for topic in DISPATCH_TOPICS:
+                with self.subTest(runtime=runtime, check="skill topic", topic=topic):
+                    self.assertNotIn(f"### {topic}", lines)
+
+    def test_non_claude_shipped_prompts_have_no_brief_heading(self):
+        root = Path(__file__).resolve().parent.parent
+        release = start.install(root, self.base / "install")
         for runtime in NON_CLAUDE:
             with self.subTest(runtime=runtime):
-                prompt = start.prompt(runtime, root, self.workspace)
-                self.assertIn(headed_body, prompt)
-                self.assertEqual(prompt.count(body), 1)
-        claude = start.prompt("claude", root, self.workspace)
-        self.assertNotIn(body, claude)
-        self.assertNotIn("\n\n## decision-page\n\n", claude)
+                self.assertNotIn("## Brief", start.prompt(runtime, release, self.workspace).splitlines())
 
-    def test_shipped_optional_features_body_is_appended_only_for_non_claude_hosts(self):
+    def test_shipped_skill_pointer_lines_resolve_to_installed_files_on_every_host(self):
         root = Path(__file__).resolve().parent.parent
-        path = root / "skills" / "optional-features" / "SKILL.md"
-        self.assertTrue(path.is_file(), "optional-features skill is missing")
-        body = skill_body(path.read_text())
-        self.assertTrue(body)
-        for runtime in NON_CLAUDE:
+        release = start.install(root, self.base / "install")
+        for runtime in (*NON_CLAUDE, "claude"):
             with self.subTest(runtime=runtime):
-                prompt = start.prompt(runtime, root, self.workspace)
-                rendered_body = body.replace("${CLAUDE_PLUGIN_ROOT}", str(root))
-                self.assertIn("\n\n## optional-features\n\n" + rendered_body + "\n\n", prompt)
-                self.assertEqual(prompt.count(rendered_body), 1)
-        claude = start.prompt("claude", root, self.workspace)
-        self.assertNotIn(body.replace("${CLAUDE_PLUGIN_ROOT}", str(root)), claude)
-        self.assertNotIn("\n\n## optional-features\n\n", claude)
+                self.assert_pinned_skill_pointers(runtime, release,
+                                                  {"decision-page", "optional-features", "tracker-rows", "review-pipeline", "coordinator-sessions", "dispatch"})
 
-    def test_no_skills_prompt_is_byte_identical_to_the_legacy_prompt(self):
+    def test_review_pipeline_description_names_every_read_moment(self):
+        from evals.test_agent_budget import DESCRIPTION_CAP, description
+        root = Path(__file__).resolve().parent.parent
+        text = (root / "skills" / "review-pipeline" / "SKILL.md").read_text()
+        expected = ("Use before moving a task's stage, sending its pull request to the reviewer, "
+                    "handling a Reviewer pass report or an over budget line, running the kanban command, "
+                    "checking review state, or merging.")
+        self.assertEqual(description(text), expected)
+        self.assertLessEqual(len(description(text)), DESCRIPTION_CAP)
+
+    def test_no_skills_prompt_preserves_legacy_bytes_except_non_claude_read_guidance(self):
         for empty_dir in (False, True):
             if empty_dir:
                 (self.plugin / "skills").mkdir()
             for runtime, digest in LEGACY_SHA256.items():
                 with self.subTest(runtime=runtime, empty_dir=empty_dir):
                     prompt = start.prompt(runtime, self.plugin, self.workspace)
+                    if runtime in NON_CLAUDE:
+                        prompt = prompt.replace(READ_POINTER_GUIDANCE + " ", "", 1)
                     normalized = prompt.replace(str(self.plugin), "<release>").replace(str(self.workspace), "<workspace>")
                     self.assertEqual(hashlib.sha256(normalized.encode()).hexdigest(), digest)
 

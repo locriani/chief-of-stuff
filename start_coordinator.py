@@ -118,6 +118,7 @@ def prompt(runtime: str, release: Path, root: Path) -> str:
                     "Preserve tracker `## Sessions` states: planning, working, waiting, idle.\n\n")
         rules = re.sub(r"## Sessions\n.*?(?=## Relay\n)", sessions, rules, flags=re.S)
         rules += ("\n\n## Host adapter\n\nYou run in " + runtime + ". Use your host's tools to read, edit and run the pinned scripts. "
+                  "A rule that says \"Read <path>\" means open that file with your host's read tool or `cat`. "
                   "When these rules say Write or Edit, use your host's own file-edit tool directly (in Codex, "
                   "`apply_patch` with a patch you write yourself); never generate file content or a patch with a "
                   "script, and never pipe command output into the edit tool. "
@@ -128,18 +129,6 @@ def prompt(runtime: str, release: Path, root: Path) -> str:
                   "Next turn, reconcile tracker and board and dispatch ready one-shot tasks automatically. "
                   "If the named calendar tool is unavailable, "
                   "report it, leave calendar facts unverified, and continue work that does not depend on it.\n")
-        # Append after host adaptation so skill sections retain their own text.
-        for path in sorted((release / "skills").glob("*/SKILL.md")):
-            text = path.read_text()
-            front = re.match(r"\A---\r?\n(.*?)\r?\n---(?:\r?\n|\Z)", text, flags=re.S)
-            hosts = [line for line in front[1].splitlines() if line.lstrip().startswith("hosts:")] if front else []
-            if any(line != "hosts: claude" for line in hosts):
-                raise Refused(f"Skill {path.parent.name}: unsupported hosts line")
-            if hosts:
-                continue
-            body = (text[front.end():] if front else text).strip()
-            body = body.replace("${CLAUDE_PLUGIN_ROOT}", str(release))
-            rules += f"\n\n## {path.parent.name}\n\n{body}"
     return (f"You are chief-of-stuff. The installed rules and scripts are pinned at {release}. "
             f"The workspace is {root}. Read its CLAUDE.md for configuration.\n\n{rules}\n\n{START}")
 

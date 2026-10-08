@@ -20,8 +20,8 @@ class RulesTextTest(unittest.TestCase):
         self.assertEqual(rules_text(self.plugin), "## Role\n\nGeneric coordinator.\n")
 
     def test_all_skill_bodies_follow_the_agent_in_sorted_order_without_frontmatter(self):
-        # Creation order differs from path order; Claude-only rules still belong in eval lints.
-        write_skill(self.plugin, "zeta", "## Last\n\nLast rule.\n", "description: Secret metadata.\nhosts: claude")
+        # Creation order differs from path order; every skill body belongs in eval lints.
+        write_skill(self.plugin, "zeta", "## Last\n\nLast rule.\n", "description: Secret metadata.")
         write_skill(self.plugin, "alpha", "## First\n\nFirst rule.\n", "description: Other metadata.")
         self.assertEqual(rules_text(self.plugin),
                          "## Role\n\nGeneric coordinator.\n\n\n## First\n\nFirst rule.\n\n## Last\n\nLast rule.")

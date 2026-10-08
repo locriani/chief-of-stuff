@@ -16,6 +16,15 @@
   "prompt": "resume",
   "graders": [
     {
+      "name": "reads the tracker-rows skill before the first backlog --close",
+      "rule": "Writing `done` on a task closes its issue in the same move: `chief-of-stuff backlog --close N --commit`, and one Log line.",
+      "type": "tool_used",
+      "tool": "Read",
+      "input_match": "\"file_path\": \"[^\"\\n]*skills/tracker-rows/SKILL\\.md\"",
+      "min": 1,
+      "before": "\"command\": \"(?:\\\\.|[^\"\\\\])*(?:\\bchief[-_]of[-_]stuff(?:\\.py)?\\s+backlog\\b|(?:scripts/)?backlog\\.py\\b)(?:(?![;&|]|\\\\n)(?:\\\\.|[^\"\\\\]))*--close(?:[ =]|\\\\\")"
+    },
+    {
       "name": "audit runs",
       "type": "tool_used",
       "tool": "Bash",

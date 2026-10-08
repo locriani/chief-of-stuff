@@ -8,6 +8,7 @@ Repos are real. `git worktree add` against a fake proves nothing.
 """
 
 import contextlib
+import fcntl
 import io
 import os
 import subprocess
@@ -22,8 +23,10 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import git_trees  # noqa: E402
+import git_view  # noqa: E402
 import make_repo  # noqa: E402
 import make_worktree as mw  # noqa: E402
+from evals import git_taint as taint  # noqa: E402
 
 CLAUDE = """# Workspace
 
@@ -35,6 +38,17 @@ CLAUDE = """# Workspace
 - Agent: fixer standing
 - Timezone: America/Chicago
 """
+
+_views = contextlib.ExitStack()
+
+
+def setUpModule() -> None:
+    """Reads go through git_view.run (#443): give them a private base, never the user's cache."""
+    _views.enter_context(taint.private_git_views(Path(_views.enter_context(tempfile.TemporaryDirectory()))))
+
+
+def tearDownModule() -> None:
+    _views.close()
 
 
 def workspace() -> tuple[tempfile.TemporaryDirectory, Path]:
@@ -164,8 +178,9 @@ class AuditEnvTest(CloneCase):
 
     def test_the_call_passes_the_shared_audit_env(self):
         done = subprocess.CompletedProcess([], 0, stdout="", stderr="")
-        with mock.patch.object(mw.subprocess, "run", return_value=done) as run:
+        with mock.patch.object(git_view, "run", return_value=done) as run:
             mw.git(["status"], self.tree)
+        self.assertEqual(run.call_args.args, (["status"], self.tree))
         env = run.call_args.kwargs["env"]
         self.assertEqual(env, git_trees.audit_env())
         self.assertNotEqual(env["HOME"], str(self.tree))
@@ -192,41 +207,68 @@ class AuditEnvTest(CloneCase):
 
 
 class GitHelperErrorPathTest(unittest.TestCase):
-    """The helper's own failure shape: a git that cannot run is code 1 with the exception's class name, never a raise."""
+    """The helper's own failure shape: a read that cannot run is code 1 with the exception's class name, never a raise.
+    The read is `git_view.run` (#443); every way it can fail is the same shape, `Unviewable` included."""
+
+    def failing(self, exc: BaseException) -> tuple[int, str]:
+        with mock.patch.object(git_view, "run", side_effect=exc):
+            return mw.git(["status"], Path("."))
 
     def test_an_oserror_is_code_1_naming_the_exception_class(self):
-        with mock.patch.object(mw.subprocess, "run", side_effect=FileNotFoundError("no git")):
-            code, detail = mw.git(["status"], Path("."))
+        code, detail = self.failing(FileNotFoundError("no git"))
         self.assertEqual(code, 1)
         self.assertIn("FileNotFoundError", detail)
 
     def test_a_timeout_is_code_1_naming_the_exception_class(self):
-        with mock.patch.object(mw.subprocess, "run", side_effect=subprocess.TimeoutExpired("git", 1)):
-            code, detail = mw.git(["status"], Path("."))
+        code, detail = self.failing(subprocess.TimeoutExpired("git", 1))
         self.assertEqual(code, 1)
         self.assertIn("TimeoutExpired", detail)
 
+    def test_an_unviewable_tree_is_code_1_naming_unviewable_and_its_reason(self):
+        self.assertEqual(self.failing(git_view.Unviewable("metadata is not a bounded regular file")),
+                         (1, "Unviewable: metadata is not a bounded regular file"))
+
+    def test_every_failure_is_code_1_with_class_and_message(self):
+        for exc in (OSError("no git"), subprocess.TimeoutExpired("git", 1), git_view.Unviewable("why"),
+                    RuntimeError("no home"), ValueError("embedded null"), subprocess.SubprocessError("odd")):
+            with self.subTest(type(exc).__name__):
+                self.assertEqual(self.failing(exc), (1, f"{type(exc).__name__}: {exc}"))
+
     def test_the_call_is_bounded_by_the_git_timeout(self):
         done = subprocess.CompletedProcess([], 0, stdout="", stderr="")
-        with mock.patch.object(mw.subprocess, "run", return_value=done) as run:
+        with mock.patch.object(git_view, "run", return_value=done) as run:
             mw.git(["status"], Path("."))
         self.assertIsNotNone(run.call_args.kwargs["timeout"])
         self.assertEqual(run.call_args.kwargs["timeout"], mw.GIT_TIMEOUT)
 
     def test_stderr_is_the_detail_when_stdout_is_empty(self):
         done = subprocess.CompletedProcess([], 3, stdout="", stderr="boom\n")
-        with mock.patch.object(mw.subprocess, "run", return_value=done):
+        with mock.patch.object(git_view, "run", return_value=done):
             self.assertEqual(mw.git(["status"], Path(".")), (3, "boom"))
 
     def test_stdout_wins_over_stderr_when_both_are_set(self):
         done = subprocess.CompletedProcess([], 0, stdout="out\n", stderr="boom\n")
-        with mock.patch.object(mw.subprocess, "run", return_value=done):
+        with mock.patch.object(git_view, "run", return_value=done):
             self.assertEqual(mw.git(["status"], Path(".")), (0, "out"))
 
     def test_a_branch_is_refused_when_git_cannot_run(self):
-        with mock.patch.object(mw, "git", return_value=(1, "x")):
+        """`check_branch` asks git directly (no repository, no view): a git that cannot run refuses."""
+        with mock.patch.object(mw, "_run", return_value=(1, "x")):
             with self.assertRaises(mw.RefusedError):
                 mw.check_branch("fix/plain")
+
+
+class GitTrustedTest(unittest.TestCase):
+    """The write path is unchanged by #443: the clone's own git, in the user's environment, not the view."""
+
+    def test_it_runs_git_itself_on_the_users_env_and_never_through_the_view(self):
+        done = subprocess.CompletedProcess([], 0, stdout="ok\n", stderr="")
+        with mock.patch.object(mw.subprocess, "run", return_value=done) as run, \
+                mock.patch.object(git_view, "run", side_effect=AssertionError("a write went through the view")):
+            self.assertEqual(mw.git_trusted(["worktree", "list"], Path("/clone")), (0, "ok"))
+        self.assertEqual(run.call_args.args[0], ["git", "-C", "/clone", "worktree", "list"])
+        self.assertEqual(run.call_args.kwargs["env"], git_trees.user_env())
+        self.assertEqual(run.call_args.kwargs["timeout"], mw.GIT_TIMEOUT)
 
 
 class WorktreeAddEnvTest(CloneCase):
@@ -266,7 +308,15 @@ class WorktreeAddEnvTest(CloneCase):
         home.mkdir()
         repo_vars = {"GIT_DIR": str(self.root / "nowhere"), "GIT_WORK_TREE": str(self.root / "nowhere"), "GIT_INDEX_FILE": str(self.root / "nowhere.idx")}
         calls, spy = self.record()
-        with mock.patch.dict(os.environ, {"HOME": str(home), **repo_vars}), mock.patch.object(mw.subprocess, "run", spy):
+        views = []
+        real_view = git_view.run
+
+        def view_spy(args, path, **kw):
+            views.append((args, kw.get("env")))
+            return real_view(args, path, **kw)
+
+        with mock.patch.dict(os.environ, {"HOME": str(home), **repo_vars}), mock.patch.object(mw.subprocess, "run", spy), \
+                mock.patch.object(git_view, "run", view_spy):
             self.build()
         adds = [env for argv, env in calls if argv[3:5] == ["worktree", "add"]]
         self.assertEqual(len(adds), 1)
@@ -275,10 +325,215 @@ class WorktreeAddEnvTest(CloneCase):
         for var in repo_vars:
             self.assertNotIn(var, env)
         self.assertEqual(env["GIT_TERMINAL_PROMPT"], "0")
-        reads = {argv[3]: env for argv, env in calls if argv[3] in ("check-ref-format", "rev-parse", "log")}
-        self.assertEqual(set(reads), {"check-ref-format", "rev-parse", "log"})
-        for verb, read_env in reads.items():
-            self.assertEqual(read_env, git_trees.audit_env(), verb)
+        checks = [env for argv, env in calls if argv[3:4] == ["check-ref-format"]]
+        self.assertEqual(checks, [git_trees.audit_env()], "the branch check is one git call on the audit env")
+        self.assertEqual(sorted(args[0] for args, _ in views), ["log", "rev-parse"], "the two reads in `build` go through the view")
+        for args, read_env in views:
+            self.assertEqual(read_env, git_trees.audit_env(), args[0])
+
+
+class ReadsThroughTheViewTest(unittest.TestCase):
+    """#443 slice 5: make_worktree's reads run on a sanitised view of the repository, never on the repository itself.
+
+    A worker writes the tree's own `.git` (config, gitfile), so none of it is a program to run. Each case has a control: the
+    former read (`git -C <tree> status` on the audit env) fires the canary on the same fixture."""
+
+    # vector -> the marker the former read fires
+    CONFIG = {"fsmonitor": "fsmonitor", "filter": "filter-clean", "include": "include-fsmonitor", "wtconfig": "wtconfig-fsmonitor"}
+    POINTER = {"gitfile": "gitfile-fsmonitor", "commondir": "decoy-fsmonitor"}  # a forged pointer: not viewable at all
+    # characterization only: `hooks_in_common` (a post-index-change hook) is quiet under the audit env's GIT_OPTIONAL_LOCKS=0
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+
+    def fixture(self, vector: str):
+        fx = taint.build(Path(tempfile.mkdtemp(prefix="fx-", dir=self.root)), vector)
+        fx.clear()
+        subprocess.run(["git", "-C", str(fx.tree), "status", "--short"], env=git_trees.audit_env(), capture_output=True, timeout=15, check=False)
+        self.assertIn(self.CONFIG.get(vector) or self.POINTER[vector], fx.fired(), "the fixture must fire under the former read, or the test proves nothing")
+        fx.clear()
+        return fx
+
+    def test_make_worktree_git_runs_in_a_view(self):
+        truth = taint.git(["status", "--short"], taint.build(self.root / "clean").tree).stdout.strip()
+        self.assertIn("README.md", truth)
+        for vector in self.CONFIG:
+            with self.subTest(vector):
+                fx = self.fixture(vector)
+                self.assertEqual(mw.git(["status", "--short"], fx.tree), (0, truth))
+                self.assertEqual(fx.fired(), [], f"{vector}: a program the worker planted ran")
+        for vector in self.POINTER:
+            with self.subTest(vector):
+                fx = self.fixture(vector)
+                code, detail = mw.git(["status", "--short"], fx.tree)
+                self.assertEqual(fx.fired(), [], f"{vector}: a program the worker planted ran")
+                self.assertEqual(code, 1)
+                self.assertTrue(detail.startswith("Unviewable: "), detail)
+
+
+class CloneLockTest(CloneCase):
+    """#443 slice 5: the lock finds the common directory from files (`git_view.locate`), starts no git, and lands on the real one."""
+
+    def held(self, common: Path) -> bool:
+        """Is `common` locked by someone else right now?"""
+        fd = os.open(common, os.O_RDONLY)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        finally:
+            os.close(fd)
+        return False
+
+    def test_clone_lock_locates_without_git(self):
+        linked = self.build().path
+        common = (self.clone / ".git").resolve()
+        boom = AssertionError("clone_lock started a git process")
+        with mock.patch.object(mw.subprocess, "run", side_effect=boom), mock.patch.object(mw.subprocess, "Popen", side_effect=boom):
+            for where in (self.clone, linked):  # a repository's own directory, and a linked tree of it
+                with self.subTest(where.name):
+                    self.assertFalse(self.held(common))
+                    with mw.clone_lock(where):
+                        self.assertTrue(self.held(common), "the lock is on the real common directory")
+                    self.assertFalse(self.held(common), "the lock is released")
+
+    def test_a_directory_that_is_no_repository_is_refused_without_git(self):
+        plain = self.root / "plain"
+        plain.mkdir()
+        boom = AssertionError("clone_lock started a git process")
+        with mock.patch.object(mw.subprocess, "run", side_effect=boom), mock.patch.object(mw.subprocess, "Popen", side_effect=boom):
+            with self.assertRaises(mw.RefusedError) as e, mw.clone_lock(plain):
+                self.fail("a plain directory was locked")
+        self.assertIn("is not a git repository", str(e.exception))
+        self.assertIn(str(plain), str(e.exception))
+
+    def test_a_forged_pointer_is_refused_not_locked(self):
+        for vector in ("gitfile", "commondir"):
+            with self.subTest(vector):
+                fx = taint.build(Path(tempfile.mkdtemp(prefix="fx-", dir=self.root)), vector)
+                with self.assertRaises(mw.RefusedError) as e, mw.clone_lock(fx.tree):
+                    self.fail("a worktree whose pointers were forged was locked")
+                self.assertIn("is not a git repository", str(e.exception))
+        fx = taint.build(Path(tempfile.mkdtemp(prefix="fx-", dir=self.root)))
+        taint.forged_linked_layout(fx)  # mutually consistent pointers into a copy the worker wrote
+        with self.assertRaises(mw.RefusedError) as e, mw.clone_lock(fx.tree):
+            self.fail("a worktree whose repository the worker copied was locked")
+        self.assertIn("is not a git repository", str(e.exception))
+
+
+class FilesOnlyLayoutTest(CloneCase):
+    """Characterization (#443 slice 5): the files-only layout refuses on purpose what the old `rev-parse` locked, like the codex grant."""
+
+    def assert_refused(self, clone: Path):
+        with self.assertRaises(mw.RefusedError) as e, mw.clone_lock(clone):
+            self.fail("a layout the files-only locate refuses was locked")
+        self.assertIn("is not a git repository", str(e.exception))
+        with self.assertRaises(mw.RefusedError) as e:
+            self.build(clone=clone)
+        self.assertIn("is not a git repository", str(e.exception))
+        self.assertFalse(self.tree.exists())
+
+    def test_a_separate_git_dir_clone_is_refused(self):
+        separate = self.root / "separate"
+        make_repo.git(["clone", "-q", "--separate-git-dir", str(self.root / "separate.git"), str(self.root / "origin.git"), str(separate)], self.root)
+        self.assertTrue((separate / ".git").is_file(), "the fixture is a gitfile clone whose git directory lives elsewhere")
+        self.assertEqual(make_repo.git(["rev-parse", "--git-dir"], separate), str((self.root / "separate.git").resolve()))  # git itself accepts it
+        self.assert_refused(separate)
+
+    def test_a_subdirectory_of_a_repository_is_refused(self):
+        sub = self.clone / "sub"
+        sub.mkdir()
+        self.assertEqual(make_repo.git(["rev-parse", "--show-toplevel"], sub), str(self.clone.resolve()))  # git itself accepts it
+        self.assert_refused(sub)
+
+
+class CheckBranchNeedsNoRepositoryTest(CloneCase):
+    """#443 slice 5: `check-ref-format` reads no repository, so `check_branch(branch)` takes none and runs from `/`."""
+
+    def spy(self):
+        calls = []
+        real = subprocess.run
+
+        def run(argv, **kw):
+            calls.append((argv, kw))
+            return real(argv, **kw)
+
+        return calls, mock.patch.object(mw.subprocess, "run", run)
+
+    def test_check_branch_needs_no_repository(self):
+        calls, patched = self.spy()
+        with patched:
+            mw.check_branch("feat/x")
+        self.assertEqual(len(calls), 1)
+        argv, kw = calls[0]
+        self.assertEqual(argv, ["git", "-C", "/", "check-ref-format", "--branch", "feat/x"])
+        self.assertEqual(kw["env"], git_trees.audit_env())
+
+    def test_it_takes_the_branch_and_nothing_else(self):
+        with self.assertRaises(TypeError):
+            mw.check_branch("feat/x", self.clone)
+
+    def test_building_with_a_hostile_clone_still_makes_the_branch_check_from_root(self):
+        hook = f"{sys.executable} -c \\\"import pathlib; pathlib.Path('{self.root / 'marker'}').touch()\\\""
+        make_repo.git(["config", "core.fsmonitor", hook], self.clone)
+        calls, patched = self.spy()
+        with patched:
+            self.build()
+        checks = [argv for argv, _ in calls if "check-ref-format" in argv]
+        self.assertEqual(checks, [["git", "-C", "/", "check-ref-format", "--branch", "feat/new"]])
+
+    def test_it_still_refuses_what_git_refuses_and_what_would_be_an_option(self):
+        calls, patched = self.spy()
+        with patched:
+            for name in ("-x", "--upload-pack=x", ""):
+                with self.subTest(name), self.assertRaises(mw.RefusedError):
+                    mw.check_branch(name)
+            self.assertEqual(calls, [], "an option-like or empty name is refused before git")
+            for name in ("a..b", "feat/x.lock", "a b", "a@{0}"):
+                with self.subTest(name), self.assertRaises(mw.RefusedError):
+                    mw.check_branch(name)
+        self.assertEqual({argv[:3] == ["git", "-C", "/"] for argv, _ in calls}, {True})
+
+
+class BuildReadsThroughTheViewTest(CloneCase):
+    """#443 slice 5: the two reads in `build` (local main's line, the new tree's sha) go through the view."""
+
+    def test_build_reads_main_and_head_through_the_view(self):
+        # Neither read fires a planted program even raw (`log` and `rev-parse` run no fsmonitor or filter), and the write path
+        # may run the clone's own config: so the proof is the call, not a marker.
+        views = []
+        real = git_view.run
+
+        def view_spy(args, path, **kw):
+            views.append((args, Path(path), kw.get("env"), kw.get("timeout")))
+            return real(args, path, **kw)
+
+        with mock.patch.object(git_view, "run", view_spy):
+            made = self.build()
+        self.assertEqual([(args, path) for args, path, *_ in views], [
+            (["log", "-1", "--format=%h %cr", "refs/heads/main"], self.clone),
+            (["rev-parse", "--short", "HEAD"], made.path),
+        ])
+        for _, _, env, timeout in views:
+            self.assertEqual((env, timeout), (git_trees.audit_env(), mw.GIT_TIMEOUT))
+        self.assertEqual(made.sha, make_repo.git(["rev-parse", "--short", "HEAD"], made.path))
+        self.assertEqual(made.sha, make_repo.git(["rev-parse", "--short", "refs/remotes/origin/main"], self.clone))
+
+    def test_a_tree_the_view_cannot_read_has_sha_question_mark(self):
+        """`build` never raises over the sha: an unviewable new tree reports `?`, not git's error text."""
+        real = git_view.run
+
+        def run(args, path, **kw):
+            if args[0] == "rev-parse":  # only the new tree's read fails; the clone's main read must work (a failing one refuses)
+                raise git_view.Unviewable("not a linked worktree of its own repository")
+            return real(args, path, **kw)
+
+        with mock.patch.object(git_view, "run", run):
+            made = self.build()
+        self.assertEqual(made.sha, "?")
+        self.assertTrue(made.path.is_dir())
 
 
 class BuildTest(CloneCase):
@@ -530,10 +785,13 @@ class ConcurrentDispatchTest(CloneCase):
 CHILD_DISPATCH = """
 import sys, time
 from pathlib import Path
-scripts, root, clone, marks = sys.argv[1:5]
-sys.path.insert(0, scripts)
+scripts, root, clone, marks, repo, base = sys.argv[1:7]
+sys.path[:0] = [scripts, repo]
 import git_trees
 import make_worktree as mw
+from evals import git_taint as taint
+views = taint.private_git_views(Path(base))
+views.__enter__()  # the child reads the clone through the same private view base as the parent
 real_fetch, real_add = git_trees.fetch_base, mw.git_trusted
 def fetch(*a, **k):
     Path(marks, "started").touch()
@@ -618,8 +876,10 @@ class SerializedDispatchTest(CloneCase):
         marks.mkdir()
         scripts = Path(mw.__file__).resolve().parent
         child = subprocess.Popen(
-            [sys.executable, "-c", CHILD_DISPATCH, str(scripts), str(self.root), str(self.clone), str(marks)],
+            [sys.executable, "-c", CHILD_DISPATCH, str(scripts), str(self.root), str(self.clone), str(marks),
+             str(Path(__file__).resolve().parent.parent), str(self.root / "child-views")],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env={**os.environ, "XDG_CACHE_HOME": str(self.root / "child-cache")},  # never the user's cache; the child's view base is the explicit one above
         )
         self.addCleanup(child.kill)
         deadline = time.monotonic() + 30
@@ -705,6 +965,64 @@ class NoLocalMainTest(CloneCase):
         self.drop_local_main()
         remote_head = advance_remote(self.root)
         self.assertEqual(rev(self.build().path), remote_head)
+
+
+class UnviewableMainTest(CloneCase):
+    """A main that cannot be read (a view failure, code 1) is not a missing main (git exit 128): it refuses naming the clone and
+    the reason, before any fetch or `worktree add`, and makes nothing."""
+
+    def refused(self, side_effect, **kw) -> str:
+        with mock.patch.object(git_view, "run", side_effect=side_effect), mock.patch.object(mw.git_trees, "fetch_base") as fetch, \
+                mock.patch.object(mw, "git_trusted") as trusted:
+            with self.assertRaises(mw.RefusedError) as e:
+                self.build(**kw)
+        fetch.assert_not_called()
+        trusted.assert_not_called()
+        self.assertFalse(self.tree.exists())
+        self.assertEqual(self.branches(), "")
+        return str(e.exception)
+
+    def assert_names_clone_and_reason(self, message: str, reason: str):
+        self.assertIn("cannot read", message)
+        self.assertIn(str(self.clone), message)
+        self.assertIn(reason, message)
+        self.assertNotIn("no local main", message, "a clone whose main cannot be read is not a clone with no main")
+
+    def test_an_unviewable_clone_refuses_naming_the_clone_and_the_reason(self):
+        for from_local in (False, True):
+            with self.subTest(from_local=from_local):
+                self.assert_names_clone_and_reason(self.refused(git_view.Unviewable("boom"), from_local=from_local), "Unviewable: boom")
+
+    def test_an_oserror_from_the_view_refuses_naming_the_clone_and_the_reason(self):
+        for from_local in (False, True):
+            with self.subTest(from_local=from_local):
+                self.assert_names_clone_and_reason(self.refused(OSError("disk full"), from_local=from_local), "OSError: disk full")
+
+    def test_an_unwritable_cache_refuses_naming_the_clone_and_the_reason(self):
+        readonly = self.root / "readonly"
+        readonly.mkdir()
+        readonly.chmod(0o500)
+        self.addCleanup(readonly.chmod, 0o700)
+        real = git_view.run
+
+        def run(args, path, **kw):
+            kw["base"] = readonly / "views"
+            return real(args, path, **kw)
+
+        for from_local in (False, True):
+            with self.subTest(from_local=from_local):
+                message = self.refused(run, from_local=from_local)
+                self.assertIn("cannot read", message)
+                self.assertIn(str(self.clone), message)
+                self.assertNotIn("no local main", message)
+
+    def test_a_really_missing_main_keeps_its_own_refusals(self):
+        make_repo.git(["checkout", "-q", "-b", "elsewhere"], self.clone)
+        make_repo.git(["branch", "-D", "main"], self.clone)
+        with self.assertRaises(mw.RefusedError) as e:
+            self.build(from_local=True)
+        self.assertIn("no local main to cut from; drop --from-local", str(e.exception))
+        self.assertNotIn("cannot read", str(e.exception))
 
 
 class BaseRefTest(unittest.TestCase):

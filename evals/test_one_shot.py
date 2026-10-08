@@ -22,11 +22,26 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import dispatch_prompt  # noqa: E402
 import git_trees  # noqa: E402
+import git_view  # noqa: E402
 import one_shot  # noqa: E402
 import process_status  # noqa: E402
 import spawn_session  # noqa: E402
 import shell_setup  # noqa: E402
 from _vendor.toon_format import decode as toon_decode, encode as toon_encode  # noqa: E402
+from evals import git_taint as taint  # noqa: E402
+
+
+@contextlib.contextmanager
+def private_git_views(base):
+    """Supply the view API's trusted test base without writing the user's cache."""
+    run = git_view.run
+
+    def run_at_base(*args, **kwargs):
+        kwargs.setdefault("base", base)
+        return run(*args, **kwargs)
+
+    with mock.patch.object(git_view, "run", side_effect=run_at_base):
+        yield
 
 
 CLAUDE = """# Workspace
@@ -129,22 +144,20 @@ class CommandTest(unittest.TestCase):
                                     agent_type=None, model="", effort="")
             self.assertEqual(self._add_dirs(args), [])
 
-    def test_codex_grants_nothing_when_a_git_lookup_fails(self):
-        # The pair cannot be validated without both answers, so a failing lookup grants nothing, not even the
-        # common dir (it used to keep it): no flag, no exception.
-        real_run = subprocess.run
-        for failing in ("--git-common-dir", "--absolute-git-dir"):
-            def run(argv, *a, _failing=failing, **kw):
-                if _failing in argv:
-                    return subprocess.CompletedProcess(argv, 128, stdout="", stderr="fatal")
-                return real_run(argv, *a, **kw)
-
-            with self.subTest(failing=failing), tempfile.TemporaryDirectory() as tmp:
-                _, tree = self._repo_with_linked_tree(tmp)
-                with mock.patch.object(one_shot.subprocess, "run", side_effect=run):
-                    args = one_shot.command("codex", "/bin/fake", tree, tree / "d.md",
-                                            agent_type=None, model="", effort="")
-                self.assertEqual(self._add_dirs(args), [])
+    def test_codex_grants_nothing_when_a_linked_trees_pointer_is_missing_or_damaged(self):
+        # #443: the grant is read from files (`git_view.locate`); a pointer it cannot read grants nothing, not even
+        # the common dir, and nothing raises out of command().
+        damage = {"back-pointer missing": lambda base, tree: (base / ".git/worktrees/tree/gitdir").unlink(),
+                  "commondir missing": lambda base, tree: (base / ".git/worktrees/tree/commondir").unlink(),
+                  "back-pointer empty": lambda base, tree: (base / ".git/worktrees/tree/gitdir").write_text(""),
+                  "gitfile empty": lambda base, tree: (tree / ".git").write_text(""),
+                  "gitfile garbage": lambda base, tree: (tree / ".git").write_text("not a gitfile\n"),
+                  "gitfile target missing": lambda base, tree: (tree / ".git").write_text(f"gitdir: {tree}/../absent\n")}
+        for label, hurt in damage.items():
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as tmp:
+                base, tree = self._repo_with_linked_tree(tmp)
+                hurt(base, tree)
+                self.assertEqual(self._codex_dirs(tree), [])
 
     def _codex_dirs(self, cwd):
         return self._add_dirs(one_shot.command("codex", "/bin/fake", cwd, cwd / "d.md",
@@ -266,44 +279,17 @@ class CommandTest(unittest.TestCase):
                 with self.subTest(case=label):
                     self.assertEqual(self._codex_dirs(cwd), [])
 
-    def _patched_rev_parse(self, answers):
-        real_run = subprocess.run
-
-        def run(argv, *a, **kw):
-            for flag, path in answers.items():
-                if flag in argv:
-                    return subprocess.CompletedProcess(argv, 0, stdout=f"{path}\n", stderr="")
-            return real_run(argv, *a, **kw)
-
-        return mock.patch.object(one_shot.subprocess, "run", side_effect=run)
-
-    def test_codex_clone_grant_needs_its_common_dir_to_be_its_dot_git(self):
-        # R2: `<clone>/.git/commondir` rewritten to another repo: git reports the other repo as the common dir.
+    def test_codex_clone_grant_stays_its_own_dot_git_when_commondir_is_rewritten(self):
+        # R2: `<clone>/.git/commondir` rewritten to another repo. A clone's grant is its own `.git`, whatever that
+        # file says: the other repo's path must never appear.
         with tempfile.TemporaryDirectory() as tmp:
             clone, victim = Path(tmp) / "clone", Path(tmp) / "victim"
             for repo in (clone, victim):
                 subprocess.run(["git", "init", "-q", str(repo)], check=True)
             (clone / ".git/commondir").write_text(f"{victim / '.git'}\n")
-            self.assertEqual(self._codex_dirs(clone), [])
-
-    def test_codex_clone_grant_needs_its_gitdir_to_equal_its_common_dir(self):
-        # R2, one term at a time: dot-git == common, but git reports another gitdir.
-        with tempfile.TemporaryDirectory() as tmp:
-            clone, other = Path(tmp) / "clone", Path(tmp) / "other"
-            for repo in (clone, other):
-                subprocess.run(["git", "init", "-q", str(repo)], check=True)
-            with self._patched_rev_parse({"--absolute-git-dir": other / ".git"}):
-                self.assertEqual(self._codex_dirs(clone), [])
-
-    def test_codex_clone_grant_needs_its_dot_git_to_equal_the_reported_dirs(self):
-        # R2, one term at a time: gitdir == common (both another repo), but `<clone>/.git` is not that.
-        with tempfile.TemporaryDirectory() as tmp:
-            clone, other = Path(tmp) / "clone", Path(tmp) / "other"
-            for repo in (clone, other):
-                subprocess.run(["git", "init", "-q", str(repo)], check=True)
-            with self._patched_rev_parse({"--absolute-git-dir": other / ".git",
-                                          "--git-common-dir": other / ".git"}):
-                self.assertEqual(self._codex_dirs(clone), [])
+            dirs = self._codex_dirs(clone)
+            self.assertEqual(dirs, [str((clone / ".git").resolve())])
+            self.assertFalse(any(str(victim.resolve()) in d for d in dirs))
 
     def test_codex_never_raises_on_a_corrupt_commondir(self):
         # R7: a NUL byte or an unreadable `commondir` grants nothing and does not raise out of command().
@@ -319,7 +305,7 @@ class CommandTest(unittest.TestCase):
                     commondir.chmod(0o644)
 
     def test_codex_grants_a_linked_worktree_despite_git_environment_variables(self):
-        # R9: GIT_DIR and friends in the launcher's environment must not redirect the rev-parse calls.
+        # R9: GIT_DIR and friends in the launcher's environment must not redirect the grant (no git process reads them).
         with tempfile.TemporaryDirectory() as tmp:
             base, tree = self._repo_with_linked_tree(tmp)
             other, _ = self._other_repo_with_worktree(tmp)
@@ -480,8 +466,7 @@ class CodexAddDirArgsTest(unittest.TestCase):
             self.assertEqual(git_trees.codex_add_dir_args(tree), [])
 
     def test_a_subdirectory_with_a_forged_back_pointer_is_refused_by_the_toplevel_guard(self):
-        # The toplevel check is the only guard here: git reports the common dir and gitdir of the tree above, and
-        # a back-pointer rewritten to `<sub>/.git` would otherwise agree with the missing `<sub>/.git`.
+        # A subdirectory has no `.git` of its own: locate raises, so a back-pointer rewritten to `<sub>/.git` grants nothing.
         with tempfile.TemporaryDirectory() as tmp:
             base, tree = self._repo_with_linked_tree(tmp)
             sub = tree / "sub"
@@ -504,23 +489,62 @@ class CodexAddDirArgsTest(unittest.TestCase):
             self.assertEqual(git_trees.codex_add_dir_args(tree),
                              self.pairs((base / ".git").resolve(), (base / ".git/worktrees/tree").resolve()))
 
-    def test_a_hung_git_grants_nothing_and_every_git_call_is_bounded(self):
+    def test_no_git_process_is_spawned_for_any_grant_or_refusal(self):
+        # #443: the tree is what a previous codex run could write to, so its git control files are read as files
+        # (`git_view.locate`), never through a git process. This replaces the old bounded-git-call test.
         with tempfile.TemporaryDirectory() as tmp:
-            _, tree = self._repo_with_linked_tree(tmp)
-            real, kwargs = subprocess.run, []
+            base, tree = self._repo_with_linked_tree(tmp)
+            plain, bare = Path(tmp) / "plain", Path(tmp) / "bare.git"
+            plain.mkdir()
+            subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True)
+            (tree / "src").mkdir()
+            clone = Path(tmp) / "clone"
+            subprocess.run(["git", "init", "-q", str(clone)], check=True)
+            boom = AssertionError("a git process was spawned")
+            with mock.patch.object(git_trees.subprocess, "run", side_effect=boom), \
+                    mock.patch.object(git_trees.subprocess, "Popen", side_effect=boom):
+                self.assertEqual(git_trees.codex_add_dir_args(clone), self.pairs((clone / ".git").resolve()))
+                self.assertEqual(git_trees.codex_add_dir_args(tree),
+                                 self.pairs((base / ".git").resolve(), (base / ".git/worktrees/tree").resolve()))
+                for refused in (plain, bare, tree / "src"):
+                    with self.subTest(refused=refused.name):
+                        self.assertEqual(git_trees.codex_add_dir_args(refused), [])
 
-            def recording(argv, *a, **kw):
-                kwargs.append(kw)
-                return real(argv, *a, **kw)
+    def test_hostile_git_config_is_never_executed_or_trusted(self):
+        # Pins that worker-written config command keys (clone `.git/config`, linked tree's common config) never run:
+        # the grant reads files only and spawns no git.
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / "ran"
+            touch = f"python3 -c \"open('{marker}', 'w').close()\""
+            hostile = f"[core]\n\tfsmonitor = {touch}\n\tsshCommand = {touch}\n\thooksPath = {tmp}\n[alias]\n\trev-parse = !{touch}\n"
+            clone = Path(tmp) / "clone"
+            subprocess.run(["git", "init", "-q", str(clone)], check=True)
+            with (clone / ".git/config").open("a") as f:
+                f.write(hostile)
+            self.assertEqual(git_trees.codex_add_dir_args(clone), self.pairs((clone / ".git").resolve()))
+            base, tree = self._repo_with_linked_tree(tmp)
+            with (base / ".git/config").open("a") as f:
+                f.write(hostile)
+            self.assertEqual(git_trees.codex_add_dir_args(tree),
+                             self.pairs((base / ".git").resolve(), (base / ".git/worktrees/tree").resolve()))
+            self.assertFalse(marker.exists())
 
-            with mock.patch.object(git_trees.subprocess, "run", side_effect=recording):
-                self.assertEqual(len(git_trees.codex_add_dir_args(tree)), 4)
-            self.assertTrue(kwargs)
-            for kw in kwargs:
-                self.assertIsNotNone(kw.get("timeout"), kw)
-            hung = subprocess.TimeoutExpired(["git"], 15)
-            with mock.patch.object(git_trees.subprocess, "run", side_effect=hung):
-                self.assertEqual(git_trees.codex_add_dir_args(tree), [])
+    def test_a_linked_tree_whose_repository_lives_inside_the_worktree_is_refused(self):
+        # Pin: the common dir and gitdir are under the tree, i.e. the worker's own directory, so nothing is granted.
+        with tempfile.TemporaryDirectory() as tmp:
+            base, tree, bare = Path(tmp) / "base", Path(tmp) / "tree", Path(tmp) / "bare.git"
+            subprocess.run(["git", "init", "-q", str(base)], check=True)
+            self._git("-C", str(base), "commit", "-q", "--allow-empty", "-m", "init")
+            subprocess.run(["git", "clone", "-q", "--bare", str(base), str(bare)], check=True)
+            self._git("-C", str(bare), "worktree", "add", "-q", str(tree))
+            inner = tree / ".repo"
+            shutil.move(str(bare), str(inner))
+            (tree / ".git").write_text(f"gitdir: {inner / 'worktrees/tree'}\n")
+            (inner / "worktrees/tree/gitdir").write_text(f"{tree / '.git'}\n")
+            seen = subprocess.run(["git", "-C", str(tree), "rev-parse", "--absolute-git-dir"], capture_output=True,
+                                  text=True, check=True).stdout.strip()
+            self.assertEqual(Path(seen).resolve(), (inner / "worktrees/tree").resolve())  # git itself accepts the layout
+            self.assertEqual(git_trees.codex_add_dir_args(tree), [])
 
     def test_one_shot_codex_command_carries_exactly_the_shared_fragment(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -538,6 +562,7 @@ class RunTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
+        self.enterContext(private_git_views(self.root / "private-views"))
         (self.root / "CLAUDE.md").write_text(CLAUDE)
         (self.root / "daily").mkdir()
         self.tracker = self.root / "daily/2026-09-18-tracker.md"
@@ -827,7 +852,7 @@ class RunTest(unittest.TestCase):
         fake = self._fake('status: done\nreason: done\nchanges: checked\n', write_partial=False)
         with mock.patch.object(one_shot.subprocess, "run", wraps=subprocess.run) as execute:
             self.assertEqual(self._run(fake), 0)
-        call = next(call for call in execute.call_args_list if "stdin" in call.kwargs)
+        call = next(call for call in execute.call_args_list if call.args[0][0] == str(fake))
         self.assertEqual(call.kwargs["env"]["CHIEF_OF_STUFF_WORKSPACE"], str(self.root.resolve()))
 
     def test_partial_failure_records_reason_and_changes(self):
@@ -1781,8 +1806,383 @@ def _slot_child(barrier, answered, out: str, trees: str, i: int, cap: int) -> No
     (Path(out) / str(i)).write_text(outcome)
 
 
+class SanitisedTreeReadTest(unittest.TestCase):
+    """Slice 2: live old-reader controls followed by the four real call sites."""
+
+    SITES = ("changed_files", "git_head", "committed_changes", "_tree_note")
+    VECTORS = ("fsmonitor", "filter", "hooks", "hooks_in_common", "include", "wtconfig",
+               "grafts", "grafts_yes", "shallow", "replace", "commondir", "gitfile")
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.base = self.root / "private-views"
+        self.enterContext(private_git_views(self.base))
+        # This is a reproducible instance of the old USER + NO_REPLACE env,
+        # without the test runner's personal config or repository selectors.
+        self.enterContext(mock.patch.dict(os.environ, taint.ENV, clear=True))
+
+    def fixture(self):
+        fx = taint.build(Path(tempfile.mkdtemp(prefix="fixture-", dir=self.root)))
+        (fx.root / "CLAUDE.md").write_text(CLAUDE.replace("`trees/`", "`.`"))
+        return fx
+
+    def old_env(self):
+        # Spell out the former implementation; tests survive its deletion.
+        return {**git_trees.user_env(), "GIT_NO_REPLACE_OBJECTS": "1"}
+
+    def raw(self, fx, args, env=None):
+        return taint.git(args, fx.tree, env=self.old_env() if env is None else env, check=False)
+
+    def truth(self, fx, site):
+        args = {
+            "changed_files": ["status", "--short"],
+            "git_head": ["rev-parse", "HEAD"],
+            "committed_changes": ["log", "--format=%h %s", "--stat", f"{fx.sha['B']}..{fx.sha['D']}"],
+            "_tree_note": ["branch", "--show-current"],
+        }[site]
+        result = self.raw(fx, args, git_trees.audit_env())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = result.stdout.strip()
+        if site == "committed_changes":
+            self.assertIn(" C\n", result.stdout)
+            self.assertIn(" D\n", result.stdout)
+        return f"worktree `wt` ({text})" if site == "_tree_note" else text
+
+    def call(self, fx, site):
+        if site == "_tree_note":
+            return one_shot._tree_note(fx.root, fx.tree)
+        if site == "committed_changes":
+            return one_shot.committed_changes(fx.tree, fx.sha["B"])
+        return getattr(one_shot, site)(fx.tree)
+
+    def assert_view_reads(self, calls, fx, command):
+        reads = [call for call in calls if call.args[0][0] == "git" and command in call.args[0]]
+        self.assertTrue(reads, f"{command} was not read")
+        for call in reads:
+            argv, env = call.args[0], call.kwargs.get("env", {})
+            self.assertNotIn("-C", argv)
+            directory = Path(env.get("GIT_DIR", "/missing-view"))
+            self.assertEqual(directory.parent, self.base)
+            self.assertNotIn(directory, (fx.common, fx.gitdir))
+            self.assertEqual(env.get("GIT_WORK_TREE"), str(fx.tree))
+            self.assertEqual(env.get("GIT_INDEX_FILE"), str(directory / "index"))
+            self.assertEqual(Path(call.kwargs["cwd"]).resolve(), fx.tree)
+            self.assertEqual({k: v for k, v in env.items() if k not in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE")},
+                             git_trees.audit_env())
+            self.assertFalse(directory.exists(), "the view was not cleaned up")
+
+    def check_site_vector(self, site, vector):
+        fx = self.fixture()
+        expected = self.truth(fx, site)
+        taint.apply(fx, vector)
+        taint.one_shot_control(self, fx, vector, self.old_env())
+        # History witnesses for the actual log, including stat data: shallow
+        # can keep the same subjects while falsifying C's diff against B.
+        if site == "committed_changes" and vector in ("grafts", "grafts_yes", "shallow"):
+            old = self.raw(fx, ["log", "--format=%h %s", "--stat", f"{fx.sha['B']}..{fx.sha['D']}"])
+            self.assertEqual(old.returncode, 0, old.stderr)
+            self.assertNotEqual(old.stdout.strip(), expected)
+        real_run = subprocess.run
+        with mock.patch.object(subprocess, "run", wraps=real_run) as execute:
+            if vector in ("commondir", "gitfile") and site == "_tree_note":
+                with self.assertRaisesRegex(ValueError, "tree is unreadable"):
+                    self.call(fx, site)
+                result = None
+            else:
+                result = self.call(fx, site)
+        self.assertEqual(fx.fired(), [])
+        if vector in ("commondir", "gitfile"):
+            if site == "changed_files":
+                self.assertRegex(result, r"^git status failed: .*unreadable")
+            elif site == "git_head":
+                self.assertIsNone(result)
+            elif site == "committed_changes":
+                self.assertEqual(result, "Could not read commits: tree unreadable")
+            self.assertEqual(execute.call_args_list, [], "a refused layout must not start git")
+        else:
+            self.assertEqual(result, expected)
+            command = {"changed_files": "status", "git_head": "rev-parse",
+                       "committed_changes": "log", "_tree_note": "branch"}[site]
+            self.assert_view_reads(execute.call_args_list, fx, command)
+        self.assertEqual(list(self.base.glob("view-*")), [])
+
+    def test_git_read_env_is_deleted(self):
+        self.assertFalse(hasattr(one_shot, "git_read_env"))
+
+    def test_r6_four_public_reads_reach_git_view_only_through_git_helper(self):
+        helper = getattr(one_shot, "_git", None)
+        self.assertTrue(callable(helper), "one_shot._git must exist")
+        fx = self.fixture()
+        inside_helper = False
+
+        def through_helper(*args, **kwargs):
+            nonlocal inside_helper
+            inside_helper = True
+            try:
+                return helper(*args, **kwargs)
+            finally:
+                inside_helper = False
+
+        real_view_run = git_view.run
+
+        def view_read(*args, **kwargs):
+            self.assertTrue(inside_helper, "a public read bypassed one_shot._git")
+            return real_view_run(*args, **kwargs)
+
+        commands = {
+            "changed_files": [["status", "--short"]],
+            "git_head": [["rev-parse", "HEAD"]],
+            "committed_changes": [["rev-parse", "HEAD"],
+                                  ["log", "--format=%h %s", "--stat", f"{fx.sha['B']}..{fx.sha['D']}"]],
+            "_tree_note": [["branch", "--show-current"]],
+        }
+        for site in self.SITES:
+            with self.subTest(site=site):
+                expected = self.truth(fx, site)
+                with mock.patch.object(one_shot, "_git", side_effect=through_helper), \
+                     mock.patch.object(git_view, "run", side_effect=view_read) as view:
+                    self.assertEqual(self.call(fx, site), expected)
+                self.assertEqual(view.call_args_list,
+                                 [mock.call(args, fx.tree, env=git_trees.audit_env(), timeout=15)
+                                  for args in commands[site]])
+
+    def test_r9_failed_branch_read_refuses_instead_of_naming_tree_detached(self):
+        fx = self.fixture()
+        failed = subprocess.CompletedProcess(["git", "branch", "--show-current"], 128,
+                                             stdout="", stderr="fatal: cannot read branch")
+        with mock.patch.object(git_view, "run", return_value=failed) as view, \
+             self.assertRaisesRegex(ValueError, "tree is unreadable"):
+            one_shot._tree_note(fx.root, fx.tree)
+        view.assert_called_once_with(["branch", "--show-current"], fx.tree,
+                                     env=git_trees.audit_env(), timeout=15)
+
+    def test_r9_successful_empty_branch_read_still_names_detached_tree(self):
+        fx = self.fixture()
+        taint.git(["checkout", "--detach", "-q"], fx.tree)
+        self.assertEqual(one_shot._tree_note(fx.root, fx.tree), "worktree `wt` (detached)")
+
+    def test_changed_files_refuses_a_gitlink_instead_of_reporting_it_clean(self):
+        fx = self.fixture()
+        taint.apply(fx, "gitlink")
+        taint.one_shot_control(self, fx, "gitlink", self.old_env())
+        result = one_shot.changed_files(fx.tree)
+        self.assertEqual(fx.fired(), [])
+        self.assertRegex(result, r"^git status failed: .*submodules are not inspected")
+
+    def test_changed_files_does_not_enter_an_untracked_nested_repo(self):
+        fx = self.fixture()
+        taint.apply(fx, "nested_untracked")
+        taint.one_shot_control(self, fx, "nested_untracked", self.old_env())
+        expected = self.raw(fx, ["status", "--short"], git_trees.audit_env())
+        self.assertEqual(expected.returncode, 0, expected.stderr)
+        self.assertIn("?? nested/", expected.stdout)
+        self.assertEqual(one_shot.changed_files(fx.tree), expected.stdout.strip())
+        self.assertEqual(fx.fired(), [])
+
+    def test_non_repository_status_reports_unreadable(self):
+        empty = self.root / "empty"
+        empty.mkdir()
+        self.assertRegex(one_shot.changed_files(empty), r"^git status failed: .*unreadable")
+
+    def test_unreadable_after_is_not_no_new_commits(self):
+        fx = self.fixture()
+        with mock.patch.object(one_shot, "git_head", return_value=None) as head:
+            self.assertEqual(one_shot.committed_changes(fx.tree, fx.sha["B"]),
+                             "Could not read commits: tree unreadable")
+        head.assert_called_once_with(fx.tree)
+
+    def test_unchanged_head_and_unknown_before_keep_no_commits(self):
+        fx = self.fixture()
+        self.assertEqual(one_shot.committed_changes(fx.tree, fx.sha["D"]), one_shot.NO_COMMITS)
+        self.assertEqual(one_shot.committed_changes(fx.tree, None), one_shot.NO_COMMITS)
+
+    def test_unreadable_log_after_a_readable_head_is_not_no_commits(self):
+        fx = self.fixture()
+        real_run = subprocess.run
+
+        def refuse_log(argv, *args, **kwargs):
+            if argv[:2] == ["git", "log"]:
+                raise git_view.Unviewable("tree unreadable")
+            return real_run(argv, *args, **kwargs)
+
+        with mock.patch.object(subprocess, "run", side_effect=refuse_log):
+            result = one_shot.committed_changes(fx.tree, fx.sha["B"])
+        self.assertEqual(result, "Could not read commits: tree unreadable")
+
+    def launch_fixture(self, fx):
+        day = datetime.now(ZoneInfo("America/Chicago")).date().isoformat()
+        tracker = fx.root / "daily" / f"{day}-tracker.md"
+        tracker.parent.mkdir()
+        tracker.write_text(TRACKER)
+        copy = fx.root / dispatch_prompt.REPORTS_DIR / "wt.toon"
+        copy.parent.mkdir(parents=True)
+        copy.write_text(toon_encode({"status": "done", "task": "Security audit", "worker": "earlier",
+                                    "runtime_exit": 0, "reason": "previous run", "changes": "reviewed", "errors": []}))
+        return day, tracker, copy, dispatch_prompt.config(fx.root)
+
+    def launch(self, fx, cfg, day):
+        return one_shot._launch(fx.root, cfg, day, "Security audit", fx.tree, "worker01", "codex", "", "",
+                                "Generic assignment\n", ["fixture-worker"], 1)
+
+    def check_refused_launch(self, vector):
+        fx = self.fixture()
+        day, tracker, copy, cfg = self.launch_fixture(fx)
+        before, previous = tracker.read_bytes(), copy.read_bytes()
+        taint.apply(fx, vector)
+        taint.one_shot_control(self, fx, vector, self.old_env())
+        real_run = subprocess.run
+
+        def execute(argv, *args, **kwargs):
+            if argv[0] == "fixture-worker":
+                self.fail("an unviewable reused tree started a worker")
+            return real_run(argv, *args, **kwargs)
+
+        with mock.patch.object(one_shot, "login_argv", side_effect=lambda argv: argv), \
+             mock.patch.object(one_shot, "record_launch", wraps=one_shot.record_launch) as row, \
+             mock.patch.object(dispatch_prompt, "write_dispatch", wraps=dispatch_prompt.write_dispatch) as dispatch, \
+             mock.patch.object(subprocess, "run", side_effect=execute) as process:
+            with self.assertRaisesRegex(ValueError, "tree is unreadable"):
+                self.launch(fx, cfg, day)
+        row.assert_not_called()
+        dispatch.assert_not_called()
+        process.assert_not_called()
+        self.assertEqual(tracker.read_bytes(), before)
+        self.assertEqual(copy.read_bytes(), previous)
+        self.assertFalse((fx.tree / dispatch_prompt.DISPATCH_FILE).exists())
+        self.assertEqual(fx.fired(), [])
+
+    def test_unviewable_reused_commondir_tree_refuses_before_a_row_is_written(self):
+        self.check_refused_launch("commondir")
+
+    def test_unviewable_relaunched_gitfile_tree_refuses_before_a_row_is_written(self):
+        self.check_refused_launch("gitfile")
+
+    def check_r4_head_refused_launch(self, failure, relaunched=False):
+        fx = self.fixture()
+        day, tracker, copy, cfg = self.launch_fixture(fx)
+        if relaunched:
+            copy.write_text(toon_encode({"status": "relaunch", "task": "Security audit", "worker": "earlier",
+                                        "runtime_exit": 1, "reason": "quota", "changes": "", "errors": []}))
+        before, previous = tracker.read_bytes(), copy.read_bytes()
+        real_view_run, real_run = git_view.run, subprocess.run
+
+        def view_read(args, tree, **kwargs):
+            if args == ["rev-parse", "HEAD"]:
+                if isinstance(failure, BaseException):
+                    raise failure
+                return failure
+            return real_view_run(args, tree, **kwargs)
+
+        process = mock.Mock(side_effect=AssertionError("an unreadable pre-run HEAD started a worker"))
+
+        def execute(argv, *args, **kwargs):
+            if argv[0] == "git":
+                return real_run(argv, *args, **kwargs)
+            return process(argv, *args, **kwargs)
+
+        with mock.patch.object(one_shot, "login_argv", side_effect=lambda argv: argv), \
+             mock.patch.object(git_view, "run", side_effect=view_read), \
+             mock.patch.object(one_shot, "record_launch", wraps=one_shot.record_launch) as row, \
+             mock.patch.object(dispatch_prompt, "write_dispatch", wraps=dispatch_prompt.write_dispatch) as dispatch, \
+             mock.patch.object(subprocess, "run", side_effect=execute):
+            with self.assertRaisesRegex(ValueError, "tree is unreadable"):
+                self.launch(fx, cfg, day)
+        row.assert_not_called()
+        dispatch.assert_not_called()
+        process.assert_not_called()
+        self.assertEqual(tracker.read_bytes(), before)
+        self.assertEqual(copy.read_bytes(), previous)
+        self.assertFalse((fx.tree / dispatch_prompt.DISPATCH_FILE).exists())
+        self.assertEqual(fx.fired(), [])
+
+    def test_r4_unreadable_pre_run_head_refuses_reused_tree_before_any_write(self):
+        failures = (git_view.Unviewable("tree unreadable"), OSError("cannot execute git"),
+                    subprocess.TimeoutExpired(["git", "rev-parse", "HEAD"], 15),
+                    subprocess.CompletedProcess(["git", "rev-parse", "HEAD"], 128,
+                                                stdout="", stderr="fatal: cannot read object"))
+        for failure in failures:
+            with self.subTest(failure=type(failure).__name__):
+                self.check_r4_head_refused_launch(failure)
+
+    def test_r4_unreadable_pre_run_head_refuses_relaunched_tree_before_any_write(self):
+        failures = (git_view.Unviewable("tree unreadable"), OSError("cannot execute git"),
+                    subprocess.TimeoutExpired(["git", "rev-parse", "HEAD"], 15),
+                    subprocess.CompletedProcess(["git", "rev-parse", "HEAD"], 128,
+                                                stdout="", stderr="fatal: cannot read object"))
+        for failure in failures:
+            with self.subTest(failure=type(failure).__name__):
+                self.check_r4_head_refused_launch(failure, relaunched=True)
+
+    def test_r4_unborn_head_allows_launch_and_keeps_no_commits_without_a_commit(self):
+        fx = self.fixture()
+        taint.git(["checkout", "--orphan", "unborn", "-q"], fx.tree)
+        before = one_shot.git_head(fx.tree)
+        self.assertIsNone(before)
+        self.assertEqual(one_shot.committed_changes(fx.tree, before), one_shot.NO_COMMITS)
+        day, tracker, copy, cfg = self.launch_fixture(fx)
+        real_run = subprocess.run
+        process = mock.Mock(return_value=subprocess.CompletedProcess(["fixture-worker"], 0))
+
+        def execute(argv, *args, **kwargs):
+            if argv[0] == "git":
+                return real_run(argv, *args, **kwargs)
+            return process(argv, *args, **kwargs)
+
+        with mock.patch.object(one_shot, "login_argv", side_effect=lambda argv: argv), \
+             mock.patch.object(subprocess, "run", side_effect=execute), \
+             mock.patch.object(one_shot, "reconcile", return_value={"status": "done", "errors": []}) as reconcile, \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.launch(fx, cfg, day), 0)
+        process.assert_called_once()
+        self.assertIn("| worker01 | running ", tracker.read_text())
+        self.assertTrue((fx.tree / dispatch_prompt.DISPATCH_FILE).exists())
+        self.assertIsNone(reconcile.call_args.args[6])
+        self.assertEqual(one_shot.committed_changes(fx.tree, before), one_shot.NO_COMMITS)
+
+    def test_git_head_before_run_uses_view_before_the_row_is_written(self):
+        fx = self.fixture()
+        day, tracker, copy, cfg = self.launch_fixture(fx)
+        taint.apply(fx, "fsmonitor")
+        taint.one_shot_control(self, fx, "fsmonitor", self.old_env())
+        real_run, calls = subprocess.run, []
+
+        def execute(argv, *args, **kwargs):
+            calls.append(mock.call(argv, *args, **kwargs))
+            return real_run(argv, *args, **kwargs)
+
+        def before_row(*args, **kwargs):
+            self.assertEqual(fx.fired(), [])
+            self.assert_view_reads(calls, fx, "rev-parse")
+            self.assert_view_reads(calls, fx, "branch")
+            raise ValueError("stop at row boundary")
+
+        with mock.patch.object(one_shot, "login_argv", side_effect=lambda argv: argv), \
+             mock.patch.object(subprocess, "run", side_effect=execute), \
+             mock.patch.object(one_shot, "record_launch", side_effect=before_row), \
+             self.assertRaisesRegex(ValueError, "stop at row boundary"):
+            self.launch(fx, cfg, day)
+        self.assertEqual(tracker.read_text(), TRACKER)
+        self.assertTrue(copy.exists())
+        self.assertFalse((fx.tree / dispatch_prompt.DISPATCH_FILE).exists())
+
+
+def sanitised_read_test(site, vector):
+    def test(self):
+        self.check_site_vector(site, vector)
+    test.__name__ = f"test_{site.lstrip('_')}_ignores_{vector}_through_view"
+    return test
+
+
+for _site in SanitisedTreeReadTest.SITES:
+    for _vector in SanitisedTreeReadTest.VECTORS:
+        _test = sanitised_read_test(_site, _vector)
+        setattr(SanitisedTreeReadTest, _test.__name__, _test)
+
+
 class TreeReadEnvTest(unittest.TestCase):
-    """Every git call that reads a tree after a run ignores replace refs and keeps the launcher's environment (#442)."""
+    """All four reads use isolated, fresh audit environments and private metadata (#442, #443)."""
     ENV = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_AUTHOR_NAME": "T", "GIT_AUTHOR_EMAIL": "t@example.test",
            "GIT_COMMITTER_NAME": "T", "GIT_COMMITTER_EMAIL": "t@example.test"}
 
@@ -1794,6 +2194,8 @@ class TreeReadEnvTest(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.root, self.tree = Path(tmp.name), Path(tmp.name) / "trees" / "worker"
+        self.base = (self.root / "private-views").resolve()
+        self.enterContext(private_git_views(self.base))
         self.tree.mkdir(parents=True)
         (self.root / "CLAUDE.md").write_text(CLAUDE)
         self.git("init", "-q", "--initial-branch=main")
@@ -1819,12 +2221,24 @@ class TreeReadEnvTest(unittest.TestCase):
         for env in envs:
             self.assertIsNotNone(env, "a bare call inherits no pin against replace refs")
             self.assertEqual(env.get("GIT_NO_REPLACE_OBJECTS"), "1")
-            self.assertEqual(env.get("PATH"), os.environ["PATH"])
+            self.assertEqual(env.get("PATH"), git_trees.audit_env()["PATH"])
+
+    def assertAuditEnv(self, env):
+        # A mocked supplier may return the same mapping for every call.
+        # Adding expected view paths must not change that caller environment.
+        expected = dict(git_trees.audit_env())
+        if "GIT_DIR" in env:
+            directory = Path(env["GIT_DIR"])
+            self.assertEqual(directory.parent, self.base)
+            expected |= {"GIT_DIR": str(directory), "GIT_WORK_TREE": str(self.tree.resolve()),
+                         "GIT_INDEX_FILE": str(directory / "index")}
+        self.assertEqual(env, expected)
 
     def read_envs(self, launcher=one_shot) -> list[dict]:
         """The env each of the four post-run git reads is given."""
         before = launcher.git_head(self.tree)
-        (self.tree / "g.txt").write_text("b\n")
+        file = self.tree / "g.txt"
+        file.write_text((file.read_text() if file.exists() else "") + "b\n")
         self.git("add", "g.txt")
         self.git("commit", "-q", "-m", "second")
         calls = [lambda: launcher.changed_files(self.tree), lambda: launcher.git_head(self.tree),
@@ -1840,31 +2254,43 @@ class TreeReadEnvTest(unittest.TestCase):
         spec.loader.exec_module(module)
         return module
 
-    def test_the_read_env_is_the_launchers_plus_the_pin(self):
-        # The launcher's whole environment, less its repository-selecting variables (#446), plus the pin.
-        # GIT_TERMINAL_PROMPT is pinned by test_the_read_env_never_prompts_and_keeps_the_launchers_home.
-        expected = {k: v for k, v in os.environ.items() if k not in git_trees.REPO_VARS} | {"GIT_NO_REPLACE_OBJECTS": "1"}
-        for env in self.read_envs():
-            self.assertEqual({k: v for k, v in env.items() if k != "GIT_TERMINAL_PROMPT"}, expected)
+    def test_the_read_env_is_exactly_the_audit_env_plus_private_view_paths(self):
+        envs = self.read_envs()
+        self.assertTrue(any("GIT_DIR" in env for env in envs), "no read used a private view")
+        for env in envs:
+            self.assertAuditEnv(env)
 
-    def test_the_read_env_never_prompts_and_keeps_the_launchers_home(self):
+    def test_the_read_env_never_prompts_and_uses_the_isolated_home_and_path(self):
         for env in self.read_envs():
             self.assertEqual(env.get("GIT_TERMINAL_PROMPT"), "0")
             self.assertEqual(env.get("GIT_NO_REPLACE_OBJECTS"), "1")
-            self.assertEqual((env.get("PATH"), env.get("HOME")), (os.environ["PATH"], os.environ["HOME"]))
+            self.assertEqual((env.get("PATH"), env.get("HOME")),
+                             (git_trees.audit_env()["PATH"], git_trees.SAFE_HOME))
 
     def test_no_read_env_carries_a_repository_selecting_variable(self):
         with mock.patch.dict(os.environ, {name: "/nowhere" for name in git_trees.REPO_VARS}):
             envs = self.read_envs(self.imported_one_shot())
         for env in envs:
             for name in git_trees.REPO_VARS:
-                self.assertNotIn(name, env, name)
+                if name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE") and name in env:
+                    self.assertNotEqual(env[name], "/nowhere", name)
+                    self.assertAuditEnv(env)
+                else:
+                    self.assertNotIn(name, env, name)
 
     def test_the_read_env_is_built_per_call_not_at_import(self):
-        with mock.patch.dict(os.environ, {"CHIEF_TEST_MARKER": "after-import"}):
-            envs = self.read_envs()
-        for env in envs:
-            self.assertEqual(env.get("CHIEF_TEST_MARKER"), "after-import")
+        # Change the env supplier after importing one_shot, twice. Every read
+        # must see the current audit env, rather than a module-level snapshot.
+        original = git_trees.audit_env()
+        for name in ("first-home", "second-home"):
+            home = self.root / name
+            home.mkdir()
+            current = {**original, "HOME": str(home)}
+            with mock.patch.object(git_trees, "audit_env", return_value=current) as supplier:
+                envs = self.read_envs()
+                self.assertGreaterEqual(supplier.call_count, 4)
+                for env in envs:
+                    self.assertAuditEnv(env)
 
     def other_repo(self) -> Path:
         """Another real repository, with its own commit and branch and an untracked file."""

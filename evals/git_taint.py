@@ -6,6 +6,7 @@ environment, never through workspace data or a fixture file.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shlex
@@ -14,6 +15,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from unittest import mock
 
 ENV = {
     "PATH": "/usr/bin:/bin:/usr/local/bin", "HOME": "/var/empty",
@@ -175,6 +177,54 @@ def apply(fx: Fx, vector: str) -> None:
     if vector not in VECTORS:
         raise ValueError(f"unknown taint vector: {vector}")
     globals()["_" + vector](fx)
+
+
+def one_shot_control(case, fx: Fx, vector: str, env: dict[str, str]) -> None:
+    """Prove a live hazard under the former one_shot read environment.
+
+    HEAD/branch reads cannot execute status hooks or observe grafted ancestry;
+    use status/history as the section 4.2 witness for those call sites too.
+    Replace refs were already disabled: prove both the attack and that guard.
+    """
+    def raw(args, child_env=env, cwd=fx.tree):
+        return git(args, cwd, env=child_env, check=False)
+
+    markers = {
+        "fsmonitor": "fsmonitor", "filter": "filter-clean",
+        "hooks": "hook-post-index-change", "hooks_in_common": "hook-in-common",
+        "include": "include-fsmonitor", "wtconfig": "wtconfig-fsmonitor",
+        "commondir": "decoy-fsmonitor", "gitfile": "gitfile-fsmonitor",
+        "gitlink": "nested-fsmonitor",
+    }
+    fx.clear()
+    if vector in markers:
+        case.assertNotIn("GIT_OPTIONAL_LOCKS", env, "the old read must allow index-refresh hooks")
+        raw(["status", "--short"])
+        case.assertIn(markers[vector], fx.fired())
+    elif vector == "grafts":
+        result = raw(["rev-list", "--count", "origin/main..HEAD"])
+        case.assertEqual((result.returncode, result.stdout), (0, "2\n"))  # truth: 3
+    elif vector == "grafts_yes":
+        case.assertEqual(raw(["merge-base", "--is-ancestor", fx.sha["D"], "main"]).returncode, 0)  # truth: 1
+    elif vector == "shallow":
+        result = raw(["rev-parse", "--is-shallow-repository"])
+        case.assertEqual((result.returncode, result.stdout), (0, "true\n"))  # truth: false
+    elif vector == "replace":
+        unpinned = {k: v for k, v in env.items() if k != "GIT_NO_REPLACE_OBJECTS"}
+        result = raw(["rev-list", "--count", "origin/main..HEAD"], unpinned)
+        case.assertEqual((result.returncode, result.stdout), (0, "1\n"))
+        guarded = raw(["rev-list", "--count", "origin/main..HEAD"])
+        case.assertEqual((guarded.returncode, guarded.stdout), (0, "3\n"))
+    elif vector == "nested_untracked":
+        raw(["status", "--short"], cwd=fx.tree / "nested")
+        case.assertIn("nested-fsmonitor", fx.fired())
+    else:
+        case.fail(f"missing old one_shot control for {vector}")
+    fx.clear()
+    # The old control may refresh the REAL index. Make the next status refresh
+    # it again, so a hook regression cannot pass merely because it ran once.
+    for name in ("README.md", "b.txt", "c.txt", "d.txt"):
+        os.utime(fx.tree / name, (1_900_000_000, 1_900_000_000))
 
 
 def _build(tmp: Path, vector, packed, object_format) -> Fx:
@@ -417,3 +467,21 @@ def launcher_stdin(fx: Fx, base: Path, env: dict[str, str], payload: str,
             process.wait()
         for stream in (process.stdin, process.stdout, process.stderr):
             stream.close()
+
+
+@contextlib.contextmanager
+def private_git_views(base: Path):
+    """Give every `git_view.run` a trusted view base, so a test never writes the user's cache.
+
+    Inert until a caller routes through `git_view.run`; a caller that passes its own `base` wins.
+    """
+    import git_view  # the scripts directory is on the importing test's path
+
+    run = git_view.run
+
+    def run_at_base(*args, **kwargs):
+        kwargs.setdefault("base", base)
+        return run(*args, **kwargs)
+
+    with mock.patch.object(git_view, "run", side_effect=run_at_base):
+        yield

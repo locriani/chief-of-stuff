@@ -8,10 +8,11 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+import tree_state  # noqa: E402
 from tree_state import TreeState, at_risk  # noqa: E402
 
 
-def state(dirty: int = 0, off_origin: int | None = 0, unpushed: int | None = None) -> TreeState:
+def state(dirty: int | None = 0, off_origin: int | None = 0, unpushed: int | None = None) -> TreeState:
     return TreeState(branch="feat/x", dirty=dirty, off_origin=off_origin, unpushed=unpushed)
 
 
@@ -44,6 +45,24 @@ class AtRiskTest(unittest.TestCase):
 
     def test_dirt_and_commits_are_both_named(self) -> None:
         self.assertEqual(at_risk(state(dirty=1, off_origin=1)), ("1 uncommitted", "1 not on origin/main", "no upstream"))
+
+    # #443 slice 3 review R8: `dirty` is None when git could not say, as `off_origin` already is; unknown is one fact, said once.
+    def test_an_unknown_dirty_count_says_uncommitted_work_is_unknown_and_nothing_false(self) -> None:
+        found = at_risk(TreeState("b", None, None, None))
+        self.assertNotIn("no upstream", found, "the status was unreadable; nothing was learned about an upstream")
+        self.assertFalse([x for x in found if "0 uncommitted" in x], found)
+        self.assertIn(tree_state.UNCOMMITTED_UNKNOWN, found)
+
+    def test_unknown_uncommitted_work_is_named_even_when_every_commit_is_safe(self) -> None:
+        """A gitlink tree on origin/main (or pushed): history is fine, the status is not, and the work is still at risk."""
+        for off_origin, unpushed in ((0, None), (None, 0), (0, 0)):
+            with self.subTest(off_origin=off_origin, unpushed=unpushed):
+                self.assertEqual(at_risk(TreeState("b", None, off_origin, unpushed)), (tree_state.UNCOMMITTED_UNKNOWN,))
+
+    def test_the_phrase_is_one_string_whatever_the_history_says(self) -> None:
+        self.assertEqual(tree_state.UNCOMMITTED_UNKNOWN, "uncommitted work unknown (status unreadable)")
+        self.assertEqual(at_risk(TreeState("b", None, 2, 0)), (tree_state.UNCOMMITTED_UNKNOWN,))
+        self.assertEqual(at_risk(TreeState("b", None, 2, None))[0], tree_state.UNCOMMITTED_UNKNOWN)
 
 
 if __name__ == "__main__":
