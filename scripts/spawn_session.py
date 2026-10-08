@@ -58,6 +58,8 @@ METACHARACTERS = re.compile(r"[;&|`$<>\n]")
 PLACEHOLDER = re.compile(r"\{(\w+)\}")
 FIELDS = ("cwd", "title", "type", "dispatch", "model", "effort", "root")
 HERDR_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9:_-]{0,63}")
+# The pane's tty cuts a typed line near 1024 bytes; refuse well before that.
+HERDR_LINE_LIMIT = 900
 
 
 class RefusedError(ValueError):
@@ -138,9 +140,9 @@ def _as_string(value: str) -> str:
     return '"' + value.translate(AS_ESCAPE) + '"'
 
 
-def runtime_tokens(*, cwd: str, agent_type: str | None, binary: Path | None, title: str | None = None,
-                   runtime: str = "claude", model: str = "", effort: str = "", workspace: str = ".") -> list[str]:
-    """Exact worker argv shared by terminal launchers."""
+def worker_tokens(*, cwd: str, agent_type: str | None, binary: Path | None, title: str | None = None,
+                  runtime: str = "claude", model: str = "", effort: str = "", workspace: str = ".") -> list[str]:
+    """The worker argv from `sys.executable` on, without the `env -C <root> PATH=... WORKSPACE=...` prefix."""
     if binary is None:
         raise RefusedError(f"cannot find `{runtime}` on PATH")
     root, dispatch = _paths(cwd)
@@ -148,18 +150,23 @@ def runtime_tokens(*, cwd: str, agent_type: str | None, binary: Path | None, tit
               "model": model, "effort": effort, "root": os.path.abspath(workspace)}
     template = _unset(TEMPLATES[runtime], values)
     rest = [PLACEHOLDER.sub(lambda m: values.get(m.group(1), m.group(0)), t) for t in template[1:]]
-    tokens = [ENV_BIN, "-C", root, f"PATH={os.environ.get('PATH', '')}",
-              f"CHIEF_OF_STUFF_WORKSPACE={os.path.abspath(workspace)}"]
     if runtime == "claude":
         rest = ["--plugin-dir", str(Path(__file__).resolve().parent.parent), *rest]
-        tokens += [sys.executable, str(Path(__file__).resolve().parent / "session_exec.py"),
-                   "exec-login", "--"]
+        tokens = [sys.executable, str(Path(__file__).resolve().parent / "session_exec.py"),
+                  "exec-login", "--"]
     else:
-        tokens += [sys.executable, str(Path(__file__).resolve().parent / "session_exec.py"),
-                   "--registry", str(Path(os.path.abspath(workspace)) / PROMPT_DIR / "sessions" / f"{title}.json"),
-                   "--runtime", runtime, "--name", title or "", "--worktree", root,
-                   "--login-shell", "--"]
+        tokens = [sys.executable, str(Path(__file__).resolve().parent / "session_exec.py"),
+                  "--registry", str(Path(os.path.abspath(workspace)) / PROMPT_DIR / "sessions" / f"{title}.json"),
+                  "--runtime", runtime, "--name", title or "", "--worktree", root,
+                  "--login-shell", "--"]
     return tokens + [str(binary)] + rest
+
+
+def runtime_tokens(*, cwd: str, workspace: str = ".", **worker) -> list[str]:
+    """Exact worker argv shared by terminal launchers: cwd and PATH pinned inline by `env`."""
+    return [ENV_BIN, "-C", _paths(cwd)[0], f"PATH={os.environ.get('PATH', '')}",
+            f"CHIEF_OF_STUFF_WORKSPACE={os.path.abspath(workspace)}",
+            *worker_tokens(cwd=cwd, workspace=workspace, **worker)]
 
 
 def tmux_command(*, tmux: Path | None, **worker) -> list[str]:
@@ -179,10 +186,16 @@ def herdr_commands(*, herdr: Path | None, session: str, **worker) -> tuple[list[
         raise RefusedError("[workers] herdr_session must match [a-z0-9][a-z0-9_-]{0,31}")
     title = worker.get("title")
     prefix = [str(herdr), "--session", session]
+    # The tab is created in the worktree with the workspace in its env, so the typed line skips `env -C`.
+    line = [shlex.quote(token) for token in worker_tokens(**worker)]
+    size = len(" ".join(line).encode())
+    if size > HERDR_LINE_LIMIT:
+        raise RefusedError(f"herdr pane line is {size} bytes, over the {HERDR_LINE_LIMIT}-byte limit: "
+                           "the pane shell cannot take a line that long")
     return ([*prefix, "tab", "create", "--cwd", os.path.abspath(worker["cwd"]),
-             "--label", title, "--no-focus"],
-            [*prefix, "pane", "run", "<root-pane>",
-             *[shlex.quote(token) for token in runtime_tokens(**worker)]])
+             "--label", title, "--no-focus",
+             "--env", f"CHIEF_OF_STUFF_WORKSPACE={os.path.abspath(worker.get('workspace', '.'))}"],
+            [*prefix, "pane", "run", "<root-pane>", *line])
 
 
 def launch_herdr(create: list[str], pane_run: list[str]) -> None:
