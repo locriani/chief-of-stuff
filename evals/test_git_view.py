@@ -867,6 +867,40 @@ class SymbolicHeadBranchNamesTest(FixtureCase):
         taint.git(["branch", "-m", name], fx.tree)
         return fx
 
+    def test_special_character_branch_upstream_config_is_quoted(self):
+        for name in ('a"b', "x]y", "a;b"):
+            valid = taint.git(["check-ref-format", "--branch", name], self.root, check=False)
+            if valid.returncode == 0:
+                self.assertEqual(answer(valid), (0, name + "\n"), valid.stderr)
+                break
+        else:
+            self.fail("Git rejected every special-character branch name")
+
+        fx = self.fixture_on_branch(name)
+        upstream = {f"branch.{name}.remote": "origin",
+                    f"branch.{name}.merge": "refs/heads/feat"}
+        for key, value in upstream.items():
+            taint.config(fx, key, value)
+
+        with self.view.opened(fx.tree, git_trees.audit_env(), base=self.base) as v:
+            config = Path(v.env["GIT_DIR"]) / "config"
+            parsed = taint.git(["config", "-f", str(config), "--list"], self.root, check=False)
+            self.assertEqual(parsed.returncode, 0, parsed.stderr)
+            for key, value in upstream.items():
+                got = taint.git(["config", "-f", str(config), "--get", key],
+                                self.root, check=False)
+                self.assertEqual(answer(got), (0, value + "\n"), got.stderr)
+
+        for args in (["branch", "--show-current"], ["status", "--short"],
+                     ["rev-parse", "--abbrev-ref", "@{u}"]):
+            with self.subTest(command=args):
+                control = raw(fx, args)
+                self.assertEqual(control.returncode, 0, control.stderr)
+                got = self.run_view(fx, args)
+                self.assertEqual(answer(got), answer(control), got.stderr)
+        self.assertEqual(fx.fired(), [])
+        self.assertEqual(self.leftovers(), [])
+
     def test_git_accepted_branch_names_read_status_branch_and_head(self):
         for name in self.ACCEPTED:
             with self.subTest(branch=name):
