@@ -196,6 +196,16 @@ class SkillsPlumbingTest(unittest.TestCase):
                 self.assert_pinned_skill_pointers(runtime, release,
                                                   {"decision-page", "optional-features", "tracker-rows", "review-pipeline"})
 
+    def test_review_pipeline_description_names_every_read_moment(self):
+        from evals.test_agent_budget import DESCRIPTION_CAP, description
+        root = Path(__file__).resolve().parent.parent
+        text = (root / "skills" / "review-pipeline" / "SKILL.md").read_text()
+        expected = ("Use before moving a task's stage, sending its pull request to the reviewer, "
+                    "handling a Reviewer pass report or an over budget line, running the kanban command, "
+                    "checking review state, or merging.")
+        self.assertEqual(description(text), expected)
+        self.assertLessEqual(len(description(text)), DESCRIPTION_CAP)
+
     def test_no_skills_prompt_preserves_legacy_bytes_except_non_claude_read_guidance(self):
         for empty_dir in (False, True):
             if empty_dir:

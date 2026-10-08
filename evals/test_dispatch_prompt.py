@@ -767,12 +767,13 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         self.assertIn("`<workspace root>` written out as an absolute path", pipeline)
 
     def _section(self, name):
-        # Slice 6 keeps only the gate/default/CLI guardrails and pointer in the
-        # agent. Behavioural pins follow the prose into the skill's ### topics.
+        # Slice 6 retains merge guardrails in Pipeline; other behavioural pins
+        # follow the prose into the skill's ### topics.
         if name in ("Pipeline", "Triage"):
             path = self.agent_file.parent.parent / "skills" / "review-pipeline" / "SKILL.md"
             if path.is_file():
-                return skill_body(path.read_text())
+                retained = sections(self.content)["Pipeline"] if name == "Pipeline" else ""
+                return retained + "\n\n" + skill_body(path.read_text())
         return sections(self.content)[name].split("\n", 1)[1]
 
     def test_the_coordinator_hands_off_and_asks_only_for_the_users_reasons(self):
@@ -831,7 +832,14 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
     def test_the_word_mergeable_comes_only_from_the_merge_ready_verdict(self):
         for name, sentence, section in self.MERGE_READY_RULE:
             with self.subTest(name):
-                self.assertTrue(sentence in self._section(section), f"{section} must say ({name}): {sentence}")
+                if name == "the word comes only from the verdict":
+                    agent = self.agent_file.read_text()
+                    self.assertEqual(agent.count(sentence), 1, "wording ban stays once in the agent")
+                    self.assertIn(sentence, sections(agent)["Pipeline"])
+                    skill = self.agent_file.parent.parent / "skills" / "review-pipeline" / "SKILL.md"
+                    self.assertNotIn(sentence, skill.read_text(), "wording ban must leave the skill")
+                else:
+                    self.assertTrue(sentence in self._section(section), f"{section} must say ({name}): {sentence}")
 
     def test_the_coordinator_tells_the_worker_to_merge_after_naming_who_merges(self):
         pipeline = self._section("Pipeline")

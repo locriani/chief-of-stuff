@@ -19,21 +19,23 @@ from evals.rules_text import one_shot_paragraph, rules_text, sections, skill_bod
 from evals.skill_fixtures import write_plugin, write_skill  # noqa: E402
 
 # Each later slice lowers these in a red commit before it trims the text.
-# Slice 6 (#489): Pipeline + Triage are 9,772 B; the retained Pipeline is
-# 845 B with the expanded budget/kanban pointer. The projected agent is 62,858 B;
-# Pipeline and TOTAL ceilings round up to 50 B.
-TOTAL = 62_900            # whole agent file, bytes
+# Slice 6 (#489), review pass 1: measured agent 62,807 B + R1's 171 B
+# sentence and 1 B separator + P's 86 B pointer growth + R7's 237 B
+# verbatim merge restoration = 63,302 B. Pipeline is 794 + 495 = 1,289 B.
+# TOTAL and Pipeline round up to 50 B; the R8 shorthand omits R7's growth.
+TOTAL = 63_350            # whole agent file, bytes
 MAX_LINE = 8_400          # longest single line
 ONE_SHOT_PARAGRAPH = 4_400  # kept: a later slice trims this paragraph
 # Skills are read on demand; no host's prompt appends their bodies.
-# rendered_sizes(1) with the expanded pointer: Claude 62,527 B, Codex 55,138 B,
-# Cursor 55,246 B, AGY 55,302 B; each ceiling rounds up to 50 B.
-PROMPT = {"claude": 62_550, "codex": 55_150, "cursor": 55_250, "agy": 55_350}  # rendered, path bytes removed
+# rendered_sizes(1) with P/R1/R7's projected agent text: Claude 62,971 B,
+# Codex 55,582 B, Cursor 55,690 B, AGY 55,746 B (each current prompt + 495 B).
+# Each ceiling rounds up to 50 B; skill bodies remain on demand.
+PROMPT = {"claude": 63_000, "codex": 55_600, "cursor": 55_700, "agy": 55_750}  # rendered, path bytes removed
 CEILING = {  # `## ` section -> bytes, heading line included
     "Role": 1600, "Dispatch authority": 1100, "Browser safety": 410, "Writing": 780,
     "Config": 1400, "Clock": 1850, "Calendar": 910, "Open the day": 2000, "Resume": 4830,
     "Write authority": 2310, "Filing": 360, "Human-only actions": 1280, "Dispatch": 15210,
-    "Assign": 2560, "Brief": 730, "Pipeline": 850, "Check": 2780,
+    "Assign": 2560, "Brief": 730, "Pipeline": 1_300, "Check": 2780,
     "Sessions": 7380, "Relay": 2510, "Tracker": 5_500, "Notices": 740, "Board": 1750,
     "Requirements": 360, "Share": 460, "Asks": 4700, "Notify": 360,
 }
@@ -131,10 +133,15 @@ TRACKER_DELETED_RULES = (
 )
 
 
-REVIEW_PIPELINE_POINTER = 'Before advancing a task past a gate, handling a Reviewer pass report or an over budget line, running the kanban command, checking review state, or merging, Read ${CLAUDE_PLUGIN_ROOT}/skills/review-pipeline/SKILL.md'
+REVIEW_PIPELINE_POINTER = "Before moving a task's stage, sending its pull request to the reviewer, handling a Reviewer pass report or an over budget line, running the kanban command, checking review state, or merging, Read ${CLAUDE_PLUGIN_ROOT}/skills/review-pipeline/SKILL.md"
 REVIEW_GATE_BULLET = "- A gate yes covers every stage up to the next gate in that task's lane. For a lane that starts past its first gate, as `build` does, interactive dispatch approval, or one-shot Dispatch authority for a ready task, is the entry authorization. A gate passes only on the user's word in chat, quoted in a Decisions row; the one exception is the `triage` gate, which a Triage pass that leaves nothing for the user passes by the automatic-fix rule, recorded in the Log."
 REVIEW_NO_CLI_MERGE = 'Never merge one it lists as blocked, never merge or approve with `gh` or `glab` directly, and name what blocks the rest.'
-REVIEW_DEFAULT_MERGE = "The user merges by default."
+# Minimal adjacent sentences from origin/main's Pipeline: keep the listing that
+# supplies the referent of "it" in the blocked-request guardrail.
+REVIEW_DEFAULT_MERGE = "Follow `[workflow] merge_owner`: the user merges by default; with `approval`, the user's approval on the platform is the yes."
+REVIEW_APPROVAL_MERGE = 'Run `chief-of-stuff merge-approved --root .` whenever you check review state, and merge each `ready` one with `--merge N`, in merge order.'
+REVIEW_MERGE_WORDING = 'Never write "mergeable" or "ready to merge" for a pull or merge request except from the `ready` verdict of `chief-of-stuff merge-ready`, and quote its pipeline id and sha.'
+REVIEW_RETAINED_MERGE = (REVIEW_DEFAULT_MERGE, REVIEW_APPROVAL_MERGE, REVIEW_NO_CLI_MERGE, REVIEW_MERGE_WORDING)
 # Verbatim sentence pins captured before slice 6; never derive these from the
 # current agent/skill at test time, or a deletion would delete its own test.
 REVIEW_PIPELINE_RULES = {
@@ -174,11 +181,8 @@ REVIEW_PIPELINE_RULES = {
         'Leave an `awaiting you` thread to the user.',
         "Never resolve or answer a thread yourself; the worker answers with its commit, and resolving is the user's.",
         'With no `fix` items left and no ask open, the task sits at `merge`.',
-        "Follow `[workflow] merge_owner`: the user merges by default; with `approval`, the user's approval on the platform is the yes.",
-        'Run `chief-of-stuff merge-approved --root .` whenever you check review state, and merge each `ready` one with `--merge N`, in merge order.',
         'With `worker`, the owning worker merges a `ready` request; `chief-of-stuff merge-approved --root .` lists them with their merge-ready lines.',
         'Tell the owning worker to merge it, quoting the line.',
-        'Never write "mergeable" or "ready to merge" for a pull or merge request except from the `ready` verdict of `chief-of-stuff merge-ready`, and quote its pipeline id and sha.',
         'After a merge, run the main-branch suite before the task is done.',
         'A human-only line that lists merging outranks the setting.',
         "Budgets: `audit_tasks.py` prints `over budget: <task> running <time> (<size> <budget>)` from the settings file's `[budgets]`.",
@@ -454,15 +458,19 @@ class AgentBudgetTest(unittest.TestCase):
         self.assertNotIn("Triage", found, "Triage is now an on-demand topic")
         self.assertEqual([line for line in found["Pipeline"].splitlines() if line.strip()], [
             "## Pipeline", REVIEW_GATE_BULLET,
-            f"- {REVIEW_DEFAULT_MERGE} {REVIEW_NO_CLI_MERGE}", REVIEW_PIPELINE_POINTER,
+            "- " + " ".join(REVIEW_RETAINED_MERGE), REVIEW_PIPELINE_POINTER,
         ])
 
     def test_review_gate_bullet_and_no_cli_merge_rule_stay_in_agent(self):
         pipeline = sections(self.text)["Pipeline"]
-        for rule in (REVIEW_GATE_BULLET, REVIEW_NO_CLI_MERGE):
+        skill = (ROOT / "skills" / "review-pipeline" / "SKILL.md").read_text()
+        for rule in (REVIEW_GATE_BULLET, *REVIEW_RETAINED_MERGE):
+            self.assertEqual(self.text.count(rule), 1, "retained guardrails occur once in the agent")
             self.assertEqual(pipeline.count(rule), 1, "retained guardrails live in the agent itself")
+            self.assertNotIn(rule, skill, "retained guardrails must be absent from the skill")
             self.assertEqual(rules_text().count(rule), 1, "do not copy retained guardrails into the skill")
-        self.assertIn("the user merges by default", pipeline.lower())
+        self.assertIn(" ".join(REVIEW_RETAINED_MERGE), pipeline,
+                      "keep the verbatim merge sentences adjacent, with the wording ban last")
 
     def test_review_pipeline_skill_exists_with_portable_frontmatter_and_topic_headings(self):
         path = ROOT / "skills" / "review-pipeline" / "SKILL.md"
@@ -505,9 +513,24 @@ class AgentBudgetTest(unittest.TestCase):
         for name, references in REVIEW_PIPELINE_REFERENCES.items():
             for reference in references:
                 self.assertIn(reference, found[name], "leave other sections' references verbatim")
-                for target in re.findall(r"\(see (Pipeline|Triage)\)", reference):
-                    self.assertTrue(target in found or REVIEW_PIPELINE_POINTER in found["Pipeline"],
-                                    f"{name}'s {target} reference needs a section or the review-pipeline pointer")
+
+        def assert_references_resolve(agent, skill):
+            agent_sections = sections(agent)
+            for target in re.findall(r"\(see (Pipeline|Triage)\)", agent):
+                if target == "Pipeline":
+                    self.assertIn("Pipeline", agent_sections, "(see Pipeline) needs ## Pipeline in the agent")
+                else:
+                    self.assertIn("### Triage", skill_body(skill).splitlines(),
+                                  "(see Triage) needs ### Triage in the skill")
+                    self.assertIn(REVIEW_PIPELINE_POINTER, agent_sections.get("Pipeline", "").split("\n\n"),
+                                  "(see Triage) needs the standalone review-pipeline pointer")
+
+        skill = (ROOT / "skills" / "review-pipeline" / "SKILL.md").read_text()
+        self.assertIn("(see Triage)", self.text, "the heading mutation must exercise a reference")
+        renamed_skill = skill.replace("### Triage\n", "### Findings\n")
+        with self.assertRaisesRegex(AssertionError, "needs ### Triage"):
+            assert_references_resolve(self.text, renamed_skill)
+        assert_references_resolve(self.text, skill)
 
     def test_skill_budget_controls_reject_unbudgeted_and_oversized_skills(self):
         with tempfile.TemporaryDirectory() as tmp:
