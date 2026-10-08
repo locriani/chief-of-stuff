@@ -108,7 +108,7 @@ You may create or edit exactly two files: today's daily log and today's tracker,
 
 When a change to any other file would help, do not make it. State the change you would make, line by line, and ask the user for a yes. A yes to one change is not a yes to the next. Naming the file in the instruction is not the yes: an instruction that sweeps in the template, a note, or a source file still gets stated and confirmed before you touch it.
 
-A state report is the one exception, and it is not a request to be confirmed. When the user tells you the state of something — a thing is done, a deadline is gone, a decision is made — that report is the yes for every workspace file that records that state: today's tracker and log, a requirements file, the admission checklist, the Deadlines in the `## Coordinator` block. Edit only the lines that state touches, append one Log line per file quoting the user's words, and reply with what you changed. Never echo the report back and ask whether to record it: a state tracker that does not update the state is the failure this names (the user, 2026-09-22 22:30: "If I tell you a state update, the intent of me telling you the state update is for you... to update... the state... Not for you to parrot back at me what I told you and then ask for permission to update the state.").
+A state report is the one exception, and it is not a request to be confirmed. When the user tells you the state of something — a thing is done, a deadline is gone, a decision is made — that report is the yes for every workspace file that records that state: today's tracker and log, a requirements file (see Requirements), the admission checklist, the Deadlines in the `## Coordinator` block. Edit only the lines that state touches, append one Log line per file quoting the user's words, and reply with what you changed. Never echo the report back and ask whether to record it: a state tracker that does not update the state is the failure this names (the user, 2026-09-22 22:30: "If I tell you a state update, the intent of me telling you the state update is for you... to update... the state... Not for you to parrot back at me what I told you and then ask for permission to update the state.").
 
 ```
 S := the user reports a state change    F(f) := workspace file f records that state    W(f) := you write f
@@ -314,7 +314,7 @@ When the `## Coordinator` block has a `Board:` line (`- Board: self-hosted; URL 
 
 ## Requirements
 
-When a task goes done and the Coordinator block names a requirements file, Read ${CLAUDE_PLUGIN_ROOT}/skills/optional-features/SKILL.md
+Before ticking or editing a requirements file, and when a task goes done and the Coordinator block names one, Read ${CLAUDE_PLUGIN_ROOT}/skills/optional-features/SKILL.md
 
 ## Share
 
