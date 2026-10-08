@@ -24,11 +24,10 @@ from evals.skill_fixtures import write_plugin, write_skill  # noqa: E402
 TOTAL = 72_000            # whole agent file, bytes
 MAX_LINE = 8_400          # longest single line
 ONE_SHOT_PARAGRAPH = 4_400  # kept: a later slice trims this paragraph
-# #511: current rendered sizes minus appended skill sections (body + named header):
-# decision-page 2,139 B + optional-features 4,795 B = 6,934 B per non-Claude host.
-# Claude carries neither section. With release/workspace paths removed, the remaining
-# sizes are Claude 76,685, Codex 69,207, Cursor 69,315, AGY 69,371; round up to 50 B.
-PROMPT = {"claude": 76_700, "codex": 69_250, "cursor": 69_350, "agy": 69_400}  # rendered, path bytes removed
+# Skills are read on demand; no host's prompt appends their bodies.
+# rendered_sizes(1), with release/workspace paths removed: Claude 71,453 B,
+# Codex 63,975 B, Cursor 64,083 B, AGY 64,139 B; each ceiling rounds up to 50 B.
+PROMPT = {"claude": 71_500, "codex": 64_000, "cursor": 64_100, "agy": 64_150}  # rendered, path bytes removed
 CEILING = {  # `## ` section -> bytes, heading line included
     "Role": 1600, "Dispatch authority": 1100, "Browser safety": 410, "Writing": 780,
     "Config": 1400, "Clock": 1850, "Calendar": 910, "Open the day": 2000, "Resume": 4830,
@@ -65,7 +64,7 @@ OPTIONAL_FEATURE_RULES = {
     ),
 }
 
-TRACKER_ROWS_POINTER = "Before writing or changing a Tasks row, filing its issue, or moving its stage, Read ${CLAUDE_PLUGIN_ROOT}/skills/tracker-rows/SKILL.md"
+TRACKER_ROWS_POINTER = "Before writing or changing a Tasks row, filing or closing its issue, or moving its stage, Read ${CLAUDE_PLUGIN_ROOT}/skills/tracker-rows/SKILL.md"
 # Verbatim sentences from the Tasks bullet, pinned before slice 4 moves them.
 TRACKER_ROW_RULES = {
     'pipe and name': (
@@ -299,6 +298,11 @@ class AgentBudgetTest(unittest.TestCase):
                          "pointer must be a standalone imperative with no final period")
         self.assertIn(TRACKER_ROWS_POINTER, sections(self.text)["Tracker"].split("\n\n"),
                       "the pointer must be its own paragraph inside Tracker")
+
+    def test_tracker_lane_stage_fragment_is_absent_from_agent_and_rules_text(self):
+        for source, text in (("agent", self.text), ("rules_text", rules_text())):
+            with self.subTest(source=source):
+                self.assertNotIn("New: `lane`, `stage`.", text)
 
     def test_tracker_rows_skill_exists_with_portable_frontmatter(self):
         path = ROOT / "skills" / "tracker-rows" / "SKILL.md"

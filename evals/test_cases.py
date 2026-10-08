@@ -585,14 +585,14 @@ class CaseLintTest(unittest.TestCase):
                 run.stop_pages(work)
                 kill.assert_not_called()
 
-    def test_workflow_step_graders_enforce_a_sentence_the_agent_carries(self) -> None:
-        """#362: every rule-bearing grader of the review case quotes the one sentence the agent file carries."""
+    def test_workflow_step_graders_enforce_a_sentence_rules_text_carries(self) -> None:
+        """#362: every rule-bearing grader of the review case quotes the moved workflow sentence."""
         rule = ("A workflow step — a review, or anything the pipeline itself performs — takes no issue: "
                 "write `workflow` in its `issue` cell.")
         agent_text = rules_text()
         graders = spec(EVALS / "cases" / "review-step-takes-the-workflow-token")["graders"]
-        self.assertEqual([g["type"] for g in graders], ["file_matches", "tool_used", "file_matches", "timestamp_tolerance"])
-        for g in graders[:3]:
+        self.assertEqual([g["type"] for g in graders], ["tool_used", "file_matches", "tool_used", "file_matches", "timestamp_tolerance"])
+        for g in graders[:4]:
             self.assertEqual(g["rule"], rule, g["name"])
             self.assertIn(g["rule"], agent_text, g["name"])
 
@@ -601,7 +601,7 @@ class CaseLintTest(unittest.TestCase):
         commands that file an issue and rows that are right; negatives are reads and rows that are wrong."""
         rule = ("A workflow step — a review, or anything the pipeline itself performs — takes no issue: "
                 "write `workflow` in its `issue` cell.")
-        row_g, filed_g, number_g = spec(EVALS / "cases" / "review-step-takes-the-workflow-token")["graders"][:3]
+        row_g, filed_g, number_g = spec(EVALS / "cases" / "review-step-takes-the-workflow-token")["graders"][1:4]
         for g in (row_g, filed_g, number_g):
             self.assertEqual(g["rule"], rule, g["name"])
         said = "chief-of-stuff backlog --list"
@@ -764,6 +764,7 @@ class CaseLintTest(unittest.TestCase):
     )
     TRACKER_ROW_SKILL_CASES = (
         "task-named-on-write", "task-sized-on-write", "pipe-escaped-in-a-task",
+        "review-step-takes-the-workflow-token",
         "stage-move-through-the-command", "sha-claim-checked-through-audit",
         "task-done-ticks-checkbox", "resume-closes-task-with-closed-issue",
         "worker-check-validates-a-new-row", "task-name-stays-a-name",
@@ -795,7 +796,7 @@ class CaseLintTest(unittest.TestCase):
                             re.compile(g[key])
 
     def test_tracker_row_skill_graders_require_read_before_the_first_action(self) -> None:
-        """Exactly four writing cases need Read; missing, late and unrelated reads fail."""
+        """Pin cases needing Read before row writes, stage moves or issue closure."""
         from datetime import timezone
         read_match = r'"file_path": "[^"\n]*skills/tracker-rows/SKILL\.md"'
         edit_before = (
@@ -806,20 +807,28 @@ class CaseLintTest(unittest.TestCase):
             r'"command": "(?:\\.|[^"\\])*(?:\bchief[-_]of[-_]stuff(?:\.py)?\s+log\b|(?:scripts/)?tracker_write\.py\b)'
             r'(?:(?![;&|]|\\n)(?:\\.|[^"\\]))*--stage(?:[ =]|\\")'
         )
+        close_before = (
+            r'"command": "(?:\\.|[^"\\])*(?:\bchief[-_]of[-_]stuff(?:\.py)?\s+backlog\b|(?:scripts/)?backlog\.py\b)'
+            r'(?:(?![;&|]|\\n)(?:\\.|[^"\\]))*--close(?:[ =]|\\")'
+        )
         name_rule = "`name` is what the task is called: a short noun phrase, yours to write when you write the task and to rewrite when the item changes, and never more than a line."
         size_rule = "`size` is your judgement of the item as written, `S`, `M`, `L` or `XL`, made when you write the task and remade when the item changes: `S` is one edit, one file, one fact to check; `M` is one item a session finishes in a sitting, a few files, one suite run; `L` is a plan with bullets, several files, its own pull request; `XL` is a task that spawns other tasks or spans sessions."
         pipe_rule = "A `|` inside any cell is written `\\|`, backticks or not: a raw one is a column delimiter, and the board reads every column right of it one place over."
         stage_rule = "Never set the cell by hand or write that line as free text."
+        workflow_rule = "A workflow step — a review, or anything the pipeline itself performs — takes no issue: write `workflow` in its `issue` cell."
+        close_rule = "Writing `done` on a task closes its issue in the same move: `chief-of-stuff backlog --close N --commit`, and one Log line."
         expected = {
             "task-named-on-write": (name_rule, edit_before),
             "task-sized-on-write": (size_rule, edit_before),
             "pipe-escaped-in-a-task": (pipe_rule, edit_before),
             "stage-move-through-the-command": (stage_rule, stage_before),
+            "review-step-takes-the-workflow-token": (workflow_rule, edit_before),
+            "resume-closes-task-with-closed-issue": (close_rule, close_before),
         }
         carrying = {case.name for case in CASES
                     if any("skills/tracker-rows/SKILL" in g.get("input_match", "")
                            for g in graders(spec(case)))}
-        self.assertEqual(carrying, set(expected), "only the four row/stage-writing cases carry this Read grader")
+        self.assertEqual(carrying, set(expected), "only the pinned row/stage/issue-writing cases carry this Read grader")
         text = rules_text()
         read = {"id": "skill", "name": "Read", "input": {"file_path": "/plugin/skills/tracker-rows/SKILL.md"}}
         at = datetime.now(timezone.utc)
@@ -854,6 +863,14 @@ class CaseLintTest(unittest.TestCase):
                     'cd "/ws" && chief-of-stuff log --root . --stage="Upload path check" pr',
                 ]
                 stages = [{"id": "action", "name": "Bash", "input": {"command": command}} for command in commands]
+                close_commands = [
+                    "chief-of-stuff backlog --close 5 --commit",
+                    'python3 /plugin/chief_of_stuff.py backlog --root "/ws" --close 5 --commit',
+                    "python3 /plugin/scripts/backlog.py --close 5 --commit",
+                    'cd "/ws" && chief-of-stuff backlog --close=5 --commit',
+                    'chief-of-stuff backlog --close "5" --commit',
+                ]
+                closes = [{"id": "action", "name": "Bash", "input": {"command": command}} for command in close_commands]
                 harmless = [
                     {"id": "read-tracker", "name": "Read", "input": {"file_path": tracker}},
                     {"id": "other", "name": "Edit", "input": {"file_path": "/ws/notes.md", "old_string": "old", "new_string": "new"}},
@@ -862,6 +879,10 @@ class CaseLintTest(unittest.TestCase):
                     {"id": "log", "name": "Bash", "input": {"command": 'chief-of-stuff log --root . "ordinary log line"'}},
                     {"id": "help", "name": "Bash", "input": {"command": "chief-of-stuff log --help; echo --stage"}},
                     {"id": "help-newline", "name": "Bash", "input": {"command": "chief-of-stuff log --help\necho --stage"}},
+                    {"id": "close-mention", "name": "Bash", "input": {"command": "pwd", "description": close_commands[0]}},
+                    {"id": "backlog", "name": "Bash", "input": {"command": "chief-of-stuff backlog --list"}},
+                    {"id": "close-help", "name": "Bash", "input": {"command": "chief-of-stuff backlog --help; echo --close 5"}},
+                    {"id": "close-help-newline", "name": "Bash", "input": {"command": "chief-of-stuff backlog --help\necho --close 5"}},
                 ]
 
                 def passes(calls):
@@ -874,7 +895,11 @@ class CaseLintTest(unittest.TestCase):
                     self.assertFalse(passes([dict(read, input={"file_path": path})]))
                 self.assertTrue(passes([read]))
                 self.assertTrue(passes(harmless + [read]), "unrelated operations and descriptions are not the first action")
-                for action in stages if name == "stage-move-through-the-command" else edits:
+                actions = {
+                    "stage-move-through-the-command": stages,
+                    "resume-closes-task-with-closed-issue": closes,
+                }.get(name, edits)
+                for action in actions:
                     self.assertTrue(passes(harmless + [read, action]), action)
                     self.assertFalse(passes([action]), action)
                     self.assertFalse(passes([action, read]), action)
