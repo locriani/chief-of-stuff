@@ -2581,9 +2581,10 @@ class ShaTreesTest(unittest.TestCase):
         real, reached = git_trees.fetch_base, []
 
         def counting(tree, *rest, **kw):
-            code, common = git_trees.git(["rev-parse", "--path-format=absolute", "--git-common-dir"], tree)
-            if code == 0:
-                reached.append(Path(common).resolve())
+            try:  # from files, as `sha_trees` does: the view's own path is a temp dir, not the repository
+                reached.append(git_view.locate(Path(tree)).common.resolve())
+            except git_view.Unviewable:
+                pass
             return real(tree, *rest, **kw)
 
         with patch.object(git_trees, "fetch_base", counting):
@@ -2912,9 +2913,15 @@ class ShaTreesTest(unittest.TestCase):
                     code, out, _ = self.run_main("--sha", self.sha)
                 finally:
                     shutil.rmtree(self.trees / name)
-                self.assertEqual(code, 0)
-                self.assertEqual(out.count("\n"), 3, out)  # wt-dirty, the one named tree, and the overall line
-                self.assert_overall(out, self.sha, 0)
+                if ctl in "\r\n":  # git_view refuses a repository path holding a line break: unreadable, so held (fail closed)
+                    self.assertEqual(code, 2)
+                    self.assertEqual(out.count("\n"), 3, out)  # wt-dirty, the one unreadable tree, and the overall line
+                    self.assert_overall(out, self.sha, 2)
+                    self.assertIn("unknown", [l for l in out.splitlines() if "[aaa" in l][0])
+                else:
+                    self.assertEqual(code, 0)
+                    self.assertEqual(out.count("\n"), 3, out)  # wt-dirty, the one named tree, and the overall line
+                    self.assert_overall(out, self.sha, 0)
                 self.assertNotIn("\r", out)
                 self.assertNotIn("\x1b", out)
                 self.assertEqual([c for c in out.replace("\n", "") if not c.isprintable()], [], repr(out))

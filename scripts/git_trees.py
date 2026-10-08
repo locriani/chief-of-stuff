@@ -9,12 +9,8 @@ fetched objects behind, for `check_sha` and `make_worktree`.
 
 from __future__ import annotations
 
-import contextvars
 import os
-import stat
 import subprocess
-from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
 
 import git_view
@@ -49,43 +45,11 @@ def user_env() -> dict[str, str]:
 
 
 def git(args: list[str], cwd: Path) -> tuple[int, str]:
-    """One git call that reads, through the sanitised view (#443). Never a shell, always a list, always bounded.
-    Inside `_raw_reads` (the sha path) it is the old unsanitised read; nothing in `args` selects it."""
-    if _raw.get():
-        return _raw_git(args, cwd)
+    """One git call that reads, through the sanitised view (#443). Never a shell, always a list, always bounded."""
     try:
         out = git_view.run(args, cwd, env=audit_env(), timeout=GIT_TIMEOUT)
     except (git_view.Unviewable, RuntimeError, ValueError) as exc:  # RuntimeError: no home to put the view in; ValueError: a path it cannot write
         return 128, f"unreadable: {exc}"
-    except (OSError, subprocess.SubprocessError) as exc:
-        return 128, f"{type(exc).__name__}: {exc}"  # git's own failure code: 1 is a real answer to `--is-ancestor`
-    return out.returncode, (out.stdout or out.stderr).strip()
-
-
-# slice 4 (#443) moves the sha path onto git_view.locate/signals; _raw_reads then goes
-_raw = contextvars.ContextVar("raw_reads", default=False)
-
-
-@contextmanager
-def _raw_reads() -> Iterator[None]:
-    token = _raw.set(True)
-    try:
-        yield
-    finally:
-        _raw.reset(token)
-
-
-def _raw_git(args: list[str], cwd: Path) -> tuple[int, str]:
-    """The unsanitised read the sha-path questions still use."""
-    try:
-        out = subprocess.run(
-            ["git", "-C", str(cwd), *args],
-            capture_output=True,
-            text=True,
-            errors="backslashreplace",  # a byte that is not UTF-8 (a Linux ref name) reads as `\xff`, never raises
-            timeout=GIT_TIMEOUT,
-            env=audit_env(),
-        )
     except (OSError, subprocess.SubprocessError) as exc:
         return 128, f"{type(exc).__name__}: {exc}"  # git's own failure code: 1 is a real answer to `--is-ancestor`
     return out.returncode, (out.stdout or out.stderr).strip()
@@ -128,7 +92,6 @@ def discover(root: Path, trees: str) -> list[Path]:
     return found
 
 
-@_raw_reads()
 def sha_trees(root: Path, trees: str) -> list[tuple[str, Path]]:
     """(name, tree) for each repository `--sha` should ask: the first tree by name of each repository `discover`
     finds (trees sharing a common git dir are one, as is a pruned
@@ -136,9 +99,11 @@ def sha_trees(root: Path, trees: str) -> list[tuple[str, Path]]:
     seen: set[Path] = set()
     found = []
     for tree in discover(root, trees):
-        code, common = git(["rev-parse", "--path-format=absolute", "--git-common-dir"], tree)
-        pruned = None if code == 0 else _pruned_common(tree)
-        key = Path(common).resolve() if code == 0 else pruned.resolve() if pruned else tree  # unreadable: its pruned repository, else itself
+        try:
+            key = git_view.locate(tree).common.resolve()
+        except git_view.Unviewable:  # unreadable: its pruned repository, else itself
+            pruned = _pruned_common(tree)
+            key = pruned.resolve() if pruned else tree
         if key not in seen:
             seen.add(key)
             found.append((tree.name, tree))
@@ -221,20 +186,6 @@ def _commits(sha: str, tree: Path) -> list[str] | None:
     return [i for i, _, kind in types if kind == "commit"]
 
 
-def _has_grafts(tree: Path) -> bool | None:
-    """Whether `info/grafts` is a non-empty file; None when git cannot say where it is or it cannot be examined."""
-    code, path = git(["rev-parse", "--path-format=absolute", "--git-path", "info/grafts"], tree)
-    if code != 0:
-        return None
-    try:
-        info = Path(path).stat()
-    except FileNotFoundError:
-        return False
-    except OSError:
-        return None
-    return stat.S_ISREG(info.st_mode) and info.st_size > 0
-
-
 read_regular = git_view.read_regular
 
 
@@ -263,12 +214,20 @@ def _pruned_common(tree: Path) -> Path | None:
     return None
 
 
-@_raw_reads()
+def _is_git_dir(common: Path) -> bool:
+    """Whether `common` is itself a bare-style git directory (no tree), by files only."""
+    try:
+        lay = git_view.locate(common)
+    except git_view.Unviewable:
+        return False
+    return lay.tree is None and lay.common == common.resolve()
+
+
 def check_sha(sha: str, tree: Path) -> tuple[int, str, bool]:
     """One repository's `(exit code, line, held)`; `held` is whether it has a commit with that id, or may have one (git
     cannot read it). A pruned worktree (`_pruned_common`: its `.git` file names a `<common>/worktrees/<name>` known gone) is
     answered by its repository, checked only when the commit lookup failed, with two rules. A: only when `<common>` is itself
-    the git directory git uses there (`rev-parse --git-dir` prints `.`), else a plain directory inside another repository would
+    the git directory (`_is_git_dir`), else a plain directory inside another repository would
     answer for that one. B: the redirect is followed once, and the answer is `_verdict`, which never redirects.
     Every other failed read (a refusal, a timeout, an unusable `.git` directory, a main clone that moved, a `<common>` git
     cannot use) may hold the commit and blocks a yes. The commit is the one whose object id starts with `sha`, never a tag or
@@ -282,7 +241,7 @@ def check_sha(sha: str, tree: Path) -> tuple[int, str, bool]:
     commit."""
     fetch_error = fetch_base(tree)
     commits = _commits(sha, tree)
-    if commits is None and (common := _pruned_common(tree)) and git(["rev-parse", "--git-dir"], common) == (0, "."):  # A (#294)
+    if commits is None and (common := _pruned_common(tree)) and _is_git_dir(common):  # A (#294)
         tree, fetch_error = common, fetch_base(common)  # the repository forgot this tree: it answers for it, once (B)
         commits = _commits(sha, tree)
     return _verdict(sha, tree, fetch_error, commits)
@@ -295,10 +254,13 @@ def _verdict(sha: str, tree: Path, fetch_error: str, commits: list[str] | None) 
     def unknown(why: str) -> tuple[int, str, bool]:
         return 2, f"sha {sha}: unknown \u2014 {why}", held
 
-    grafted = None if commits is None else _has_grafts(tree)
-    if grafted is None:
+    if commits is None:
         return unknown("git could not read this repository")
-    if grafted:
+    try:
+        found = git_view.signals(git_view.locate(tree))
+    except git_view.Unviewable:
+        return unknown("git could not read this repository")
+    if "grafts" in found:
         return unknown("this repository has grafts, so ancestry cannot be trusted")
     ref = git(["rev-parse", "--verify", "-q", "refs/heads/main"], tree)[0] if len(commits) == 1 else 1  # 1: no such ref
     local_code = git(["merge-base", "--is-ancestor", commits[0], "refs/heads/main"], tree)[0] if ref == 0 else ref
@@ -308,20 +270,16 @@ def _verdict(sha: str, tree: Path, fetch_error: str, commits: list[str] | None) 
         return unknown(f"no {BASE} to check against{note}")
     if len(commits) > 1:
         return unknown("more than one commit starts with it")
+    if "shallow" in found:  # a shallow clone never answers yes: the commit may be in what was cut off
+        return unknown(f"shallow clone, so history is cut off{note}")
     compared = git(["merge-base", "--is-ancestor", commits[0], REF], tree)[0] if held else 1
     if compared not in (0, 1):
         return unknown(f"git could not compare it with {BASE}")
     if local_code not in (0, 1) and compared != 0:  # origin/main holding it needs no local fact
         return unknown("git could not read this repository")
     code, line = sha_verdict(sha, fetch_error, held, compared == 0, tip, local_code == 0 and compared == 1)
-    if code == 1:
-        shallow, out = git(["rev-parse", "--is-shallow-repository"], tree)
-        if shallow != 0:
-            return unknown("git could not read this repository")
-        if out == "true":
-            return unknown(f"shallow clone, so history is cut off{note}")
-        if local_code == 0:
-            line = f"sha {sha}: on local main only, not pushed to {BASE} {tip} (fetched)"
+    if code == 1 and local_code == 0:
+        line = f"sha {sha}: on local main only, not pushed to {BASE} {tip} (fetched)"
     return code, line, held
 
 

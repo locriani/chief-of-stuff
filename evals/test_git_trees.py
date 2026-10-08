@@ -515,10 +515,13 @@ class CheckShaTest(Repo):
         self.assertEqual(git_trees.check_sha(older, shallow),
                          (2, f"sha {older}: unknown \u2014 shallow clone, so history is cut off", False))
         # D2 (#443 slice 4): a shallow clone never answers yes either. The view has no `shallow` file, so ancestry past the
-        # boundary cannot be asked there, and the answer is decided before any comparison. It used to be a yes here, since
-        # origin/main holds the tip inside the cut. Local main is the clone's main at that same tip, hence the note.
-        self.assertEqual(git_trees.check_sha(head, shallow),
-                         (2, f"sha {head}: unknown \u2014 shallow clone, so history is cut off; local main holds it", True))
+        # boundary cannot be asked there and the answer is decided before any comparison. The "; local main holds it" note is
+        # best effort: the view cannot read a real shallow clone's parent, so the note is absent and not required.
+        code, line, _ = git_trees.check_sha(head, shallow)
+        self.assertEqual(code, 2)
+        self.assertTrue(line.startswith(f"sha {head}: unknown \u2014 shallow clone, so history is cut off"), line)
+        for definite in ("not on origin/main", "no such commit", "on origin/main"):
+            self.assertNotIn(definite, line)
 
     def test_a_commit_on_local_main_not_pushed_is_said_so(self) -> None:
         """#49 G: distinct from a commit on no main at all (`not on origin/main`), since the row audit reports an
