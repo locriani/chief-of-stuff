@@ -1514,20 +1514,57 @@ class ClosedIssueOnOpenTaskTest(unittest.TestCase):
             "ask the user: reopen the issue or drop the work",
             [str(f) for f in report.issues])
 
-    def test_a_tree_git_cannot_read_is_not_work_not_on_main(self):
-        """R7: `_tree_unlanded` matched the text "not on main", which an unreadable tree (128, not git's `no`) also printed, so a
-        closed issue told the user to reopen it or drop work nobody had seen. Exit 1 stays that answer (the test above)."""
+    def unreadable_fault(self, root: Path, patched=None) -> str:
         gh = FakeGh({"o/backlog": {5: "CLOSED", 6: "CLOSED", 7: "CLOSED"}})
+        with patched or contextlib.nullcontext():
+            report = al.audit(root, "2026-09-17", gh=gh)
+        [fault] = [str(f) for f in report.issues if "#6" in str(f)]
+        return fault
+
+    def assert_asks_the_user_it_is_unknown(self, fault: str) -> None:
+        """V1: git could not read the tree, so the audit knows neither that work is unlanded nor that nothing is. It asks
+        the user, in the audit's one wording for "git could not say", and says neither of the two things it does not know."""
+        self.assertIn("Unlanded work — #6 is closed", fault)
+        self.assertIn(unreadable_phrase(), fault)
+        self.assertIn("ask the user", fault)
+        self.assertNotIn("write the task done", fault)
+        self.assertNotIn("work not on main", fault)
+        self.assertNotIn("reopen the issue or drop the work", fault)
+
+    def test_a_tree_git_cannot_read_is_not_work_not_on_main(self):
+        """R7 + V1: `_tree_unlanded` matched the text "not on main", which an unreadable tree (128, not git's `no`) also printed, so a
+        closed issue told the user to reopen it or drop work nobody had seen; once that text went, the gate answered "not unlanded"
+        and the same issue was told to write the task done. Neither: it asks the user, saying git could not read the tree.
+        Exit 1 stays the real `no` (the test above)."""
         for label, patched in (("a tree the view refuses", None), ("a merge-base git cannot answer", refusing("merge-base"))):
             with self.subTest(label):
                 root = self.workspace()
                 if patched is None:
                     refuse(root / "trees" / "wt-unmerged")
-                with patched or contextlib.nullcontext():
-                    report = al.audit(root, "2026-09-17", gh=gh)
-                [fault] = [str(f) for f in report.issues if "#6" in str(f)]
-                self.assertNotIn("work not on main", fault)
-                self.assertNotIn("reopen the issue or drop the work", fault)
+                self.assert_asks_the_user_it_is_unknown(self.unreadable_fault(root, patched))
+
+    def test_the_unlanded_gate_does_not_read_the_prose_of_the_tree_state(self):
+        """V1: the gate searched the wording `_state` prints. Reword whatever string `_state` reports and each of the three
+        trees still gets its own answer: unmerged asks the user about unlanded work, landed writes the task done, unreadable asks
+        the user with the unknown wording."""
+        real = al._state
+
+        def reworded(*args, **kw):
+            result = real(*args, **kw)
+            if isinstance(result, tuple):
+                return tuple(re.sub(r"not on main|on main", "elsewhere", x) if isinstance(x, str) else x for x in result)
+            return result
+
+        gh = FakeGh({"o/backlog": {5: "CLOSED", 6: "CLOSED", 7: "CLOSED"}})
+        with patch.object(al, "_state", reworded):
+            readable = [str(f) for f in al.audit(self.workspace(), "2026-09-17", gh=gh).issues]
+            unreadable_root = self.workspace()
+            refuse(unreadable_root / "trees" / "wt-unmerged")
+            unreadable = self.unreadable_fault(unreadable_root, patch.object(al, "_state", reworded))
+        self.assertIn("issue: Unlanded work — #6 is closed but its tree has work not on main; "
+                      "ask the user: reopen the issue or drop the work", readable)
+        self.assertIn("issue: Landed work — #7 is closed; write the task done", readable)
+        self.assert_asks_the_user_it_is_unknown(unreadable)
 
     def test_an_unlanded_worktree_keyed_on_the_tasks_name_asks_the_user_too(self):
         """#51: a prefix-less item whose File ownership row is keyed on the task's `name` — `_tree_unlanded`
