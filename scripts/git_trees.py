@@ -19,7 +19,7 @@ from pathlib import Path
 
 import git_view
 from shell_setup import clean_env
-from tree_state import TreeState
+from tree_state import UNREADABLE_BRANCH, TreeState
 
 # Replace refs and grafts both rewrite parents, so neither may make a yes.
 GIT_ENV = {"GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0", "GIT_NO_REPLACE_OBJECTS": "1"}
@@ -51,13 +51,12 @@ def user_env() -> dict[str, str]:
 
 def git(args: list[str], cwd: Path) -> tuple[int, str]:
     """One git call that reads, through the sanitised view (#443). Never a shell, always a list, always bounded.
-    Inside `_raw_reads` (the sha path) it is the old unsanitised read, and so is `--git-dir`, which the view refuses and
-    the sha tests use to ask the real git."""
-    if _raw.get() or "--git-dir" in args:
+    Inside `_raw_reads` (the sha path) it is the old unsanitised read; nothing in `args` selects it."""
+    if _raw.get():
         return _raw_git(args, cwd)
     try:
         out = git_view.run(args, cwd, env=audit_env(), timeout=GIT_TIMEOUT)
-    except git_view.Unviewable as exc:
+    except (git_view.Unviewable, RuntimeError, ValueError) as exc:  # RuntimeError: no home to put the view in; ValueError: a path it cannot write
         return 128, f"unreadable: {exc}"
     except (OSError, subprocess.SubprocessError) as exc:
         return 128, f"{type(exc).__name__}: {exc}"  # git's own failure code: 1 is a real answer to `--is-ancestor`
@@ -98,13 +97,19 @@ def _count(rev_range: str, tree: Path) -> int | None:
     return int(out) if code == 0 and out.isdecimal() else None
 
 
+def branch_of(tree: Path) -> str:
+    """The branch HEAD is on; one fixed placeholder when git cannot say, never its error text (it is printed everywhere)."""
+    code, branch = git(["rev-parse", "--abbrev-ref", "HEAD"], tree)
+    return branch if code == 0 else UNREADABLE_BRANCH
+
+
 def read_state(tree: Path) -> TreeState:
-    _, branch = git(["rev-parse", "--abbrev-ref", "HEAD"], tree)
+    branch = branch_of(tree)
     code, dirty = git(["status", "--porcelain"], tree)
     readable = code == 0  # an unreadable status cannot rule out uncommitted work: leave the counts unknown, so the tree stays at risk
     return TreeState(
         branch=branch,
-        dirty=len(dirty.splitlines()) if readable else 0,
+        dirty=len(dirty.splitlines()) if readable else None,
         off_origin=_count(f"{BASE}..HEAD", tree) if readable else None,
         unpushed=_count("@{u}..HEAD", tree) if readable else None,
     )
