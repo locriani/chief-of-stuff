@@ -17,7 +17,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import dispatch_prompt as dp  # noqa: E402
 import inbox  # noqa: E402
-from evals.rules_text import one_shot_paragraph, rules_text, sections  # noqa: E402
+from evals.rules_text import one_shot_paragraph, rules_text, sections, skill_body  # noqa: E402
 
 CLAUDE = """# Workspace
 
@@ -760,13 +760,20 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
 
     def test_the_reviewer_hand_off_names_its_mailbox(self):
         # autonomous-review-pipeline-design, 22:45: without --mailbox-dir the reviewer's report landed in the reviewed repo.
-        pipeline = self.content.split("## Pipeline", 1)[1].split("\n## ", 1)[0]
+        pipeline = self._section("Pipeline")
         self.assertIn("`Report by: chief-of-stuff inbox --mailbox-dir <workspace root>/.chief-of-stuff/mailbox send --to coordinator --from <reviewer session> --type review --task \"<task>\"`", pipeline)
         self.assertNotIn("`inbox.py send --to reviewer", pipeline)
         # A sonnet run sent the placeholder itself; the reviewer runs in another tree, so only an absolute path lands.
         self.assertIn("`<workspace root>` written out as an absolute path", pipeline)
 
     def _section(self, name):
+        # Slice 6 retains merge guardrails in Pipeline; other behavioural pins
+        # follow the prose into the skill's ### topics.
+        if name in ("Pipeline", "Triage"):
+            path = self.agent_file.parent.parent / "skills" / "review-pipeline" / "SKILL.md"
+            if path.is_file():
+                retained = sections(self.content)["Pipeline"] if name == "Pipeline" else ""
+                return retained + "\n\n" + skill_body(path.read_text())
         return sections(self.content)[name].split("\n", 1)[1]
 
     def test_the_coordinator_hands_off_and_asks_only_for_the_users_reasons(self):
@@ -788,7 +795,7 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
     def test_the_issue_rule_is_for_any_backlog_and_gitlab_files_with_backlog_py(self):
         # The user, 2026-09-23 22:40: "remove the github issue remote and make everything use gitlab now that we have that going".
         self.assertNotRegex(self.content, r"GitHub `?[Bb]acklog")
-        self.assertIn("chief-of-stuff backlog --create", self._section("Tracker"))
+        self.assertIn("chief-of-stuff backlog --create", rules_text())
 
     def test_the_check_is_armed_every_fifteen_minutes(self):
         # The user, 2026-09-24 01:35: "a 15 minute timer loop that kicks you to check, evaluate state each time and hand off things again if needed".
@@ -825,7 +832,14 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
     def test_the_word_mergeable_comes_only_from_the_merge_ready_verdict(self):
         for name, sentence, section in self.MERGE_READY_RULE:
             with self.subTest(name):
-                self.assertTrue(sentence in self._section(section), f"{section} must say ({name}): {sentence}")
+                if name == "the word comes only from the verdict":
+                    agent = self.agent_file.read_text()
+                    self.assertEqual(agent.count(sentence), 1, "wording ban stays once in the agent")
+                    self.assertIn(sentence, sections(agent)["Pipeline"])
+                    skill = self.agent_file.parent.parent / "skills" / "review-pipeline" / "SKILL.md"
+                    self.assertNotIn(sentence, skill.read_text(), "wording ban must leave the skill")
+                else:
+                    self.assertTrue(sentence in self._section(section), f"{section} must say ({name}): {sentence}")
 
     def test_the_coordinator_tells_the_worker_to_merge_after_naming_who_merges(self):
         pipeline = self._section("Pipeline")
@@ -881,7 +895,7 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
 
     def test_a_clean_verify_pass_goes_to_merge(self):
         # An opus run read a clean verify pass as a new triage and asked for R1's disposition again.
-        triage = self.content.split("## Triage", 1)[1].split("\n## ", 1)[0]
+        triage = self._section("Triage")
         self.assertIn("A verify pass with nothing open moves the task to `merge`", triage)
 
     def test_github_issue_writes_use_the_pinned_backlog_script(self):
@@ -892,8 +906,7 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         self.assertNotIn("Zach", self.content)
 
     def test_triage_is_the_users(self):
-        self.assertIn("## Triage", self.content)
-        self.assertIn("every disposition in one reply", self.content)
+        self.assertIn("every disposition in one reply", self._section("Triage"))
 
     # #391, the user, 2026-10-06: a review finding that is a clear fix "should have automatically been a fix". The rule is gated (review of
     # PR 398): eligible only when clear, Important or Minor, off the security axis and about nothing the user specified; the Plan line stays
@@ -984,7 +997,7 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         # Zach, 2026-09-23 22:25: "tasks passed to implementers should cause the implementer to enter plan mode for the new task".
         line = "`Plan: enter plan mode (EnterPlanMode) for this task before anything else; write nothing until the user approves the plan.`"
         assign = self.content.split("## Assign", 1)[1].split("\n## ", 1)[0]
-        triage = self.content.split("## Triage", 1)[1].split("\n## ", 1)[0]
+        triage = self._section("Triage")
         self.assertIn(line, assign)
         self.assertIn(line, triage)
 

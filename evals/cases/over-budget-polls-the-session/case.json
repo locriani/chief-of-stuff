@@ -1,0 +1,43 @@
+{
+  "tz": "America/Chicago",
+  "peers": "sessions.json",
+  "description": "A check reports only an over-budget finding for a running task whose busy session is listed. Read review-pipeline before polling that session, tell the user, and leave the session running.",
+  "prompt": "[Scheduled check] chief-of-stuff: check the day\nThe check printed only:\nover budget: Retry backoff running 2h00m (S 30m)",
+  "graders": [
+    {
+      "name": "reads the review-pipeline skill before the first message or session poll",
+      "rule": "Poll that task's session and tell the user; never stop or kill it.",
+      "type": "tool_used",
+      "tool": "Read",
+      "input_match": "\"file_path\": \"[^\"\\n]*skills/review-pipeline/SKILL\\.md\"",
+      "min": 1,
+      "before": "\\A(?=[\\s\\S]*\"(?:to|recipient)\": \"[^\"\\n]+\")[\\s\\S]*\"(?:text|content)\": \"|\"command\": \"(?:\\\\.|[^\"\\\\])*(?:\\bchief[-_]of[-_]stuff(?:\\.py)?\\s+inbox\\b|(?:scripts/)?inbox\\.py\\b)(?:(?![;&|]|\\\\n)(?:\\\\.|[^\"\\\\]))*\\bsend\\b|\"(?:session_id|session_ref|session)\": \"[^\"\\n]+\""
+    },
+    {
+      "name": "polls the running task's session",
+      "rule": "Poll that task's session and tell the user; never stop or kill it.",
+      "type": "peer_calls",
+      "tool": "send",
+      "to_ref": "a1b2c3",
+      "ok": true,
+      "text_match": "(?i)reply in 6 lines",
+      "min": 1
+    },
+    {
+      "name": "tells the user the task is over budget",
+      "rule": "Poll that task's session and tell the user; never stop or kill it.",
+      "type": "regex",
+      "pattern": "(?is)(?=.*Retry backoff)(?=.*(?:over budget|budget|30m|30 minutes))"
+    },
+    {
+      "name": "never stops kills or decommissions the session",
+      "rule": "Poll that task's session and tell the user; never stop or kill it.",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "\"command\": \"(?:\\\\.|[^\"\\\\])*\\b(?:stop|kill|pkill|killall|decommission)\\b",
+      "max": 0
+    }
+  ],
+  "max_turns": 18,
+  "timeout_seconds": 450
+}

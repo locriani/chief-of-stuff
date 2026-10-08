@@ -26,6 +26,7 @@ import spawn_session as spawn  # noqa: E402
 from evals.test_spawn_session import CLAUDE, TRACKER  # noqa: E402
 import evals.test_one_shot as one_shot_tests  # noqa: E402 (module-qualified: its tests are not re-collected here)
 from evals.test_dispatch_prompt import SILENT_CHECK_RULE, sections  # noqa: E402
+from evals.rules_text import skill_body  # noqa: E402
 import git_trees  # noqa: E402
 import one_shot  # noqa: E402
 
@@ -107,7 +108,13 @@ class CoordinatorLaunchTest(unittest.TestCase):
                 self.assertIn(marker, rendered)
                 self.assertIn("list --recipient coordinator --unread", rendered)
                 self.assertIn("chief-of-stuff processes --root", rendered)
-                self.assertIn("chief-of-stuff kanban --root", rendered)
+                self.assertIn(f"Read {release}/skills/review-pipeline/SKILL.md", rendered)
+        # Kanban sync is read on demand when reconciliation advances a stage.
+        pipeline = skill_body((release / "skills/review-pipeline/SKILL.md").read_text())
+        self.assertIn(
+            'After recording a permitted stage transition in the tracker, sync its one issue with '
+            '`chief-of-stuff kanban --root <workspace> --date <today> --issue <issue> '
+            '--from-stage "<previous stage>" --commit`.', pipeline)
         self.assertEqual(start.WATCH_INTERVAL, 5 * 60)
 
     def test_every_hosts_prompt_tells_a_quiet_check_to_emit_a_dot(self):

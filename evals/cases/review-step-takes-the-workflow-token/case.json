@@ -4,6 +4,15 @@
   "prompt": "Please review merge request 14 on o/app when you can.",
   "graders": [
     {
+      "name": "reads the tracker-rows skill before the first tracker Edit/Write",
+      "rule": "A workflow step — a review, or anything the pipeline itself performs — takes no issue: write `workflow` in its `issue` cell.",
+      "type": "tool_used",
+      "tool": "Read",
+      "input_match": "\"file_path\": \"[^\"\\n]*skills/tracker-rows/SKILL\\.md\"",
+      "min": 1,
+      "before": "\\A(?=[\\s\\S]*\"(?:old_string|content)\":)[\\s\\S]*\"file_path\": \"(?:[^\"\\n]*[/\\\\])?daily[/\\\\]{{today}}-tracker\\.md\""
+    },
+    {
       "name": "the review row's issue cell is the workflow token",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",
