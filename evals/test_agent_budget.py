@@ -28,8 +28,11 @@ from evals.skill_fixtures import write_plugin, write_skill  # noqa: E402
 TOTAL = 77_700            # whole agent file, bytes
 MAX_LINE = 8_400          # longest single line
 ONE_SHOT_PARAGRAPH = 4_400  # kept: a later slice trims this paragraph
-# Other hosts still append skill bodies, plus the new always-loaded rules.
-PROMPT = {"claude": 77_500, "codex": 76_200, "cursor": 76_300, "agy": 76_400}  # rendered, path bytes removed
+# #511: current rendered sizes minus appended skill sections (body + named header):
+# decision-page 2,139 B + optional-features 4,795 B = 6,934 B per non-Claude host.
+# Claude carries neither section. With release/workspace paths removed, the remaining
+# sizes are Claude 76,685, Codex 69,207, Cursor 69,315, AGY 69,371; round up to 50 B.
+PROMPT = {"claude": 76_700, "codex": 69_250, "cursor": 69_350, "agy": 69_400}  # rendered, path bytes removed
 CEILING = {  # `## ` section -> bytes, heading line included
     "Role": 1600, "Dispatch authority": 1100, "Browser safety": 410, "Writing": 780,
     "Config": 1400, "Clock": 1850, "Calendar": 910, "Open the day": 2000, "Resume": 4830,
@@ -297,21 +300,18 @@ class AgentBudgetTest(unittest.TestCase):
             write_skill(root, "alpha", "Generic rule.")
             assert_skill_pointers(self, root)
 
-    def test_rendered_budget_counts_appended_skill_bytes(self):
+    def test_rendered_budget_is_independent_of_on_demand_skill_bytes(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = write_plugin(Path(tmp))
             before = rendered_sizes(1, root)
             body = "## Generic detail\n\n" + "é" * 500
             write_skill(root, "alpha", body, "description: Use for generic detail.")
             after = rendered_sizes(1, root)
-            self.assertEqual(after, rendered_sizes(40, root), "skill bytes must also be path independent")
-            self.assertEqual(after["claude"], before["claude"])
-            for runtime in ("codex", "cursor", "agy"):
+            self.assertEqual(after, rendered_sizes(40, root), "prompt bytes must be path independent")
+            for runtime in runtimes.NAMES:
                 with self.subTest(runtime=runtime):
-                    # A cap one byte below the body must be crossed by the full rendered prompt.
-                    fixture_cap = before[runtime] + len(body.encode()) - 1
-                    self.assertGreater(after[runtime], fixture_cap,
-                                       "rendered prompt budget must count the appended skill body")
+                    self.assertEqual(after[runtime], before[runtime],
+                                     "on-demand skill bodies must not consume starting prompt bytes")
 
     def test_non_claude_prompts_do_not_keep_claude_only_phrases(self):
         # start_coordinator.prompt() swaps these by exact-string .replace(); an edit to the agent
