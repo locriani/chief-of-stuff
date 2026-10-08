@@ -107,6 +107,30 @@ class ServeTest(unittest.TestCase):
 
     def test_dotfiles_are_not_served(self):
         self.assertEqual(get(self.port, "/.pid").status, 404)
+        name = "a" * 40 + "-" + "b" * 8
+        out = self.dir / ".graphs" / name
+        out.mkdir(parents=True)
+        (out / "page.html").write_text("<p>full graph marker</p>")
+        self.assertEqual(get(self.port, f"/.graphs/{name}/page.html").status, 404)
+
+    def test_only_the_full_graph_page_is_served_through_the_graphs_route(self):
+        name = "a" * 40 + "-" + "b" * 8
+        out = self.dir / ".graphs" / name
+        out.mkdir(parents=True)
+        (out / "page.html").write_text("<p>full graph marker</p>")
+        resp = get(self.port, f"/graphs/{name}/page.html")
+        self.assertEqual(resp.status, 200)
+        self.assertIn(b"full graph marker", resp.body)
+
+        (self.dir / ".sources.json").write_text('{"private": true}')
+        (out / "other.html").write_text("<p>other graph file</p>")
+        (self.dir / ".graphs" / "x").mkdir()
+        (self.dir / ".graphs" / "x" / "page.html").write_text("<p>invalid graph name</p>")
+        missing = "c" * 40 + "-" + "d" * 8
+        for path in (f"/graphs/{missing}/page.html", "/graphs/../.sources.json", "/graphs/x/page.html",
+                     f"/graphs/{name}/other.html", f"/graphs/{name}/page.html/..%2f..%2f.sources.json"):
+            with self.subTest(path=path):
+                self.assertEqual(get(self.port, path).status, 404)
 
 
 def snippet() -> str:

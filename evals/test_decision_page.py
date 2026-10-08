@@ -903,6 +903,8 @@ class ModuleGraphTest(unittest.TestCase):
         section = self.section(page)
         self.assertIn("unavailable", section)
         self.assertNotIn('class="mermaid"', section)
+        self.assertNotIn('href="/graphs/', section)
+        self.assertNotIn("Open the full graph", section)
         self.assertEqual(self.runs(), [])
         for text in ("The plan and the architecture disagree on where uploads go", "Follow the architecture", "The worker waits."):
             self.assertIn(text, page)
@@ -915,6 +917,8 @@ class ModuleGraphTest(unittest.TestCase):
         self.assertIn("unavailable", section)
         self.assertIn("no import root agent", section)
         self.assertNotIn('class="mermaid"', section)
+        self.assertNotIn('href="/graphs/', section)
+        self.assertNotIn("Open the full graph", section)
         self.assertIn("Follow the architecture", page)
 
     # The user: a real MR drew dozens of tests.* modules and was unreadable. Test modules are hidden, and a big graph
@@ -1003,6 +1007,19 @@ class ModuleGraphTest(unittest.TestCase):
         self.page()
         self.assertEqual([r["exclude"] for r in self.runs()], [["tests.*", "evals.*"]] * 2 + [["tests.*"]])
 
+    def test_the_drawn_and_cached_sections_link_to_the_full_graph(self):
+        self.fake(views=VIEWS)
+        self.workspace()
+        section = self.section(self.page())
+        [out] = (self.pages / ".graphs").iterdir()
+        href = f'href="/graphs/{out.name}/page.html"'
+        self.assertIn(href, section)
+        self.assertIn("Open the full graph", section)
+        section = self.section(self.page())
+        self.assertIn(href, section)
+        self.assertIn("Open the full graph", section)
+        self.assertEqual(len(self.runs()), 1)
+
     def test_an_older_tool_that_writes_only_page_mmd_still_draws_it(self):
         self.workspace()
         for drawn in ("drawn now", "served from the cache"):
@@ -1023,6 +1040,8 @@ class ModuleGraphTest(unittest.TestCase):
     def assert_nothing_outside_the_excluded_set(self, page: str, section: str):
         self.assertIn("outside the excluded set", section)
         self.assertNotIn('<pre class="mermaid">', section)
+        self.assertNotIn('href="/graphs/', section)
+        self.assertNotIn("Open the full graph", section)
         for text in ("unavailable", "Errno", "page.mmd"):
             with self.subTest(text=text):
                 self.assertNotIn(text, page)
@@ -1060,6 +1079,32 @@ class ModuleGraphTest(unittest.TestCase):
         m = re.search(r"<section[^>]*>\s*<h2[^>]*>\s*Architecture\b.*?</section>", page, re.S)
         self.assertIsNotNone(m, "the task page has no Architecture section")
         self.assert_nothing_outside_the_excluded_set(page, m[0])
+        self.assertEqual(len(self.runs()), 1)
+
+    def test_the_task_page_architecture_links_to_the_full_graph(self):
+        import issue_page as ip
+        self.fake(views=VIEWS)
+        self.workspace()
+        self.page()  # draws the change once; the task page is served from the same cache
+        [out] = (self.pages / ".graphs").iterdir()
+        cache = self.pages / bs.CACHE
+        sources = bs.load(self.pages)
+        change = replace(sources.changes["#58"], issues=("#109",))
+        bs._write(cache, bs.Sources({}, {}, {"#58": change}, (), {}))
+        (self.root / "daily").mkdir()
+        today = datetime.now(ZoneInfo("America/Chicago")).date()
+        (self.root / "daily" / f"{today}-tracker.md").write_text(
+            "# Tracker\n\n## Tasks\n\n| name | item | owner | state | since | due | size | lane | stage | issue | checklist |\n"
+            + "|---" * 11 + f"|\n| Warm pool | Warm the pool | Robin | waiting | {today} |  | S |  |  | #109 | c |\n"
+            "\n## Log\n")
+        page_path = ip.write(self.root, self.pages, 109)
+        self.assertIsNotNone(page_path, "no task page for #109")
+        page = page_path.read_text()
+        m = re.search(r"<section[^>]*>\s*<h2[^>]*>\s*Architecture\b.*?</section>", page, re.S)
+        self.assertIsNotNone(m, "the task page has no Architecture section")
+        self.assertIn('<pre class="mermaid">', m[0])
+        self.assertIn(f'href="/graphs/{out.name}/page.html"', m[0])
+        self.assertIn("Open the full graph", m[0])
         self.assertEqual(len(self.runs()), 1)
 
     def test_the_caption_reads_the_summary_as_designed(self):
