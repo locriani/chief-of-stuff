@@ -12,7 +12,7 @@ def skill_body(text: str) -> str:
 
 
 def rules_text(plugin_root: Path = ROOT) -> str:
-    """The agent followed by every skill body in path order, including Claude-only rules.
+    """The agent followed by every on-demand skill body in path order.
 
     No skills means the original agent text, byte for byte. Do not add wrapper headings:
     existing section and one-shot paragraph lints must still find the rules after a move.
