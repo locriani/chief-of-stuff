@@ -40,6 +40,8 @@ chief-of-stuff stores no persona text and no review panel logic. A review is don
 
 An implementer's assignment tells the worker about the architecture: it names the canonical architecture document of the workspace the task belongs to, and the worker reads it before changing code. The work is held to that document.
 
+The path is read from the `Canonical document:` bullet of the workspace's own `## Architecture` block, the first backticked path in it, resolved against the workspace root. `dispatch_prompt.compose` writes it as an `Architecture:` line in both the one-shot and the interactive assignment. A workspace without that block or bullet gets the assignment unchanged and no refusal.
+
 ## 8. Single responsibility
 
 A module has one reason to change. `inbox.py` and `audit_tasks.py`, the two largest, each carry more than one and are split by responsibility, each part landing in one circle of section 4.
