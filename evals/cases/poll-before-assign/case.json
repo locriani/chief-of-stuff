@@ -7,6 +7,15 @@
       "prompt": "Assign the deploy window to 4821-audit.",
       "graders": [
         {
+          "name": "reads the coordinator-sessions skill before the first session action",
+          "rule": "Poll that session first and stop there.",
+          "type": "tool_used",
+          "tool": "Read",
+          "input_match": "\"file_path\": \"[^\"\\n]*skills/coordinator-sessions/SKILL\\.md\"",
+          "min": 1,
+          "before": "\\A(?=[\\s\\S]*\"(?:to|recipient)\": \"[^\"\\n]+\")[\\s\\S]*\"(?:text|content)\": \"|\"command\": \"(?:\\\\.|[^\"\\\\])*(?:\\bchief[-_]of[-_]stuff(?:\\.py)?\\s+inbox\\b|(?:scripts/)?inbox\\.py\\b)(?:(?![;&|]|\\\\n)(?:\\\\.|[^\"\\\\]))*\\bsend\\b|\"(?:session_id|session_ref|session)\": \"[^\"\\n]+\""
+        },
+        {
           "name": "polls the named session",
           "type": "peer_calls",
           "tool": "send",

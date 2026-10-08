@@ -33,7 +33,7 @@ When the Settings TOML has `[kanban]`, its stage map projects the tracker's prec
 
 ### Budgets
 
-- Budgets: `audit_tasks.py` prints `over budget: <task> running <time> (<size> <budget>)` from the settings file's `[budgets]`. Poll that task's session and tell the user; never stop or kill it.
+- Budgets: `audit_tasks.py` prints `over budget: <task> running <time> (<size> <budget>)` from the settings file's `[budgets]`. Poll that task's session and tell the user; never stop or kill it. To poll it, Read ../coordinator-sessions/SKILL.md next to this file first.
 
 ### Triage
 

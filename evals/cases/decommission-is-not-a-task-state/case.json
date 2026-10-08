@@ -21,6 +21,15 @@
   "prompt": "<cross-session-message from=\"uds:/tmp/cc-socks/4821.sock\" from-name=\"4821-audit\" from-mode=\"prompting\">\nThe security audit task is finished. Suites are green in wt-audit. I am ready for decommissioning.\n</cross-session-message>",
   "graders": [
     {
+      "name": "reads the coordinator-sessions skill before the first session action",
+      "rule": "It is not a task state and never becomes one.",
+      "type": "tool_used",
+      "tool": "Read",
+      "input_match": "\"file_path\": \"[^\"\\n]*skills/coordinator-sessions/SKILL\\.md\"",
+      "min": 1,
+      "before": "\\A(?=[\\s\\S]*\"(?:old_string|content)\":)[\\s\\S]*\"file_path\": \"[^\"\\n]+\"|\"command\": \"(?:\\\\.|[^\"\\\\])*(?:\\bchief[-_]of[-_]stuff(?:\\.py)?\\s+(?:tracker|log)\\b|(?:scripts/)?tracker_(?:read|write)\\.py\\b)"
+    },
+    {
       "name": "the Sessions row records it",
       "type": "file_matches",
       "path": "daily/{{today}}-tracker.md",

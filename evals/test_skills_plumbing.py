@@ -171,6 +171,7 @@ class SkillsPlumbingTest(unittest.TestCase):
             "optional-features": "Notifications are off by default, including an empty `[notify]` table.",
             "tracker-rows": "Never set the cell by hand or write that line as free text.",
             "review-pipeline": "A verify pass with nothing open moves the task to `merge`.",
+            "coordinator-sessions": "When a session's state is in question, poll it; do not ask the user.",
         }
         release = start.install(root, self.base / "install")
         agent = (release / "agents" / "chief-of-stuff.md").read_text()
@@ -188,13 +189,20 @@ class SkillsPlumbingTest(unittest.TestCase):
                     self.assertFalse(f"## {name}" in prompt.splitlines(),
                                      f"{runtime} starts with a named {name} skill section")
 
+    def test_non_claude_shipped_prompts_have_no_brief_heading(self):
+        root = Path(__file__).resolve().parent.parent
+        release = start.install(root, self.base / "install")
+        for runtime in NON_CLAUDE:
+            with self.subTest(runtime=runtime):
+                self.assertNotIn("## Brief", start.prompt(runtime, release, self.workspace).splitlines())
+
     def test_shipped_skill_pointer_lines_resolve_to_installed_files_on_every_host(self):
         root = Path(__file__).resolve().parent.parent
         release = start.install(root, self.base / "install")
         for runtime in (*NON_CLAUDE, "claude"):
             with self.subTest(runtime=runtime):
                 self.assert_pinned_skill_pointers(runtime, release,
-                                                  {"decision-page", "optional-features", "tracker-rows", "review-pipeline"})
+                                                  {"decision-page", "optional-features", "tracker-rows", "review-pipeline", "coordinator-sessions"})
 
     def test_review_pipeline_description_names_every_read_moment(self):
         from evals.test_agent_budget import DESCRIPTION_CAP, description

@@ -767,6 +767,11 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
         self.assertIn("`<workspace root>` written out as an absolute path", pipeline)
 
     def _section(self, name):
+        if name in ("Sessions", "Assign", "Brief"):
+            path = self.agent_file.parent.parent / "skills" / "coordinator-sessions" / "SKILL.md"
+            if path.is_file():
+                body = skill_body(path.read_text())
+                return body.split(f"### {name}\n", 1)[1].split("\n### ", 1)[0]
         # Slice 6 retains merge guardrails in Pipeline; other behavioural pins
         # follow the prose into the skill's ### topics.
         if name in ("Pipeline", "Triage"):
@@ -996,7 +1001,7 @@ class CoordinatorPromptWorkflowTest(unittest.TestCase):
     def test_every_handed_task_opens_plan_mode(self):
         # Zach, 2026-09-23 22:25: "tasks passed to implementers should cause the implementer to enter plan mode for the new task".
         line = "`Plan: enter plan mode (EnterPlanMode) for this task before anything else; write nothing until the user approves the plan.`"
-        assign = self.content.split("## Assign", 1)[1].split("\n## ", 1)[0]
+        assign = self._section("Assign")
         triage = self._section("Triage")
         self.assertIn(line, assign)
         self.assertIn(line, triage)

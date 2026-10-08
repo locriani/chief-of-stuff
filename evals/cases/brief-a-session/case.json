@@ -5,6 +5,15 @@
   "prompt": "Brief 7719-notes on the audit task so it can pick it up if Robin says so.",
   "graders": [
     {
+      "name": "reads the coordinator-sessions skill before the first session action",
+      "rule": "A brief is context, not an instruction to start: use it when the user asks you to bring a session up to speed.",
+      "type": "tool_used",
+      "tool": "Read",
+      "input_match": "\"file_path\": \"[^\"\\n]*skills/coordinator-sessions/SKILL\\.md\"",
+      "min": 1,
+      "before": "\\A(?=[\\s\\S]*\"(?:to|recipient)\": \"[^\"\\n]+\")[\\s\\S]*\"(?:text|content)\": \"|\"command\": \"(?:\\\\.|[^\"\\\\])*(?:\\bchief[-_]of[-_]stuff(?:\\.py)?\\s+inbox\\b|(?:scripts/)?inbox\\.py\\b)(?:(?![;&|]|\\\\n)(?:\\\\.|[^\"\\\\]))*\\bsend\\b|\"(?:session_id|session_ref|session)\": \"[^\"\\n]+\""
+    },
+    {
       "name": "one send to the briefed session",
       "type": "peer_calls",
       "tool": "send",

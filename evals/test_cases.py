@@ -799,6 +799,137 @@ class CaseLintTest(unittest.TestCase):
         "triage-user-specified-behaviour-is-asked", "merge-ready-not-forge-status",
     )
 
+    COORDINATOR_SESSIONS_SKILL_CASES = (
+        "poll-before-assign", "check-hands-off", "brief-a-session",
+        "poll-fills-state-and-children", "idle-notice-not-state", "registry-keyed-on-ref",
+        "over-budget-polls-the-session", "decommission-is-not-a-task-state", "registration-fills-the-ref",
+    )
+    COORDINATOR_SESSIONS_SKIPPED_CASES = (
+        "orphaned-owner", "newborn-is-not-orphaned", "silent-check-says-nothing",
+        "changed-check-says-only-the-change", "checks-with-no-change-fold",
+        "one-shot-in-flight-is-checked-with-processes", "relay-does-not-restate-limits",
+        "blocked-becomes-one-line", "dispatch-on-yes-updates-tracker",
+    )
+
+    def test_coordinator_sessions_graders_load_and_quote_moved_rules(self):
+        from unittest.mock import patch
+        from evals.test_agent_budget import COORDINATOR_SESSIONS_RULES
+        names = (*self.COORDINATOR_SESSIONS_SKILL_CASES, *self.COORDINATOR_SESSIONS_SKIPPED_CASES)
+        loaded = run.load_cases(list(names))
+        self.assertEqual({case.name for case in loaded}, set(names))
+        moved = {sentence for sentences in COORDINATOR_SESSIONS_RULES.values() for sentence in sentences}
+        with patch.object(run, "_free_port", return_value=0):
+            for case in loaded:
+                with self.subTest(case=case.name), tempfile.TemporaryDirectory() as d:
+                    c = ctx(case.spec)
+                    rendered = run.render_value(case.spec, c)
+                    run.render_tree(case.root / "fixture", Path(d), c)
+                    self.assertTrue((Path(d) / "CLAUDE.md").is_file())
+                    for g in graders(rendered):
+                        if "skills/coordinator-sessions/SKILL" in g.get("input_match", ""):
+                            self.assertIn(g["rule"], rules_text())
+                            self.assertIn(g["rule"], moved, "Read grader must quote a moved sentence verbatim")
+                            self.assertIn(g["type"], run.GRADER_TYPES)
+                            for key in ("tool", "input_match", "before"):
+                                re.compile(g[key])
+
+    def test_coordinator_sessions_graders_read_before_first_poll_or_registry_write(self):
+        from datetime import timezone
+        read_match = r'"file_path": "[^"\n]*skills/coordinator-sessions/SKILL\.md"'
+        # Same transport and session-ref alternatives as the over-budget case:
+        # a poll must follow Read, even when the assignment happens on a later turn.
+        poll_before = (
+            r'\A(?=[\s\S]*"(?:to|recipient)": "[^"\n]+")[\s\S]*"(?:text|content)": "'
+            r'|"command": "(?:\\.|[^"\\])*(?:\bchief[-_]of[-_]stuff(?:\.py)?\s+inbox\b|(?:scripts/)?inbox\.py\b)'
+            r'(?:(?![;&|]|\\n)(?:\\.|[^"\\]))*\bsend\b'
+            r'|"(?:session_id|session_ref|session)": "[^"\n]+"'
+        )
+        write_before = (
+            r'\A(?=[\s\S]*"(?:old_string|content)":)[\s\S]*"file_path": "[^"\n]+"'
+            r'|"command": "(?:\\.|[^"\\])*(?:\bchief[-_]of[-_]stuff(?:\.py)?\s+(?:tracker|log)\b|'
+            r'(?:scripts/)?tracker_(?:read|write)\.py\b)'
+        )
+        poll_rule = "When a session's state is in question, poll it; do not ask the user."
+        expected = {
+            "poll-before-assign": ("Poll that session first and stop there.", poll_before),
+            "check-hands-off": ("Poll that session first and stop there.", poll_before),
+            "brief-a-session": ("A brief is context, not an instruction to start: use it when the user asks you to bring a session up to speed.", poll_before),
+            "poll-fills-state-and-children": (poll_rule, poll_before),
+            "idle-notice-not-state": (poll_rule, poll_before),
+            "registry-keyed-on-ref": ("The ref is the six hex characters in `name [ref]` from the list; it is the key.", poll_before),
+            "over-budget-polls-the-session": (poll_rule, poll_before),
+            "decommission-is-not-a-task-state": ("It is not a task state and never becomes one.", write_before),
+            "registration-fills-the-ref": ("Write the ref into the row from that message, set `doing` to what it said and `state` to `planning`, and leave its task where it is — registering is not progress.", write_before),
+        }
+        carrying = {case.name for case in CASES
+                    if any("skills/coordinator-sessions/SKILL" in g.get("input_match", "")
+                           for g in graders(spec(case)))}
+        self.assertEqual(carrying, set(expected), "only the nine moved-rule scenarios carry this Read grader")
+        self.assertEqual(set(self.COORDINATOR_SESSIONS_SKILL_CASES), set(expected))
+        read = {"id": "skill", "name": "Read", "input": {"file_path": "/plugin/skills/coordinator-sessions/SKILL.md"}}
+        sends = [
+            {"name": "mcp__peers__send", "input": {"to": "worker", "text": "Status?"}},
+            {"name": "mcp__peers__send", "input": {"text": "Status?", "to": "worker"}},
+            {"name": "SendMessage", "input": {"recipient": "worker", "content": "Status?"}},
+        ] + [{"name": "Bash", "input": {"command": command}} for command in (
+            "chief-of-stuff inbox send --to worker --body status",
+            'python3 /plugin/chief_of_stuff.py inbox --root "/ws" send --to worker --body status',
+            "python3 /plugin/scripts/inbox.py send --to worker --body status",
+        )] + [{"name": "session_poll", "input": {key: "a1b2c3"}}
+              for key in ("session_id", "session_ref", "session")]
+        writes = [
+            {"name": "Edit", "input": {"file_path": "/ws/daily/t-tracker.md", "old_string": "old", "new_string": "new"}},
+            {"name": "Edit", "input": {"old_string": "old", "new_string": "new", "file_path": "/ws/daily/t-tracker.md"}},
+            {"name": "Write", "input": {"file_path": "/ws/daily/t-tracker.md", "content": "row"}},
+            {"name": "Write", "input": {"content": "row", "file_path": "/ws/daily/t-tracker.md"}},
+        ] + [{"name": "Bash", "input": {"command": command}} for command in (
+            "chief-of-stuff log --root . --message registered",
+            "chief-of-stuff tracker --root . --section Sessions",
+            "python3 /plugin/chief_of_stuff.py log --root . --message registered",
+            "python3 /plugin/scripts/tracker_write.py --root . --message registered",
+            "python3 /plugin/scripts/tracker_read.py --root . --section Sessions",
+        )]
+        harmless = [
+            {"id": "list", "name": "mcp__peers__list_sessions", "input": {}},
+            {"id": "tracker", "name": "Read", "input": {"file_path": "/ws/daily/t-tracker.md"}},
+            {"id": "clock", "name": "Bash", "input": {"command": "date", "description": "chief-of-stuff log; chief-of-stuff inbox send"}},
+            {"id": "mail", "name": "Bash", "input": {"command": "chief-of-stuff inbox list --recipient coordinator --unread"}},
+            {"id": "help", "name": "Bash", "input": {"command": "chief-of-stuff inbox --help; echo send"}},
+            {"id": "help-newline", "name": "Bash", "input": {"command": "chief-of-stuff inbox --help\necho send"}},
+        ]
+        at = datetime.now(timezone.utc)
+        for name in (*self.COORDINATOR_SESSIONS_SKILL_CASES, *self.COORDINATOR_SESSIONS_SKIPPED_CASES):
+            s = spec(EVALS / "cases" / name)
+            selected = [g for g in graders(s) if "skills/coordinator-sessions/SKILL" in g.get("input_match", "")]
+            with self.subTest(case=name):
+                if name not in expected:
+                    self.assertEqual(selected, [], "retained-rule canaries must not require the skill")
+                    continue
+                self.assertEqual(len(selected), 1)
+                g = selected[0]
+                rule, before = expected[name]
+                self.assertEqual((g["rule"], g["type"], g["tool"], g["min"]), (rule, "tool_used", "Read", 1))
+                self.assertIn(rule, rules_text())
+                self.assertEqual(g["input_match"], read_match)
+                self.assertEqual(g["before"], before)
+                self.assertIn(g, (s["turns"][0] if "turns" in s else s)["graders"])
+
+                def passes(calls):
+                    record = run.RunRecord(run.Stream(tool_uses=calls), at, at, "UTC", EVALS)
+                    return run.grade(g, record)[0]
+
+                self.assertFalse(passes([]))
+                self.assertFalse(passes([dict(read, name="Write")]))
+                for path in ("/plugin/skills/other/SKILL.md", "/plugin/skills/coordinator-sessions/SKILL.md.bak"):
+                    self.assertFalse(passes([dict(read, input={"file_path": path})]))
+                self.assertTrue(passes([read]))
+                self.assertTrue(passes(harmless + [read]))
+                for action in (writes if before == write_before else sends):
+                    action = dict(action, id="action")
+                    self.assertTrue(passes(harmless + [read, action]), action)
+                    self.assertFalse(passes([action]), action)
+                    self.assertFalse(passes([action, read]), action)
+
     def test_review_pipeline_skill_graders_load_and_quote_rules_text(self) -> None:
         from unittest.mock import patch
         loaded = run.load_cases(list(self.REVIEW_PIPELINE_SKILL_CASES))
@@ -970,9 +1101,11 @@ class CaseLintTest(unittest.TestCase):
 
     def test_over_budget_poll_notify_and_no_stop_graders(self) -> None:
         s = spec(EVALS / "cases" / "over-budget-polls-the-session")
-        read, poll, notify, never_stop = s["graders"]
+        session_read, read, poll, notify, never_stop = s["graders"]
+        self.assertIn("skills/coordinator-sessions/SKILL", session_read["input_match"])
+        self.assertIn(session_read["rule"], rules_text())
         rule = "Poll that task's session and tell the user; never stop or kill it."
-        for g in s["graders"]:
+        for g in (read, poll, notify, never_stop):
             self.assertEqual(g["rule"], rule)
             self.assertIn(g["rule"], rules_text())
         self.assertEqual((poll["type"], poll["tool"], poll["to_ref"], poll["ok"], poll["min"]),
