@@ -18,15 +18,15 @@ The shared helpers the page modules use (the stylesheet head, the file write tha
 
 ## 4. Circles
 
-Each script under `scripts/`, the two launchers and the hook belong to one circle. A module that does the work of two circles is a gap against this section until it is split.
+Each script under `scripts/`, the two launchers and the hook belong to one circle. A module that does the work of two circles is a gap against this section until it is split. `inbox.py` and `audit_tasks.py` are placed by the parts section 8 splits them into; each is a gap until the split lands.
 
 | Circle | Modules |
 |---|---|
-| Entities | `tracker.py`, `md.py`, `clock.py`, `runtimes.py`, `findings.py`, `ownership.py`, `orphans.py`, `estimate.py` |
-| Use Cases | `audit_tasks.py`, `dispatch_prompt.py`, `one_shot.py`, `kanban.py`, `merge_ready.py`, `merge_approved.py`, `review_threads.py`, `task_forge.py` |
+| Entities | `tracker.py`, `md.py`, `clock.py`, `runtimes.py`, `findings.py`, `ownership.py`, `orphans.py`, `estimate.py`, the finding types of `audit_tasks.py`, the message format of `inbox.py` |
+| Use Cases | the ownership rules and judgements of `audit_tasks.py`, `dispatch_prompt.py`, `one_shot.py`, `kanban.py`, `merge_ready.py`, `merge_approved.py`, `review_threads.py`, `task_forge.py` |
 | Interface Adapters, presenters | `fragment.py`, `columns.py`, `panels.py`, `gantt.py`, `flow_chart.py`, `render_board.py`, `decision_page.py`, `issue_page.py`, `source_page.py`, `module_graph.py`, and the page module of section 3 |
-| Interface Adapters, gateways | `backlog.py`, `backlog_ref.py`, `board_sources.py`, `workspace.py`, `settings.py`, `tracker_read.py`, `tracker_write.py` |
-| Frameworks and Drivers | `git_trees.py`, `git_view.py`, `inbox.py`, `notify.py`, `notify_service.py`, `process_status.py`, `session_exec.py`, `spawn_session.py`, `probe_health.py`, `pages.py`, `chief_of_stuff.py`, `start_coordinator.py`, `hooks/hooks.json` |
+| Interface Adapters, gateways | `backlog.py`, `backlog_ref.py`, `board_sources.py`, `workspace.py`, `settings.py`, `tracker_read.py`, `tracker_write.py`, the git and forge fact gathering of `audit_tasks.py`, the mailbox storage of `inbox.py` |
+| Frameworks and Drivers | `git_trees.py`, `git_view.py`, the command line of `inbox.py`, the audit orchestration and command line of `audit_tasks.py`, `notify.py`, `notify_service.py`, `process_status.py`, `session_exec.py`, `spawn_session.py`, `probe_health.py`, `pages.py`, `chief_of_stuff.py`, `start_coordinator.py`, `hooks/hooks.json` |
 
 ## 5. Enforcement
 
