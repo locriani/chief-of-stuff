@@ -16,6 +16,7 @@ from pathlib import Path
 import backlog
 import dispatch_prompt
 import git_trees
+import git_view
 import kanban
 import ownership
 import runtimes
@@ -116,37 +117,36 @@ def quota_stop(log: Path, runtime: str, model: str) -> str:
     return ""
 
 
-def git_read_env() -> dict[str, str]:
-    # the launcher's own repository-selecting variables must not win over the worker's tree; a replace ref in a worker's tree must not rewrite what is read
-    return {**git_trees.user_env(), "GIT_NO_REPLACE_OBJECTS": "1"}
-
-
 def changed_files(cwd: Path) -> str:
     try:
-        out = subprocess.run(["git", "status", "--short"], cwd=cwd, capture_output=True,
-                             text=True, timeout=15, check=False, env=git_read_env())
+        out = git_view.run(["status", "--short"], cwd, env=git_trees.audit_env(), timeout=15)
         return out.stdout.strip() if out.returncode == 0 else f"git status failed: {out.stderr.strip()}"
+    except git_view.Unviewable as exc:
+        return f"git status failed: unreadable: {exc}"
     except (OSError, subprocess.TimeoutExpired) as exc:
         return f"git status failed: {exc}"
 
 
 def git_head(cwd: Path) -> str | None:
     try:
-        out = subprocess.run(["git", "rev-parse", "HEAD"], cwd=cwd, capture_output=True,
-                             text=True, timeout=15, check=False, env=git_read_env())
+        out = git_view.run(["rev-parse", "HEAD"], cwd, env=git_trees.audit_env(), timeout=15)
         return out.stdout.strip() if out.returncode == 0 else None
-    except (OSError, subprocess.TimeoutExpired):
+    except (git_view.Unviewable, OSError, subprocess.TimeoutExpired):
         return None
 
 
 def committed_changes(cwd: Path, before: str | None) -> str:
     after = git_head(cwd)
-    if not before or not after or before == after:
+    if not before or before == after:
         return NO_COMMITS
+    if after is None:
+        return "Could not read commits: tree unreadable"
     try:
-        out = subprocess.run(["git", "log", "--format=%h %s", "--stat", f"{before}..{after}"],
-                             cwd=cwd, capture_output=True, text=True, timeout=15, check=False, env=git_read_env())
+        out = git_view.run(["log", "--format=%h %s", "--stat", f"{before}..{after}"],
+                           cwd, env=git_trees.audit_env(), timeout=15)
         return out.stdout.strip()[:12000] if out.returncode == 0 else f"Could not read commits: {out.stderr.strip()}"
+    except git_view.Unviewable:
+        return "Could not read commits: tree unreadable"
     except (OSError, subprocess.TimeoutExpired) as exc:
         return f"Could not read commits: {exc}"
 
@@ -188,8 +188,11 @@ def _tree_note(root: Path, cwd: Path) -> str:
         tree = str(cwd.resolve().relative_to(base))
     except ValueError:
         tree = str(cwd.resolve())
-    branch = subprocess.run(["git", "-C", str(cwd), "branch", "--show-current"],
-                            capture_output=True, text=True, check=False, env=git_read_env()).stdout.strip()
+    try:
+        branch = git_view.run(["branch", "--show-current"], cwd,
+                              env=git_trees.audit_env(), timeout=15).stdout.strip()
+    except (git_view.Unviewable, OSError, subprocess.TimeoutExpired):
+        raise ValueError("tree is unreadable") from None
     if any(c in tree + branch for c in "|`()\n"):
         raise ValueError(f"tree {tree!r} on {branch!r} cannot be written into a File ownership row")
     return f"worktree `{tree}` ({branch or 'detached'})"

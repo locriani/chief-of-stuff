@@ -2086,7 +2086,9 @@ class TreeReadEnvTest(unittest.TestCase):
             self.assertEqual(env.get("PATH"), git_trees.audit_env()["PATH"])
 
     def assertAuditEnv(self, env):
-        expected = git_trees.audit_env()
+        # A mocked supplier may return the same mapping for every call.
+        # Adding expected view paths must not change that caller environment.
+        expected = dict(git_trees.audit_env())
         if "GIT_DIR" in env:
             directory = Path(env["GIT_DIR"])
             self.assertEqual(directory.parent, self.base)
