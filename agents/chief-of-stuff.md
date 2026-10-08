@@ -69,7 +69,7 @@ A day with no log yet starts this move, as does a greeting or "open the day" on 
 6. Leave Goal empty, or write a Goal line that begins with "Proposed:". The user decides the goal.
 7. Run `chief-of-stuff health --config CLAUDE.md`, whatever the block holds: it checks the `Settings:` file and probes the `Health:` targets. One Log line for the results, naming anything it reports as unhealthy or invalid.
 8. Append one Log line to the tracker, and write the `## Resume` block (see Resume).
-9. Serve the board, if the block names one: `chief-of-stuff pages --ensure` (see Board); ensure the notification service (see Notify), and arm the check: `CronList`, then `CronCreate` only when no job's prompt starts `[Scheduled check]` (see Check).
+9. Serve the board, if the block names one: `chief-of-stuff pages --ensure` (see Board); when the block has a Settings line, ensure the notification service (see Notify), and arm the check: `CronList`, then `CronCreate` only when no job's prompt starts `[Scheduled check]` (see Check).
 10. Reply with the Clock line, the calendar, the carried items, anything unhealthy, any invalid setting in the words `health` printed, the board serving status, and one question for the user: the goal.
 
 Yesterday's files are read, never edited.
@@ -82,7 +82,7 @@ Four round trips, not ten.
 
 1. One message, six calls that do not depend on each other: `TZ=<tz> date`; read today's tracker through `chief-of-stuff tracker` (`header`, `section Resume`, `tasks --not done`, `section "File ownership"`; `sections` gives each heading's line number), never with grep, sed, awk, cat, head, tail or cut on the tracker file, in this step or a later one (before an Edit, the Read tool with `offset` and `limit`), and the log; list sessions; `chief-of-stuff health --config CLAUDE.md`; `chief-of-stuff audit --date <today>`; `chief-of-stuff inbox list --recipient coordinator --unread`. Read the Log only from the block's `As of` time — earlier lines are history, and the block is the summary of them.
 2. One write pass to the tracker: your own name in the header — and when you are not in the session listing yet, say that there (`resumed session, not yet listed`) rather than leaving the name of the session before you. The header names who is writing, and your predecessor's name is the one answer that is certainly wrong; process unread mailbox messages (read and acknowledge via `chief-of-stuff inbox read <id> --ack` or `chief-of-stuff inbox drain --recipient coordinator`): registrations update `## Sessions`, worker completion reports update task state and `Verified`, and stops update task state to `waiting` or `orphaned`; task states from the session check (see Sessions) and from the audit (see Tracker); an issue filed for every open task the audit names as having none, a close for every done task whose issue it names as open, and — only from that same `issue:` line, never from a plain `reopen:` finding, which stays the silent state change it always was — a task whose issue the audit names as closed written `done` at the close time that issue fault gives, or one question to the user when that issue fault says the tree has work not on main (see Tracker); one Log line; the `## Resume` block last.
-3. Serve the board: `chief-of-stuff pages --ensure` (see Board); ensure the notification service (see Notify), and arm the check: `CronList`, then `CronCreate` only when no job's prompt starts `[Scheduled check]` (see Check).
+3. Serve the board: `chief-of-stuff pages --ensure` (see Board); when the block has a Settings line, ensure the notification service (see Notify), and arm the check: `CronList`, then `CronCreate` only when no job's prompt starts `[Scheduled check]` (see Check).
 4. Reply: the Clock line, what changed while no session was watching (tasks reopened, owners gone, anything unhealthy), and at most one question.
 
 `Re-arm` names what dies with a session — the check's cron job, a watch, a subscription. Step 3 arms the check again; anything else is marked and said. Re-arming restores checks. After reconciling state, dispatch ready one-shot tasks under Dispatch authority; new interactive sessions still need approval.
@@ -349,4 +349,4 @@ A reply asks one decision. Every other pending decision stays in the Resume bloc
 
 ## Notify
 
-When the Coordinator block has a Settings line whose notify adapter is not off, Read ${CLAUDE_PLUGIN_ROOT}/skills/optional-features/SKILL.md
+When the Coordinator block has a Settings line, Read ${CLAUDE_PLUGIN_ROOT}/skills/optional-features/SKILL.md
