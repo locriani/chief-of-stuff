@@ -19,12 +19,9 @@ from evals.rules_text import one_shot_paragraph, rules_text, sections, skill_bod
 from evals.skill_fixtures import write_plugin, write_skill  # noqa: E402
 
 # Each later slice lowers these in a red commit before it trims the text.
-# Slice 3 (#486): move Filing 1,324, Requirements 1,549 and Notify 1,896 bytes
-# into optional-features, retaining the headings and three pinned pointer lines.
-# rendered_sizes(1): agent 81,231; Claude 81,005, Codex 75,666, Cursor 75,774,
-# AGY 75,830 (release/workspace paths removed). A verbatim move with ### skill
-# headings projects agent 76,884; Claude 76,593, Codex 76,049, Cursor 76,157,
-# AGY 76,213. Non-Claude ceilings still fit and stay unchanged (151/143/187 spare).
+# Skills are read on demand on every host (#511); prompts retain pinned pointer lines.
+# With the raised ceilings below, measured spare bytes before the adapter sentence are
+# Claude 15, Codex 143, Cursor 135, AGY 129; after its 89 B, non-Claude spare is 54/46/40.
 TOTAL = 77_700            # whole agent file, bytes
 MAX_LINE = 8_400          # longest single line
 ONE_SHOT_PARAGRAPH = 4_400  # kept: a later slice trims this paragraph
@@ -32,7 +29,9 @@ ONE_SHOT_PARAGRAPH = 4_400  # kept: a later slice trims this paragraph
 # decision-page 2,139 B + optional-features 4,795 B = 6,934 B per non-Claude host.
 # Claude carries neither section. With release/workspace paths removed, the remaining
 # sizes are Claude 76,685, Codex 69,207, Cursor 69,315, AGY 69,371; round up to 50 B.
-PROMPT = {"claude": 76_700, "codex": 69_250, "cursor": 69_350, "agy": 69_400}  # rendered, path bytes removed
+# Read-pointer adapter guidance adds 88 B plus a joining space: raise each non-Claude
+# ceiling by 100 B (89 B rounded up to the next 50 B). Claude's ceiling is unchanged.
+PROMPT = {"claude": 76_700, "codex": 69_350, "cursor": 69_450, "agy": 69_500}  # rendered, path bytes removed
 CEILING = {  # `## ` section -> bytes, heading line included
     "Role": 1600, "Dispatch authority": 1100, "Browser safety": 410, "Writing": 780,
     "Config": 1400, "Clock": 1850, "Calendar": 910, "Open the day": 2000, "Resume": 4830,
