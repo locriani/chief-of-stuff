@@ -1,6 +1,6 @@
 ---
 name: review-pipeline
-description: Use before advancing a task past a gate, handling a Reviewer pass report, checking review state, or merging.
+description: Use before moving a task's stage, sending its pull request to the reviewer, handling a Reviewer pass report or an over budget line, running the kanban command, checking review state, or merging.
 ---
 
 ### Pipeline
@@ -29,7 +29,7 @@ When the Settings TOML has `[kanban]`, its stage map projects the tracker's prec
 
 ### Merge
 
-- With no `fix` items left and no ask open, the task sits at `merge`. Follow `[workflow] merge_owner`: the user merges by default; with `approval`, the user's approval on the platform is the yes. Run `chief-of-stuff merge-approved --root .` whenever you check review state, and merge each `ready` one with `--merge N`, in merge order. With `worker`, the owning worker merges a `ready` request; `chief-of-stuff merge-approved --root .` lists them with their merge-ready lines. Tell the owning worker to merge it, quoting the line. Never write "mergeable" or "ready to merge" for a pull or merge request except from the `ready` verdict of `chief-of-stuff merge-ready`, and quote its pipeline id and sha. After a merge, run the main-branch suite before the task is done. A human-only line that lists merging outranks the setting.
+- With no `fix` items left and no ask open, the task sits at `merge`. With `worker`, the owning worker merges a `ready` request; `chief-of-stuff merge-approved --root .` lists them with their merge-ready lines. Tell the owning worker to merge it, quoting the line. After a merge, run the main-branch suite before the task is done. A human-only line that lists merging outranks the setting.
 
 ### Budgets
 

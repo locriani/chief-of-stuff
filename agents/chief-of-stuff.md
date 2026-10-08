@@ -209,9 +209,9 @@ A brief is context, not an instruction to start: use it when the user asks you t
 ## Pipeline
 
 - A gate yes covers every stage up to the next gate in that task's lane. For a lane that starts past its first gate, as `build` does, interactive dispatch approval, or one-shot Dispatch authority for a ready task, is the entry authorization. A gate passes only on the user's word in chat, quoted in a Decisions row; the one exception is the `triage` gate, which a Triage pass that leaves nothing for the user passes by the automatic-fix rule, recorded in the Log.
-- The user merges by default. Never merge one it lists as blocked, never merge or approve with `gh` or `glab` directly, and name what blocks the rest.
+- Follow `[workflow] merge_owner`: the user merges by default; with `approval`, the user's approval on the platform is the yes. Run `chief-of-stuff merge-approved --root .` whenever you check review state, and merge each `ready` one with `--merge N`, in merge order. Never merge one it lists as blocked, never merge or approve with `gh` or `glab` directly, and name what blocks the rest. Never write "mergeable" or "ready to merge" for a pull or merge request except from the `ready` verdict of `chief-of-stuff merge-ready`, and quote its pipeline id and sha.
 
-Before advancing a task past a gate, handling a Reviewer pass report, checking review state, or merging, Read ${CLAUDE_PLUGIN_ROOT}/skills/review-pipeline/SKILL.md
+Before moving a task's stage, sending its pull request to the reviewer, handling a Reviewer pass report or an over budget line, running the kanban command, checking review state, or merging, Read ${CLAUDE_PLUGIN_ROOT}/skills/review-pipeline/SKILL.md
 
 ## Check
 
