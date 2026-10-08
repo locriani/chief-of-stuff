@@ -968,6 +968,68 @@ class CheckShaTest(Repo):
         (tree / ".git").write_text(f"gitdir: {common}/worktrees/gone\n")
         self.assert_could_not_read(sha, tree)
 
+    def lookalike(self, kind: str) -> Path:
+        """A plain directory INSIDE the enclosing repository `self.clone` that has the files `git_view.locate` wants but that
+        real git does not treat as a repository (it walks up to `self.clone`): an empty `HEAD`, a garbage `HEAD`, or a valid
+        `HEAD` with no `objects/`."""
+        common = self.clone / "lookalike"
+        shutil.rmtree(common, ignore_errors=True)
+        (common / "refs").mkdir(parents=True)
+        if kind != "no objects":
+            (common / "objects").mkdir()
+        (common / "HEAD").write_text({"empty HEAD": "", "garbage HEAD": "not a ref\x00\xff\n", "no objects": "ref: refs/heads/main\n"}[kind])
+        return common
+
+    LOOKALIKES = ("empty HEAD", "garbage HEAD", "no objects")
+
+    def test_a_lookalike_common_dir_inside_another_repository_is_never_fetched_into(self) -> None:
+        """#550 review, security: `fetch_base(<common>)` runs real git with the user's credentials. A worker-written gitfile
+        `gitdir: <lookalike>/worktrees/x` must not make a directory that real git does not open (it walks up to the ENCLOSING
+        repository) the place the fetch runs. Rule A: no redirect, `fetch_base` only for the pruned tree itself, and the answer
+        is the unknown of any unredirected pruned tree."""
+        sha = git("rev-parse", "HEAD", cwd=self.clone)
+        for kind in self.LOOKALIKES:
+            with self.subTest(kind):
+                common = self.lookalike(kind)
+                # git's own answer: it walks up to the enclosing repository
+                self.assertEqual(Path(subprocess.run(["git", "-C", str(common), "rev-parse", "--show-toplevel"], capture_output=True,
+                                                     text=True, env=taint.ENV).stdout.strip()).resolve(), self.clone.resolve())
+                tree = self.trees / f"hand-made-{kind.replace(' ', '-')}"
+                tree.mkdir()
+                (tree / ".git").write_text(f"gitdir: {common}/worktrees/x\n")
+                self.assertEqual(git_trees._pruned_common(tree), common)
+                with patch.object(git_trees, "fetch_base", return_value="") as fetched:
+                    answer = git_trees.check_sha(sha, tree)
+                self.assertEqual([c.args[0] for c in fetched.call_args_list], [tree])
+                self.assertEqual(answer, (2, f"sha {sha}: {self.COULD_NOT_READ}", True))
+
+    def test_a_real_bare_common_dir_still_gets_the_redirected_fetch(self) -> None:
+        """The control for the test above: when `<common>` is a real bare repository, rule A still redirects, so `fetch_base`
+        runs for the pruned tree and then for `<common>`."""
+        sha = git("rev-parse", "HEAD", cwd=self.clone)
+        bare = self.root / "common.git"
+        git("clone", "--bare", str(self.clone), str(bare), cwd=self.root)
+        tree = self.trees / "hand-made"
+        tree.mkdir()
+        (tree / ".git").write_text(f"gitdir: {bare}/worktrees/x\n")
+        with patch.object(git_trees, "fetch_base", return_value="") as fetched:
+            git_trees.check_sha(sha, tree)
+        self.assertEqual([c.args[0] for c in fetched.call_args_list], [tree, bare])
+
+    def test_is_git_dir_is_true_for_real_git_directories_and_false_for_lookalikes(self) -> None:
+        """#550 review: `_is_git_dir` is true for a real bare repository and a real `.git` common dir, false for the three
+        lookalikes and for a plain subdirectory of a repository."""
+        bare = self.root / "common.git"
+        git("clone", "--bare", str(self.clone), str(bare), cwd=self.root)
+        self.assertTrue(git_trees._is_git_dir(bare))
+        self.assertTrue(git_trees._is_git_dir(self.clone / ".git"))
+        (self.clone / "plain").mkdir()
+        self.assertFalse(git_trees._is_git_dir(self.clone / "plain"))
+        for kind in self.LOOKALIKES:
+            with self.subTest(kind):
+                common = self.lookalike(kind)
+                self.assertFalse(git_trees._is_git_dir(common))
+
     def test_a_common_dir_missing_its_objects_or_refs_could_not_be_read_and_may_hold_it(self) -> None:
         """#294 round 6, A: a real pruned worktree, then the main clone's `objects` (or `refs`) directory is renamed away:
         `<common>` holds `HEAD` but is not a git directory any more, so git cannot answer for the tree."""
