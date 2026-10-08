@@ -867,8 +867,12 @@ class HerdrLauncherTest(unittest.TestCase):
     """#471: exact argv, JSON pane handoff, and refusal cleanup; no real herdr or agent runs.
 
     Every CLI call selects a dedicated named session before its subcommand. Dry runs use
-    <root-pane>, since tab creation has not happened. The pane shell receives the same
-    wrapper as tmux, with each word shell-quoted. Assignment, registry and label keep one name.
+    <root-pane>, since tab creation has not happened. The pane shell receives the tmux wrapper with
+    each word shell-quoted, minus the `env -C <root> PATH=... CHIEF_OF_STUFF_WORKSPACE=...` prefix: the tab is
+    created in the worktree (`--cwd`), the pane shell already has the user's PATH, and the workspace travels as
+    `tab create --env CHIEF_OF_STUFF_WORKSPACE=<root>`. A typed line past ~1024 bytes is cut by the tty, so a
+    line over HERDR_LINE_LIMIT (900) bytes is refused before any herdr call. Assignment, registry and label
+    keep one name.
     The fake tab-created response follows the installed herdr v0.9.3 API schema.
     """
 
@@ -970,32 +974,51 @@ print(found)
             args += ["--launcher", launcher]
         return args + list(extra)
 
-    def invoke(self, **kw):
-        return subprocess.run([sys.executable, str(Path(ss.__file__)), *self.args(**kw)],
-                              capture_output=True, text=True, timeout=30, env=self.env)
+    def invoke(self, limit=None, **kw):
+        """A subprocess run. `limit` instead runs main in-process with HERDR_LINE_LIMIT raised to it: the
+        non-claude runtimes' lines are over the real limit, and their exact shape still needs pinning."""
+        if limit is None:
+            return subprocess.run([sys.executable, str(Path(ss.__file__)), *self.args(**kw)],
+                                  capture_output=True, text=True, timeout=30, env=self.env)
+        with unittest.mock.patch.dict(os.environ, self.env, clear=True), \
+                unittest.mock.patch.object(ss, "HERDR_LINE_LIMIT", limit), \
+                contextlib.redirect_stdout(io.StringIO()) as output, \
+                contextlib.redirect_stderr(io.StringIO()) as errors:
+            code = ss.main(self.args(**kw))
+        return subprocess.CompletedProcess([], code, output.getvalue(), errors.getvalue())
 
     def calls(self):
         return [json.loads(line) for line in self.log.read_text().splitlines()] if self.log.exists() else []
 
-    def worker_tokens(self, *, title="audit-01", runtime="claude", model="", effort=""):
+    def worker_tokens(self, *, title="audit-01", runtime="claude", model="", effort="", herdr=False):
+        """The shared wrapper (tmux, Ghostty). herdr=True is the typed-line form: the leading
+        `env -C <root> PATH=... CHIEF_OF_STUFF_WORKSPACE=...` is dropped and the rest is unchanged."""
         binary = self.bin / {"claude": "claude", "codex": "codex", "cursor": "agent", "agy": "agy"}[runtime]
         with unittest.mock.patch.dict(os.environ, self.env, clear=True):
-            return ss.runtime_tokens(cwd=str(self.tree), agent_type=None, binary=binary, title=title,
-                                     runtime=runtime, model=model, effort=effort, workspace=str(self.root))
+            tokens = ss.runtime_tokens(cwd=str(self.tree), agent_type=None, binary=binary, title=title,
+                                       runtime=runtime, model=model, effort=effort, workspace=str(self.root))
+        if not herdr:
+            return tokens
+        self.assertEqual(tokens[:2], [ss.ENV_BIN, "-C"])
+        return tokens[5:]  # env, -C, <root>, PATH=..., CHIEF_OF_STUFF_WORKSPACE=...
 
     def tab_argv(self, title="audit-01", *, session="chief-of-stuff"):
-        return ["--session", session, "tab", "create", "--cwd", str(self.tree), "--label", title, "--no-focus"]
+        return ["--session", session, "tab", "create", "--cwd", str(self.tree), "--label", title, "--no-focus",
+                "--env", f"CHIEF_OF_STUFF_WORKSPACE={self.root}"]
 
     def pane_argv(self, *, title="audit-01", runtime="claude", pane=None, model="", effort="",
                   session="chief-of-stuff"):
         # herdr joins these words for the pane's shell; quote every wrapper token independently.
         return ["--session", session, "pane", "run", pane or self.pane_id,
                 *[shlex.quote(token) for token in self.worker_tokens(
-                    title=title, runtime=runtime, model=model, effort=effort)]]
+                    title=title, runtime=runtime, model=model, effort=effort, herdr=True)]]
 
-    def commands(self, *, title="audit-01", runtime="claude", session="chief-of-stuff", model="", effort=""):
+    def commands(self, *, title="audit-01", runtime="claude", session="chief-of-stuff", model="", effort="",
+                 limit=None):
         binary = self.bin / {"claude": "claude", "codex": "codex", "cursor": "agent", "agy": "agy"}[runtime]
-        with unittest.mock.patch.dict(os.environ, self.env, clear=True):
+        with unittest.mock.patch.dict(os.environ, self.env, clear=True), contextlib.ExitStack() as stack:
+            if limit is not None:
+                stack.enter_context(unittest.mock.patch.object(ss, "HERDR_LINE_LIMIT", limit))
             return ss.herdr_commands(herdr=self.herdr, session=session, cwd=str(self.tree),
                                      agent_type=None, binary=binary, title=title, runtime=runtime,
                                      model=model, effort=effort, workspace=str(self.root))
@@ -1017,7 +1040,7 @@ print(found)
                                        ("cursor", "cursor-test", ""), ("agy", "agy-test", "medium")):
             with self.subTest(runtime=runtime):
                 extra = ["--dry-run", "--model", model] + (["--effort", effort] if effort else [])
-                out = self.invoke(runtime=runtime, extra=extra)
+                out = self.invoke(limit=10_000, runtime=runtime, extra=extra)
                 self.assertEqual(out.returncode, 0, out.stderr)
                 lines = out.stdout.splitlines()
                 self.assertEqual(len(lines), 3, out.stdout)
@@ -1308,7 +1331,7 @@ with open({str(self.log)!r}, 'a') as log:
         self.assertEqual(calls, [self.tab_argv(), self.pane_argv(), self.close_argv()])
 
     def test_pane_run_uses_quoted_tmux_wrapper_without_agent_start_options(self):
-        create, run = self.commands(runtime="codex", model="gpt-test", effort="high")
+        create, run = self.commands(runtime="codex", model="gpt-test", effort="high", limit=10_000)
         self.assertEqual(create, [str(self.herdr), *self.tab_argv()])
         self.assertEqual(run, [str(self.herdr), *self.pane_argv(
             runtime="codex", pane="<root-pane>", model="gpt-test", effort="high")])
@@ -1319,7 +1342,172 @@ with open({str(self.log)!r}, 'a') as log:
             tmux = ss.tmux_command(tmux=self.bin / "tmux", binary=self.bin / "codex",
                                    cwd=str(self.tree), agent_type=None, title="audit-01",
                                    runtime="codex", model="gpt-test", effort="high", workspace=str(self.root))
-        self.assertEqual(shlex.split(" ".join(run[6:])), tmux[7:])
+        # The same runtime argv as tmux; only the env prefix is gone (the tab's --env carries the workspace).
+        self.assertEqual(shlex.split(" ".join(run[6:])), tmux[7 + 5:])
+        self.assertEqual(tmux[7:12][:2], [ss.ENV_BIN, "-C"])
+        self.assertEqual(create[-2:], ["--env", f"CHIEF_OF_STUFF_WORKSPACE={self.root}"])
+
+    def long_path(self):
+        """About 20 KB of PATH, the launching bin dir first so the fakes still resolve."""
+        value = f"{self.bin}:" + ":".join(f"/opt/seg{i:04d}/bin" for i in range(1300))
+        self.assertGreater(len(value), 20_000)
+        return value
+
+    @staticmethod
+    def typed(argv):
+        """The line herdr types into the pane's shell: the words after the pane id, joined."""
+        return " ".join(argv[5:])
+
+    def assert_short_line_without_env(self, line):
+        self.assertNotIn("/opt/seg", line)
+        self.assertNotIn(str(self.bin), line)
+        self.assertNotIn("/usr/bin/env", line)
+        words = shlex.split(line)
+        self.assertEqual([w for w in words if w.startswith(("PATH=", "CHIEF_OF_STUFF_WORKSPACE="))], [])
+        self.assertNotIn("--workspace", words)
+        self.assertEqual(words[0], sys.executable)
+        # A typed line past ~1024 bytes is cut by the tty; the limit leaves margin.
+        self.assertLessEqual(len(line.encode()), 900)
+
+    def test_the_typed_line_is_short_and_carries_no_env_or_path_under_a_20kb_path(self):
+        self.env["PATH"] = self.long_path()
+        _, run = self.commands()
+        self.assert_short_line_without_env(self.typed(run))
+        self.env["PATH"] = str(self.bin)
+
+    def test_the_typed_line_does_not_grow_with_the_path(self):
+        for runtime in ("claude", "codex", "cursor", "agy"):
+            with self.subTest(runtime=runtime):
+                model = "" if runtime == "claude" else "m"
+                short = self.typed(self.commands(runtime=runtime, model=model, limit=10_000)[1])
+                self.env["PATH"] = self.long_path()
+                long = self.typed(self.commands(runtime=runtime, model=model, limit=10_000)[1])
+                self.env["PATH"] = str(self.bin)
+                self.assertEqual(long, short)
+
+    def test_a_real_launch_under_a_20kb_path_types_the_exact_runtime_tail_and_nothing_else(self):
+        self.env["PATH"] = self.long_path()
+        out = self.invoke()
+        self.assertEqual(out.returncode, 0, out.stderr)
+        pane_run = self.calls()[1]["argv"]
+        self.assertEqual(pane_run, self.pane_argv())
+        self.assert_short_line_without_env(self.typed(pane_run))
+        # The tail after the wrapper is exactly the tmux/Ghostty tail: binary, args, plugin-dir.
+        tail = lambda t: t[t.index(str(self.bin / "claude")):]
+        self.assertEqual(tail(shlex.split(self.typed(pane_run))), tail(self.worker_tokens()))
+        self.env["PATH"] = str(self.bin)
+
+    def test_tab_create_carries_the_workspace_as_its_environment_last_after_no_focus(self):
+        out = self.invoke()
+        self.assertEqual(out.returncode, 0, out.stderr)
+        create = self.calls()[0]["argv"]
+        self.assertEqual(create[-3:], ["--no-focus", "--env", f"CHIEF_OF_STUFF_WORKSPACE={self.root}"])
+        self.assertEqual(create, self.tab_argv())
+
+    def test_herdr_commands_builds_the_short_line_without_a_filesystem(self):
+        gone = self.root / "no" / "such tree"
+        with unittest.mock.patch.dict(os.environ, self.env, clear=True):
+            create, run = ss.herdr_commands(herdr=self.herdr, session="chief-of-stuff", cwd=str(gone),
+                                            agent_type=None, binary=self.bin / "claude", title="audit-01",
+                                            runtime="claude", workspace=str(self.root))
+        words = shlex.split(self.typed(run))
+        self.assertEqual(words[0], sys.executable)
+        self.assertNotIn(ss.ENV_BIN, words)
+        self.assertEqual(create[-2:], ["--env", f"CHIEF_OF_STUFF_WORKSPACE={self.root}"])
+        self.assertFalse(gone.exists())
+
+    def test_the_workspace_environment_is_absolute_even_for_a_relative_root(self):
+        with unittest.mock.patch.dict(os.environ, self.env, clear=True):
+            create, _ = ss.herdr_commands(herdr=self.herdr, session="chief-of-stuff", cwd=str(self.tree),
+                                          agent_type=None, binary=self.bin / "claude", title="audit-01",
+                                          runtime="claude", workspace=os.path.relpath(self.root))
+        self.assertEqual(create[-1], f"CHIEF_OF_STUFF_WORKSPACE={os.path.abspath(self.root)}")
+
+    # The length guard: a launch never claims "started" with a line the pane shell would cut.
+    def line_bytes(self, **kw):
+        return len(" ".join(shlex.quote(t) for t in self.worker_tokens(herdr=True, **kw)).encode())
+
+    def test_the_limit_is_900_bytes(self):
+        self.assertEqual(ss.HERDR_LINE_LIMIT, 900)
+
+    def test_a_claude_line_passes_the_guard(self):
+        self.assertLessEqual(self.line_bytes(), 900)
+        self.assertEqual(self.invoke().returncode, 0)
+
+    def test_the_guard_counts_utf8_bytes_and_refuses_only_past_the_limit(self):
+        for char in ("a", "\u00e9"):
+            with self.subTest(char=char):
+                n = next(n for n in range(1, 400) if self.line_bytes(title=char * n) > 900)
+                self.assertLessEqual(self.line_bytes(title=char * (n - 1)), 900)
+                self.commands(title=char * (n - 1))  # at or under the limit: built
+                with self.assertRaisesRegex(ss.RefusedError, "900"):
+                    self.commands(title=char * n)
+                if char != "a":
+                    chars = len(" ".join(shlex.quote(t) for t in self.worker_tokens(herdr=True, title=char * n)))
+                    self.assertLessEqual(chars, 900, "bytes, not characters, are counted")
+
+    def test_other_runtimes_lines_are_over_the_limit_and_refused_before_any_herdr_call(self):
+        for runtime, model in (("codex", "gpt-test"), ("cursor", "cursor-test"), ("agy", "agy-test")):
+            with self.subTest(runtime=runtime):
+                size = self.line_bytes(runtime=runtime, model=model)
+                self.assertGreater(size, 900)
+                out = self.invoke(runtime=runtime, extra=["--model", model])
+                self.assertEqual(out.returncode, 1, out.stdout)
+                self.assertRegex(out.stderr, r"(?m)^refused: ")
+                self.assertIn(str(size), out.stderr)
+                self.assertIn("900", out.stderr)
+                self.assertRegex(out.stderr, r"pane shell cannot take a line that long")
+                self.assertNotIn(str(self.root), out.stderr)
+                self.assertNotIn(str(self.tree), out.stderr)
+                self.assertEqual(self.calls(), [], "no tab may be created for a line that cannot be typed")
+                self.assertFalse(self.dispatch.exists(), "a refused launch leaves the tree reusable")
+                self.assertFalse(self.runtime_log.exists())
+                self.assertNotIn("started", out.stdout)
+
+    def test_the_guard_also_refuses_the_dry_run_it_would_have_printed(self):
+        out = self.invoke(runtime="codex", extra=["--dry-run", "--model", "gpt-test"])
+        self.assertEqual(out.returncode, 1)
+        self.assertNotIn("would run:", out.stdout)
+        self.assertEqual(self.calls(), [])
+
+    def test_a_refused_launch_leaves_the_tree_reusable_for_a_relaunch(self):
+        refused = self.invoke(runtime="codex", extra=["--model", "gpt-test"])
+        self.assertEqual(refused.returncode, 1)
+        again = self.invoke()
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertEqual([call["argv"] for call in self.calls()], [self.tab_argv(), self.pane_argv()])
+        self.assertTrue(self.dispatch.is_file())
+
+    def test_the_guard_never_applies_to_tmux_or_ghostty(self):
+        self.executable("tmux", f"""import json, sys
+with open({str(self.log)!r}, 'a') as log:
+    log.write(json.dumps({{'argv': sys.argv[1:]}}) + '\\n')
+""")
+        self.assertGreater(len(" ".join(shlex.quote(t) for t in self.worker_tokens(runtime="codex", model="m"))), 900)
+        out = self.invoke(launcher="tmux", runtime="codex", extra=["--model", "m"])
+        self.assertEqual(out.returncode, 0, out.stderr)
+        out = self.invoke(launcher="ghostty", runtime="codex", extra=["--dry-run", "--model", "m"])
+        self.assertEqual(out.returncode, 0, out.stderr)
+
+    def test_control_tmux_and_ghostty_keep_env_cwd_and_the_launching_path(self):
+        self.executable("tmux", f"""import json, sys
+with open({str(self.log)!r}, 'a') as log:
+    log.write(json.dumps({{'argv': sys.argv[1:]}}) + '\\n')
+""")
+        self.env["PATH"] = launching = self.long_path()
+        out = self.invoke(launcher="tmux")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        argv = self.calls()[0]["argv"]
+        self.assertEqual(argv[6:11], [ss.ENV_BIN, "-C", str(self.tree), f"PATH={launching}",
+                                      f"CHIEF_OF_STUFF_WORKSPACE={self.root}"])
+        self.assertNotIn("--workspace", argv)
+        with unittest.mock.patch.dict(os.environ, self.env, clear=True):
+            script = ss.ghostty_script(cwd=str(self.tree), agent_type=None, claude=self.bin / "claude",
+                                       title="audit-01", workspace=str(self.root))
+        self.assertIn(shlex.quote(f"PATH={launching}"), script)
+        self.assertIn("/usr/bin/env -C", script)
+        self.assertNotIn("--workspace", script)
+        self.env["PATH"] = str(self.bin)
 
     def test_hostile_titles_and_paths_round_trip_through_the_pane_shell(self):
         # The command builder must quote even inputs rejected by the assignment's name policy.
@@ -1336,16 +1524,19 @@ with open({str(self.log)!r}, 'a') as log:
                     self.tree = original_tree / value
                     self.bin = original_bin / value
                     self.env["PATH"] = str(self.bin)
-                    create, run = self.commands(title=value, runtime=runtime, model=model, effort=effort)
-                    tokens = self.worker_tokens(title=value, runtime=runtime, model=model, effort=effort)
+                    create, run = self.commands(title=value, runtime=runtime, model=model, effort=effort,
+                                                limit=100_000)
+                    tokens = self.worker_tokens(title=value, runtime=runtime, model=model, effort=effort,
+                                                herdr=True)
                     self.assertEqual(create, [str(self.herdr), *self.tab_argv(value)])
                     self.assertEqual(run[:6], [str(self.herdr), "--session", "chief-of-stuff",
                                               "pane", "run", "<root-pane>"])
                     self.assertEqual(run[6:], [shlex.quote(token) for token in tokens])
                     self.assertEqual(shlex.split(" ".join(run[6:])), tokens)
                     self.assertIn(str(self.tree), tokens)
-                    self.assertIn(f"PATH={self.bin}", tokens)
-                    self.assertIn(f"CHIEF_OF_STUFF_WORKSPACE={self.root}", tokens)
+                    self.assertNotIn("--workspace", tokens)
+                    self.assertNotIn(ss.ENV_BIN, tokens)
+                    self.assertFalse([t for t in tokens if t.startswith(("PATH=", "CHIEF_OF_STUFF_WORKSPACE="))])
         self.root, self.tree, self.bin = original_root, original_tree, original_bin
         self.env["PATH"] = original_path
         self.assertEqual(self.calls(), [])
@@ -1356,7 +1547,7 @@ with open({str(self.log)!r}, 'a') as log:
             with self.subTest(title=title):
                 self.log.unlink(missing_ok=True)
                 self.dispatch.unlink(missing_ok=True)
-                out = self.invoke(title=title, runtime="codex")
+                out = self.invoke(limit=10_000, title=title, runtime="codex")
                 self.assertEqual(out.returncode, 0, out.stderr)
                 self.assertEqual([call["argv"] for call in self.calls()],
                                  [self.tab_argv(title), self.pane_argv(title=title, runtime="codex")])
@@ -1372,7 +1563,7 @@ with open({str(self.log)!r}, 'a') as log:
     def test_control_valid_session_names_stay_verbatim_in_dry_run(self):
         for title in ("a", "audit-team", "audit_team-01", "AUDIT-01", "audit.team", "0", "7-day", "a" * 64):
             with self.subTest(title=title):
-                out = self.invoke(title=title, runtime="codex", extra=["--dry-run"])
+                out = self.invoke(limit=10_000, title=title, runtime="codex", extra=["--dry-run"])
                 self.assertEqual(out.returncode, 0, out.stderr)
                 lines = out.stdout.splitlines()
                 self.assertEqual(lines[0], "would run: " + shlex.join([str(self.herdr), *self.tab_argv(title)]))
