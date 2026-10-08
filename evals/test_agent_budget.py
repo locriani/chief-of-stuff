@@ -34,11 +34,11 @@ CEILING = {  # `## ` section -> bytes, heading line included
     "Config": 1400, "Clock": 1850, "Calendar": 910, "Open the day": 2000, "Resume": 4830,
     "Write authority": 2310, "Filing": 360, "Human-only actions": 1280, "Dispatch": 15210,
     "Assign": 2560, "Brief": 730, "Pipeline": 6150, "Triage": 3770, "Check": 2780,
-    "Sessions": 7380, "Relay": 2510, "Tracker": 5300, "Notices": 740, "Board": 1750,
+    "Sessions": 7380, "Relay": 2510, "Tracker": 5_500, "Notices": 740, "Board": 1750,
     "Requirements": 360, "Share": 460, "Asks": 4700, "Notify": 360,
 }
-SKILL_CEILING = {"decision-page": 2_700, "optional-features": 5_200, "tracker-rows": 6_300}  # moved bytes + metadata/organization/headroom
-SKILLS_TOTAL = 14_200  # all SKILL.md files, bytes
+SKILL_CEILING = {"decision-page": 2_700, "optional-features": 5_200, "tracker-rows": 5_400}  # moved bytes + metadata/organization/headroom
+SKILLS_TOTAL = 13_300  # all SKILL.md files, bytes
 DESCRIPTION_CAP = 300  # frontmatter description characters, not bytes
 SKILL_POINTER = re.compile(r"\$\{CLAUDE_PLUGIN_ROOT\}/skills/([^/\s`]+)/SKILL\.md")
 DECISION_PAGE_POINTER = "Before writing a decision page, Read ${CLAUDE_PLUGIN_ROOT}/skills/decision-page/SKILL.md"
