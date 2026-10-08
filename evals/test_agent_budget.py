@@ -49,8 +49,8 @@ CEILING = {  # `## ` section -> bytes, heading line included
 # 8,875 B, leaving 425 B headroom under its 9,300 B ceiling.
 # dispatch: the simulated skill (frontmatter, six topics, overlap-order clause back, report-read sentence and
 # done-gate clause out) is 14,136 B, leaving 64 B under its 14,200 B ceiling (room for a description tweak that names the notification).
-SKILL_CEILING = {"decision-page": 2_700, "optional-features": 5_200, "tracker-rows": 5_400, "review-pipeline": 9_677, "coordinator-sessions": 9_300, "dispatch": 14_200}  # moved bytes + metadata/organization/headroom
-SKILLS_TOTAL = 46_477  # all SKILL.md files, bytes; the sum of the ceilings above (real total 44,559 B simulated)
+SKILL_CEILING = {"decision-page": 2_350, "optional-features": 4_950, "tracker-rows": 5_150, "review-pipeline": 9_250, "coordinator-sessions": 8_950, "dispatch": 14_200}  # measured size rounded up to 50 B
+SKILLS_TOTAL = 44_850  # all SKILL.md files, bytes; the sum of the ceilings above (measured 44,559 B)
 DESCRIPTION_CAP = 300  # frontmatter description characters, not bytes
 SKILL_POINTER = re.compile(r"\$\{CLAUDE_PLUGIN_ROOT\}/skills/([^/\s`]+)/SKILL\.md")
 DECISION_PAGE_POINTER = "Before writing a decision page, Read ${CLAUDE_PLUGIN_ROOT}/skills/decision-page/SKILL.md"
