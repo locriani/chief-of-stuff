@@ -519,23 +519,62 @@ class CodexAddDirArgsTest(unittest.TestCase):
             self.assertEqual(git_trees.codex_add_dir_args(tree),
                              self.pairs((base / ".git").resolve(), (base / ".git/worktrees/tree").resolve()))
 
-    def test_a_hung_git_grants_nothing_and_every_git_call_is_bounded(self):
+    def test_no_git_process_is_spawned_for_any_grant_or_refusal(self):
+        # #443: the tree is what a previous codex run could write to, so its git control files are read as files
+        # (`git_view.locate`), never through a git process. This replaces the old bounded-git-call test.
         with tempfile.TemporaryDirectory() as tmp:
-            _, tree = self._repo_with_linked_tree(tmp)
-            real, kwargs = subprocess.run, []
+            base, tree = self._repo_with_linked_tree(tmp)
+            plain, bare = Path(tmp) / "plain", Path(tmp) / "bare.git"
+            plain.mkdir()
+            subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True)
+            (tree / "src").mkdir()
+            clone = Path(tmp) / "clone"
+            subprocess.run(["git", "init", "-q", str(clone)], check=True)
+            boom = AssertionError("a git process was spawned")
+            with mock.patch.object(git_trees.subprocess, "run", side_effect=boom), \
+                    mock.patch.object(git_trees.subprocess, "Popen", side_effect=boom):
+                self.assertEqual(git_trees.codex_add_dir_args(clone), self.pairs((clone / ".git").resolve()))
+                self.assertEqual(git_trees.codex_add_dir_args(tree),
+                                 self.pairs((base / ".git").resolve(), (base / ".git/worktrees/tree").resolve()))
+                for refused in (plain, bare, tree / "src"):
+                    with self.subTest(refused=refused.name):
+                        self.assertEqual(git_trees.codex_add_dir_args(refused), [])
 
-            def recording(argv, *a, **kw):
-                kwargs.append(kw)
-                return real(argv, *a, **kw)
+    def test_hostile_git_config_is_never_executed_or_trusted(self):
+        # Characterization: `rev-parse` does not run these keys today, so this is green before and after #443; it pins that
+        # worker-written config command keys (clone `.git/config`, linked tree's common config) never run.
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / "ran"
+            touch = f"python3 -c \"open('{marker}', 'w').close()\""
+            hostile = f"[core]\n\tfsmonitor = {touch}\n\tsshCommand = {touch}\n\thooksPath = {tmp}\n[alias]\n\trev-parse = !{touch}\n"
+            clone = Path(tmp) / "clone"
+            subprocess.run(["git", "init", "-q", str(clone)], check=True)
+            with (clone / ".git/config").open("a") as f:
+                f.write(hostile)
+            self.assertEqual(git_trees.codex_add_dir_args(clone), self.pairs((clone / ".git").resolve()))
+            base, tree = self._repo_with_linked_tree(tmp)
+            with (base / ".git/config").open("a") as f:
+                f.write(hostile)
+            self.assertEqual(git_trees.codex_add_dir_args(tree),
+                             self.pairs((base / ".git").resolve(), (base / ".git/worktrees/tree").resolve()))
+            self.assertFalse(marker.exists())
 
-            with mock.patch.object(git_trees.subprocess, "run", side_effect=recording):
-                self.assertEqual(len(git_trees.codex_add_dir_args(tree)), 4)
-            self.assertTrue(kwargs)
-            for kw in kwargs:
-                self.assertIsNotNone(kw.get("timeout"), kw)
-            hung = subprocess.TimeoutExpired(["git"], 15)
-            with mock.patch.object(git_trees.subprocess, "run", side_effect=hung):
-                self.assertEqual(git_trees.codex_add_dir_args(tree), [])
+    def test_a_linked_tree_whose_repository_lives_inside_the_worktree_is_refused(self):
+        # Pin: the common dir and gitdir are under the tree, i.e. the worker's own directory, so nothing is granted.
+        with tempfile.TemporaryDirectory() as tmp:
+            base, tree, bare = Path(tmp) / "base", Path(tmp) / "tree", Path(tmp) / "bare.git"
+            subprocess.run(["git", "init", "-q", str(base)], check=True)
+            self._git("-C", str(base), "commit", "-q", "--allow-empty", "-m", "init")
+            subprocess.run(["git", "clone", "-q", "--bare", str(base), str(bare)], check=True)
+            self._git("-C", str(bare), "worktree", "add", "-q", str(tree))
+            inner = tree / ".repo"
+            shutil.move(str(bare), str(inner))
+            (tree / ".git").write_text(f"gitdir: {inner / 'worktrees/tree'}\n")
+            (inner / "worktrees/tree/gitdir").write_text(f"{tree / '.git'}\n")
+            seen = subprocess.run(["git", "-C", str(tree), "rev-parse", "--absolute-git-dir"], capture_output=True,
+                                  text=True, check=True).stdout.strip()
+            self.assertEqual(Path(seen).resolve(), (inner / "worktrees/tree").resolve())  # git itself accepts the layout
+            self.assertEqual(git_trees.codex_add_dir_args(tree), [])
 
     def test_one_shot_codex_command_carries_exactly_the_shared_fragment(self):
         with tempfile.TemporaryDirectory() as tmp:
