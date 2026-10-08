@@ -959,6 +959,51 @@ class SymbolicHeadBranchNamesTest(FixtureCase):
                 self.assertEqual(self.leftovers(), [])
 
 
+def edit_readme(case, fx, fsmonitor, racy=True):
+    """Leave README.md edited to the same size, with every timestamp pinned.
+
+    racy: the edit lands in the index's own mtime second, so only a content
+    compare can see it. Otherwise it lands one second after the cached mtime
+    and well before the index's, so a stat compare sees it unless fsmonitor
+    lies. With `fsmonitor`, the index is also marked fsmonitor-valid by a
+    planted monitor that always reports no change.
+    """
+    readme = fx.tree / "README.md"
+    index = fx.gitdir / "index"
+    (fx.tree / "new.txt").unlink()
+    (fx.tree / ".gitattributes").unlink()
+    stamp = (time.time_ns() // 10**9 - 10) * 10**9 + 250_000_000
+    for _ in range(20):  # ctime (not settable) must stay in one second
+        readme.write_text("a\n")
+        os.utime(readme, ns=(stamp, stamp))
+        taint.git(["update-index", "--refresh"], fx.tree)
+        before = readme.stat().st_ctime_ns // 10**9
+        if fsmonitor:
+            code = (f"from pathlib import Path; import sys; "
+                    f"Path({str(fx.markers / 'fsmonitor-lie')!r}).write_text('fired'); "
+                    "sys.stdout.buffer.write(b'token\\0')")
+            taint.config(fx, "core.fsmonitor", shlex.join([sys.executable, "-c", code]))
+            taint.git(["update-index", "--fsmonitor"], fx.tree)
+            # Only a status with the monitor on marks the entries valid.
+            env = git_trees.audit_env()
+            env.pop("GIT_OPTIONAL_LOCKS")
+            case.assertEqual(answer(raw(fx, ["status", "--short"], env)), (0, ""))
+        if racy:
+            os.utime(index, ns=(stamp, stamp))
+        readme.write_text("z\n")
+        edited = stamp if racy else stamp + 10**9
+        os.utime(readme, ns=(edited, edited))
+        if not racy or readme.stat().st_ctime_ns // 10**9 == before:
+            break
+    else:
+        case.fail("could not keep the edit in the index's ctime second")
+    # Precondition: the index carries fsmonitor-valid bits exactly when asked
+    # (`ls-files -f` tags those entries in lowercase).
+    tags = raw(fx, ["ls-files", "-f"]).stdout.split("\n")
+    case.assertEqual(any(t[:1].islower() for t in tags), fsmonitor, tags)
+    fx.clear()
+
+
 class TruthTest(FixtureCase):
     """One named test per vector, with loose/packed x ten command subtests."""
 
@@ -1032,19 +1077,9 @@ class TruthTest(FixtureCase):
         fx = self.fixture()
         # Start clean, let a real fsmonitor protocol response mark all entries
         # valid, then change a file while the monitor reports no changes.
-        (fx.tree / "README.md").write_text("a\n")
-        (fx.tree / "new.txt").unlink()
-        (fx.tree / ".gitattributes").unlink()
-        taint.git(["update-index", "--refresh"], fx.tree)
-        code = (f"from pathlib import Path; import sys; "
-                f"Path({str(fx.markers / 'fsmonitor-lie')!r}).write_text('fired'); "
-                "sys.stdout.buffer.write(b'token\\0')")
-        taint.config(fx, "core.fsmonitor", shlex.join([sys.executable, "-c", code]))
-        taint.git(["update-index", "--fsmonitor"], fx.tree)
+        edit_readme(self, fx, fsmonitor=True, racy=False)
         env = git_trees.audit_env()
         env.pop("GIT_OPTIONAL_LOCKS")
-        self.assertEqual(answer(raw(fx, ["status", "--short"], env)), (0, ""))
-        (fx.tree / "README.md").write_text("z\n")
         self.assertEqual(answer(raw(fx, ["status", "--short"], env)), (0, ""))
         self.assertIn("fsmonitor-lie", fx.fired())
         fx.clear()
@@ -1059,30 +1094,7 @@ class TruthTest(FixtureCase):
         for fsmonitor in (True, False):
             with self.subTest(fsmonitor_valid=fsmonitor):
                 fx = self.fixture()
-                readme = fx.tree / "README.md"
-                index = fx.gitdir / "index"
-                (fx.tree / "new.txt").unlink()
-                (fx.tree / ".gitattributes").unlink()
-                stamp = (time.time_ns() // 10**9 - 10) * 10**9 + 250_000_000
-                for _ in range(20):  # ctime (not settable) must stay in one second
-                    readme.write_text("a\n")
-                    os.utime(readme, ns=(stamp, stamp))
-                    taint.git(["update-index", "--refresh"], fx.tree)
-                    before = readme.stat().st_ctime_ns // 10**9
-                    if fsmonitor:
-                        code = (f"from pathlib import Path; import sys; "
-                                f"Path({str(fx.markers / 'fsmonitor-lie')!r}).write_text('fired'); "
-                                "sys.stdout.buffer.write(b'token\\0')")
-                        taint.config(fx, "core.fsmonitor", shlex.join([sys.executable, "-c", code]))
-                        taint.git(["update-index", "--fsmonitor"], fx.tree)
-                    os.utime(index, ns=(stamp, stamp))
-                    readme.write_text("z\n")
-                    os.utime(readme, ns=(stamp, stamp))
-                    if readme.stat().st_ctime_ns // 10**9 == before:
-                        break
-                else:
-                    self.fail("could not keep the edit in the index's ctime second")
-                fx.clear()
+                edit_readme(self, fx, fsmonitor)
                 # Plain Git, fsmonitor off, never rewrites the index: the entry is racy.
                 plain = raw(fx, ["-c", "core.fsmonitor=false", "status", "--short"],
                             git_trees.audit_env())

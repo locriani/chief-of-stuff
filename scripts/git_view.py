@@ -344,13 +344,13 @@ def _opened(path: Path, env: dict[str, str], base: Path | None, deadline: float)
         if layout.tree is not None:
             child_env.update(GIT_WORK_TREE=str(layout.tree), GIT_INDEX_FILE=str(directory / "index"))
             # Older Git can trust copied fsmonitor-valid bits despite core.fsmonitor=false.
-            stamp = (directory / "index").stat() if (directory / "index").exists() else None  # an unborn tree has none
+            stamp = (directory / "index").stat() if (directory / "index").is_file() else None  # an unborn tree has none
             index = _run(["update-index", "--no-fsmonitor"], cwd=directory, env=child_env,
                          timeout=_remaining(deadline))
             if index.returncode:
                 raise Unviewable("index fsmonitor state cannot be cleared")
             # The rewrite moves the copy's mtime to now, so an edit made in the original's second stops looking racy.
-            if stamp:
+            if stamp is not None:
                 os.utime(directory / "index", ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
         view = View(layout, child_env)
     except BaseException:
