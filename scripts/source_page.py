@@ -323,7 +323,7 @@ def render(number: int, trackers: list[tuple[date, str]], sources: board_sources
             f"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
             f"<title>Source {escape(change.ref) if change else ref}</title>\n{HEAD}{CSS}</head>\n"
             f'<body>\n<main class="source">\n{tab_bar("Board", pending, True)}  <header class="top">\n    <div>\n      <span class="eyebrow">{crumb} · '
-            f'<a href="/issues/{number}">task</a> · <a href="/">board</a> · rendered {now:%H:%M %Z}</span>\n'
+            f'<a href="/issues/{number}">task</a> · <a href="/">board</a></span>\n'
             f"      <h1>{title}</h1>\n    </div>\n{cmp}  </header>\n{body}</main>\n</body>\n</html>\n")
 
 

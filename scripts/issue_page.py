@@ -278,7 +278,7 @@ def render(number: int, trackers: list[tuple[date, str]], sources: board_sources
 
     lane = next((t.lane.strip() for t in reversed(mine) if t.lane.strip()), "")
     eyebrow = " · ".join(["Task", f'<a class="ref" data-k="issue" {href(issue.url)}>{ref}</a>' if issue else ref,
-                          *([f"lane {escape(lane)}"] if lane else []), '<a href="/">board</a>', f"rendered {now:%H:%M %Z}"])
+                          *([f"lane {escape(lane)}"] if lane else []), '<a href="/">board</a>'])  # (#215) no render clock
     flow = flow_chart.section(rows, now)
     return (f"<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n"
             f"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
