@@ -135,6 +135,8 @@ def reconcile_dead_workers(root: Path, tracker_path: Path, day: str) -> list[str
         return []
 
     live = live_workers(root)
+    row_of = tracker.launcher(parsed.tasks)  # #570: a one-shot's pid file holds its item, not the row's name
+    live = {*live, *(row_of(k)[1] for k in live)}
     reconciled: list[str] = []
 
     for t in running_tasks:
