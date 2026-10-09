@@ -375,16 +375,17 @@ class AuditTest(unittest.TestCase):
         self.assertEqual([r.task for r in report.reopen], ["Open branch work"])
 
     def test_a_branch_merged_on_the_forge_is_landed_though_local_main_lags(self):
-        """#567: the forge moved main; neither local main nor the clone's origin/main has seen it until a fetch."""
+        """#567: the forge moved main and a fetch moved origin/main; local main, which nothing moves, still lags."""
         tmp, root = workspace(
             "| Open branch work | sam | done 10:30 | 09:00 |  | Checklist: Open branch work |",
             "| sam | worktree wt-unmerged (feat/open) |",
         )
         self.addCleanup(tmp.cleanup)
         clone, tree = root / "repo", root / "trees" / "wt-unmerged"
-        stale = git("rev-parse", "refs/remotes/origin/main", cwd=clone)
+        main = git("rev-parse", "main", cwd=clone)
         git("push", "origin", "HEAD:main", cwd=tree)
-        git("update-ref", "refs/remotes/origin/main", stale, cwd=clone)
+        git("fetch", "origin", cwd=clone)
+        self.assertEqual(git("rev-parse", "main", cwd=clone), main)
         report = al.audit(root, "2026-09-17")
         self.assertEqual(report.reopen, [])
         self.assertTrue(any(line.startswith("wt-unmerged (feat/open): on main") for line in report.lines), report.lines)
