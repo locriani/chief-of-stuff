@@ -50,7 +50,7 @@ from md import section as md_section
 from module_graph import section as _graph
 from notify_service import atomic_write
 from settings import Graph, SettingsError, load as load_settings
-from tracker import decision_rows, parse_tracker
+from tracker import decision_rows, issue_key, parse_tracker
 from workspace import ConfigError, daily_trackers, pages_address, read_config
 
 NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
@@ -99,6 +99,10 @@ def parse(data: dict) -> dict:
             raise DecisionError("a saved answer needs the time it was saved (at)") from None
     elif answer and answer not in keys:
         raise DecisionError(f"answer {answer!r} is not one of the options {', '.join(keys)}")
+    if not isinstance(data.get("holds") or [], list):
+        raise DecisionError("holds is not a list of issues")
+    if not isinstance(refs := data.get("references") or [], list) or not all(isinstance(r, dict) for r in refs):
+        raise DecisionError("references is not a list of {kind, value}")
     for side in data.get("sides", []):
         if side.get("status") not in ("open", "done"):
             raise DecisionError(f"side {side.get('label')!r} has status {side.get('status')!r}, not open or done")
@@ -522,6 +526,16 @@ def refs_in(text: str) -> list[str]:
     return out
 
 
+# REF's matches, a URL whole, so tracker.issue_key can tell another project's #12 from this one's.
+KEYED = re.compile(r"https?://[^\s`<>()]+?/(?:issues|pull|merge_requests)/\d+\b|" + REF.pattern)
+
+
+def ref_keys(text: str, home: Backlog | GitHubBacklog | None) -> list[str]:
+    """refs_in's refs keyed as the board files them: an issue by tracker.issue_key, a change as refs_in names it."""
+    keys = [r if (r := refs_in(m[0])[0]).startswith("!") else issue_key(m[0], home) for m in KEYED.finditer(text or "")]
+    return list(dict.fromkeys(keys))
+
+
 def span(td: timedelta) -> str:
     """`29m`, `1h 18m`, `4h`, `1d 1h`."""
     d, m = divmod(max(0, int(td.total_seconds() // 60)), 1440)
@@ -591,17 +605,17 @@ class Context:
                 return hit
         return ""
 
-    def holding(self, slug: str, d: dict) -> list[str]:
+    def holding(self, slug: str, d: dict, refs=refs_in) -> list[str]:
         """The issues and PRs/MRs the decision holds: its `holds`, its one-ref references, and the refs of every
-        task whose item names the page."""
+        task whose item names the page, each as `refs` reads a text's refs."""
         page = f"decision-{slug}"
-        found = [r for h in d.get("holds") or [] for r in refs_in(str(h))]
+        found = [r for h in d.get("holds") or [] for r in refs(str(h))]
         for r in d.get("references") or []:
-            one = refs_in(str(r.get("value", "")))
+            one = refs(str(r.get("value", "")))
             found += one if len(one) == 1 else []
         for t in self.tasks:
             if page in PAGE_REF.findall(t.item):
-                found += refs_in(t.issue) + refs_in(t.item)
+                found += refs(t.issue) + refs(t.item)
         return list(dict.fromkeys(found))
 
     def change(self, ref: str) -> board_sources.Change | None:
@@ -662,9 +676,10 @@ def pending_count(pages_dir: Path, ctx: Context | None) -> int:
 
 
 def held_refs(pending: list[tuple[str, dict | None, datetime | None, str]], ctx: Context) -> set[str]:
-    """The issues and changes the pending decisions (`entries`) hold: what a task's hold names as `decision` (#228),
-    and what decisions.html counts as held."""
-    return {r for slug, d, _, _ in pending if d is not None for r in ctx.holding(slug, d)}
+    """The issues and changes the pending decisions (`entries`) hold, keyed as the board files them (`ref_keys`): what a
+    task's hold names as `decision` (#228), and what decisions.html counts as held."""
+    keys = lambda text: ref_keys(text, ctx.sources.home)  # noqa: E731
+    return {r for slug, d, _, _ in pending if d is not None for r in ctx.holding(slug, d, keys)}
 
 
 def index(pages_dir: Path, ctx: Context, day: str, pending: list | None = None) -> tuple[str, list[tuple[str, dict | None, datetime | None, str]]]:

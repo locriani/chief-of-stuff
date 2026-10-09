@@ -152,7 +152,7 @@ class RenderTest(unittest.TestCase):
         today = today_tracker()
         built = fc.build(fc.moves(YESTERDAY_TRACKER, YESTERDAY, CT) + fc.moves(today, TODAY, CT),
                          rb.parse_tracker(YESTERDAY_TRACKER).tasks + rb.parse_tracker(today).tasks, LANES,
-                         task_forge.hold_causes(rb.parse_tracker(today).tasks, None, sources(MR, OTHER), LANES), {}, NOW)  # #228
+                         task_forge.held_names(task_forge.hold_causes(rb.parse_tracker(today).tasks, None, sources(MR, OTHER), LANES, set())), {}, NOW)  # #228
         row = next(r for _, r in built if r.ref == "#109")
         figures = re.findall(r'<figure class="gantt".*?</figure>', html, re.S)
         self.assertTrue(figures)
