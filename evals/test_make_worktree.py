@@ -102,6 +102,12 @@ class BranchNameTest(unittest.TestCase):
             with self.assertRaises(mw.RefusedError, msg=name):
                 mw.check_branch(name)
 
+    def test_the_at_branch_name_is_refused(self):
+        """#546: `@` is git's shorthand for HEAD and `@{...}` the previous-checkout form; neither names a branch."""
+        for name in ("@", "@{0}", "@{-1}"):
+            with self.assertRaises(mw.RefusedError, msg=name):
+                mw.check_branch(name)
+
     def test_gits_own_reserved_shapes_are_refused(self):
         for name in ("a..b", "a@{0}", "a.lock", "a b", "a~1", ""):
             with self.assertRaises(mw.RefusedError, msg=name):

@@ -83,9 +83,11 @@ def check_type(claude_md: str, agent_type: str) -> None:
 
 
 def check_branch(branch: str) -> None:
-    """Validate a branch with Git after rejecting option-like names. The check needs no repository."""
+    """Validate a branch with Git after rejecting option-like names and rev-parse shorthands. The check needs no repository."""
     if not branch or branch.startswith("-"):
         raise RefusedError(f"branch name {branch!r} is empty or would be read as an option")
+    if branch == "@" or branch.startswith("@{"):
+        raise RefusedError(f"branch name {branch!r} is git's HEAD or previous-checkout shorthand, not a branch name")
     code, detail = _run(["check-ref-format", "--branch", branch], Path("/"), git_trees.audit_env())  # needs no repository
     if code != 0:
         raise RefusedError(f"git refuses the branch name {branch!r}: {detail or 'not a valid ref'}")
