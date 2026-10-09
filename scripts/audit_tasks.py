@@ -25,6 +25,7 @@ from backlog import CLOSED, GITHUB, Backlog, BacklogError, GitHubBacklog, file_w
 import backlog  # noqa: E402
 from settings import Kanban, SettingsError, load as load_settings  # noqa: E402
 import board_sources  # noqa: E402
+import tracker_log  # noqa: E402
 import kanban as kanban_tool  # noqa: E402
 import ownership  # noqa: E402
 import git_trees  # noqa: E402
@@ -299,8 +300,13 @@ class KanbanFault:
         return f"{KANBAN} {self.task} — {self.why}"
 
 
-def kanban_faults(tasks, home: Backlog | GitHubBacklog, config: Kanban, gh=None) -> list[KanbanFault]:
-    """Report label or Project Status drift; never move a card during an audit."""
+def kanban_faults(tasks, home: Backlog | GitHubBacklog, config: Kanban, gh=None,
+                  hold_failures: dict[str, str] | None = None) -> list[KanbanFault]:
+    """Report label or Project Status drift; never move a card during an audit.
+
+    `hold_failures` maps task item -> the Log's last hold-failure reason (#566): a hold the launcher could
+    not apply stays visible here while the issue still has no hold label, and stops once the hold lands.
+    """
     selected = []
     for task in tasks:
         if task.standing or task.kind == "done" or not task.lane.strip() or not task.issue.strip():
@@ -322,6 +328,10 @@ def kanban_faults(tasks, home: Backlog | GitHubBacklog, config: Kanban, gh=None)
         found = states[(ref.host, ref.repo)].get(ref.number)
         if found is None:
             continue  # issue_faults already reports a missing issue
+        failed = (hold_failures or {}).get(task.item.strip()) if config.human_review_label else None
+        if failed and config.human_review_label not in found.labels:
+            faults.append(KanbanFault(clip_name(task.label),
+                                      f"review hold failed: {failed}; the issue has no hold label"))
         status = None
         if ref.host == GITHUB and config.github_project:
             if project_items is None:
@@ -784,6 +794,9 @@ def audit(root: Path, day: str, gh=None, check_issues: bool = True, now: datetim
     trees = worktrees_dir(claude_md)
     tracker_text = (root / cfg.tracker_path(day)).read_text()
     tracker = parse_tracker(tracker_text)
+    # A done task the Log records as a user-approved forge closure is not reopened (#547); its tree state
+    # still lands in the report.
+    approved = tracker_log.approved_closes(tracker_text)
     tasks = tracker.tasks
     owners = parse_ownership("\n".join(_section(tracker_text, "## File ownership")))
     # An empty Sessions table cannot prove that workers are absent.
@@ -827,10 +840,12 @@ def audit(root: Path, day: str, gh=None, check_issues: bool = True, now: datetim
             if complaint and complaint not in sha_said:
                 sha_said.add(complaint)
                 report.lines.append(f"sha: {clip_name(_unmark(task.item))} \u2014 {complaint}; read as it was before")
-            if verdict == NOT_LANDED:
-                report.reopen.append(Reopen(task.item, task.owner, f"{name} ({branch})", f"its sha {sha} is not on main"))
-            elif verdict == UNKNOWN_SHA and why:
-                report.reopen.append(Reopen(task.item, task.owner, f"{name} ({branch})", why))
+            # #547: an approved forge closure stands even while the branch is unmerged; no reopen either way.
+            if _unmark(task.item) not in approved:
+                if verdict == NOT_LANDED:
+                    report.reopen.append(Reopen(task.item, task.owner, f"{name} ({branch})", f"its sha {sha} is not on main"))
+                elif verdict == UNKNOWN_SHA and why:
+                    report.reopen.append(Reopen(task.item, task.owner, f"{name} ({branch})", why))
         stop = read_stop(path)
         if stop is not None and task is not None and task.kind not in SETTLED and name not in stopped_at:
             stopped_at.add(name)
@@ -905,7 +920,8 @@ def audit(root: Path, day: str, gh=None, check_issues: bool = True, now: datetim
             issues = " issues=off"
     report.lanes.extend(lane_faults(tasks, settings.lanes, cfg.settings_path))
     if settings.kanban and cfg.backlog and check_issues:
-        report.kanban.extend(kanban_faults(tasks, cfg.backlog, settings.kanban, gh=gh))
+        report.kanban.extend(kanban_faults(tasks, cfg.backlog, settings.kanban, gh=gh,
+                                           hold_failures=tracker_log.hold_failures(tracker_text)))
         report.lines.extend(str(f) for f in report.kanban)
     report.over.extend(over_budget(tasks, settings.budgets, day, now or datetime.now(cfg.zone)))
     report.lines.extend(str(o) for o in report.over)

@@ -1097,6 +1097,27 @@ class RunTest(unittest.TestCase):
         _, hold, _ = self._stopped(result="status: human_review\nreason: unclear policy\nchanges: none\n")
         hold.assert_called_once()
 
+    def test_a_failed_hold_is_recorded_in_the_log(self):
+        # #566: the report alone loses a hold failure between runs; the Log keeps it where the audit reads it.
+        self._with_an_issue_and_kanban()
+        fake = self._fake('status: human_review\nreason: unclear policy\nchanges: none\n', write_partial=False)
+        with mock.patch.object(one_shot.kanban, "add_human_hold",
+                               return_value="missing label in GitHub: !! - HUMAN REVIEW REQUIRED") as hold, \
+             mock.patch.object(one_shot.backlog, "comment",
+                               return_value=SimpleNamespace(done=True, error="")) as comment:
+            self.assertEqual(self._run(fake), 1)
+        hold.assert_called_once()
+        self.assertIn("one-shot worker01: review hold failed: missing label in GitHub: "
+                      "!! - HUMAN REVIEW REQUIRED, task Security audit", self.tracker.read_text())
+        self.assertEqual(self._report()["errors"],
+                         ["review hold: missing label in GitHub: !! - HUMAN REVIEW REQUIRED"])
+
+    def test_a_landed_hold_writes_no_failure_line(self):
+        self._with_an_issue_and_kanban()
+        _, hold, _ = self._stopped(result='status: human_review\nreason: unclear policy\nchanges: none\n')
+        hold.assert_called_once()
+        self.assertNotIn("review hold failed", self.tracker.read_text())
+
     def test_a_quota_stop_needs_resource_exhausted_in_any_case_with_the_429(self):
         self._stopped(stderr="429 resource_exhausted\n")
         report = self._report()

@@ -327,16 +327,50 @@ def existing_labels(cfg: Backlog, token: str | None = None, timeout: float = TIM
     return set(), f"more than {MAX_PAGES} pages of labels"
 
 
-def ensure_labels(cfg: Backlog, names: tuple[str, ...], token: str | None = None,
-                  commit: bool = False, timeout: float = TIMEOUT) -> tuple[Written, ...]:
+def _gh_label_names(cfg: GitHubBacklog, gh) -> tuple[set[str], str]:
+    """Every label name the repository has, or the reason we do not know."""
+    rc, out, err = gh(["label", "list", "-R", cfg.repo, "--json", "name", "--limit", str(GH_LIMIT)])
+    if rc != 0:
+        return set(), f"gh: {(err.strip().splitlines() or ['exit ' + str(rc)])[-1]}"
+    try:
+        rows = json.loads(out)
+    except ValueError:
+        return set(), "GitHub did not answer with JSON"
+    if not isinstance(rows, list):
+        return set(), "GitHub answered with something that is not a list of labels"
+    return {str(row.get("name", "")) for row in rows if isinstance(row, dict)}, ""
+
+
+def _ensure_github_labels(cfg: GitHubBacklog, wanted: tuple[str, ...], *, commit: bool,
+                          gh) -> tuple[Written, ...]:
+    have, error = _gh_label_names(cfg, gh)
+    if error:
+        return (Written(LABEL, ", ".join(wanted), error=error),)
+    out = []
+    for name in wanted:
+        if name in have:
+            continue
+        if not commit:
+            out.append(Written(LABEL, name))
+            continue
+        rc, _out, err = gh(["label", "create", name, "-R", cfg.repo, "--color", LABEL_COLOR.lstrip("#")])
+        out.append(Written(LABEL, name, done=rc == 0,
+                           error="" if rc == 0 else f"gh: {(err.strip().splitlines() or ['exit ' + str(rc)])[-1]}"))
+    return tuple(out)
+
+
+def ensure_labels(cfg: Backlog | GitHubBacklog, names: tuple[str, ...], token: str | None = None,
+                  commit: bool = False, timeout: float = TIMEOUT, gh=None) -> tuple[Written, ...]:
     """Create the labels a write needs and no others.
 
     No vocabulary is baked in. Zach, 2026-09-19 22:47 — "tasks are also going to be changeable over
-    time" — so the caller names the labels and this creates whichever of them GitLab has not seen.
+    time" — so the caller names the labels and this creates whichever of them the forge has not seen.
     """
     wanted = tuple(n for n in dict.fromkeys(n.strip() for n in names) if n)
     if not wanted:
         return ()
+    if isinstance(cfg, GitHubBacklog):
+        return _ensure_github_labels(cfg, wanted, commit=commit, gh=gh or run_gh)
     secret = _secret(cfg, token)
     have, error = existing_labels(cfg, token=secret, timeout=timeout)
     if error:

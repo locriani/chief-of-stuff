@@ -30,19 +30,22 @@ from evals.skill_fixtures import write_plugin, write_skill  # noqa: E402
 # Browser safety 151, Writing 579, Resume 4,667, Write authority 1,784, Relay 3,188 (Notices merged in, section gone),
 # Board 1,456, Asks 3,894; longest line unchanged at 2,969 B. Section ceilings round up to 10 B, TOTAL to 50 B.
 # PR 540 review: the Browser safety sentence regains "or ask to open it" (+19 B): agent 39,614 B; Browser safety 170.
-TOTAL = 39_650            # whole agent file, bytes
-MAX_LINE = 3_000          # longest single line
+# #547: the approved-forge-closure Log record adds one sentence to Tracker (longest line 3,114 B, Tracker
+# section 5,629 B, agent 39,759 B; rendered sizes measured below). Section ceilings round up to 10 B, TOTAL to 50 B.
+TOTAL = 39_800            # whole agent file, bytes
+MAX_LINE = 3_120          # longest single line
 ONE_SHOT_PARAGRAPH = 3_800  # kept: a later slice trims this paragraph
 # Skills are read on demand; no host's prompt appends their bodies.
 # rendered_sizes(1) over the simulated agent, copied into a temporary plugin:
 # Claude 39,241 B; Codex 37,248 B; Cursor 37,356 B; AGY 37,412 B (slice 487 plus the PR 540 review sentence simulated).
-PROMPT = {"claude": 39_250, "codex": 37_250, "cursor": 37_400, "agy": 37_450}
+# #547 adds the approved-forge-closure sentence: Claude 39,386; Codex 37,393; Cursor 37,501; AGY 37,557.
+PROMPT = {"claude": 39_390, "codex": 37_400, "cursor": 37_510, "agy": 37_560}
 CEILING = {  # `## ` section -> bytes, heading line included
     "Role": 1600, "Dispatch authority": 1100, "Browser safety": 170, "Writing": 580,
     "Config": 1400, "Clock": 1850, "Calendar": 910, "Open the day": 2000, "Resume": 4670,
     "Write authority": 1790, "Filing": 360, "Human-only actions": 1280, "Dispatch": 1_200,
     "Assign": 300, "Pipeline": 1_300, "Check": 2780,
-    "Sessions": 1_700, "Relay": 3190, "Tracker": 5_500, "Board": 1460,
+    "Sessions": 1_700, "Relay": 3190, "Tracker": 5_640, "Board": 1460,
     "Requirements": 360, "Share": 460, "Asks": 3900, "Notify": 360,
 }
 # coordinator-sessions: 8,587 B moved prose; projected frontmatter/topics yield

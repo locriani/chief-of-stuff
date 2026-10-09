@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import audit_tasks as al  # noqa: E402
 import git_trees  # noqa: E402
 import git_view  # noqa: E402
+import tracker_log as tl  # noqa: E402
 import board_sources as bs  # noqa: E402
 import test_git_trees as tgt  # noqa: E402  (module-qualified: don't re-collect its TestCases)
 import test_board_sources as tbs  # noqa: E402  (module-qualified: don't re-collect its TestCases)
@@ -334,6 +335,30 @@ class AuditTest(unittest.TestCase):
         report = al.audit(root, "2026-09-17")
         self.assertEqual([r.task for r in report.reopen], ["Open branch work"])
         self.assertIn("not on main", report.reopen[0].why)
+
+    def test_a_done_task_the_log_records_as_user_approved_stays_done(self):
+        # #547: a forge closure the user approved is recorded in the Log, and the audit honours the record.
+        tmp, root = workspace(
+            "| Open branch work | robin | done 10:00 | 09:00 |  | Checklist: Open branch work |",
+            "| robin | worktree wt-unmerged (feat/open) |",
+        )
+        self.addCleanup(tmp.cleanup)
+        tracker = root / "daily" / "2026-09-17-tracker.md"
+        tracker.write_text(tracker.read_text() + tl.approved_close_line(
+            "10:05", "Open branch work", "the forge closed its issue; work stays on the branch") + "\n")
+        self.assertEqual(al.audit(root, "2026-09-17").reopen, [])
+
+    def test_an_approval_recorded_for_another_task_does_not_clear_this_one(self):
+        tmp, root = workspace(
+            "| Open branch work | robin | done 10:00 | 09:00 |  | Checklist: Open branch work |",
+            "| robin | worktree wt-unmerged (feat/open) |",
+        )
+        self.addCleanup(tmp.cleanup)
+        tracker = root / "daily" / "2026-09-17-tracker.md"
+        tracker.write_text(tracker.read_text() + tl.approved_close_line(
+            "10:05", "Some other task", "the forge closed its issue") + "\n")
+        report = al.audit(root, "2026-09-17")
+        self.assertEqual([r.task for r in report.reopen], ["Open branch work"])
 
     def test_done_with_uncommitted_work_must_reopen(self):
         tmp, root = workspace(

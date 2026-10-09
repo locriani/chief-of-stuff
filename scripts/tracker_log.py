@@ -1,5 +1,5 @@
-"""The tracker's `## Log` lines that scripts write and the pages read back: a task's stage move, and a one-shot's
-start, end and relaunch.
+"""The tracker's `## Log` lines that scripts write and the pages read back: a task's stage move, a one-shot's
+start, end and relaunch, a hold the launcher could not apply, and a closure the user approved.
 
 `chief-of-stuff log --stage` and the one-shot launcher write them with the formatters here; the Flow charts, the
 board's workers, the Workers page and the issue page read them with the patterns here. Both sides live in one
@@ -30,6 +30,10 @@ RELAUNCH = re.compile(r"^- (\d{1,2}):(\d{2}) one-shot (\S+): (relaunch) requeste
 # A started line's runtime and model and its worktree, for the board's workers and the issue page. STARTED reads
 # only the worker and the task.
 STARTED_DETAIL = re.compile(r"^-\s+(\d{1,2}:\d{2}) one-shot (\S+) started: (.*?), worktree `([^`]*)`, task (.+?)\s*$")
+# The launcher's line when the forge refused the review hold, and the coordinator's record of a forge closure
+# the user approved. Each names its task last, as a started line does, and matches no pattern above.
+HOLD_FAILED = re.compile(r"^- (\d{1,2}):(\d{2}) one-shot (\S+): review hold failed: (.*), task (.+?)\s*$")
+APPROVED_CLOSE = re.compile(r"^- (\d{1,2}):(\d{2}) forge closure approved by the user: (.*), task (.+?)\s*$")
 
 
 def stage_line(at: str, name: str, stage: str) -> str:
@@ -61,6 +65,18 @@ def relaunch_line(at: str, name: str, task: str, reason: str) -> str:
     return f"- {at} one-shot {name}{RELAUNCHED.format(task=task)}{one_period(reason)}"
 
 
+def hold_failed_line(at: str, name: str, task: str, error: str) -> str:
+    """The launcher's line when worker `name`'s review hold could not be applied to `task`'s issue (#566); the
+    audit reads it back with HOLD_FAILED and keeps reporting the hold until it lands."""
+    return f"- {at} one-shot {name}: review hold failed: {error}, task {task}"
+
+
+def approved_close_line(at: str, task: str, why: str) -> str:
+    """The coordinator's record that the user approved `task` done because its issue closed on the forge (#547);
+    the audit does not reopen a task this line names."""
+    return f"- {at} forge closure approved by the user: {why}, task {task}"
+
+
 @dataclass(frozen=True)
 class Move:
     at: datetime
@@ -71,13 +87,32 @@ class Move:
     worker: str = field(default="", compare=False)  # a launcher move's worker
 
 
+def _log_lines(text: str) -> list[str]:
+    """The stripped lines of the tracker's `## Log` section."""
+    log = next((part for part in re.split(r"(?m)^## ", text) if part.split("\n", 1)[0].strip() == "Log"), "")
+    return [line.strip() for line in log.splitlines()]
+
+
+def hold_failures(text: str) -> dict[str, str]:
+    """Task -> the reason of the last hold failure the Log records for it (#566)."""
+    out: dict[str, str] = {}
+    for line in _log_lines(text):
+        m = HOLD_FAILED.match(line)
+        if m:
+            out[m[5]] = m[4]
+    return out
+
+
+def approved_closes(text: str) -> set[str]:
+    """The tasks whose done state the Log records as a user-approved forge closure (#547)."""
+    return {m[4] for line in _log_lines(text) if (m := APPROVED_CLOSE.match(line))}
+
+
 def moves(text: str, day: date, zone: ZoneInfo) -> list[Move]:
     """The `stage:` and one-shot launcher lines of the tracker's `## Log`, stamped on `day`. A launcher move names
     the task key of its worker's active started line; a relaunch is a stop boundary, not a working stage."""
-    log = next((part for part in re.split(r"(?m)^## ", text) if part.split("\n", 1)[0].strip() == "Log"), "")
     out, task_of = [], {}
-    for line in log.splitlines():
-        line = line.strip()
+    for line in _log_lines(text):
         m = STAGE.match(line) or STARTED.match(line) or ENDED.match(line) or RELAUNCH.match(line)
         if not m or int(m[1]) >= 24 or int(m[2]) >= 60:
             continue

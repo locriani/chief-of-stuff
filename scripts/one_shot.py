@@ -27,7 +27,7 @@ from notify_service import atomic_write
 from one_shot_report import FIELD_MAX, UNREADABLE, read_report
 from process_status import PIDFILE, running_trees
 from tracker import parse_tracker
-from tracker_log import RELAUNCHED, ended_line, relaunch_line, started_line
+from tracker_log import RELAUNCHED, ended_line, hold_failed_line, relaunch_line, started_line
 from workspace import worktrees_dir
 from settings import load as load_settings
 from shell_setup import clean_env, login_argv, resolve
@@ -276,9 +276,13 @@ def record_launch(path: Path, task: str, name: str, tree: str, runtime: str, mod
 
 
 def update_tracker(path: Path, task: str, name: str, owner: str, status: str, reason: str, changes: str,
-                   at: str, carried: bool = False) -> None:
+                   at: str, hold_error: str = "", carried: bool = False) -> None:
     """Set the dispatched row to waiting, or back to ready on a relaunch, and append a durable local result note.
-    A row the midnight rollover carried over starts open under the worker (#576), not running."""
+
+    A row the midnight rollover carried over starts open under the worker (#576), not running. A failed
+    review hold (#566) rides the same locked edit into the Log, so the audit still sees the hold attempt
+    after this run's report is gone.
+    """
     if "|" in owner or "\n" in owner:
         raise ValueError("configured user name cannot be written as a tracker owner")
 
@@ -294,7 +298,10 @@ def update_tracker(path: Path, task: str, name: str, owner: str, status: str, re
         else:
             lines[i] = _set_owner_state(lines[i], running, f"| {owner} | waiting |", why)
             note = ended_line(at, name, status, _brief(reason), _brief(changes))
-        return tracker_write.append_log("".join(lines), note, create=True)
+        text = tracker_write.append_log("".join(lines), note, create=True)
+        if hold_error:
+            text = tracker_write.append_log(text, hold_failed_line(at, name, task, hold_error))
+        return text
 
     tracker_write.edit(path, change)
 
@@ -389,10 +396,12 @@ def reconcile(root: Path, day: str, task: str, name: str, cwd: Path, exit_code: 
                   "changes": summary, "errors": [f"{dispatch_prompt.TRACKER_ERROR} task row changed; no issue or tracker update was made"]}
         return write_report(root, cwd, report)
     ref = backlog.issue_ref(row.issue, cfg.backlog) if row and row.issue.strip() else None
+    hold_error = ""
     if status == "human_review" and ref:
         if settings.kanban:
             error = kanban.add_human_hold(ref, cfg.backlog, settings.kanban)
             if error:
+                hold_error = error
                 errors.append(f"review hold: {error}")
         else:
             errors.append("review hold: workspace has no [kanban] configuration")
@@ -406,7 +415,7 @@ def reconcile(root: Path, day: str, task: str, name: str, cwd: Path, exit_code: 
                 errors.append(f"issue comment: {commented.error}")
     try:
         update_tracker(path, task, name, cfg.user, status, reason, summary,
-                       tracker_write.stamp(cfg.zone), carried=row.kind == "open")
+                       tracker_write.stamp(cfg.zone), hold_error=hold_error, carried=row.kind == "open")
     except (OSError, ValueError) as exc:
         errors.append(f"{dispatch_prompt.TRACKER_ERROR} {exc}")
     report = {"status": status, "task": task, "worker": name, "runtime_exit": exit_code,
