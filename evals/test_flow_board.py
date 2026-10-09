@@ -8,7 +8,7 @@ import sys
 import tempfile
 import unittest
 from dataclasses import replace
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -631,9 +631,6 @@ class Page(unittest.TestCase):
         self.assertIn('<meta name="viewport" content="width=device-width, initial-scale=1">', self.html)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class EpicRiskTest(unittest.TestCase):
     """#230: the Epics tab counts the tasks' milestones at risk and late, each milestone once by its URL."""
@@ -664,6 +661,8 @@ class EpicRiskTest(unittest.TestCase):
         on_time = {"item #1": NOW + timedelta(hours=2), "item #2": NOW + timedelta(days=1)}
         self.assertEqual(self.risk(rows, on_time), (0, 0))
         self.assertEqual(self.risk(rows, {**on_time, "item #2": NOW + timedelta(days=2)}), (1, 0))  # the latest estimate
+        # #580 review R5: the latest, not the last row's.
+        self.assertEqual(self.risk(rows, {"item #1": NOW + timedelta(days=2), "item #2": NOW}), (1, 0))
 
     def test_only_open_tasks_on_open_issues_forecast(self):
         due = NOW.date() + timedelta(days=1)
@@ -672,15 +671,19 @@ class EpicRiskTest(unittest.TestCase):
         self.assertEqual(self.risk([("#1", self.milestone(due), "closed", "waiting")], late_end), (0, 0))
         self.assertEqual(self.risk([("#1", self.milestone(due), "open", "waiting")]), (0, 0))  # no estimate, no forecast
         self.assertEqual(self.risk([("#1", self.milestone(None), "open", "waiting")], late_end), (0, 0))
+        self.assertEqual(self.risk([("#1", self.milestone(due, state="closed"), "open", "waiting")], late_end), (0, 0))  # R4
 
     def test_a_late_milestone_is_not_also_at_risk(self):
         past = NOW.date() - timedelta(days=1)
         self.assertEqual(self.risk([("#1", self.milestone(past), "open", "waiting")], {"item #1": NOW + timedelta(days=3)}), (0, 1))
 
     def test_the_forecast_is_judged_on_the_workspace_date(self):
-        # 23:30 on the due date in the workspace is on time, though it is the next day in UTC.
-        end = datetime.combine(NOW.date(), time(23, 30), NOW.tzinfo)
-        self.assertEqual(self.risk([("#1", self.milestone(NOW.date()), "open", "waiting")], {"item #1": end}), (0, 0))
+        # #580 review R3: given in UTC. 01:00Z on the 17th is 20:00 on the 16th in Chicago, so a milestone due the 16th
+        # is not yet late, and an end at 04:30Z on the 17th (23:30 on the 16th there) is on time.
+        utc = datetime(2026, 9, 17, 1, 0, tzinfo=timezone.utc)
+        due = utc.astimezone(NOW.tzinfo).date()
+        end = datetime(2026, 9, 17, 4, 30, tzinfo=timezone.utc)
+        self.assertEqual(self.risk([("#1", self.milestone(due), "open", "waiting")], {"item #1": end}, now=utc), (0, 0))
 
     def test_two_repos_with_one_title_are_two_epics(self):
         # COS Architecture on #230: keyed by URL, not title.
@@ -700,3 +703,7 @@ class EpicsOnTheBoardTest(unittest.TestCase):
         cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
         self.assertIn('title="milestones: 1 late">1 late</span>', rb.render(TRACKER, cfg, NOW, lanes=LANES, sources=sources))
         self.assertNotIn("milestones:", rb.render(TRACKER, cfg, NOW, lanes=LANES, sources=SOURCES))
+
+
+if __name__ == "__main__":
+    unittest.main()

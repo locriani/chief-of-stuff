@@ -264,9 +264,9 @@ class GitHubStageTwoTest(unittest.TestCase):
         self.assertIn("body", self.query.split("... on Issue", 1)[1].split("... on PullRequest", 1)[0])
 
     def test_an_issue_carries_its_milestone(self):
-        # #230: the Epics tab reads milestones. GitHub's dueOn is the date as written: 07:00Z is the 1st, not the
-        # 30th in Chicago (COS Architecture on #230).
-        milestone = {"title": "v2", "url": "https://github.com/o/app/milestone/3", "dueOn": "2026-10-01T07:00:00Z",
+        # #230: the Epics tab reads milestones. GitHub's dueOn is the date as written: midnight UTC on the 1st, which is
+        # 19:00 on the 30th in Chicago (COS Architecture on #230; #580 review R1: GitHub answers T00:00:00Z).
+        milestone = {"title": "v2", "url": "https://github.com/o/app/milestone/3", "dueOn": "2026-10-01T00:00:00Z",
                      "state": "OPEN", "issues": {"totalCount": 4}}
         got = self.refresh(n118={**gh_issue(118), "milestone": milestone}).issues
         self.assertEqual(got["#118"].milestone,
