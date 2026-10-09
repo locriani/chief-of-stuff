@@ -599,7 +599,10 @@ class LastLookedTest(unittest.TestCase):
     the look before it, from the start of the day when there is none. A timer reload is not a look."""
 
     SETTINGS = LANES + '[kanban]\nstages = ["impl"]\nhuman_review_label = "needs-human"\nhold_stages = ["implement"]\n[kanban.map]\nimplement = 0\n'
-    LOOK = {"Sec-Fetch-User": "?1"}
+    # A navigation, as every browser marks one (Safari sends no Sec-Fetch-User: Codex on #579); the reload snippet's
+    # own reload carries its cookie, and an agent's GET is no navigation.
+    LOOK = {"Sec-Fetch-Mode": "navigate"}
+    RELOAD = {"Sec-Fetch-Mode": "navigate", "Cookie": "theme=dark; cos-reload=1"}
     setUp = RenderOnRequestTest.setUp
     fake_refresh = RenderOnRequestTest.fake_refresh
 
@@ -611,7 +614,9 @@ class LastLookedTest(unittest.TestCase):
         earlier = datetime.fromisoformat(f"{self.day}T08:00").replace(tzinfo=ZoneInfo(ZONE))
         (self.pages / ".last-looked").write_text(earlier.isoformat())
         self.assertEqual(self.since(), ["1 went needs input since 00:00"])
-        self.assertFalse((self.pages / ".looked-before").exists(), "a reload with no user activation recorded a look")
+        self.assertEqual(self.since(self.RELOAD), ["1 went needs input since 00:00"])
+        self.assertEqual(get(self.port, "/", method="HEAD", headers=self.LOOK).status, 200)
+        self.assertFalse((self.pages / ".looked-before").exists(), "an agent's GET, a timer reload or a HEAD recorded a look")
         before = datetime.now(ZoneInfo(ZONE)).replace(microsecond=0)
         self.assertEqual(self.since(self.LOOK), ["1 went needs input since 08:00"])
         self.assertEqual(datetime.fromisoformat((self.pages / ".looked-before").read_text()), earlier)
@@ -668,6 +673,18 @@ class LastLookedTest(unittest.TestCase):
             get(self.port, "/", headers=self.LOOK)
             get(self.port, "/issues/7")
         self.assertEqual(len(calls), 1)
+
+
+class ReloadMarksItselfTest(unittest.TestCase):
+    """Codex on #579: the snippet's timer reload marks itself with a short-lived cookie the server reads as no look;
+    the notice's Reload button is the person's own and does not."""
+
+    def test_the_timer_reload_sets_the_cookie_and_the_button_does_not(self):
+        import page_reload
+        snippet = page_reload.SNIPPET
+        self.assertIn(f"document.cookie='{page_reload.RELOAD_COOKIE};max-age=10;path=/';location.reload()", snippet)
+        self.assertIn("b.onclick=function(){location.reload();}", snippet)
+        self.assertEqual(snippet.count("location.reload()"), 2)
 
 
 class _PagesFixture:
