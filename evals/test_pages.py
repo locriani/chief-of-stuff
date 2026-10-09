@@ -642,6 +642,12 @@ class LastLookedTest(unittest.TestCase):
         self.assertTrue((self.pages / ".last-looked").is_file())
         self.assertFalse((self.pages / ".looked-before").exists())
 
+    def test_a_load_with_no_board_to_serve_is_no_look(self):
+        # Codex on #579: a 404 showed the person nothing, so it must not become the look the next board counts from.
+        self.tracker.unlink()
+        self.assertEqual(get(self.port, "/", headers=self.LOOK).status, 404)
+        self.assertFalse((self.pages / ".last-looked").exists())
+
     def test_looks_at_once_do_not_trip_over_each_others_files(self):
         # #579 review R5: the page server is threaded; each write goes through its own temporary file.
         import workspace
