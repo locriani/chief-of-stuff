@@ -1372,7 +1372,10 @@ class ReviewReportTest(unittest.TestCase):
         for line in ("Reviewer pass: <full|verify> @ <head sha>", "PR: <url>",
                      "Tests: <pass|fail> — <counts> — `<command>`", "Axes not examined: <axis: reason>, or none",
                      "R1 | <axis> | <severity> | <confidence> | <file:line> | <what> | <evidence> | suggested: <fix|file|keep|discard>",
-                     "Assessment: <one line on the change; no merge verdict>"):
+                     "Assessment: <one line on the change; no merge verdict>",
+                     "Reviewer pass: verify @ <head sha>", "Axes examined: <axes>",
+                     "Resolved: R<n> — <file:line>, <how it is fixed now>",
+                     "Unresolved: R<n> — <file:line>, <what is still wrong>", "Findings: none"):
             self.assertIn(line, text)
         for word in ("Critical", "Important", "Minor", "Confirmed", "Probable", "Unverified"):
             self.assertIn(word, text)
@@ -1395,7 +1398,10 @@ class ReviewReportTest(unittest.TestCase):
                 continue
             with self.subTest(case=case.parent.name):
                 rows = [line for line in prompt.splitlines() if re.match(r"R\d+ \|", line)]
-                self.assertTrue(rows)
+                self.assertTrue(rows or "\nFindings: none" in prompt)
+                for line in prompt.splitlines():
+                    if line.startswith(("Resolved:", "Unresolved:")):
+                        self.assertRegex(line, r"^(?:Un)?[Rr]esolved: R\d+ — [^ ]+:\d+, .+")
                 for line in rows:
                     self.assertRegex(line, row)
 
