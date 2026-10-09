@@ -66,10 +66,17 @@ def write_env() -> dict[str, str]:
     return env
 
 
-def git(args: list[str], cwd: Path) -> tuple[int, str]:
-    """One git call that reads, through the sanitised view (#443). Never a shell, always a list, always bounded."""
+def git(args: list[str], cwd: Path, view: git_view.View | None = None) -> tuple[int, str]:
+    """One git call that reads, through the sanitised view (#443). Never a shell, always a list, always bounded.
+    With `view` (the audit's one opened view per tree, #548) the read runs inside it instead of building and
+    removing a view for one call; a view opened for another tree is an unreadable refusal, never a wrong-tree answer."""
     try:
-        out = git_view.run(args, cwd, env=audit_env(), timeout=GIT_TIMEOUT)
+        if view is None:
+            out = git_view.run(args, cwd, env=audit_env(), timeout=GIT_TIMEOUT)
+        elif _for_tree(view, cwd):
+            out = git_view.in_view(view, args, timeout=GIT_TIMEOUT)
+        else:
+            return 128, "unreadable: the opened view is not this tree's"
     except (git_view.Unviewable, RuntimeError, ValueError) as exc:  # RuntimeError: no home to put the view in; ValueError: a path it cannot write
         return 128, f"unreadable: {exc}"
     except (OSError, subprocess.SubprocessError) as exc:
@@ -77,26 +84,34 @@ def git(args: list[str], cwd: Path) -> tuple[int, str]:
     return out.returncode, (out.stdout or out.stderr).strip()
 
 
-def _count(rev_range: str, tree: Path) -> int | None:
-    code, out = git(["rev-list", "--count", rev_range], tree)
+def _for_tree(view: git_view.View, cwd: Path) -> bool:
+    """Whether `view` was opened for `cwd`'s repository: its working tree, or the git dir itself when bare."""
+    try:
+        return (view.layout.tree or view.layout.gitdir) == Path(cwd).resolve()
+    except OSError:  # a cwd that cannot be resolved is not this view's
+        return False
+
+
+def _count(rev_range: str, tree: Path, view: git_view.View | None = None) -> int | None:
+    code, out = git(["rev-list", "--count", rev_range], tree, view)
     return int(out) if code == 0 and out.isdecimal() else None
 
 
-def branch_of(tree: Path) -> str:
+def branch_of(tree: Path, view: git_view.View | None = None) -> str:
     """The branch HEAD is on; one fixed placeholder when git cannot say, never its error text (it is printed everywhere)."""
-    code, branch = git(["rev-parse", "--abbrev-ref", "HEAD"], tree)
+    code, branch = git(["rev-parse", "--abbrev-ref", "HEAD"], tree, view)
     return branch if code == 0 else UNREADABLE_BRANCH
 
 
-def read_state(tree: Path) -> TreeState:
-    branch = branch_of(tree)
-    code, dirty = git(["status", "--porcelain"], tree)
+def read_state(tree: Path, view: git_view.View | None = None) -> TreeState:
+    branch = branch_of(tree, view)
+    code, dirty = git(["status", "--porcelain"], tree, view)
     readable = code == 0  # an unreadable status cannot rule out uncommitted work: leave the counts unknown, so the tree stays at risk
     return TreeState(
         branch=branch,
         dirty=len(dirty.splitlines()) if readable else None,
-        off_origin=_count(f"{BASE}..HEAD", tree) if readable else None,
-        unpushed=_count("@{u}..HEAD", tree) if readable else None,
+        off_origin=_count(f"{BASE}..HEAD", tree, view) if readable else None,
+        unpushed=_count("@{u}..HEAD", tree, view) if readable else None,
     )
 
 
