@@ -117,17 +117,40 @@ def quota_stop(log: Path, runtime: str, model: str) -> str:
     return ""
 
 
+def _enclosing_repository(cwd: Path) -> Path | None:
+    """The nearest ancestor of cwd holding a `.git` entry, or None (#560): a one-shot working
+    in a subfolder of a repository commits and reads there. Filesystem lookups only — the
+    resolved location is still read through the sanitised view."""
+    try:
+        parents = cwd.resolve().parents
+    except (OSError, RuntimeError):
+        return None
+    return next((parent for parent in parents if os.path.lexists(parent / ".git")), None)
+
+
 def _git(args: list[str], tree: Path) -> tuple[subprocess.CompletedProcess[str] | None, Exception | None]:
-    """Keep a refused or failed view separate from Git's own exit status."""
+    """Keep a refused or failed view separate from Git's own exit status. Only an absent
+    layout (a plain folder below a repository) resolves to the enclosing repository; an
+    unreadable one is never quietly replaced with another tree's view."""
     try:
         return git_view.run(args, tree, env=git_trees.audit_env(), timeout=15), None
     except (git_view.Unviewable, OSError, subprocess.TimeoutExpired) as exc:
-        return None, exc
+        if not isinstance(exc, git_view.NotARepository):
+            return None, exc
+        root = _enclosing_repository(tree)
+        if root is None:
+            return None, exc
+        try:
+            return git_view.run(args, root, env=git_trees.audit_env(), timeout=15), None
+        except (git_view.Unviewable, OSError, subprocess.TimeoutExpired) as enclosed:
+            return None, enclosed
 
 
 def changed_files(cwd: Path) -> str:
     out, error = _git(["status", "--short"], cwd)
     if out is None:
+        if isinstance(error, git_view.NotARepository):  # a plain folder has no change list to report (#559)
+            return ""
         return f"git status failed: {'unreadable: ' if isinstance(error, git_view.Unviewable) else ''}{error}"
     return out.stdout.strip() if out.returncode == 0 else f"git status failed: {out.stderr.strip()}"
 
