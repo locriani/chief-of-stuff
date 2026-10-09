@@ -29,7 +29,7 @@ import git_view  # noqa: E402
 import board_sources as bs  # noqa: E402
 import test_git_trees as tgt  # noqa: E402  (module-qualified: don't re-collect its TestCases)
 import test_board_sources as tbs  # noqa: E402  (module-qualified: don't re-collect its TestCases)
-from tracker import Task, short_name  # noqa: E402
+from tracker import Session, Task, short_name  # noqa: E402
 import tree_state  # noqa: E402
 from evals import git_taint as taint  # noqa: E402
 
@@ -700,6 +700,62 @@ class OrphanJoinTest(unittest.TestCase):
         tmp, root = workspace(self.DIRTY, self.OWNS, sessions=session_row("robin"))
         self.addCleanup(tmp.cleanup)
         self.assertIn("orphaned=1", al.audit(root, "2026-09-17").lines[-1])
+
+
+class OwnershipRowKeyedOnShortNameTest(unittest.TestCase):
+    """#553: dispatch keys a File ownership row on the item's colon prefix or board short name
+    (`task_keys`), and the audit read only the full item and the Tasks `name` — so a row the
+    coordinator had rewritten to the short form joined nothing, and every done task behind it was
+    orphaned the moment the Sessions table grew a row. The audit accepts dispatch's key set, and the
+    empty-roster escape stops covering rows when there are Sessions rows to ask instead.
+    """
+
+    ITEM = "Security audit: the upload handler, every path, findings into notes/audit.md"
+    TASK = f"| {ITEM} | Robin | done 10:00 | 09:00 |  | Checklist: Security audit |"
+    SHORT_KEYED = "| Security audit | worktree wt-dirty (feat/dirty) |"
+    MISKEYED = "| ghost (unrelated) | worktree wt-dirty (feat/dirty) |"
+
+    def row(self, context: str, tree: str = "wt-a") -> al.OwnerRow:
+        return al.parse_ownership(f"| {context} | worktree {tree} (feat/a) |")[0]
+
+    def test_a_row_keyed_on_a_short_name_is_not_orphaned_when_sessions_has_rows(self) -> None:
+        """The issue's repro: a done one-shot's short-keyed row, one just-spawned session row, ref empty."""
+        tmp, root = workspace(self.TASK, self.SHORT_KEYED, sessions=session_row("sam", ref=""))
+        self.addCleanup(tmp.cleanup)
+        report = al.audit(root, "2026-09-17")
+        self.assertEqual(report.orphans, [], report.lines)
+
+    def test_a_row_keyed_on_a_short_colon_head_is_not_orphaned_either(self) -> None:
+        """A head under 12 characters is one `short_name` does not cut to, so the colon prefix is the key."""
+        item = "Tab check: confirm this session came up in a tab and change nothing at all"
+        task = f"| {item} | Robin | done 10:00 | 09:00 |  | Checklist: Tab check |"
+        tmp, root = workspace(task, "| Tab check | worktree wt-dirty (feat/dirty) |",
+                              sessions=session_row("sam", ref=""))
+        self.addCleanup(tmp.cleanup)
+        self.assertEqual(al.audit(root, "2026-09-17").orphans, [])
+
+    def test_keyed_on_reads_the_colon_prefix_and_short_name(self) -> None:
+        """Dispatch's key set (`task_keys`), read as audit reads prose: bare, emphasis and refs stripped."""
+        item = "Security audit: the upload handler"
+        self.assertTrue(al.keyed_on(self.row("Security audit"), item, ""))
+        self.assertTrue(al.keyed_on(self.row("**Security audit** [a1b2c3]"), item, ""))
+        self.assertFalse(al.keyed_on(self.row("Security"), item, ""))
+
+    def test_a_row_keyed_on_nothing_is_still_orphaned_when_sessions_has_rows(self) -> None:
+        """The widening must not blanket-accept: a context no key of the task names stays dead."""
+        tmp, root = workspace(self.TASK, self.MISKEYED, sessions=session_row("sam"))
+        self.addCleanup(tmp.cleanup)
+        [orphan] = al.audit(root, "2026-09-17").orphans
+        self.assertIn("wt-dirty", str(orphan))
+
+    def test_sessions_rows_that_name_no_one_do_not_re_arm_the_escape(self) -> None:
+        """The escape answers for an empty table; a table with rows is asked, and a row keyed on
+        nothing — no task key, no listed context, no ref — is dead."""
+        tmp, root = workspace(self.TASK, self.MISKEYED, sessions=session_row(""))
+        self.addCleanup(tmp.cleanup)
+        [orphan] = al.audit(root, "2026-09-17").orphans
+        self.assertIn("wt-dirty", str(orphan))
+        self.assertIn("is not in ## Sessions", str(orphan))
 
 
 class TreesOnDiskTest(unittest.TestCase):
@@ -3260,7 +3316,9 @@ class OwnershipRowKeyedOnNameTest(unittest.TestCase):
         return Task(item=item, owner=owner, state="running 09:10", since="09:00", due="", checklist="", name=name)
 
     def claim(self, row: al.OwnerRow, tasks: list[Task], roster: set[str]):
-        return al.row_claim(row, tasks, roster, set(), "robin")
+        # The roster is the listed sessions' names; #553's escape asks the table, so say it has rows.
+        rows = tuple(Session("", name, "", "", "", "", "", "", "") for name in roster)
+        return al.row_claim(row, tasks, roster, set(), "robin", sessions=rows)
 
     def test_a_name_keyed_rows_claim_is_live_while_its_tasks_owner_is_listed(self) -> None:
         self.assertTrue(self.claim(self.row("alpha"), [self.task("alpha")], {"sam"}).live)
