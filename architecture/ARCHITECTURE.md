@@ -23,10 +23,10 @@ Each script under `scripts/`, the two launchers and the hook belong to one circl
 | Circle | Modules |
 |---|---|
 | Entities | `tracker.py`, `md.py`, `clock.py`, `runtimes.py`, `findings.py`, `ownership.py`, `orphans.py`, `estimate.py`, `tracker_log.py`, `tree_state.py`, the finding types of `audit_tasks.py`, the message format of `inbox.py` |
-| Use Cases | the ownership rules and judgements of `audit_tasks.py`, `dispatch_prompt.py`, `one_shot.py`, `kanban.py`, `merge_ready.py`, `merge_approved.py`, `review_threads.py`, `task_forge.py`, the ready-task and stagnation judgements of `flow.py` |
+| Use Cases | the ownership rules and judgements of `audit_tasks.py`, `dispatch_prompt.py`, `one_shot.py`, `kanban.py`, `merge_ready.py`, `merge_approved.py`, `review_threads.py`, `task_forge.py`, the ready-task and stagnation judgements of `flow.py`, `performance.py` |
 | Interface Adapters, presenters | `fragment.py`, `columns.py`, `panels.py`, `gantt.py`, `flow_chart.py`, `render_board.py`, `decision_page.py`, `issue_page.py`, `source_page.py`, `module_graph.py`, `workers_page.py`, `page_reload.py`, and the page module of section 3 |
 | Interface Adapters, gateways | `backlog.py`, `backlog_ref.py`, `board_sources.py`, `workspace.py`, `settings.py`, `tracker_read.py`, `tracker_write.py`, `forge_review.py`, `one_shot_report.py`, `tree_claims.py`, the git and forge fact gathering of `audit_tasks.py`, the mailbox storage of `inbox.py` |
-| Frameworks and Drivers | `git_trees.py`, `git_view.py`, the command line of `inbox.py`, the audit orchestration and command line of `audit_tasks.py`, `notify.py`, `notify_service.py`, `process_status.py`, `session_exec.py`, `spawn_session.py`, `probe_health.py`, `pages.py`, `chief_of_stuff.py`, `start_coordinator.py`, `hooks/hooks.json`, `board_guard.py`, `init_workspace.py`, `install_model_guidance.py`, `make_worktree.py`, `migrate_backlog.py`, `one_shot_result.py`, `shell_setup.py`, the command line and tick orchestration of `flow.py` |
+| Frameworks and Drivers | `git_trees.py`, `git_view.py`, the command line of `inbox.py`, the audit orchestration and command line of `audit_tasks.py`, `notify.py`, `notify_service.py`, `process_status.py`, `session_exec.py`, `spawn_session.py`, `probe_health.py`, `pages.py`, `chief_of_stuff.py`, `start_coordinator.py`, `hooks/hooks.json`, `board_guard.py`, `init_workspace.py`, `install_model_guidance.py`, `make_worktree.py`, `migrate_backlog.py`, `one_shot_result.py`, `shell_setup.py`, the command line and tick orchestration of `flow.py`, `performance_report.py` |
 
 ## 5. Enforcement
 
@@ -59,3 +59,23 @@ A module has one reason to change. `inbox.py` and `audit_tasks.py`, the two larg
 | `audit_tasks.py` | The audit orchestration and the command line | Frameworks and Drivers |
 
 Each module keeps re-exporting the names its callers import until they import from the new modules. Where the module boundaries and their names fall is decided when the work is assigned.
+
+## 9. Agent performance
+
+Agent performance is measured from the one-shot launcher lines in the `## Log` of every day's tracker, listed by `workspace.daily_trackers`. No other store, cache or copy is kept. The one-shot reports are not a source, because a launch deletes the earlier reports for its task and a report holds no runtime, model or times. Interactive sessions are not measured.
+
+The started line records the agent type as `type=<agent type>` after the effort, only when one is set, as it records the model and effort. `one_shot.record_launch` passes the type the launcher already receives. Runs started before this have no type.
+
+A run is a started line paired with the same worker's completed, human-review or relaunch line, across consecutive days' trackers, so a run that ends after midnight keeps its end. The pairing is one function in `tracker_log.py`, which returns `Run` records, and every reader that pairs runs uses it: the issue page drops its own same-day pairing.
+
+| Boundary | Signature | Circle |
+|---|---|---|
+| `tracker_log.Run` | `worker: str, task: str, runtime: str, model: str, effort: str, agent_type: str, started: datetime, ended: datetime \| None, outcome: str \| None` | Entities |
+| `tracker_log.runs` | `(trackers: list[tuple[date, str]], zone: ZoneInfo) -> list[Run]` | Entities |
+| `performance.Row` | `period: date, runtime: str, model: str, effort: str, agent_type: str, started: int, completed: int, human_review: int, relaunched: int, median_minutes: int \| None` | Use Cases |
+| `performance.table` | `(runs: list[Run], since: date, until: date, by: str) -> list[Row]` | Use Cases |
+| `performance_report.main` | `(argv: list[str] \| None = None) -> int` | Frameworks and Drivers |
+
+For each day or week and each key of runtime, model, effort and agent type, the report counts the runs started, completed, sent to human review and relaunched, and the median minutes from start to end. A run with no model or effort on its started line is keyed by what is there. `performance.py` reads no file; `performance_report.py` reads the trackers, calls `performance.table` and prints one table. It is the `performance` command: `chief-of-stuff performance --since DATE [--until DATE] [--by day|week]`. No board panel or page shows it.
+
+Review findings are not counted until review reports have one shape (issue #563). Then findings per task are joined to runs by the task on the started line.
