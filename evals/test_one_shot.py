@@ -9,6 +9,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -1818,8 +1819,85 @@ class RunTest(unittest.TestCase):
             self._run(self._fake('status: done\nreason: r\nchanges: c\n', write_partial=False))
         self.assertEqual(self.tracker.read_text(), before)
 
+    def test_a_restarted_coordinator_adopts_a_finished_one_shots_run(self):
+        # #99: the worker runs in its own session, so a coordinator restart kills the launcher and
+        # leaves the row running, not the run; the restarted coordinator adopts the finished run
+        # from the tree's evidence, and the row waits, not running.
+        release = self.root / "release.txt"
+        fake = self._fake('status: done\nreason: audited\nchanges: none\n', write_partial=False)
+        fake.write_text(fake.read_text().replace(
+            "(root / 'worker-result.toon').write_text",
+            f"for _ in range(600):\n    if Path({str(release)!r}).exists(): break\n"
+            "    __import__('time').sleep(0.05)\n(root / 'worker-result.toon').write_text", 1))
+        driver = ("import sys; from pathlib import Path; sys.path.insert(0, %r); import one_shot; "
+                  "one_shot.resolve = lambda name: %r; one_shot.login_argv = lambda argv: argv; "
+                  "one_shot.run(root=Path(%r), day='2026-09-18', task='Security audit', cwd=Path(%r), "
+                  "name='worker01', runtime='codex', agent_type=None, model='', effort='', dry_run=False)"
+                  % (str(Path(one_shot.__file__).resolve().parent), str(fake), str(self.root), str(self.tree)))
+        launcher = subprocess.Popen([sys.executable, "-c", driver], start_new_session=True)
+        try:
+            deadline = time.monotonic() + 30
+            while not (self.root / "during.md").exists():
+                self.assertIsNone(launcher.poll(), "the launcher died before the worker started")
+                self.assertLess(time.monotonic(), deadline, "the worker never started")
+                time.sleep(0.05)
+            os.killpg(launcher.pid, signal.SIGKILL)  # the restart: the launcher's tree, not the worker's
+        finally:
+            launcher.wait()
+        release.write_text("go\n")
+        deadline = time.monotonic() + 30
+        while not (self.tree / one_shot.RESULT).exists():
+            self.assertLess(time.monotonic(), deadline, "the worker did not outlive the restart")
+            time.sleep(0.05)
+        self.assertTrue((self.tree / one_shot.PIDFILE).exists(), "the dead launcher left no pid file")
+        self.assertIn("| Security audit | worker01 | running", self.tracker.read_text())
+        reports = one_shot.adopt(self.root, day="2026-09-18")
+        self.assertEqual(len(reports), 1)
+        self.assertEqual(reports[0]["status"], "done")
+        self.assertIn("the launcher died before reconciling this run", reports[0]["reason"])
+        self.assertIn("| Security audit | Robin | waiting |", self.tracker.read_text())
+
+    def test_a_tree_with_a_result_but_no_report_copy_is_adopted(self):
+        # #99: a run whose worker finished but whose launcher died before reconciling is adopted
+        # from the tree's evidence: the report is written and the row waits, not running.
+        self._stopped_tree()
+        (self.tree / one_shot.RESULT).write_text('status: done\nreason: audited\nchanges: none\n')
+        self.tracker.write_text(TRACKER.replace(
+            "| Security audit | unassigned | open | 09:00 | |",
+            "| Security audit | worker01 | running 09:01 | |").replace(
+            "| Security audit | `src/a/` |", "| Security audit | `src/a/`; worktree `worker` (main) |"))
+        reports = one_shot.adopt(self.root, day="2026-09-18")
+        self.assertEqual(len(reports), 1)
+        self.assertEqual(reports[0]["status"], "done")
+        self.assertIn("the launcher died before reconciling this run", reports[0]["reason"])
+        self.assertIn("| Security audit | Robin | waiting |", self.tracker.read_text())
+        copy = toon_decode((self.root / dispatch_prompt.REPORTS_DIR / "worker.toon").read_text())
+        self.assertEqual(copy["task"], "Security audit")
+
+    def test_adopt_leaves_a_live_worker_an_answered_tree_and_an_open_row_alone(self):
+        # #99: a worker still running keeps its row; a tree whose latest run was already reconciled
+        # is not adopted twice; a row that is not running, or a tree the row does not name, is
+        # nobody's to adopt.
+        running = TRACKER.replace(
+            "| Security audit | unassigned | open | 09:00 | |",
+            "| Security audit | worker01 | running 09:01 | |").replace(
+            "| Security audit | `src/a/` |", "| Security audit | `src/a/`; worktree `worker` (main) |")
+        self._stopped_tree(live=True)
+        self.tracker.write_text(running)
+        self.assertEqual(one_shot.adopt(self.root, day="2026-09-18"), [])
+        self._stopped_tree()
+        reports = self.root / dispatch_prompt.REPORTS_DIR
+        reports.mkdir(parents=True)
+        (reports / "worker.toon").write_text("status: done\nreason: already reconciled\n")
+        self.tracker.write_text(running)
+        self.assertEqual(one_shot.adopt(self.root, day="2026-09-18"), [])
+        (reports / "worker.toon").unlink()
+        self.tracker.write_text(TRACKER)  # the row is open again, not running
+        self.assertEqual(one_shot.adopt(self.root, day="2026-09-18"), [])
+        self.tracker.write_text(running.replace("worktree `worker` (main)", "worktree `other` (main)"))
+        self.assertEqual(one_shot.adopt(self.root, day="2026-09-18"), [])
+
     def test_dry_run_writes_nothing(self):
-        fake = self._fake('status: done\nreason: done\nchanges: changed\n')
         with mock.patch.object(one_shot, "resolve", return_value=str(fake)):
             result = one_shot.run(root=self.root, day="2026-09-18", task="Security audit",
                                   cwd=self.tree, name="worker01", runtime="cursor", agent_type=None,
