@@ -87,8 +87,9 @@ class HoldCauseTest(unittest.TestCase):
         self.tasks = {t.name: t for t in parse_tracker(TRACKER).tasks}
         self.kanban = replace(KANBAN, hold_stages=("triage",))
 
-    def cause(self, name: str, refs=frozenset(), kanban=None, workers=frozenset()) -> str:
-        return task_forge.hold_cause(self.tasks[name], kanban or self.kanban, None, workers, refs, None)
+    def cause(self, name: str, refs=frozenset(), kanban=None, workers=frozenset(), task=None) -> str:
+        return task_forge.hold_cause(task or self.tasks[name], kanban or self.kanban, None, workers=workers,
+                                     pending_refs=refs, home=None, lane=LANES["build"])
 
     def test_a_pending_decision_on_the_issue_comes_first(self) -> None:
         self.assertEqual(self.cause("Write README", {"#7"}), "decision")
@@ -98,11 +99,33 @@ class HoldCauseTest(unittest.TestCase):
 
     def test_else_a_waiting_task_names_the_person_it_waits_on(self) -> None:
         waiting = replace(self.tasks["Console"], state="waiting")
-        self.assertEqual(task_forge.hold_cause(waiting, self.kanban, None, frozenset(), frozenset(), None), "Robin")
-        self.assertEqual(task_forge.hold_cause(waiting, self.kanban, None, {"Robin"}, frozenset(), None), "")
+        self.assertEqual(self.cause("", task=waiting), "Robin")
+        self.assertEqual(self.cause("", task=waiting, workers={"Robin"}), "")
 
     def test_nothing_holds_a_running_task_off_a_hold_stage(self) -> None:
         self.assertEqual(self.cause("Cut the release"), "")
+
+    def test_nothing_holds_a_done_task(self) -> None:
+        # #240: a finished task is not held, though its issue has a pending decision and it sits at a hold stage.
+        self.assertEqual(self.cause("", {"#7"}, task=replace(self.tasks["Write README"], state="done")), "")
+
+    def test_a_waiting_task_with_no_owner_waits_on_no_one(self) -> None:
+        # `unassigned` is the tracker's word for no owner (#193), not a person to wait on.
+        self.assertEqual(self.cause("", task=replace(self.tasks["Console"], state="waiting", owner="unassigned")), "")
+
+    def test_the_build_flag_and_the_tile_count_every_cause(self) -> None:
+        # #228 review: the BUILD flag and the NEEDS INPUT tile read the same cause as the Flow note, not only a
+        # [kanban] hold stage: a task waiting on a person, and a task whose issue a pending decision holds.
+        waiting = TRACKER.replace("| Robin | open | 09:00 | 17:00 | S | build | triage |",
+                                  "| Robin | waiting | 09:00 | 17:00 | S | build | triage |")
+        for case, tracker, refs in (("waiting on Robin", waiting, frozenset()), ("decision", TRACKER, {"#9"})):
+            with self.subTest(case=case):
+                html = rb.render(tracker, parse_coordinator(CLAUDE_MD, today=NOW.date()), NOW, lanes=LANES, kanban=KANBAN,
+                                 sources=SOURCES, pending_refs=refs)
+                tiles = dict(re.findall(r'<span class="panels-label">([A-Z ]+)</span><b class="panels-count">(\d+)</b>', html))
+                self.assertEqual(tiles["NEEDS INPUT"], "1")
+                self.assertEqual(re.findall(r'<div class="columns-tag columns-flag" data-cat="hold">([^<]*)<', html),
+                                 ["NEEDS INPUT"])
 
 
 class MergeOrder(unittest.TestCase):
