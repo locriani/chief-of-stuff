@@ -89,9 +89,11 @@ def hold_began(held: dict[Task, str], moves: list[Move], pending_refs: Mapping[s
 
 def went_held(held: dict[Task, str], began: dict[Task, datetime | None], since: datetime) -> int:
     """How many of the `held` tasks' holds began after `since` (#229). A hold whose start is not known is not counted:
-    it would claim a change nobody can date. The Log keeps minutes, so a hold logged in `since`'s own minute counts."""
-    since = since.replace(second=0, microsecond=0)
-    return sum(1 for t in held if (at := began.get(t)) is not None and at >= since)
+    it would claim a change nobody can date. The Log keeps minutes, so a gate hold logged in `since`'s own minute
+    counts; a decision's asked time keeps seconds, so it is compared as it is."""
+    minute = since.replace(second=0, microsecond=0)
+    return sum(1 for t, cause in held.items()
+               if (at := began.get(t)) is not None and at >= (since if cause == "decision" else minute))
 
 
 def held_names(held: dict[Task, str]) -> dict[str, str]:
