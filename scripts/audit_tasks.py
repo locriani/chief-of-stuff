@@ -8,7 +8,9 @@ remain inside the workspace root.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import re
+import subprocess
 import sys
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
@@ -29,6 +31,7 @@ import tracker_log  # noqa: E402
 import kanban as kanban_tool  # noqa: E402
 import ownership  # noqa: E402
 import git_trees  # noqa: E402
+import git_view  # noqa: E402
 from tree_state import UNCOMMITTED_UNKNOWN  # noqa: E402
 from orphans import Claim, Orphan, Unclaimed, judge  # noqa: E402
 from tree_claims import Claims, one_shot_claims, registry_claims  # noqa: E402
@@ -550,15 +553,21 @@ def _resolve(root: Path, trees: str, name: str) -> tuple[Path | None, str, str]:
     return candidate, "ok", ""
 
 
-def _handle(root: Path, trees: str, seen: list[Path]) -> Path | None:
-    """Somewhere to ask git about a branch whose tree is gone: a tree still on disk that git can read."""
+def _handle(root: Path, trees: str, seen: list[Path],
+            view_of=None) -> Path | None:
+    """Somewhere to ask git about a branch whose tree is gone: a tree still on disk that git can read. With
+    `view_of` (the audit's per-tree views, #548) the probes run inside the candidate's own view when it has one."""
     base = (root / trees) if trees else root
     kids = [c for c in sorted(base.glob("*")) if (c / ".git").exists()] if base.is_dir() else []
     found = [*seen, *kids, *([root] if (root / ".git").exists() else [])]
-    return next((c for c in found if git_trees.git(["rev-parse", "HEAD"], c)[0] == 0), found[0] if found else None)
+    for c in found:
+        code = git_trees.git(["rev-parse", "HEAD"], c, view_of(c) if view_of else None)[0]
+        if code == 0:
+            return c
+    return found[0] if found else None
 
 
-def missing_tree(handle: Path | None, name: str, detail: str) -> str:
+def missing_tree(handle: Path | None, name: str, detail: str, view=None) -> str:
     """Finding 46. A missing tree means two opposite things and the script printed one line for both.
 
     A branch that is an ancestor of main is a session that tidied up after itself. A branch that is
@@ -568,12 +577,12 @@ def missing_tree(handle: Path | None, name: str, detail: str) -> str:
     if handle is None:
         return f"{name}: no worktree, and no tree left on disk to ask git in"
     for cand in branch_candidates(name, detail):
-        code = git_trees.git(["rev-parse", "--verify", "--quiet", f"refs/heads/{cand}"], handle)[0]
+        code = git_trees.git(["rev-parse", "--verify", "--quiet", f"refs/heads/{cand}"], handle, view)[0]
         if code == 1:
             continue
         if code != 0:
             return f"{name}: no worktree — whether it has a branch is {UNREADABLE_PHRASE}"
-        merged = _on_main(f"refs/heads/{cand}", handle)  # the branch itself: a tag of the same name would shadow `cand`
+        merged = _on_main(f"refs/heads/{cand}", handle, view)  # the branch itself: a tag of the same name would shadow `cand`
         if merged == 0:
             return f"{name}: no worktree — branch {cand} is on main; merged and cleaned up"
         if merged != 1:
@@ -582,19 +591,19 @@ def missing_tree(handle: Path | None, name: str, detail: str) -> str:
     return f"{name}: no worktree and no branch by that name — the row names a tree that was never created"
 
 
-def _on_main(rev: str, tree: Path) -> int:
+def _on_main(rev: str, tree: Path, view=None) -> int:
     """Whether `rev` is on main, as an exit code: 0 when origin/main as last fetched (a new tree's fetch, `--sha`) or
     local main holds it, so a forge merge reads as landed while local main lags, and an integration not yet pushed reads
     as landed too (#567); 1 when every main that exists says no; else unknown (git's failing code, or 128 with no main
     at all), so a comparison that failed beside a no is no proof. Each main is looked up by its exact ref name and
     compared by object id, so no branch or tag named like it stands in for it. The audit itself never fetches."""
-    code, out = git_trees.git(["for-each-ref", "--format=%(refname) %(objectname)", git_trees.REF, git_trees.LOCAL_REF], tree)
+    code, out = git_trees.git(["for-each-ref", "--format=%(refname) %(objectname)", git_trees.REF, git_trees.LOCAL_REF], tree, view)
     if code:
         return code
     mains = [oid for name, _, oid in (line.partition(" ") for line in out.splitlines()) if name in (git_trees.REF, git_trees.LOCAL_REF)]
     verdict = 1 if mains else 128
     for oid in mains:
-        code = git_trees.git(["merge-base", "--is-ancestor", rev, oid], tree)[0]
+        code = git_trees.git(["merge-base", "--is-ancestor", rev, oid], tree, view)[0]
         if code == 0:
             return 0
         if code != 1:
@@ -602,21 +611,21 @@ def _on_main(rev: str, tree: Path) -> int:
     return verdict
 
 
-def _merged(worktree: Path) -> int:
+def _merged(worktree: Path, view=None) -> int:
     """git's exit code for "is HEAD on main": 0 yes, 1 no, anything else git could not say."""
-    return _on_main("HEAD", worktree)
+    return _on_main("HEAD", worktree, view)
 
 
-def _state(worktree: Path) -> tuple[str, str]:
+def _state(worktree: Path, view=None) -> tuple[str, str]:
     """(branch, why it is not done), where the why is empty when the work is on main and committed."""
-    branch = git_trees.branch_of(worktree)
-    code, dirty = git_trees.git(["status", "--porcelain"], worktree)
+    branch = git_trees.branch_of(worktree, view)
+    code, dirty = git_trees.git(["status", "--porcelain"], worktree, view)
     reasons = []
     if code != 0:
         reasons.append(UNCOMMITTED_UNKNOWN)
     elif dirty:
         reasons.append(f"{len(dirty.splitlines())} uncommitted file(s)")
-    merged = _merged(worktree)
+    merged = _merged(worktree, view)
     if merged == 1:
         reasons.append("not on main")
     elif merged != 0:
@@ -672,7 +681,7 @@ def task_sha(state: str) -> str:
     return rest[0] if rest else ""
 
 
-def landed(sha: str, worktree: Path) -> tuple[str, str]:
+def landed(sha: str, worktree: Path, view=None) -> tuple[str, str]:
     """Did the change this task claimed actually reach main? Finding 116(a). Returns a verdict and,
     where the citation itself is the problem, the complaint to print.
 
@@ -695,20 +704,20 @@ def landed(sha: str, worktree: Path) -> tuple[str, str]:
         return UNKNOWN_SHA, ""
     if not SHA.match(sha.lower()):
         return UNKNOWN_SHA, f"{sha!r} is not a commit id"
-    if git_trees.git(["cat-file", "-e", f"{sha}^{{commit}}"], worktree)[0] != 0:
+    if git_trees.git(["cat-file", "-e", f"{sha}^{{commit}}"], worktree, view)[0] != 0:
         return UNKNOWN_SHA, f"no commit {sha} here, so the citation cannot be checked"
-    code = _on_main(sha, worktree)
+    code = _on_main(sha, worktree, view)
     if code not in (0, 1):
         return UNKNOWN_SHA, f"whether {sha} is on main is {UNREADABLE_PHRASE}"
     return (LANDED if code == 0 else NOT_LANDED), ""
 
 
-def _push_gap(worktree: Path) -> str:
+def _push_gap(worktree: Path, view=None) -> str:
     """Report main's commit and its distance from origin/main for verification."""
     # Use main, not this worktree's HEAD.
-    code, sha = git_trees.git(["rev-parse", "--short", "main"], worktree)
+    code, sha = git_trees.git(["rev-parse", "--short", "main"], worktree, view)
     at = f"main {sha} " if code == 0 and sha and " " not in sha else "main "
-    code, counts = git_trees.git(["rev-list", "--left-right", "--count", "main...origin/main"], worktree)
+    code, counts = git_trees.git(["rev-list", "--left-right", "--count", "main...origin/main"], worktree, view)
     if code != 0 or not counts:
         return f"{at}vs origin/main unknown"
     ahead, behind = (counts.split() + ["0", "0"])[:2]
@@ -817,84 +826,98 @@ def audit(root: Path, day: str, gh=None, check_issues: bool = True, now: datetim
     names: dict[Path, str] = {}
     stopped_at: set[str] = set()
     gone: dict[str, str] = {}
-    def visit(row: OwnerRow, name: str, task) -> None:
-        """One tree, once: its git state, and any task it reopens or stop it carries."""
-        path, kind, message = _resolve(root, trees, name)
-        if path is None:
-            if kind == "missing":
-                gone.setdefault(name, row.branches.get(name, ""))
-            elif name not in refused:
-                refused.add(name)
-                report.lines.append(message)
-            return
-        branch, why = _state(path)
-        if name not in handled:
-            handled.add(name)
-            seen.add(path)
-            order.append(path)
-            names.setdefault(path, name)
-            report.lines.append(_tree_line(name, branch, why))
-        if task is not None and task.kind == DONE:
-            sha = task_sha(task.state)
-            verdict, complaint = landed(sha, path)
-            if complaint and complaint not in sha_said:
-                sha_said.add(complaint)
-                report.lines.append(f"sha: {clip_name(_unmark(task.item))} \u2014 {complaint}; read as it was before")
-            # #547: an approved forge closure stands even while the branch is unmerged; no reopen either way.
-            if _unmark(task.item) not in approved:
-                if verdict == NOT_LANDED:
-                    report.reopen.append(Reopen(task.item, task.owner, f"{name} ({branch})", f"its sha {sha} is not on main"))
-                elif verdict == UNKNOWN_SHA and why:
-                    report.reopen.append(Reopen(task.item, task.owner, f"{name} ({branch})", why))
-        stop = read_stop(path)
-        if stop is not None and task is not None and task.kind not in SETTLED and name not in stopped_at:
-            stopped_at.add(name)
-            report.stopped.append(Stop(task.item, stop.get("stop", ""), stop.get("lands on", ""),
-                                       f"{name} ({branch})", task.state.strip()))
+    views: dict[Path, git_view.View | None] = {}
+    with contextlib.ExitStack() as stack:
 
-    for task in tasks:
-        rows, note = rows_for(task.item, task.owner, owners, key_name(task, roster, refs))
-        if note and note not in noted:
-            noted.add(note)
-            report.lines.append(note)
-        for row in rows:
+        def view_of(tree: Path) -> git_view.View | None:
+            """One opened view per tree for the whole audit (#548): every git read about `tree` runs inside it, and
+            the view is closed when the audit's git reads are done. A tree whose view cannot be built (`None`)
+            keeps the per-call behaviour — each of its reads then answers on its own."""
+            if tree not in views:
+                try:
+                    views[tree] = stack.enter_context(git_view.opened(tree, git_trees.audit_env()))
+                except (git_view.Unviewable, RuntimeError, ValueError, OSError, subprocess.SubprocessError):
+                    views[tree] = None
+            return views[tree]
+
+        def visit(row: OwnerRow, name: str, task) -> None:
+            """One tree, once: its git state, and any task it reopens or stop it carries."""
+            path, kind, message = _resolve(root, trees, name)
+            if path is None:
+                if kind == "missing":
+                    gone.setdefault(name, row.branches.get(name, ""))
+                elif name not in refused:
+                    refused.add(name)
+                    report.lines.append(message)
+                return
+            branch, why = _state(path, view_of(path))
+            if name not in handled:
+                handled.add(name)
+                seen.add(path)
+                order.append(path)
+                names.setdefault(path, name)
+                report.lines.append(_tree_line(name, branch, why))
+            if task is not None and task.kind == DONE:
+                sha = task_sha(task.state)
+                verdict, complaint = landed(sha, path, view_of(path))
+                if complaint and complaint not in sha_said:
+                    sha_said.add(complaint)
+                    report.lines.append(f"sha: {clip_name(_unmark(task.item))} \u2014 {complaint}; read as it was before")
+                # #547: an approved forge closure stands even while the branch is unmerged; no reopen either way.
+                if _unmark(task.item) not in approved:
+                    if verdict == NOT_LANDED:
+                        report.reopen.append(Reopen(task.item, task.owner, f"{name} ({branch})", f"its sha {sha} is not on main"))
+                    elif verdict == UNKNOWN_SHA and why:
+                        report.reopen.append(Reopen(task.item, task.owner, f"{name} ({branch})", why))
+            stop = read_stop(path)
+            if stop is not None and task is not None and task.kind not in SETTLED and name not in stopped_at:
+                stopped_at.add(name)
+                report.stopped.append(Stop(task.item, stop.get("stop", ""), stop.get("lands on", ""),
+                                           f"{name} ({branch})", task.state.strip()))
+
+        for task in tasks:
+            rows, note = rows_for(task.item, task.owner, owners, key_name(task, roster, refs))
+            if note and note not in noted:
+                noted.add(note)
+                report.lines.append(note)
+            for row in rows:
+                for name in row.worktrees:
+                    visit(row, name, task)
+
+        # Visit ownership rows even when no current task names their worktree.
+        for row in owners:
             for name in row.worktrees:
-                visit(row, name, task)
+                visit(row, name, None)
 
-    # Visit ownership rows even when no current task names their worktree.
-    for row in owners:
-        for name in row.worktrees:
-            visit(row, name, None)
-
-    # The trees on disk, not the rows that name them, are what the orphan check walks (#43).
-    for path in git_trees.discover(root, trees):
-        if path not in seen:
-            branch, why = _state(path)
-            seen.add(path)
-            order.append(path)
-            names[path] = path.name
-            report.lines.append(_tree_line(path.name, branch, why))
-    claims: Claims = {}
-    for row in owners:
-        for name in row.worktrees:
-            path = _resolve(root, trees, name)[0]
-            if path is not None:
-                claims.setdefault(path, []).append(row_claim(row, tasks, roster, refs, cfg.user, tracker.sessions))
-    for source in (registry_claims(root), one_shot_claims((root / trees).resolve())):
-        for path, found in source.items():
-            claims.setdefault(path, []).extend(found)
-    for path in order:
-        finding = judge(names[path], git_trees.read_state(path), claims.get(path, []))
-        if isinstance(finding, Orphan):
-            report.orphans.append(finding)
-        elif isinstance(finding, Unclaimed):
-            report.unclaimed.append(finding)
-    handle = _handle(root, trees, order)
-    for name, detail in gone.items():
-        report.lines.append(missing_tree(handle, name, detail))
-    if order:
-        # All worktrees share the same main and origin/main refs.
-        report.lines.append(_push_gap(order[0]))
+        # The trees on disk, not the rows that name them, are what the orphan check walks (#43).
+        for path in git_trees.discover(root, trees):
+            if path not in seen:
+                branch, why = _state(path, view_of(path))
+                seen.add(path)
+                order.append(path)
+                names[path] = path.name
+                report.lines.append(_tree_line(path.name, branch, why))
+        claims: Claims = {}
+        for row in owners:
+            for name in row.worktrees:
+                path = _resolve(root, trees, name)[0]
+                if path is not None:
+                    claims.setdefault(path, []).append(row_claim(row, tasks, roster, refs, cfg.user, tracker.sessions))
+        for source in (registry_claims(root), one_shot_claims((root / trees).resolve())):
+            for path, found in source.items():
+                claims.setdefault(path, []).extend(found)
+        for path in order:
+            finding = judge(names[path], git_trees.read_state(path, view_of(path)), claims.get(path, []))
+            if isinstance(finding, Orphan):
+                report.orphans.append(finding)
+            elif isinstance(finding, Unclaimed):
+                report.unclaimed.append(finding)
+        handle = _handle(root, trees, order, view_of)
+        for name, detail in gone.items():
+            report.lines.append(missing_tree(handle, name, detail, view_of(handle) if handle else None))
+        if order:
+            # All worktrees share the same main and origin/main refs.
+            report.lines.append(_push_gap(order[0], view_of(order[0])))
     report.lines.extend(group_reopens(report.reopen))
     report.lines.extend(str(o) for o in report.orphans)
     report.lines.extend(str(u) for u in report.unclaimed)

@@ -386,28 +386,44 @@ def run(args: list[str], path: Path, *, env: dict[str, str], timeout: int = 15,
         base: Path | None = None) -> subprocess.CompletedProcess[str]:
     """Build, read and remove a view within one subprocess time budget."""
     revisions, paths = _check_args(args)
-    command = args[0]
     deadline = time.monotonic() + timeout
     if paths:
         layout = locate(path)
         for operand in paths:
             _check_operand(operand, layout.tree or layout.gitdir)
     with _opened(path, env, base, deadline) as view:
-        cwd = view.layout.tree or Path(view.env["GIT_DIR"])
-        for revision in revisions:
-            resolved = _run(["rev-parse", "--revs-only", "--no-flags", "--end-of-options", revision],
-                            cwd=cwd, env=view.env, timeout=_remaining(deadline))
-            if (resolved.returncode or not resolved.stdout
-                    or any(not re.fullmatch(r"\^?" + _OID, oid) for oid in resolved.stdout.splitlines())):
-                raise Unviewable("paths require an explicit separator")
-        if command not in _OBJECT_ONLY:
-            index = _run(["ls-files", "--stage", "-z"], cwd=cwd, env=view.env,
-                         text=False, timeout=_remaining(deadline))
-            if index.returncode:
-                raise Unviewable("index is unreadable")
-            if any(entry.startswith(b"160000 ") for entry in index.stdout.split(b"\0")):
-                raise Unviewable("submodules are not inspected")
-        return _run(args, cwd=cwd, env=view.env, timeout=_remaining(deadline))
+        return _finish(view, args, revisions, deadline)
+
+
+def in_view(view: View, args: list[str], *, timeout: int) -> subprocess.CompletedProcess[str]:
+    """One allowed read against an open view, on its own budget (#548): every argument is checked the way `run`
+    checks it — against the view's own layout — so sharing the view never widens what a read may do."""
+    revisions, paths = _check_args(args)
+    deadline = time.monotonic() + timeout
+    for operand in paths:
+        _check_operand(operand, view.layout.tree or view.layout.gitdir)
+    return _finish(view, args, revisions, deadline)
+
+
+def _finish(view: View, args: list[str], revisions: list[str],
+            deadline: float) -> subprocess.CompletedProcess[str]:
+    """The read `run` and `in_view` share: revision and submodule checks on the view, then the command."""
+    command = args[0]
+    cwd = view.layout.tree or Path(view.env["GIT_DIR"])
+    for revision in revisions:
+        resolved = _run(["rev-parse", "--revs-only", "--no-flags", "--end-of-options", revision],
+                        cwd=cwd, env=view.env, timeout=_remaining(deadline))
+        if (resolved.returncode or not resolved.stdout
+                or any(not re.fullmatch(r"\^?" + _OID, oid) for oid in resolved.stdout.splitlines())):
+            raise Unviewable("paths require an explicit separator")
+    if command not in _OBJECT_ONLY:
+        index = _run(["ls-files", "--stage", "-z"], cwd=cwd, env=view.env,
+                     text=False, timeout=_remaining(deadline))
+        if index.returncode:
+            raise Unviewable("index is unreadable")
+        if any(entry.startswith(b"160000 ") for entry in index.stdout.split(b"\0")):
+            raise Unviewable("submodules are not inspected")
+    return _run(args, cwd=cwd, env=view.env, timeout=_remaining(deadline))
 
 
 def signals(layout: Layout) -> frozenset[str]:

@@ -465,6 +465,36 @@ class AuditTest(unittest.TestCase):
         self.assertTrue(any(line.startswith("wt-unmerged (feat/open): on main") for line in report.lines), report.lines)
 
 
+class ViewReuseTest(unittest.TestCase):
+    """#548: the audit opens one git view per tree and reuses it for every read about that tree — branch, status,
+    merge, the cited sha — instead of building and removing one view per read."""
+
+    def test_an_audit_builds_a_low_constant_number_of_views_per_tree(self):
+        tmp, root = workspace(
+            "| Open branch work | robin | done 10:00 | 09:00 |  | Checklist: Open branch work |",
+            "| robin | worktree wt-unmerged (feat/open) |",
+        )
+        self.addCleanup(tmp.cleanup)
+        # A cited sha, so `landed`'s reads ride the same per-tree view too.
+        sha = git("rev-parse", "HEAD", cwd=root / "trees" / "wt-unmerged")
+        tracker = root / "daily" / "2026-09-17-tracker.md"
+        tracker.write_text(tracker.read_text().replace("done 10:00 |", f"done 10:00 {sha} |"))
+        builds: list[Path] = []
+        real = git_view._opened
+
+        @contextlib.contextmanager
+        def counting(path, env, base, deadline):
+            builds.append(path)
+            with real(path, env, base, deadline) as view:
+                yield view
+
+        with patch.object(git_view, "_opened", counting):
+            report = al.audit(root, "2026-09-17")
+        self.assertEqual([r.task for r in report.reopen], ["Open branch work"], "the audit still answers")
+        # Three trees on disk (wt-merged, wt-unmerged, wt-dirty), one view each; the used-to-be ~10-12 builds per tree.
+        self.assertLessEqual(len(builds), 4, f"one view per tree, not per read: {len(builds)} built for {builds}")
+
+
 class OnMainTest(unittest.TestCase):
     """#567 review: either main holding the commit lands it; "not on main" needs every main that exists to say so, so a
     comparison git could not make stays unknown. Each main is found by its exact ref name and compared by object id."""
@@ -475,7 +505,7 @@ class OnMainTest(unittest.TestCase):
         """`origin` and `local` are merge-base's answer for each main, None when that main does not exist."""
         answers = {self.ORIGIN: origin, self.LOCAL: local}
 
-        def git(args, tree):
+        def git(args, tree, view=None):
             if args[0] == "for-each-ref":
                 self.assertEqual(args[2:], [git_trees.REF, git_trees.LOCAL_REF])
                 refs = ((git_trees.REF, self.ORIGIN), (git_trees.LOCAL_REF, self.LOCAL))
@@ -3640,9 +3670,15 @@ class UnreadableTreeTest(unittest.TestCase):
                 plain.append(argv)
             return real(argv, *a, **kw)
 
-        with patch.object(git_view, "run", wraps=git_view.run) as viewed, patch.object(subprocess, "run", watch):
+        with patch.object(git_view, "run", wraps=git_view.run) as viewed, \
+                patch.object(git_view, "in_view", wraps=git_view.in_view) as reused, \
+                patch.object(subprocess, "run", watch):
             report = al.audit(self.root, "2026-09-17")
-        self.assertIn("--git-dir", " ".join(" ".join(c.args[0]) for c in viewed.call_args_list if c.args),
+        # #548: a healthy tree's read rides the audit's opened view (`in_view`); `run` builds one per call. Both are
+        # the view layer — the option-shaped name must reach git through one of them, never around it.
+        asked = [c.args[0] for c in viewed.call_args_list if c.args] \
+            + [c.args[1] for c in reused.call_args_list if len(c.args) > 1]
+        self.assertIn("--git-dir", " ".join(" ".join(a) for a in asked),
                       "the premise: the audit asked about the option-shaped name")
         self.assertEqual(plain, [], "#443 slice 4 deleted `_raw_git`: no read starts `git -C <tree>` itself")
         self.assertFalse(hasattr(git_trees, "_raw_git"))

@@ -460,6 +460,34 @@ class CodexAddDirArgsTest(unittest.TestCase):
                 with self.subTest(case=label):
                     self.assertEqual(git_trees.codex_add_dir_args(cwd), [])
 
+    def test_a_clone_with_a_separate_git_dir_grants_nothing(self):
+        # #544: `git init --separate-git-dir` leaves a `.git` file naming a git directory that is no linked worktree's
+        # gitdir of any repository, so the grant reads it and grants nothing.
+        with tempfile.TemporaryDirectory() as tmp:
+            clone, gitdir = Path(tmp) / "clone", Path(tmp) / "the-git-dir"
+            subprocess.run(["git", "init", "-q", "--separate-git-dir", str(gitdir), str(clone)], check=True)
+            self.assertEqual(git_trees.codex_add_dir_args(clone), [])
+
+    def test_a_linked_tree_whose_gitfile_names_a_path_outside_its_repository_grants_nothing(self):
+        # #544: a linked tree's gitfile rewritten to name some other repository's git directory: it is not a worktree
+        # gitdir with this tree's back-pointer, so nothing is granted.
+        with tempfile.TemporaryDirectory() as tmp:
+            base, tree = self._repo_with_linked_tree(tmp)
+            other = Path(tmp) / "elsewhere"
+            subprocess.run(["git", "init", "-q", str(other)], check=True)
+            (tree / ".git").write_text(f"gitdir: {other / '.git'}\n")
+            self.assertEqual(git_trees.codex_add_dir_args(tree), [])
+
+    def test_a_linked_tree_whose_worktrees_dir_is_a_symlink_grants_nothing(self):
+        # #544: the repository's `.git/worktrees` replaced by a symlink: the gitdir the gitfile names resolves
+        # elsewhere, the back-pointer layout check refuses it, and nothing is granted.
+        with tempfile.TemporaryDirectory() as tmp:
+            base, tree = self._repo_with_linked_tree(tmp)
+            worktrees = base / ".git/worktrees"
+            shutil.move(str(worktrees), str(base / ".git/wt-real"))
+            worktrees.symlink_to(base / ".git/wt-real", target_is_directory=True)
+            self.assertEqual(git_trees.codex_add_dir_args(tree), [])
+
     def test_a_corrupt_commondir_grants_nothing_and_does_not_raise(self):
         with tempfile.TemporaryDirectory() as tmp:
             base, tree = self._repo_with_linked_tree(tmp)

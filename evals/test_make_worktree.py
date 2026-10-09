@@ -267,19 +267,20 @@ class GitHelperErrorPathTest(unittest.TestCase):
 class GitTrustedTest(unittest.TestCase):
     """The write path is unchanged by #443: the clone's own git, in the user's environment, not the view."""
 
-    def test_it_runs_git_itself_on_the_users_env_and_never_through_the_view(self):
+    def test_it_runs_git_itself_with_the_write_pins_and_never_through_the_view(self):
         done = subprocess.CompletedProcess([], 0, stdout="ok\n", stderr="")
         with mock.patch.object(mw.subprocess, "run", return_value=done) as run, \
                 mock.patch.object(git_view, "run", side_effect=AssertionError("a write went through the view")):
             self.assertEqual(mw.git_trusted(["worktree", "list"], Path("/clone")), (0, "ok"))
-        self.assertEqual(run.call_args.args[0], ["git", "-C", "/clone", "worktree", "list"])
-        self.assertEqual(run.call_args.kwargs["env"], git_trees.user_env())
+        self.assertEqual(run.call_args.args[0], ["git", "-C", "/clone", *git_trees.GIT_WRITE_PINS, "worktree", "list"])
+        self.assertEqual(run.call_args.kwargs["env"], git_trees.write_env())
         self.assertEqual(run.call_args.kwargs["timeout"], mw.GIT_TIMEOUT)
 
 
 class WorktreeAddEnvTest(CloneCase):
-    """`worktree add` runs the clone's own post-checkout hook, and a hook in the user's own clone is trusted: that one call
-    runs in the user's environment (the repo-selecting variables dropped). Every read stays on the audit env."""
+    """`worktree add` runs in a clone whose config and hooks a worker can write (#556): the call carries the write
+    pins on its argv and runs on the write env — the audit's isolation plus only the caller's credential variables —
+    so no hook or helper the clone holds can run. Every read stays on the audit env."""
 
     def record(self):
         calls = []
@@ -291,25 +292,40 @@ class WorktreeAddEnvTest(CloneCase):
 
         return calls, spy
 
-    def test_a_post_checkout_hook_that_needs_a_writable_home_succeeds(self):
+    def plant_hook(self, body: str) -> Path:
+        """A post-checkout hook in the clone's own hooks directory: exactly what a worker with the git-dir grant can
+        write. The clone is a plain one, so `.git` is a directory and this is its default hooks path."""
         hook = self.clone / ".git" / "hooks" / "post-checkout"
-        hook.write_text(
-            f"#!{sys.executable}\n"
-            "import os, sys\n"
-            "try:\n"
-            "    os.makedirs(os.path.join(os.environ['HOME'], '.cache-marker'))\n"
-            "except OSError:\n"
-            "    sys.exit(1)\n"
-        )
+        hook.parent.mkdir(exist_ok=True)
+        hook.write_text(f"#!{sys.executable}\n" + body)
         hook.chmod(0o755)
+        return hook
+
+    def test_a_worker_written_post_checkout_hook_does_not_run(self):
+        """#556, the verified repro: a worker writes `.git/hooks/post-checkout` into the shared git directory its grant
+        makes writable; the launcher's next `worktree add` must not execute it."""
+        marker = self.root / "hook-ran"
+        self.plant_hook(f"from pathlib import Path\nPath({str(marker)!r}).write_text('fired')\n")
+        made = self.build()
+        self.assertTrue(made.path.is_dir())
+        self.assertFalse(marker.exists(), "the launcher's worktree add ran a hook the worker could have written")
+
+    def test_the_add_runs_even_when_a_hook_would_need_a_writable_home(self):
+        """The old contract ran the clone's own hook with the user's HOME; #556 withdraws that: the tree is made with
+        the hook dark, so nothing in it needs a writable home to begin with."""
         home = self.root / "user-home"
         home.mkdir()
+        self.plant_hook("import os, sys\n"
+                        "try:\n"
+                        "    os.makedirs(os.path.join(os.environ['HOME'], '.cache-marker'))\n"
+                        "except OSError:\n"
+                        "    sys.exit(1)\n")
         with mock.patch.dict(os.environ, {"HOME": str(home)}):
             made = self.build()
         self.assertTrue(made.path.is_dir())
-        self.assertTrue((home / ".cache-marker").is_dir(), "the hook ran with the user's HOME")
+        self.assertFalse((home / ".cache-marker").exists(), "the hook ran")
 
-    def test_the_add_call_runs_in_the_users_env_and_every_read_stays_on_the_audit_env(self):
+    def test_the_add_call_runs_on_the_write_env_and_every_read_stays_on_the_audit_env(self):
         home = self.root / "user-home"
         home.mkdir()
         repo_vars = {"GIT_DIR": str(self.root / "nowhere"), "GIT_WORK_TREE": str(self.root / "nowhere"), "GIT_INDEX_FILE": str(self.root / "nowhere.idx")}
@@ -321,16 +337,20 @@ class WorktreeAddEnvTest(CloneCase):
             views.append((args, kw.get("env")))
             return real_view(args, path, **kw)
 
-        with mock.patch.dict(os.environ, {"HOME": str(home), **repo_vars}), mock.patch.object(mw.subprocess, "run", spy), \
-                mock.patch.object(git_view, "run", view_spy):
+        with mock.patch.dict(os.environ, {"HOME": str(home), "SSH_AUTH_SOCK": "/agent.sock", **repo_vars}), \
+                mock.patch.object(mw.subprocess, "run", spy), mock.patch.object(git_view, "run", view_spy):
             self.build()
-        adds = [env for argv, env in calls if argv[3:5] == ["worktree", "add"]]
+            expected = git_trees.write_env()  # inside the patched environment: the credentials ride along
+        head = ["git", "-C", str(self.clone), *git_trees.GIT_WRITE_PINS]
+        adds = [(argv, env) for argv, env in calls if argv[:len(head)] == head]
         self.assertEqual(len(adds), 1)
-        env = adds[0]
-        self.assertEqual(env["HOME"], str(home))
+        argv, env = adds[0]
+        self.assertEqual(argv[len(head):len(head) + 2], ["worktree", "add"])
+        self.assertEqual(env, expected)
+        self.assertEqual(env["HOME"], git_trees.SAFE_HOME, "no home of the caller's is read")
+        self.assertEqual(env["SSH_AUTH_SOCK"], "/agent.sock", "the caller's credentials ride along")
         for var in repo_vars:
             self.assertNotIn(var, env)
-        self.assertEqual(env["GIT_TERMINAL_PROMPT"], "0")
         checks = [env for argv, env in calls if argv[3:4] == ["check-ref-format"]]
         self.assertEqual(checks, [git_trees.audit_env()], "the branch check is one git call on the audit env")
         self.assertEqual(sorted(args[0] for args, _ in views), ["log", "rev-parse"], "the two reads in `build` go through the view")

@@ -60,8 +60,9 @@ def git(args: list[str], cwd: Path) -> tuple[int, str]:
 
 
 def git_trusted(args: list[str], cwd: Path) -> tuple[int, str]:
-    """Run a bounded Git command that runs the clone's own hooks, in the user's environment."""
-    return _run(args, cwd, git_trees.user_env())
+    """Run a bounded Git command in the clone with the write pins and no caller environment beyond its credentials
+    (#556): the clone's config and hooks are worker-writable, so `worktree add` runs none of them."""
+    return _run([*git_trees.GIT_WRITE_PINS, *args], cwd, git_trees.write_env())
 
 
 def agent_types(claude_md: str) -> dict[str, str]:
