@@ -5,6 +5,7 @@ them, who the workers are and whether a stage holds. The board and the task page
 
 from __future__ import annotations
 
+from collections.abc import Container
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -14,7 +15,7 @@ from settings import Kanban
 from tracker import Task, issue_key
 
 
-def hold_cause(task: Task, kanban: Kanban | None, stage: str | None, *, workers: set[str], pending_refs: set[str],
+def hold_cause(task: Task, kanban: Kanban | None, stage: str | None, *, workers: set[str], pending_refs: Container[str],
                home, lane) -> str:
     """What holds the task, or "" when nothing does, at `stage` (its own cell when None): `decision` when a pending
     decision holds its issue (`pending_refs`, keyed as issue_key keys it under `home`), else the stage when [kanban] holds it there, else the person a waiting task waits on.
@@ -56,13 +57,19 @@ def effective_stage(task: Task, sources: board_sources.Sources, lanes: dict) -> 
 
 
 def hold_causes(tasks: list[Task], kanban: Kanban | None, sources: board_sources.Sources, lanes: dict,
-                pending_refs: set[str]) -> dict[Task, str]:
+                pending_refs: Container[str]) -> dict[Task, str]:
     """Each held task to its `hold_cause` at its effective stage, decided once: the BUILD flag, the NEEDS INPUT tile and
     the Flow note all read it (#228)."""
     workers = worker_names(sources)
     return {t: cause for t in tasks
             if (cause := hold_cause(t, kanban, effective_stage(t, sources, lanes), workers=workers,
                                     pending_refs=pending_refs, home=sources.home, lane=lanes.get(t.lane.strip())))}
+
+
+def went_held(held: dict[Task, str], began: dict[Task, datetime | None], since: datetime) -> int:
+    """How many of the `held` tasks' holds began after `since` (#229). A hold whose start is not known is not counted:
+    it would claim a change nobody can date."""
+    return sum(1 for t in held if (at := began.get(t)) is not None and at > since)
 
 
 def held_names(held: dict[Task, str]) -> dict[str, str]:

@@ -6,6 +6,7 @@ Precise deadlines can also be decided in a tracker's `## Decisions` table; `with
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time
@@ -161,6 +162,34 @@ def pages_address(root: Path) -> tuple[Path, int]:
     if not cfg.pages_dir or not port:
         raise ConfigError("the Board: line names no `URL http://127.0.0.1:<port>/` and `dir` to serve")
     return root / cfg.pages_dir, port
+
+
+# A person's loads of the board (#229), in the pages dir; dotfiles, which the page server never serves.
+LAST_LOOKED, LOOKED_BEFORE = ".last-looked", ".looked-before"
+
+
+def _swap_in(path: Path, text: str) -> None:
+    tmp = path.with_name(path.name + ".tmp")  # ponytail: one tmp name; two looks in the same instant may race
+    tmp.write_text(text)
+    os.replace(tmp, path)
+
+
+def record_look(pages_dir: Path, now: datetime) -> None:
+    """A person loaded the board at `now` (the server's clock): the look before it becomes `.looked-before`, freshly
+    written so the board, whose source it is, re-renders from it."""
+    try:
+        _swap_in(pages_dir / LOOKED_BEFORE, (pages_dir / LAST_LOOKED).read_text())
+    except FileNotFoundError:
+        pass  # a first look: nothing before it
+    _swap_in(pages_dir / LAST_LOOKED, now.isoformat())
+
+
+def looked_before(pages_dir: Path) -> datetime | None:
+    """When a person last looked at the board before the latest look, or None."""
+    try:
+        return datetime.fromisoformat((pages_dir / LOOKED_BEFORE).read_text().strip())
+    except (OSError, ValueError):
+        return None
 
 
 def worktrees_dir(claude_md: str) -> str:

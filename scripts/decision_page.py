@@ -675,11 +675,16 @@ def pending_count(pages_dir: Path, ctx: Context | None) -> int:
     return sum(d is not None for _, d, _, _ in entries(pages_dir, ctx)) if ctx else 0
 
 
-def held_refs(pending: list[tuple[str, dict | None, datetime | None, str]], ctx: Context) -> set[str]:
+def held_refs(pending: list[tuple[str, dict | None, datetime | None, str]], ctx: Context) -> dict[str, datetime | None]:
     """The issues and changes the pending decisions (`entries`) hold, keyed as the board files them (`ref_keys`): what a
-    task's hold names as `decision` (#228), and what decisions.html counts as held."""
+    task's hold names as `decision` (#228), and what decisions.html counts as held. Each maps to when the first
+    decision holding it was asked, or None when no holder's time is known: when that hold began (#229)."""
     keys = lambda text: ref_keys(text, ctx.sources.home)  # noqa: E731
-    return {r for slug, d, _, _ in pending if d is not None for r in ctx.holding(slug, d, keys)}
+    out: dict[str, datetime | None] = {}
+    for slug, d, asked, _ in pending:
+        for r in ctx.holding(slug, d, keys) if d is not None else ():
+            out[r] = min((at for at in (out.get(r), asked) if at), default=None)
+    return out
 
 
 def index(pages_dir: Path, ctx: Context, day: str, pending: list | None = None) -> tuple[str, list[tuple[str, dict | None, datetime | None, str]]]:

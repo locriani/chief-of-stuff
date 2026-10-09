@@ -47,7 +47,7 @@ from html import escape
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 import page_reload
-from workspace import ConfigError, daily_trackers, pages_address, read_config
+from workspace import LOOKED_BEFORE, ConfigError, daily_trackers, pages_address, read_config, record_look
 
 SERVER = "chief-of-stuff-pages"
 PID = ".pid"
@@ -97,7 +97,8 @@ class PagesError(RuntimeError):
 
 def _sources(root: Path, cfg, pages_dir: Path, day: str) -> list[Path]:
     return [root / "CLAUDE.md", *([root / cfg.settings_path] if cfg.settings_path else []), root / cfg.log_path(day),
-            *(path for _, path in daily_trackers(root, cfg)), *pages_dir.glob("decision-*.json"), pages_dir / CACHE]
+            *(path for _, path in daily_trackers(root, cfg)), *pages_dir.glob("decision-*.json"), pages_dir / CACHE,
+            pages_dir / LOOKED_BEFORE]
 
 
 def today_board(root: Path) -> str | None:
@@ -203,6 +204,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         root = getattr(self.server, "root", None)
         self._poke()
         if path == "/":
+            if self.headers.get("Sec-Fetch-User") == "?1":
+                # A person's load (#229): a navigation they started. The reload snippet's timer has no user activation,
+                # so its reload sends no Sec-Fetch-User. Recorded before `fresh`, so the board counts from the look before.
+                with contextlib.suppress(OSError):
+                    record_look(Path(self.directory), datetime.now().astimezone())
             # Served in place, not redirected: the tab stays on `/`, so its reload poll finds the next day's board.
             name = None
             if root is not None:

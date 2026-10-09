@@ -451,7 +451,7 @@ class HeldRefsTest(unittest.TestCase):
 
     def held(self, *holds) -> set[str]:
         ctx = dp.Context(NOW, sources=replace(bs.EMPTY, home=GitHubBacklog("o/app")))
-        return dp.held_refs([("x", decision(holds=list(holds), references=[]), None, "")], ctx)
+        return set(dp.held_refs([("x", decision(holds=list(holds), references=[]), None, "")], ctx))
 
     def test_another_projects_issue_is_held_under_its_own_key(self):
         self.assertEqual(self.held("other/lib#12"), {"other/lib#12"})
@@ -462,6 +462,14 @@ class HeldRefsTest(unittest.TestCase):
 
     def test_a_change_stays_a_change(self):
         self.assertEqual(self.held("!58"), {"!58"})
+
+    def test_a_held_ref_dates_from_the_first_decision_asked_that_holds_it(self):
+        # #229: when the hold began; a decision with no known time does not move it.
+        ctx = dp.Context(NOW, sources=replace(bs.EMPTY, home=GitHubBacklog("o/app")))
+        d = decision(holds=["#12"], references=[])
+        asked = [("late", d, NOW, ""), ("unknown", d, None, ""), ("early", d, NOW - timedelta(hours=1), "")]
+        self.assertEqual(dp.held_refs(asked, ctx), {"#12": NOW - timedelta(hours=1)})
+        self.assertEqual(dp.held_refs([("unknown", d, None, "")], ctx), {"#12": None})
 
 
 class IndexTest(unittest.TestCase):

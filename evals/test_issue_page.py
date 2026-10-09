@@ -831,8 +831,8 @@ class ForgeMergedTaskPageTest(unittest.TestCase):
         # person it waits on; the board's Flow and the task page read the one cause.
         cfg = BoardTest().cfg()
         src = sources()
-        for kanban, refs, cause in ((KANBAN, set(), "Robin"), (replace(KANBAN, hold_stages=("pr",)), set(), "pr"),
-                                    (replace(KANBAN, hold_stages=("pr",)), {"#109"}, "decision")):
+        for kanban, refs, cause in ((KANBAN, {}, "Robin"), (replace(KANBAN, hold_stages=("pr",)), {}, "pr"),
+                                    (replace(KANBAN, hold_stages=("pr",)), {"#109": None}, "decision")):
             with self.subTest(cause=cause):
                 board = self.flow_rows(lambda: rb.render(TODAY_START, cfg, self.NOW2, lanes=LANES, tracker_day=TODAY,
                                                          kanban=kanban, stage_log=[(YESTERDAY, YESTERDAY_TRACKER)],

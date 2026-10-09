@@ -53,13 +53,17 @@ nav.tabs .badge{font:700 11.5px ui-monospace,SFMono-Regular,Menlo,monospace;lett
 """
 
 
-def tab_bar(tab: str, pending: int, parent: bool = False) -> str:
+def tab_bar(tab: str, pending: int, parent: bool = False, since: tuple[int, str] = (0, "")) -> str:
     """The nav, `tab` marked as this page's (`aria-current`), or as its parent's on a detail page (`parent`).
-    Decisions carries `pending`, the count decisions.html heads PENDING with, when there is any."""
+    Decisions carries `pending`, the count decisions.html heads PENDING with, when there is any. Since you last looked
+    carries `since`'s count of holds begun after its HH:MM (#229), when there is any; only the board passes it."""
     mark = ' class="tab-parent"' if parent else ' aria-current="page"'
+    badges = {"Decisions": (pending, f"{pending} pending"),
+              "Since you last looked": (since[0], f"{since[0]} went needs input since {since[1]}")}
     out = []
     for name, url in TABS:
-        badge = f'<span class="badge" title="{pending} pending">{pending}</span>' if name == "Decisions" and pending else ""
+        count, title = badges.get(name, (0, ""))
+        badge = f'<span class="badge" title="{title}">{count}</span>' if count else ""
         attrs = mark if name == tab else ""
-        out.append(f"<a {href(url)}{attrs}>{name}{badge}</a>" if url else f"<span{attrs}>{name}</span>")
+        out.append(f"<a {href(url)}{attrs}>{name}{badge}</a>" if url else f"<span{attrs}>{name}{badge}</span>")
     return '<nav class="tabs" aria-label="Board sections">' + "".join(out) + "</nav>\n"
