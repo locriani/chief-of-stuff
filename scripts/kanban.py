@@ -248,9 +248,10 @@ def add_human_hold(ref: backlog.IssueRef, home: backlog.Backlog | backlog.GitHub
         current, error = _github_issue(gh, ref)
         if error or label in current:
             return error
-        error = _github_labels_exist(gh, ref, (label,))
-        if error:
-            return error
+        # #566: the hold is the point — a label the repo has never seen is created, not refused.
+        for made in backlog.ensure_labels(backlog.GitHubBacklog(ref.repo), (label,), commit=True, gh=gh):
+            if made.error:
+                return made.error
         code, _, stderr = gh(["issue", "edit", str(ref.number), "-R", ref.repo, "--add-label", label])
         if code:
             return stderr.strip() or f"gh exited {code}"
@@ -270,11 +271,10 @@ def add_human_hold(ref: backlog.IssueRef, home: backlog.Backlog | backlog.GitHub
         return "GitLab issue has no readable labels"
     if label in row["labels"]:
         return ""
-    labels, error = backlog.existing_labels(project, token=secret)
-    if error:
-        return error
-    if label not in labels:
-        return f"missing label in GitLab: {label}"
+    # #566: the hold is the point — a label the project has never seen is created, not refused.
+    for made in backlog.ensure_labels(project, (label,), token=secret, commit=True):
+        if made.error:
+            return made.error
     _, _, error = backlog._call("PUT", url, secret, backlog.TIMEOUT, {"add_labels": label})
     if error:
         return error

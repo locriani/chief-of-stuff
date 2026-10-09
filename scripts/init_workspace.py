@@ -12,6 +12,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import backlog  # noqa: E402
 from backlog_ref import BacklogError, parse_backlog
 from install_model_guidance import destination as guidance_destination, install as install_guidance
 from workspace import ConfigError, parse_coordinator
@@ -84,6 +85,37 @@ def settings_text(launcher: str, mode: str = "interactive") -> str:
     return text
 
 
+def _configured_hold_label(settings: Path, new_settings: str) -> str:
+    """The hold label the workspace will run with: the existing settings file's, else the new text's (#566)."""
+    try:
+        data = tomllib.loads(settings.read_text() if settings.exists() else new_settings)
+    except (OSError, tomllib.TOMLDecodeError, ValueError):
+        return ""
+    kanban = data.get("kanban")
+    label = kanban.get("human_review_label", "") if isinstance(kanban, dict) else ""
+    return label.strip() if isinstance(label, str) else ""
+
+
+def provision_hold_label(forge, label: str, dry: bool) -> tuple[str, str]:
+    """Create the configured hold label on the forge when it has never seen it, via backlog.ensure_labels (#566).
+
+    Dry-run prints the intent and touches nothing. A forge that refuses is reported and init still succeeds —
+    the first hold attempt reports the label again if it never lands.
+    """
+    if forge is None or not label:
+        return "", ""
+    where = forge.repo if isinstance(forge, backlog.GitHubBacklog) else forge.project
+    if dry:
+        return f"would create the hold label {label} on {where}", ""
+    try:
+        made = backlog.ensure_labels(forge, (label,), commit=True)
+    except (BacklogError, OSError) as exc:
+        return "", f"hold label not created on {where}: {exc}"
+    out = " ".join(f"hold label {w.what} created on {where}" for w in made if w.done)
+    pending = "; ".join(w.error for w in made if w.error)
+    return out, f"hold label not created on {where}: {pending}" if pending else ""
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--root", type=Path, required=True, help="existing workspace directory")
@@ -97,9 +129,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--worker-mode", choices=("interactive", "one-shot"), default="interactive",
                     help="default dispatch mode written to [workers] in the workspace TOML")
     ap.add_argument("--board-port", type=int, help="configure local board serving on this fixed port")
-    backlog = ap.add_mutually_exclusive_group()
-    backlog.add_argument("--github-repo", help="GitHub owner/repository")
-    backlog.add_argument("--gitlab-host", help="GitLab https URL; also pass --gitlab-project")
+    backlog_group = ap.add_mutually_exclusive_group()
+    backlog_group.add_argument("--github-repo", help="GitHub owner/repository")
+    backlog_group.add_argument("--gitlab-host", help="GitLab https URL; also pass --gitlab-project")
     ap.add_argument("--gitlab-project", help="GitLab group/repository")
     ap.add_argument("--gitlab-token-env", default="CHIEF_OF_STUFF_GITLAB_TOKEN")
     ap.add_argument("--dry-run", action="store_true", help="print the new block and settings without writing")
@@ -134,12 +166,20 @@ def main(argv: list[str] | None = None) -> int:
             except SettingsError as exc:
                 raise InitError(f"existing settings are invalid: {exc}") from None
         new_settings = settings_text(args.launcher, args.worker_mode)
+        # #566: with a backlog named, create the [kanban] hold label the workspace will run with, so no
+        # review hold ever dies on a label the forge has not seen.
+        forge = (backlog.GitHubBacklog(args.github_repo) if args.github_repo else
+                 backlog.Backlog(args.gitlab_host, args.gitlab_project) if args.gitlab_host else None)
+        label_out, label_err = provision_hold_label(
+            forge, _configured_hold_label(settings, new_settings), args.dry_run)
         if args.dry_run:
             print(f"would {'append to' if claude.exists() else 'create'}: {claude}\n{block}")
             print(f"would {'keep existing' if settings.exists() else 'create'}: {settings}")
             if not settings.exists():
                 print(new_settings)
             print(f"would {'keep existing' if guidance.exists() else 'create'}: {guidance}")
+            if label_out:
+                print(label_out)
             return 0
         if not settings.exists():
             with settings.open("x") as fh:
@@ -150,6 +190,10 @@ def main(argv: list[str] | None = None) -> int:
             with claude.open("x") as fh:
                 fh.write("# Workspace\n\n" + block)
         install_guidance(root)
+        if label_out:
+            print(label_out)
+        if label_err:
+            print(label_err, file=sys.stderr)
         print(f"configured {root}; settings in {settings}; model guidance in {guidance}")
         return 0
     except (InitError, OSError) as exc:
