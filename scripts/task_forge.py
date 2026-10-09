@@ -14,8 +14,22 @@ from settings import Kanban
 from tracker import Task, issue_key
 
 
-def held(task: Task, kanban: Kanban | None, stage: str | None = None) -> bool:
-    return kanban is not None and kanban.holds(task.stage.strip() if stage is None else stage)
+def hold_cause(task: Task, kanban: Kanban | None, stage: str | None, *, workers: set[str], pending_refs: set[str],
+               home, lane) -> str:
+    """What holds the task, or "" when nothing does, at `stage` (its own cell when None): `decision` when a pending
+    decision holds its issue (`pending_refs`, keyed as issue_key keys it under `home`), else the stage when [kanban] holds it there, else the person a waiting task waits on.
+    The one place a hold is decided, so the BUILD flag, the NEEDS INPUT tile and the Flow note agree (#228). Nothing
+    holds a finished task: done, or at its `lane`'s last stage, where a merged change puts it (#240)."""
+    stage = task.stage.strip() if stage is None else stage
+    if task.kind == "done" or (lane and lane.stages and stage == lane.stages[-1]):
+        return ""
+    if task.issue.strip() and issue_key(task.issue, home) in pending_refs:
+        return "decision"
+    if kanban is not None and kanban.holds(stage):
+        return stage
+    if task.kind == "waiting" and task.shown_owner and task.shown_owner not in workers:
+        return task.shown_owner
+    return ""
 
 
 def worker_names(sources: board_sources.Sources) -> set[str]:
@@ -39,6 +53,21 @@ def effective_stage(task: Task, sources: board_sources.Sources, lanes: dict) -> 
     if changes and changes[0].state == "merged" and lane and lane.stages:
         return lane.stages[-1]
     return stage
+
+
+def hold_causes(tasks: list[Task], kanban: Kanban | None, sources: board_sources.Sources, lanes: dict,
+                pending_refs: set[str]) -> dict[Task, str]:
+    """Each held task to its `hold_cause` at its effective stage, decided once: the BUILD flag, the NEEDS INPUT tile and
+    the Flow note all read it (#228)."""
+    workers = worker_names(sources)
+    return {t: cause for t in tasks
+            if (cause := hold_cause(t, kanban, effective_stage(t, sources, lanes), workers=workers,
+                                    pending_refs=pending_refs, home=sources.home, lane=lanes.get(t.lane.strip())))}
+
+
+def held_names(held: dict[Task, str]) -> dict[str, str]:
+    """`hold_causes` by task name, as flow_chart.build reads it. A nameless task has no name to hold it by (as forge_ends)."""
+    return {t.name.strip(): cause for t, cause in held.items() if t.name.strip()}
 
 
 def forge_ends(tasks: list[Task], sources: board_sources.Sources, zone: ZoneInfo) -> dict[str, tuple[datetime, str]]:

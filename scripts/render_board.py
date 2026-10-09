@@ -21,7 +21,7 @@ from estimate import (ALL_SIZES, NO_ESTIMATE, SIZES, day_bar, estimates, history
                       nearest_deadline, queue_durations, task_end as _end)
 from md import BULLET, section as _section, unquote as _unquote  # noqa: E402
 from settings import Kanban, SettingsError, load as load_settings  # noqa: E402
-from task_forge import drifts, effective_stage, forge_ends, held, task_changes, worker_names  # noqa: E402
+from task_forge import drifts, effective_stage, forge_ends, held_names, hold_causes, task_changes, worker_names  # noqa: E402
 from tracker import TRAILING_NUMBER, Task, change_keys, decision_rows, issue_key, issue_number, parse_tracker  # noqa: E402
 from workspace import (Config, ConfigError, daily_trackers, read_config,  # noqa: E402
                        with_decision_deadlines, with_workspace_decision_deadlines)
@@ -156,10 +156,12 @@ def merged_today(sources: board_sources.Sources, now: datetime) -> list[board_so
 
 
 def build_columns(tasks: list[Task], lanes: dict | None, kanban: Kanban | None = None,
-                  sources: board_sources.Sources = board_sources.EMPTY, now: datetime | None = None) -> list[columns.Column]:
-    """The Build board: a column per lane stage, a card per task at it.
-    Sources add each card's changes and marks, and a `main` column of the changes merged today."""
+                  sources: board_sources.Sources = board_sources.EMPTY, now: datetime | None = None,
+                  held: dict[Task, str] | None = None) -> list[columns.Column]:
+    """The Build board: a column per lane stage, a card per task at it. Sources add each card's changes and marks, and
+    a `main` column of the changes merged today; `held` (task_forge.hold_causes) flags a card NEEDS INPUT."""
     lanes = lanes or {}
+    held = hold_causes(tasks, kanban, sources, lanes, frozenset()) if held is None else held
     gates = {g for lane in lanes.values() for g in lane.gates}
 
     def issue_url(ref: str, cell: str = "") -> str:
@@ -186,7 +188,7 @@ def build_columns(tasks: list[Task], lanes: dict | None, kanban: Kanban | None =
         marks = change_marks(changes) + ((columns.Mark("drift", "drift"),) if drifts(task, kanban, sources, stage) else ())
         owner = task.shown_owner
         return columns.Card(task.label, task.kind, refs, owner, task.state, marks,
-                            flag=columns.Mark("NEEDS INPUT", "hold") if held(task, kanban, stage) else None,
+                            flag=columns.Mark("NEEDS INPUT", "hold") if task in held else None,
                             href=page(task.issue, next((c.url for c in changes if c.state == "open"), url)),
                             owner_href="/workers" if owner in workers else "")
 
@@ -294,7 +296,8 @@ def flow_tiles(total: int, held: int, sources: board_sources.Sources, running: i
 def render(tracker_text: str, cfg: Config, now: datetime, lanes: dict | None = None,
            tracker_day: date | None = None, decisions: list[tuple[str, dict | None, datetime | None, str]] | None = None,
            kanban: Kanban | None = None, sources: board_sources.Sources = board_sources.EMPTY, answered: int = 0,
-           tracker_at: datetime | None = None, stage_log: list[tuple[date, str]] | None = None, slots: int = 1) -> str:
+           tracker_at: datetime | None = None, stage_log: list[tuple[date, str]] | None = None, slots: int = 1,
+           pending_refs: set[str] = frozenset()) -> str:
     """The board page, the Flow artboard's sections: header, tiles, BUILD (the stage columns), the MERGE ORDER,
     DECISIONS and WORKERS panels, and the Flow charts. `stage_log` is (day, tracker text) for the earlier days the
     Flow charts reach back over; `slots` is how many queued tasks run at once, `[workers] max_concurrency`."""
@@ -314,23 +317,18 @@ def render(tracker_text: str, cfg: Config, now: datetime, lanes: dict | None = N
 
     issues = sum(1 for t in tasks if t.issue.strip() and not t.workflow)
     changes = sum(1 for c in sources.changes.values() if c.state == "open")
-    workers = worker_names(sources)
-    # A task's stage for drift/hold purposes, computed once, keyed by the task: every nameless task shares the blank name.
+    # A task's stage for drift, computed once, keyed by the task: every nameless task shares the blank name.
     stages = {t: effective_stage(t, sources, lanes or {}) for t in tasks}
-    build_cols = build_columns(tasks, lanes, kanban, sources, now)
+    # #228: what holds each task, decided once, so the BUILD flag, the NEEDS INPUT tile and the Flow note agree.
+    held = hold_causes(tasks, kanban, sources, lanes or {}, pending_refs)
+    build_cols = build_columns(tasks, lanes, kanban, sources, now, held)
     build_html = (f'<section id="flow"><h2>Build</h2>\n<div class="meta">{_plural(issues, "issue")} · {_plural(changes, "merge request")}</div>\n'
                   f'{columns.render(build_cols)}</section>\n')
     flow_moves = [m for day, text in [*(stage_log or []), (tracker_day or today, tracker_text)]
                   for m in tracker_log.moves(text, day, zone)]
     known = [t for _, text in stage_log or [] for t in parse_tracker(text).tasks] + tasks
     ends = {t.item: end for t in active if (end := _end(t, cfg, now, now, est))[1] in ("due", "derived")}
-    # #227: a `waiting` task owned by a person, not a worker, holds too — the same worker/person split
-    # the BUILD cards draw their "NEEDS INPUT" flag and owner link from.
-    # flow_chart names its rows' tasks, and a nameless task has no name to hold it by (as forge_ends).
-    flow_held = {t.name.strip() for t in tasks if t.name.strip() and
-                (held(t, kanban, stages[t]) or
-                 (t.kind == "waiting" and t.shown_owner and t.shown_owner not in workers))}
-    flow_rows = flow_chart.build(flow_moves, known, lanes or {}, flow_held,
+    flow_rows = flow_chart.build(flow_moves, known, lanes or {}, held_names(held),
                                  {item: end[0] for item, end in ends.items()}, now,
                                  queue_durations(active, hist), slots,
                                  frozenset(t.name.strip() for t in tasks
@@ -355,8 +353,8 @@ def render(tracker_text: str, cfg: Config, now: datetime, lanes: dict | None = N
             _tasks(len(tasks))]
     head = panels.Header(f"Board · {now.strftime('%a %d %b')}", tuple(meta), now, nearest.name, nearest.at,
                          tuple(f"{k}: {why}" for k, why in sources.errors.items()))
-    # NEEDS INPUT counts the cards flagged NEEDS INPUT, by the same `held`; ALL counts every task (#349).
-    tiles = flow_tiles(len(tasks), sum(held(t, kanban, stages[t]) for t in tasks),
+    # NEEDS INPUT counts the held tasks, as the BUILD cards are flagged; ALL counts every task (#349).
+    tiles = flow_tiles(len(tasks), len(held),
                        sources, len(running), sum(drifts(t, kanban, sources, stages[t]) for t in tasks), len(unowned))
     panels_html = panels.panels([merge_order(sources), decision_panel(pending, answered, now), worker_panel(sources, now)])
 
@@ -432,14 +430,15 @@ def write(root: Path, day: str | None = None) -> tuple[Path, Config, datetime, s
         settings = load_settings(root, cfg.settings_path)
     except SettingsError as e:
         raise ConfigError(str(e)) from None
-    pending = decision_page.write_all(out.parent, decision_page.decision_context(root, tracker_day, now), day, root)
+    ctx = decision_page.decision_context(root, tracker_day, now)
+    pending = decision_page.write_all(out.parent, ctx, day, root)
     reach = (now - flow_chart.WINDOWS[-1][1]).date()
     stage_log = [(d, path.read_text()) for d, path in daily_trackers(root, cfg) if reach <= d < tracker_day]
     page = render(tracker_text, cfg, now, lanes=settings.lanes,
                   tracker_day=tracker_day, decisions=pending, kanban=settings.kanban,
                   sources=board_sources.load(out.parent), answered=len(decision_rows(tracker_text)),
                   tracker_at=datetime.fromtimestamp(tracker.stat().st_mtime, cfg.zone), stage_log=stage_log,
-                  slots=settings.workers.max_concurrency or 1)
+                  slots=settings.workers.max_concurrency or 1, pending_refs=decision_page.held_refs(pending, ctx))
     write_if_changed(out, page)
     return out, cfg, now, tracker_text, req_texts
 
