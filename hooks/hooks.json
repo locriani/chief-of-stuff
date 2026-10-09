@@ -1,6 +1,17 @@
 {
-  "description": "Serve the board without opening it",
+  "description": "Serve the board and run deterministic flow reconciliation",
   "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/flow.py\" --root .",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "hooks": [

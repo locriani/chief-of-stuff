@@ -44,6 +44,7 @@ COMMANDS = {
     "merge-ready": "scripts/merge_ready.py",
     "review-threads": "scripts/review_threads.py",
     "sources": "scripts/board_sources.py",
+    "tick": "scripts/flow.py",
 }
 
 
