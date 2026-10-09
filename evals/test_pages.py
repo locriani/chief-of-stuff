@@ -604,7 +604,7 @@ class LastLookedTest(unittest.TestCase):
     fake_refresh = RenderOnRequestTest.fake_refresh
 
     def since(self, headers=None) -> list[str]:
-        return re.findall(r'title="(\d+ went needs input since [\d:]+)"', get(self.port, "/", headers=headers).body.decode())
+        return re.findall(r'title="(\d+ went needs input since [\w :]+)"', get(self.port, "/", headers=headers).body.decode())
 
     def test_a_look_counts_from_the_look_before_it_and_a_timer_reload_is_no_look(self):
         self.tracker.write_text(ISSUE_TRACKER.format(day=self.day, task="Security audit"))  # held at implement since 09:00
@@ -618,6 +618,18 @@ class LastLookedTest(unittest.TestCase):
         self.assertGreaterEqual(datetime.fromisoformat((self.pages / ".last-looked").read_text()), before)
         for path in ("/.last-looked", "/%2elast-looked", "/%2Elooked-before"):  # #579 review R1: decoded, too
             self.assertEqual(get(self.port, path).status, 404, path)
+
+    def test_a_hold_begun_days_after_an_old_look_counts(self):
+        # Codex on #579: the Flow reads 48 hours of trackers; the Since tab reads back to the look before.
+        from datetime import timedelta
+        today = datetime.fromisoformat(self.day).date()
+        old_day = (today - timedelta(days=3)).isoformat()
+        (self.root / "daily" / f"{old_day}-tracker.md").write_text(ISSUE_TRACKER.format(day=old_day, task="Security audit"))
+        self.tracker.write_text(ISSUE_TRACKER.format(day=self.day, task="Security audit").replace(
+            "- 09:00 stage: Security audit → implement\n", ""))
+        looked = datetime.fromisoformat(f"{today - timedelta(days=4)}T08:00").replace(tzinfo=ZoneInfo(ZONE))
+        (self.pages / ".last-looked").write_text(looked.isoformat())
+        self.assertEqual(self.since(self.LOOK), [f"1 went needs input since {looked:%a} 08:00"])  # not today's 08:00
 
     def test_a_first_look_is_recorded(self):
         # #579 review R2: no `.last-looked` yet.
