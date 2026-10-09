@@ -21,7 +21,7 @@ from estimate import (ALL_SIZES, NO_ESTIMATE, SIZES, day_bar, estimates, history
                       nearest_deadline, queue_durations, task_end as _end)
 from md import BULLET, section as _section, unquote as _unquote  # noqa: E402
 from settings import Kanban, SettingsError, load as load_settings  # noqa: E402
-from task_forge import drifts, effective_stage, forge_ends, held_names, hold_began, hold_causes, task_changes, went_held, worker_names  # noqa: E402
+from task_forge import drifts, effective_stage, epic_risk, forge_ends, held_names, hold_began, hold_causes, task_changes, went_held, worker_names  # noqa: E402
 from tracker import TRAILING_NUMBER, Task, change_keys, decision_rows, issue_key, issue_number, parse_tracker  # noqa: E402
 from workspace import (Config, ConfigError, daily_trackers, looked_before, read_config,  # noqa: E402
                        with_decision_deadlines, with_workspace_decision_deadlines)
@@ -337,9 +337,10 @@ def render(tracker_text: str, cfg: Config, now: datetime, lanes: dict | None = N
     shown = since.astimezone(zone)  # a look on another day names its day
     went = went_held(held, began, since), f"{shown:%H:%M}" if shown.date() == today else f"{shown:%a %H:%M}"
     known = [t for _, text in stage_log or [] for t in parse_tracker(text).tasks] + tasks
-    ends = {t.item: end for t in active if (end := _end(t, cfg, now, now, est))[1] in ("due", "derived")}
-    flow_rows = flow_chart.build(flow_moves, known, lanes or {}, held_names(held),
-                                 {item: end[0] for item, end in ends.items()}, now,
+    # The board's estimate, by item: where the Flow draws a row's end and what an epic's forecast is (#230).
+    ends = {t.item: end[0] for t in active if (end := _end(t, cfg, now, now, est))[1] in ("due", "derived")}
+    epics = epic_risk(tasks, sources, ends, zone, now)
+    flow_rows = flow_chart.build(flow_moves, known, lanes or {}, held_names(held), ends, now,
                                  queue_durations(active, hist), slots,
                                  frozenset(t.name.strip() for t in tasks
                                            if t.name.strip() and any(c.state == "open" and c.approved for c in task_changes(t, sources))),
@@ -391,7 +392,7 @@ h2+.meta{{display:inline-block}}
 </style>
 <body>
 <div class="board" data-rendered-at="{_iso(now)}" data-tz="{_esc(cfg.tz)}" data-deadline="{_iso(nearest.at)}" data-deadline-name="{_esc(nearest.name)}">
-{tab_bar("Board", sum(d is not None for _, d, _, _ in pending), since=went)}<div class="header">{panels.header(head)}</div>
+{tab_bar("Board", sum(d is not None for _, d, _, _ in pending), since=went, epics=epics)}<div class="header">{panels.header(head)}</div>
 {panels.tiles(tiles)}
 {build_html}{panels_html}
 {flow_html}</div>
