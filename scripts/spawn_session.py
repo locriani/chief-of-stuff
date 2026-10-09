@@ -15,6 +15,7 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -60,6 +61,10 @@ FIELDS = ("cwd", "title", "type", "dispatch", "model", "effort", "root")
 HERDR_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9:_-]{0,63}")
 # The pane's tty cuts a typed line near 1024 bytes; refuse well before that.
 HERDR_LINE_LIMIT = 900
+# `pane run` confirms delivery, not execution: the start is real only when the worker's registration
+# changes on disk (#551). A cut line never registers; a slow login shell gets a full CLI timeout to boot.
+HERDR_REGISTER_WAIT = 30.0
+HERDR_REGISTER_POLL = 0.25
 
 
 class RefusedError(ValueError):
@@ -188,8 +193,14 @@ def herdr_commands(*, herdr: Path | None, session: str, **worker) -> tuple[list[
         raise RefusedError("[workers] herdr_session must match [a-z0-9][a-z0-9_-]{0,31}")
     title = worker.get("title")
     prefix = [str(herdr), "--session", session]
+    tokens = worker_tokens(**worker)
+    if tokens[2:3] == ["exec-login"]:
+        # The launcher verifies the worker's registration after `pane run` (#551), so through herdr the
+        # claude wrapper registers too; tmux and Ghostty keep their exact argv.
+        registry = Path(os.path.abspath(worker.get("workspace", "."))) / PROMPT_DIR / "sessions" / f"{title}.json"
+        tokens = tokens[:3] + ["--registry", str(registry), "--name", title or ""] + tokens[3:]
     # The tab is created in the worktree with the workspace in its env, so the typed line skips `env -C`.
-    line = [shlex.quote(token) for token in worker_tokens(**worker)]
+    line = [shlex.quote(token) for token in tokens]
     size = len(" ".join(line).encode())
     if size > HERDR_LINE_LIMIT:
         raise RefusedError(f"herdr pane line is {size} bytes, over the {HERDR_LINE_LIMIT}-byte limit: "
@@ -198,6 +209,87 @@ def herdr_commands(*, herdr: Path | None, session: str, **worker) -> tuple[list[
              "--label", title, "--no-focus",
              "--env", f"CHIEF_OF_STUFF_WORKSPACE={os.path.abspath(worker.get('workspace', '.'))}"],
             [*prefix, "pane", "run", "<root-pane>", *line])
+
+
+def _unquote(word: str) -> str:
+    """The exact inverse of shlex.quote for one typed word: strip its single quotes and
+    restore the quote character from its escape sequence."""
+    if len(word) >= 2 and word.startswith("'") and word.endswith("'"):
+        marker = "'" + chr(34) + "'" + chr(34) + "'"  # how shlex.quote escapes a quote
+        return word[1:-1].replace(marker, "'")
+    return word
+
+
+def _registry_from(pane_run: list[str]) -> Path | None:
+    """The registration file the pane command itself declares (#551): the token after `--registry`.
+    The pane command's words are this module's own shlex.quote output, so the value comes back
+    without re-tokenizing the line (token substitution never re-splits argv)."""
+    words = pane_run[6:]  # [herdr, --session, session, pane, run, pane-id, ...quoted line]
+    for at, word in enumerate(words[:-1]):
+        if word == "--registry":
+            return Path(_unquote(words[at + 1]))
+    return None
+
+
+def _registered_state(registry: Path | None) -> bytes | None:
+    """The registration on disk now, or None when there is none or it cannot be read."""
+    if registry is None:
+        return None
+    try:
+        return registry.read_bytes() if registry.is_file() else None
+    except OSError:
+        return None
+
+
+def wait_for_registration(registry: Path | None, before: bytes | None) -> None:
+    """#551: a line the pane's shell cut never registers, so an unchanged file is a failed start.
+    A registration left by an earlier worker does not vouch: the file must change."""
+    if registry is None:
+        return
+    deadline = time.monotonic() + HERDR_REGISTER_WAIT
+    while _registered_state(registry) == before:
+        if time.monotonic() >= deadline:
+            raise RefusedError(f"the worker never registered its start (no new {registry.name} within "
+                               f"{HERDR_REGISTER_WAIT:g}s); herdr may have cut the command at the pane's shell")
+        time.sleep(HERDR_REGISTER_POLL)
+
+
+def _require_session(create: list[str], run) -> None:
+    """#552: herdr has no `session create` (v0.9.3 CLI reference); a session exists only once
+    `herdr --session <name>` launched it. Check the roster before tab create, so a start against a
+    session that was never begun refuses naming the setting and the way back, instead of herdr's
+    socket error. A probe that fails or cannot be read is never a no; tab create reports that."""
+    try:
+        out = run([*create[:3], "session", "list", "--json"], "session list")
+    except RefusedError:
+        return
+    try:
+        reply = json.loads(out.stdout)
+    except (ValueError, RecursionError):
+        return
+    if isinstance(reply, dict):
+        holder = reply.get("result")
+        holder = holder if isinstance(holder, dict) else reply
+        roster = holder.get("sessions")
+    else:
+        roster = reply
+    if not isinstance(roster, list):
+        return
+    names = set()
+    for entry in roster:
+        if isinstance(entry, str):
+            names.add(entry)
+        elif isinstance(entry, dict):
+            name = next((entry[key] for key in ("name", "session", "session_id")
+                         if isinstance(entry.get(key), str)), None)
+            if name is not None:
+                names.add(name)
+    session = create[2]
+    if session in names:
+        return
+    raise RefusedError(f"no running herdr session is named {session!r}: herdr has no `session create`, so "
+                       f"start it once with `herdr --session {session}` and leave it running, or set "
+                       "[workers] herdr_session to a session that is running (`herdr session list` shows them)")
 
 
 def launch_herdr(create: list[str], pane_run: list[str]) -> None:
@@ -216,6 +308,9 @@ def launch_herdr(create: list[str], pane_run: list[str]) -> None:
             raise RefusedError(f"herdr {action} failed (exit {out.returncode}): {detail}")
         return out
 
+    _require_session(create, run)
+    registry = _registry_from(pane_run)
+    before = _registered_state(registry)
     out = run(create, "tab create")
     try:
         reply = json.loads(out.stdout)
@@ -236,6 +331,7 @@ def launch_herdr(create: list[str], pane_run: list[str]) -> None:
         command = list(pane_run)
         command[5] = pane
         run(command, "pane run")
+        wait_for_registration(registry, before)
     except Exception:
         try:
             run([*create[:3], "tab", "close", tab], "tab close")

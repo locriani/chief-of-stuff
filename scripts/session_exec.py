@@ -45,9 +45,22 @@ def alive(path: Path) -> bool:
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "exec-login":
-        if len(argv) < 3 or argv[1] != "--":
+        rest = argv[1:]
+        registration: dict[str, str] = {}
+        while rest and rest[0] in ("--registry", "--name", "--worktree"):
+            if len(rest) < 2:
+                raise SystemExit(f"expected a value after {rest[0]}")
+            registration[rest[0]] = rest[1]
+            rest = rest[2:]
+        if len(rest) < 2 or rest[0] != "--":
             raise SystemExit("expected exec-login -- followed by the runtime command")
-        exec_login(argv[2:])
+        # exec-login is only built for the claude wrapper. The herdr launcher verifies this
+        # registration after `pane run` (#551); a bare exec-login (tmux, Ghostty) stays unregistered,
+        # exactly as before. The pane's cwd is the worktree the tab was created in.
+        if "--registry" in registration and "--name" in registration:
+            register(Path(registration["--registry"]), runtime="claude", name=registration["--name"],
+                     worktree=registration.get("--worktree", os.getcwd()), pid=os.getpid())
+        exec_login(rest[1:])
     if argv and argv[0] == "resume-codex":
         resume = argparse.ArgumentParser(description="Resume an approved Codex plan with write access")
         resume.add_argument("--root", type=Path, required=True)
