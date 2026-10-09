@@ -5,14 +5,15 @@ them, who the workers are and whether a stage holds. The board and the task page
 
 from __future__ import annotations
 
-from collections.abc import Container
+from collections.abc import Container, Mapping
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import board_sources
 import kanban as kanban_tool
 from settings import Kanban
-from tracker import Task, issue_key
+from tracker import Task, issue_key, launcher
+from tracker_log import Move
 
 
 def hold_cause(task: Task, kanban: Kanban | None, stage: str | None, *, workers: set[str], pending_refs: Container[str],
@@ -64,6 +65,26 @@ def hold_causes(tasks: list[Task], kanban: Kanban | None, sources: board_sources
     return {t: cause for t in tasks
             if (cause := hold_cause(t, kanban, effective_stage(t, sources, lanes), workers=workers,
                                     pending_refs=pending_refs, home=sources.home, lane=lanes.get(t.lane.strip())))}
+
+
+def hold_began(held: dict[Task, str], moves: list[Move], pending_refs: Mapping[str, datetime | None], home,
+               tasks: list[Task]) -> dict[Task, datetime | None]:
+    """When each of the `held` tasks' holds began (#229): a decision when the first decision holding its issue was asked
+    (`pending_refs`, decision_page.held_refs); a gate stage at the task's last move into it, the moves read as flow_chart
+    reads them (by name or item in any case, a launcher line only until the task's first `stage:` move); a person's
+    wait, which no line records, None."""
+    find = {**{t.item.strip().casefold(): t for t in tasks if t.item.strip()},
+            **{t.name.strip().casefold(): t for t in tasks if t.name.strip()}}
+    row_of = launcher(tasks)
+    staged, into = set(), {}
+    for m in sorted(moves, key=lambda m: m.at):
+        t = find.get(m.name.strip().casefold()) or (row_of(m.name)[0] if m.launch else None)
+        if t is None or (m.launch and t in staged):
+            continue
+        staged |= set() if m.launch else {t}
+        into[t, m.stage] = m.at
+    return {t: pending_refs.get(issue_key(t.issue, home)) if cause == "decision" else into.get((t, cause))
+            for t, cause in held.items()}
 
 
 def went_held(held: dict[Task, str], began: dict[Task, datetime | None], since: datetime) -> int:

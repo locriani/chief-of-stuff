@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import re
+import tempfile
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time
 from pathlib import Path
@@ -169,9 +170,10 @@ LAST_LOOKED, LOOKED_BEFORE = ".last-looked", ".looked-before"
 
 
 def _swap_in(path: Path, text: str) -> None:
-    tmp = path.with_name(path.name + ".tmp")  # ponytail: one tmp name; two looks in the same instant may race
-    tmp.write_text(text)
-    os.replace(tmp, path)
+    """Atomically, through a temporary file of its own: the threaded page server may record two looks at once."""
+    with tempfile.NamedTemporaryFile("w", dir=path.parent, prefix=f"{path.name}-", delete=False) as out:
+        out.write(text)
+    os.replace(out.name, path)
 
 
 def record_look(pages_dir: Path, now: datetime) -> None:

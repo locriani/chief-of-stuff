@@ -21,7 +21,7 @@ from estimate import (ALL_SIZES, NO_ESTIMATE, SIZES, day_bar, estimates, history
                       nearest_deadline, queue_durations, task_end as _end)
 from md import BULLET, section as _section, unquote as _unquote  # noqa: E402
 from settings import Kanban, SettingsError, load as load_settings  # noqa: E402
-from task_forge import drifts, effective_stage, forge_ends, held_names, hold_causes, task_changes, went_held, worker_names  # noqa: E402
+from task_forge import drifts, effective_stage, forge_ends, held_names, hold_began, hold_causes, task_changes, went_held, worker_names  # noqa: E402
 from tracker import TRAILING_NUMBER, Task, change_keys, decision_rows, issue_key, issue_number, parse_tracker  # noqa: E402
 from workspace import (Config, ConfigError, daily_trackers, looked_before, read_config,  # noqa: E402
                        with_decision_deadlines, with_workspace_decision_deadlines)
@@ -328,10 +328,7 @@ def render(tracker_text: str, cfg: Config, now: datetime, lanes: dict | None = N
                   f'{columns.render(build_cols)}</section>\n')
     flow_moves = [m for day, text in [*(stage_log or []), (tracker_day or today, tracker_text)]
                   for m in tracker_log.moves(text, day, zone)]
-    # #229: when each hold began: a decision when asked, a gate its task's last move into it; a person's wait, unknown.
-    began = {t: pending_refs.get(issue_key(t.issue, sources.home)) if cause == "decision" else
-             max((m.at for m in flow_moves if m.name == t.name.strip() and m.stage == cause and not m.launch), default=None)
-             for t, cause in held.items()}
+    began = hold_began(held, flow_moves, pending_refs, sources.home, tasks)
     since = looked or datetime.combine(today, time(), zone)
     went = went_held(held, began, since), f"{since.astimezone(zone):%H:%M}"
     known = [t for _, text in stage_log or [] for t in parse_tracker(text).tasks] + tasks

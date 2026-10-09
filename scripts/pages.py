@@ -97,8 +97,7 @@ class PagesError(RuntimeError):
 
 def _sources(root: Path, cfg, pages_dir: Path, day: str) -> list[Path]:
     return [root / "CLAUDE.md", *([root / cfg.settings_path] if cfg.settings_path else []), root / cfg.log_path(day),
-            *(path for _, path in daily_trackers(root, cfg)), *pages_dir.glob("decision-*.json"), pages_dir / CACHE,
-            pages_dir / LOOKED_BEFORE]
+            *(path for _, path in daily_trackers(root, cfg)), *pages_dir.glob("decision-*.json"), pages_dir / CACHE]
 
 
 def today_board(root: Path) -> str | None:
@@ -145,7 +144,7 @@ def fresh(root: Path, pages_dir: Path, name: str, slots=contextlib.nullcontext()
             if not (root / cfg.tracker_path(day)).is_file():
                 return ""
         with page_lock(key):  # checked under the lock: a request that waited finds the page already rendered
-            newest = max(RENDERER_MTIME_NS, max((p.stat().st_mtime_ns for p in _sources(root, cfg, pages_dir, day) if p.is_file()), default=0))
+            newest = max(RENDERER_MTIME_NS, max((p.stat().st_mtime_ns for p in [*_sources(root, cfg, pages_dir, day), *([pages_dir / LOOKED_BEFORE] if name.endswith("-board.html") else [])] if p.is_file()), default=0))
             mtime = target.stat().st_mtime_ns if target.is_file() else 0
             record = RENDERED_AT.get(key)
             rendered = record[0] if record and record[1] in (mtime, None) else mtime
@@ -198,7 +197,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_error(403, "Host is not this machine")
             return False
         path = self.path.split("?")[0]
-        if any(part.startswith(".") for part in path.split("/")):
+        if any(part.startswith(".") for part in unquote(path).split("/")):  # `%2e` is a dot too
             self.send_error(404)
             return False
         root = getattr(self.server, "root", None)
