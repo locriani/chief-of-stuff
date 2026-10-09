@@ -6,6 +6,7 @@ in. The one variable argument is the task name, and a task name that is not a ro
 shell expansion that reached this far produces a refusal rather than a payload.
 """
 
+import json
 import re
 import shlex
 import sys
@@ -1357,6 +1358,48 @@ class ReadOnlyAssignmentTest(unittest.TestCase):
                     self.assertIn(self.SENTENCE, body)
                     self.assertNotIn("Commit small and often", body)
                     self.assertNotIn("Do not touch any other file", body)
+
+
+class ReviewReportTest(unittest.TestCase):
+    """#563: every agent that reviews a pull or merge request reports in one shape, whatever its runtime, because
+    Triage reads R-numbers, axis, severity, confidence and the suggestion off it. Zach, 2026-10-08 21:10: "we need a
+    code review report template for agents to follow that are code reviewing"."""
+
+    TEMPLATE = Path(dp.__file__).resolve().parents[1] / "skills/review-pipeline/review-report.md"
+
+    def test_the_template_ships_with_the_report_shape_triage_reads(self):
+        text = self.TEMPLATE.read_text()
+        for line in ("Reviewer pass: <full|verify> @ <head sha>", "PR: <url>",
+                     "Tests: <pass|fail> — <counts> — `<command>`", "Axes not examined: <axis: reason>, or none",
+                     "R1 | <axis> | <severity> | <confidence> | <file:line> | <what> | <evidence> | suggested: <fix|file|keep|discard>",
+                     "Assessment: <one line on the change; no merge verdict>"):
+            self.assertIn(line, text)
+        for word in ("Critical", "Important", "Minor", "Confirmed", "Probable", "Unverified"):
+            self.assertIn(word, text)
+
+    def test_the_triage_cases_reports_fit_the_template(self):
+        # The coordinator's Triage evals feed it reviewer reports; a template that drifts from them is two shapes.
+        row = re.compile(r"^R\d+ \| [^|]+ \| (?:Critical|Important|Minor) \| (?:Confirmed|Probable|Unverified) \| "
+                         r"[^|]+:\d+ \| [^|]+ \| [^|]+ \| suggested: (?:fix|file|keep|discard)$")
+        cases = sorted((Path(dp.__file__).resolve().parents[1] / "evals/cases").glob("triage-*/case.json"))
+        self.assertTrue(cases)
+        for case in cases:
+            prompt = json.loads(case.read_text())["prompt"]
+            if "Reviewer pass:" not in prompt:
+                continue
+            with self.subTest(case=case.parent.name):
+                rows = [line for line in prompt.splitlines() if re.match(r"R\d+ \|", line)]
+                self.assertTrue(rows)
+                for line in rows:
+                    self.assertRegex(line, row)
+
+    def test_every_assignment_points_a_reviewing_worker_at_the_template(self):
+        for one_shot in (True, False):
+            with self.subTest(one_shot=one_shot):
+                tmp, root = workspace()
+                self.addCleanup(tmp.cleanup)
+                body = dp.compose(root, "2026-09-18", "Security audit", worktree=root / "tree", one_shot=one_shot)
+                self.assertIn(f"Review: if this task reviews a pull or merge request, write your report in the format of {self.TEMPLATE}", body)
 
 
 class AgyRuntimeTest(unittest.TestCase):
