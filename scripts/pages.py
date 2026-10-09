@@ -203,13 +203,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         root = getattr(self.server, "root", None)
         self._poke()
         if path == "/":
-            if (self.command == "GET" and self.headers.get("Sec-Fetch-Mode") == "navigate"
-                    and page_reload.RELOAD_COOKIE not in self.headers.get("Cookie", "")):
-                # A person's load (#229): a browser navigation (an agent's GET is none) that is not the reload
-                # snippet's own (its cookie). Recorded before `fresh`, so the board counts from the look before; one
-                # lock around the whole rotation, so two tabs loading at once cannot interleave it.
-                with page_lock(Path(self.directory) / LAST_LOOKED), contextlib.suppress(OSError):
-                    record_look(Path(self.directory), datetime.now().astimezone())
             # Served in place, not redirected: the tab stays on `/`, so its reload poll finds the next day's board.
             name = None
             if root is not None:
@@ -221,6 +214,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if name is None and not boards:
                 self.send_error(404, "no board rendered yet")
                 return False
+            if (self.command == "GET" and self.headers.get("Sec-Fetch-Mode") == "navigate"
+                    and page_reload.RELOAD_COOKIE not in self.headers.get("Cookie", "")):
+                # A person's load (#229): a browser navigation (an agent's GET is none) that is not the reload
+                # snippet's own (its cookie), with a board to serve. Recorded before `fresh`, so the board counts
+                # from the look before; one lock around the whole rotation, so two tabs loading at once cannot
+                # interleave it.
+                with page_lock(Path(self.directory) / LAST_LOOKED), contextlib.suppress(OSError):
+                    record_look(Path(self.directory), datetime.now().astimezone())
             self.path = "/" + (name or boards[-1].name)
         elif path == "/all":
             self.path = "/"
