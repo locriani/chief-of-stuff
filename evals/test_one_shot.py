@@ -2000,10 +2000,35 @@ class SanitisedTreeReadTest(unittest.TestCase):
         self.assertEqual(one_shot.changed_files(fx.tree), expected.stdout.strip())
         self.assertEqual(fx.fired(), [])
 
-    def test_non_repository_status_reports_unreadable(self):
+    # A plain folder (no .git entry in it or any ancestor) is no repository: its status read is
+    # an empty change list, not an error line that reads as a dirty tree and holds the run (#559).
+    def test_a_plain_folder_reports_an_empty_change_list(self):
         empty = self.root / "empty"
         empty.mkdir()
-        self.assertRegex(one_shot.changed_files(empty), r"^git status failed: .*unreadable")
+        (empty / "notes.txt").write_text("generic\n")
+        self.assertEqual(one_shot.changed_files(empty), "")
+
+    def test_a_repository_subfolder_records_the_enclosing_repository_s_head(self):
+        # #560: a one-shot working in a subfolder of a repository commits there, so its launch
+        # records that repository's head and its post-run reads resolve to the enclosing tree.
+        fx = self.fixture()
+        for sub, head in ((fx.tree / "src", fx.sha["D"]), (fx.clone / "src", fx.sha["B"])):
+            sub.mkdir()
+            with self.subTest(subfolder=str(sub)):
+                self.assertEqual(one_shot.git_head(sub, strict=True), head)
+                self.assertEqual(one_shot.git_head(sub), head)
+        sub = fx.tree / "src"
+        (fx.tree / "g.txt").write_text("b\n")
+        taint.git(["add", "g.txt"], fx.tree)
+        taint.git(["commit", "-qm", "second"], fx.tree)
+        log = one_shot.committed_changes(sub, fx.sha["D"])
+        self.assertIn("second", log)
+        self.assertIn("g.txt", log)
+        expected = self.raw(fx, ["status", "--short"], git_trees.audit_env())
+        self.assertEqual(expected.returncode, 0, expected.stderr)
+        self.assertEqual(one_shot.changed_files(sub), expected.stdout.strip())
+        self.assertEqual(fx.fired(), [])
+        self.assertEqual(list(self.base.glob("view-*")), [])
 
     def test_unreadable_after_is_not_no_new_commits(self):
         fx = self.fixture()
