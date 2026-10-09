@@ -15,6 +15,8 @@ from .constants import (
     TAB,
 )
 
+HEX_DIGITS = "0123456789abcdefABCDEF"  # the four digits a \uXXXX escape names its character with
+
 
 def escape_string(value: str) -> str:
     """Escape special characters in a string for encoding.
@@ -46,8 +48,10 @@ def escape_string(value: str) -> str:
 def unescape_string(value: str) -> str:
     """Unescape a string by processing escape sequences.
 
-    Handles `\\n`, `\\t`, `\\r`, `\\\\`, and `\\"` escape sequences.
-    Per Section 7.1 of the TOON specification.
+    Handles `\\n`, `\\t`, `\\r`, `\\\\`, `\\"`, and `\\uXXXX` escape sequences.
+    Per Section 7.1 of the TOON specification. A `\\uXXXX` escape is four hex
+    digits; a surrogate pair decodes to one character, and a lone surrogate
+    reads as the replacement character.
 
     Args:
         value: The string to unescape (without surrounding quotes)
@@ -92,6 +96,24 @@ def unescape_string(value: str) -> str:
             if next_char == DOUBLE_QUOTE:
                 result += DOUBLE_QUOTE
                 i += 2
+                continue
+            if next_char == "u":
+                digits = value[i + 2:i + 6]
+                if len(digits) != 4 or any(d not in HEX_DIGITS for d in digits):
+                    raise ValueError("Invalid escape sequence: \\u must be followed by four hexadecimal digits")
+                code = int(digits, 16)
+                i += 6
+                if 0xD800 <= code <= 0xDBFF:  # a high surrogate waits for its low half as another \uXXXX escape
+                    low_digits = value[i + 2:i + 6]
+                    if (value[i:i + 2] == BACKSLASH + "u" and len(low_digits) == 4
+                            and all(d in HEX_DIGITS for d in low_digits) and 0xDC00 <= int(low_digits, 16) <= 0xDFFF):
+                        code = 0x10000 + ((code - 0xD800) << 10) + (int(low_digits, 16) - 0xDC00)
+                        i += 6
+                if 0xD800 <= code <= 0xDFFF:
+                    # A lone surrogate cannot survive as text: replace it, as the launcher's own report writes do
+                    # (`utf-8, errors="replace"`), and the report still reads.
+                    code = 0xFFFD
+                result += chr(code)
                 continue
 
             raise ValueError(f"Invalid escape sequence: \\{next_char}")
