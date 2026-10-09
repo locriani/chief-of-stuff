@@ -678,6 +678,27 @@ class ResultTests(unittest.TestCase):
         self.assertEqual(toon_decode(done.stdout)["worktree"], "b-good")
         self.assertEqual(done.stderr.splitlines(), [SKIPPED.format(n=1)])
 
+    # A `\uXXXX` escape in a report is TOON a worker may legitimately write (#577): it decodes, and the report reads.
+
+    def test_a_u_escaped_report_still_reads_its_string(self):
+        for reason, escaped in (("the 429 path \u2014 retry", "the 429 path \\u2014 retry"),
+                                ("caf\u00e9 fix", "caf\\u00e9 fix"),
+                                ("shipped \U0001F600 today", "shipped \\ud83d\\ude00 today")):
+            with self.subTest(escaped):
+                self.plant("rate-limit", 'task: "Rate limit headers"\nworker: "rate-limit"\n'
+                                         f'status: "human_review"\nreason: "{escaped}"\n')
+                done = self.one("--task", "Rate limit headers")
+                self.only_skipped_none()
+                self.assertEqual(done["reason"], reason)
+
+    def test_a_lone_surrogate_escape_reads_as_the_replacement_character(self):
+        # What the launcher's own writes do to a lone surrogate (`utf-8, errors="replace"`), a report holding one reads back as.
+        self.plant("rate-limit", 'task: "Rate limit headers"\nworker: "rate-limit"\n'
+                                 'status: "human_review"\nreason: "x \\ud800 end"\n')
+        done = self.one("--task", "Rate limit headers")
+        self.only_skipped_none()
+        self.assertEqual(done["reason"], "x \ufffd end")
+
 
 if __name__ == "__main__":
     unittest.main()
