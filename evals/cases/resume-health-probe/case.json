@@ -12,7 +12,7 @@
       "name": "probe script run",
       "type": "tool_used",
       "tool": "Bash",
-      "input_match": "probe_health\\.py",
+      "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:chief[-_]of[-_]stuff(?:\\.py)?\\s+health\\b|probe_health\\.py)",
       "min": 1
     },
     {

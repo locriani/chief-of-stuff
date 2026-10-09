@@ -2343,5 +2343,70 @@ class CaseLintTest(unittest.TestCase):
             self.assertIn("src/a/", dispatch_prompt.compose(work, day, "Security audit"))
 
 
+class CliFormGradersTest(unittest.TestCase):
+    """#233: `chief-of-stuff <command>` means the plugin's own `chief_of_stuff.py`. The graders read the call's command
+    field only (the description is prose about the call and decides nothing)."""
+
+    CASES = EVALS / "cases"
+
+    def named(self, case: str, prefix: str) -> dict:
+        return next(g for g in graders(spec(self.CASES / case)) if g.get("name", "").startswith(prefix))
+
+    def hits(self, g: dict, command: str, said: str = "chief-of-stuff audit; which chief-of-stuff") -> bool:
+        return grader_hits(g, "Bash", command=command, description=said)
+
+    def test_tool_used_graders_never_carry_text_match(self) -> None:
+        # `_tool_used` reads only `input_match`, so a `text_match` on it matched every call of the tool.
+        for case in sorted(self.CASES.glob("*/case.json")):
+            for g in graders(json.loads(case.read_text())):
+                if g.get("type") == "tool_used":
+                    self.assertNotIn("text_match", g, f"{case.parent.name}: {g.get('name')}")
+
+    def test_audit_graders_find_the_audit_call_in_either_form(self) -> None:
+        cases = {"resume-reopens-unmerged-done": "audit script run", "resume-closes-task-with-closed-issue": "audit runs",
+                 "decommission-is-not-a-task-state": "the task audit", "orphaned-work-has-no-owner": "T1: it asks the audit",
+                 "orphaned-unpushed-has-no-row": "it asks the audit"}
+        audit = {self.named(case, prefix.removeprefix("T1: "))["input_match"] for case, prefix in cases.items()}
+        self.assertEqual(len(audit), 1, audit)
+        g = {"tool": "Bash", "input_match": audit.pop()}
+        for command in ("python3 /release/chief_of_stuff.py audit --date 2026-10-09", "chief-of-stuff audit",
+                        "cd /tmp/ws; chief_of_stuff audit 2>&1", "python3 /release/scripts/audit_tasks.py --root ."):
+            self.assertTrue(self.hits(g, command), command)
+        for command in ("TZ=America/Chicago date", 'grep -n "x" README.md', "python3 /r/chief_of_stuff.py audit --help",
+                        "python3 /r/chief_of_stuff.py auditor", "python3 /r/chief_of_stuff.py health --config CLAUDE.md"):
+            self.assertFalse(self.hits(g, command), command)
+
+    def test_bare_path_grader_finds_a_chief_of_stuff_from_path(self) -> None:
+        g = self.named("resume-reopens-unmerged-done", "it never runs a chief-of-stuff found on PATH")
+        self.assertEqual(g, self.named("resume-closes-task-with-closed-issue", "it never runs a chief-of-stuff found on PATH"))
+        self.assertEqual(g["max"], 0)
+        for command in ("chief-of-stuff audit --root .", "cd x && chief-of-stuff audit", "cd x; chief-of-stuff log --root . hi",
+                        "TZ=America/Chicago chief-of-stuff log --root . hi", "env A=1 chief-of-stuff audit",
+                        'echo "$(chief-of-stuff tracker sections)"', "(chief-of-stuff audit)", "chief-of-stuff",
+                        "if chief-of-stuff audit; then :; fi", "date\nchief-of-stuff audit"):
+            self.assertTrue(self.hits(g, command, said=""), command)
+        for command in ("python3 /release/chief_of_stuff.py audit", "ls ~/Developer/chief-of-stuff-wt/cli-form",
+                        "cat .chief-of-stuff/reports/a.toon", "python3 /x/chief-of-stuff/chief_of_stuff.py audit"):
+            self.assertFalse(self.hits(g, command, said="then chief-of-stuff audit"), command)
+
+    def test_probe_grader_finds_a_look_at_the_cli_form(self) -> None:
+        g = self.named("resume-reopens-unmerged-done", "it runs the CLI without probing")
+        self.assertEqual(g, self.named("resume-closes-task-with-closed-issue", "it runs the CLI without probing"))
+        self.assertEqual(g["max"], 0)
+        for command in ("printenv CHIEF_OF_STUFF_RELEASE", "env | grep CHIEF", "echo $CHIEF_OF_STUFF_RELEASE",
+                        "which chief-of-stuff", "type chief-of-stuff", "whereis chief-of-stuff", "command -v chief-of-stuff",
+                        "echo $CLAUDE_PLUGIN_ROOT", "ls ${CLAUDE_PLUGIN_ROOT}", "chief-of-stuff --help",
+                        "python3 /r/chief_of_stuff.py -h"):
+            self.assertTrue(self.hits(g, command, said=""), command)
+        # A subcommand's --help reads that subcommand's flags; it does not ask which form to run.
+        for command in ("python3 /release/chief_of_stuff.py audit", "python3 /r/chief_of_stuff.py tracker --help",
+                        "TZ=America/Chicago date"):
+            self.assertFalse(self.hits(g, command), command)
+
+    def test_health_probe_grader_is_the_bad_setting_one(self) -> None:
+        bad = spec(self.CASES / "open-day-names-a-bad-setting")["graders"][0]["input_match"]
+        self.assertEqual(self.named("resume-health-probe", "probe script run")["input_match"], bad)
+
+
 if __name__ == "__main__":
     unittest.main()

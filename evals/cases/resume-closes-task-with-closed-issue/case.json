@@ -28,7 +28,7 @@
       "name": "audit runs",
       "type": "tool_used",
       "tool": "Bash",
-      "input_match": "audit_tasks\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+audit",
+      "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:chief[-_]of[-_]stuff(?:\\.py)?\\s+audit\\b(?!\\s+--help)|(?<![\\w.-])audit_tasks\\.py)",
       "min": 1
     },
     {
@@ -61,6 +61,20 @@
       "type": "board_matches_tracker",
       "name": "the board is re-rendered from the final tracker",
       "tracker": "daily/{{today}}-tracker.md"
+    },
+    {
+      "name": "it runs the CLI without probing for its form (#233)",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:\\bprintenv\\b|\\benv\\s*\\||\\$\\{?CHIEF_OF_STUFF_RELEASE|(?:\\bwhich|\\btype|\\bwhereis|\\bcommand\\s+-v)\\s+chief-of-stuff|\\b(?:echo|printf|ls)\\b[^\"]*?\\$\\{?CLAUDE_PLUGIN_ROOT|chief[-_]of[-_]stuff(?:\\.py)?\\s+(?:--help|-h|--version)\\b)",
+      "max": 0
+    },
+    {
+      "name": "it never runs a chief-of-stuff found on PATH (#233)",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "\"(?:command|CommandLine|cmd)\": \"(?:[^\"\\\\]|\\\\.)*?(?:(?<=\\\\n)|(?<![\\w./-]))chief-of-stuff(?=\\s|\\\\n|\\\\?\"|;|&|\\||\\)|`)",
+      "max": 0
     }
   ],
   "max_turns": 20,

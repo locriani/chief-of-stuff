@@ -1617,7 +1617,8 @@ def run_one(case: Case, arm: str, model: str, out: Path, root: Path | None = Non
                 return run_host_turns(spec, arm, model, out, work, env, mcp_config, calls_log, tz,
                                       runtime=runtime, root=root or PLUGIN_ROOT, effort=effort,
                                       case_root=case.root, ctx=ctx)
-            return run_turns(spec, arm, model, out, work, env, mcp_config, calls_log, tz, case_root=case.root, ctx=ctx)
+            return run_turns(spec, arm, model, out, work, env, mcp_config, calls_log, tz, case_root=case.root, ctx=ctx,
+                             root=root, effort=effort)
         try:
             cmd = (command(case, arm, model, spec["prompt"], mcp_config=mcp_config, root=root, effort=effort)
                    if runtime == "claude" else host_command(runtime, model,
@@ -1727,9 +1728,9 @@ def run_host_turns(spec: dict[str, Any], arm: str, model: str, out: Path, work: 
                             "denials": sum(len(s.denied_ids) for s, _, _ in completed)}
 
 
-def run_turns(spec: dict[str, Any], arm: str, model: str, out: Path, work: Path, env: dict[str, str], mcp_config: dict[str, Any] | None, calls_log: Path, tz: str, case_root: Path = Path("."), ctx: dict[str, str] | None = None) -> tuple[list[tuple[str, bool, str]], str | None, dict[str, Any]]:
+def run_turns(spec: dict[str, Any], arm: str, model: str, out: Path, work: Path, env: dict[str, str], mcp_config: dict[str, Any] | None, calls_log: Path, tz: str, case_root: Path = Path("."), ctx: dict[str, str] | None = None, root: Path | None = None, effort: str | None = None) -> tuple[list[tuple[str, bool, str]], str | None, dict[str, Any]]:
     """Multi-turn case: one stream-json process, graders scoped to each turn, fixture snapshot per turn."""
-    cmd = command(Case("", Path(), spec), arm, model, None, mcp_config=mcp_config)
+    cmd = command(Case("", Path(), spec), arm, model, None, mcp_config=mcp_config, root=root, effort=effort)
     (out / "command.json").write_text(json.dumps(cmd, indent=1))
 
     def snapshot(n: int) -> None:

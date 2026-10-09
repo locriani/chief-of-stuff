@@ -119,6 +119,17 @@ class PagesLifecycleTest(unittest.TestCase):
             signalled.assert_called_once_with(server_pid, signal.SIGTERM)
         self.assertFalse(self.work.exists())
 
+    def test_multi_turn_case_reads_the_snapshot_plugin_root(self):
+        """#233 review: a multi-turn case runs against the plugin snapshot it was given, not the live checkout."""
+        snapshot = self.root / "snapshot"
+        with patch.object(run.tempfile, "mkdtemp", return_value=str(self.work)), \
+             patch.object(run, "start_fixture_pages"), \
+             patch.object(run, "command", return_value=["mock-runtime"]) as built, \
+             patch.object(run, "drive_turns", side_effect=RuntimeError("stop after the command")):
+            with self.assertRaisesRegex(RuntimeError, "stop after the command"):
+                run.run_one(self.case, "agent", "sonnet", self.root / "out", root=snapshot, effort="high")
+        self.assertEqual((built.call_args.kwargs["root"], built.call_args.kwargs["effort"]), (snapshot, "high"))
+
     def test_huge_pid_does_not_skip_the_rest_of_case_cleanup(self):
         """R9: stop_pages must not prevent rmtree or either stop_server call."""
         def start(work, env, root):
