@@ -4,6 +4,10 @@ It polls the file's Last-Modified with a HEAD every 5 s and when the tab is show
 throttled). A change reloads the page, except while the user has unsaved input in a form (typing, a picked option): then it shows one notice with a button.
 """
 
+# Set by the timer's reload, so the page server does not count it as a person looking at the board (#229); the
+# notice's Reload button is the person's own click and sets none.
+RELOAD_COOKIE = "cos-reload=1"
+
 SNIPPET = """<script>
 (function(){
   var seen=Date.parse(document.lastModified);
@@ -23,13 +27,13 @@ SNIPPET = """<script>
   function poll(){
     fetch(location.pathname,{method:'HEAD',cache:'no-store'}).then(function(r){
       var t=Date.parse(r.headers.get('Last-Modified'));
-      if(!isNaN(t)&&t!==seen){if(typing())notice();else location.reload();}
+      if(!isNaN(t)&&t!==seen){if(typing())notice();else{document.cookie='%s;max-age=10;path=/';location.reload();}}
     }).catch(function(){});
   }
   setInterval(poll,5000);document.addEventListener('visibilitychange',poll);
 })();
 </script>
-"""
+""" % RELOAD_COOKIE
 
 
 ENCODED = SNIPPET.encode()

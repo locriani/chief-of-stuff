@@ -47,7 +47,7 @@ from html import escape
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 import page_reload
-from workspace import LOOKED_BEFORE, ConfigError, daily_trackers, pages_address, read_config, record_look
+from workspace import LAST_LOOKED, LOOKED_BEFORE, ConfigError, daily_trackers, pages_address, read_config, record_look
 
 SERVER = "chief-of-stuff-pages"
 PID = ".pid"
@@ -203,10 +203,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         root = getattr(self.server, "root", None)
         self._poke()
         if path == "/":
-            if self.headers.get("Sec-Fetch-User") == "?1":
-                # A person's load (#229): a navigation they started. The reload snippet's timer has no user activation,
-                # so its reload sends no Sec-Fetch-User. Recorded before `fresh`, so the board counts from the look before.
-                with contextlib.suppress(OSError):
+            if (self.command == "GET" and self.headers.get("Sec-Fetch-Mode") == "navigate"
+                    and page_reload.RELOAD_COOKIE not in self.headers.get("Cookie", "")):
+                # A person's load (#229): a browser navigation (an agent's GET is none) that is not the reload
+                # snippet's own (its cookie). Recorded before `fresh`, so the board counts from the look before; one
+                # lock around the whole rotation, so two tabs loading at once cannot interleave it.
+                with page_lock(Path(self.directory) / LAST_LOOKED), contextlib.suppress(OSError):
                     record_look(Path(self.directory), datetime.now().astimezone())
             # Served in place, not redirected: the tab stays on `/`, so its reload poll finds the next day's board.
             name = None
