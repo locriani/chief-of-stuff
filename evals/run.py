@@ -1458,14 +1458,17 @@ class _HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler's name)
         status = self.server.plan.get(self.path, 404)
         body = json.dumps({"path": self.path, "status": status}).encode()
+        # The probe is logged before the response goes out: ThreadingHTTPServer serves each
+        # request on its own thread, so logging after `wfile.write` lets the client's next
+        # probe land its log line first and reverses the recorded call order.
+        with open(self.server.log, "a") as fh:
+            fh.write(json.dumps({"tool": "health", "path": self.path, "status": status,
+                                 "at": datetime.now(ZoneInfo(self.server.tz)).isoformat()}) + "\n")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
-        with open(self.server.log, "a") as fh:
-            fh.write(json.dumps({"tool": "health", "path": self.path, "status": status,
-                                 "at": datetime.now(ZoneInfo(self.server.tz)).isoformat()}) + "\n")
 
     def log_message(self, *_a) -> None:
         return
