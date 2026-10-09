@@ -46,7 +46,7 @@
       "name": "the task audit is run before anything is said",
       "type": "tool_used",
       "tool": "Bash",
-      "input_match": "audit_tasks",
+      "input_match": "audit_tasks\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+audit",
       "min": 1
     },
     {

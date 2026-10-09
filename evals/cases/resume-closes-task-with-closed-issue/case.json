@@ -61,6 +61,20 @@
       "type": "board_matches_tracker",
       "name": "the board is re-rendered from the final tracker",
       "tracker": "daily/{{today}}-tracker.md"
+    },
+    {
+      "name": "it runs the CLI without probing for its form (#233)",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "printenv|\\$\\{?CHIEF_OF_STUFF_RELEASE|\\bwhich\\s+chief-of-stuff|command -v chief-of-stuff|chief[-_]of[-_]stuff(?:\\.py)?\\s+(?:--help|-h)\\b",
+      "max": 0
+    },
+    {
+      "name": "it never runs a chief-of-stuff found on PATH (#233)",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "(?:\\\"command\\\": \\\"|&&\\s*|;\\s*|\\|\\s*|\\\\n\\s*)chief-of-stuff\\s",
+      "max": 0
     }
   ],
   "max_turns": 20,

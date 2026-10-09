@@ -28,7 +28,7 @@
           "name": "it asks the audit rather than guessing",
           "type": "tool_used",
           "tool": "Bash",
-          "text_match": "audit_tasks",
+          "input_match": "audit_tasks\\.py|chief[-_]of[-_]stuff(?:\\.py)?\\s+audit",
           "min": 1
         },
         {
