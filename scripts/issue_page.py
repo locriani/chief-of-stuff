@@ -17,14 +17,14 @@ from pathlib import Path
 import board_sources
 import flow_chart
 import tracker_log
-from decision_page import HEAD, _md, _section, context, pending_count, span, write_if_changed
+from decision_page import HEAD, _md, _section, context, entries, held_refs, span, write_if_changed
 from fragment import href, tab_bar
 from module_graph import section as _graph
 from clock import dur as _dur
-from task_forge import forge_ends
+from task_forge import forge_ends, held_names, hold_causes
 from tracker import TRAILING_NUMBER, issue_number, parse_tracker, resolve_due as _resolve_due
 from workspace import Config, ConfigError, daily_trackers, read_config
-from settings import Graph, SettingsError, load as load_settings
+from settings import Graph, Kanban, SettingsError, load as load_settings
 
 # A worker's outcome by its last launcher move's stage (tracker_log.moves: completed → pr, HUMAN REVIEW → review).
 ENDED = {"pr": "completed", "review": "human review"}
@@ -185,7 +185,8 @@ def _next(rows, change: board_sources.Change | None, changes, why_not: str, now:
 
 def render(number: int, trackers: list[tuple[date, str]], sources: board_sources.Sources, now: datetime,
            lanes: dict | None = None, cfg: Config | None = None, graph: Graph | None = None, pages: Path | None = None,
-           root: Path | None = None, pending: int = 0) -> str | None:
+           root: Path | None = None, pending: int = 0, kanban: Kanban | None = None,
+           pending_refs: set[str] = frozenset()) -> str | None:
     """The page, or None when no task in `trackers` names issue `number`. `cfg` resolves a task's due (the board's
     deadlines); `graph`, `pages` and `root` draw Architecture as the decision page draws its module graph."""
     ref = f"#{number}"
@@ -201,7 +202,10 @@ def render(number: int, trackers: list[tuple[date, str]], sources: board_sources
     ends = {t.item: end for t in parse_tracker(trackers[-1][1]).tasks
             if t.kind != "done" and (end := _resolve_due(t.due, cfg, now.date()))}
     # (#200, #220) forge_ends is shared with the board, so both end a row at the same time
-    rows = [(s, r) for s, r in flow_chart.build(log, known, lanes or {}, set(), ends, now,
+    # #228: held as the board holds it, from today's tasks less the standing ones, so both name the same cause.
+    today = [t for t in parse_tracker(trackers[-1][1]).tasks if not t.standing]
+    held = held_names(hold_causes(today, kanban, sources, lanes or {}, pending_refs))
+    rows = [(s, r) for s, r in flow_chart.build(log, known, lanes or {}, held, ends, now,
                                                 ended=forge_ends(known, sources, now.tzinfo))
             if issue_number(r.ref) == number]
     log = [m for m in log if m.name.strip().casefold() in keys]
@@ -317,6 +321,8 @@ def write(root: Path, pages_dir: Path, number: int) -> Path | None:
     """Render `issue-<number>.html`; with no page, remove the file and return None. The page server calls this in
     process."""
     cfg, now, trackers, settings = inputs(root)
+    ctx = context(root, now.date().isoformat())
+    pending = entries(pages_dir, ctx) if ctx else []
     page = render(number, trackers, board_sources.load(pages_dir), now, settings.lanes, cfg, settings.graph, pages_dir, root,
-                  pending_count(pages_dir, context(root, now.date().isoformat())))
+                  sum(d is not None for _, d, _, _ in pending), settings.kanban, held_refs(pending, ctx))
     return put(pages_dir / f"issue-{number}.html", page)
