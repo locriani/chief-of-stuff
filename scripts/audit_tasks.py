@@ -18,9 +18,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from clock import HHMM, RAN, dur as _dur, hhmm as _hhmm  # noqa: E402
 from findings import ISSUE, KANBAN, LANE, MERGED, NEXT, OVER, QUEUE, REOPEN, STOPPED  # noqa: E402
 from md import cells as _cells, is_separator as _is_separator, section as _section, unmark as _unmark  # noqa: E402
-from tracker import clip_name, parse_tracker  # noqa: E402
+from tracker import Session, clip_name, parse_tracker  # noqa: E402
 from workspace import ConfigError, parse_coordinator, read_config, worktrees_dir  # noqa: E402
-from dispatch_prompt import PROMPT_DIR, STOP_FILE  # noqa: E402
+from dispatch_prompt import PROMPT_DIR, STOP_FILE, task_keys  # noqa: E402
 from backlog import CLOSED, GITHUB, Backlog, BacklogError, GitHubBacklog, file_with, home_of, issue_ref, issue_states  # noqa: E402
 import backlog  # noqa: E402
 from settings import Kanban, SettingsError, load as load_settings  # noqa: E402
@@ -468,9 +468,13 @@ def key_name(task, roster: set[str], refs: set[str]) -> str:
 
 
 def keyed_on(row: OwnerRow, item: str, name: str) -> bool:
-    """A File ownership row keyed on a task's item, or whose whole context is its Tasks-table `name`, is keyed on that
-    task. The name is compared exactly, as dispatch does: a session's `arch (deletion)` is not a task named `arch`."""
-    return owns(row, item) or (bool(name.strip()) and row.context.strip() == name.strip())
+    """A File ownership row keyed on a task's item, its colon prefix or board short name — the key set
+    dispatch writes (`task_keys`, #553) — or whose whole context is its Tasks-table `name`, is keyed on
+    that task. The name is compared exactly, as dispatch does: a session's `arch (deletion)` is not a
+    task named `arch`; the item's short forms read as audit reads prose, bare."""
+    if owns(row, item) or (bool(name.strip()) and row.context.strip() == name.strip()):
+        return True
+    return any(_bare(row.context) == _bare(key) for key in task_keys(item) - {item.strip()})
 
 
 def _tokens(text: str) -> set[str]:
@@ -506,12 +510,15 @@ def rows_for(item: str, owner: str, owners: list[OwnerRow], name: str = "") -> t
     return top, ""
 
 
-def row_claim(row: OwnerRow, tasks, roster: set[str], refs: set[str], user: str) -> Claim:
+def row_claim(row: OwnerRow, tasks, roster: set[str], refs: set[str], user: str,
+              sessions: tuple[Session, ...] = ()) -> Claim:
     """A File ownership row's claim on its trees. Live when its context is in `## Sessions`, or when the
     task it is keyed on — a one-shot's row is keyed on its task, never a session — has a listed owner.
-    An empty Sessions table cannot prove that workers are absent, so with no roster every row is live."""
+    An empty Sessions table cannot prove that workers are absent, so with no rows to ask every row is
+    live; rows that are there but name no one do not re-arm that escape (#553): the join runs on what
+    they say, and a row keyed on nothing is dead."""
     owner = _bare(row.context)
-    if not roster:
+    if not sessions:
         return Claim(owner, True)
     here, missing = listed(row.context, roster, refs, user)
     keyed = next((t for t in tasks if keyed_on(row, t.item, t.name)), None)
@@ -857,7 +864,7 @@ def audit(root: Path, day: str, gh=None, check_issues: bool = True, now: datetim
         for name in row.worktrees:
             path = _resolve(root, trees, name)[0]
             if path is not None:
-                claims.setdefault(path, []).append(row_claim(row, tasks, roster, refs, cfg.user))
+                claims.setdefault(path, []).append(row_claim(row, tasks, roster, refs, cfg.user, tracker.sessions))
     for source in (registry_claims(root), one_shot_claims((root / trees).resolve())):
         for path, found in source.items():
             claims.setdefault(path, []).extend(found)

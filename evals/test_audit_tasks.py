@@ -29,7 +29,7 @@ import git_view  # noqa: E402
 import board_sources as bs  # noqa: E402
 import test_git_trees as tgt  # noqa: E402  (module-qualified: don't re-collect its TestCases)
 import test_board_sources as tbs  # noqa: E402  (module-qualified: don't re-collect its TestCases)
-from tracker import Task, short_name  # noqa: E402
+from tracker import Session, Task, short_name  # noqa: E402
 import tree_state  # noqa: E402
 from evals import git_taint as taint  # noqa: E402
 
@@ -3316,7 +3316,9 @@ class OwnershipRowKeyedOnNameTest(unittest.TestCase):
         return Task(item=item, owner=owner, state="running 09:10", since="09:00", due="", checklist="", name=name)
 
     def claim(self, row: al.OwnerRow, tasks: list[Task], roster: set[str]):
-        return al.row_claim(row, tasks, roster, set(), "robin")
+        # The roster is the listed sessions' names; #553's escape asks the table, so say it has rows.
+        rows = tuple(Session("", name, "", "", "", "", "", "", "") for name in roster)
+        return al.row_claim(row, tasks, roster, set(), "robin", sessions=rows)
 
     def test_a_name_keyed_rows_claim_is_live_while_its_tasks_owner_is_listed(self) -> None:
         self.assertTrue(self.claim(self.row("alpha"), [self.task("alpha")], {"sam"}).live)
