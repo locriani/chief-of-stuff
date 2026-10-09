@@ -821,8 +821,44 @@ class RunTest(unittest.TestCase):
     def test_a_worker_that_cannot_start_still_leaves_a_report_copy(self):
         self.copy_of_a_run_that_never_got_a_result(127, str(self.root / "no-such-agent"))
 
-    def test_a_worker_that_times_out_still_leaves_a_report_copy(self):
+    def test_a_timed_out_run_is_relaunched_once_into_its_tree(self):
+        # #110: the first timeout relaunches the run once, into the same tree with its partial commits,
+        # the doubled wait giving the second run its headroom and the Log line marking the retry spent.
+        cfg = dispatch_prompt.config(self.root)
+        real_popen = subprocess.Popen
+        trees, waits, first = [], [], True
+
+        def popen(argv, *args, **kwargs):
+            nonlocal first
+            if argv[0] == "git":  # the launcher's own reads run for real
+                return real_popen(argv, *args, **kwargs)
+            trees.append(kwargs.get("cwd"))
+            worker = mock.Mock(returncode=0)
+            if first:
+                first = False
+                worker.wait.side_effect = [subprocess.TimeoutExpired(argv, 1), 0]  # the kill's wait
+            else:
+                (self.tree / one_shot.RESULT).write_text(
+                    "status: done\nreason: finished on the second run\nchanges: checked\n")
+                worker.wait.side_effect = lambda timeout=None: waits.append(timeout) or 0
+            return worker
+
+        with mock.patch.object(one_shot, "login_argv", side_effect=lambda argv: argv), \
+             mock.patch.object(subprocess, "Popen", side_effect=popen), \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(one_shot._launch(self.root, cfg, "2026-09-18", "Security audit", self.tree, "worker01",
+                                              "codex", "", "", "Generic assignment\n", ["fixture-worker"], 1), 0)
+        self.assertEqual(trees, [self.tree, self.tree], "the run did not relaunch into its own tree")
+        self.assertEqual(waits, [2 * 60], "the second run did not get a doubled timeout")
+        self.assertIn("timed out after 1 minute", self.tracker.read_text())
+        report = toon_decode((self.root / dispatch_prompt.REPORTS_DIR / "worker.toon").read_text())
+        self.assertEqual(report["status"], "done")
+        self.assertIn("finished on the second run", report["reason"])
+
+    def test_a_second_timed_out_run_is_held_for_review(self):
+        # #110: a run that times out twice holds for review, its Log marker written exactly once.
         self.copy_of_a_run_that_never_got_a_result(124, str(self._fake(None)), timeout=True)
+        self.assertEqual(sum("timed out after" in line for line in self.tracker.read_text().splitlines()), 1)
 
     def test_a_launch_with_no_reports_folder_leaves_this_runs_copy_there(self):
         reports = self.root / dispatch_prompt.REPORTS_DIR
