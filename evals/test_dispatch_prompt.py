@@ -1383,8 +1383,14 @@ class ReviewReportTest(unittest.TestCase):
                          r"[^|]+:\d+ \| [^|]+ \| [^|]+ \| suggested: (?:fix|file|keep|discard)$")
         cases = sorted((Path(dp.__file__).resolve().parents[1] / "evals/cases").glob("triage-*/case.json"))
         self.assertTrue(cases)
+        def strings(value):  # a case's prompt, or each of its turns'
+            if isinstance(value, str):
+                yield value
+            for inner in value.values() if isinstance(value, dict) else value if isinstance(value, list) else ():
+                yield from strings(inner)
+
         for case in cases:
-            prompt = json.loads(case.read_text())["prompt"]
+            prompt = "\n".join(strings(json.loads(case.read_text())))
             if "Reviewer pass:" not in prompt:
                 continue
             with self.subTest(case=case.parent.name):
