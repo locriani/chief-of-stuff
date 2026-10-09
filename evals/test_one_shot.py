@@ -1764,6 +1764,60 @@ class RunTest(unittest.TestCase):
         self.assertEqual(probe.read_text(), f"{os.getpid()} Security audit\n")
         self.assertEqual(process_status.running_trees(self.root / "trees"), {})
 
+    def _stopped_tree(self, task: str = "Security audit", *, live: bool = False, pid_file: bool = True) -> None:
+        """A tree holding an earlier one-shot's dispatch, its pid file's launcher gone unless `live`."""
+        stale = self.tree / ".chief-of-stuff"
+        stale.mkdir(exist_ok=True)
+        (stale / "dispatch.md").write_text("# One-shot assignment\nAn earlier dispatch.\n")
+        if pid_file:
+            if live:
+                pid = os.getpid()
+            else:
+                gone = subprocess.Popen([sys.executable, "-c", "pass"])
+                gone.wait()
+                pid = gone.pid
+            (self.tree / one_shot.PIDFILE).write_text(f"{pid} {task}\n")
+
+    def test_a_stopped_tree_accepts_the_same_task_again_and_keeps_its_work(self):
+        # #138: a tree whose launcher was stopped accepts the same task again, keeping the work
+        # already in it; the stopped run's result is not read as this run's.
+        subprocess.run(["git", "-C", str(self.tree), "-c", "user.name=Test", "-c", "user.email=test@example.test",
+                        "commit", "-q", "--allow-empty", "-m", "partial work"], check=True)
+        (self.tree / one_shot.RESULT).write_text('status: done\nreason: from the stopped run\nchanges: none\n')
+        self._stopped_tree()
+        fake = self._fake(None, write_partial=False)
+        self.assertEqual(self._run(fake), 1)
+        self.assertIn("| Security audit | Robin | waiting |", self.tracker.read_text())
+        report = toon_decode((self.root / dispatch_prompt.REPORTS_DIR / "worker.toon").read_text())
+        self.assertEqual(report["status"], "human_review")
+        self.assertNotIn("from the stopped run", report["reason"], "the stopped run's result read as this run's")
+        subjects = subprocess.run(["git", "-C", str(self.tree), "log", "--format=%s"],
+                                  capture_output=True, text=True, check=True).stdout
+        self.assertIn("partial work", subjects, "the work already in the tree was lost")
+
+    def test_a_tree_whose_pid_file_is_gone_accepts_the_same_task_again(self):
+        # #138: a run that ended cleanly unlinks its pid file; its dispatch does not jail the tree.
+        self._stopped_tree(pid_file=False)
+        fake = self._fake('status: done\nreason: r\nchanges: c\n', write_partial=False)
+        self.assertEqual(self._run(fake), 0)
+        self.assertIn("| Security audit | Robin | waiting |", self.tracker.read_text())
+
+    def test_a_tree_with_a_live_launcher_still_refuses_the_dispatch(self):
+        # #138: a pid file with a live pid means the tree is somebody's; the refusal stands.
+        self._stopped_tree(live=True)
+        before = self.tracker.read_text()
+        with self.assertRaisesRegex(ValueError, "already holds a dispatch"):
+            self._run(self._fake('status: done\nreason: r\nchanges: c\n', write_partial=False))
+        self.assertEqual(self.tracker.read_text(), before)
+
+    def test_a_tree_holding_another_task_s_dispatch_still_refuses_it(self):
+        # #138: only the same task may relaunch into its own stopped tree.
+        self._stopped_tree(task="Export header")
+        before = self.tracker.read_text()
+        with self.assertRaisesRegex(ValueError, "already holds a dispatch"):
+            self._run(self._fake('status: done\nreason: r\nchanges: c\n', write_partial=False))
+        self.assertEqual(self.tracker.read_text(), before)
+
     def test_dry_run_writes_nothing(self):
         fake = self._fake('status: done\nreason: done\nchanges: changed\n')
         with mock.patch.object(one_shot, "resolve", return_value=str(fake)):
