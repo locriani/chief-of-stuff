@@ -504,7 +504,11 @@ class BrandTest(unittest.TestCase):
         self.assertIsNotNone(link)
         self.assertIn("Cormorant+SC", link.group(1))
         self.assertIn("Alegreya+Sans", link.group(1))
-        families = re.findall(r"font(?:-family)?:([^;}]+)", self.css)
+        # The vendored canonical theme satisfies this convention inside its own `--f-*` tokens and refers to
+        # them (`font-family: var(--f-head)`); its bytes are pinned by hash in test_page_theme, so the scan
+        # below applies to the page's own rules, which follow the theme's end marker.
+        own_css = self.css.split("the canonical theme ends here", 1)[-1]
+        families = re.findall(r"font(?:-family)?:([^;}]+)", own_css)
         self.assertTrue(families)
         for f in families:
             self.assertRegex(f.strip(), r"(serif|sans-serif|monospace)$", f)
