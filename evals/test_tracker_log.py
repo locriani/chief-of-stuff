@@ -91,6 +91,37 @@ class RoundTripTest(unittest.TestCase):
             (time(10, 30), "Cap uploads", "implement", True, "worker02"),
             (time(11, 0), "Cap uploads", "review", True, "worker02")])
 
+    def test_a_hold_failed_line_reads_back_its_task_and_error(self):
+        # #566: the launcher records the hold it could not apply; the audit reads the task and reason back.
+        line = tl.hold_failed_line("10:20", "worker01", "Security audit",
+                                   "missing label in GitHub: !! - HUMAN REVIEW REQUIRED")
+        self.assertEqual(tl.HOLD_FAILED.match(line).groups(),
+                         ("10", "20", "worker01", "missing label in GitHub: !! - HUMAN REVIEW REQUIRED", "Security audit"))
+        for pattern in (tl.STAGE, tl.STARTED, tl.ENDED, tl.RELAUNCH):
+            self.assertIsNone(pattern.match(line), line)
+        text = "\n".join(("# Tracker", "", "## Log", "", line, ""))
+        self.assertEqual(tl.hold_failures(text),
+                         {"Security audit": "missing label in GitHub: !! - HUMAN REVIEW REQUIRED"})
+        self.assertEqual(tl.moves(text, DAY, CT), [])
+
+    def test_the_last_hold_failure_for_a_task_wins(self):
+        first = tl.hold_failed_line("10:20", "worker01", "Security audit", "missing label in GitHub: X")
+        second = tl.hold_failed_line("11:30", "worker02", "Security audit", "lab was down")
+        text = "\n".join(("# Tracker", "", "## Log", "", first, second, ""))
+        self.assertEqual(tl.hold_failures(text), {"Security audit": "lab was down"})
+
+    def test_an_approved_forge_closure_line_reads_back_its_task(self):
+        # #547: the coordinator records the user's approval; the audit does not reopen the task it names.
+        line = tl.approved_close_line("10:05", "Open branch work",
+                                      "the forge closed its issue; work stays on the branch")
+        self.assertEqual(tl.APPROVED_CLOSE.match(line).groups(),
+                         ("10", "05", "the forge closed its issue; work stays on the branch", "Open branch work"))
+        for pattern in (tl.STAGE, tl.STARTED, tl.ENDED, tl.RELAUNCH):
+            self.assertIsNone(pattern.match(line), line)
+        text = "\n".join(("# Tracker", "", "## Log", "", line, ""))
+        self.assertEqual(tl.approved_closes(text), {"Open branch work"})
+        self.assertEqual(tl.moves(text, DAY, CT), [])
+
 
 class WordingTest(unittest.TestCase):
     """One line of each kind, byte for byte as `chief-of-stuff log --stage` and the one-shot launcher wrote it

@@ -111,6 +111,43 @@ class HumanHoldTest(unittest.TestCase):
         self.assertEqual(write.call_args.args[1], issue)
         self.assertEqual(labels.call_args.args[0], backlog.Backlog("https://labs.example.test", "team/other", "TEAM_TOKEN"))
 
+    def test_add_human_hold_creates_a_missing_label(self):
+        # #566: a hold label the repo has never seen is created, not refused — the hold is the point.
+        ref = backlog.IssueRef("team/repo", 9)
+        calls = []
+        labels = ["03 - BUILD"]
+
+        def gh(args):
+            calls.append(args)
+            if args[:2] == ["issue", "view"]:
+                held = any(cmd[:2] == ["issue", "edit"] for cmd in calls)
+                shown = [*labels, *([FLOW.human_review_label] if held else [])]
+                return 0, json.dumps({"labels": [{"name": x} for x in shown]}), ""
+            if args[:2] == ["label", "list"]:
+                return 0, json.dumps([{"name": x} for x in labels]), ""
+            if args[:2] == ["label", "create"]:
+                labels.append(args[2])
+            return 0, "", ""
+
+        self.assertEqual(kanban.add_human_hold(ref, backlog.GitHubBacklog("team/repo"), FLOW, gh=gh), "")
+        self.assertIn(["label", "create", FLOW.human_review_label, "-R", "team/repo", "--color", "428bca"], calls)
+        self.assertEqual(calls[-1][:2], ["issue", "view"])  # the hold is verified after it lands
+
+    def test_a_gitlab_hold_creates_a_missing_label(self):
+        # #566: the GitLab path creates the label through ensure_labels, then applies and verifies the hold.
+        home = backlog.Backlog("https://labs.example.test", "team/app")
+        ref = backlog.IssueRef("team/app", 7, "labs.example.test")
+        before = {"labels": ["03 - BUILD", "kind::code"]}
+        held = {"labels": [*before["labels"], FLOW.human_review_label]}
+        writes = []
+        with mock.patch.object(kanban.backlog, "_get", side_effect=[(before, {}, ""), (held, {}, "")]), \
+             mock.patch.object(kanban.backlog, "existing_labels", return_value=({"03 - BUILD"}, "")), \
+             mock.patch.object(kanban.backlog, "_call",
+                               side_effect=lambda *a: (writes.append(a) or (held, {}, ""))):
+            self.assertEqual(kanban.add_human_hold(ref, home, FLOW, token="test"), "")
+        self.assertEqual([c[4] for c in writes], [{"name": FLOW.human_review_label, "color": "#428bca"},
+                                                  {"add_labels": FLOW.human_review_label}])
+
 
 class GitLabUpdaterTest(unittest.TestCase):
     def setUp(self):
@@ -387,7 +424,7 @@ class CliTest(unittest.TestCase):
 class AuditTest(unittest.TestCase):
     def test_audit_reports_label_drift_without_writing(self):
         task = SimpleNamespace(standing=False, lane="build", stage="implement", issue="#7",
-                               label="Build it", kind="open")
+                               label="Build it", kind="open", item="Build it")
         cfg = backlog.Backlog("https://labs.example.test", "team/app")
         issue = backlog.Issue(7, "Build it", "opened", ("00 - PLAN", "kind::code"))
         with mock.patch.object(audit_tasks, "issue_states", return_value={7: issue}), \
@@ -399,7 +436,7 @@ class AuditTest(unittest.TestCase):
 
     def test_gitlab_audit_uses_labels_even_with_github_project_configured(self):
         task = SimpleNamespace(standing=False, lane="build", stage="implement", issue="#7",
-                               label="Build it", kind="open")
+                               label="Build it", kind="open", item="Build it")
         cfg = backlog.Backlog("https://labs.example.test", "team/app")
         issue = backlog.Issue(7, "Build it", "opened", ("03 - BUILD",))
         mixed = Kanban(FLOW.stages, FLOW.human_review_label, FLOW.stage_map,
@@ -407,12 +444,34 @@ class AuditTest(unittest.TestCase):
         with mock.patch.object(audit_tasks, "issue_states", return_value={7: issue}):
             self.assertEqual(audit_tasks.kanban_faults([task], cfg, mixed), [])
 
+    def test_a_failed_hold_is_reported_while_the_issue_has_no_hold(self):
+        # #566: the Log recorded the launcher's failed hold; the audit keeps reporting it while the issue has no hold.
+        task = SimpleNamespace(standing=False, lane="build", stage="implement", issue="#7",
+                               label="Build it", kind="waiting", item="Security audit")
+        cfg = backlog.Backlog("https://labs.example.test", "team/app")
+        issue = backlog.Issue(7, "Build it", "opened", ("03 - BUILD",))
+        with mock.patch.object(audit_tasks, "issue_states", return_value={7: issue}):
+            clean = audit_tasks.kanban_faults([task], cfg, FLOW)
+            failed = audit_tasks.kanban_faults([task], cfg, FLOW,
+                                               hold_failures={"Security audit": "lab was down"})
+        self.assertEqual(clean, [])
+        self.assertEqual([f.why for f in failed], ["review hold failed: lab was down; the issue has no hold label"])
+
+    def test_a_failed_hold_whose_hold_landed_is_not_reported(self):
+        task = SimpleNamespace(standing=False, lane="build", stage="implement", issue="#7",
+                               label="Build it", kind="waiting", item="Security audit")
+        cfg = backlog.Backlog("https://labs.example.test", "team/app")
+        issue = backlog.Issue(7, "Build it", "opened", ("03 - BUILD", FLOW.human_review_label))
+        with mock.patch.object(audit_tasks, "issue_states", return_value={7: issue}):
+            self.assertEqual(audit_tasks.kanban_faults([task], cfg, FLOW,
+                                                       hold_failures={"Security audit": "lab was down"}), [])
+
     def test_github_project_audit_lists_items_once_for_multiple_tasks(self):
         cfg = backlog.GitHubBacklog("example/app")
         mixed = Kanban(FLOW.stages, FLOW.human_review_label, FLOW.stage_map,
                        FLOW.hold_stages, FLOW.terminal_stages, GitHubProject("example", 3, options=FLOW.stages))
         tasks = [SimpleNamespace(standing=False, lane="build", stage="implement",
-                                 issue=f"#{n}", label=f"Build {n}", kind="open") for n in (7, 8)]
+                                 issue=f"#{n}", label=f"Build {n}", kind="open", item=f"Build {n}") for n in (7, 8)]
         issues = {n: backlog.Issue(n, f"Build {n}", "opened", ()) for n in (7, 8)}
         project_items = {backlog.IssueRef("example/app", n).url: FLOW.stages[3] for n in (7, 8)}
         with mock.patch.object(audit_tasks, "issue_states", return_value=issues), \

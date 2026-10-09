@@ -2,12 +2,14 @@
 
 import contextlib
 import io
+import json
 import sys
 import tempfile
 import tomllib
 import unittest
 from datetime import date
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import init_workspace as init  # noqa: E402
@@ -93,6 +95,41 @@ class InitWorkspaceTest(unittest.TestCase):
         settings.write_text('[workers]\nlauncher = "tmux"\n')
         self.assertEqual(self.run_init()[0], 0)
         self.assertEqual(settings.read_text(), '[workers]\nlauncher = "tmux"\n')
+
+    def test_init_provisions_a_configured_hold_label(self):
+        # #566: init creates the hold label the settings configure, so no hold dies on a label the forge never saw.
+        (self.root / "chief-of-stuff.toml").write_text(
+            '[kanban]\nstages = ["00 - PLAN"]\nhuman_review_label = "!! - HUMAN REVIEW REQUIRED"\n'
+            '[kanban.map]\nplan = 0\n')
+        labels = []
+
+        def gh(args):
+            if args[:2] == ["label", "list"]:
+                return 0, json.dumps([{"name": x} for x in labels]), ""
+            if args[:2] == ["label", "create"]:
+                labels.append(args[2])
+            return 0, "", ""
+
+        with mock.patch.object(init.backlog, "run_gh", gh):
+            code, out, err = self.run_init("--github-repo", "owner/repo")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(labels, ["!! - HUMAN REVIEW REQUIRED"])
+        self.assertIn("hold label !! - HUMAN REVIEW REQUIRED created on owner/repo", out)
+
+    def test_a_hold_label_the_forge_refuses_is_reported_and_init_still_succeeds(self):
+        (self.root / "chief-of-stuff.toml").write_text(
+            '[kanban]\nstages = ["00 - PLAN"]\nhuman_review_label = "HOLD"\n[kanban.map]\nplan = 0\n')
+        code, out, err = self.run_init("--gitlab-host", "https://labs.example.test", "--gitlab-project", "team/app")
+        self.assertEqual(code, 0)
+        self.assertIn("hold label not created on team/app", err)
+
+    def test_dry_run_prints_the_hold_label_it_would_create(self):
+        (self.root / "chief-of-stuff.toml").write_text(
+            '[kanban]\nstages = ["00 - PLAN"]\nhuman_review_label = "!! - HUMAN REVIEW REQUIRED"\n'
+            '[kanban.map]\nplan = 0\n')
+        code, out, _ = self.run_init("--dry-run", "--github-repo", "owner/repo")
+        self.assertEqual(code, 0)
+        self.assertIn("would create the hold label !! - HUMAN REVIEW REQUIRED on owner/repo", out)
 
     def test_existing_model_guidance_is_preserved(self):
         path = self.root / guidance.NAME
