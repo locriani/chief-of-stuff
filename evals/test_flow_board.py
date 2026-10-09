@@ -8,7 +8,7 @@ import sys
 import tempfile
 import unittest
 from dataclasses import replace
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -159,6 +159,20 @@ class SinceLookedTest(unittest.TestCase):
         task = next(t for t in tasks if t.name == name)
         moves = tracker_log.moves(TRACKER + log, NOW.date(), NOW.tzinfo)
         return task_forge.hold_began({task: cause}, moves, {}, None, tasks)[task]
+
+    def test_a_move_under_an_earlier_rows_name_or_item_is_the_tasks(self) -> None:
+        # Codex on #579: a move logged before a rename names the earlier row; it is today's task by the earlier row's
+        # name, or, when the name changed too, by its issue.
+        tasks = parse_tracker(TRACKER).tasks
+        task = next(t for t in tasks if t.name == "Write README")
+        day = NOW.date() - timedelta(days=1)
+        for earlier_row, moved in (("| Write README | Draft the README |", "Draft the README"),
+                                   ("| README draft | Draft the README |", "README draft")):
+            with self.subTest(moved):
+                earlier = TRACKER.replace("| Write README | Write eval README |", earlier_row)
+                moves = tracker_log.moves(earlier + f"- 11:00 stage: {moved} → triage\n", day, NOW.tzinfo)
+                began = task_forge.hold_began({task: "triage"}, moves, {}, None, tasks, parse_tracker(earlier).tasks)
+                self.assertEqual(began[task], datetime.combine(day, time(11, 0), NOW.tzinfo))
 
     def test_a_gate_hold_begins_at_the_tasks_last_move_into_that_gate(self) -> None:
         # #579 review R3, R7: moves read as flow_chart reads them: by name or item, any case; the latest move into the
