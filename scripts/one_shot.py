@@ -14,7 +14,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import backlog
+import board_sources
 import dispatch_prompt
+import forge_review
 import git_trees
 import git_view
 import kanban
@@ -29,7 +31,7 @@ from process_status import PIDFILE, PIDFILE_MAX, pidfile_runs, process_exists, r
 from tracker import parse_tracker
 from tracker_log import RELAUNCHED, TIMED_OUT, ended_line, hold_failed_line, relaunch_line, started_line, timed_out_line
 from workspace import worktrees_dir
-from settings import load as load_settings
+from settings import SettingsError, load as load_settings
 from shell_setup import clean_env, login_argv, resolve
 
 RESULT = Path(dispatch_prompt.RESULT_FILE)
@@ -338,8 +340,43 @@ def _launch_row_running(launch: Path, task: str, name: str) -> bool:
     return len(rows) == 1 and rows[0].kind == "running" and rows[0].owner.strip().lower() == name.lower()
 
 
+def _mr_state(home, number: int, approver: str) -> forge_review.Request:
+    """One pull/merge request's state, through the forge the Backlog line names (#64)."""
+    if isinstance(home, backlog.GitHubBacklog):
+        return forge_review.github_request(home.repo, number, approver)
+    return forge_review.gitlab_request(home, home.project, number, approver, backlog.token(home))
+
+
+def _mr_snapshot(root: Path, cfg, day: str, task: str) -> tuple[forge_review.Request | None, str]:
+    """The request state a launch hands `reconcile` to compare after the run (#64): read when the task's
+    row names exactly one pull/merge request. A forge that cannot be read does not stop the launch — its
+    error rides the report, because a check that cannot run is not a check that found nothing."""
+    try:
+        rows = [row for row in parse_tracker((root / cfg.tracker_path(day)).read_text()).tasks
+                if row.item.strip() == task]
+        numbers = board_sources.change_numbers(rows[0], cfg.backlog) if len(rows) == 1 and cfg.backlog else set()
+        if len(numbers) != 1:
+            return None, ""
+        approver = load_settings(root, cfg.settings_path).workflow.approver or ""
+        return _mr_state(cfg.backlog, numbers.pop(), approver), ""
+    except (OSError, RuntimeError, ValueError, KeyError, TypeError, AttributeError, SettingsError) as exc:
+        return None, str(exc)
+
+
+def _mr_lost(root: Path, cfg, before: forge_review.Request) -> tuple[list[str], str]:
+    """(what the run lost, why the after-state could not be read) (#64). An after-state the forge will
+    not give up is an error the report carries, never a comparison silently skipped."""
+    try:
+        approver = load_settings(root, cfg.settings_path).workflow.approver or ""
+        after = _mr_state(cfg.backlog, before.number, approver)
+    except (OSError, RuntimeError, ValueError, KeyError, TypeError, AttributeError, SettingsError) as exc:
+        return [], f"MR state: {exc}"
+    return forge_review.lost_on_run(before, after), ""
+
+
 def reconcile(root: Path, day: str, task: str, name: str, cwd: Path, exit_code: int,
               before_head: str | None = None, read_only: bool = False, runtime: str = "", model: str = "",
+              mr_before: forge_review.Request | None = None, mr_snapshot_error: str = "",
               *, adopted: bool = False) -> dict:
     cfg = dispatch_prompt.config(root)
     settings = load_settings(root, cfg.settings_path)
@@ -396,6 +433,20 @@ def reconcile(root: Path, day: str, task: str, name: str, cwd: Path, exit_code: 
                   "reason": "task row changed during the one-shot run; reconcile it manually",
                   "changes": summary, "errors": [f"{dispatch_prompt.TRACKER_ERROR} task row changed; no issue or tracker update was made"]}
         return write_report(root, cwd, report)
+    if mr_snapshot_error:
+        errors.append(f"MR snapshot: {mr_snapshot_error}")
+    if mr_before is not None:
+        # #64: what the forge held before the run and dropped during it is this run's loss to answer for.
+        lost, note = _mr_lost(root, cfg, mr_before)
+        if note:
+            errors.append(note)
+        if lost:
+            if status == "done":
+                status = "human_review"
+                reason = (f"the run lost {', '.join(lost)} on the request it was making mergeable: "
+                          "re-enable or say why not")
+            else:
+                errors.append(f"the run also lost {', '.join(lost)} on it")
     if adopted:
         # #99: the launcher died before reconciling this run; the report, the Log line and any
         # review comment say so, and the tree's evidence is the only word there is.
@@ -506,6 +557,7 @@ def _launch(root: Path, cfg, chosen_day: str, task: str, cwd: Path, name: str, r
     # Everything that can refuse runs before anything is written; a refused row takes its dispatch back.
     launch_argv, tree = login_argv(argv), _tree_note(root, cwd)
     before_head = git_head(cwd, strict=True)
+    mr_before, mr_snapshot_error = _mr_snapshot(root, cfg, chosen_day, task)
     written = dispatch_prompt.write_dispatch(cwd, body)
     logs = cwd / dispatch_prompt.PROMPT_DIR
     try:
@@ -542,7 +594,8 @@ def _launch(root: Path, cfg, chosen_day: str, task: str, cwd: Path, name: str, r
                 (cwd / RESULT).unlink(missing_ok=True)
             exit_code = _run_worker(cwd, logs, launch_argv, env, task, timeout_minutes * 2)
     report = reconcile(root, chosen_day, task, name, cwd, exit_code, before_head, runtime=runtime, model=model,
-                       read_only=dispatch_prompt.READ_ONLY in body.splitlines())  # held to what it was told
+                       read_only=dispatch_prompt.READ_ONLY in body.splitlines(),  # held to what it was told
+                       mr_before=mr_before, mr_snapshot_error=mr_snapshot_error)
     print(toon_encode(report))
     return 0 if report["status"] == "done" and not report["errors"] else 1
 

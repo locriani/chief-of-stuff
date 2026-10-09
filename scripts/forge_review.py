@@ -69,6 +69,7 @@ class Request:
     threads_cut_at: int = 0          # the count read when more threads lay behind it (a cut-off read is not a whole one)
     draft: bool = False
     merge_state: str = ""            # GitHub's mergeStateStatus; "" (GitLab) has none
+    auto_merge: bool = False         # auto-merge armed at the forge (#64): GH autoMergeRequest, GL merge_when_pipeline_succeeds
 
     @property
     def unverified(self) -> str:
@@ -152,14 +153,61 @@ def gitlab_requests(home: backlog.Backlog, project: str, approver: str, token: s
         approvals, _, err2 = call("GET", f"{base}/merge_requests/{iid}/approvals", token, backlog.TIMEOUT)
         if err or err2:
             raise RuntimeError(f"!{iid}: {err or err2}")
-        names = {(a.get("user") or {}).get("username") for a in approvals.get("approved_by") or []}
-        head = mr.get("head_pipeline") or {}
-        pipeline = head.get("status")
-        status = mr.get("detailed_merge_status") or ""
-        out.append(Request(iid, mr.get("title", ""), mr.get("web_url", ""), mr.get("sha", ""),
-                           "approved" if approver in names else "none",
-                           "none" if pipeline is None else GITLAB_PIPELINE.get(pipeline, "running"),
-                           "conflict" if mr.get("has_conflicts") else ("yes" if status == "mergeable" else status),
-                           approver, str(head.get("id") or ""), (head.get("sha") or None) if head else "",
-                           draft=bool(mr.get("draft"))))
+        out.append(_gl_request(mr, approvals, approver))
     return out
+
+
+def _gl_request(mr: dict, approvals: dict, approver: str) -> Request:
+    names = {(a.get("user") or {}).get("username") for a in approvals.get("approved_by") or []}
+    head = mr.get("head_pipeline") or {}
+    pipeline = head.get("status")
+    status = mr.get("detailed_merge_status") or ""
+    return Request(int(mr["iid"]), mr.get("title", ""), mr.get("web_url", ""), mr.get("sha", ""),
+                   "approved" if approver in names else "none",
+                   "none" if pipeline is None else GITLAB_PIPELINE.get(pipeline, "running"),
+                   "conflict" if mr.get("has_conflicts") else ("yes" if status == "mergeable" else status),
+                   approver, str(head.get("id") or ""), (head.get("sha") or None) if head else "",
+                   draft=bool(mr.get("draft")), auto_merge=bool(mr.get("merge_when_pipeline_succeeds")))
+
+
+def github_request(repo: str, number: int, approver: str, gh=backlog.run_gh) -> Request:
+    """One pull request's state for the launcher's before/after comparison (#64). The single read carries
+    no pipeline sha or thread count, so `verdict` means nothing here; what a run can lose through it is
+    the armed auto-merge and the approver's approval."""
+    code, out, err = gh(["pr", "view", str(number), "-R", repo, "--json",
+                         "number,title,url,headRefOid,reviews,statusCheckRollup,mergeable,isDraft,mergeStateStatus,autoMergeRequest"])
+    if code != 0:
+        raise RuntimeError(f"gh pr view {number}: {err.strip() or code}")
+    p = json.loads(out)
+    armed = p.get("autoMergeRequest") or {}
+    return Request(p["number"], p["title"], p["url"], p["headRefOid"],
+                   github_approval(p.get("reviews") or [], approver, p["headRefOid"]),
+                   github_pipeline(p.get("statusCheckRollup") or []),
+                   {"MERGEABLE": "yes", "CONFLICTING": "conflict"}.get(p.get("mergeable"), "unknown"), approver,
+                   draft=bool(p.get("isDraft")), merge_state=p.get("mergeStateStatus") or "UNKNOWN",
+                   auto_merge=bool(armed.get("enabledAt")) if isinstance(armed, dict) else bool(armed))
+
+
+def gitlab_request(home: backlog.Backlog, project: str, iid: int, approver: str, token: str,
+                   call=backlog._call) -> Request:
+    """One merge request's state for the launcher's before/after comparison (#64): the single-request
+    port beside `github_request`, carrying the armed auto-merge and the approver's approval."""
+    base = home.api(project)
+    mr, _, err = call("GET", f"{base}/merge_requests/{iid}", token, backlog.TIMEOUT)
+    if err or not isinstance(mr, dict):
+        raise RuntimeError(f"!{iid}: {err or 'no merge request came back'}")
+    approvals, _, err2 = call("GET", f"{base}/merge_requests/{iid}/approvals", token, backlog.TIMEOUT)
+    if err2:
+        raise RuntimeError(f"!{iid}: {err2}")
+    return _gl_request(mr, approvals or {}, approver)
+
+
+def lost_on_run(before: Request, after: Request) -> list[str]:
+    """What a run lost (#64): the request's properties `before` held that `after` no longer does. Pure,
+    and only about what the launcher can see across a run — the armed auto-merge and the approval."""
+    lost = []
+    if before.auto_merge and not after.auto_merge:
+        lost.append("auto-merge")
+    if before.approval == "approved" and after.approval != "approved":
+        lost.append(f"{before.approver}'s approval" if before.approver else "the approver's approval")
+    return lost

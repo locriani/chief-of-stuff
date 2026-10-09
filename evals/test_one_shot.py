@@ -1063,15 +1063,25 @@ class RunTest(unittest.TestCase):
 
     # #64: a run that clears an MR's auto-merge comes back as human review naming what was lost.
 
-    def _forge_workspace(self) -> None:
-        """A workspace whose forge is GitHub and whose one task names PR #58."""
+    def _forge_root(self) -> None:
+        """A workspace whose forge is GitHub: the Backlog line in CLAUDE.md."""
         (self.root / "CLAUDE.md").write_text(
             CLAUDE + "- Backlog: GitHub issues; repo https://github.com/team/repo (private)\n")
-        self.tracker.write_text(TRACKER.replace("Inspect upload handler", "PR #58 mergeable"))
+
+    def _forge_tracker(self) -> str:
+        """The day's tracker with an issue (#12) and a PR (#58) named in the row, on the issued 9-column schema."""
+        return TRACKER.replace(
+            "| item | owner | state | since | due | checklist |\n"
+            "|---|---|---|---|---|---|\n"
+            "| Security audit | unassigned | open | 09:00 | | Inspect upload handler |",
+            "| name | item | owner | state | since | due | size | issue | checklist |\n"
+            "|---|---|---|---|---|---|---|---|---|\n"
+            "| Audit | Security audit | unassigned | open | 09:00 |  | M | #12 | Checklist: make PR #58 mergeable |")
 
     def _reconcile_a_clean_done(self, **kwargs) -> dict:
         """A running row, an unchanged tree, and a worker result that says done."""
-        self.tracker.write_text(TRACKER.replace("| unassigned | open |", "| worker01 | running 09:00 |"))
+        self._forge_root()
+        self.tracker.write_text(self._forge_tracker().replace("| unassigned | open |", "| worker01 | running 09:00 |"))
         (self.tree / ".chief-of-stuff").mkdir(exist_ok=True)
         (self.tree / ".chief-of-stuff" / ".gitignore").write_text("*\n")  # as the launcher leaves it
         (self.tree / one_shot.RESULT).write_text('status: done\nreason: made it mergeable\nchanges: none\n')
@@ -1080,7 +1090,8 @@ class RunTest(unittest.TestCase):
 
     def test_a_cleared_auto_merge_after_a_run_reconciles_as_human_review_naming_it(self):
         # The forge dropped the armed auto-merge while the worker ran; done would sit waiting on a merge nobody scheduled.
-        self._forge_workspace()
+        self._forge_root()
+        self.tracker.write_text(self._forge_tracker())
         before = forge_review.Request(58, "Fix the handler", "https://github.com/team/repo/pull/58", "head0",
                                       "approved", "passed", "yes", "Robin", auto_merge=True)
         after = forge_review.Request(58, "Fix the handler", "https://github.com/team/repo/pull/58", "head1",
@@ -1093,7 +1104,8 @@ class RunTest(unittest.TestCase):
         self.assertIn("re-enable or say why not", report["reason"])
 
     def test_an_auto_merge_that_survives_the_run_leaves_a_done_run_done(self):
-        self._forge_workspace()
+        self._forge_root()
+        self.tracker.write_text(self._forge_tracker())
         armed = forge_review.Request(58, "Fix the handler", "https://github.com/team/repo/pull/58", "head0",
                                      "approved", "passed", "yes", "Robin", auto_merge=True)
         with mock.patch.object(one_shot.forge_review, "github_request", return_value=armed):
@@ -1103,7 +1115,8 @@ class RunTest(unittest.TestCase):
 
     def test_a_launch_snapshots_the_pull_request_its_task_names_before_the_worker_runs(self):
         # The launcher reads the MR before the run and reconcile reads it after, through the same port.
-        self._forge_workspace()
+        self._forge_root()
+        self.tracker.write_text(self._forge_tracker())
         seen = []
 
         def request(repo, number, approver):
@@ -1119,7 +1132,8 @@ class RunTest(unittest.TestCase):
 
     def test_a_launch_whose_pull_request_cannot_be_read_names_it_in_the_report(self):
         # A forge the launcher cannot read never stops the launch, and never passes as a check that found nothing either.
-        self._forge_workspace()
+        self._forge_root()
+        self.tracker.write_text(self._forge_tracker())
         fake = self._fake('status: done\nreason: done\nchanges: none\n', write_partial=False)
         with mock.patch.object(one_shot.forge_review, "github_request", side_effect=RuntimeError("gh: no auth")), \
              contextlib.redirect_stdout(io.StringIO()):
