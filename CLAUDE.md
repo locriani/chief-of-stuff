@@ -10,3 +10,18 @@ A versioned coordinator for Claude Code, Codex CLI, Cursor CLI, and Antigravity 
 - **No shell scripts.** Harness code, shims, mocks, and probes are Python (or another real language). Shell appears only as a one-line command someone types.
 - **Fixtures are templates.** `{{today}}`, `{{yesterday}}`, `{{tomorrow}}`, `{{tz}}`, `{{now_hhmm}}`, `{{now±Nh}}` (`|local`, `|hhmm`), `{{dotgit}}` (a `.git` dir name, since git cannot track one), and `{{live_pid}}` (a pid alive for the whole run) in file names and contents. No hardcoded dates. An unknown token fails the run.
 - **Fixtures are generic.** No data from any workspace that uses this agent — no patient data, no program documents, no real deploy names.
+
+## Architecture
+
+Read by `claude --agent frank-lloyd-aight`. Every path, name, and tool the architecture session uses comes from this block.
+
+- User: Zach, he/him
+- Project: chief-of-stuff
+- Architecture directory: `architecture/`
+- Canonical document: `architecture/ARCHITECTURE.md`. Kept canonical by this session, never moved, never renumbered.
+- Plan directory: `~/.claude/plans/`
+- Review directory: `architecture/`; pages are named `<subject>-review.html`
+- Publisher: self-hosted; URL http://127.0.0.1:8787/; dir `/Users/locriani/Developer/Gauntlet/Areas/pages/`. A review page written there is at `http://127.0.0.1:8787/<subject>-review.html`.
+- Session tools: `ListAgents` to find sessions, `SendMessage` to reach one
+- Diagram renderer: `~/Developer/ai-additions/plugins/mermaid-system-design/skills/mermaid-system-design/scripts/mermaid-check.py` (exit 0 rendered, 1 a diagram failed, 2 renderer missing). A diagram that did not render is never approved.
+- Commits: this session commits its own work in its own worktree, in small meaningful commits, and pushes each one. It does not merge.

@@ -10,7 +10,7 @@ Install one command from this checkout:
 python3 chief_of_stuff.py install --bin-dir /usr/local/bin
 ```
 
-This writes a stable launcher in `/usr/local/bin` and a versioned release under `~/.local/share/chief-of-stuff/`. The system directory needs write permission only when first installing or explicitly replacing a different launcher; later installs update the user-owned `current` pointer. Use `--dry-run` to preview the paths without writing. The command routes a fixed set of operations: `start`, `init`, `models`, `worktree`, `worker`, `audit`, `processes`, `result`, `board`, `inbox`, `backlog`, `kanban`, `notify`, `health`, `pages`, and `tracker`. Use `chief-of-stuff <command> --help` for each command's options.
+This writes a stable launcher in `/usr/local/bin` and a versioned release under `~/.local/share/chief-of-stuff/`. The system directory needs write permission only when first installing or explicitly replacing a different launcher; later installs update the user-owned `current` pointer. Use `--dry-run` to preview the paths without writing. The command routes a fixed set of operations: `start`, `init`, `models`, `worktree`, `worker`, `audit`, `processes`, `result`, `board`, `inbox`, `backlog`, `kanban`, `notify`, `health`, `pages`, `decision`, `log`, `merge-approved`, `merge-ready`, `review-threads`, `sources`, `tracker`, and `tick`. Use `chief-of-stuff <command> --help` for each command's options.
 
 For a new workspace, create a minimal `## Coordinator` block and settings file, then launch a coordinator:
 
