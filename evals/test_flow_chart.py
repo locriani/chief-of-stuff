@@ -70,7 +70,7 @@ def rows(ends: dict | None = None, durations: dict | None = None, slots: int = 1
          tracker: str = TODAY_TRACKER, approved: frozenset = frozenset()) -> dict[str, tuple[str, gantt.Row]]:
     tasks = rb.parse_tracker(tracker).tasks
     log = fc.moves(YESTERDAY_TRACKER, YESTERDAY, CT) + fc.moves(tracker, TODAY, CT)
-    built = fc.build(log, tasks, LANES, {"Cache warmup"}, ends or {}, NOW, durations or {}, slots, approved)
+    built = fc.build(log, tasks, LANES, {"Cache warmup": "Robin"}, ends or {}, NOW, durations or {}, slots, approved)
     return {row.name: (status, row) for status, row in built}
 
 
@@ -112,9 +112,8 @@ class BuildTest(unittest.TestCase):
         self.assertEqual(hold.start, NOW)
         self.assertGreaterEqual(hold.end, NOW + max(after for _, _, after in fc.WINDOWS))
         # #227 Acceptance: "The row's note reads `needs input · <cause>`, the cause as the task page
-        # names it." Nothing on Task or Kanban names a cause yet (no such column or field exists) — this
-        # asserts only the `needs input` prefix the acceptance falls back to, and the gap is in my report.
-        self.assertTrue(row.note.startswith("needs input"), row.note)
+        # names it." #228 supplies the cause (task_forge.hold_causes); here it is the person waited on.
+        self.assertEqual(row.note, "needs input · Robin")
 
     def test_the_last_stage_of_the_lane_ends_the_row(self):
         status, row = rows()["Locale fallback"]
@@ -205,7 +204,7 @@ class DoneNoClockTest(unittest.TestCase):
 
     def test_several_done_no_clock_tasks_sharing_an_issue_merge_ending_at_the_latest_move(self):
         tasks = rb.parse_tracker(DONE_MERGE_TRACKER).tasks
-        built = fc.build(fc.moves(DONE_MERGE_TRACKER, TODAY, CT), tasks, LANES, set(), {}, NOW)
+        built = fc.build(fc.moves(DONE_MERGE_TRACKER, TODAY, CT), tasks, LANES, {}, {}, NOW)
         mine = [(s, r) for s, r in built if r.ref == "#400"]
         self.assertEqual(len(mine), 1)
         _, row = mine[0]
@@ -228,7 +227,7 @@ class DoneNoClockTest(unittest.TestCase):
     def test_an_open_running_or_waiting_task_still_runs_its_last_bar_to_now(self):
         built = {row.name: (status, row) for status, row in
                  fc.build(fc.moves(STILL_RUNS_TO_NOW, TODAY, CT), rb.parse_tracker(STILL_RUNS_TO_NOW).tasks,
-                          LANES, set(), {}, NOW)}
+                          LANES, {}, {}, NOW)}
         for name in ("Open task", "Running task", "Waiting task"):
             with self.subTest(task=name):
                 _, row = built[name]
@@ -272,7 +271,7 @@ class DoneClockAfterMidnightTest(unittest.TestCase):
         # names YESTERDAY 22:21 — the only occurrence of 22:21 that has actually happened — not a today
         # 22:21 that is still 20 hours away.
         tasks = rb.parse_tracker(DONE_AFTER_MIDNIGHT).tasks
-        built = fc.build(fc.moves(DONE_AFTER_MIDNIGHT, YESTERDAY, CT), tasks, LANES, set(), {}, NOW)
+        built = fc.build(fc.moves(DONE_AFTER_MIDNIGHT, YESTERDAY, CT), tasks, LANES, {}, {}, NOW)
         _, row = {r.name: (s, r) for s, r in built}["Night owl"]
         self.assertTrue(row.segments)
         self.assertEqual(row.segments[-1].end, at(YESTERDAY, "22:21"))
@@ -282,7 +281,7 @@ class DoneClockAfterMidnightTest(unittest.TestCase):
         # Regression guard: just after midnight, a clock before now's own time of day still means today —
         # the fix must not walk every done clock back a day regardless of which is earlier.
         tasks = rb.parse_tracker(DONE_SAME_DAY).tasks
-        built = fc.build(fc.moves(DONE_SAME_DAY, TODAY, CT), tasks, LANES, set(), {}, NOW)
+        built = fc.build(fc.moves(DONE_SAME_DAY, TODAY, CT), tasks, LANES, {}, {}, NOW)
         _, row = {r.name: (s, r) for s, r in built}["Night owl"]
         self.assertTrue(row.segments)
         self.assertEqual(row.segments[-1].end, at(TODAY, "00:50"))
@@ -346,7 +345,7 @@ class SectionTest(unittest.TestCase):
 
     def test_a_chart_draws_only_rows_in_its_window(self):
         old = fc.Move(NOW - 30 * H, "Old", "implement"), fc.Move(NOW - 29 * H, "Old", "main")
-        built = fc.build(list(old), rb.parse_tracker(TODAY_TRACKER).tasks, {**LANES}, set(), {}, NOW)
+        built = fc.build(list(old), rb.parse_tracker(TODAY_TRACKER).tasks, {**LANES}, {}, {}, NOW)
         html = fc.section(built, NOW)
         self.assertNotIn("24 hours", html)
         self.assertIn("7 days", html)
@@ -397,7 +396,7 @@ class GroupedFlowTest(unittest.TestCase):
 
     def built(self) -> list[tuple[str, gantt.Row]]:
         tasks = rb.parse_tracker(GROUPED_TRACKER).tasks
-        return fc.build(fc.moves(GROUPED_TRACKER, TODAY, CT), tasks, LANES, {"Charlie needs input"}, {}, NOW,
+        return fc.build(fc.moves(GROUPED_TRACKER, TODAY, CT), tasks, LANES, {"Charlie needs input": "Charlie"}, {}, NOW,
                         {"Hotel work": 2 * H, "India work": 2 * H}, 1, frozenset({"Echo approved"}))
 
     def test_rows_group_merged_approved_running_needs_input_queued_earliest_first(self):
@@ -649,7 +648,7 @@ class IssueRowTest(unittest.TestCase):
     """The review loop makes a Tasks row per pass; the chart draws one row per issue (#155)."""
 
     def built(self) -> list[tuple[str, gantt.Row]]:
-        return fc.build(fc.moves(REVIEW_LOOP, TODAY, CT), rb.parse_tracker(REVIEW_LOOP).tasks, LANES, set(), {}, NOW)
+        return fc.build(fc.moves(REVIEW_LOOP, TODAY, CT), rb.parse_tracker(REVIEW_LOOP).tasks, LANES, {}, {}, NOW)
 
     def test_tasks_sharing_an_issue_draw_on_one_row_in_time_order(self):
         mine = [(s, r) for s, r in self.built() if r.ref == "#307"]
@@ -666,7 +665,7 @@ class IssueRowTest(unittest.TestCase):
         text = REVIEW_LOOP.replace("| Trim cache | Trim | w5 | running 00:45 | 2026-09-26 |  | S |  |  |  | c |",
                                    "| Land docs | Land | w6 | done 01:00 | 2026-09-26 |  | S | build | main | #307 | c |")
         text = tw.append_log(text, "- 01:00 stage: Land docs → main")
-        got = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(), {}, NOW)
+        got = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, {}, {}, NOW)
         self.assertEqual(len([r for _, r in got if r.ref == "#307"]), 1)
         fc.section(got, NOW)
 
@@ -713,7 +712,7 @@ class OneShotTest(unittest.TestCase):
             return path.read_text()
 
     def built(self, text: str) -> dict[str, tuple[str, gantt.Row]]:
-        got = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(), {}, NOW)
+        got = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, {}, {}, NOW)
         return {row.name: (status, row) for status, row in got}
 
     def test_a_running_one_shot_draws_from_its_launch_to_now(self):
@@ -754,7 +753,7 @@ class LaunchRowTest(unittest.TestCase):
 
     def setUp(self):
         text = launched_tracker()
-        self.got = [row for _, row in fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(), {}, NOW)]
+        self.got = [row for _, row in fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, {}, {}, NOW)]
 
     def launched_at(self, hhmm: str) -> gantt.Row:
         rows = [r for r in self.got if any(g.start == at(TODAY, hhmm) for g in r.segments)]
@@ -831,7 +830,7 @@ class RelaunchStopTest(unittest.TestCase):
                                    [("Check parser", "worker-1", "00:10")])
 
     def row(self, text):
-        built = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(), {}, NOW)
+        built = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, {}, {}, NOW)
         self.assertEqual([r.name for _, r in built], ["Check parser"])
         return built[0][1]
 
@@ -947,7 +946,7 @@ class RelaunchStopTest(unittest.TestCase):
         # Control: the same open row, lane and due-date estimate used by the relaunch regression.
         text = self.ready_tracker()
         end = NOW + 2 * H
-        built = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(),
+        built = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, {},
                          {"Check parser": end}, NOW)
         self.assertEqual(len(built), 1)
         _, row = built[0]
@@ -960,7 +959,7 @@ class RelaunchStopTest(unittest.TestCase):
     def test_a_relaunch_as_the_last_move_keeps_the_due_date_forecast(self):
         text = self.stopped_tracker()
         end = NOW + 2 * H
-        built = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(),
+        built = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, {},
                          {"Check parser": end}, NOW)
         self.assertEqual(len(built), 1)
         _, row = built[0]
@@ -975,7 +974,7 @@ class RelaunchStopTest(unittest.TestCase):
 
     def test_a_held_relaunched_rows_hold_bar_uses_the_prior_stage_category(self):
         text = self.stopped_tracker().replace("| Robin | open |", "| Robin | waiting |")
-        built = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, {"Check parser"}, {}, NOW)
+        built = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, {"Check parser": "implement"}, {}, NOW)
         self.assertEqual(len(built), 1)
         status, row = built[0]
         self.assertEqual(status, "needs input")
@@ -989,7 +988,7 @@ class RelaunchStopTest(unittest.TestCase):
         lanes = {"build": st.Lane(("implement", "relaunch", "pr", "main"))}
         text = tw.append_log(self.ready_tracker(), tl.stage_line("00:40", "Check parser", "relaunch"))
         text = tw.append_log(text, tl.stage_line("01:00", "Check parser", "pr"))
-        built = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, lanes, set(), {}, NOW)
+        built = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, lanes, {}, {}, NOW)
         self.assertEqual(len(built), 1)
         _, row = built[0]
         self.assertEqual([(g.category, g.start, g.end, g.kind) for g in row.segments], [
@@ -1009,8 +1008,8 @@ class RelaunchReviewPassTwoTest(unittest.TestCase):
         return tw.append_log(text, tl.started_line(clock, worker, "codex", "gpt-test",
                                                   "worktree `trees/retry` (retry)", "Check parser"))
 
-    def row(self, text, held=()):
-        built = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(held), {}, NOW)
+    def row(self, text, held=None):
+        built = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, held or {}, {}, NOW)
         self.assertEqual([r.name for _, r in built], ["Check parser"])
         return built[0][1]
 
@@ -1021,7 +1020,7 @@ class RelaunchReviewPassTwoTest(unittest.TestCase):
         text = self.tracker().replace("| worker-1 | running 00:10 |", "| Robin | waiting |")
         for held in (False, True):
             with self.subTest(held=held):
-                row = self.row(text, {"Check parser"} if held else set())
+                row = self.row(text, {"Check parser": "Robin"} if held else {})
                 self.assertEqual([(g.category, g.start, g.end, g.kind, g.title) for g in row.segments],
                                  [("implement", NOW, NOW + fc.WINDOWS[-1][2], "hold", "worker-1")] if held else
                                  [("implement", at(TODAY, "00:10"), NOW, "done", "worker-1")])
@@ -1074,7 +1073,7 @@ class RelaunchReviewPassTwoTest(unittest.TestCase):
                                     ("Check formatter", "Check formatter", "#702")],
                                    [("Check parser", "worker-1", "00:10"),
                                     ("Check formatter", "worker-2", "01:00")])
-        built = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(), {}, NOW)
+        built = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, {}, {}, NOW)
         self.assertEqual({r.name: self.worker_bars(r) for _, r in built}, {
             "Check parser": [(at(TODAY, "00:10"), NOW, "worker-1")],
             "Check formatter": [(at(TODAY, "01:00"), NOW, "worker-2")]})
@@ -1095,7 +1094,7 @@ class FullIssueMergeKeyTest(unittest.TestCase):
             ("Check parser diagnostics", "worker-2", "00:40"),
             ("Implement formatter", "worker-3", "00:50"),
         ])
-        built = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(), {}, NOW)
+        built = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, {}, {}, NOW)
         self.assertEqual(len(built), 2)
         self.assertEqual([(r.ref, r.name) for _, r in built], [
             ("forge.example/group/project#7", "Build parser"),
@@ -1118,7 +1117,7 @@ class GrownLaunchRowTest(unittest.TestCase):
         # The append happens AFTER record_launch writes the original item into the Log.
         text = text.replace(f"| Build parser | {prompt} |",
                             f"| Build parser | {prompt} Reviewed 15:09 by w2: checks pass. |")
-        got = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(), {}, NOW)
+        got = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, {}, {}, NOW)
         self.assertEqual(len(got), 1)
         status, row = got[0]
         self.assertEqual((status, row.ref, row.name), ("running", "#7", "Build parser"))
@@ -1146,7 +1145,7 @@ class WorkflowFlowRowTest(unittest.TestCase):
         text = flow_launch_tracker([
             ("Review change 50", review, "workflow"), ("Verify change 51", verify, "workflow")],
             [(review, "w1", "00:20"), (verify, "w2", "00:50")])
-        got = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(), {}, NOW)
+        got = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, {}, {}, NOW)
         self.assertEqual(len(got), 2, "unrelated changes share only the workflow token")
         self.assertEqual([(r.name, [(g.start, g.end, g.title) for g in r.segments]) for _, r in got], [
             ("Review change 50", [(at(TODAY, "00:20"), NOW, "w1")]),
@@ -1163,7 +1162,7 @@ class WorkflowFlowRowTest(unittest.TestCase):
             ("Verify parser", verify, "workflow"), ("Review parser", review, "workflow"),
             ("Build parser", build, ISSUE_URL)],
             [(build, "w1", "00:10"), (review, "w2", "00:40"), (verify, "w3", "01:10")])
-        got = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(), {}, NOW)
+        got = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, {}, {}, NOW)
         self.assertEqual(len(got), 1, "the real issue must join its build, review and verify passes")
         status, row = got[0]
         self.assertEqual((status, row.name), ("running", "Build parser"))
@@ -1183,7 +1182,7 @@ class WorkflowFlowRowTest(unittest.TestCase):
             [(prompts[0], "w1", "00:20"), (prompts[1], "w2", "00:50")])
         text = "".join(line for line in text.splitlines(keepends=True)
                        if not line.startswith(("| Inspect helpers |", "| Compare examples |")))
-        got = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(), {}, NOW)
+        got = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, {}, {}, NOW)
         self.assertEqual(len(got), 2)
         self.assertEqual([(r.ref, r.name) for _, r in got], [("", prompt.split("\n", 1)[0][:80]) for prompt in prompts])
         self.assertEqual([[(g.start, g.end, g.title) for g in r.segments] for _, r in got], [
@@ -1194,7 +1193,7 @@ class ChangeBridgeReviewTest(unittest.TestCase):
     """R1: a change-only pass needs a unique bridge, including evidence retained in the Log."""
 
     def build(self, text):
-        return fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(), {}, NOW)
+        return fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, {}, {}, NOW)
 
     def test_a_change_only_pass_joins_the_issue_through_another_rows_bridge(self):
         # Both bridge sources matter: explicit issue cell, and a workflow item's own closes clause.
@@ -1268,7 +1267,7 @@ class HomeFlowReviewTest(unittest.TestCase):
     def test_build_accepts_home_by_keyword_and_merges_a_bare_issue_with_its_review(self):
         text = self.tracker()
         got = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks,
-                       LANES, set(), {}, NOW, home=self.HOME)
+                       LANES, {}, {}, NOW, home=self.HOME)
         self.assertEqual(len(got), 1, "home #7 and the home project's closes #7 are the same issue")
         status, row = got[0]
         self.assertEqual((status, row.ref, row.name), ("running", "#7", "Build parser"))
@@ -1286,7 +1285,7 @@ class HomeFlowReviewTest(unittest.TestCase):
 
     def test_build_without_home_preserves_the_existing_bare_issue_key(self):
         text = self.tracker()
-        got = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(), {}, NOW)
+        got = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, {}, {}, NOW)
         self.assertEqual([(r.name, r.ref) for _, r in got], [
             ("Build parser", "#7"), ("Review parser", "forge.example/group/project#7")])
 
@@ -1297,7 +1296,7 @@ class WorkflowKeyReviewTest(unittest.TestCase):
     OTHER_CHANGE = "https://forge.example/group/project/-/merge_requests/51"
 
     def build(self, text):
-        return fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(), {}, NOW)
+        return fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, {}, {}, NOW)
 
     def context_tracker(self, context, done=False):
         build = f"Build the parser for {ISSUE_URL}"
@@ -1473,7 +1472,7 @@ class ManyLaunchesTest(unittest.TestCase):
         text, cls.expected = many_launched_tracker(cls.N)
         log, tasks = fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks
         start = time.perf_counter()
-        cls.got = fc.build(log, tasks, LANES, set(), {}, NOW)
+        cls.got = fc.build(log, tasks, LANES, {}, {}, NOW)
         cls.took = time.perf_counter() - start
 
     def test_the_chart_builds_within_seconds(self):
@@ -1499,14 +1498,14 @@ class OwnerTest(unittest.TestCase):
         # "A bar that follows a one-shot started line carries that worker in its title, e.g.
         # `implement 20:05–21:35 · W · done`."
         text = OneShotTest().tracker()  # w1 launched Audit headers at 00:20; its owner cell is now Robin
-        built = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(), {}, NOW)
+        built = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, {}, {}, NOW)
         implement = [t for t in titles(built, "Audit headers") if t.startswith("implement ")]
         self.assertTrue(implement)
         for title in implement:
             self.assertIn(" · w1 · ", title)
         # A launch that maps to no tracker row has no owner cell; its worker still names the bar.
         text = launched_tracker()
-        built = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(), {}, NOW)
+        built = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, {}, {}, NOW)
         sweep = next(r for _, r in built if any(g.start == at(TODAY, "01:00") for g in r.segments))
         got = titles(built, sweep.name)
         self.assertTrue(got)
@@ -1523,7 +1522,7 @@ class OwnerTest(unittest.TestCase):
                     self.assertIn(f" · {owner} · ", title)
         # w1 completed Audit headers at 01:30; the pr bar after it has no running launch.
         text = OneShotTest().tracker()
-        built = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, set(), {}, NOW)
+        built = fc.build(fc.moves(text, TODAY, CT), rb.parse_tracker(text).tasks, LANES, {}, {}, NOW)
         pr = [t for t in titles(built, "Audit headers") if t.startswith("pr ")]
         self.assertTrue(pr)
         for title in pr:
@@ -1585,7 +1584,7 @@ class UnassignedOwnerTest(unittest.TestCase):
     def built(self, owner: str) -> dict[str, tuple[str, gantt.Row]]:
         """TODAY_TRACKER's rows with Cache warmup's owner cell set to `owner`, whitespace kept."""
         tasks = [replace(t, owner=owner) if t.name == "Cache warmup" else t for t in rb.parse_tracker(TODAY_TRACKER).tasks]
-        return {row.name: (status, row) for status, row in fc.build(moves(), tasks, LANES, {"Cache warmup"}, {}, NOW)}
+        return {row.name: (status, row) for status, row in fc.build(moves(), tasks, LANES, {"Cache warmup": "Robin"}, {}, NOW)}
 
     def test_an_unassigned_owner_cell_draws_no_owner_part(self):
         # "A Flow bar of a task whose owner cell is `unassigned` (any case) has no owner part in its title."

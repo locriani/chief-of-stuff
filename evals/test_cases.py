@@ -941,7 +941,7 @@ class CaseLintTest(unittest.TestCase):
         "one-shot-disjoint-tasks-launch-together", "one-shot-relaunch-redispatches", "interactive-request-wins-over-one-shot",
         "models-rotation-first-entry", "models-rotation-out-of-quota", "models-effort-whatever-the-runtime",
         "worker-task-by-name", "worktree-clone-is-a-repos-name", "worker-check-validates-a-new-row",
-        "one-shot-report-is-read-with-result",
+        "one-shot-report-is-read-with-result", "one-shot-worker-named-after-its-issue",
     )
     # No Read grader, on purpose. The first four hold a rule that stays in the agent or a safety property no moved sentence
     # states (a peer's text, an owned item, a live pid); the last two are golden, which is Opus-only and is not run here.
@@ -997,8 +997,9 @@ class CaseLintTest(unittest.TestCase):
             'worker-check-validates-a-new-row': ('Before proposing a new task for dispatch, validate its Tasks and File ownership rows with `chief-of-stuff worker --check --root . --task <name>`, which needs no `--cwd`, makes no worktree and starts nothing; add `--name <session>` when the task is a standing row and `--one-shot` for a one-shot task; when it prints `refused: <why>`, tell the user that refusal and do not propose the task.', 'launch'),
             # The report sentence stays in the agent (#539 review R5), so the skill Read grader quotes the moved notification sentence.
             'one-shot-report-is-read-with-result': ("A background launch's completion notification only says the launch ended: name the task in its Bash description, and on the notification read that task's report with `chief-of-stuff result --root . --task <the Tasks name>`, then reconcile it, sync the issue's Kanban state and report that task before using its result.", 'result'),
+            'one-shot-worker-named-after-its-issue': ("The name is the one the user gave, or `<project>-<issue>-<role>`: the repository holding the task's issue, its number, and what the worker does (`implementer`, `reviewer`, `researcher`), as in `app-12-reviewer`.", 'launch'),
         }
-        self.assertEqual(carrying, set(expected), "only the seventeen moved-rule scenarios carry this Read grader")
+        self.assertEqual(carrying, set(expected), "only the eighteen moved-rule scenarios carry this Read grader")
         self.assertEqual(set(self.DISPATCH_SKILL_CASES), set(expected))
         self.assertFalse(carrying & set(self.DISPATCH_SKILL_SKIPPED_CASES))
         read = {"id": "skill", "name": "Read", "input": {"file_path": "/plugin/skills/dispatch/SKILL.md"}}

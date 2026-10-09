@@ -145,7 +145,7 @@ class FlowChartEndedTest(unittest.TestCase):
         for word in ("merged", "closed"):
             with self.subTest(word=word):
                 at_time = at(TODAY, "01:15")
-                built = fc.build(_log(), rb.parse_tracker(TODAY_TRACKER).tasks, LANES, set(), {}, NOW,
+                built = fc.build(_log(), rb.parse_tracker(TODAY_TRACKER).tasks, LANES, {}, {}, NOW,
                                  ended={"Upload size limit": (at_time, word)})
                 status, row = {r.name: (s, r) for s, r in built}["Upload size limit"]
                 self.assertEqual((status, row.note), (word, f"{word} 01:15"))
@@ -180,7 +180,7 @@ class GroupedRowClipTest(unittest.TestCase):
         # last wins the note) — but Task A's own `review` segment, still `waiting`, keeps running past it.
         now = at(TODAY, "23:00")  # well after 21:00, so an unclipped segment would visibly overrun
         built = fc.build(fc.moves(GROUPED_TRACKER, TODAY, CT), rb.parse_tracker(GROUPED_TRACKER).tasks,
-                         LANES, set(), {}, now)
+                         LANES, {}, {}, now)
         rows = [(s, r) for s, r in built if r.ref == "#150"]
         self.assertEqual(len(rows), 1, rows)  # both tasks merged into a single row
         status, row = rows[0]
@@ -241,7 +241,7 @@ class IssueKeyedByProjectTest(unittest.TestCase):
     def test_the_task_on_the_open_issue_keeps_its_flow_row_unclipped(self):
         tasks = rb.parse_tracker(TODAY_TRACKER.replace("| #109 |", f"| {self.B} |").replace("| #111 |", f"| {self.A} |")).tasks
         src = bs.Sources({}, {issue_key(self.A): issue("closed"), issue_key(self.B): issue("open")}, {}, (), {})
-        built = {r.name: (s, r) for s, r in fc.build(_log(), tasks, LANES, set(), {}, NOW, ended=rb.forge_ends(tasks, src, CT))}
+        built = {r.name: (s, r) for s, r in fc.build(_log(), tasks, LANES, {}, {}, NOW, ended=rb.forge_ends(tasks, src, CT))}
         status, row = built["Upload size limit"]  # on B, open
         self.assertNotEqual(status, "closed")
         self.assertEqual(built["Cache warmup"][0], "closed")  # on A, closed

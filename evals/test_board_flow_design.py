@@ -170,12 +170,12 @@ class OneBuildDrawing(Board):
 
     def test_a_task_with_no_lane_is_still_counted_as_before(self) -> None:
         # Pinned to what the code draws today, so the removal changes none of it: the header counts all 8 tasks, the
-        # tiles read (#349: the artboard's label) ALL 8, NEEDS INPUT 1, RUNNING 2 (Upload size limit and the lane-less Renew
+        # tiles read (#349: the artboard's label) ALL 8, NEEDS INPUT 2 (#228: the triage gate and the task waiting on Robin, the Flow's two holds), RUNNING 2 (Upload size limit and the lane-less Renew
         # certs), APPROVED 0, ORPHANED 1 (the lane-less Archive logs), DRIFT 0, and the Flow charts draw a row for each lane-less task that
         # moved, in both charts, and none for the one that never did.
         self.seen(r"\b8 tasks\b", self.body, "the header counting the tasks with no lane")
         tiles = re.findall(r'<span class="panels-label">([A-Z ]+)</span><b class="panels-count">(\d+)</b>', self.body)
-        self.assertEqual(tiles, [("ALL", "8"), ("NEEDS INPUT", "1"), ("RUNNING", "2"), ("APPROVED", "0"), ("ORPHANED", "1"),
+        self.assertEqual(tiles, [("ALL", "8"), ("NEEDS INPUT", "2"), ("RUNNING", "2"), ("APPROVED", "0"), ("ORPHANED", "1"),
                                  ("DRIFT", "0")])
         flow = self.body[at(self.body, "<h2>Flow · 24 hours</h2>"):]
         for name in IDLE:

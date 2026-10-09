@@ -558,6 +558,42 @@ DECISION = ('{"headline": "Cache TTL", "ask": "Keep 5 minutes?", "options": [{"k
             '"text": "no change"}, {"key": "B", "title": "Drop", "text": "slower"}], "recommended": "A", "why": "fine", "default": "A at 17:00"}')
 
 
+class HoldWiringTest(unittest.TestCase):
+    """#228 review: the board's and the task page's write() read the pending decisions and [kanban] themselves, and
+    both name the same cause for the task's hold."""
+
+    def workspace(self, decision: str = DECISION, toml: str = "") -> tuple[Path, str]:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root, day = Path(tmp.name), datetime.now(ZoneInfo(ZONE)).date().isoformat()
+        (root / "CLAUDE.md").write_text(
+            "## Coordinator\n- User: Robin\n- Daily log dir: `daily/`\n- Tracker: `daily/<date>-tracker.md`\n"
+            f"- Timezone: {ZONE}\n- Board: self-hosted; URL http://127.0.0.1:8765/; dir `pages/`\n- Settings: `cos.toml`\n")
+        (root / "cos.toml").write_text(LANES + toml)
+        (root / "daily").mkdir()
+        (root / "daily" / f"{day}-tracker.md").write_text(ISSUE_TRACKER.format(day=day, task="Security audit"))
+        (root / "pages").mkdir()
+        (root / "pages" / "decision-cache-ttl.json").write_text(decision)
+        return root, day
+
+    def notes(self, root: Path, day: str) -> list[str]:
+        import issue_page, render_board
+        render_board.write(root, day)
+        board = (root / "pages" / f"{day}-board.html").read_text()
+        task = issue_page.write(root, root / "pages", 7).read_text()
+        return [re.findall(r"needs input · [\w ]+", page) for page in (board, task)]
+
+    def test_a_pending_decision_holding_the_issue_names_decision_on_both_pages(self):
+        root, day = self.workspace(DECISION[:-1] + ', "holds": ["#7"]}')
+        for got in self.notes(root, day):
+            self.assertIn("needs input · decision", got)
+
+    def test_a_kanban_hold_stage_names_the_stage_on_both_pages(self):
+        root, day = self.workspace(toml='[kanban]\nstages = ["impl"]\nhuman_review_label = "needs-human"\nhold_stages = ["implement"]\n[kanban.map]\nimplement = 0\n')
+        for got in self.notes(root, day):
+            self.assertIn("needs input · implement", got)
+
+
 class _PagesFixture:
     """A workspace with every kind of page and the real server rendering them. `FREEZE` pins each renderer's clock at
     12:00, so a run of the real renderers with the same inputs gives the same bytes; a test that is about the clock sets it False."""
