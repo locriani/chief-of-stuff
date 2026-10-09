@@ -32,9 +32,9 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
-def get(port: int, path: str, host: str | None = None, method: str = "GET") -> http.client.HTTPResponse:
+def get(port: int, path: str, host: str | None = None, method: str = "GET", headers: dict | None = None) -> http.client.HTTPResponse:
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-    conn.request(method, path, headers={"Host": host or f"127.0.0.1:{port}"})
+    conn.request(method, path, headers={"Host": host or f"127.0.0.1:{port}", **(headers or {})})
     resp = conn.getresponse()
     resp.body = resp.read()
     conn.close()
@@ -592,6 +592,120 @@ class HoldWiringTest(unittest.TestCase):
         root, day = self.workspace(toml='[kanban]\nstages = ["impl"]\nhuman_review_label = "needs-human"\nhold_stages = ["implement"]\n[kanban.map]\nimplement = 0\n')
         for got in self.notes(root, day):
             self.assertIn("needs input · implement", got)
+
+
+class LastLookedTest(unittest.TestCase):
+    """#229: a person loading the board records the server's time; the Since tab counts the holds that began after
+    the look before it, from the start of the day when there is none. A timer reload is not a look."""
+
+    SETTINGS = LANES + '[kanban]\nstages = ["impl"]\nhuman_review_label = "needs-human"\nhold_stages = ["implement"]\n[kanban.map]\nimplement = 0\n'
+    # A navigation, as every browser marks one (Safari sends no Sec-Fetch-User: Codex on #579); the reload snippet's
+    # own reload carries its cookie, and an agent's GET is no navigation.
+    LOOK = {"Sec-Fetch-Mode": "navigate"}
+    RELOAD = {"Sec-Fetch-Mode": "navigate", "Cookie": "theme=dark; cos-reload=1"}
+    setUp = RenderOnRequestTest.setUp
+    fake_refresh = RenderOnRequestTest.fake_refresh
+
+    def since(self, headers=None) -> list[str]:
+        return re.findall(r'title="(\d+ went needs input since [\w :]+)"', get(self.port, "/", headers=headers).body.decode())
+
+    def test_a_look_counts_from_the_look_before_it_and_a_timer_reload_is_no_look(self):
+        self.tracker.write_text(ISSUE_TRACKER.format(day=self.day, task="Security audit"))  # held at implement since 09:00
+        earlier = datetime.fromisoformat(f"{self.day}T08:00").replace(tzinfo=ZoneInfo(ZONE))
+        (self.pages / ".last-looked").write_text(earlier.isoformat())
+        self.assertEqual(self.since(), ["1 went needs input since 00:00"])
+        self.assertEqual(self.since(self.RELOAD), ["1 went needs input since 00:00"])
+        self.assertEqual(get(self.port, "/", method="HEAD", headers=self.LOOK).status, 200)
+        self.assertFalse((self.pages / ".looked-before").exists(), "an agent's GET, a timer reload or a HEAD recorded a look")
+        before = datetime.now(ZoneInfo(ZONE)).replace(microsecond=0)
+        self.assertEqual(self.since(self.LOOK), ["1 went needs input since 08:00"])
+        self.assertEqual(datetime.fromisoformat((self.pages / ".looked-before").read_text()), earlier)
+        self.assertGreaterEqual(datetime.fromisoformat((self.pages / ".last-looked").read_text()), before)
+        for path in ("/.last-looked", "/%2elast-looked", "/%2Elooked-before"):  # #579 review R1: decoded, too
+            self.assertEqual(get(self.port, path).status, 404, path)
+
+    def test_a_hold_begun_days_after_an_old_look_counts(self):
+        # Codex on #579: the Flow reads 48 hours of trackers; the Since tab reads back to the look before.
+        from datetime import timedelta
+        today = datetime.fromisoformat(self.day).date()
+        old_day = (today - timedelta(days=3)).isoformat()
+        (self.root / "daily" / f"{old_day}-tracker.md").write_text(ISSUE_TRACKER.format(day=old_day, task="Security audit"))
+        self.tracker.write_text(ISSUE_TRACKER.format(day=self.day, task="Security audit").replace(
+            "- 09:00 stage: Security audit → implement\n", ""))
+        looked = datetime.fromisoformat(f"{today - timedelta(days=4)}T08:00").replace(tzinfo=ZoneInfo(ZONE))
+        (self.pages / ".last-looked").write_text(looked.isoformat())
+        self.assertEqual(self.since(self.LOOK), [f"1 went needs input since {looked:%a} 08:00"])  # not today's 08:00
+
+    def test_a_first_look_is_recorded(self):
+        # #579 review R2: no `.last-looked` yet.
+        get(self.port, "/", headers=self.LOOK)
+        self.assertTrue((self.pages / ".last-looked").is_file())
+        self.assertFalse((self.pages / ".looked-before").exists())
+
+    def test_a_load_with_no_board_to_serve_is_no_look(self):
+        # Codex on #579: a 404 showed the person nothing, so it must not become the look the next board counts from.
+        self.tracker.unlink()
+        self.assertEqual(get(self.port, "/", headers=self.LOOK).status, 404)
+        self.assertFalse((self.pages / ".last-looked").exists())
+
+    def test_a_load_whose_board_cannot_render_is_no_look(self):
+        # Codex on #579: the banner showed no board, so the look before it stands.
+        earlier = datetime.fromisoformat(f"{self.day}T08:00").replace(tzinfo=ZoneInfo(ZONE)).isoformat()
+        (self.pages / ".last-looked").write_text(earlier)
+        (self.root / "cos.toml").write_text("[lanes\n")
+        self.assertEqual(get(self.port, "/", headers=self.LOOK).status, 200)
+        self.assertEqual((self.pages / ".last-looked").read_text(), earlier)
+        self.assertFalse((self.pages / ".looked-before").exists())
+
+    def test_a_reload_clears_its_own_marker(self):
+        # Codex on #579: the marker is the origin's for 10 s, so another tab's reload must not leave it on the next
+        # navigation; the request that carries it clears it, and a person's request carries none to clear.
+        self.assertRegex(get(self.port, "/", headers=self.RELOAD).getheader("Set-Cookie") or "", r"^cos-reload=; Max-Age=0; Path=/$")
+        self.assertIsNone(get(self.port, "/", headers=self.LOOK).getheader("Set-Cookie"))
+
+    def test_looks_at_once_do_not_trip_over_each_others_files(self):
+        # #579 review R5: the page server is threaded; each write goes through its own temporary file.
+        import workspace
+        errors = []
+
+        def look():
+            for _ in range(50):
+                try:
+                    workspace.record_look(self.pages, datetime.now(ZoneInfo(ZONE)))
+                except OSError as e:
+                    errors.append(e)
+        threads = [threading.Thread(target=look) for _ in range(4)]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join()
+        self.assertEqual(errors, [])
+        self.assertIsNotNone(workspace.looked_before(self.pages))
+
+    def test_a_look_re_renders_the_board_only(self):
+        # #579 review R6: `.looked-before` is the board's source, not every page's.
+        import issue_page
+        self.tracker.write_text(ISSUE_TRACKER.format(day=self.day, task="Security audit"))
+        calls = []
+        real = issue_page.write
+        with mock.patch.object(issue_page, "write", lambda *a, **k: calls.append(1) or real(*a, **k)):
+            get(self.port, "/", headers=self.LOOK)
+            self.assertEqual(get(self.port, "/issues/7").status, 200)
+            get(self.port, "/", headers=self.LOOK)
+            get(self.port, "/issues/7")
+        self.assertEqual(len(calls), 1)
+
+
+class ReloadMarksItselfTest(unittest.TestCase):
+    """Codex on #579: the snippet's timer reload marks itself with a short-lived cookie the server reads as no look;
+    the notice's Reload button is the person's own and does not."""
+
+    def test_the_timer_reload_sets_the_cookie_and_the_button_does_not(self):
+        import page_reload
+        snippet = page_reload.SNIPPET
+        self.assertIn(f"document.cookie='{page_reload.RELOAD_COOKIE};max-age=10;path=/';location.reload()", snippet)
+        self.assertIn("b.onclick=function(){location.reload();}", snippet)
+        self.assertEqual(snippet.count("location.reload()"), 2)
 
 
 class _PagesFixture:

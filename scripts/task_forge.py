@@ -5,16 +5,18 @@ them, who the workers are and whether a stage holds. The board and the task page
 
 from __future__ import annotations
 
+from collections.abc import Container, Mapping
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import board_sources
 import kanban as kanban_tool
 from settings import Kanban
-from tracker import Task, issue_key
+from tracker import Task, issue_key, launcher
+from tracker_log import Move
 
 
-def hold_cause(task: Task, kanban: Kanban | None, stage: str | None, *, workers: set[str], pending_refs: set[str],
+def hold_cause(task: Task, kanban: Kanban | None, stage: str | None, *, workers: set[str], pending_refs: Container[str],
                home, lane) -> str:
     """What holds the task, or "" when nothing does, at `stage` (its own cell when None): `decision` when a pending
     decision holds its issue (`pending_refs`, keyed as issue_key keys it under `home`), else the stage when [kanban] holds it there, else the person a waiting task waits on.
@@ -56,13 +58,50 @@ def effective_stage(task: Task, sources: board_sources.Sources, lanes: dict) -> 
 
 
 def hold_causes(tasks: list[Task], kanban: Kanban | None, sources: board_sources.Sources, lanes: dict,
-                pending_refs: set[str]) -> dict[Task, str]:
+                pending_refs: Container[str]) -> dict[Task, str]:
     """Each held task to its `hold_cause` at its effective stage, decided once: the BUILD flag, the NEEDS INPUT tile and
     the Flow note all read it (#228)."""
     workers = worker_names(sources)
     return {t: cause for t in tasks
             if (cause := hold_cause(t, kanban, effective_stage(t, sources, lanes), workers=workers,
                                     pending_refs=pending_refs, home=sources.home, lane=lanes.get(t.lane.strip())))}
+
+
+def hold_began(held: dict[Task, str], moves: list[Move], pending_refs: Mapping[str, datetime | None], home,
+               tasks: list[Task], earlier: list[Task] = ()) -> dict[Task, datetime | None]:
+    """When each of the `held` tasks' holds began (#229): a decision when the first decision holding its issue was asked
+    (`pending_refs`, decision_page.held_refs); a gate stage at the task's last move into it, the moves read as flow_chart
+    reads them (by name or item in any case, a launcher line only until the task's first `stage:` move); a person's
+    wait, which no line records, None. A move may name an `earlier` tracker's row: it is today's task of that row's
+    name, or, renamed, of its issue."""
+    by_name = {t.name.strip().casefold(): t for t in tasks if t.name.strip()}
+    by_issue = {issue_key(t.issue, home): t for t in tasks if t.issue.strip()}
+
+    def today(t: Task) -> Task | None:
+        return by_name.get(t.name.strip().casefold()) or (by_issue.get(issue_key(t.issue, home)) if t.issue.strip() else None)
+
+    find = {**{k: cur for t in earlier for k in (t.item.strip().casefold(), t.name.strip().casefold())
+               if k and (cur := today(t))},
+            **{t.item.strip().casefold(): t for t in tasks if t.item.strip()}, **by_name}
+    row_of = launcher(tasks)
+    staged, into = set(), {}
+    for m in sorted(moves, key=lambda m: m.at):
+        t = find.get(m.name.strip().casefold()) or (row_of(m.name)[0] if m.launch else None)
+        if t is None or (m.launch and t in staged):
+            continue
+        staged |= set() if m.launch else {t}
+        into[t, m.stage] = m.at
+    return {t: pending_refs.get(issue_key(t.issue, home)) if cause == "decision" else into.get((t, cause))
+            for t, cause in held.items()}
+
+
+def went_held(held: dict[Task, str], began: dict[Task, datetime | None], since: datetime) -> int:
+    """How many of the `held` tasks' holds began after `since` (#229). A hold whose start is not known is not counted:
+    it would claim a change nobody can date. The Log keeps minutes, so a gate hold logged in `since`'s own minute
+    counts; a decision's asked time keeps seconds, so it is compared as it is."""
+    minute = since.replace(second=0, microsecond=0)
+    return sum(1 for t, cause in held.items()
+               if (at := began.get(t)) is not None and at >= (since if cause == "decision" else minute))
 
 
 def held_names(held: dict[Task, str]) -> dict[str, str]:

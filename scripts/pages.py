@@ -47,7 +47,7 @@ from html import escape
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 import page_reload
-from workspace import ConfigError, daily_trackers, pages_address, read_config
+from workspace import LAST_LOOKED, LOOKED_BEFORE, ConfigError, daily_trackers, pages_address, read_config, record_look, unrecord_look
 
 SERVER = "chief-of-stuff-pages"
 PID = ".pid"
@@ -144,7 +144,7 @@ def fresh(root: Path, pages_dir: Path, name: str, slots=contextlib.nullcontext()
             if not (root / cfg.tracker_path(day)).is_file():
                 return ""
         with page_lock(key):  # checked under the lock: a request that waited finds the page already rendered
-            newest = max(RENDERER_MTIME_NS, max((p.stat().st_mtime_ns for p in _sources(root, cfg, pages_dir, day) if p.is_file()), default=0))
+            newest = max(RENDERER_MTIME_NS, max((p.stat().st_mtime_ns for p in [*_sources(root, cfg, pages_dir, day), *([pages_dir / LOOKED_BEFORE] if name.endswith("-board.html") else [])] if p.is_file()), default=0))
             mtime = target.stat().st_mtime_ns if target.is_file() else 0
             record = RENDERED_AT.get(key)
             rendered = record[0] if record and record[1] in (mtime, None) else mtime
@@ -197,11 +197,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_error(403, "Host is not this machine")
             return False
         path = self.path.split("?")[0]
-        if any(part.startswith(".") for part in path.split("/")):
+        if any(part.startswith(".") for part in unquote(path).split("/")):  # `%2e` is a dot too
             self.send_error(404)
             return False
         root = getattr(self.server, "root", None)
         self._poke()
+        look = False
         if path == "/":
             # Served in place, not redirected: the tab stays on `/`, so its reload poll finds the next day's board.
             name = None
@@ -214,6 +215,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if name is None and not boards:
                 self.send_error(404, "no board rendered yet")
                 return False
+            # A person's load (#229): a browser navigation (an agent's GET is none) that is not the reload snippet's
+            # own (its cookie), with a board to serve.
+            look = (self.command == "GET" and self.headers.get("Sec-Fetch-Mode") == "navigate"
+                    and page_reload.RELOAD_COOKIE not in self.headers.get("Cookie", ""))
             self.path = "/" + (name or boards[-1].name)
         elif path == "/all":
             self.path = "/"
@@ -237,7 +242,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return False
         name = self.path.split("?")[0].lstrip("/")
         if root is not None and RENDERED.fullmatch(name):
-            self.banner = fresh(root, Path(self.directory), name, self.server.slots)
+            # A look is recorded before `fresh`, so the board counts from the look before, and taken back when the
+            # board cannot render; one lock around it all, so two tabs loading at once cannot interleave it.
+            pages = Path(self.directory)
+            with page_lock(pages / LAST_LOOKED) if look else contextlib.nullcontext():
+                prior = None
+                if look:
+                    with contextlib.suppress(OSError):
+                        prior = record_look(pages, datetime.now().astimezone())
+                self.banner = fresh(root, pages, name, self.server.slots)
+                if self.banner and prior is not None:
+                    with contextlib.suppress(OSError):
+                        unrecord_look(pages, prior)
         if name.startswith("issue-") and not self.banner and not (Path(self.directory) / name).is_file():
             self.send_error(404, "no task names this issue")  # issue_page.write removes the page then
             return False
@@ -355,6 +371,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def end_headers(self):
         self.send_header("Cache-Control", "no-cache")
+        if page_reload.RELOAD_COOKIE in ((getattr(self, "headers", None) or {}).get("Cookie") or ""):
+            # Consumed by the request that carries it, so it cannot mark another tab's navigation (Codex on #579).
+            self.send_header("Set-Cookie", f"{page_reload.RELOAD_COOKIE.split('=')[0]}=; Max-Age=0; Path=/")
         super().end_headers()
 
     def log_message(self, *_args):

@@ -9,6 +9,7 @@ References. pages.py renders it on request into `issue-<n>.html`.
 from __future__ import annotations
 
 import re
+from collections.abc import Container
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from html import escape
@@ -186,7 +187,7 @@ def _next(rows, change: board_sources.Change | None, changes, why_not: str, now:
 def render(number: int, trackers: list[tuple[date, str]], sources: board_sources.Sources, now: datetime,
            lanes: dict | None = None, cfg: Config | None = None, graph: Graph | None = None, pages: Path | None = None,
            root: Path | None = None, pending: int = 0, kanban: Kanban | None = None,
-           pending_refs: set[str] = frozenset()) -> str | None:
+           pending_refs: Container[str] = frozenset()) -> str | None:
     """The page, or None when no task in `trackers` names issue `number`. `cfg` resolves a task's due (the board's
     deadlines); `graph`, `pages` and `root` draw Architecture as the decision page draws its module graph."""
     ref = f"#{number}"

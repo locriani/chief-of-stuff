@@ -13,7 +13,7 @@ import html
 import re
 import sys
 from dataclasses import dataclass, replace
-from datetime import date, datetime
+from datetime import date, datetime, time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -21,9 +21,9 @@ from estimate import (ALL_SIZES, NO_ESTIMATE, SIZES, day_bar, estimates, history
                       nearest_deadline, queue_durations, task_end as _end)
 from md import BULLET, section as _section, unquote as _unquote  # noqa: E402
 from settings import Kanban, SettingsError, load as load_settings  # noqa: E402
-from task_forge import drifts, effective_stage, forge_ends, held_names, hold_causes, task_changes, worker_names  # noqa: E402
+from task_forge import drifts, effective_stage, forge_ends, held_names, hold_began, hold_causes, task_changes, went_held, worker_names  # noqa: E402
 from tracker import TRAILING_NUMBER, Task, change_keys, decision_rows, issue_key, issue_number, parse_tracker  # noqa: E402
-from workspace import (Config, ConfigError, daily_trackers, read_config,  # noqa: E402
+from workspace import (Config, ConfigError, daily_trackers, looked_before, read_config,  # noqa: E402
                        with_decision_deadlines, with_workspace_decision_deadlines)
 import board_sources  # noqa: E402
 import columns  # noqa: E402
@@ -297,10 +297,13 @@ def render(tracker_text: str, cfg: Config, now: datetime, lanes: dict | None = N
            tracker_day: date | None = None, decisions: list[tuple[str, dict | None, datetime | None, str]] | None = None,
            kanban: Kanban | None = None, sources: board_sources.Sources = board_sources.EMPTY, answered: int = 0,
            tracker_at: datetime | None = None, stage_log: list[tuple[date, str]] | None = None, slots: int = 1,
-           pending_refs: set[str] = frozenset()) -> str:
+           pending_refs: dict[str, datetime | None] | None = None, looked: datetime | None = None,
+           look_log: list[tuple[date, str]] | None = None) -> str:
     """The board page, the Flow artboard's sections: header, tiles, BUILD (the stage columns), the MERGE ORDER,
     DECISIONS and WORKERS panels, and the Flow charts. `stage_log` is (day, tracker text) for the earlier days the
-    Flow charts reach back over; `slots` is how many queued tasks run at once, `[workers] max_concurrency`."""
+    Flow charts reach back over; `slots` is how many queued tasks run at once, `[workers] max_concurrency`.
+    `pending_refs` is decision_page.held_refs; `looked`, the look before the latest (workspace.looked_before), and
+    `look_log` the earlier days back to it that `stage_log` does not reach, read only for when a hold began."""
     cfg = with_decision_deadlines(cfg, tracker_text, tracker_day or now.date())
     sha = hashlib.sha256(tracker_text.encode()).hexdigest()
     tracker = parse_tracker(tracker_text)
@@ -320,12 +323,19 @@ def render(tracker_text: str, cfg: Config, now: datetime, lanes: dict | None = N
     # A task's stage for drift, computed once, keyed by the task: every nameless task shares the blank name.
     stages = {t: effective_stage(t, sources, lanes or {}) for t in tasks}
     # #228: what holds each task, decided once, so the BUILD flag, the NEEDS INPUT tile and the Flow note agree.
+    pending_refs = pending_refs or {}
     held = hold_causes(tasks, kanban, sources, lanes or {}, pending_refs)
     build_cols = build_columns(tasks, lanes, kanban, sources, now, held)
     build_html = (f'<section id="flow"><h2>Build</h2>\n<div class="meta">{_plural(issues, "issue")} · {_plural(changes, "merge request")}</div>\n'
                   f'{columns.render(build_cols)}</section>\n')
     flow_moves = [m for day, text in [*(stage_log or []), (tracker_day or today, tracker_text)]
                   for m in tracker_log.moves(text, day, zone)]
+    look_moves = [m for day, text in look_log or [] for m in tracker_log.moves(text, day, zone)]
+    began = hold_began(held, look_moves + flow_moves, pending_refs, sources.home, tasks,
+                       [t for _, text in [*(look_log or []), *(stage_log or [])] for t in parse_tracker(text).tasks])
+    since = looked or datetime.combine(today, time(), zone)
+    shown = since.astimezone(zone)  # a look on another day names its day
+    went = went_held(held, began, since), f"{shown:%H:%M}" if shown.date() == today else f"{shown:%a %H:%M}"
     known = [t for _, text in stage_log or [] for t in parse_tracker(text).tasks] + tasks
     ends = {t.item: end for t in active if (end := _end(t, cfg, now, now, est))[1] in ("due", "derived")}
     flow_rows = flow_chart.build(flow_moves, known, lanes or {}, held_names(held),
@@ -381,7 +391,7 @@ h2+.meta{{display:inline-block}}
 </style>
 <body>
 <div class="board" data-rendered-at="{_iso(now)}" data-tz="{_esc(cfg.tz)}" data-deadline="{_iso(nearest.at)}" data-deadline-name="{_esc(nearest.name)}">
-{tab_bar("Board", sum(d is not None for _, d, _, _ in pending))}<div class="header">{panels.header(head)}</div>
+{tab_bar("Board", sum(d is not None for _, d, _, _ in pending), since=went)}<div class="header">{panels.header(head)}</div>
 {panels.tiles(tiles)}
 {build_html}{panels_html}
 {flow_html}</div>
@@ -433,12 +443,17 @@ def write(root: Path, day: str | None = None) -> tuple[Path, Config, datetime, s
     ctx = decision_page.decision_context(root, tracker_day, now)
     pending = decision_page.write_all(out.parent, ctx, day, root)
     reach = (now - flow_chart.WINDOWS[-1][1]).date()
-    stage_log = [(d, path.read_text()) for d, path in daily_trackers(root, cfg) if reach <= d < tracker_day]
+    looked = looked_before(out.parent)
+    since_day = looked.astimezone(cfg.zone).date() if looked else reach
+    trackers = [(d, path) for d, path in daily_trackers(root, cfg) if min(reach, since_day) <= d < tracker_day]
+    stage_log = [(d, path.read_text()) for d, path in trackers if reach <= d]
+    look_log = [(d, path.read_text()) for d, path in trackers if d < reach]
     page = render(tracker_text, cfg, now, lanes=settings.lanes,
                   tracker_day=tracker_day, decisions=pending, kanban=settings.kanban,
                   sources=board_sources.load(out.parent), answered=len(decision_rows(tracker_text)),
                   tracker_at=datetime.fromtimestamp(tracker.stat().st_mtime, cfg.zone), stage_log=stage_log,
-                  slots=settings.workers.max_concurrency or 1, pending_refs=decision_page.held_refs(pending, ctx))
+                  slots=settings.workers.max_concurrency or 1, pending_refs=decision_page.held_refs(pending, ctx),
+                  looked=looked, look_log=look_log)
     write_if_changed(out, page)
     return out, cfg, now, tracker_text, req_texts
 

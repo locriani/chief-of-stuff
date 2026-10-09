@@ -8,7 +8,7 @@ import sys
 import tempfile
 import unittest
 from dataclasses import replace
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -20,6 +20,7 @@ import decision_page  # noqa: E402
 import panels  # noqa: E402
 import render_board as rb  # noqa: E402
 import task_forge  # noqa: E402
+import tracker_log  # noqa: E402
 from tracker import parse_tracker  # noqa: E402
 from workspace import parse_coordinator  # noqa: E402
 import settings as st  # noqa: E402
@@ -118,7 +119,7 @@ class HoldCauseTest(unittest.TestCase):
         # [kanban] hold stage: a task waiting on a person, and a task whose issue a pending decision holds.
         waiting = TRACKER.replace("| Robin | open | 09:00 | 17:00 | S | build | triage |",
                                   "| Robin | waiting | 09:00 | 17:00 | S | build | triage |")
-        for case, tracker, refs in (("waiting on Robin", waiting, frozenset()), ("decision", TRACKER, {"#9"})):
+        for case, tracker, refs in (("waiting on Robin", waiting, {}), ("decision", TRACKER, {"#9": None})):
             with self.subTest(case=case):
                 html = rb.render(tracker, parse_coordinator(CLAUDE_MD, today=NOW.date()), NOW, lanes=LANES, kanban=KANBAN,
                                  sources=SOURCES, pending_refs=refs)
@@ -126,6 +127,94 @@ class HoldCauseTest(unittest.TestCase):
                 self.assertEqual(tiles["NEEDS INPUT"], "1")
                 self.assertEqual(re.findall(r'<div class="columns-tag columns-flag" data-cat="hold">([^<]*)<', html),
                                  ["NEEDS INPUT"])
+
+
+class SinceLookedTest(unittest.TestCase):
+    """#229: the Since tab counts the holds that began after the last look: a gate stage from its last `stage:` move
+    into it, a decision from when it was asked. A hold with no known start (a person-owned wait) is not counted."""
+
+    def test_a_hold_logged_in_the_looks_minute_counts(self) -> None:
+        # Codex on #579: the Log keeps minutes and a look keeps seconds; a move logged in the look's own minute may
+        # have come after it, and a count shown twice is better than one missed.
+        a, b, *_ = parse_tracker(TRACKER).tasks
+        look = NOW.replace(second=10)
+        self.assertEqual(task_forge.went_held({a: "triage", b: "triage"},
+                                              {a: NOW.replace(second=0), b: NOW - timedelta(minutes=1)}, look), 1)
+
+    def test_a_decision_asked_before_the_look_in_its_minute_does_not_count(self) -> None:
+        # Codex on #579: a decision's asked time keeps seconds, so the Log's same-minute allowance is not its.
+        a, b, *_ = parse_tracker(TRACKER).tasks
+        look = NOW.replace(second=50)
+        held = {a: "decision", b: "decision"}
+        self.assertEqual(task_forge.went_held(held, {a: NOW.replace(second=10), b: NOW.replace(second=55)}, look), 1)
+
+    def test_went_held_counts_only_holds_known_to_begin_after_the_look(self) -> None:
+        a, b, c, d = parse_tracker(TRACKER).tasks
+        held = {a: "decision", b: "triage", c: "Robin", d: "Robin"}
+        began = {a: NOW, b: NOW - timedelta(hours=2), c: None}
+        self.assertEqual(task_forge.went_held(held, began, NOW - timedelta(hours=1)), 1)
+
+    def began(self, log: str, cause: str = "triage", name: str = "Write README"):
+        tasks = parse_tracker(TRACKER).tasks
+        task = next(t for t in tasks if t.name == name)
+        moves = tracker_log.moves(TRACKER + log, NOW.date(), NOW.tzinfo)
+        return task_forge.hold_began({task: cause}, moves, {}, None, tasks)[task]
+
+    def test_a_move_under_an_earlier_rows_name_or_item_is_the_tasks(self) -> None:
+        # Codex on #579: a move logged before a rename names the earlier row; it is today's task by the earlier row's
+        # name, or, when the name changed too, by its issue.
+        tasks = parse_tracker(TRACKER).tasks
+        task = next(t for t in tasks if t.name == "Write README")
+        day = NOW.date() - timedelta(days=1)
+        for earlier_row, moved in (("| Write README | Draft the README |", "Draft the README"),
+                                   ("| README draft | Draft the README |", "README draft")):
+            with self.subTest(moved):
+                earlier = TRACKER.replace("| Write README | Write eval README |", earlier_row)
+                moves = tracker_log.moves(earlier + f"- 11:00 stage: {moved} → triage\n", day, NOW.tzinfo)
+                began = task_forge.hold_began({task: "triage"}, moves, {}, None, tasks, parse_tracker(earlier).tasks)
+                self.assertEqual(began[task], datetime.combine(day, time(11, 0), NOW.tzinfo))
+
+    def test_a_gate_hold_begins_at_the_tasks_last_move_into_that_gate(self) -> None:
+        # #579 review R3, R7: moves read as flow_chart reads them: by name or item, any case; the latest move into the
+        # gate, not another stage's or another task's.
+        at = lambda hhmm: NOW.replace(hour=int(hhmm[:2]), minute=int(hhmm[3:]))  # noqa: E731
+        self.assertEqual(self.began("- 11:00 stage: Write README → triage\n- 12:00 stage: Write README → merge\n"
+                                    "- 13:00 stage: Write README → triage\n"), at("13:00"))
+        self.assertIsNone(self.began("- 11:00 stage: Write README → merge\n"))
+        self.assertIsNone(self.began("- 11:00 stage: Cut the release → triage\n"))
+        self.assertEqual(self.began("- 11:00 stage: write eval readme → triage\n"), at("11:00"))
+
+    def test_a_launcher_line_moves_a_task_only_until_its_first_stage_move(self) -> None:
+        # #579 review R7: flow_chart's rule; `completed` puts the task at pr.
+        at = lambda hhmm: NOW.replace(hour=int(hhmm[:2]), minute=int(hhmm[3:]))  # noqa: E731
+        started = "- 10:00 one-shot w1 started: claude, task Write eval README\n"
+        self.assertEqual(self.began(started + "- 11:00 one-shot w1: completed; awaiting integration\n", "pr"), at("11:00"))
+        self.assertIsNone(self.began("- 09:30 stage: Write README → implement\n" + started +
+                                     "- 11:00 one-shot w1: completed; awaiting integration\n", "pr"))
+
+    def test_the_since_time_is_shown_in_the_workspace_zone(self) -> None:
+        # #579 review R4: a look stored in another zone is titled in the workspace's.
+        from datetime import timezone
+        gate = replace(KANBAN, hold_stages=("triage",))
+        self.assertEqual(self.since((NOW - timedelta(hours=2)).astimezone(timezone.utc), kanban=gate,
+                                    log="- 13:00 stage: Write README → triage\n"), [("1 went needs input since 12:30", "1")])
+
+    def since(self, looked, refs=None, kanban=KANBAN, log="") -> list[str]:
+        html = rb.render(TRACKER + log, parse_coordinator(CLAUDE_MD, today=NOW.date()), NOW, lanes=LANES, kanban=kanban,
+                         sources=SOURCES, pending_refs=refs or {}, looked=looked)
+        return re.findall(r'title="(\d+ went needs input since [\d:]+)">(\d+)<', html)
+
+    def test_the_board_counts_a_gate_move_and_a_decision_after_the_look(self) -> None:
+        gate, move = replace(KANBAN, hold_stages=("triage",)), "- 13:00 stage: Write README → triage\n"
+        for case, args, want in (
+                ("moved into the gate after", dict(kanban=gate, log=move), [("1 went needs input since 12:30", "1")]),
+                ("asked after", dict(refs={"#9": NOW - timedelta(minutes=30)}), [("1 went needs input since 12:30", "1")]),
+                ("asked at an unknown time", dict(refs={"#9": None}), []),
+                ("held with no move", dict(kanban=gate), [])):
+            with self.subTest(case=case):
+                self.assertEqual(self.since(NOW - timedelta(hours=2), **args), want)
+        self.assertEqual(self.since(NOW - timedelta(minutes=30), kanban=gate, log=move), [])
+        self.assertEqual(self.since(None, kanban=gate, log=move), [("1 went needs input since 00:00", "1")])
 
 
 class MergeOrder(unittest.TestCase):
