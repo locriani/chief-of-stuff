@@ -12,7 +12,7 @@ import time
 import unittest
 from contextlib import redirect_stdout
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from unittest import mock
 from zoneinfo import ZoneInfo
@@ -263,6 +263,17 @@ class GitHubStageTwoTest(unittest.TestCase):
         self.assertEqual(self.refresh(n118=issue).issues["#118"].body, "### Acceptance\n- [ ] limits hold\n")
         self.assertIn("body", self.query.split("... on Issue", 1)[1].split("... on PullRequest", 1)[0])
 
+    def test_an_issue_carries_its_milestone(self):
+        # #230: the Epics tab reads milestones. GitHub's dueOn is the date as written: 07:00Z is the 1st, not the
+        # 30th in Chicago (COS Architecture on #230).
+        milestone = {"title": "v2", "url": "https://github.com/o/app/milestone/3", "dueOn": "2026-10-01T07:00:00Z",
+                     "state": "OPEN", "issues": {"totalCount": 4}}
+        got = self.refresh(n118={**gh_issue(118), "milestone": milestone}).issues
+        self.assertEqual(got["#118"].milestone,
+                         bs.Milestone("v2", "https://github.com/o/app/milestone/3", date(2026, 10, 1), "open", 4))
+        self.assertIsNone(got["#115"].milestone)
+        self.assertIn("milestone", self.query.split("... on Issue", 1)[1].split("... on PullRequest", 1)[0])
+
 
 class GitLabStageTwoTest(unittest.TestCase):
     """B1-B4, C1 from GitLab: diffStats, headPipeline.jobs, conflicts, resolvable discussions, the issue's description."""
@@ -359,6 +370,17 @@ class GitLabStageTwoTest(unittest.TestCase):
         # C1: Issue gains body, from GitLab description.
         self.assertEqual(self.refresh().issues["#115"].body, "## Acceptance\n- [x] pages hold\n")
         self.assertIn("description", self.query.split("issues(", 1)[1].split("mergeRequests(", 1)[0])
+
+    def test_an_issue_carries_its_milestone(self):
+        # #230: GitLab's active is open; its open issues are the total less the closed.
+        self.ISSUE = {**self.ISSUE, "milestone": {"title": "v2", "webPath": "/team/app/-/milestones/3", "dueDate": "2026-10-01",
+                                                  "state": "active", "stats": {"totalIssuesCount": 5, "closedIssuesCount": 2}}}
+        self.assertEqual(self.refresh().issues["#115"].milestone,
+                         bs.Milestone("v2", "https://labs.example.test/team/app/-/milestones/3", date(2026, 10, 1), "open", 3))
+        self.assertIn("milestone", self.query.split("issues(", 1)[1].split("mergeRequests(", 1)[0])
+
+    def test_an_issue_with_no_milestone_has_none(self):
+        self.assertIsNone(self.refresh().issues["#115"].milestone)
 
 
 class FakeGitLab:
@@ -1093,6 +1115,21 @@ class LoadTest(unittest.TestCase):
         self.assertIs(bs.load(pages), bs.EMPTY)
         (pages / ".sources.json").write_text("{not json")
         self.assertIs(bs.load(pages), bs.EMPTY)
+
+    def test_a_cache_from_before_milestones_reads_none(self):
+        # #230: an older release wrote no `milestone`; a milestone with no due date round-trips as None.
+        root = workspace("GitHub issues; repo o/app")
+        no_due = {"title": "v2", "url": "https://github.com/o/app/milestone/3", "dueOn": None, "state": "CLOSED",
+                  "issues": {"totalCount": 0}}
+        got = bs.refresh(root, NOW, gh=FakeGh(n118={**gh_issue(118), "milestone": no_due}))
+        self.assertEqual(bs.load(root / "pages"), got)
+        self.assertEqual(got.issues["#118"].milestone.due, None)
+        cache = root / "pages" / bs.CACHE
+        old = json.loads(cache.read_text())
+        for issue in old["issues"].values():
+            issue.pop("milestone")
+        cache.write_text(json.dumps(old))
+        self.assertEqual({k: i.milestone for k, i in bs.load(root / "pages").issues.items()}, {"#118": None, "#115": None})
 
     def test_no_coordinator_block_never_raises(self):
         got = bs.refresh(Path(tempfile.mkdtemp()), NOW)
