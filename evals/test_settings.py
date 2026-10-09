@@ -107,6 +107,15 @@ class SettingsTest(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(st.SettingsError):
                 st.load(self.root, self.write(f"[workers]\nmax_concurrency = {bad}\n"))
 
+    def test_claude_profile_is_absent_or_a_claude_as_profile_name(self):
+        # Zach, 2026-10-08 20:50: Claude subagents "need to use "cl secondary" (aka claude-as)".
+        self.assertEqual(st.load(self.root, None).workers.claude_profile, "")
+        got = st.load(self.root, self.write('[workers]\nclaude_profile = "secondary"\n')).workers
+        self.assertEqual(got.claude_profile, "secondary")
+        for bad in ('""', '"-x"', '".x"', '"a/b"', '"a b"', "3"):
+            with self.subTest(bad=bad), self.assertRaises(st.SettingsError):
+                st.load(self.root, self.write(f"[workers]\nclaude_profile = {bad}\n"))
+
     def test_pages_workers_defaults_to_four_and_is_a_positive_whole_number(self):
         # The user, 2026-09-26: "allow the board server to have up to 4 workers", then "well, N workers. 4 default".
         # Rule: "[pages] workers that is not a positive whole number raises SettingsError naming [pages] workers".

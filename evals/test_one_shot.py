@@ -7,6 +7,7 @@ import json
 import multiprocessing
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -1674,6 +1675,24 @@ class RunTest(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertFalse((self.tree / ".chief-of-stuff").exists())
         self.assertEqual(self.tracker.read_text(), TRACKER)
+
+    def test_claude_profile_runs_the_one_shot_through_claude_as(self):
+        # Zach, 2026-10-08 20:50: Claude workers launch through `claude-as run <profile>`, not a bare `claude`.
+        (self.root / "CLAUDE.md").write_text(CLAUDE + "- Settings: `chief-of-stuff.toml`\n")
+        (self.root / "chief-of-stuff.toml").write_text('[workers]\nclaude_profile = "secondary"\n')
+        for runtime, program in (("claude", "claude-as"), ("codex", "codex")):
+            with self.subTest(runtime=runtime):
+                out = io.StringIO()
+                with mock.patch.object(one_shot, "resolve", side_effect=lambda name: f"/bin/{name}") as found, \
+                        contextlib.redirect_stdout(out):
+                    result = one_shot.run(root=self.root, day="2026-09-18", task="Security audit",
+                                          cwd=self.tree, name="worker01", runtime=runtime, agent_type=None,
+                                          model="", effort="", dry_run=True)
+                self.assertEqual(result, 0)
+                found.assert_called_once_with(program)
+                argv = shlex.split(out.getvalue().splitlines()[0].removeprefix("would run one-shot: "))
+                expected = ["/bin/claude-as", "run", "secondary", "--print"] if runtime == "claude" else ["/bin/codex"]
+                self.assertEqual(argv[:len(expected)], expected)
 
     def test_dry_run_with_a_corrupt_commondir_grants_nothing_and_does_not_raise(self):
         # #421 second review: a damaged `commondir` must not raise out of command(), dry-run included.
