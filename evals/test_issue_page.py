@@ -451,7 +451,7 @@ class WhatHappensNextTest(unittest.TestCase):
     def test_forecast_stages_from_the_flow_row(self):
         today = due_tracker()
         built = fc.build(fc.moves(YESTERDAY_TRACKER, YESTERDAY, CT) + fc.moves(today, TODAY, CT),
-                         rb.parse_tracker(YESTERDAY_TRACKER).tasks + rb.parse_tracker(today).tasks, LANES, set(),
+                         rb.parse_tracker(YESTERDAY_TRACKER).tasks + rb.parse_tracker(today).tasks, LANES, {},
                          {"Cap uploads": DUE}, NOW)
         ahead = [g for _, r in built if r.ref == "#109" for g in r.segments if g.kind == "forecast"]
         self.assertTrue(ahead, "the fixture forecasts nothing")
