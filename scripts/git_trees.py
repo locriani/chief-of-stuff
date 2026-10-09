@@ -27,6 +27,7 @@ GIT_TIMEOUT = 15
 BASE = "origin/main"
 LOCAL_NOTE = "; local main holds it"
 REF = f"refs/remotes/{BASE}"  # the full name: a branch, tag or `refs/origin/main` called `origin/main` shadows the short one
+LOCAL_REF = "refs/heads/main"
 
 
 def audit_env() -> dict[str, str]:
@@ -264,8 +265,8 @@ def _verdict(sha: str, tree: Path, fetch_error: str, commits: list[str] | None) 
         return unknown("git could not read this repository")
     if "grafts" in found:
         return unknown("this repository has grafts, so ancestry cannot be trusted")
-    ref = git(["rev-parse", "--verify", "-q", "refs/heads/main"], tree)[0] if len(commits) == 1 else 1  # 1: no such ref
-    local_code = git(["merge-base", "--is-ancestor", commits[0], "refs/heads/main"], tree)[0] if ref == 0 else ref
+    ref = git(["rev-parse", "--verify", "-q", LOCAL_REF], tree)[0] if len(commits) == 1 else 1  # 1: no such ref
+    local_code = git(["merge-base", "--is-ancestor", commits[0], LOCAL_REF], tree)[0] if ref == 0 else ref
     note = _local_note(local_code == 0)
     code, tip = git(["rev-parse", "--short", REF], tree)
     if code != 0:
