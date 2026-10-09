@@ -141,10 +141,12 @@ def _as_string(value: str) -> str:
 
 
 def worker_tokens(*, cwd: str, agent_type: str | None, binary: Path | None, title: str | None = None,
-                  runtime: str = "claude", model: str = "", effort: str = "", workspace: str = ".") -> list[str]:
+                  runtime: str = "claude", model: str = "", effort: str = "", workspace: str = ".",
+                  claude_profile: str = "") -> list[str]:
     """The worker argv from `sys.executable` on, without the `env -C <root> PATH=... WORKSPACE=...` prefix."""
+    program, lead = runtimes.program(runtime, claude_profile)
     if binary is None:
-        raise RefusedError(f"cannot find `{runtime}` on PATH")
+        raise RefusedError(f"cannot find `{program}` on PATH")
     root, dispatch = _paths(cwd)
     values = {"cwd": root, "title": title or "", "type": agent_type or "", "dispatch": dispatch,
               "model": model, "effort": effort, "root": os.path.abspath(workspace)}
@@ -159,7 +161,7 @@ def worker_tokens(*, cwd: str, agent_type: str | None, binary: Path | None, titl
                   "--registry", str(Path(os.path.abspath(workspace)) / PROMPT_DIR / "sessions" / f"{title}.json"),
                   "--runtime", runtime, "--name", title or "", "--worktree", root,
                   "--login-shell", "--"]
-    return tokens + [str(binary)] + rest
+    return tokens + [str(binary)] + lead + rest
 
 
 def runtime_tokens(*, cwd: str, workspace: str = ".", **worker) -> list[str]:
@@ -243,10 +245,11 @@ def launch_herdr(create: list[str], pane_run: list[str]) -> None:
 
 
 def ghostty_script(*, cwd: str, agent_type: str | None, claude: Path | None, title: str | None = None,
-                   runtime: str = "claude", model: str = "", effort: str = "", workspace: str = ".") -> str:
+                   runtime: str = "claude", model: str = "", effort: str = "", workspace: str = ".",
+                   claude_profile: str = "") -> str:
     """Build a Ghostty tab script with an absolute binary and the launching shell's PATH."""
-    tokens = runtime_tokens(cwd=cwd, agent_type=agent_type, binary=claude, title=title,
-                            runtime=runtime, model=model, effort=effort, workspace=workspace)
+    tokens = runtime_tokens(cwd=cwd, agent_type=agent_type, binary=claude, title=title, runtime=runtime,
+                            model=model, effort=effort, workspace=workspace, claude_profile=claude_profile)
     command = " ".join(shlex.quote(tok) for tok in tokens)
     # Surface configuration has no title field.
     named = (f'  perform action {_as_string("set_tab_title:" + title)} on focused terminal of tb\n'
@@ -389,25 +392,27 @@ def main(argv_in: list[str] | None = None) -> int:
         body = assignment(args, False, Path(args.cwd))
         # The eval harness uses the argv override.
         worker = dict(cwd=args.cwd, agent_type=args.agent_type, title=args.title, runtime=args.runtime,
-                      model=args.model, effort=args.effort, workspace=args.root)
+                      model=args.model, effort=args.effort, workspace=args.root,
+                      claude_profile=worker_settings.claude_profile)
+        program = runtimes.program(args.runtime, worker_settings.claude_profile)[0]
         if override:
             command = argv(launcher(), agent_type=args.agent_type, cwd=args.cwd, title=args.title,
                            model=args.model, effort=args.effort, workspace=args.root)
             script = None
         elif selected == "tmux":
             command = tmux_command(tmux=Path(p) if (p := resolve("tmux")) else None,
-                                   binary=Path(p) if (p := resolve(runtime.binary)) else None,
+                                   binary=Path(p) if (p := resolve(program)) else None,
                                    **worker)
             script = None
         elif selected == "herdr":
             command, pane_command = herdr_commands(
                 herdr=Path(p) if (p := resolve("herdr")) else None,
                 session=worker_settings.herdr_session,
-                binary=Path(p) if (p := resolve(runtime.binary)) else None, **worker)
+                binary=Path(p) if (p := resolve(program)) else None, **worker)
             script = None
         else:
             command = [OSASCRIPT, "-"]
-            script = ghostty_script(claude=Path(p) if (p := resolve(runtime.binary)) else None,
+            script = ghostty_script(claude=Path(p) if (p := resolve(program)) else None,
                                    **worker)
     except (RefusedError, dispatch_prompt.RefusedError, SettingsError, ShellError) as exc:
         print(f"refused: {exc}", file=sys.stderr)

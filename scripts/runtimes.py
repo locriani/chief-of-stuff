@@ -46,6 +46,15 @@ def get(name: str) -> Runtime:
     return _BY_NAME[name]
 
 
+def program(name: str, claude_profile: str = "") -> tuple[str, list[str]]:
+    """The executable a launch resolves and the argv between it and the CLI's own flags. Zach, 2026-10-08 20:50:
+    Claude workers "need to use "cl secondary" (aka claude-as)", so a Claude launch with a profile runs
+    `claude-as run <profile>`, which execs `claude` under that profile's config dir."""
+    if name == "claude" and claude_profile:
+        return "claude-as", ["run", claude_profile]
+    return binary(name), []
+
+
 def binary(name: str) -> str:
     """The executable for `name`. A session registration can name a runtime this release does not know;
     its name stands in for the executable, as the liveness checks always read it."""

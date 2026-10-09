@@ -25,6 +25,7 @@ HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 OFFSET = re.compile(r"^(\d+)([hm])$")
 WORKER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 HERDR_NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
+CLAUDE_PROFILE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_-]*")  # claude-as's valid_profile_name
 DEFAULT_WARNINGS = ("24h", "3h", "1h")
 EFFORTS = ("high", "medium", "low")
 
@@ -85,6 +86,7 @@ class Workers:
     # #100: one-shots running at once across every session in the workspace; None is no cap.
     max_concurrency: int | None = None
     herdr_session: str = "chief-of-stuff"
+    claude_profile: str = ""  # a claude-as profile Claude workers run under; empty is a bare `claude`
 
 
 @dataclass(frozen=True)
@@ -214,7 +216,12 @@ def _workers(table) -> Workers:
     cap = table.get("max_concurrency")
     if cap is not None and (type(cap) is not int or cap < 1):
         raise SettingsError("[workers] max_concurrency must be a positive whole number")
-    return Workers(launcher=launcher, mode=mode, max_concurrency=cap, herdr_session=session)
+    profile = table.get("claude_profile", "")
+    if "claude_profile" in table and not (isinstance(profile, str) and CLAUDE_PROFILE.fullmatch(profile)):
+        raise SettingsError("[workers] claude_profile must be a claude-as profile name: letters, digits, '_' and '-', "
+                            "not starting with '-'")
+    return Workers(launcher=launcher, mode=mode, max_concurrency=cap, herdr_session=session,
+                   claude_profile=profile)
 
 
 def _repos(table) -> dict[str, str]:

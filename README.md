@@ -57,7 +57,10 @@ Set the workspace worker mode in TOML:
 mode = "one-shot" # or "interactive" (the default)
 launcher = "ghostty" # ghostty, tmux, or herdr for interactive workers
 herdr_session = "chief-of-stuff" # herdr only: the dedicated session workers run in
+claude_profile = "secondary" # optional: Claude workers run as `claude-as run secondary`
 ```
+
+With `claude_profile` set, every Claude-runtime worker, interactive or one-shot, launches through `claude-as run <profile>` instead of a bare `claude`, so it runs under that account profile. `claude-as` must be on the login shell's PATH, or the launch is refused. Codex, Cursor and Antigravity workers are unaffected.
 
 With `launcher = "herdr"`, each interactive worker starts in its own tab of a dedicated herdr session (default `chief-of-stuff`, session name rule `[a-z0-9][a-z0-9_-]{0,31}`), which must already be running with an active workspace. After creating the tab, the launcher uses its returned root pane id with `herdr --session <session> pane run <pane-id> <command words>` to run the worker wrapper through the pane's shell, quoting each command word with `shlex.quote`. The typed line omits the `env -C <root> PATH=... CHIEF_OF_STUFF_WORKSPACE=...` prefix tmux and Ghostty use: the tab is created with `--cwd`, the pane shell already has the user's PATH, and the workspace reaches the worker through `tab create --env CHIEF_OF_STUFF_WORKSPACE=<root>`. A typed line over 900 bytes would be cut by the pane's tty, so the launcher refuses it, before creating a tab, instead of reporting a launch that did not happen. The launcher's own herdr calls carry no `HERDR_*` variables; herdr sets its own variables inside each pane, and isolation comes from the dedicated session's own socket. Any launch failure after a valid tab id is received attempts to close that tab.
 

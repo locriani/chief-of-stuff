@@ -40,7 +40,7 @@ BOOTSTRAP = ("Read {dispatch} first. It is your entire one-shot assignment. Work
 
 
 def command(runtime: str, binary: str, cwd: Path, dispatch: Path, *, agent_type: str | None,
-            model: str, effort: str) -> list[str]:
+            model: str, effort: str, lead: list[str] = ()) -> list[str]:
     """A single foreground CLI invocation, without interactive plan or mailbox modes."""
     prompt = BOOTSTRAP.format(dispatch=dispatch, cwd=cwd)
     tail: list[str] = []
@@ -64,7 +64,7 @@ def command(runtime: str, binary: str, cwd: Path, dispatch: Path, *, agent_type:
     else:
         raise ValueError(f"unknown runtime {runtime}")
     flags = [*(["--model", model] if model else []), *runtimes.get(runtime).effort_tokens(effort)]
-    return [*argv, *flags, *tail, prompt]
+    return [argv[0], *lead, *argv[1:], *flags, *tail, prompt]
 
 
 def worker_result(path: Path, exit_code: int) -> tuple[str, str, str]:
@@ -396,11 +396,13 @@ def run(*, root: Path, day: str | None, task: str, cwd: Path, name: str,
     chosen_day = day or datetime.now(cfg.zone).date().isoformat()
     body = dispatch_prompt.compose(root, chosen_day, task, worktree=cwd, name=name,
                                    runtime=runtime, one_shot=True)
-    binary = resolve(runtimes.binary(runtime))
+    workers = load_settings(root, cfg.settings_path).workers
+    program, lead = runtimes.program(runtime, workers.claude_profile)
+    binary = resolve(program)
     if not binary:
-        raise ValueError(f"{runtime} is unavailable in the configured interactive login shell")
+        raise ValueError(f"{program} is unavailable in the configured interactive login shell")
     dispatch = cwd / dispatch_prompt.DISPATCH_FILE
-    argv = command(runtime, binary, cwd, dispatch, agent_type=agent_type, model=model, effort=effort)
+    argv = command(runtime, binary, cwd, dispatch, agent_type=agent_type, model=model, effort=effort, lead=lead)
     if dry_run:
         print("would run one-shot: " + " ".join(shlex.quote(x) for x in argv))
         print(f"would write: {dispatch}")
@@ -408,7 +410,7 @@ def run(*, root: Path, day: str | None, task: str, cwd: Path, name: str,
     if not cwd.is_dir():
         raise ValueError(f"no worktree at {cwd}")
     trees = root / worktrees_dir((root / "CLAUDE.md").read_text())
-    with slot(trees, cwd, task, load_settings(root, cfg.settings_path).workers.max_concurrency):
+    with slot(trees, cwd, task, workers.max_concurrency):
         return _launch(root, cfg, chosen_day, task, cwd, name, runtime, model, effort, body, argv, timeout_minutes)
 
 

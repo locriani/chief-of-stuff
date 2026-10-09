@@ -1115,7 +1115,8 @@ print(found)
         # Other runtimes are not Claude Code and keep their own binary.
         out = self.invoke(limit=10_000, runtime="codex", launcher=None, extra=["--dry-run", "--model", "gpt-test"])
         self.assertEqual(out.returncode, 0, out.stderr)
-        self.assertNotIn("claude-as", out.stdout)
+        self.assertNotIn(str(claude_as), out.stdout)
+        self.assertIn(str(self.bin / "codex"), out.stdout)
 
     def test_failed_pane_run_closes_tab_in_configured_herdr_session(self):
         session = "review_workers-471"
