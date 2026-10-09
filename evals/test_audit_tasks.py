@@ -404,6 +404,32 @@ class AuditTest(unittest.TestCase):
         self.assertTrue(any(line.startswith("wt-unmerged (feat/open): on main") for line in report.lines), report.lines)
 
 
+class OnMainTest(unittest.TestCase):
+    """#567 review pass 2: either main holding the commit lands it; "not on main" needs every main that exists to say so,
+    so a comparison git could not make stays unknown instead of reading as a definite no."""
+
+    def on_main(self, origin: int, local: int, origin_exists: bool = True) -> int:
+        def git(args, tree):
+            if args[0] == "rev-parse":
+                return (0 if origin_exists or args[-1] != git_trees.REF else 1), ""
+            return (origin if args[-1] == git_trees.REF else local), ""
+        with patch.object(al.git_trees, "git", git):
+            return al._on_main("abc", Path("."))
+
+    def test_either_main_holding_it_is_landed(self):
+        self.assertEqual((self.on_main(0, 1), self.on_main(1, 0), self.on_main(128, 0)), (0, 0, 0))
+
+    def test_both_mains_saying_no_is_not_on_main(self):
+        self.assertEqual(self.on_main(1, 1), 1)
+
+    def test_a_failed_comparison_beside_a_no_is_unknown(self):
+        self.assertEqual(self.on_main(128, 1), 128)
+        self.assertEqual(self.on_main(1, 128), 128)
+
+    def test_with_no_origin_main_local_main_decides(self):
+        self.assertEqual(self.on_main(128, 1, origin_exists=False), 1)
+
+
 class PushGapTest(unittest.TestCase):
     def test_main_even_with_origin_is_reported_as_even(self):
         tmp, root = workspace(
