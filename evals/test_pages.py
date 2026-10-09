@@ -648,6 +648,21 @@ class LastLookedTest(unittest.TestCase):
         self.assertEqual(get(self.port, "/", headers=self.LOOK).status, 404)
         self.assertFalse((self.pages / ".last-looked").exists())
 
+    def test_a_load_whose_board_cannot_render_is_no_look(self):
+        # Codex on #579: the banner showed no board, so the look before it stands.
+        earlier = datetime.fromisoformat(f"{self.day}T08:00").replace(tzinfo=ZoneInfo(ZONE)).isoformat()
+        (self.pages / ".last-looked").write_text(earlier)
+        (self.root / "cos.toml").write_text("[lanes\n")
+        self.assertEqual(get(self.port, "/", headers=self.LOOK).status, 200)
+        self.assertEqual((self.pages / ".last-looked").read_text(), earlier)
+        self.assertFalse((self.pages / ".looked-before").exists())
+
+    def test_a_reload_clears_its_own_marker(self):
+        # Codex on #579: the marker is the origin's for 10 s, so another tab's reload must not leave it on the next
+        # navigation; the request that carries it clears it, and a person's request carries none to clear.
+        self.assertRegex(get(self.port, "/", headers=self.RELOAD).getheader("Set-Cookie") or "", r"^cos-reload=; Max-Age=0; Path=/$")
+        self.assertIsNone(get(self.port, "/", headers=self.LOOK).getheader("Set-Cookie"))
+
     def test_looks_at_once_do_not_trip_over_each_others_files(self):
         # #579 review R5: the page server is threaded; each write goes through its own temporary file.
         import workspace
