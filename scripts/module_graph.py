@@ -29,16 +29,28 @@ DRIFT = (re.compile(r"^(\s*linkStyle [\d,]+ )(?:stroke:#\w+,)?", re.M), r"\1stro
 LEGEND = (("new", "NEW"), ("changed", "CHANGED"), ("removed", "REMOVED"), ("drift", "DRIFT"))
 
 
-def run(cmd: list[str], timeout: int = 120) -> str:
-    """stdout, or ValueError with the last line of stderr."""
+def _run(cmd: list[str], env: dict[str, str], timeout: int) -> str:
+    """stdout of `cmd`, or ValueError with the last line of stderr."""
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL,
-                             env=git_trees.user_env())  # the launcher's repository-selecting variables must not win over the clone the path names
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL, env=env)
     except subprocess.TimeoutExpired:
         raise ValueError(f"{cmd[0]} timed out after {timeout}s") from None
     if out.returncode:
         raise ValueError((out.stderr.strip().splitlines() or [f"{cmd[0]} exited {out.returncode}"])[-1])
     return out.stdout
+
+
+def run(cmd: list[str], timeout: int = 120) -> str:
+    """stdout of a plain call in the caller's environment, minus the repository-selecting variables: the clone the
+    path names must win over the launcher's."""
+    return _run(cmd, git_trees.user_env(), timeout)
+
+
+def git(args: list[str], timeout: int = 120) -> str:
+    """stdout of a pinned git call in the clone (#556): the fetch writes into a clone whose config and hooks a worker
+    can write, so it carries `git_trees.GIT_WRITE_PINS` and runs on `git_trees.write_env()` — its hooks and helpers
+    pinned dark, the caller's credential variables riding along."""
+    return _run(["git", *git_trees.GIT_WRITE_PINS, *args], git_trees.write_env(), timeout)
 
 
 def fetch(change: board_sources.Change, clone: Path) -> str:
@@ -49,7 +61,7 @@ def fetch(change: board_sources.Change, clone: Path) -> str:
     ref = f"refs/merge-requests/{n}/head" if change.ref.startswith("!") else f"pull/{n}/head"
     # ponytail: the fetch runs synchronously on the GET that renders the page (up to minutes on a big clone); a
     # background job if that bites.
-    run(["git", "-C", str(clone), "fetch", "-q", "--end-of-options", "origin", ref, *([change.base] if change.base else [])])
+    git(["-C", str(clone), "fetch", "-q", "--end-of-options", "origin", ref, *([change.base] if change.base else [])])
     return run(["git", "-C", str(clone), "merge-base", "--end-of-options", f"origin/{change.base}", change.head]).strip()
 
 

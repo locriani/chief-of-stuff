@@ -45,6 +45,27 @@ def user_env() -> dict[str, str]:
     return {**{k: v for k, v in os.environ.items() if k not in REPO_VARS}, "GIT_TERMINAL_PROMPT": "0"}
 
 
+# -c pins for every git call the launcher writes with (#556): no hook path, no credential helper and no submodule
+# recursion may reach the call out of a config a worker can write. `credential.helper=` — the empty value — resets the
+# helper list, so no helper runs at all, and a `-c` outlasts the repository's own config for these keys.
+GIT_WRITE_PINS = ["-c", "core.hooksPath=/dev/null", "-c", "credential.helper=",
+                  "-c", "submodule.recurse=false", "-c", "fetch.recurseSubmodules=false"]
+
+# The caller's variables a git write may authenticate with (#556): the agent socket, the ssh command and fallback ssh,
+# and the askpass program the caller chose. Every other caller variable stays out: the write runs on the audit env.
+CREDENTIAL_VARS = ("SSH_AUTH_SOCK", "GIT_SSH_COMMAND", "GIT_SSH", "GIT_ASKPASS")
+
+
+def write_env() -> dict[str, str]:
+    """The environment of the launcher's git writes (#556): the audit's isolation — no home, global or system config,
+    no prompts, no replace refs — plus only the caller's credential variables, so a fetch the caller could
+    authenticate still authenticates. The repository-selecting variables are never carried, or the write would land
+    where the reads do not look, as `user_env` never carried them."""
+    env = audit_env()
+    env.update({name: os.environ[name] for name in CREDENTIAL_VARS if name in os.environ})
+    return env
+
+
 def git(args: list[str], cwd: Path) -> tuple[int, str]:
     """One git call that reads, through the sanitised view (#443). Never a shell, always a list, always bounded."""
     try:
@@ -117,14 +138,15 @@ def fetch_base(tree: Path, timeout: int = 30) -> str:
     """`""` once `origin/main` is fetched, else one line saying why: the first `fatal:` line, else the last, with the
     tree's path blanked and every non-printable character escaped (`clean`), since it is printed. The refspec is
     explicit and forced, so the ref moves whatever `remote.origin.fetch` says and follows a rewritten main, and
-    `--no-tags` keeps it the only ref written. Not through `git()`: a fetch needs the caller's credentials and ssh
-    agent, which that sandboxed call strips. A fetch that loses a race for the ref (`cannot lock ref`) runs once more."""
+    `--no-tags` keeps it the only ref written. Not through `git()`: the fetch writes into a tree a worker can write, so
+    it carries `GIT_WRITE_PINS` and runs on `write_env()` (#556) — the clone's own hooks and helpers pinned dark while
+    the caller's credentials ride along. A fetch that loses a race for the ref (`cannot lock ref`) runs once more."""
     try:
         for _ in range(2):  # a concurrent fetch holding the ref has moved it by the second try
             out = subprocess.run(
-                ["git", "-C", str(tree), "fetch", "-q", "--no-tags", "origin", f"+refs/heads/main:{REF}"],
+                ["git", *GIT_WRITE_PINS, "-C", str(tree), "fetch", "-q", "--no-tags", "origin", f"+refs/heads/main:{REF}"],
                 capture_output=True, text=True, errors="backslashreplace", timeout=timeout,  # stderr from ssh or a helper may hold any byte
-                env=user_env(),
+                env=write_env(),
             )
             if out.returncode == 0 or "cannot lock ref" not in out.stderr:
                 break
