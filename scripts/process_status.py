@@ -18,6 +18,7 @@ from datetime import datetime, timedelta
 
 import runtimes
 from _vendor.toon_format import encode as toon_encode
+from dispatch_prompt import LINE_CAP
 from git_trees import read_regular
 from tracker import parse_tracker
 from workspace import ConfigError, read_config, worktrees_dir
@@ -28,6 +29,9 @@ PIDFILE = Path(".chief-of-stuff") / "one-shot.pid"
 # tracker holds it, at most this many characters; it and `result` show a tree name only when it is `[A-Za-z0-9._-]`. The readers below return them raw.
 TASK_MAX = 200
 TREE_NAME = re.compile(r"[A-Za-z0-9._-]+")
+# A pid file holds `<pid> <item>`, and an item launches at up to LINE_CAP characters of up to 4 UTF-8 bytes: read it whole,
+# or flow cannot join a long item to its row and orphans a live run (#570).
+PIDFILE_MAX = 4 * LINE_CAP + 32
 
 
 def registrations(root: Path) -> dict[int, dict[str, str]]:
@@ -74,7 +78,7 @@ def one_shot_runs(trees: Path) -> list[tuple[Path, int, str]]:
     found = []
     for f in sorted(trees.glob(f"*/{PIDFILE}")):
         try:
-            data = read_regular(f, 8 * TASK_MAX, nofollow=True)
+            data = read_regular(f, PIDFILE_MAX, nofollow=True)
             pid, _, task = ((data or b"").decode(errors="replace").splitlines() or [""])[0].partition(" ")
             if pid.isascii() and pid.isdecimal() and int(pid) > 0 and process_exists(int(pid)):
                 found.append((f.parent.parent, int(pid), task.strip() or f.parent.parent.name))

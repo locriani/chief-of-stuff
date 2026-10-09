@@ -254,6 +254,12 @@ class OneShotRunsTests(unittest.TestCase):
         (task,) = [row["task"] for row in self.one_shots()]
         self.assertTrue(0 < len(task) <= 200 and item.startswith(task), len(task))
 
+    def test_an_item_at_the_launch_cap_comes_back_whole(self):
+        # #570: flow joins the pid file's text to its row by the item; a read cut short of the item orphans a live run.
+        item = "Long item \u2014 " + "z" * (2340 - 12)
+        self.pidfile("cap", f"{LIVE} {item}\n")
+        self.assertEqual(self.running(), {"cap": item})
+
     # What `processes` prints is read by an LLM coordinator, and the pid file and the tree's directory name are both
     # writable by the worker: a task is printed only when the tracker holds it.
 
@@ -443,8 +449,8 @@ class OneShotRunsTests(unittest.TestCase):
         text, _ = self.processes()
         self.assertLess(len(text), 10_000)
         self.assertEqual([row["worktree"] for row in self.one_shots()], ["huge"])
-        # The read stops at 8 * TASK_MAX bytes, `<pid> ` among them: the task is a prefix of the first line, no longer.
-        self.assertTrue(0 < len(self.running()["huge"]) <= 8 * process_status.TASK_MAX, len(self.running()["huge"]))
+        # The read stops at PIDFILE_MAX bytes, `<pid> ` among them: the task is a prefix of the first line, no longer.
+        self.assertTrue(0 < len(self.running()["huge"]) <= process_status.PIDFILE_MAX, len(self.running()["huge"]))
 
     def test_one_shots_are_listed_by_tree_name(self):
         self.pidfile("b-tree", f"{LIVE} Rate limit headers\n")
