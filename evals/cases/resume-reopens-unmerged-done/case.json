@@ -53,7 +53,7 @@
     {
       "name": "reply says it once",
       "type": "regex",
-      "pattern": "(?i)(not on main|unmerged|not (yet )?merged|nothing merged|still on [`']?feat|on a branch)"
+      "pattern": "(?i)((?:not|n't) on main|unmerged|not (yet )?merged|nothing merged|still on [`']?feat|on a branch)"
     },
     {
       "name": "Log times are this move's clock reads",
