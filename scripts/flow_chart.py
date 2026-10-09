@@ -76,12 +76,12 @@ def _refs(tasks, log: list[Move], home):
     return ref_of
 
 
-def build(log: list[Move], tasks, lanes: dict, held: set[str], ends: dict[str, datetime], now: datetime,
+def build(log: list[Move], tasks, lanes: dict, held: dict[str, str], ends: dict[str, datetime], now: datetime,
           durations: dict[str, timedelta] | None = None, slots: int = 1,
           approved: frozenset[str] = frozenset(), ended: dict[str, tuple[datetime, str]] | None = None,
           home=None) -> list[tuple[str, gantt.Row]]:
     """(status, row) per task with a move, first moved first, then the queued tasks in tracker order. `tasks` are
-    tracker rows, later ones winning; `held` names the held tasks; `ends` maps a task's item to its estimated end;
+    tracker rows, later ones winning; `held` maps each held task's name to what holds it (task_forge.hold_causes); `ends` maps a task's item to its estimated end;
     `durations` maps a queued task's item to how long it will take, and `slots` is how many run at once;
     `approved` names the tasks whose open change is approved, labelled `approved · merge ~HH:MM` by their end;
     `ended` maps a task's name to (time, word) — its change's forge merge or its closed issue's close time — which
@@ -173,7 +173,7 @@ def build(log: list[Move], tasks, lanes: dict, held: set[str], ends: dict[str, d
             status, note = "merged", f"merged {last.at:%H:%M}"
         elif is_held:
             segs.append(gantt.Segment(now, now + WINDOWS[-1][2], last.stage, "hold", owner(key, now, task)))
-            status, note = "needs input", f"needs input · {last.stage}"
+            status, note = "needs input", f"needs input · {held[task.name.strip()]}"
         elif task and lane and last.stage in lane.stages and (end := ends.get(task.item)) and end > now:
             ahead = [last.stage] + [s for s in lane.stages[lane.stages.index(last.stage) + 1:] if s not in terminal]
             segs += _ahead(ahead, now, end, owner(key, now, task))

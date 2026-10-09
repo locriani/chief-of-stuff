@@ -152,6 +152,12 @@ class RenderTest(unittest.TestCase):
 
 
 class ParseTest(unittest.TestCase):
+    def test_holds_and_references_must_be_lists(self):
+        # #228 review: a hold is read on every board and task page, so a wrong type is an unreadable decision, not a crash.
+        for bad in ({"holds": 109}, {"holds": "#109"}, {"references": ["#109"]}, {"references": {"value": "#109"}}):
+            with self.subTest(bad=bad), self.assertRaises(dp.DecisionError):
+                dp.parse(decision(**bad))
+
     def test_a_decision_missing_what_the_user_needs_is_refused(self):
         for key in ("headline", "ask", "options", "recommended", "why", "default"):
             d = decision()
@@ -439,6 +445,25 @@ def pages_dir(**decisions) -> Path:
     return pages
 
 
+class HeldRefsTest(unittest.TestCase):
+    """#228 review: held_refs keys each held issue as the board files it (tracker.issue_key), so a task's hold compares
+    like with like and another project's #12 is not this project's #12."""
+
+    def held(self, *holds) -> set[str]:
+        ctx = dp.Context(NOW, sources=replace(bs.EMPTY, home=GitHubBacklog("o/app")))
+        return dp.held_refs([("x", decision(holds=list(holds), references=[]), None, "")], ctx)
+
+    def test_another_projects_issue_is_held_under_its_own_key(self):
+        self.assertEqual(self.held("other/lib#12"), {"other/lib#12"})
+        self.assertEqual(self.held("https://github.com/other/lib/issues/12"), {"other/lib#12"})
+
+    def test_a_home_issue_in_any_form_is_one_key(self):
+        self.assertEqual(self.held("#12", "o/app#12", "https://github.com/o/app/issues/12"), {"#12"})
+
+    def test_a_change_stays_a_change(self):
+        self.assertEqual(self.held("!58"), {"!58"})
+
+
 class IndexTest(unittest.TestCase):
     """decisions.html is a list of pending and completed decisions (Decisions.dc.html)."""
 
@@ -467,6 +492,10 @@ class IndexTest(unittest.TestCase):
         self.assertNotIn("checked", pending)
         self.assertNotRegex(pending, r'class="[^"]*\brec\b')
         self.assertIn("rendered 02:10 CDT · 1 pending · oldest 29m · holding 1 issue, 1 merge request · 0 completed today", page)
+
+    def test_two_decisions_holding_one_issue_hold_it_once(self):
+        page = self.render(dp.Context(NOW), a=decision(holds=["#111"], references=[]), b=decision(holds=["#111"], references=[]))
+        self.assertRegex(page, r"holding 1 issue\b")
 
     def test_a_saved_page_answer_is_an_answered_row_with_the_words(self):
         saved = {"key": "B", "words": "B, and log each retry", "at": at("02:08").isoformat()}
