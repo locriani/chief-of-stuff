@@ -568,9 +568,11 @@ def missing_tree(handle: Path | None, name: str, detail: str) -> str:
 def _on_main(rev: str, tree: Path) -> int:
     """git's exit code for "is `rev` on main": 0 when origin/main as last fetched (a new tree's fetch, `--sha`) or local
     main holds it, so a forge merge reads as landed while local main lags, and an integration not yet pushed reads as
-    landed too (#567); 1 when one says no; anything else git could not say. The audit itself never fetches."""
-    codes = [git_trees.git(["merge-base", "--is-ancestor", rev, base], tree)[0] for base in (git_trees.REF, "main")]
-    return 0 if 0 in codes else 1 if 1 in codes else codes[-1]
+    landed too (#567); 1 when every main that exists says no; anything else git could not say, so a comparison that
+    failed beside a no stays unknown. With no origin/main, local main decides. The audit itself never fetches."""
+    codes = [git_trees.git(["merge-base", "--is-ancestor", rev, base], tree)[0] for base in (git_trees.REF, "refs/heads/main")
+             if git_trees.git(["rev-parse", "--verify", "--quiet", base], tree)[0] != 1]  # 1: no such ref
+    return 0 if 0 in codes else 1 if codes and all(c == 1 for c in codes) else next((c for c in codes if c != 1), 128)
 
 
 def _merged(worktree: Path) -> int:

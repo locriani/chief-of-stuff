@@ -429,6 +429,12 @@ class OnMainTest(unittest.TestCase):
     def test_with_no_origin_main_local_main_decides(self):
         self.assertEqual(self.on_main(128, 1, origin_exists=False), 1)
 
+    def test_with_no_main_at_all_it_is_unknown(self):
+        def git(args, tree):
+            return (1, "") if args[0] == "rev-parse" else (128, "")
+        with patch.object(al.git_trees, "git", git):
+            self.assertEqual(al._on_main("abc", Path(".")), 128)
+
 
 class PushGapTest(unittest.TestCase):
     def test_main_even_with_origin_is_reported_as_even(self):
