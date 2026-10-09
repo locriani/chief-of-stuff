@@ -375,7 +375,8 @@ class AuditTest(unittest.TestCase):
         self.assertEqual([r.task for r in report.reopen], ["Open branch work"])
 
     def test_a_branch_merged_on_the_forge_is_landed_though_local_main_lags(self):
-        """#567: the forge moved main and a fetch moved origin/main; local main, which nothing moves, still lags."""
+        """#567: the forge moved main, and origin/main with it (the push from the tree updates the clone's shared ref);
+        local main, which nothing moves, still lags."""
         tmp, root = workspace(
             "| Open branch work | sam | done 10:30 | 09:00 |  | Checklist: Open branch work |",
             "| sam | worktree wt-unmerged (feat/open) |",
@@ -384,11 +385,46 @@ class AuditTest(unittest.TestCase):
         clone, tree = root / "repo", root / "trees" / "wt-unmerged"
         main = git("rev-parse", "main", cwd=clone)
         git("push", "origin", "HEAD:main", cwd=tree)
-        git("fetch", "origin", cwd=clone)
         self.assertEqual(git("rev-parse", "main", cwd=clone), main)
         report = al.audit(root, "2026-09-17")
         self.assertEqual(report.reopen, [])
         self.assertTrue(any(line.startswith("wt-unmerged (feat/open): on main") for line in report.lines), report.lines)
+
+    def test_a_cited_sha_merged_on_the_forge_is_landed_though_local_main_lags(self):
+        """#567 review: `landed` reads origin/main too. The tree moves on past the pushed commit, so only the cited
+        sha, on origin/main alone, can clear the task."""
+        tmp, root = workspace("| Open branch work | sam | @STATE@ | 09:00 |  | Checklist: Open branch work |",
+                              "| sam | worktree wt-unmerged (feat/open) |")
+        self.addCleanup(tmp.cleanup)
+        tree = root / "trees" / "wt-unmerged"
+        sha = git("rev-parse", "--short", "HEAD", cwd=tree).strip()
+        git("push", "origin", "HEAD:main", cwd=tree)
+        git("commit", "--allow-empty", "-m", "more work", cwd=tree)
+        p = root / "daily" / "2026-09-17-tracker.md"
+        p.write_text(p.read_text().replace("@STATE@", f"done 10:30 {sha}"))
+        self.assertEqual(al.audit(root, "2026-09-17").reopen, [])
+
+    def test_a_removed_tree_whose_branch_merged_on_the_forge_is_cleaned_up(self):
+        """#567 review: `missing_tree` reads origin/main too."""
+        tmp, root = workspace("| Open branch work | sam | waiting | 09:00 |  | Checklist: Open branch work |",
+                              "| sam | worktree wt-unmerged (feat/open) |")
+        self.addCleanup(tmp.cleanup)
+        clone, tree = root / "repo", root / "trees" / "wt-unmerged"
+        git("push", "origin", "HEAD:main", cwd=tree)
+        git("worktree", "remove", "--force", str(tree), cwd=clone)
+        line = next(ln for ln in al.audit(root, "2026-09-17").lines if "wt-unmerged" in ln)
+        self.assertIn("is on main; merged and cleaned up", line)
+
+    def test_a_tag_named_like_a_removed_trees_branch_does_not_stand_in_for_it(self):
+        """#567 review: `missing_tree` asks about the branch itself, so a tag of the same name on main does not clear it."""
+        tmp, root = workspace("| Open branch work | sam | waiting | 09:00 |  | Checklist: Open branch work |",
+                              "| sam | worktree wt-unmerged (feat/open) |")
+        self.addCleanup(tmp.cleanup)
+        clone = root / "repo"
+        git("worktree", "remove", "--force", str(root / "trees" / "wt-unmerged"), cwd=clone)
+        git("tag", "feat/open", "main", cwd=clone)
+        line = next(ln for ln in al.audit(root, "2026-09-17").lines if "wt-unmerged" in ln)
+        self.assertIn("is not on main", line)
 
     def test_a_branch_integrated_on_local_main_before_its_push_is_landed(self):
         """#567 review: local main ahead of origin/main (integrated, not yet pushed) still holds the work."""
@@ -405,14 +441,22 @@ class AuditTest(unittest.TestCase):
 
 
 class OnMainTest(unittest.TestCase):
-    """#567 review pass 2: either main holding the commit lands it; "not on main" needs every main that exists to say so,
-    so a comparison git could not make stays unknown instead of reading as a definite no."""
+    """#567 review: either main holding the commit lands it; "not on main" needs every main that exists to say so, so a
+    comparison git could not make stays unknown. Each main is found by its exact ref name and compared by object id."""
 
-    def on_main(self, origin: int, local: int, origin_exists: bool = True) -> int:
+    ORIGIN, LOCAL = "1" * 40, "2" * 40
+
+    def on_main(self, origin: int | None, local: int | None, lookup: int = 0) -> int:
+        """`origin` and `local` are merge-base's answer for each main, None when that main does not exist."""
+        answers = {self.ORIGIN: origin, self.LOCAL: local}
+
         def git(args, tree):
-            if args[0] == "rev-parse":
-                return (0 if origin_exists or args[-1] != git_trees.REF else 1), ""
-            return (origin if args[-1] == git_trees.REF else local), ""
+            if args[0] == "for-each-ref":
+                self.assertEqual(args[2:], [git_trees.REF, git_trees.LOCAL_REF])
+                refs = ((git_trees.REF, self.ORIGIN), (git_trees.LOCAL_REF, self.LOCAL))
+                return lookup, "\n".join(f"{name} {oid}" for name, oid in refs if answers[oid] is not None)
+            self.assertEqual(args[:3], ["merge-base", "--is-ancestor", "abc"])
+            return answers[args[3]], ""
         with patch.object(al.git_trees, "git", git):
             return al._on_main("abc", Path("."))
 
@@ -427,13 +471,23 @@ class OnMainTest(unittest.TestCase):
         self.assertEqual(self.on_main(1, 128), 128)
 
     def test_with_no_origin_main_local_main_decides(self):
-        self.assertEqual(self.on_main(128, 1, origin_exists=False), 1)
+        self.assertEqual((self.on_main(None, 1), self.on_main(None, 0)), (1, 0))
 
     def test_with_no_main_at_all_it_is_unknown(self):
-        def git(args, tree):
-            return (1, "") if args[0] == "rev-parse" else (128, "")
-        with patch.object(al.git_trees, "git", git):
-            self.assertEqual(al._on_main("abc", Path(".")), 128)
+        self.assertEqual(self.on_main(None, None), 128)
+
+    def test_a_failed_lookup_is_unknown(self):
+        self.assertEqual(self.on_main(1, 1, lookup=128), 128)
+
+    def test_a_branch_named_like_origin_main_does_not_stand_in_for_it(self):
+        # With no refs/remotes/origin/main, git's lookup would take a branch called `refs/remotes/origin/main`.
+        tmp, root = workspace("| Open branch work | sam | done 10:30 | 09:00 |  | Checklist: Open branch work |",
+                              "| sam | worktree wt-unmerged (feat/open) |")
+        self.addCleanup(tmp.cleanup)
+        clone = root / "repo"
+        git("update-ref", "-d", git_trees.REF, cwd=clone)
+        git("branch", git_trees.REF, "feat/open", cwd=clone)
+        self.assertEqual(al._on_main("refs/heads/feat/open", clone), 1)
 
 
 class PushGapTest(unittest.TestCase):
