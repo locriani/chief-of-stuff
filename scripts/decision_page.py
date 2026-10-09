@@ -661,11 +661,17 @@ def pending_count(pages_dir: Path, ctx: Context | None) -> int:
     return sum(d is not None for _, d, _, _ in entries(pages_dir, ctx)) if ctx else 0
 
 
+def held_refs(pending: list[tuple[str, dict | None, datetime | None, str]], ctx: Context) -> set[str]:
+    """The issues and changes the pending decisions (`entries`) hold: what a task's hold names as `decision` (#228),
+    and what decisions.html counts as held."""
+    return {r for slug, d, _, _ in pending if d is not None for r in ctx.holding(slug, d)}
+
+
 def index(pages_dir: Path, ctx: Context, day: str, pending: list | None = None) -> tuple[str, list[tuple[str, dict | None, datetime | None, str]]]:
     """`decisions.html` (Decisions.dc.html) and its pending entries (`entries`, read here unless given), which the
     board's DECISIONS panel lists too."""
     pending = entries(pages_dir, ctx) if pending is None else pending
-    rows, held = [], []
+    rows, held = [], held_refs(pending, ctx)
     for slug, d, asked, why in pending:
         when = f'<span class="when">{ctx.when(asked)}</span>' if asked else ""
         if d is None:
@@ -675,7 +681,6 @@ def index(pages_dir: Path, ctx: Context, day: str, pending: list | None = None) 
                         + '        <span class="none">—</span>' * 3 + "\n      </div>")
             continue
         holds = ctx.holding(slug, d)
-        held += holds
         age = f'<span class="age">{span(ctx.now - asked)}</span>' if asked else ""
         topic = f'<span class="topic">{escape(d["topic"])}</span>' if d.get("topic") else ""
         if saved(d):
@@ -725,7 +730,6 @@ def index(pages_dir: Path, ctx: Context, day: str, pending: list | None = None) 
                     f"        <span>{keyed}{escape(answer)}</span>\n        <span class=\"words\">{escape(row.words)}</span>\n"
                     f'        <span class="since">{since}</span>\n      </div>')
     ready = [a for _, d, a, _ in pending if d is not None]
-    held = list(dict.fromkeys(held))
     mrs = sum(1 for r in held if ctx.is_change(r))
     unread = len(pending) - len(ready)
     meta = [f"rendered {ctx.now:%H:%M} {ctx.now:%Z}".rstrip(), f"{len(ready)} pending"]

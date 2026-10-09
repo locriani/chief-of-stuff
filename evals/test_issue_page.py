@@ -31,6 +31,7 @@ import flow_chart as fc  # noqa: E402
 import one_shot  # noqa: E402
 import pages as pg  # noqa: E402
 import render_board as rb  # noqa: E402
+import task_forge  # noqa: E402
 from workspace import parse_coordinator  # noqa: E402
 import tracker_write as tw  # noqa: E402
 from test_flow_chart import BoardTest, CT, KANBAN, LANES, NOW, TODAY, TODAY_TRACKER, YESTERDAY, at, flow_launch_tracker, merged  # noqa: E402
@@ -136,20 +137,22 @@ class RenderTest(unittest.TestCase):
         self.assertIsNone(page(110))
 
     def test_the_header_names_the_issue_the_task_and_its_state(self):
-        # Header: "Task · #109 · … · board", h1 "Upload size limit", chip "RUNNING".
+        # Header: "Task · #109 · … · board", h1 "Upload size limit", chip "NEEDS INPUT": the row waits on Robin, and
+        # the task page holds it as the board does (#228).
         header = re.search(r"<header\b.*?</header>", page(), re.S)
         self.assertIsNotNone(header)
         self.assertIn("#109", text(header[0]))
         self.assertIn('href="/"', header[0])
         self.assertIn("Upload size limit", text(re.search(r"<h1\b.*?</h1>", header[0], re.S)[0]))
-        self.assertRegex(text(header[0]), r"(?i)\brunning\b")
+        self.assertRegex(text(header[0]), r"(?i)\bneeds input\b")
 
     def test_flow_is_one_row_of_every_task_on_the_issue(self):
         # FLOW: one row, the issue's tasks merged by flow_chart.build; no other issue's row.
         html = page()
         today = today_tracker()
         built = fc.build(fc.moves(YESTERDAY_TRACKER, YESTERDAY, CT) + fc.moves(today, TODAY, CT),
-                         rb.parse_tracker(YESTERDAY_TRACKER).tasks + rb.parse_tracker(today).tasks, LANES, set(), {}, NOW)
+                         rb.parse_tracker(YESTERDAY_TRACKER).tasks + rb.parse_tracker(today).tasks, LANES,
+                         task_forge.hold_causes(rb.parse_tracker(today).tasks, None, sources(MR, OTHER), LANES), {}, NOW)  # #228
         row = next(r for _, r in built if r.ref == "#109")
         figures = re.findall(r'<figure class="gantt".*?</figure>', html, re.S)
         self.assertTrue(figures)
@@ -433,9 +436,10 @@ DUE = datetime.combine(TODAY, time(5, 0), CT)
 
 
 def due_tracker() -> str:
-    """Today's tracker with #109's build row due 05:00, so the Flow row forecasts its remaining stages."""
+    """Today's tracker with #109's build row due 05:00 and running, so the Flow row forecasts its remaining stages: a
+    row waiting on Robin is held, and a held row forecasts nothing (#228)."""
     before = today_tracker()
-    after = before.replace(f"| Robin | waiting | {YESTERDAY} |  |", f"| Robin | waiting | {YESTERDAY} | {DUE:%H:%M} |")
+    after = before.replace(f"| Robin | waiting | {YESTERDAY} |  |", f"| Robin | running 00:05 | {YESTERDAY} | {DUE:%H:%M} |")
     assert after != before, "the fixture's #109 row moved"
     return after
 
