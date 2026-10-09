@@ -151,6 +151,27 @@ class FlowEngineTests(unittest.TestCase):
         updated = tracker_path.read_text()
         self.assertIn("| task-d | Improve module D | worker-d | orphaned |", updated)
 
+    def test_reconcile_keeps_a_live_one_shot_whose_pid_file_holds_the_item(self):
+        """#570: the pid file records the item text, not the row's name; a live launcher still holds its row."""
+        tracker_text = """## Tasks
+
+| name | item | owner | state | since | due | size | lane | stage | issue | checklist |
+|---|---|---|---|---|---|---|---|---|---|---|
+| task-d | Improve module D | app-4-implementer | running 10:00 | 2026-10-08 | | S | build | build | #4 | |
+
+## Log
+
+- 10:00 started
+"""
+        make_workspace(self.root, tracker_text)
+        pid_file = self.root / "worktrees" / "tree-d" / ".chief-of-stuff" / "one-shot.pid"
+        pid_file.parent.mkdir(parents=True)
+        pid_file.write_text(f"{os.getpid()} Improve module D\n")
+        tracker_path = self.root / "daily" / "2026-10-08-tracker.md"
+
+        self.assertEqual(flow.reconcile_dead_workers(self.root, tracker_path, "2026-10-08"), [])
+        self.assertIn("| app-4-implementer | running 10:00 |", tracker_path.read_text())
+
     def test_check_stagnant_tasks_detects_prolonged_running_without_commits(self):
         tracker_text = """## Tasks
 
