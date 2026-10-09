@@ -257,5 +257,19 @@ class NonePendingTest(TwoPending):
                 self.assertEqual(name(t), "Decisions")
 
 
+
+class EpicsBadgeTest(unittest.TestCase):
+    """#230: the Epics tab reads `N at risk · M late`, zeros left out; with neither it has no badge."""
+
+    def test_the_badge_leaves_out_its_zeros(self):
+        import fragment
+        for epics, text in (((2, 1), "2 at risk · 1 late"), ((2, 0), "2 at risk"), ((0, 1), "1 late")):
+            with self.subTest(epics=epics):
+                t = tabs(fragment.tab_bar("Board", 0, epics=epics))["Epics"]
+                self.assertEqual([(b.all_text(), b.attrs["title"]) for b in badges(t)], [(text, f"milestones: {text}")])
+                self.assertEqual(name(t), "Epics")
+        self.assertEqual(badges(tabs(fragment.tab_bar("Board", 0))["Epics"]), [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -125,6 +125,26 @@ def forge_ends(tasks: list[Task], sources: board_sources.Sources, zone: ZoneInfo
     return out
 
 
+def epic_risk(tasks: list[Task], sources: board_sources.Sources, ends: Mapping[str, datetime], zone: ZoneInfo,
+              now: datetime) -> tuple[int, int]:
+    """(#230) (at risk, late): the milestones of the cached issues, each once by its URL. Late: open, past its due date
+    in `zone`, with open issues. At risk: open, not late, and the latest of `ends` (the board's estimate, by item) among
+    its open tasks on open issues falls after its due date in `zone`. A milestone with no due date, or no estimated open
+    task, is neither."""
+    today = now.astimezone(zone).date()
+    milestones = {i.milestone.url: i.milestone for i in sources.issues.values() if i.milestone}
+    forecast: dict[str, datetime] = {}
+    for t in tasks:
+        issue = sources.issues.get(issue_key(t.issue, sources.home)) if t.issue.strip() else None
+        if t.kind != "done" and t.item in ends and issue and issue.state == "open" and issue.milestone:
+            url = issue.milestone.url
+            forecast[url] = max(forecast.get(url, ends[t.item]), ends[t.item])
+    late = {u for u, m in milestones.items() if m.state == "open" and m.due and m.due < today and m.open_issues}
+    at_risk = {u for u, m in milestones.items() if m.state == "open" and m.due and u not in late
+               and u in forecast and forecast[u].astimezone(zone).date() > m.due}
+    return len(at_risk), len(late)
+
+
 def drifts(task: Task, kanban: Kanban | None, sources: board_sources.Sources, stage: str | None = None) -> bool:
     """The forge's labels disagree with the task's stage, by the same check the audit runs (kanban.drift).
     `stage` overrides the tracker's own cell — pass `effective_stage()` so a merged change's card is judged at

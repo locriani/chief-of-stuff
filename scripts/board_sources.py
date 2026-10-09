@@ -41,7 +41,8 @@ GL_MR = re.compile(r"(?<![\w&])!(\d+)\b")
 GL_STATE = {"opened": "open", "locked": "closed"}
 GL_WAITING = {"pending", "created", "waiting_for_resource", "preparing", "scheduled", "manual"}
 
-GH_ISSUE = "number url title state body labels(first: 50) { nodes { name } } closedAt"
+GH_ISSUE = ("number url title state body labels(first: 50) { nodes { name } } closedAt "
+            "milestone { title url dueOn state issues(states: OPEN) { totalCount } }")
 # A review thread is its first comment, as review_threads.QUERY reads them; one comment keeps the node count low.
 GH_CHANGE = ("number url title state isDraft mergedAt baseRefName body headRefOid reviewDecision mergeable "
              "files(first: 100) { nodes { path additions deletions } } "
@@ -50,7 +51,8 @@ GH_CHANGE = ("number url title state isDraft mergedAt baseRefName body headRefOi
              "commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes { __typename "
              "... on CheckRun { name status conclusion startedAt completedAt } ... on StatusContext { state } } } } } } }")
 GL_PAGE = 100  # the most nodes GitLab answers for one connection
-GL_ISSUE = "iid webUrl title state description labels { nodes { title } } closedAt"
+GL_ISSUE = ("iid webUrl title state description labels { nodes { title } } closedAt "
+            "milestone { title webPath dueDate state stats { totalIssuesCount closedIssuesCount } }")
 GL_CHANGE = ("iid webUrl title state draft mergedAt targetBranch description approved conflicts "
              "approvedBy { nodes { username } } headPipeline { status } diffStats { path additions deletions } diffHeadSha")
 # Jobs and discussions only for open changes, in a second query: in GL_CHANGE they took it past GitLab's complexity cap of 250.
@@ -111,6 +113,15 @@ class ChangeState:     # what the audit asks of a PR or MR (#45)
 
 
 @dataclass(frozen=True)
+class Milestone:       # an epic (#230)
+    title: str
+    url: str           # its identity: two repos may each have a "v2"
+    due: date | None
+    state: str         # "open" | "closed"
+    open_issues: int
+
+
+@dataclass(frozen=True)
 class Issue:
     ref: str
     url: str
@@ -119,6 +130,7 @@ class Issue:
     labels: tuple[str, ...]
     body: str = ""
     closed_at: datetime | None = None  # (#220)
+    milestone: Milestone | None = None
 
 
 @dataclass(frozen=True)
@@ -150,6 +162,16 @@ def _when(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value) if value else None
 
 
+def _due(value: str | None) -> date | None:
+    """The date as written: GitHub's dueOn is a midnight-ish UTC time that the workspace zone would move a day back."""
+    return date.fromisoformat(value[:10]) if value else None
+
+
+def _milestone_of(v: dict | None) -> Milestone | None:
+    """A cached milestone; a cache from an older release has none."""
+    return Milestone(**{**v, "due": _due(v["due"])}) if v else None
+
+
 def _change_of(v: dict) -> Change:
     """A cached change; a cache from an older release lacks the later fields, which keep their defaults."""
     return Change(**{**v, "merged_at": _when(v["merged_at"]), "files": tuple(v["files"]), "issues": tuple(v["issues"]),
@@ -167,7 +189,8 @@ def load(pages_dir: Path) -> Sources:
     try:
         d = json.loads((pages_dir / CACHE).read_text())
         return Sources({k: datetime.fromisoformat(v) for k, v in d["fetched"].items()},
-                       {k: Issue(**{**v, "labels": tuple(v["labels"]), "closed_at": _when(v.get("closed_at"))})
+                       {k: Issue(**{**v, "labels": tuple(v["labels"]), "closed_at": _when(v.get("closed_at")),
+                                    "milestone": _milestone_of(v.get("milestone"))})
                         for k, v in d["issues"].items()},
                        {k: _change_of(v) for k, v in d["changes"].items()},
                        tuple(Worker(**{**w, "started": _when(w["started"]), "last": _when(w["last"])})
@@ -247,9 +270,12 @@ def github(home: backlog.GitHubBacklog, wanted: dict[str, set[int]], since: date
             if node.get("__typename") == "PullRequest":
                 changes[key] = _gh_change(key, node, approver)
             else:
+                m = node.get("milestone")
                 issues[key] = Issue(key, node["url"], node["title"], node["state"].lower(),
                                     tuple(x["name"] for x in (node.get("labels") or {}).get("nodes") or []),
-                                    node.get("body") or "", _when(node.get("closedAt")))
+                                    node.get("body") or "", _when(node.get("closedAt")),
+                                    Milestone(m["title"], m["url"], _due(m.get("dueOn")), m["state"].lower(),
+                                              int((m.get("issues") or {}).get("totalCount") or 0)) if m else None)
     for node in ((data.get("merged") or {}).get("nodes") or []):
         if node and _when(node.get("mergedAt")) and _when(node["mergedAt"]) >= since:
             changes.setdefault(f"#{node['number']}", _gh_change(f"#{node['number']}", node, approver))
@@ -328,9 +354,14 @@ def gitlab(home: backlog.Backlog, wanted: dict[str, set[int]], mrs: set[int], si
     for project in sorted(set(wanted) | {home.project}):
         for node in pages(project, "issues", sorted(wanted.get(project) or ()), GL_ISSUE, "kanban"):
             key = backlog.IssueRef(project, int(node["iid"]), host).label(home)
+            m, stats = node.get("milestone"), (node.get("milestone") or {}).get("stats") or {}
             issues[key] = Issue(key, node["webUrl"], node["title"], {"opened": "open"}.get(node["state"], node["state"]),
                                 tuple(x["title"] for x in (node.get("labels") or {}).get("nodes") or []),
-                                node.get("description") or "", _when(node.get("closedAt")))
+                                node.get("description") or "", _when(node.get("closedAt")),
+                                Milestone(m["title"], f"{home.host.rstrip('/')}{m['webPath']}", _due(m.get("dueDate")),
+                                          {"active": "open"}.get(m["state"], m["state"]),
+                                          int(stats.get("totalIssuesCount") or 0) - int(stats.get("closedIssuesCount") or 0))
+                                if m else None)
     for node in pages(home.project, "mergeRequests", sorted(mrs), GL_CHANGE, "merge requests"):
         changes.setdefault(f"!{node['iid']}", _gl_change(node, approver))
     cursor = ""  # the merged page to ask for next, None once the last one is in
