@@ -254,6 +254,12 @@ class OneShotRunsTests(unittest.TestCase):
         (task,) = [row["task"] for row in self.one_shots()]
         self.assertTrue(0 < len(task) <= 200 and item.startswith(task), len(task))
 
+    def test_an_item_at_the_launch_cap_comes_back_whole(self):
+        # #570: flow joins the pid file's text to its row by the item; a read cut short of the item orphans a live run.
+        item = "Long item \u2014 " + "z" * (2340 - 12)
+        self.pidfile("cap", f"{LIVE} {item}\n")
+        self.assertEqual(self.running(), {"cap": item})
+
     # What `processes` prints is read by an LLM coordinator, and the pid file and the tree's directory name are both
     # writable by the worker: a task is printed only when the tracker holds it.
 
