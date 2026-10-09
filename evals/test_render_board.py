@@ -341,6 +341,13 @@ class RenderTest(unittest.TestCase):
         self.assertIn("Launch", self.html)
 
 
+    def test_no_header_prints_a_rendered_clock(self) -> None:
+        # #215: pages re-render on every request, so a render clock only ever says now. The meta keeps the
+        # sources' read times and the page's own counts; `data-rendered-at` stays for scripts.
+        self.assertNotRegex(self.html, r"\brendered \d{1,2}:\d{2}")
+        self.assertIn("tracker 14:30", self.html)
+        self.assertIn('data-rendered-at="2026-09-16T14:30:00-05:00"', self.html)
+
     def test_escapes_html(self) -> None:
         html = rb.render(LANED_TRACKER.replace("Write eval README", "Write <b>README</b> & more"), self.cfg, NOW)
         self.assertNotIn("<b>README</b>", html)

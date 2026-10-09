@@ -508,7 +508,7 @@ class Page(unittest.TestCase):
         self.assertEqual(at, sorted(at), [m for _, m in sorted(zip(at, marks))])
 
     def test_the_header_names_each_source_time_and_the_counts(self) -> None:
-        self.assertIn("rendered 14:30 CDT · tracker 14:25 · kanban 14:28 · merge requests 14:27 · workers 14:30 · "
+        self.assertIn("tracker 14:25 · kanban 14:28 · merge requests 14:27 · workers 14:30 · "  # (#215) no render clock
                       "4 tasks</div>", self.body)
         self.assertNotRegex(self.body, r"(?i)no[ -]lane")  # #350: NO LANE is gone; the 4 still counts the task with no lane
 
@@ -603,7 +603,7 @@ class Page(unittest.TestCase):
         tiles = re.findall(r'<span class="panels-label">([A-Z ]+)</span><b class="panels-count">(\d+)</b>', html)
         # #349: the artboard's label, in the artboard's order.
         self.assertEqual(tiles, [("ALL", "4"), ("NEEDS INPUT", "0"), ("RUNNING", "1"), ("APPROVED", "0"), ("ORPHANED", "1"), ("DRIFT", "0")])
-        self.assertIn("rendered 14:30 CDT · tracker 14:30 · 4 tasks", html)
+        self.assertIn("tracker 14:30 · 4 tasks", html)  # (#215) no render clock
 
     def test_panel_and_tile_colours_are_board_tokens_light_and_dark(self) -> None:
         css = self.html.split("<style>", 1)[1].split("</style>", 1)[0]

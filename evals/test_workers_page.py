@@ -390,6 +390,10 @@ class HeaderTest(unittest.TestCase):
     """(#195) Header boxes: need you (today's human-review ends), running, and slots free `k of N` when the workspace
     caps one-shots."""
 
+    def test_no_header_prints_a_rendered_clock(self) -> None:
+        # #215: the eyebrow keeps the board link and the sources' errors, not a render clock.
+        self.assertNotRegex(page(), r"\brendered \d{1,2}:\d{2}")
+
     def test_need_you_counts_todays_human_review_ends(self):
         self.assertEqual(box(page(), "need you"), "1")
 
