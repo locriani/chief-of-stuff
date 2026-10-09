@@ -141,6 +141,13 @@ class SinceLookedTest(unittest.TestCase):
         self.assertEqual(task_forge.went_held({a: "triage", b: "triage"},
                                               {a: NOW.replace(second=0), b: NOW - timedelta(minutes=1)}, look), 1)
 
+    def test_a_decision_asked_before_the_look_in_its_minute_does_not_count(self) -> None:
+        # Codex on #579: a decision's asked time keeps seconds, so the Log's same-minute allowance is not its.
+        a, b, *_ = parse_tracker(TRACKER).tasks
+        look = NOW.replace(second=50)
+        held = {a: "decision", b: "decision"}
+        self.assertEqual(task_forge.went_held(held, {a: NOW.replace(second=10), b: NOW.replace(second=55)}, look), 1)
+
     def test_went_held_counts_only_holds_known_to_begin_after_the_look(self) -> None:
         a, b, c, d = parse_tracker(TRACKER).tasks
         held = {a: "decision", b: "triage", c: "Robin", d: "Robin"}
