@@ -49,8 +49,9 @@ CEILING = {  # `## ` section -> bytes, heading line included
 # 8,875 B, leaving 425 B headroom under its 9,300 B ceiling.
 # dispatch: the simulated skill (frontmatter, six topics, overlap-order clause back, report-read sentence and
 # done-gate clause out) is 14,136 B, leaving 64 B under its 14,200 B ceiling (room for a description tweak that names the notification).
-SKILL_CEILING = {"decision-page": 2_350, "optional-features": 4_950, "tracker-rows": 5_150, "review-pipeline": 9_250, "coordinator-sessions": 8_950, "dispatch": 14_200}  # measured size rounded up to 50 B
-SKILLS_TOTAL = 44_850  # all SKILL.md files, bytes; the sum of the ceilings above (measured 44,559 B)
+# #565: naming workers after their issue adds two sentences; the skill measures 14,354 B under a 14,400 B ceiling.
+SKILL_CEILING = {"decision-page": 2_350, "optional-features": 4_950, "tracker-rows": 5_150, "review-pipeline": 9_250, "coordinator-sessions": 8_950, "dispatch": 14_400}  # measured size rounded up to 50 B
+SKILLS_TOTAL = 45_050  # all SKILL.md files, bytes; the sum of the ceilings above (measured 44,777 B)
 DESCRIPTION_CAP = 300  # frontmatter description characters, not bytes
 SKILL_POINTER = re.compile(r"\$\{CLAUDE_PLUGIN_ROOT\}/skills/([^/\s`]+)/SKILL\.md")
 DECISION_PAGE_POINTER = "Before writing a decision page, Read ${CLAUDE_PLUGIN_ROOT}/skills/decision-page/SKILL.md"
@@ -447,9 +448,9 @@ DISPATCH_RULES = {
         'In an interactive workspace with no `Agent:` lines in the block: a background subagent (the `Agent` tool with `run_in_background: true`), and the subagent type.',
         'In a one-shot workspace with no `Agent:` lines, use a one-shot CLI worker in its own worktree and omit `--type` from the worker call.',
         "With `Agent:` lines: a session of one type named there — its own terminal, its own worktree — and then the proposal also names the branch and the path you would create, and the session's name.",
-        "The name is the one the user gave, or `<project>-<issue>-<role>`: project is the name of the repository the task's issue is in, issue is that issue's number, and the role is what it does (`implementer`, `reviewer`, `researcher`).",
-        'A review or a verify takes the issue its pull or merge request closes, and a second worker for the same issue and role adds `-2`, then `-3`.',
-        'A task with no issue is `<role>-<runtime>-<NN>`, where runtime is `claude`, `agy`, `codex`, or `cursor`, and `NN` is the lowest available two-digit number for that role and runtime.',
+        "The name is the one the user gave, or `<project>-<issue>-<role>`: the repository holding the task's issue, its number, and what the worker does (`implementer`, `reviewer`, `researcher`), as in `app-12-reviewer`.",
+        'A review or verify takes the issue its pull or merge request closes; a repeat adds `-2`, then `-3`.',
+        'With no issue it is `<role>-<runtime>-<NN>`: runtime is `claude`, `agy`, `codex`, or `cursor`, and `NN` the lowest free two-digit number for that role and runtime.',
         'Never infer the runtime or model from a name.',
         'Never reuse a live session name; a stopped name may be reused.',
         'Record the runtime and model explicitly; an interactive approval covers those choices.',
