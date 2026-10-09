@@ -895,7 +895,8 @@ class HerdrLauncherTest(unittest.TestCase):
         self.workspace_id, self.tab_id, self.pane_id = "w53", "w53:t29", "w53:p97"
         self.configure_fake()
         # Embedded paths survive launch_env's whitelist; no special fake-only environment is needed.
-        self.herdr = self.executable("herdr", f"""import json, os, re, sys
+        self.herdr = self.executable("herdr", f"""import json, os, re, shlex, sys
+from datetime import datetime, timezone
 from pathlib import Path
 args = sys.argv[1:]
 with open({str(self.log)!r}, 'a') as log:
@@ -904,9 +905,17 @@ with open({str(self.log)!r}, 'a') as log:
 if len(args) < 4 or args[0] != '--session' or not re.fullmatch(r'[a-z0-9][a-z0-9_-]{{0,31}}', args[1]):
     print('missing or invalid dedicated herdr session', file=sys.stderr)
     sys.exit(92)
-args = args[2:]
+session, args = args[1], args[2:]
 config = json.loads(Path({str(self.response)!r}).read_text())
-if args[:2] == ['tab', 'create']:
+if args[:2] == ['session', 'list']:
+    if config['failure'] == 'session list':
+        print('no running herdr server', file=sys.stderr)
+        sys.exit(7)
+    # None: any requested session is running. A list: the whole roster (v0.9.3 reply shape).
+    roster = config['sessions'] if config['sessions'] is not None else [session]
+    print(json.dumps({{'id': 'eval-session-list', 'result': {{'type': 'session_list',
+                       'sessions': [{{'name': name}} for name in roster]}}}}))
+elif args[:2] == ['tab', 'create']:
     if config['failure'] == 'tab':
         print('no running herdr server', file=sys.stderr)
         sys.exit(7)
@@ -915,6 +924,18 @@ elif args[:2] == ['pane', 'run']:
     if config['failure'] == 'pane':
         print('pane command was rejected', file=sys.stderr)
         sys.exit(8)
+    # The real wrapper registers before exec. failure 'register' is #551's cut-off line: the pane
+    # took the command and nothing ran.
+    if config['failure'] != 'register':
+        words = args[3:]
+        for at, word in enumerate(words[:-1]):
+            if word == '--registry':
+                path = Path(shlex.dequote(words[at + 1]))
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps({{'runtime': 'claude', 'name': path.stem, 'worktree': 'eval',
+                                             'pid': os.getpid(),
+                                             'started': datetime.now(timezone.utc).isoformat()}}) + '\\n')
+                break
     print(json.dumps({{'result': {{'started': True}}}}))
 elif args[:2] == ['tab', 'close']:
     tab = config['reply'].get('result', {{}}).get('tab', {{}})
@@ -960,11 +981,11 @@ print(found)
                           "workspace_id": self.workspace_id, "tab_id": self.tab_id,
                           "focused": False, "agent_status": "idle", "revision": 0}}}
 
-    def configure_fake(self, *, failure="", reply=None, cleanup_failure=False):
+    def configure_fake(self, *, failure="", reply=None, cleanup_failure=False, sessions=None):
         if reply is None:
             reply = self.tab_reply()
         self.response.write_text(json.dumps({"failure": failure, "reply": reply,
-                                             "cleanup_failure": cleanup_failure}))
+                                             "cleanup_failure": cleanup_failure, "sessions": sessions}))
 
     def args(self, *, title="audit-01", runtime="claude", launcher="herdr", extra=()):
         # Relative input must become absolute in both the tab argv and runtime_tokens.
@@ -1025,6 +1046,9 @@ print(found)
 
     def close_argv(self, *, session="chief-of-stuff"):
         return ["--session", session, "tab", "close", self.tab_id]
+
+    def session_list_argv(self, *, session="chief-of-stuff"):
+        return ["--session", session, "session", "list", "--json"]
 
     def assert_refused(self, out, *details):
         self.assertNotEqual(out.returncode, 0, out.stdout)
@@ -1263,6 +1287,51 @@ with open({str(self.log)!r}, 'a') as log:
         self.assertRegex(out.stderr, r"(?m)^cleanup: .*herdr tab close.*cleanup denied")
         self.assertEqual([call["argv"] for call in self.calls()],
                          [self.tab_argv(), self.pane_argv(), self.close_argv()])
+
+    # #551: `pane run` confirms delivery, not execution. The start is real only when the worker's own
+    # registration changes on disk; a line the pane's shell cut never registers, and a registration
+    # left by an earlier worker does not vouch for this one.
+    def test_a_herdr_start_that_never_registered_reports_failure_and_leaves_the_tree_reusable(self):
+        self.configure_fake(failure="register")
+        out = self.invoke(limit=10_000)
+        self.assert_refused(out, "registered")
+        self.assertEqual([call["argv"] for call in self.calls()],
+                         [self.session_list_argv(), self.tab_argv(), self.pane_argv(), self.close_argv()])
+        self.assertNotIn("started", out.stdout)
+        self.assertFalse((self.root / ss.PROMPT_DIR / "sessions" / "audit-01.json").exists())
+
+    def test_a_stale_registration_from_an_earlier_worker_does_not_vouch_for_a_new_start(self):
+        registry = self.root / ss.PROMPT_DIR / "sessions" / "audit-01.json"
+        registry.parent.mkdir(parents=True)
+        registry.write_text('{"runtime": "claude", "name": "audit-01", "worktree": "gone", "pid": 419,'
+                            ' "started": "2026-10-01T09:00:00+00:00"}\n')
+        self.configure_fake(failure="register")
+        out = self.invoke(limit=10_000)
+        self.assert_refused(out, "registered")
+        self.assertNotIn("started", out.stdout)
+
+    # #552: herdr has no `session create` (v0.9.3 CLI reference); a session exists only once
+    # `herdr --session <name>` launched it. The launcher checks the roster before tab create, so a
+    # start against a session that was never begun names the setting and the way back.
+    def test_a_missing_herdr_session_refuses_naming_the_setting_and_the_way_back(self):
+        (self.root / "chief-of-stuff.toml").write_text('[workers]\nherdr_session = "away-team-7"\n')
+        self.configure_fake(sessions=["chief-of-stuff"])
+        out = self.invoke()
+        self.assert_refused(out, "[workers] herdr_session", "away-team-7", "session create")
+        self.assertEqual([call["argv"] for call in self.calls()],
+                         [self.session_list_argv(session="away-team-7")])
+        self.assertNotIn("started", out.stdout)
+
+    def test_a_failed_session_list_probe_is_never_a_no(self):
+        # A server that cannot answer the roster is tab create's to report: the launcher must not
+        # refuse a start it could not rule out.
+        self.configure_fake(failure="session list")
+        out = self.invoke()
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("started", out.stdout)
+        self.assertEqual([call["argv"] for call in self.calls()],
+                         [self.session_list_argv(), self.tab_argv(), self.pane_argv()])
+        self.assertTrue(self.dispatch.is_file())
 
     def test_commands_refuse_invalid_dedicated_session_even_without_settings_loader(self):
         # Exercise the builder's own check; settings validation cannot kill its mutant.
