@@ -556,7 +556,7 @@ def missing_tree(handle: Path | None, name: str, detail: str) -> str:
             continue
         if code != 0:
             return f"{name}: no worktree — whether it has a branch is {UNREADABLE_PHRASE}"
-        merged = git_trees.git(["merge-base", "--is-ancestor", cand, _base(handle)], handle)[0]
+        merged = _on_main(cand, handle)
         if merged == 0:
             return f"{name}: no worktree — branch {cand} is on main; merged and cleaned up"
         if merged != 1:
@@ -565,15 +565,17 @@ def missing_tree(handle: Path | None, name: str, detail: str) -> str:
     return f"{name}: no worktree and no branch by that name — the row names a tree that was never created"
 
 
-def _base(tree: Path) -> str:
-    """What "on main" is tested against: origin/main as last fetched (a new tree's fetch, `--sha`), so a forge merge reads
-    as landed while local main lags (#567); local main only in a clone with no origin/main. The audit itself never fetches."""
-    return git_trees.REF if git_trees.git(["rev-parse", "--verify", "--quiet", git_trees.REF], tree)[0] == 0 else "main"
+def _on_main(rev: str, tree: Path) -> int:
+    """git's exit code for "is `rev` on main": 0 when origin/main as last fetched (a new tree's fetch, `--sha`) or local
+    main holds it, so a forge merge reads as landed while local main lags, and an integration not yet pushed reads as
+    landed too (#567); 1 when one says no; anything else git could not say. The audit itself never fetches."""
+    codes = [git_trees.git(["merge-base", "--is-ancestor", rev, base], tree)[0] for base in (git_trees.REF, "main")]
+    return 0 if 0 in codes else 1 if 1 in codes else codes[-1]
 
 
 def _merged(worktree: Path) -> int:
     """git's exit code for "is HEAD on main": 0 yes, 1 no, anything else git could not say."""
-    return git_trees.git(["merge-base", "--is-ancestor", "HEAD", _base(worktree)], worktree)[0]
+    return _on_main("HEAD", worktree)
 
 
 def _state(worktree: Path) -> tuple[str, str]:
@@ -666,7 +668,7 @@ def landed(sha: str, worktree: Path) -> tuple[str, str]:
         return UNKNOWN_SHA, f"{sha!r} is not a commit id"
     if git_trees.git(["cat-file", "-e", f"{sha}^{{commit}}"], worktree)[0] != 0:
         return UNKNOWN_SHA, f"no commit {sha} here, so the citation cannot be checked"
-    code, _ = git_trees.git(["merge-base", "--is-ancestor", sha, _base(worktree)], worktree)
+    code = _on_main(sha, worktree)
     if code not in (0, 1):
         return UNKNOWN_SHA, f"whether {sha} is on main is {UNREADABLE_PHRASE}"
     return (LANDED if code == 0 else NOT_LANDED), ""
