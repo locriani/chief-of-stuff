@@ -118,7 +118,7 @@ class HoldCauseTest(unittest.TestCase):
         # [kanban] hold stage: a task waiting on a person, and a task whose issue a pending decision holds.
         waiting = TRACKER.replace("| Robin | open | 09:00 | 17:00 | S | build | triage |",
                                   "| Robin | waiting | 09:00 | 17:00 | S | build | triage |")
-        for case, tracker, refs in (("waiting on Robin", waiting, frozenset()), ("decision", TRACKER, {"#9"})):
+        for case, tracker, refs in (("waiting on Robin", waiting, {}), ("decision", TRACKER, {"#9": None})):
             with self.subTest(case=case):
                 html = rb.render(tracker, parse_coordinator(CLAUDE_MD, today=NOW.date()), NOW, lanes=LANES, kanban=KANBAN,
                                  sources=SOURCES, pending_refs=refs)
@@ -126,6 +126,34 @@ class HoldCauseTest(unittest.TestCase):
                 self.assertEqual(tiles["NEEDS INPUT"], "1")
                 self.assertEqual(re.findall(r'<div class="columns-tag columns-flag" data-cat="hold">([^<]*)<', html),
                                  ["NEEDS INPUT"])
+
+
+class SinceLookedTest(unittest.TestCase):
+    """#229: the Since tab counts the holds that began after the last look: a gate stage from its last `stage:` move
+    into it, a decision from when it was asked. A hold with no known start (a person-owned wait) is not counted."""
+
+    def test_went_held_counts_only_holds_known_to_begin_after_the_look(self) -> None:
+        a, b, c, d = parse_tracker(TRACKER).tasks
+        held = {a: "decision", b: "triage", c: "Robin", d: "Robin"}
+        began = {a: NOW, b: NOW - timedelta(hours=2), c: None}
+        self.assertEqual(task_forge.went_held(held, began, NOW - timedelta(hours=1)), 1)
+
+    def since(self, looked, refs=None, kanban=KANBAN, log="") -> list[str]:
+        html = rb.render(TRACKER + log, parse_coordinator(CLAUDE_MD, today=NOW.date()), NOW, lanes=LANES, kanban=kanban,
+                         sources=SOURCES, pending_refs=refs or {}, looked=looked)
+        return re.findall(r'title="(\d+ went needs input since [\d:]+)">(\d+)<', html)
+
+    def test_the_board_counts_a_gate_move_and_a_decision_after_the_look(self) -> None:
+        gate, move = replace(KANBAN, hold_stages=("triage",)), "- 13:00 stage: Write README → triage\n"
+        for case, args, want in (
+                ("moved into the gate after", dict(kanban=gate, log=move), [("1 went needs input since 12:30", "1")]),
+                ("asked after", dict(refs={"#9": NOW - timedelta(minutes=30)}), [("1 went needs input since 12:30", "1")]),
+                ("asked at an unknown time", dict(refs={"#9": None}), []),
+                ("held with no move", dict(kanban=gate), [])):
+            with self.subTest(case=case):
+                self.assertEqual(self.since(NOW - timedelta(hours=2), **args), want)
+        self.assertEqual(self.since(NOW - timedelta(minutes=30), kanban=gate, log=move), [])
+        self.assertEqual(self.since(None, kanban=gate, log=move), [("1 went needs input since 00:00", "1")])
 
 
 class MergeOrder(unittest.TestCase):

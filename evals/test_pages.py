@@ -32,9 +32,9 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
-def get(port: int, path: str, host: str | None = None, method: str = "GET") -> http.client.HTTPResponse:
+def get(port: int, path: str, host: str | None = None, method: str = "GET", headers: dict | None = None) -> http.client.HTTPResponse:
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-    conn.request(method, path, headers={"Host": host or f"127.0.0.1:{port}"})
+    conn.request(method, path, headers={"Host": host or f"127.0.0.1:{port}", **(headers or {})})
     resp = conn.getresponse()
     resp.body = resp.read()
     conn.close()
@@ -592,6 +592,31 @@ class HoldWiringTest(unittest.TestCase):
         root, day = self.workspace(toml='[kanban]\nstages = ["impl"]\nhuman_review_label = "needs-human"\nhold_stages = ["implement"]\n[kanban.map]\nimplement = 0\n')
         for got in self.notes(root, day):
             self.assertIn("needs input · implement", got)
+
+
+class LastLookedTest(unittest.TestCase):
+    """#229: a person loading the board records the server's time; the Since tab counts the holds that began after
+    the look before it, from the start of the day when there is none. A timer reload is not a look."""
+
+    SETTINGS = LANES + '[kanban]\nstages = ["impl"]\nhuman_review_label = "needs-human"\nhold_stages = ["implement"]\n[kanban.map]\nimplement = 0\n'
+    LOOK = {"Sec-Fetch-User": "?1"}
+    setUp = RenderOnRequestTest.setUp
+    fake_refresh = RenderOnRequestTest.fake_refresh
+
+    def since(self, headers=None) -> list[str]:
+        return re.findall(r'title="(\d+ went needs input since [\d:]+)"', get(self.port, "/", headers=headers).body.decode())
+
+    def test_a_look_counts_from_the_look_before_it_and_a_timer_reload_is_no_look(self):
+        self.tracker.write_text(ISSUE_TRACKER.format(day=self.day, task="Security audit"))  # held at implement since 09:00
+        earlier = datetime.fromisoformat(f"{self.day}T08:00").replace(tzinfo=ZoneInfo(ZONE))
+        (self.pages / ".last-looked").write_text(earlier.isoformat())
+        self.assertEqual(self.since(), ["1 went needs input since 00:00"])
+        self.assertFalse((self.pages / ".looked-before").exists(), "a reload with no user activation recorded a look")
+        before = datetime.now(ZoneInfo(ZONE)).replace(microsecond=0)
+        self.assertEqual(self.since(self.LOOK), ["1 went needs input since 08:00"])
+        self.assertEqual(datetime.fromisoformat((self.pages / ".looked-before").read_text()), earlier)
+        self.assertGreaterEqual(datetime.fromisoformat((self.pages / ".last-looked").read_text()), before)
+        self.assertEqual(get(self.port, "/.last-looked").status, 404)
 
 
 class _PagesFixture:
