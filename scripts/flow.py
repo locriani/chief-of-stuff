@@ -55,13 +55,15 @@ def resolve_chief_bin(root: Path) -> Path:
     return (root / "chief_of_stuff.py").resolve()
 
 
+def live_one_shots(root: Path) -> dict[str, int]:
+    """Map each live one-shot's pid-file text (its task's item) to its launcher's PID."""
+    trees_path = (root / worktrees_dir((root / "CLAUDE.md").read_text())).resolve()
+    return {task: pid for _, pid, task in process_status.one_shot_runs(trees_path)}
+
+
 def live_workers(root: Path) -> dict[str, int]:
     """Map running task labels or session names to their live PIDs."""
-    result: dict[str, int] = {}
-    cfg = read_config(root)
-    trees_path = (root / worktrees_dir((root / "CLAUDE.md").read_text())).resolve()
-    for _, pid, task in process_status.one_shot_runs(trees_path):
-        result[task] = pid
+    result = live_one_shots(root)
     for pid, record in process_status.registrations(root).items():
         if process_status.process_exists(pid):
             result[record["name"]] = pid
@@ -134,9 +136,10 @@ def reconcile_dead_workers(root: Path, tracker_path: Path, day: str) -> list[str
     if not running_tasks:
         return []
 
-    live = live_workers(root)
-    row_of = tracker.launcher(parsed.tasks)  # #570: a one-shot's pid file holds its item, not the row's name
-    live = {*live, *(row_of(k)[1] for k in live)}
+    # #570: a one-shot's pid file holds its item, not the row's name; only that text is joined to a row, never a
+    # session's name, which may happen to equal some task's item (#571 review).
+    row_of = tracker.launcher(parsed.tasks)
+    live = {*live_workers(root), *(row_of(k)[1] for k in live_one_shots(root))}
     reconciled: list[str] = []
 
     for t in running_tasks:
