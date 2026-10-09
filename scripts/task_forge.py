@@ -68,13 +68,21 @@ def hold_causes(tasks: list[Task], kanban: Kanban | None, sources: board_sources
 
 
 def hold_began(held: dict[Task, str], moves: list[Move], pending_refs: Mapping[str, datetime | None], home,
-               tasks: list[Task]) -> dict[Task, datetime | None]:
+               tasks: list[Task], earlier: list[Task] = ()) -> dict[Task, datetime | None]:
     """When each of the `held` tasks' holds began (#229): a decision when the first decision holding its issue was asked
     (`pending_refs`, decision_page.held_refs); a gate stage at the task's last move into it, the moves read as flow_chart
     reads them (by name or item in any case, a launcher line only until the task's first `stage:` move); a person's
-    wait, which no line records, None."""
-    find = {**{t.item.strip().casefold(): t for t in tasks if t.item.strip()},
-            **{t.name.strip().casefold(): t for t in tasks if t.name.strip()}}
+    wait, which no line records, None. A move may name an `earlier` tracker's row: it is today's task of that row's
+    name, or, renamed, of its issue."""
+    by_name = {t.name.strip().casefold(): t for t in tasks if t.name.strip()}
+    by_issue = {issue_key(t.issue, home): t for t in tasks if t.issue.strip()}
+
+    def today(t: Task) -> Task | None:
+        return by_name.get(t.name.strip().casefold()) or (by_issue.get(issue_key(t.issue, home)) if t.issue.strip() else None)
+
+    find = {**{k: cur for t in earlier for k in (t.item.strip().casefold(), t.name.strip().casefold())
+               if k and (cur := today(t))},
+            **{t.item.strip().casefold(): t for t in tasks if t.item.strip()}, **by_name}
     row_of = launcher(tasks)
     staged, into = set(), {}
     for m in sorted(moves, key=lambda m: m.at):
