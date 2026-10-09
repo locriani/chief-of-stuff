@@ -45,7 +45,7 @@ from pathlib import Path
 import board_sources
 from backlog_ref import Backlog, BacklogError, GitHubBacklog, backlog_from_config
 from clock import leading
-from fragment import FONTS, TAB_CSS, href, tab_bar
+from fragment import FONTS, TAB_CSS, href, tab_bar, theme
 from md import section as md_section
 from module_graph import section as _graph
 from notify_service import atomic_write
@@ -420,7 +420,7 @@ def render(d: dict, day: str, forge: Backlog | GitHubBacklog | None = None, root
     where += _graph(change, ctx and ctx.graph, ctx and ctx.pages, root)
     return (f"<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n"
             f"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
-            f"<title>{escape(d['headline'])}</title>\n{HEAD}</head>\n<body>\n<main class=\"decision\">\n{tab_bar('Decisions', pending, True)}"
+            f"<title>{escape(d['headline'])}</title>\n{HEAD_OPEN}{theme()}{PAGE_CSS}</head>\n<body>\n<main class=\"decision\">\n{tab_bar('Decisions', pending, True)}"
             f'  <header class="top">\n    <div>\n      <span class="eyebrow">{eyebrow}</span>\n'
             f"      <h1>{md(d['headline'])}</h1>\n    </div>\n"
             f'    <span class="chip{" answered" if answered else ""}">{chip}</span>\n  </header>\n\n'
@@ -774,7 +774,7 @@ def index(pages_dir: Path, ctx: Context, day: str, pending: list | None = None) 
             + ("\n".join(done) or none) + "\n    </div>\n  </section>\n")
     return (f"<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n"
             f"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
-            f"<title>Decisions · {escape(_day(day))}</title>\n{HEAD}</head>\n<body>\n<main class=\"decisions\">\n{tab_bar('Decisions', len(ready))}"
+            f"<title>Decisions · {escape(_day(day))}</title>\n{HEAD_OPEN}{theme()}{PAGE_CSS}</head>\n<body>\n<main class=\"decisions\">\n{tab_bar('Decisions', len(ready))}"
             f'  <header class="top">\n    <div>\n      <h1>Decisions · {escape(_day(day))}</h1>\n'
             f'      <span class="eyebrow">{" · ".join(meta)}</span>\n    </div>\n  </header>\n'
             + body + "</main>\n" + ANSWER_JS + "</body>\n</html>\n"), pending
@@ -796,41 +796,48 @@ def write_all(pages_dir: Path, ctx: Context, day: str, root: Path | None = None)
     return pending
 
 
-HEAD = f'<link rel="stylesheet" href="{FONTS}">\n' + """<style>
-/* The board's parchment scheme (render_board.py) and the architecture review's state encoding (frank-lloyd-aight
+# The theme-carrying pages splice the canonical theme (fragment.theme, read at render time so a re-sync reaches
+# the served pages without a restart) between the one `<style>` block's open and the pages' own rules below —
+# cascade order (theme first, page rules second) is all that decides what wins. The pages that do not carry the
+# theme yet take `HEAD` whole, which is the same block without the theme.
+HEAD_OPEN = f'<link rel="stylesheet" href="{FONTS}">\n<style>\n'
+PAGE_CSS = """/* The board's parchment scheme (render_board.py) and the architecture review's state encoding (frank-lloyd-aight
    docs/review-page.md). Okabe-Ito colours the timeline stages, as on the board Gantt. */
 :root{--bg:#f4efe1;--surface:#fbf8ef;--fg:#2f2630;--muted:#6e6470;--line:#ddd3bd;--brass:#a7843e;--dl:#c9533a;--link:#8a6c30;--ref-bg:#efe7d3;--deployed:#2b3542;--inflight:#a8660f;--inflight-soft:#f6ead6;--designed:#2c58a0;--designed-soft:#dfe8f6;--ext:#8a8f98;--ext-soft:#f1eee6;--ext-ink:#5f6b7b;--stage-implement:#0072B2;--stage-pr:#56B4E9;--stage-review:#009E73;--stage-triage:#E69F00;--stage-fix:#D55E00;--stage-verify:#CC79A7;--stage-merge:#000000;--now:#4f6b3a}
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;--bg:#1c1813;--surface:#262019;--fg:#efe6d2;--muted:#b3a791;--line:#3d352a;--brass:#d4b06a;--dl:#f08566;--link:#e2c27f;--ref-bg:#342b1f;--deployed:#d9d2c4;--inflight:#e8ad55;--inflight-soft:#35281a;--designed:#8fb3f0;--designed-soft:#1f2735;--ext:#8f8a80;--ext-soft:#2d2822;--ext-ink:#c4bdb0;--stage-implement:#3D95D6;--stage-pr:#56B4E9;--stage-review:#009E73;--stage-triage:#E69F00;--stage-fix:#D55E00;--stage-verify:#CC79A7;--stage-merge:#efe6d2;--now:#a8c67e}}
 :root[data-theme="dark"]{color-scheme:dark;--bg:#1c1813;--surface:#262019;--fg:#efe6d2;--muted:#b3a791;--line:#3d352a;--brass:#d4b06a;--dl:#f08566;--link:#e2c27f;--ref-bg:#342b1f;--deployed:#d9d2c4;--inflight:#e8ad55;--inflight-soft:#35281a;--designed:#8fb3f0;--designed-soft:#1f2735;--ext:#8f8a80;--ext-soft:#2d2822;--ext-ink:#c4bdb0;--stage-implement:#3D95D6;--stage-pr:#56B4E9;--stage-review:#009E73;--stage-triage:#E69F00;--stage-fix:#D55E00;--stage-verify:#CC79A7;--stage-merge:#efe6d2;--now:#a8c67e}
 *{box-sizing:border-box}
+/* The canonical theme sits above the marker in this block (fragment.theme); these restate what its base rules would
+   otherwise change: the pages keep their own scrolling, spacing, chips and figures. */
+html{scroll-behavior:auto}
 body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 "Alegreya Sans","Gill Sans",system-ui,sans-serif;padding:24px 16px 48px}
-main{max-width:1280px;margin:0 auto;display:flex;flex-direction:column;gap:16px}
-h1,h2{font-family:"Cormorant SC","Cormorant Garamond",Georgia,serif;font-weight:600;text-wrap:balance;margin:0}
+main{margin:0 auto;display:flex;flex-direction:column;gap:16px;padding:0}
+h1,h2{font-family:"Cormorant SC","Cormorant Garamond",Georgia,serif;font-weight:600;line-height:normal;text-wrap:balance;margin:0}
 h1{font-size:27px;letter-spacing:.04em;margin-top:2px}
 h2{font-size:16px;letter-spacing:.1em;text-transform:uppercase;margin-bottom:6px}
 p{margin:0}
 a{color:var(--link);overflow-wrap:anywhere}
-section{min-width:0}
-header.top{display:flex;align-items:flex-end;gap:20px;border-bottom:1px solid var(--brass);padding-bottom:10px}
+section{min-width:0;margin-top:0;scroll-margin-top:0}
+header.top{display:flex;align-items:flex-end;gap:20px;border-bottom:1px solid var(--brass);padding-bottom:10px;margin-bottom:0}
 header.top>div{flex:1 1 auto;min-width:0}
-.eyebrow{font-size:12.5px;color:var(--muted)}
+.eyebrow{font-size:12.5px;color:var(--muted);font-family:inherit;letter-spacing:normal;text-transform:none}
 .card{background:var(--surface);border:1px solid var(--line);border-radius:5px;padding:10px 14px}
 .card>p+p{margin-top:6px}
 .cap{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
-.chip,.pill{font-size:10.5px;font-weight:700;letter-spacing:.06em;border-radius:3px;padding:0 6px;white-space:nowrap}
+.chip,.pill{display:inline;line-height:normal;vertical-align:baseline;font-family:inherit;text-transform:none;font-size:10.5px;font-weight:700;letter-spacing:.06em;border-radius:3px;padding:0 6px;white-space:nowrap}
 header .chip{color:var(--link);border:1px solid var(--brass);margin-bottom:4px}
 header .chip.answered{color:var(--surface);background:#009E73;border-color:#009E73}
 .ask{border-top:3px solid var(--brass);display:flex;flex-direction:column;gap:4px}
 .ask strong{font-size:16px}
 .ask p{color:var(--muted)}
-code{font-family:ui-monospace,monospace;font-size:.88em;background:var(--ref-bg);padding:0 3px;border-radius:3px}
+code{font-family:ui-monospace,monospace;font-size:.88em;background:var(--ref-bg);padding:0 3px;border-radius:3px;overflow-wrap:normal}
 .ref{font-family:ui-monospace,monospace;font-size:.88em;color:var(--link);text-decoration:none;border-bottom:1px dotted var(--brass);background:var(--ref-bg);padding:0 3px;border-radius:3px;white-space:nowrap}
 .ref::before{content:attr(data-k);font-size:.8em;color:var(--muted);margin-right:3px}
 .cols{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:18px}
 .col{display:flex;flex-direction:column;gap:14px;min-width:0}
 .compare{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
 .side{display:flex;flex-direction:column;gap:4px;align-items:flex-start}
-.pill.done{color:#fff;background:#009E73} .pill.open{color:#2f2630;background:#E69F00}
+.pill.done{color:#fff;background:#009E73;border:0} .pill.open{color:#2f2630;background:#E69F00;border:0}
 .timeline{padding:4px 14px}
 .step{display:grid;grid-template-columns:70px 14px minmax(0,1fr);gap:0 10px;padding:6px 0}
 .step+.step{border-top:1px dotted var(--line)}
@@ -858,21 +865,21 @@ span.saved{font:11.5px ui-monospace,monospace;color:var(--now)}
 .default{border-left:3px solid var(--muted)}
 .refs{display:grid;grid-template-columns:70px minmax(0,1fr) auto;gap:5px 10px;font-size:13px;align-items:baseline}
 .refs .st{color:var(--muted);font-size:12px}
-.fig{margin:0;padding:8px 10px 10px}
-.scroll{overflow-x:auto}
-.fig svg{display:block;max-width:100%;height:auto}
+.fig{margin:0;padding:8px 10px 10px;background:none;border:0;border-radius:0}
+.scroll{overflow-x:auto;background:none;border:0;border-radius:0}
+.fig svg{display:block;max-width:100%;height:auto;width:auto;min-width:0}
 figcaption{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;font-size:12px;color:var(--muted);border-top:1px dotted var(--line);padding-top:7px;margin-top:4px}
 figcaption .chip.deployed{border:1.5px solid var(--deployed);color:var(--deployed)}
 figcaption .chip.inflight{border:1.5px dashed var(--inflight);color:var(--inflight);background:var(--inflight-soft)}
 figcaption .chip.designed{border:1.5px dotted var(--designed);color:var(--designed);background:var(--designed-soft)}
-figcaption .chip.hot{border:2px solid var(--dl);color:var(--dl)}
+figcaption .chip.hot{border:2px solid var(--dl);color:var(--dl);background:none}
 figcaption .chip.external{border:1.5px solid var(--ext);color:var(--ext-ink);border-radius:9px}
 figcaption .chip.new{border:2px solid var(--stage-review);color:var(--fg);background:color-mix(in srgb,var(--stage-review) 14%,var(--surface))}
 figcaption .chip.changed{border:2px solid var(--stage-implement);color:var(--fg);background:color-mix(in srgb,var(--stage-implement) 14%,var(--surface))}
 figcaption .chip.removed{border:1.5px dashed var(--stage-fix);color:var(--fg);background:color-mix(in srgb,var(--stage-fix) 14%,var(--surface))}
 figcaption .chip.drift{border:2.5px solid var(--stage-triage);color:var(--fg)}
 figcaption .sum{font-family:ui-monospace,monospace}
-pre.mermaid{margin:0}
+pre.mermaid{margin:0;font:13px ui-monospace,monospace;background:none;border:0;padding:0;overflow:visible}
 .graph{margin:0} .views{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr));gap:12px}
 .view .scroll{max-height:480px;overflow:auto}
 /* branch-graph's classDefs are shape only; its node classes take the legend's colours (mermaid's own rules are id-scoped). */
@@ -896,7 +903,7 @@ svg rect.hot,svg line.hot{stroke:var(--dl);stroke-width:2}
 svg .ar-e{fill:var(--deployed)} svg .ar-e-inflight{fill:var(--inflight)} svg .ar-e-designed{fill:var(--designed)} svg .ar-hot{fill:var(--dl)}
 .foot{font-size:12.5px;color:var(--muted);border-top:1px solid var(--line);padding-top:8px}
 /* decisions.html (Decisions.dc.html): a list, pending then completed. */
-.decisions{font-size:13.5px;line-height:1.45}
+.decisions{display:flex;flex-direction:column;gap:16px;margin:0;padding:0;font-size:13.5px;line-height:1.45}
 .decisions section{display:grid;gap:8px}
 h2.pend{color:var(--link)}
 .list{background:var(--surface);border:1px solid var(--line);border-top:3px solid var(--brass);border-radius:5px}
@@ -927,6 +934,7 @@ h2.pend{color:var(--link)}
 @media (max-width:900px){.cols{grid-template-columns:minmax(0,1fr)}}
 @media (max-width:480px){header.top{flex-direction:column;align-items:flex-start;gap:6px}.refs{grid-template-columns:minmax(0,1fr)}}
 """ + TAB_CSS + "</style>\n"
+HEAD = HEAD_OPEN + PAGE_CSS
 
 # Picking an option saves it at once; the write-in saves on its button. Without JS the form posts and the server
 # redirects back to the page.

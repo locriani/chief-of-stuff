@@ -6,7 +6,7 @@ The pages are routes: `/` the board, `/workers` the running workers and today's 
 and diff. Each is rendered into its file (`<day>-board.html`, `workers.html`, `decisions.html`, `decision-<slug>.html`,
 `issue-<n>.html`, `issue-<n>-source.html`), which only the routes serve: a request for the file's own name is a 404.
 A GET re-renders a page when one of its sources (the trackers, CLAUDE.md, the settings TOML, the decision JSON,
-`.sources.json`) is newer than its last render, and `/workers` on every GET (it reads the session logs too), and a thread refreshes `.sources.json` from the forge every minute. An open tab
+`.sources.json`) is newer than its last render, or differs in bytes from what that render read, and `/workers` on every GET (it reads the session logs too), and a thread refreshes `.sources.json` from the forge every minute. An open tab
 reloads itself when the file changes.
 
     python3 pages.py --ensure [--root R]              # start it unless it is already serving; print status only
@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import functools
+import hashlib
 import http.server
 import io
 import json
@@ -61,10 +62,14 @@ MAX_BODY = 16 * 1024  # a write-in is a sentence or a paragraph
 # An answer saved mid-render of another page (the board) can leave that page stale until the next forge refresh.
 PAGE_LOCKS: dict[str, threading.Lock] = {}
 PAGE_LOCKS_GUARD = threading.Lock()
-# Each page's last render by this server: (when it started, ns; the file's time after it). Apart from the file's time,
-# which is only when its bytes last changed (the Last-Modified a tab reloads on). A page with no record, or whose file
-# changed since (an older release's, an editor's), is judged by its file's time; a None file time marks it stale.
-RENDERED_AT: dict[str, tuple[int, int | None]] = {}
+# Each page's last render by this server: (when it started, ns; the file's time after it; the sha256 of the
+# sources' bytes it consumed). Apart from the file's time, which is only when its bytes last changed (the
+# Last-Modified a tab reloads on). A page with no record, or whose file changed since (an older release's, an
+# editor's), is judged by its file's time; a None file time marks it stale. The digest decides freshness where
+# the record is this server's own render of this file: this filesystem's mtime clock reads behind the wall
+# clock by more than a render takes under load, so no mtime comparison can order a source saved just after a
+# render began against that render — the bytes can.
+RENDERED_AT: dict[str, tuple[int, int | None, str]] = {}
 
 
 def page_lock(path: Path | str) -> threading.Lock:
@@ -82,7 +87,9 @@ def _plugin_version() -> str:
 
 VERSION = _plugin_version()
 # The renderer's own code counts as a source: a release upgrade changes it, not the sources.
-RENDERER_MTIME_NS = max(p.stat().st_mtime_ns for p in Path(__file__).resolve().parent.glob("*.py"))
+import fragment  # light (html, re, pathlib); the renderers stay lazy for --ensure
+
+RENDERER_MTIME_NS = max(p.stat().st_mtime_ns for p in (*Path(__file__).resolve().parent.glob("*.py"), fragment.THEME_PATH) if p.is_file())
 
 
 def _version(server_header: str) -> tuple[int, ...]:
@@ -100,6 +107,16 @@ def _sources(root: Path, cfg, pages_dir: Path, day: str) -> list[Path]:
             *(path for _, path in daily_trackers(root, cfg)), *pages_dir.glob("decision-*.json"), pages_dir / CACHE]
 
 
+def _digest(sources: list[Path]) -> str:
+    """sha256 of the sources' bytes, for a render record: content, not times, says whether a render's inputs changed."""
+    h = hashlib.sha256()
+    for p in sources:
+        if p.is_file():
+            h.update(str(p).encode())
+            h.update(p.read_bytes())
+    return h.hexdigest()
+
+
 def today_board(root: Path) -> str | None:
     """Today's board name once today's tracker exists, else None."""
     cfg = read_config(root)
@@ -108,8 +125,9 @@ def today_board(root: Path) -> str | None:
 
 
 def fresh(root: Path, pages_dir: Path, name: str, slots=contextlib.nullcontext()) -> str:
-    """Re-render the page `name` when a source is newer than its last render, inside one of `slots`. Returns the render
-    error, or "". On an error the last good file stays where it is."""
+    """Re-render the page `name` when a source is newer than its last render, or differs in bytes from what that
+    render consumed, inside one of `slots`. Returns the render error, or "". On an error the last good file stays
+    where it is."""
     # The renderers are imported here, not at the top, to keep `pages.py --ensure` light.
     import decision_page
     import issue_page
@@ -144,12 +162,22 @@ def fresh(root: Path, pages_dir: Path, name: str, slots=contextlib.nullcontext()
             if not (root / cfg.tracker_path(day)).is_file():
                 return ""
         with page_lock(key):  # checked under the lock: a request that waited finds the page already rendered
-            newest = max(RENDERER_MTIME_NS, max((p.stat().st_mtime_ns for p in [*_sources(root, cfg, pages_dir, day), *([pages_dir / LOOKED_BEFORE] if name.endswith("-board.html") else [])] if p.is_file()), default=0))
+            sources = [*_sources(root, cfg, pages_dir, day),
+                       *([pages_dir / LOOKED_BEFORE] if name.endswith("-board.html") else []), fragment.THEME_PATH]
+            newest = max(RENDERER_MTIME_NS, max((p.stat().st_mtime_ns for p in sources if p.is_file()), default=0))
             mtime = target.stat().st_mtime_ns if target.is_file() else 0
+            digest = _digest(sources)
             record = RENDERED_AT.get(key)
             rendered = record[0] if record and record[1] in (mtime, None) else mtime
             if rendered >= newest and name != "workers.html":
-                return ""
+                # The filesystem's mtime clock reads behind the wall clock by more than a render takes under load
+                # here, so a source saved after that render began can carry an mtime from before it. Where the
+                # record is this server's render of this file, the sources' bytes settle it: fresh only if they
+                # are still exactly what that render consumed. A source touched without a change keeps the mtime
+                # path's one confirming render — it re-renders, records the same digest, and the polls after it
+                # are fresh.
+                if not (record and record[1] == mtime and record[2] != digest):
+                    return ""
             started = time.time_ns()
             with slots:
                 if name == "workers.html":
@@ -162,7 +190,7 @@ def fresh(root: Path, pages_dir: Path, name: str, slots=contextlib.nullcontext()
                     issue_page.write(root, pages_dir, int(name[len("issue-"):-5]))
                 else:
                     render_board.write(root, day)
-            RENDERED_AT[key] = started, target.stat().st_mtime_ns if target.is_file() else 0  # only after a render that did not raise
+            RENDERED_AT[key] = started, target.stat().st_mtime_ns if target.is_file() else 0, digest  # only after a render that did not raise
         return ""
     except Exception as e:  # any renderer failure: the server keeps serving the last good page
         return f"{type(e).__name__}: {e}"
@@ -344,7 +372,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns))
             for page in Path(self.directory).iterdir():
                 if RENDERED.fullmatch(page.name):
-                    RENDERED_AT[str(page)] = 0, None
+                    RENDERED_AT[str(page)] = 0, None, ""
         self.send_response(303)
         self.send_header("Location", "/decisions" if form.get("back") == ["/decisions"] else f"/decisions/{m[1]}")
         self.send_header("Content-Length", "0")
