@@ -41,7 +41,7 @@ VIA = "(via "
 CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 # Allow long tracker items while bounding assignment size.
 LINE_CAP = 2400
-BODY_CAP = 16000
+BODY_CAP = 16500  # #563: +500 for the review-report rule every assignment carries
 # Session listings may append a six-character ref.
 SESSION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}(?: \[[0-9a-f]{6}\])?")
 # Launch names do not include refs.
@@ -203,6 +203,9 @@ WRITING_RULE = ("Markdown: everything you write for a person to read is well-for
                 "text fields. One paragraph is one line; never hard-wrap prose at any column, because renderers "
                 "compact or break wrapped lines unpredictably. Blank lines separate blocks. Lists and tables use "
                 "real markdown syntax. Code and commands go in fences with a language. Links are markdown links.")
+# #563: one report shape for every reviewer, whatever its runtime, because Triage reads its fields.
+REVIEW_RULE = ("Review: if this task reviews a pull or merge request, write your report in the format of "
+               f"{Path(__file__).resolve().parent.parent / 'skills' / 'review-pipeline' / 'review-report.md'}; read it first.")
 # Workers commit on their branches and open PRs; the reviewer and user handle review and merge.
 COMMITS = ("Commits: Commit small and often on your own branch — uncommitted work is how work gets "
            "lost. Code reaches main only through a pull request: push the branch and open one "
@@ -372,6 +375,7 @@ def compose(root: Path, day: str | None, task: str, worktree: Path | None = None
             "Do not wait for a plan approval or for a reply. If a decision, missing access, or another blocker prevents completion, stop and report human_review.",
             board_rule,
             WRITING_RULE,
+            REVIEW_RULE,
             f"Task: {item}",
         ]
         if rows[0].checklist.strip():
@@ -448,7 +452,7 @@ def compose(root: Path, day: str | None, task: str, worktree: Path | None = None
         report_text = report_text.replace("If direct messaging fails, send via mailbox:", "Send via mailbox:")
         header_text = header_text.replace("When direct messaging is unavailable, send your ask via:", "Send your ask via:")
 
-    lines = [header_text, board_rule, WRITING_RULE, f"Task: {item}"]
+    lines = [header_text, board_rule, WRITING_RULE, REVIEW_RULE, f"Task: {item}"]
     if rows[0].checklist.strip():
         lines.append(f"Requirement: {_clean('the checklist cell', rows[0].checklist.strip())}")
     if issue:
