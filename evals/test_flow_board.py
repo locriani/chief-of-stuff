@@ -133,6 +133,14 @@ class SinceLookedTest(unittest.TestCase):
     """#229: the Since tab counts the holds that began after the last look: a gate stage from its last `stage:` move
     into it, a decision from when it was asked. A hold with no known start (a person-owned wait) is not counted."""
 
+    def test_a_hold_logged_in_the_looks_minute_counts(self) -> None:
+        # Codex on #579: the Log keeps minutes and a look keeps seconds; a move logged in the look's own minute may
+        # have come after it, and a count shown twice is better than one missed.
+        a, b, *_ = parse_tracker(TRACKER).tasks
+        look = NOW.replace(second=10)
+        self.assertEqual(task_forge.went_held({a: "triage", b: "triage"},
+                                              {a: NOW.replace(second=0), b: NOW - timedelta(minutes=1)}, look), 1)
+
     def test_went_held_counts_only_holds_known_to_begin_after_the_look(self) -> None:
         a, b, c, d = parse_tracker(TRACKER).tasks
         held = {a: "decision", b: "triage", c: "Robin", d: "Robin"}
