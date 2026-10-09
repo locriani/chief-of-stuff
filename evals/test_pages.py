@@ -616,7 +616,46 @@ class LastLookedTest(unittest.TestCase):
         self.assertEqual(self.since(self.LOOK), ["1 went needs input since 08:00"])
         self.assertEqual(datetime.fromisoformat((self.pages / ".looked-before").read_text()), earlier)
         self.assertGreaterEqual(datetime.fromisoformat((self.pages / ".last-looked").read_text()), before)
-        self.assertEqual(get(self.port, "/.last-looked").status, 404)
+        for path in ("/.last-looked", "/%2elast-looked", "/%2Elooked-before"):  # #579 review R1: decoded, too
+            self.assertEqual(get(self.port, path).status, 404, path)
+
+    def test_a_first_look_is_recorded(self):
+        # #579 review R2: no `.last-looked` yet.
+        get(self.port, "/", headers=self.LOOK)
+        self.assertTrue((self.pages / ".last-looked").is_file())
+        self.assertFalse((self.pages / ".looked-before").exists())
+
+    def test_looks_at_once_do_not_trip_over_each_others_files(self):
+        # #579 review R5: the page server is threaded; each write goes through its own temporary file.
+        import workspace
+        errors = []
+
+        def look():
+            for _ in range(50):
+                try:
+                    workspace.record_look(self.pages, datetime.now(ZoneInfo(ZONE)))
+                except OSError as e:
+                    errors.append(e)
+        threads = [threading.Thread(target=look) for _ in range(4)]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join()
+        self.assertEqual(errors, [])
+        self.assertIsNotNone(workspace.looked_before(self.pages))
+
+    def test_a_look_re_renders_the_board_only(self):
+        # #579 review R6: `.looked-before` is the board's source, not every page's.
+        import issue_page
+        self.tracker.write_text(ISSUE_TRACKER.format(day=self.day, task="Security audit"))
+        calls = []
+        real = issue_page.write
+        with mock.patch.object(issue_page, "write", lambda *a, **k: calls.append(1) or real(*a, **k)):
+            get(self.port, "/", headers=self.LOOK)
+            self.assertEqual(get(self.port, "/issues/7").status, 200)
+            get(self.port, "/", headers=self.LOOK)
+            get(self.port, "/issues/7")
+        self.assertEqual(len(calls), 1)
 
 
 class _PagesFixture:

@@ -20,6 +20,7 @@ import decision_page  # noqa: E402
 import panels  # noqa: E402
 import render_board as rb  # noqa: E402
 import task_forge  # noqa: E402
+import tracker_log  # noqa: E402
 from tracker import parse_tracker  # noqa: E402
 from workspace import parse_coordinator  # noqa: E402
 import settings as st  # noqa: E402
@@ -137,6 +138,37 @@ class SinceLookedTest(unittest.TestCase):
         held = {a: "decision", b: "triage", c: "Robin", d: "Robin"}
         began = {a: NOW, b: NOW - timedelta(hours=2), c: None}
         self.assertEqual(task_forge.went_held(held, began, NOW - timedelta(hours=1)), 1)
+
+    def began(self, log: str, cause: str = "triage", name: str = "Write README"):
+        tasks = parse_tracker(TRACKER).tasks
+        task = next(t for t in tasks if t.name == name)
+        moves = tracker_log.moves(TRACKER + log, NOW.date(), NOW.tzinfo)
+        return task_forge.hold_began({task: cause}, moves, {}, None, tasks)[task]
+
+    def test_a_gate_hold_begins_at_the_tasks_last_move_into_that_gate(self) -> None:
+        # #579 review R3, R7: moves read as flow_chart reads them: by name or item, any case; the latest move into the
+        # gate, not another stage's or another task's.
+        at = lambda hhmm: NOW.replace(hour=int(hhmm[:2]), minute=int(hhmm[3:]))  # noqa: E731
+        self.assertEqual(self.began("- 11:00 stage: Write README → triage\n- 12:00 stage: Write README → merge\n"
+                                    "- 13:00 stage: Write README → triage\n"), at("13:00"))
+        self.assertIsNone(self.began("- 11:00 stage: Write README → merge\n"))
+        self.assertIsNone(self.began("- 11:00 stage: Cut the release → triage\n"))
+        self.assertEqual(self.began("- 11:00 stage: write eval readme → triage\n"), at("11:00"))
+
+    def test_a_launcher_line_moves_a_task_only_until_its_first_stage_move(self) -> None:
+        # #579 review R7: flow_chart's rule; `completed` puts the task at pr.
+        at = lambda hhmm: NOW.replace(hour=int(hhmm[:2]), minute=int(hhmm[3:]))  # noqa: E731
+        started = "- 10:00 one-shot w1 started: claude, task Write eval README\n"
+        self.assertEqual(self.began(started + "- 11:00 one-shot w1: completed; awaiting integration\n", "pr"), at("11:00"))
+        self.assertIsNone(self.began("- 09:30 stage: Write README → implement\n" + started +
+                                     "- 11:00 one-shot w1: completed; awaiting integration\n", "pr"))
+
+    def test_the_since_time_is_shown_in_the_workspace_zone(self) -> None:
+        # #579 review R4: a look stored in another zone is titled in the workspace's.
+        from datetime import timezone
+        gate = replace(KANBAN, hold_stages=("triage",))
+        self.assertEqual(self.since((NOW - timedelta(hours=2)).astimezone(timezone.utc), kanban=gate,
+                                    log="- 13:00 stage: Write README → triage\n"), [("1 went needs input since 12:30", "1")])
 
     def since(self, looked, refs=None, kanban=KANBAN, log="") -> list[str]:
         html = rb.render(TRACKER + log, parse_coordinator(CLAUDE_MD, today=NOW.date()), NOW, lanes=LANES, kanban=kanban,
