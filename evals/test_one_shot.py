@@ -33,6 +33,26 @@ from _vendor.toon_format import decode as toon_decode, encode as toon_encode  # 
 from evals import git_taint as taint  # noqa: E402
 
 
+def worker_popen_only(agent: str, *, timeout: bool = False, launched: list | None = None):
+    """A Popen replacement that fakes only the worker's process (#99); every other call - git's own,
+    including the ones `subprocess.run` makes internally - runs for real. Each faked launch's cwd is
+    appended to `launched` when given."""
+    real = subprocess.Popen
+
+    def popen(argv, *args, **kwargs):
+        if argv[0] != agent:
+            return real(argv, *args, **kwargs)
+        if launched is not None:
+            launched.append(kwargs.get("cwd"))
+        if timeout:
+            worker = mock.Mock()
+            worker.wait.side_effect = [subprocess.TimeoutExpired(argv, 1), 0]  # the kill's wait
+            return worker
+        return real([sys.executable, "-c", "pass"], *args, **kwargs)  # a worker that merely exits
+
+    return popen
+
+
 @contextlib.contextmanager
 def private_git_views(base):
     """Supply the view API's trusted test base without writing the user's cache."""
@@ -784,16 +804,13 @@ class RunTest(unittest.TestCase):
 
     def copy_of_a_run_that_never_got_a_result(self, exit_code: int, agent: str, *, timeout: bool = False) -> None:
         """The launcher's copy of a run whose worker could not start (127) or timed out (124): human review, with the exit code."""
-        real_run = subprocess.run
-
-        def run(argv, *args, **kwargs):
-            if timeout and argv[0] == agent:
-                raise subprocess.TimeoutExpired(argv, 1)
-            return real_run(argv, *args, **kwargs)
-
-        with mock.patch.object(one_shot, "resolve", return_value=agent), \
-             mock.patch.object(one_shot, "login_argv", side_effect=lambda argv: argv), \
-             mock.patch.object(one_shot.subprocess, "run", side_effect=run), contextlib.redirect_stdout(io.StringIO()):
+        patches = [mock.patch.object(one_shot, "resolve", return_value=agent),
+                   mock.patch.object(one_shot, "login_argv", side_effect=lambda argv: argv)]
+        if timeout:  # the worker starts and its wait runs out; a 127 starts nothing at all
+            patches.append(mock.patch.object(one_shot.subprocess, "Popen", side_effect=worker_popen_only(agent, timeout=True)))
+        with contextlib.ExitStack() as stack, contextlib.redirect_stdout(io.StringIO()):
+            for patch in patches:
+                stack.enter_context(patch)
             self.assertEqual(one_shot.run(root=self.root, day="2026-09-18", task="Security audit", cwd=self.tree, name="worker01",
                                           runtime="codex", agent_type=None, model="", effort="", dry_run=False), 1)
         copy = self.root / dispatch_prompt.REPORTS_DIR / "worker.toon"
@@ -880,7 +897,7 @@ class RunTest(unittest.TestCase):
 
     def test_worker_inherits_the_workspace_for_the_board_guard(self):
         fake = self._fake('status: done\nreason: done\nchanges: checked\n', write_partial=False)
-        with mock.patch.object(one_shot.subprocess, "run", wraps=subprocess.run) as execute:
+        with mock.patch.object(one_shot.subprocess, "Popen", wraps=subprocess.Popen) as execute:
             self.assertEqual(self._run(fake), 0)
         call = next(call for call in execute.call_args_list if call.args[0][0] == str(fake))
         self.assertEqual(call.kwargs["env"]["CHIEF_OF_STUFF_WORKSPACE"], str(self.root.resolve()))
@@ -1757,12 +1774,15 @@ class RunTest(unittest.TestCase):
         self.assertEqual(self._run(fake), 0)
 
     def test_a_running_worker_is_counted_and_released_when_it_exits(self):
+        # #99: the pid file holds the worker's own pid while it runs - the pid actually in this tree -
+        # so `processes` counts the run even after the launcher's own process is gone.
         probe = self.root / "pid-during.txt"
         fake = self._fake('status: done\nreason: r\nchanges: c\n', write_partial=False)
         fake.write_text(fake.read_text().replace(
             "sys.exit(", f"Path({str(probe)!r}).write_text((root / 'one-shot.pid').read_text())\nsys.exit(", 1))
         self.assertEqual(self._run(fake), 0)
-        self.assertEqual(probe.read_text(), f"{os.getpid()} Security audit\n")
+        pid = probe.read_text().split(" ", 1)[0]
+        self.assertNotEqual(int(pid), os.getpid(), "the pid file held the launcher's pid, not the worker's")
         self.assertEqual(process_status.running_trees(self.root / "trees"), {})
 
     def _stopped_tree(self, task: str = "Security audit", *, live: bool = False, pid_file: bool = True) -> None:
@@ -1770,6 +1790,7 @@ class RunTest(unittest.TestCase):
         stale = self.tree / ".chief-of-stuff"
         stale.mkdir(exist_ok=True)
         (stale / "dispatch.md").write_text("# One-shot assignment\nAn earlier dispatch.\n")
+        (stale / ".gitignore").write_text("*\n")  # a launched tree keeps its folder out of git status
         if pid_file:
             if live:
                 pid = os.getpid()
@@ -1898,6 +1919,7 @@ class RunTest(unittest.TestCase):
         self.assertEqual(one_shot.adopt(self.root, day="2026-09-18"), [])
 
     def test_dry_run_writes_nothing(self):
+        fake = self._fake('status: done\nreason: r\nchanges: c\n', write_partial=False)
         with mock.patch.object(one_shot, "resolve", return_value=str(fake)):
             result = one_shot.run(root=self.root, day="2026-09-18", task="Security audit",
                                   cwd=self.tree, name="worker01", runtime="cursor", agent_type=None,
@@ -2396,16 +2418,16 @@ class SanitisedTreeReadTest(unittest.TestCase):
         self.assertIsNone(before)
         self.assertEqual(one_shot.committed_changes(fx.tree, before), one_shot.NO_COMMITS)
         day, tracker, copy, cfg = self.launch_fixture(fx)
-        real_run = subprocess.run
-        process = mock.Mock(return_value=subprocess.CompletedProcess(["fixture-worker"], 0))
+        real_popen = subprocess.Popen
+        process = mock.Mock(return_value=mock.Mock(returncode=0))
 
         def execute(argv, *args, **kwargs):
             if argv[0] == "git":
-                return real_run(argv, *args, **kwargs)
+                return real_popen(argv, *args, **kwargs)
             return process(argv, *args, **kwargs)
 
         with mock.patch.object(one_shot, "login_argv", side_effect=lambda argv: argv), \
-             mock.patch.object(subprocess, "run", side_effect=execute), \
+             mock.patch.object(subprocess, "Popen", side_effect=execute), \
              mock.patch.object(one_shot, "reconcile", return_value={"status": "done", "errors": []}) as reconcile, \
              contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(self.launch(fx, cfg, day), 0)
@@ -2463,15 +2485,14 @@ class SanitisedTreeReadTest(unittest.TestCase):
         fx = self.fixture()
         day, tracker, copy, cfg = self.launch_fixture(fx)
         plain = self.plain_folder(fx)
-        process = mock.Mock(return_value=subprocess.CompletedProcess(["fixture-worker"], 0))
+        launched: list = []
         with mock.patch.object(one_shot, "login_argv", side_effect=lambda argv: argv), \
-             mock.patch.object(subprocess, "run", side_effect=process), \
+             mock.patch.object(subprocess, "Popen", side_effect=worker_popen_only("fixture-worker", launched=launched)), \
              mock.patch.object(one_shot, "reconcile", return_value={"status": "done", "errors": []}) as reconcile, \
              contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(one_shot._launch(fx.root, cfg, day, "Security audit", plain, "worker01", "codex", "", "",
                                               "Generic assignment\n", ["fixture-worker"], 1), 0)
-        process.assert_called_once()
-        self.assertEqual(process.call_args.kwargs["cwd"], plain)
+        self.assertEqual(launched, [plain])
         text = tracker.read_text()
         self.assertIn("| worker01 | running ", text)
         self.assertIn("worktree `plain` (detached)", text)
@@ -2534,6 +2555,7 @@ class SanitisedTreeReadTest(unittest.TestCase):
                 process = mock.Mock(side_effect=AssertionError("an unreadable tree started a worker"))
                 with mock.patch.object(one_shot, "login_argv", side_effect=lambda argv: argv), \
                      mock.patch.object(subprocess, "run", side_effect=process), \
+                     mock.patch.object(subprocess, "Popen", side_effect=process), \
                      mock.patch.object(one_shot, "record_launch") as row, \
                      mock.patch.object(dispatch_prompt, "write_dispatch") as dispatch:
                     with self.assertRaisesRegex(ValueError, "tree is unreadable"):

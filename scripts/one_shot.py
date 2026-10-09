@@ -10,7 +10,7 @@ import re
 import shlex
 import subprocess
 from contextlib import contextmanager, suppress
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import backlog
@@ -25,7 +25,7 @@ from _vendor.toon_format import ToonDecodeError, decode as toon_decode, encode a
 from md import cells as _cells, is_separator as _is_separator
 from notify_service import atomic_write
 from one_shot_report import FIELD_MAX, UNREADABLE, read_report
-from process_status import PIDFILE, PIDFILE_MAX, process_exists, running_trees
+from process_status import PIDFILE, PIDFILE_MAX, pidfile_runs, process_exists, running_trees
 from tracker import parse_tracker
 from tracker_log import RELAUNCHED, ended_line, hold_failed_line, relaunch_line, started_line
 from workspace import worktrees_dir
@@ -339,7 +339,8 @@ def _launch_row_running(launch: Path, task: str, name: str) -> bool:
 
 
 def reconcile(root: Path, day: str, task: str, name: str, cwd: Path, exit_code: int,
-              before_head: str | None = None, read_only: bool = False, runtime: str = "", model: str = "") -> dict:
+              before_head: str | None = None, read_only: bool = False, runtime: str = "", model: str = "",
+              *, adopted: bool = False) -> dict:
     cfg = dispatch_prompt.config(root)
     settings = load_settings(root, cfg.settings_path)
     status, reason, changes = worker_result(cwd / RESULT, exit_code)
@@ -395,6 +396,10 @@ def reconcile(root: Path, day: str, task: str, name: str, cwd: Path, exit_code: 
                   "reason": "task row changed during the one-shot run; reconcile it manually",
                   "changes": summary, "errors": [f"{dispatch_prompt.TRACKER_ERROR} task row changed; no issue or tracker update was made"]}
         return write_report(root, cwd, report)
+    if adopted:
+        # #99: the launcher died before reconciling this run; the report, the Log line and any
+        # review comment say so, and the tree's evidence is the only word there is.
+        reason = f"the launcher died before reconciling this run; {reason}"
     ref = backlog.issue_ref(row.issue, cfg.backlog) if row and row.issue.strip() else None
     hold_error = ""
     if status == "human_review" and ref:
@@ -521,20 +526,84 @@ def _launch(root: Path, cfg, chosen_day: str, task: str, cwd: Path, name: str, r
             pass
     env = clean_env()
     env["CHIEF_OF_STUFF_WORKSPACE"] = str(root.resolve())
+    worker = None
     try:
         with (logs / "worker-stdout.log").open("w") as stdout, (logs / "worker-stderr.log").open("w") as stderr:
-            completed = subprocess.run(launch_argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
-                                       stdout=stdout, stderr=stderr, timeout=timeout_minutes * 60,
-                                       check=False)
-        exit_code = completed.returncode
+            # The worker runs in a session of its own: the coordinator's restart kills the launcher
+            # and the row, not the run, and the restarted coordinator adopts the finished run from
+            # the tree's evidence (#99). The pid file names the worker, the pid that is actually in
+            # this tree; `processes` reads the same file either way.
+            worker = subprocess.Popen(launch_argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+                                      stdout=stdout, stderr=stderr, start_new_session=True)
+            try:
+                (cwd / PIDFILE).write_text(f"{worker.pid} {task}\n")
+            except OSError:
+                worker.kill()  # a live worker with no pid file would race a fresh launch into this tree
+                worker.wait()
+                raise
+            exit_code = worker.wait(timeout=timeout_minutes * 60)
     except subprocess.TimeoutExpired:
+        if worker is not None:
+            worker.kill()
+            worker.wait()
         with (logs / "worker-stderr.log").open("a") as stderr:
             stderr.write(f"One-shot run timed out after {timeout_minutes} minutes\n")
         exit_code = 124
     except OSError as exc:
-        (logs / "worker-stderr.log").write_text(f"Could not start worker: {exc}\n")
+        (logs / "worker-stderr.log").open("a").write(f"Could not start worker: {exc}\n")
         exit_code = 127
     report = reconcile(root, chosen_day, task, name, cwd, exit_code, before_head, runtime=runtime, model=model,
                        read_only=dispatch_prompt.READ_ONLY in body.splitlines())  # held to what it was told
     print(toon_encode(report))
     return 0 if report["status"] == "done" and not report["errors"] else 1
+
+
+ADOPT_LOOKBACK = 7  # days of trackers one adoption sweep scans for a dead run's running row
+
+
+def _running_row(root: Path, cfg, task: str, cwd: Path, days: list[str]) -> tuple[str, str] | None:
+    """The day and worker name of `task`'s running row in the latest of `days` whose tracker holds one
+    and whose File ownership names this tree; None when no recent tracker says running here (#99)."""
+    tree = f"worktree `{cwd.resolve().name}`"
+    for day in days:  # latest first
+        try:
+            text = (root / cfg.tracker_path(day)).read_text()
+        except OSError:
+            continue
+        rows = [row for row in parse_tracker(text).tasks if row.item.strip() == task]
+        if len(rows) != 1 or rows[0].kind != "running" or not rows[0].owner.strip():
+            continue
+        owned = ownership.cell(text, dispatch_prompt.task_keys(task, dispatch_prompt.task_name(text, task)))
+        if owned is None or tree not in owned:
+            continue  # the row's running work lives in some other tree
+        return day, rows[0].owner.strip()
+    return None
+
+
+def adopt(root: Path, day: str | None = None) -> list[dict]:
+    """Reconcile the one-shot runs whose launcher died before reconciling them (#99): a tree whose
+    pid file names a worker that is gone, whose task row still says running under that worker, and
+    whose launcher report copy was never written, is reconciled from its own evidence - the result
+    file, the changed files, the work already in the tree. A worker still alive is left to finish;
+    the next sweep adopts it. The day is a tracker day, not the zone's today; with none given,
+    adoption looks back through ADOPT_LOOKBACK days."""
+    cfg = dispatch_prompt.config(root)
+    trees = root / worktrees_dir((root / "CLAUDE.md").read_text())
+    days = [day] if day else [(datetime.now(cfg.zone).date() - timedelta(days=n)).isoformat()
+                              for n in range(ADOPT_LOOKBACK)]
+    adopted = []
+    for cwd, pid, task in pidfile_runs(trees):
+        if process_exists(pid):
+            continue  # a worker still running is still working on its row
+        if launcher_copy(root, cwd).exists():
+            continue  # a copy is there: a reconcile already answered for this tree's latest run
+        found = _running_row(root, cfg, task, cwd, days)
+        if found is None:
+            continue
+        row_day, name = found
+        stale = cwd / dispatch_prompt.DISPATCH_FILE
+        body = stale.read_text() if stale.is_file() else ""
+        # The dispatch is the launcher's own writing, so its Read-only line is trusted (#57).
+        adopted.append(reconcile(root, row_day, task, name, cwd, 0,
+                                 read_only=dispatch_prompt.READ_ONLY in body.splitlines(), adopted=True))
+    return adopted
