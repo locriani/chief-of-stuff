@@ -200,10 +200,20 @@ def ensure(root: Path, jobs_dir: Path | None = None) -> str:
             return "notify: serving"
         if loaded:
             launchctl("bootout", target)
+            time.sleep(0.05)
         atomic_write(path, plistlib.dumps(desired))
         # stop removes the plist; enable also recovers a job disabled externally.
         launchctl("enable", target)
-        launchctl("bootstrap", f"gui/{os.getuid()}", str(path))
+        for attempt in range(5):
+            try:
+                launchctl("bootstrap", f"gui/{os.getuid()}", str(path))
+                break
+            except ServiceError as exc:
+                if "Input/output error" in str(exc) and attempt < 4:
+                    time.sleep(0.1 * (attempt + 1))
+                    launchctl("bootout", target, missing_ok=True)
+                    continue
+                raise
         return "notify: restarted" if existing or loaded else "notify: started"
 
 
@@ -221,6 +231,7 @@ def stop(root: Path, jobs_dir: Path | None = None) -> str:
         path.unlink(missing_ok=True)
         if launchctl("print", target, missing_ok=True):
             launchctl("bootout", target)
+            time.sleep(0.05)
         return "notify: stopped"
 
 
