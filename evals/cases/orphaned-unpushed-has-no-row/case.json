@@ -29,8 +29,8 @@
           "name": "it asks the audit rather than guessing",
           "type": "tool_used",
           "tool": "Bash",
-          "text_match": "audit",
-          "min": 1
+          "min": 1,
+          "input_match": "\"command\": \"(?:[^\"\\\\]|\\\\.)*?(?:chief[-_]of[-_]stuff(?:\\.py)?\\s+audit\\b(?!\\s+--help)|(?<![\\w.-])audit_tasks\\.py)"
         },
         {
           "name": "the reply names the tree whose writer is gone",
