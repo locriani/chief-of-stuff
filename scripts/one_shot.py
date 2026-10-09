@@ -27,7 +27,7 @@ from notify_service import atomic_write
 from one_shot_report import FIELD_MAX, UNREADABLE, read_report
 from process_status import PIDFILE, PIDFILE_MAX, pidfile_runs, process_exists, running_trees
 from tracker import parse_tracker
-from tracker_log import RELAUNCHED, ended_line, hold_failed_line, relaunch_line, started_line
+from tracker_log import RELAUNCHED, TIMED_OUT, ended_line, hold_failed_line, relaunch_line, started_line, timed_out_line
 from workspace import worktrees_dir
 from settings import load as load_settings
 from shell_setup import clean_env, login_argv, resolve
@@ -526,13 +526,44 @@ def _launch(root: Path, cfg, chosen_day: str, task: str, cwd: Path, name: str, r
             pass
     env = clean_env()
     env["CHIEF_OF_STUFF_WORKSPACE"] = str(root.resolve())
+    for log in ("worker-stdout.log", "worker-stderr.log"):
+        (logs / log).write_text("")  # a fresh run's worker logs start empty; a retried run appends
+    exit_code = _run_worker(cwd, logs, launch_argv, env, task, timeout_minutes)
+    if exit_code == 124 and not (cwd / RESULT).exists():
+        # The first timeout relaunches the run once, into the same tree with its partial commits
+        # (#110): the Log line is the once-per-row marker the second timeout finds, a result the
+        # killed worker wrote mid-window goes so only the second run's evidence is read, and the
+        # second wait gets a doubled timeout.
+        tracker = root / cfg.tracker_path(chosen_day)
+        if not timed_out_before(tracker, name):
+            tracker_write.edit(tracker, lambda text: tracker_write.append_log(
+                text, timed_out_line(tracker_write.stamp(cfg.zone), name, timeout_minutes, task)))
+            with suppress(OSError):
+                (cwd / RESULT).unlink(missing_ok=True)
+            exit_code = _run_worker(cwd, logs, launch_argv, env, task, timeout_minutes * 2)
+    report = reconcile(root, chosen_day, task, name, cwd, exit_code, before_head, runtime=runtime, model=model,
+                       read_only=dispatch_prompt.READ_ONLY in body.splitlines())  # held to what it was told
+    print(toon_encode(report))
+    return 0 if report["status"] == "done" and not report["errors"] else 1
+
+
+def timed_out_before(tracker: Path, name: str) -> bool:
+    """Whether this tracker's Log already carries `name`'s timed-out marker: the row's once-per-run
+    retry is spent, so a run timing out again holds for review instead of relaunching (#110)."""
+    if not tracker.is_file():
+        return False
+    return any((m := TIMED_OUT.match(line)) and m.group(3) == name for line in tracker.read_text().splitlines())
+
+
+def _run_worker(cwd: Path, logs: Path, launch_argv: list[str], env: dict, task: str, timeout_minutes: int) -> int:
+    """Run the worker once, to completion or out of time: its exit code, 124 when the wait ran out,
+    127 when it could not start. The worker runs in a session of its own: the coordinator's restart
+    kills the launcher and the row, not the run, and the restarted coordinator adopts the finished
+    run from the tree's evidence (#99). The pid file names the worker, the pid that is actually in
+    this tree; `processes` reads the same file either way."""
     worker = None
     try:
-        with (logs / "worker-stdout.log").open("w") as stdout, (logs / "worker-stderr.log").open("w") as stderr:
-            # The worker runs in a session of its own: the coordinator's restart kills the launcher
-            # and the row, not the run, and the restarted coordinator adopts the finished run from
-            # the tree's evidence (#99). The pid file names the worker, the pid that is actually in
-            # this tree; `processes` reads the same file either way.
+        with (logs / "worker-stdout.log").open("a") as stdout, (logs / "worker-stderr.log").open("a") as stderr:
             worker = subprocess.Popen(launch_argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
                                       stdout=stdout, stderr=stderr, start_new_session=True)
             try:
@@ -541,21 +572,17 @@ def _launch(root: Path, cfg, chosen_day: str, task: str, cwd: Path, name: str, r
                 worker.kill()  # a live worker with no pid file would race a fresh launch into this tree
                 worker.wait()
                 raise
-            exit_code = worker.wait(timeout=timeout_minutes * 60)
+            return worker.wait(timeout=timeout_minutes * 60)
     except subprocess.TimeoutExpired:
         if worker is not None:
             worker.kill()
             worker.wait()
         with (logs / "worker-stderr.log").open("a") as stderr:
             stderr.write(f"One-shot run timed out after {timeout_minutes} minutes\n")
-        exit_code = 124
+        return 124
     except OSError as exc:
         (logs / "worker-stderr.log").open("a").write(f"Could not start worker: {exc}\n")
-        exit_code = 127
-    report = reconcile(root, chosen_day, task, name, cwd, exit_code, before_head, runtime=runtime, model=model,
-                       read_only=dispatch_prompt.READ_ONLY in body.splitlines())  # held to what it was told
-    print(toon_encode(report))
-    return 0 if report["status"] == "done" and not report["errors"] else 1
+        return 127
 
 
 ADOPT_LOOKBACK = 7  # days of trackers one adoption sweep scans for a dead run's running row

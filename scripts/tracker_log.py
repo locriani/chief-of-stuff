@@ -1,5 +1,6 @@
 """The tracker's `## Log` lines that scripts write and the pages read back: a task's stage move, a one-shot's
-start, end and relaunch, a hold the launcher could not apply, and a closure the user approved.
+start, end and relaunch, a run relaunching after its wait ran out, a hold the launcher could not apply, and a
+closure the user approved.
 
 `chief-of-stuff log --stage` and the one-shot launcher write them with the formatters here; the Flow charts, the
 board's workers, the Workers page and the issue page read them with the patterns here. Both sides live in one
@@ -27,6 +28,9 @@ STARTED = re.compile(r"^- (\d{1,2}):(\d{2}) one-shot (\S+) started: .*, task (.+
 ENDED = re.compile(r"^- (\d{1,2}):(\d{2}) one-shot (\S+): (completed; awaiting integration|HUMAN REVIEW NEEDED)\b")
 # RELAUNCHED's Log line, grouped as ENDED is.
 RELAUNCH = re.compile(r"^- (\d{1,2}):(\d{2}) one-shot (\S+): (relaunch) requested for ")
+# A run whose wait ran out relaunches once into its tree (#110); this line is the once-per-row marker the
+# second timeout finds, grouped as RELAUNCH is.
+TIMED_OUT = re.compile(r"^- (\d{1,2}):(\d{2}) one-shot (\S+): timed out after (\d+) minutes? — running once more, task (.+?)\s*$")
 # A started line's runtime and model and its worktree, for the board's workers and the issue page. STARTED reads
 # only the worker and the task.
 STARTED_DETAIL = re.compile(r"^-\s+(\d{1,2}:\d{2}) one-shot (\S+) started: (.*?), worktree `([^`]*)`, task (.+?)\s*$")
@@ -63,6 +67,12 @@ def ended_line(at: str, name: str, status: str, reason: str, changes: str) -> st
 def relaunch_line(at: str, name: str, task: str, reason: str) -> str:
     """The launcher's line when worker `name` asks for `task` to run again; `reason` comes already on one line."""
     return f"- {at} one-shot {name}{RELAUNCHED.format(task=task)}{one_period(reason)}"
+
+
+def timed_out_line(at: str, name: str, minutes: int, task: str) -> str:
+    """The launcher's line when worker `name`'s wait ran out once and the run relaunches into its tree (#110);
+    the line is the once-per-row marker the second timeout finds."""
+    return f"- {at} one-shot {name}: timed out after {minutes} minutes — running once more, task {task}"
 
 
 def hold_failed_line(at: str, name: str, task: str, error: str) -> str:
