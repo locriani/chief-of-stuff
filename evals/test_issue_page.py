@@ -822,6 +822,22 @@ class ForgeMergedTaskPageTest(unittest.TestCase):
         self.assertEqual(board_rows["Upload size limit"][1].note, task_rows["Upload size limit"][1].note)
         self.assertEqual(board_rows["Upload size limit"][1].note, f"merged {self.MERGE_LOCAL}")
 
+    def test_the_board_and_the_task_page_name_the_same_hold_cause(self):
+        # #228: a needs-input row names what holds it, a pending decision first, then a [kanban] hold stage, then the
+        # person it waits on; the board's Flow and the task page read the one cause.
+        cfg = BoardTest().cfg()
+        src = sources()
+        for kanban, refs, cause in ((KANBAN, set(), "Robin"), (replace(KANBAN, hold_stages=("pr",)), set(), "pr"),
+                                    (replace(KANBAN, hold_stages=("pr",)), {"#109"}, "decision")):
+            with self.subTest(cause=cause):
+                board = self.flow_rows(lambda: rb.render(TODAY_START, cfg, self.NOW2, lanes=LANES, tracker_day=TODAY,
+                                                         kanban=kanban, stage_log=[(YESTERDAY, YESTERDAY_TRACKER)],
+                                                         sources=src, pending_refs=refs))
+                task = self.flow_rows(lambda: ip.render(109, [(YESTERDAY, YESTERDAY_TRACKER), (TODAY, TODAY_START)],
+                                                        src, self.NOW2, LANES, kanban=kanban, pending_refs=refs))
+                self.assertEqual(board["Upload size limit"][1].note, f"needs input · {cause}")
+                self.assertEqual(task["Upload size limit"][1].note, f"needs input · {cause}")
+
 
 DONE_MIDNIGHT_TRACKER = f"""# Tracker
 

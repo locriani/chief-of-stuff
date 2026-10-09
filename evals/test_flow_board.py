@@ -20,6 +20,7 @@ import decision_page  # noqa: E402
 import panels  # noqa: E402
 import render_board as rb  # noqa: E402
 import task_forge  # noqa: E402
+from tracker import parse_tracker  # noqa: E402
 from workspace import parse_coordinator  # noqa: E402
 import settings as st  # noqa: E402
 from test_render_board import CLAUDE_MD, NOW  # noqa: E402
@@ -77,6 +78,31 @@ Coordinator: coordinator. Board: board-7.
 LANES = {"build": st.Lane(("implement", "pr", "review", "triage", "merge"), ("triage", "merge"))}
 KANBAN = st.Kanban(("stage::implement", "stage::review", "stage::triage"), "needs-human",
                    {"implement": 0, "pr": 0, "review": 1, "triage": 2, "merge": 2})
+
+
+class HoldCauseTest(unittest.TestCase):
+    """#228: task_forge.hold_cause is the one place a hold is decided, and names what holds the task."""
+
+    def setUp(self) -> None:
+        self.tasks = {t.name: t for t in parse_tracker(TRACKER).tasks}
+        self.kanban = replace(KANBAN, hold_stages=("triage",))
+
+    def cause(self, name: str, refs=frozenset(), kanban=None, workers=frozenset()) -> str:
+        return task_forge.hold_cause(self.tasks[name], kanban or self.kanban, None, workers, refs, None)
+
+    def test_a_pending_decision_on_the_issue_comes_first(self) -> None:
+        self.assertEqual(self.cause("Write README", {"#7"}), "decision")
+
+    def test_else_a_kanban_hold_stage_names_the_stage(self) -> None:
+        self.assertEqual(self.cause("Write README"), "triage")
+
+    def test_else_a_waiting_task_names_the_person_it_waits_on(self) -> None:
+        waiting = replace(self.tasks["Console"], state="waiting")
+        self.assertEqual(task_forge.hold_cause(waiting, self.kanban, None, frozenset(), frozenset(), None), "Robin")
+        self.assertEqual(task_forge.hold_cause(waiting, self.kanban, None, {"Robin"}, frozenset(), None), "")
+
+    def test_nothing_holds_a_running_task_off_a_hold_stage(self) -> None:
+        self.assertEqual(self.cause("Cut the release"), "")
 
 
 class MergeOrder(unittest.TestCase):
