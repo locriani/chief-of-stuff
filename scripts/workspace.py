@@ -176,14 +176,28 @@ def _swap_in(path: Path, text: str) -> None:
     os.replace(out.name, path)
 
 
-def record_look(pages_dir: Path, now: datetime) -> None:
+def record_look(pages_dir: Path, now: datetime) -> dict[str, str | None]:
     """A person loaded the board at `now` (the server's clock): the look before it becomes `.looked-before`, freshly
-    written so the board, whose source it is, re-renders from it."""
-    try:
-        _swap_in(pages_dir / LOOKED_BEFORE, (pages_dir / LAST_LOOKED).read_text())
-    except FileNotFoundError:
-        pass  # a first look: nothing before it
+    written so the board, whose source it is, re-renders from it. Returns both files as they were, for `unrecord_look`."""
+    prior = {}
+    for name in (LAST_LOOKED, LOOKED_BEFORE):
+        try:
+            prior[name] = (pages_dir / name).read_text()
+        except FileNotFoundError:
+            prior[name] = None  # a first look: nothing before it
+    if prior[LAST_LOOKED] is not None:
+        _swap_in(pages_dir / LOOKED_BEFORE, prior[LAST_LOOKED])
     _swap_in(pages_dir / LAST_LOOKED, now.isoformat())
+    return prior
+
+
+def unrecord_look(pages_dir: Path, prior: dict[str, str | None]) -> None:
+    """Put both files back as `record_look` found them: the board it was for never showed."""
+    for name, text in prior.items():
+        if text is None:
+            (pages_dir / name).unlink(missing_ok=True)
+        else:
+            _swap_in(pages_dir / name, text)
 
 
 def looked_before(pages_dir: Path) -> datetime | None:
