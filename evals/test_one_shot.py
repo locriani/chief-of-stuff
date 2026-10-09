@@ -1783,8 +1783,8 @@ class RunTest(unittest.TestCase):
         # already in it; the stopped run's result is not read as this run's.
         subprocess.run(["git", "-C", str(self.tree), "-c", "user.name=Test", "-c", "user.email=test@example.test",
                         "commit", "-q", "--allow-empty", "-m", "partial work"], check=True)
-        (self.tree / one_shot.RESULT).write_text('status: done\nreason: from the stopped run\nchanges: none\n')
         self._stopped_tree()
+        (self.tree / one_shot.RESULT).write_text('status: done\nreason: from the stopped run\nchanges: none\n')
         fake = self._fake(None, write_partial=False)
         self.assertEqual(self._run(fake), 1)
         self.assertIn("| Security audit | Robin | waiting |", self.tracker.read_text())

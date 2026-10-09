@@ -25,7 +25,7 @@ from _vendor.toon_format import ToonDecodeError, decode as toon_decode, encode a
 from md import cells as _cells, is_separator as _is_separator
 from notify_service import atomic_write
 from one_shot_report import FIELD_MAX, UNREADABLE, read_report
-from process_status import PIDFILE, running_trees
+from process_status import PIDFILE, PIDFILE_MAX, process_exists, running_trees
 from tracker import parse_tracker
 from tracker_log import RELAUNCHED, ended_line, hold_failed_line, relaunch_line, started_line
 from workspace import worktrees_dir
@@ -444,6 +444,31 @@ def slot(trees: Path, cwd: Path, task: str, cap: int | None):
         (cwd / PIDFILE).unlink(missing_ok=True)
 
 
+def _clear_stale_dispatch(cwd: Path, task: str) -> None:
+    """A dispatch whose launcher was stopped mid-run accepts the same task again, keeping the work
+    already in the tree (#138). The pid file answers whether a launcher or worker is still live: a
+    dead or missing one plus the same task clears the tree's copy of the dispatch and the stopped
+    run's result; a live pid, another task's dispatch, or a pid file that cannot be read, refuses
+    as ever (write_dispatch, below). Runs before slot() writes its own claim into the pid file."""
+    dispatch = cwd / dispatch_prompt.DISPATCH_FILE
+    if not dispatch.is_file():
+        return
+    try:
+        data = git_view.read_regular(cwd / PIDFILE, PIDFILE_MAX, nofollow=True)
+    except FileNotFoundError:
+        pass  # no pid file: the run that wrote this dispatch ended and cleaned its slot
+    except OSError:
+        return  # a pid file that cannot be read vouches for nothing; the refusal stands
+    else:
+        pid, _, held = ((data or b"").decode(errors="replace").splitlines() or [""])[0].partition(" ")
+        if pid.isascii() and pid.isdecimal() and int(pid) > 0 and process_exists(int(pid)):
+            return  # a launcher or worker is live in this tree
+        if held.strip() != task.strip():
+            return  # another task's tree
+    (cwd / RESULT).unlink(missing_ok=True)  # the stopped run's result is not the next run's
+    dispatch.unlink(missing_ok=True)
+
+
 def run(*, root: Path, day: str | None, task: str, cwd: Path, name: str,
         runtime: str, agent_type: str | None, model: str, effort: str, dry_run: bool,
         timeout_minutes: int = 60) -> int:
@@ -465,6 +490,7 @@ def run(*, root: Path, day: str | None, task: str, cwd: Path, name: str,
     if not cwd.is_dir():
         raise ValueError(f"no worktree at {cwd}")
     trees = root / worktrees_dir((root / "CLAUDE.md").read_text())
+    _clear_stale_dispatch(cwd, task)
     with slot(trees, cwd, task, workers.max_concurrency):
         return _launch(root, cfg, chosen_day, task, cwd, name, runtime, model, effort, body, argv, timeout_minutes)
 
