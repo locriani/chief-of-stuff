@@ -18,7 +18,7 @@ The shared helpers the page modules use (the stylesheet head, the file write tha
 
 ## 4. Circles
 
-Each script under `scripts/`, the two launchers and the hook belong to one circle. A module that does the work of two circles is a gap against this section until it is split. `inbox.py` and `audit_tasks.py` are placed by the parts section 8 splits them into; each is a gap until the split lands.
+Each script under `scripts/`, the two launchers and the hook belong to one circle. A module that does the work of two circles is a gap against this section until it is split. `inbox.py`, `audit_tasks.py` and `flow.py` are placed by the parts section 8 splits them into; each is a gap until the split lands.
 
 | Circle | Modules |
 |---|---|
@@ -46,7 +46,7 @@ The path is read from the `Canonical document:` bullet of the workspace's own `#
 
 ## 8. Single responsibility
 
-A module has one reason to change. `inbox.py` and `audit_tasks.py`, the two largest, each carry more than one and are split by responsibility, each part landing in one circle of section 4.
+A module has one reason to change. `inbox.py` and `audit_tasks.py`, the two largest, and `flow.py` each carry more than one and are split by responsibility, each part landing in one circle of section 4.
 
 | Module today | Responsibility | Circle |
 |---|---|---|
@@ -57,6 +57,8 @@ A module has one reason to change. `inbox.py` and `audit_tasks.py`, the two larg
 | `audit_tasks.py` | The ownership rules and the pure judgements | Use Cases |
 | `audit_tasks.py` | Gathering facts from git and the forge | Interface Adapters, gateways |
 | `audit_tasks.py` | The audit orchestration and the command line | Frameworks and Drivers |
+| `flow.py` | The ready-task and stagnation judgements | Use Cases |
+| `flow.py` | The tick orchestration and the command line | Frameworks and Drivers |
 
 Each module keeps re-exporting the names its callers import until they import from the new modules. Where the module boundaries and their names fall is decided when the work is assigned.
 
@@ -72,10 +74,10 @@ A run is a started line paired with the same worker's completed, human-review or
 |---|---|---|
 | `tracker_log.Run` | `worker: str, task: str, runtime: str, model: str, effort: str, agent_type: str, started: datetime, ended: datetime \| None, outcome: str \| None` | Entities |
 | `tracker_log.runs` | `(trackers: list[tuple[date, str]], zone: ZoneInfo) -> list[Run]` | Entities |
-| `performance.Row` | `period: date, runtime: str, model: str, effort: str, agent_type: str, started: int, completed: int, human_review: int, relaunched: int, median_minutes: int \| None` | Use Cases |
-| `performance.table` | `(runs: list[Run], since: date, until: date, by: str) -> list[Row]` | Use Cases |
+| `performance.Row` | `period: date, runtime: str, model: str, effort: str, agent_type: str, runs: int, completed: int, human_review: int, relaunched: int, median_minutes: int \| None` | Use Cases |
+| `performance.table` | `(runs: list[Run], since: date, until: date, by: str) -> list[Row]`, where `by` is `day` or `week` | Use Cases |
 | `performance_report.main` | `(argv: list[str] \| None = None) -> int` | Frameworks and Drivers |
 
-For each day or week and each key of runtime, model, effort and agent type, the report counts the runs started, completed, sent to human review and relaunched, and the median minutes from start to end. A run with no model or effort on its started line is keyed by what is there. `performance.py` reads no file; `performance_report.py` reads the trackers, calls `performance.table` and prints one table. It is the `performance` command: `chief-of-stuff performance --since DATE [--until DATE] [--by day|week]`. No board panel or page shows it.
+For each day or week and each key of runtime, model, effort and agent type, the report counts the runs started, completed, sent to human review and relaunched, and the median minutes from start to end. A run with no model, effort or type on its started line is keyed by what is there, and an empty key field prints as `-`. `performance.py` reads no file; `performance_report.py` reads the trackers, calls `performance.table` and prints one table. It is the `performance` entry of `COMMANDS` in `chief_of_stuff.py`: `chief-of-stuff performance --since DATE [--until DATE] [--by day|week]`. No board panel or page shows it.
 
 Review findings are not counted until review reports have one shape (issue #563). Then findings per task are joined to runs by the task on the started line.
