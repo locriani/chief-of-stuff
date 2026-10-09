@@ -90,7 +90,7 @@ TRACKER_ROW_RULES = {
     ),
     'sha': (
         "The optional `<sha>` is the commit that carried THIS task's change onto main — the one you already reported in `Verified`, written here so a machine can read it.",
-        "`audit_tasks.py` clears a task from `git merge-base --is-ancestor <sha> main` when it is there, and falls back to asking whether the owner's TREE is on main when it is not; a sha it cannot parse or cannot find is treated as absent, never as a clear.",
+        "`audit_tasks.py` clears a task when `<sha>` is on origin/main as last fetched or on local main, and falls back to asking whether the owner's TREE is on main when it is not; a sha it cannot parse or cannot find is treated as absent, never as a clear.",
         'Write it only when you have it, and never one you did not verify: a task reopened in error is noisy and self-clearing, and a task cleared in error is silent and permanent.',
     ),
     'size': (
