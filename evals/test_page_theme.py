@@ -140,6 +140,62 @@ class DecisionPagesThemeTest(unittest.TestCase):
         assert_carries_the_theme(self, self.listing)
 
 
+class DecisionPageSkillThemeTest(unittest.TestCase):
+    """Stage 4 of the page-theme plan: the hand-written decision pages carry the theme through the skill's template.
+    The JSON the skill teaches is what the coordinator writes by hand; the page it renders reads its theme from the
+    vendored asset the server holds. The skill names that asset (as the canonical page specs name theirs), carries no
+    styling of its own, and the asset it names is the pinned bytes wherever the install puts it."""
+
+    SKILL = ROOT / "skills" / "decision-page" / "SKILL.md"
+    NAMED_ASSET = re.compile(r"\$\{CLAUDE_PLUGIN_ROOT\}/(assets/page-theme\.css)")
+
+    def setUp(self):
+        self.skill = self.SKILL.read_text()
+
+    def test_the_skill_names_the_vendored_theme_asset(self):
+        """The template the agent copies ties its page to the canonical theme by naming the vendored asset the way
+        the canonical page specs name theirs (frank-lloyd-aight docs/review-page.md §Stylesheet), so the hand-written
+        flow cannot drift from the renderers' copy."""
+        self.assertIsNotNone(self.NAMED_ASSET.search(self.skill),
+                             "the skill never names ${CLAUDE_PLUGIN_ROOT}/assets/page-theme.css")
+
+    def test_the_skill_instructs_no_inline_css(self):
+        """The schema carries no styling and neither does the skill: no `<style>` block, no css fence, no hex colour —
+        a hand-written decision page gets the theme only from the vendored asset the server reads."""
+        self.assertNotIn("<style>", self.skill)
+        self.assertNotIn("```css", self.skill)
+        self.assertNotRegex(self.skill, r"#[0-9a-fA-F]{6}\b")
+
+    def test_the_named_asset_is_the_pinned_bytes_in_a_standalone_install(self):
+        """The standalone release copies skills, scripts and assets beside each other (start_coordinator.py), so the
+        asset the skill names is the file the renderers read there too, and `sync_page_theme.py --check` stays honest
+        in the release tree, not just in the checkout."""
+        named = self.NAMED_ASSET.search(self.skill)
+        release = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, release, True)
+        for item in ("skills", "scripts", "assets"):
+            shutil.copytree(ROOT / item, release / item)
+        self.assertIsNotNone(named, "the skill names no theme asset to resolve in the release tree")
+        self.assertEqual(sha256(release / named[1]), theme_sync.PINNED_SHA256)
+        check = subprocess.run([sys.executable, str(release / "scripts" / "sync_page_theme.py"), "--check"],
+                               capture_output=True, text=True, timeout=60)
+        self.assertEqual(check.returncode, 0, check.stderr)
+
+    def test_the_skill_template_renders_a_page_that_carries_the_whole_theme(self):
+        """A decision JSON holding every part the skill's schema names renders, through the server's renderer, into a
+        page that carries the whole theme — the carriage stage 2 landed, tied here to the skill's own template."""
+        d = decision(timeline=[{"when": "09:40", "text": "impl-uploads stopped.", "kind": "pr"}])
+        d["architecture"] = {"summary": "The parts the ask touches.",
+                             "nodes": [{"id": "pool", "name": "pool.py", "state": "inflight", "detail": "src/cache/pool.py", "hot": True},
+                                      {"id": "client", "name": "client.py", "state": "deployed"}],
+                             "edges": [{"from": "client", "to": "pool", "label": "draws", "state": "deployed"}]}
+        pages = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, pages, True)
+        (pages / "decision-skill-template.json").write_text(json.dumps(d))
+        dp.write(pages, pages, "skill-template", "2026-09-26")
+        assert_carries_the_theme(self, (pages / "decision-skill-template.html").read_text())
+
+
 class PagesServerThemeTest(unittest.TestCase):
     """The server's own render path — a GET re-rendering from the workspace — serves themed pages too."""
 
