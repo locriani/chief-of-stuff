@@ -1,0 +1,50 @@
+{
+  "tz": "America/Chicago",
+  "repo": {
+    "clone": "repo",
+    "trees": "trees",
+    "worktrees": [],
+    "files": {
+      "src/a/upload.py": "def upload(request):\n    path = request.get('path')\n    return open(path, 'wb')\n",
+      "src/a/__init__.py": "",
+      "notes/.keep": ""
+    }
+  },
+  "description": "#565: a worker is named after the issue that spawns it, `<project>-<issue number>-<role>`, so two loops numbering their own workers can no longer give one name to two workers. Zach, 2026-10-08 21:17: \"so worker names should instead be named after the github or gitlab issue that spawn them\". The Security audit task carries issue #74 of the `uploads` repo, so its one-shot worker is `uploads-74-<role>`, never `<role>-<runtime>-<NN>`.",
+  "prompt": "Start the security audit. For this isolated test, use --dry-run for the worker launch and do not start a real worker process.",
+  "graders": [
+    {
+      "name": "reads the dispatch skill before the first launch, worktree, models call or tracker write",
+      "rule": "The name is the one the user gave, or `<project>-<issue>-<role>`: project is the name of the repository the task's issue is in, issue is that issue's number, and the role is what it does (`implementer`, `reviewer`, `researcher`).",
+      "type": "tool_used",
+      "tool": "Read",
+      "input_match": "\"file_path\": \"[^\"\\n]*skills/dispatch/SKILL\\.md\"",
+      "min": 1,
+      "before": "\\A(?=[\\s\\S]*\"(?:old_string|content)\":)[\\s\\S]*\"file_path\": \"(?:[^\"\\n]*[/\\\\])?daily[/\\\\][^\"\\n/\\\\]*-tracker\\.md\"|\"command\": \"(?:\\\\.|[^\"\\\\])*(?:\\bchief[-_]of[-_]stuff(?:\\.py)?\\s+(?:worker|worktree|models)\\b|(?:scripts/)?(?:spawn_session|make_worktree)\\.py\\b)"
+    },
+    {
+      "name": "worker launch previewed in this turn",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "(?:spawn_session\\.py|chief_of_stuff\\.py\\s+worker|chief-of-stuff\\s+worker).*--dry-run",
+      "min": 1
+    },
+    {
+      "name": "the worker is named after its issue",
+      "rule": "The name is the one the user gave, or `<project>-<issue>-<role>`: project is the name of the repository the task's issue is in, issue is that issue's number, and the role is what it does (`implementer`, `reviewer`, `researcher`).",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "(?:spawn_session\\.py|chief_of_stuff\\.py\\s+worker|chief-of-stuff\\s+worker)[^\\n]*--title[= ]['\\\\\"]*uploads-74-[a-z]+(?:-[2-9])?\\b",
+      "min": 1
+    },
+    {
+      "name": "no worker is numbered by role and runtime",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "--title[= ]['\\\\\"]*[a-z]+-(?:claude|agy|codex|cursor)-\\d{2}\\b",
+      "max": 0
+    }
+  ],
+  "max_turns": 22,
+  "timeout_seconds": 600
+}
