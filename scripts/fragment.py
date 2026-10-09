@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import html
 import re
+from pathlib import Path
 
 KIND = re.compile(r"[a-z][a-z0-9-]*")
 COLOUR = re.compile(r"[#\w(),.%/ -]+")  # a colour, var() or border shorthand; nothing that ends a declaration or a rule
@@ -45,12 +46,22 @@ TABS = (("Board", "/"), ("Workers", "/workers"), ("Dispatch", ""), ("Since you l
 # On the pages' tokens (--fg, --muted, --line, --link); wraps at phone width rather than widening the page.
 # The pages' type: Alegreya Sans for text, Cormorant SC for heads.
 FONTS = "https://fonts.googleapis.com/css2?family=Alegreya+Sans:wght@400;500;600&family=Cormorant+SC:wght@600&display=swap"
+# The canonical page theme (frank-lloyd-aight docs/page-theme.css), vendored at assets/page-theme.css by
+# scripts/sync_page_theme.py; read at render time, so a re-sync reaches the served pages without a restart.
+THEME_PATH = Path(__file__).resolve().parent.parent / "assets" / "page-theme.css"
 TAB_CSS = """nav.tabs{display:flex;flex-wrap:wrap;align-items:flex-end;column-gap:28px;margin:-8px 0 0;border-bottom:1px solid var(--line)}
 nav.tabs>*{display:inline-flex;align-items:baseline;gap:7px;min-height:34px;box-sizing:border-box;padding:8px 0 7px;margin-bottom:-1px;font:600 15.5px "Cormorant SC",Georgia,serif;letter-spacing:.08em;text-decoration:none;color:var(--muted)}
 nav.tabs>[aria-current=page]{color:var(--fg);box-shadow:inset 0 -3px 0 var(--fg)}
 nav.tabs>.tab-parent{color:var(--fg);box-shadow:inset 0 -1px 0 var(--fg)}
 nav.tabs .badge{font:700 11.5px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:0;color:var(--link,var(--brass))}
 """
+
+
+def theme() -> str:
+    """The vendored theme's CSS, to sit at the top of a page's own `<style>` block, ahead of the page's rules —
+    cascade order (theme first, page rules second) is all that decides what wins while the pages keep their own look.
+    One block per page, as the tests that slice the pages' CSS expect; the comment marks where the theme ends."""
+    return THEME_PATH.read_text() + "\n/* the canonical theme ends here; the page's own rules follow */\n"
 
 
 def tab_bar(tab: str, pending: int, parent: bool = False, since: tuple[int, str] = (0, ""),
