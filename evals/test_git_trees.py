@@ -291,19 +291,30 @@ class FetchBaseTest(Repo):
                 for path in (self.clone, self.clone.resolve()):
                     self.assertNotIn(str(path), err)
 
-    def test_the_call_is_the_callers_environment_with_prompts_off(self) -> None:
-        """Not through the sandboxed `git()`: a fetch needs the caller's credentials and ssh agent."""
+    def test_the_call_carries_the_write_pins_and_the_callers_credentials(self) -> None:
+        """#556: the fetch is a launcher write into a tree a worker can write, so it runs with the write pins on argv
+        and the audit's environment — no home, global or system config, no prompts — plus only the caller's credential
+        variables: a fetch the caller could authenticate still authenticates. Still not through the sandboxed `git()`."""
         seen = {}
 
         def fake(argv, **kw):
             seen["argv"], seen["kw"] = argv, kw
             return subprocess.CompletedProcess(argv, 0, "", "")
 
-        with patch.dict(os.environ, {"COS_FETCH_ENV_PROBE": "kept"}), patch.object(git_trees.subprocess, "run", fake):
+        with patch.dict(os.environ, {"COS_FETCH_ENV_PROBE": "kept", "SSH_AUTH_SOCK": "/agent.sock",
+                                     "GIT_SSH_COMMAND": "ssh -i key"}), patch.object(git_trees.subprocess, "run", fake):
             self.assertEqual(git_trees.fetch_base(self.clone, timeout=7), "")
-        self.assertEqual(seen["argv"], ["git", "-C", str(self.clone), "fetch", "-q", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main"])
-        self.assertEqual(seen["kw"]["env"]["GIT_TERMINAL_PROMPT"], "0")
-        self.assertEqual(seen["kw"]["env"]["COS_FETCH_ENV_PROBE"], "kept")
+        self.assertEqual(seen["argv"], ["git", *git_trees.GIT_WRITE_PINS, "-C", str(self.clone), "fetch", "-q",
+                                        "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main"])
+        env = seen["kw"]["env"]
+        self.assertEqual(env["GIT_TERMINAL_PROMPT"], "0")
+        self.assertEqual(env["HOME"], git_trees.SAFE_HOME, "no home of the caller's is read")
+        self.assertEqual(env["GIT_CONFIG_GLOBAL"], os.devnull)
+        self.assertEqual(env["GIT_CONFIG_SYSTEM"], os.devnull)
+        self.assertEqual(env["GIT_NO_REPLACE_OBJECTS"], "1")
+        self.assertEqual(env["SSH_AUTH_SOCK"], "/agent.sock")
+        self.assertEqual(env["GIT_SSH_COMMAND"], "ssh -i key")
+        self.assertNotIn("COS_FETCH_ENV_PROBE", env, "nothing but the credential variables rides along")
         self.assertEqual(seen["kw"]["timeout"], 7)
         self.assertFalse(seen["kw"].get("shell"))
 
