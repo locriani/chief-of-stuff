@@ -17,6 +17,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
+import flow
 import notify
 from notify import configuration, sync_workspace
 from workspace import ConfigError, daily_trackers
@@ -104,6 +105,11 @@ class Service:
             for line in changes.lines:
                 if line != "notify: off":
                     print(line, flush=True)
+            try:
+                for ev in flow.tick(self.root, now):
+                    print(f"flow: {ev}", flush=True)
+            except Exception as exc:
+                print(f"notify service (flow): {exc}", file=sys.stderr, flush=True)
         except Exception as exc:
             message = f"{type(exc).__name__}: {exc}"
             if message != self.record["error"]:
