@@ -689,3 +689,14 @@ class EpicRiskTest(unittest.TestCase):
                 ("o/lib#1", self.milestone(due, url="https://github.com/o/lib/milestone/1"), "open", "waiting"),
                 ("#2", self.milestone(past, url="https://github.com/o/app/milestone/1"), "open", "waiting")]
         self.assertEqual(self.risk(rows, {"item o/lib#1": NOW + timedelta(days=3)}), (1, 1))
+
+
+class EpicsOnTheBoardTest(unittest.TestCase):
+    """#230: the board passes the tab bar its milestones at risk and late."""
+
+    def test_the_board_counts_a_late_milestone(self):
+        late = bs.Milestone("v2", "https://forge/m/1", NOW.date() - timedelta(days=1), "open", 1)
+        sources = replace(SOURCES, issues={**SOURCES.issues, "#9": replace(SOURCES.issues["#9"], milestone=late)})
+        cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.assertIn('title="milestones: 1 late">1 late</span>', rb.render(TRACKER, cfg, NOW, lanes=LANES, sources=sources))
+        self.assertNotIn("milestones:", rb.render(TRACKER, cfg, NOW, lanes=LANES, sources=SOURCES))
