@@ -191,6 +191,26 @@ class FlowEngineTests(unittest.TestCase):
             reconciled = flow.reconcile_dead_workers(self.root, tracker_path, "2026-10-08")
         self.assertTrue(any("orphaned" in r for r in reconciled), reconciled)
 
+    def test_a_live_session_named_as_the_rows_name_or_owner_still_holds_it(self):
+        """#575 review: a registered session joins its row by the row's name or owner, so its row stays running."""
+        tracker_text = """## Tasks
+
+| name | item | owner | state | since | due | size | lane | stage | issue | checklist |
+|---|---|---|---|---|---|---|---|---|---|---|
+| task-d | deploy | worker-d | running 10:00 | 2026-10-08 | | S | build | build | #4 | |
+
+## Log
+
+- 10:00 started
+"""
+        tracker_path = self.root / "daily" / "2026-10-08-tracker.md"
+        for session in ("task-d", "worker-d"):
+            with self.subTest(session=session):
+                make_workspace(self.root, tracker_text)
+                with mock.patch("process_status.registrations", return_value={os.getpid(): {"name": session}}):
+                    self.assertEqual(flow.reconcile_dead_workers(self.root, tracker_path, "2026-10-08"), [])
+                self.assertIn("| worker-d | running 10:00 |", tracker_path.read_text())
+
     def test_check_stagnant_tasks_detects_prolonged_running_without_commits(self):
         tracker_text = """## Tasks
 
