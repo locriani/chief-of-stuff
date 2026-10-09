@@ -215,6 +215,11 @@ def _running(name: str) -> re.Pattern:
     return re.compile(rf"\|\s*{re.escape(name)}\s*\|\s*running\s+\d{{1,2}}:\d{{2}}\s*\|", re.I)
 
 
+def _carried(name: str) -> re.Pattern:
+    """The rollover twin's row: same worker, state restarted to open (#576)."""
+    return re.compile(rf"\|\s*{re.escape(name)}\s*\|\s*open\s*\|", re.I)
+
+
 def _tree_note(root: Path, cwd: Path) -> str:
     """How the File ownership row names the tree: relative to the Worktrees dir, as audit reads it."""
     base = (root / worktrees_dir((root / "CLAUDE.md").read_text())).resolve()
@@ -271,15 +276,17 @@ def record_launch(path: Path, task: str, name: str, tree: str, runtime: str, mod
 
 
 def update_tracker(path: Path, task: str, name: str, owner: str, status: str, reason: str, changes: str,
-                   at: str) -> None:
-    """Set the dispatched row to waiting, or back to ready on a relaunch, and append a durable local result note."""
+                   at: str, carried: bool = False) -> None:
+    """Set the dispatched row to waiting, or back to ready on a relaunch, and append a durable local result note.
+    A row the midnight rollover carried over starts open under the worker (#576), not running."""
     if "|" in owner or "\n" in owner:
         raise ValueError("configured user name cannot be written as a tracker owner")
 
     def change(text: str) -> str:
         lines = text.splitlines(keepends=True)
         i = _task_line(lines, task)
-        running, why = _running(name), "task row changed during the one-shot run; tracker needs manual reconciliation"
+        running = _carried(name) if carried else _running(name)
+        why = "task row changed during the one-shot run; tracker needs manual reconciliation"
         if status == "relaunch":
             # Back to unassigned and open: ready, so the coordinator dispatches it again.
             lines[i] = _set_owner_state(lines[i], running, "| unassigned | open |", why)
@@ -315,6 +322,15 @@ def write_report(root: Path, cwd: Path, report: dict) -> dict:
     return report
 
 
+def _launch_row_running(launch: Path, task: str, name: str) -> bool:
+    """The launch-day row the midnight rollover carried over is still running under this worker (#576)."""
+    try:
+        rows = [row for row in parse_tracker(launch.read_text()).tasks if row.item.strip() == task]
+    except OSError:
+        return False
+    return len(rows) == 1 and rows[0].kind == "running" and rows[0].owner.strip().lower() == name.lower()
+
+
 def reconcile(root: Path, day: str, task: str, name: str, cwd: Path, exit_code: int,
               before_head: str | None = None, read_only: bool = False, runtime: str = "", model: str = "") -> dict:
     cfg = dispatch_prompt.config(root)
@@ -324,8 +340,13 @@ def reconcile(root: Path, day: str, task: str, name: str, cwd: Path, exit_code: 
     commits = committed_changes(cwd, before_head)
     # The result lands on the day the run ends, falling back to the launch day's (#93).
     path = root / cfg.tracker_path(day)
+    launch = path
     end = root / cfg.tracker_path(datetime.now(cfg.zone).date().isoformat())
+    carried = False
     if end.exists() and any(row.item.strip() == task for row in parse_tracker(end.read_text()).tasks):
+        # The midnight rollover carries a still-running launch-day row over as the end day's open twin (#576):
+        # the same row, so the run lands on it. The launch day's row tells the twin from a changed row.
+        carried = launch != end and _launch_row_running(launch, task, name)
         path = end
     if status == "done" and read_only and (actual or commits != NO_COMMITS):
         # A task that owns nothing changed something: whatever the worker wrote, someone looks (#57).
@@ -360,7 +381,9 @@ def reconcile(root: Path, day: str, task: str, name: str, cwd: Path, exit_code: 
     rows = [row for row in parse_tracker(path.read_text()).tasks if row.item.strip() == task]
     row = rows[0] if len(rows) == 1 else None
     errors = []
-    if row is None or row.owner.strip().lower() != name.lower() or row.kind != "running":
+    if row is None or row.owner.strip().lower() != name.lower() or (
+            # The rollover twin is the same row, open (#576); any other drift from running is a changed row.
+            row.kind != "running" and not (carried and row.kind == "open")):
         report = {"status": "human_review", "task": task, "worker": name, "runtime_exit": exit_code,
                   "reason": "task row changed during the one-shot run; reconcile it manually",
                   "changes": summary, "errors": [f"{dispatch_prompt.TRACKER_ERROR} task row changed; no issue or tracker update was made"]}
@@ -383,7 +406,7 @@ def reconcile(root: Path, day: str, task: str, name: str, cwd: Path, exit_code: 
                 errors.append(f"issue comment: {commented.error}")
     try:
         update_tracker(path, task, name, cfg.user, status, reason, summary,
-                       tracker_write.stamp(cfg.zone))
+                       tracker_write.stamp(cfg.zone), carried=row.kind == "open")
     except (OSError, ValueError) as exc:
         errors.append(f"{dispatch_prompt.TRACKER_ERROR} {exc}")
     report = {"status": status, "task": task, "worker": name, "runtime_exit": exit_code,

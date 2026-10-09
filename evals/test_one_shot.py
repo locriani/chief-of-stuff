@@ -1505,6 +1505,55 @@ class RunTest(unittest.TestCase):
         self.assertIn("already relaunched once", end.read_text())
         self.assertEqual(self.tracker.read_text(), (self.root / "during.md").read_text())
 
+    def test_reconcile_accepts_a_rolled_over_row_across_midnight(self):
+        # #576: the rollover carries a still-running launch-day row over as the end day's open twin,
+        # same owner with the state restarted; the run is still that row's, so the result lands on it.
+        end = self.root / self.END_TRACKER
+        end.write_text(TRACKER.replace("| unassigned | open |", "| worker01 | open |"))
+        fake = self._fake('status: done\nreason: completed audit\nchanges: none\n', write_partial=False)
+        self.assertEqual(self._run_past_midnight(fake), 0)
+        self.assertIn("| Security audit | Robin | waiting |", end.read_text())
+        self.assertIn("completed; awaiting integration", end.read_text())
+        self.assertEqual(self.tracker.read_text(), (self.root / "during.md").read_text(),
+                         "the launch day's tracker is untouched by the result")
+
+    def test_a_rolled_over_row_under_another_owner_still_holds(self):
+        # #576: the twin is the same row only under the same worker; an open row owned by someone else changed.
+        end = self.root / self.END_TRACKER
+        end.write_text(TRACKER.replace("| unassigned | open |", "| worker02 | open |"))
+        fake = self._fake('status: done\nreason: completed audit\nchanges: none\n', write_partial=False)
+        self.assertEqual(self._run_past_midnight(fake), 1)
+        self.assertIn("| Security audit | worker02 | open |", end.read_text())
+
+    def test_a_rolled_over_row_whose_launch_day_row_is_no_longer_running_still_holds(self):
+        # #576: the twin is the same row only while the launch-day row is still running under this worker.
+        end = self.root / self.END_TRACKER
+        end.write_text(TRACKER.replace("| unassigned | open |", "| worker01 | open |"))
+        fake = self._fake('status: done\nreason: completed audit\nchanges: none\n', write_partial=False,
+                          during=self._rewrites_the_tracker("t.read_text().replace('running', 'done')"))
+        self.assertEqual(self._run_past_midnight(fake), 1)
+        self.assertIn("| Security audit | worker01 | open |", end.read_text())
+
+    def test_a_rolled_over_row_already_waiting_on_the_end_day_still_holds(self):
+        # #576: an open twin is the rollover; a waiting row on the end day is someone's later dispatch.
+        end = self.root / self.END_TRACKER
+        end.write_text(TRACKER.replace("| unassigned | open |", "| worker01 | waiting |"))
+        fake = self._fake('status: done\nreason: completed audit\nchanges: none\n', write_partial=False)
+        self.assertEqual(self._run_past_midnight(fake), 1)
+        self.assertIn("| Security audit | worker01 | waiting |", end.read_text())
+
+    def test_other_rows_changing_during_the_run_leaves_the_result_to_land(self):
+        # #576's report: edits to other rows are not this row changing; the run still lands the same day.
+        self._overlap_tracker("`src/a/`", "`src/b/`")
+        fake = self._fake('status: done\nreason: completed audit\nchanges: none\n', write_partial=False,
+                          during=self._rewrites_the_tracker(
+                              "t.read_text().replace('| Export header | worker07 | running 08:30 |', "
+                              "'| Export header | worker07 | waiting |')"))
+        self.assertEqual(self._run(fake), 0)
+        tracker = self.tracker.read_text()
+        self.assertIn("| Security audit | Robin | waiting |", tracker)
+        self.assertIn("| Export header | worker07 | waiting |", tracker)
+
     def _overlap_tracker(self, audit: str, running: str, ready: str = "`src/z/`", running_state: str = "running 08:30") -> None:
         """Security audit is the launch; Export header is another worker's row; Draft notes is ready and unlaunched."""
         self.tracker.write_text(
