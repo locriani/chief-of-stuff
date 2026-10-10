@@ -89,5 +89,6 @@ A mod (TypeScript function hooks, in-terminal status line, native notify) is all
 - **Gantt segments**: what a segment is keyed on when rework yields several PRs or workers for one issue. Call: key segments by (issue, stage, attempt).
 - **Forge coverage for "create the issue first"**: GitHub and GitLab, and workspaces with no `Backlog:` line. Decided: a workspace with no `Backlog:` line is not run. The engine refuses the work and instead helps Zach set up or configure the backlog. Setup help is part of 1.0.
 
+- **Form of the worker guard plugin (decisions 9-11)**: Zach, 2026-10-10: "leave it all in the design for later." Candidates: a TypeScript mod (gates that can fail closed through `.catch`, plus `$.tool.register` for `report`/`ask`, plus session-start injection), Python command hooks plus a Python MCP server (gates fail open), or a mod for the gates with the MCP server for the channel. Unverified: that a `claude -p` worker loaded with `--plugin-dir` runs function hooks and honours `.catch`. Decide after a spike.
 - **How the engine supervises and restarts** the `claude -p` calls and carries session state between them (see 7a).
 - **Choosing the trio**: how the topic-appropriate three reviewers are picked, and what record of their verdict is kept.

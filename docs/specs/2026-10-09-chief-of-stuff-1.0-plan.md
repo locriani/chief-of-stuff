@@ -25,6 +25,7 @@ No product code. Produces decisions.
 
 1. **Store and ORM proposal for Zach's approval.** Present candidates with source and reason (a Python ORM over SQLite is the likely shape; candidates and trade-offs to be researched, none adopted). Block M1 on his yes.
 2. **`claude -p --output-format json` spike.** This also fixes the shape of the model port the adapter implements (request, structured response, session handle, error/quota result). Prove: structured judgement calls (a review verdict, a trio vote), session continuity across calls, behaviour at quota or outage, cost accounting. Output: a short note and a throwaway script in `_scratch`, not shipped.
+   Add to this spike (deferred by Zach, 2026-10-10, to run later): does a `claude -p` worker loaded with `--plugin-dir` run TypeScript function hooks, and does a `.catch` make a gate fail closed? The answer picks the guard plugin's form (design Open items).
 3. **Carry/drop ledger.** One row per current behaviour or module (tick, kanban, notify, PARA filing, launchers, `claude_profile`, mailbox, decision pages, the 110 eval cases), each marked carry, rewrite, or drop, with the reason. Zach reviews the ledger once.
 4. **Behaviour spec extraction.** From the golden evals and the architecture doc, list the behaviours 1.0 must reproduce. Resolve the design's remaining Open items that block M1-M3: policy content for code review, trio selection rule, default limits.
 
