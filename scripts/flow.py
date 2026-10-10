@@ -322,7 +322,8 @@ def main(argv: list[str] | None = None) -> int:
     configured = os.environ.get("CHIEF_OF_STUFF_WORKSPACE")
     if (root == Path(".").resolve() or not (root / "CLAUDE.md").is_file()) and configured:
         root = Path(configured).resolve()
-    if not (root / "CLAUDE.md").is_file():
+    claude_md = root / "CLAUDE.md"
+    if not claude_md.is_file() or not re.search(r"^## Coordinator\s*$", claude_md.read_text(), re.M):
         return 0
     try:
         events = tick(root, day=args.date)
