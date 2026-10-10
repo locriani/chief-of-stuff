@@ -397,6 +397,10 @@ class HeaderTest(unittest.TestCase):
     def test_need_you_counts_todays_human_review_ends(self):
         self.assertEqual(box(page(), "need you"), "1")
 
+    def test_the_workers_tab_counts_the_workers_that_need_input(self):
+        # #224: the page passes its needs-input count to the tab bar; the badge reads it in the alarm tone.
+        self.assertIn('class="badge badge-alarm" title="1 need input">1</span>', page())
+
     def test_running_counts_the_running_workers(self):
         self.assertEqual(box(page(), "running"), "3")
 

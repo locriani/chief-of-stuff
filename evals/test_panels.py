@@ -45,18 +45,20 @@ class Header(unittest.TestCase):
 
 
 class Tiles(unittest.TestCase):
-    def test_one_anchor_per_tile_with_its_label_and_count(self) -> None:
-        html = panels.tiles([panels.Tile("BLOCKED", 3, "blocked", "blocked"), panels.Tile("RUNNING", 4, "workers", "running")])
-        self.assertEqual(re.findall(r'<a class="panels-tile" data-kind="([a-z-]+)" href="#([a-z-]+)">', html),
-                         [("blocked", "blocked"), ("running", "workers")])
-        self.assertEqual(re.findall(r'<b class="panels-count">(\d+)</b>', html), ["3", "4"])
-        self.assertIn('<span class="panels-label">BLOCKED</span>', html)
+    def test_one_filter_button_per_tile_with_its_label_and_count(self) -> None:
+        # #207: the tiles are filters — a button per category carrying its count, ALL included, no anchors to jump to.
+        html = panels.tiles([panels.Tile("ALL", 7, "all"), panels.Tile("RUNNING", 4, "running")])
+        self.assertEqual(re.findall(r'<button type="button" class="panels-tile" data-kind="([a-z-]+)" data-filter="\1" aria-pressed="false">', html),
+                         ["all", "running"])
+        self.assertEqual(re.findall(r'<b class="panels-count">(\d+)</b>', html), ["7", "4"])
+        self.assertIn('<span class="panels-label">ALL</span>', html)
+        self.assertNotIn("href=", html)
 
-    def test_a_kind_or_anchor_must_be_a_name(self) -> None:
+    def test_a_kind_must_be_a_name(self) -> None:
         with self.assertRaises(ValueError):
-            panels.tiles([panels.Tile("X", 1, 'a"b', "x")])
+            panels.tiles([panels.Tile("X", 1, 'a"b')])
         with self.assertRaises(ValueError):
-            panels.tiles([panels.Tile("X", 1, "x", "x y")])
+            panels.tiles([panels.Tile("X", 1, "x y")])
 
 
 class Panel(unittest.TestCase):

@@ -12,10 +12,11 @@ from datetime import datetime
 
 from fragment import colour as _colour, css_str as _css_str, esc as _esc, href as _href, kind as _kind
 
-# Okabe-Ito on parchment: a kind's accent, its top rule and its count.
+# Okabe-Ito on parchment: a kind's accent, its top rule and its count. `hold` is the NEEDS INPUT filter's
+# key (#207) — the same red `blocked` wears, so the tile keeps its colour while matching the cards' tag.
 PALETTE: dict[str, str] = {
     "blocked": "#c9533a", "decisions": "#a7843e", "approved": "#009E73", "running": "#0072B2",
-    "drift": "#c9533a", "orphaned": "#6e6470", "merge": "#009E73", "workers": "#0072B2",
+    "drift": "#c9533a", "orphaned": "#6e6470", "merge": "#009E73", "workers": "#0072B2", "hold": "#c9533a",
 }
 TOKENS: dict[str, str] = {
     "ink": "#2f2630", "muted": "#6e6470", "card": "#fbf8ef", "rule": "#ddd3bd", "edge": "#a7843e", "link": "#8a6c30",
@@ -37,8 +38,7 @@ class Header:
 class Tile:
     label: str
     count: int
-    anchor: str  # the id it links to
-    kind: str
+    kind: str  # the filter's key (#207) — the cards' tag it keeps lit — and the chip's palette key
 
 
 @dataclass(frozen=True)
@@ -88,9 +88,10 @@ def header(h: Header) -> str:
 
 
 def tiles(ts: list[Tile]) -> str:
-    return ('<nav class="panels-tiles" aria-label="counts">'
-            + "".join(f'<a class="panels-tile" data-kind="{_kind(t.kind)}" href="#{_kind(t.anchor)}">'
-                      f'<span class="panels-label">{_esc(t.label)}</span><b class="panels-count">{t.count}</b></a>' for t in ts)
+    """The board's filter row (#207): a button per category, `data-filter` naming the cards' tag it keeps lit."""
+    return ('<nav class="panels-tiles" aria-label="filters">'
+            + "".join(f'<button type="button" class="panels-tile" data-kind="{_kind(t.kind)}" data-filter="{_kind(t.kind)}" aria-pressed="false">'
+                      f'<span class="panels-label">{_esc(t.label)}</span><b class="panels-count">{t.count}</b></button>' for t in ts)
             + "</nav>")
 
 
@@ -132,7 +133,8 @@ BASE_CSS = """\
 .panels-clock-name{font-size:9.5px;letter-spacing:.09em;text-transform:uppercase;opacity:.85}
 .panels-clock time{font:18px ui-monospace,monospace;font-variant-numeric:tabular-nums}
 .panels-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin:14px 0}
-.panels-tile{display:flex;align-items:baseline;gap:6px;text-decoration:none;color:var(--panels-ink);background:var(--panels-card);border:1px solid var(--panels-rule);border-top:3px solid var(--k,var(--panels-rule));border-radius:5px;padding:7px 11px}
+.panels-tile{display:flex;align-items:baseline;gap:6px;font:14px/1.5 "Alegreya Sans","Gill Sans",system-ui,sans-serif;text-align:left;cursor:pointer;color:var(--panels-ink);background:var(--panels-card);border:1px solid var(--panels-rule);border-top:3px solid var(--k,var(--panels-rule));border-radius:5px;padding:7px 11px}
+.panels-tile[aria-pressed=true]{box-shadow:inset 0 0 0 2px var(--k,var(--panels-ink));font-weight:600}
 .panels-tile:focus-visible{outline:2px solid var(--panels-ink);outline-offset:1px}
 .panels-label{font:14px "Cormorant SC",Georgia,serif;letter-spacing:.08em}
 .panels-tile .panels-count{font-size:24px;margin-left:auto}

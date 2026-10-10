@@ -54,6 +54,8 @@ nav.tabs>*{display:inline-flex;align-items:baseline;gap:7px;min-height:34px;box-
 nav.tabs>[aria-current=page]{color:var(--fg);box-shadow:inset 0 -3px 0 var(--fg)}
 nav.tabs>.tab-parent{color:var(--fg);box-shadow:inset 0 -1px 0 var(--fg)}
 nav.tabs .badge{font:700 11.5px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:0;color:var(--link,var(--brass))}
+nav.tabs .badge.badge-alarm{color:var(--dl,var(--brass))}
+nav.tabs .badge.badge-ready{color:var(--stage-review,var(--brass))}
 """
 
 
@@ -65,20 +67,24 @@ def theme() -> str:
 
 
 def tab_bar(tab: str, pending: int, parent: bool = False, since: tuple[int, str] = (0, ""),
-            epics: tuple[int, int] = (0, 0)) -> str:
+            epics: tuple[int, int] = (0, 0), workers: int | None = None, dispatch: int | None = None) -> str:
     """The nav, `tab` marked as this page's (`aria-current`), or as its parent's on a detail page (`parent`).
     Decisions carries `pending`, the count decisions.html heads PENDING with, when there is any. Since you last looked
     carries `since`'s count of holds begun after its HH:MM (#229), and Epics `epics`' milestones at risk and late,
-    zeros left out (#230), when there is any; only the board passes those two."""
+    zeros left out (#230), when there is any; only the board passes those two. Workers carries `workers`, the count
+    that need input, and Dispatch `dispatch`, the ready-to-dispatch tasks, unlinked while the page is unbuilt (#224);
+    a count's tone names its meaning — alarm for needs-input, ready for launchable work."""
     mark = ' class="tab-parent"' if parent else ' aria-current="page"'
     at_risk = " · ".join(f"{n} {what}" for n, what in zip(epics, ("at risk", "late")) if n)
-    badges = {"Decisions": (f"{pending}" if pending else "", f"{pending} pending"),
-              "Since you last looked": (f"{since[0]}" if since[0] else "", f"{since[0]} went needs input since {since[1]}"),
-              "Epics": (at_risk, f"milestones: {at_risk}")}
+    badges = {"Decisions": (f"{pending}" if pending else "", f"{pending} pending", "badge-alarm"),
+              "Since you last looked": (f"{since[0]}" if since[0] else "", f"{since[0]} went needs input since {since[1]}", "badge-alarm"),
+              "Epics": (at_risk, f"milestones: {at_risk}", "badge-alarm"),
+              "Workers": (f"{workers}" if workers else "", f"{workers} need input", "badge-alarm"),
+              "Dispatch": (f"{dispatch}" if dispatch else "", f"{dispatch} ready to dispatch", "badge-ready")}
     out = []
     for name, url in TABS:
-        text, title = badges.get(name, ("", ""))
-        badge = f'<span class="badge" title="{title}">{text}</span>' if text else ""
+        text, title, tone = badges.get(name, ("", "", ""))
+        badge = f'<span class="badge {tone}" title="{title}">{text}</span>' if text else ""
         attrs = mark if name == tab else ""
         out.append(f"<a {href(url)}{attrs}>{name}{badge}</a>" if url else f"<span{attrs}>{name}{badge}</span>")
     return '<nav class="tabs" aria-label="Board sections">' + "".join(out) + "</nav>\n"

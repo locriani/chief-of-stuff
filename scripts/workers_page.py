@@ -98,7 +98,7 @@ def render(tracker_text: str, sources: board_sources.Sources, now: datetime, tre
                           '<a href="/">board</a>'])
     return (f"<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n"
             f"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
-            f"<title>Workers</title>\n{HEAD}{CSS}</head>\n<body>\n<main>\n{tab_bar('Workers', pending)}"
+            f"<title>Workers</title>\n{HEAD}{CSS}</head>\n<body>\n<main>\n{tab_bar('Workers', pending, workers=need)}"
             f'  <header class="top">\n    <div>\n      <h1>Workers</h1>\n      <span class="eyebrow">{eyebrow}</span>\n    </div>\n'
             f'    <div class="boxes">{boxes_html}</div>\n  </header>\n'
             f'  <section>\n    <h2>Running · {len(running)}</h2>\n'

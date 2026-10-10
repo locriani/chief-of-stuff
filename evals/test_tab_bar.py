@@ -271,5 +271,38 @@ class EpicsBadgeTest(unittest.TestCase):
         self.assertEqual(badges(tabs(fragment.tab_bar("Board", 0))["Epics"]), [])
 
 
+class WorkersBadgeTest(unittest.TestCase):
+    """#224: the Workers tab counts the workers that need input; a zero is left out."""
+
+    def test_the_workers_tab_counts_the_workers_that_need_input(self):
+        import fragment
+        t = tabs(fragment.tab_bar("Workers", 0, workers=2))["Workers"]
+        [(count, title, tone)] = [(b.all_text(), b.attrs["title"], b.attrs.get("class", "")) for b in badges(t)]
+        self.assertEqual((count, title), ("2", "2 need input"))
+        self.assertIn("badge-alarm", tone.split(), "a needs-input count reads in the alarm tone")
+        self.assertEqual(name(t), "Workers")
+
+    def test_with_none_it_carries_no_badge(self):
+        import fragment
+        self.assertEqual(badges(tabs(fragment.tab_bar("Workers", 0))["Workers"]), [])
+
+
+class DispatchBadgeTest(unittest.TestCase):
+    """#224: the Dispatch tab has no page yet; its ready count shows unlinked, a zero left out."""
+
+    def test_the_unbuilt_dispatch_tab_shows_its_count_unlinked(self):
+        import fragment
+        t = tabs(fragment.tab_bar("Board", 0, dispatch=3))["Dispatch"]
+        [(count, title, tone)] = [(b.all_text(), b.attrs["title"], b.attrs.get("class", "")) for b in badges(t)]
+        self.assertEqual((count, title), ("3", "3 ready to dispatch"))
+        self.assertIn("badge-ready", tone.split(), "a ready count reads in the ready tone")
+        self.assertEqual([n.tag for n in t.walk() if n.tag == "a"], [], "the unbuilt Dispatch tab became a link")
+        self.assertEqual(name(t), "Dispatch")
+
+    def test_with_none_it_carries_no_badge(self):
+        import fragment
+        self.assertEqual(badges(tabs(fragment.tab_bar("Board", 0))["Dispatch"]), [])
+
+
 if __name__ == "__main__":
     unittest.main()
