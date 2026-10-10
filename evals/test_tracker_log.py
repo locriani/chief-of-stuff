@@ -143,7 +143,8 @@ class RoundTripTest(unittest.TestCase):
         first = tl.severe_line("10:20", "kanban: changed outside the tracker", "session hs-fixer")
         second = tl.severe_line("11:30", "tracker write refused by the lock", "repo o/harness-defects")
         text = "\n".join(("# Tracker", "", "## Log", "", first, second, ""))
-        self.assertEqual(tl.SEVERE.findall(text), [
+        found = [m.groups() for line in text.splitlines() if (m := tl.SEVERE.match(line))]
+        self.assertEqual(found, [
             ("10", "20", "kanban: changed outside the tracker", "session hs-fixer"),
             ("11", "30", "tracker write refused by the lock", "repo o/harness-defects"),
         ])
