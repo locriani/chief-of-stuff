@@ -517,19 +517,20 @@ class Page(unittest.TestCase):
         self.assertIn('<div class="panels-warn">workers: no registry</div>', html)
 
     def test_tile_counts(self) -> None:
-        # #349: the artboard's label. ALL counts every task (the header's 4 tasks); NEEDS INPUT is what BLOCKED counted, the held
-        # cards (none: no kanban hold stage); RUNNING is the two workers; DRIFT: README at triage has stage::implement.
-        # The DECISIONS tile's count is no tile now: the tab bar's badge and the DECISIONS panel carry it.
+        # #349: the artboard's label. #207: a tile's count is the drawn cards its filter keeps, so tile and board
+        # always agree — RUNNING counts the running card (one), not the two workers; APPROVED counts cards carrying
+        # an approved change, not the merge panel's rows; NEEDS INPUT is what BLOCKED counted, the held cards (none:
+        # no kanban hold stage); DRIFT: README at triage has stage::implement.
         tiles = re.findall(r'<span class="panels-label">([A-Z ]+)</span><b class="panels-count">(\d+)</b>', self.body)
-        self.assertEqual(tiles, [("ALL", "4"), ("NEEDS INPUT", "0"), ("RUNNING", "2"), ("APPROVED", "3"), ("ORPHANED", "1"), ("DRIFT", "1")])
+        self.assertEqual(tiles, [("ALL", "4"), ("NEEDS INPUT", "0"), ("RUNNING", "1"), ("APPROVED", "0"), ("ORPHANED", "1"), ("DRIFT", "1")])
 
-    def test_each_tile_links_where_it_linked_before(self) -> None:
-        # #349: the artboard's label. BLOCKED linked to #flow, APPROVED to #merge, RUNNING to #workers, ORPHANED and DRIFT to #flow;
-        # ALL had no tile, and the BUILD section whose cards it counts is #flow.
-        links = re.findall(r'<a class="panels-tile" data-kind="([a-z]+)" href="#([a-z]+)"><span class="panels-label">([A-Z ]+)</span>', self.body)
-        # #349 review: the kind is what the stylesheet colours a tile by, so each is pinned with its link and label.
-        self.assertEqual(links, [("all", "flow", "ALL"), ("blocked", "flow", "NEEDS INPUT"), ("running", "workers", "RUNNING"),
-                                 ("approved", "merge", "APPROVED"), ("orphaned", "flow", "ORPHANED"), ("drift", "flow", "DRIFT")])
+    def test_each_tile_filters_its_own_kind(self) -> None:
+        # #207: the tiles are filters now, not anchors: each button carries its kind for the stylesheet, filters by
+        # it, and starts unpressed. The kinds stay the artboard's, in the artboard's order.
+        tiles = re.findall(r'<button type="button" class="panels-tile" data-kind="([a-z]+)" data-filter="([a-z-]+)"'
+                           r' aria-pressed="false"><span class="panels-label">([A-Z ]+)</span>', self.body)
+        self.assertEqual(tiles, [("all", "all", "ALL"), ("hold", "hold", "NEEDS INPUT"), ("running", "running", "RUNNING"),
+                                 ("approved", "approved", "APPROVED"), ("orphaned", "orphaned", "ORPHANED"), ("drift", "drift", "DRIFT")])
 
     def test_every_tile_kind_has_a_colour_and_all_draws_in_the_artboards_ink(self) -> None:
         # #349 review: the artboard's tone map gives ALL ink (Flow.dc.html `all: '#2f2630'`, the light --fg); a tile with
@@ -543,11 +544,15 @@ class Page(unittest.TestCase):
         self.assertIn('[data-kind="all"]{--k:var(--fg)}', css)
 
     def test_all_counts_every_task_not_only_the_active_ones(self) -> None:
-        # #349: the artboard's ALL counts every task, as the header does, finished ones too.
+        # #349: ALL counts the finished cards too — every card the board draws, not only the active ones. #207: the
+        # count is the cards the ALL filter keeps, so tile and board can never disagree.
         tracker = TRACKER.replace("## Decisions", "| Old chore | Done long ago | Robin | done | 08:00 |  | S |  |  |  | c |\n\n## Decisions")
         html = rb.render(tracker, self.cfg, NOW, lanes=LANES, kanban=KANBAN, sources=SOURCES)
         self.assertIn("5 tasks</div>", html)
-        self.assertIn('<span class="panels-label">ALL</span><b class="panels-count">5</b>', html)
+        all_count = int(re.search(r'<span class="panels-label">ALL</span><b class="panels-count">(\d+)</b>', html).group(1))
+        drawn = len(re.findall(r'<div class="columns-card"[^>]*>', html.split("</style>", 1)[1]))
+        self.assertEqual(all_count, drawn)
+        self.assertIn('data-cat="merged today"', html)  # a finished card is drawn and counted
 
     def test_the_old_tile_and_flag_words_are_drawn_nowhere(self) -> None:
         # #349: the artboard's label. A board with held cards and a pending decision draws none of BLOCKED, ON HOLD, or
@@ -594,15 +599,17 @@ class Page(unittest.TestCase):
         self.assertEqual(tiles["NEEDS INPUT"], "0")
         self.assertEqual(tiles["DRIFT"], "1")  # unrelated, pre-existing: README at triage has stage::implement
 
-    def test_tiles_link_to_their_sections(self) -> None:
-        for anchor in re.findall(r'class="panels-tile" data-kind="[a-z]+" href="#([a-z]+)"', self.body):
-            self.assertIn(f'id="{anchor}"', self.body)
+    def test_no_tile_links_anywhere(self) -> None:
+        # #207: the tiles filter the cards instead of jumping to sections; nothing in the tiles nav navigates.
+        nav = re.search(r'<nav class="panels-tiles".*?</nav>', self.body, re.S).group(0)
+        self.assertNotIn("<a ", nav)
 
     def test_empty_sources_render_and_running_falls_back_to_tasks(self) -> None:
         html = rb.render(TRACKER, self.cfg, NOW, lanes=LANES)
         tiles = re.findall(r'<span class="panels-label">([A-Z ]+)</span><b class="panels-count">(\d+)</b>', html)
-        # #349: the artboard's label, in the artboard's order.
-        self.assertEqual(tiles, [("ALL", "4"), ("NEEDS INPUT", "0"), ("RUNNING", "1"), ("APPROVED", "0"), ("ORPHANED", "1"), ("DRIFT", "0")])
+        # #349: the artboard's label, in the artboard's order. #207: ALL counts the drawn cards — the done Locale
+        # fallback draws no card without a merge source, so the tile reads 3 while the header keeps all 4 tasks.
+        self.assertEqual(tiles, [("ALL", "3"), ("NEEDS INPUT", "0"), ("RUNNING", "1"), ("APPROVED", "0"), ("ORPHANED", "1"), ("DRIFT", "0")])
         self.assertIn("tracker 14:30 · 4 tasks", html)  # (#215) no render clock
 
     def test_panel_and_tile_colours_are_board_tokens_light_and_dark(self) -> None:

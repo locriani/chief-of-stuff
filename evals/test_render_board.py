@@ -340,7 +340,6 @@ class RenderTest(unittest.TestCase):
         self.assertIn('data-deadline="2026-09-16T23:59:00-05:00"', self.html)
         self.assertIn("Launch", self.html)
 
-
     def test_no_header_prints_a_rendered_clock(self) -> None:
         # #215: pages re-render on every request, so a render clock only ever says now. The meta keeps the
         # sources' read times and the page's own counts; `data-rendered-at` stays for scripts.
@@ -362,6 +361,67 @@ class RenderTest(unittest.TestCase):
             with self.subTest(cell=bad):
                 html = rb.render(LANED_TRACKER.replace("| 09:00 | 17:00 |", f"| {bad} | {bad} |", 1), self.cfg, NOW)
                 self.assertIn("Write eval README", html)
+
+
+class TileFilterTest(unittest.TestCase):
+    """#207: the tiles are filters. A count is the number of cards carrying the filter's tag, so a count and its
+    dimmed board always agree; choosing dims the cards outside it and marks the button pressed; ALL clears; the
+    choice survives the page's own refresh (localStorage); with scripts off no card dims."""
+
+    def setUp(self) -> None:
+        import test_flow_board as tfb
+        self.cfg = parse_coordinator(CLAUDE_MD, today=NOW.date())
+        self.html = rb.render(tfb.TRACKER, self.cfg, NOW, lanes=tfb.LANES, kanban=tfb.KANBAN, sources=tfb.SOURCES,
+                              decisions=[("x", {"headline": "Pick", "recommended": "B", "default": "d"},
+                                          NOW.replace(hour=10, minute=0), "")])
+        nav = re.search(r'<nav class="panels-tiles".*?</nav>', self.html, re.S)
+        self.assertIsNotNone(nav, "the board draws no tiles nav")
+        self.tiles_nav = nav.group(0)
+        self.tiles = re.findall(r'<button type="button" class="panels-tile"[^>]*data-filter="([a-z-]+)"'
+                                r'[^>]*aria-pressed="false"><span class="panels-label">([A-Z ]+)</span>'
+                                r'<b class="panels-count">(\d+)</b>', self.tiles_nav)
+
+    def card_tags(self) -> list[set[str]]:
+        """The drawn cards' tag sets, read off the markup after the tiles nav."""
+        body = self.html[self.html.index(self.tiles_nav) + len(self.tiles_nav):]
+        tags = []
+        for div in re.findall(r'<div class="columns-card"[^>]*>', body):
+            m = re.search(r'data-cats="([^"]*)"', div)
+            tags.append(set(m.group(1).split()) if m else set())
+        return tags
+
+    def test_the_six_filters_in_order_with_all_first(self) -> None:
+        self.assertEqual([(f, label) for f, label, _ in self.tiles],
+                         [("all", "ALL"), ("hold", "NEEDS INPUT"), ("running", "RUNNING"),
+                          ("approved", "APPROVED"), ("orphaned", "ORPHANED"), ("drift", "DRIFT")])
+        self.assertNotIn("href=", self.tiles_nav, "a tile still jumps to an anchor instead of filtering")
+
+    def test_each_filter_counts_the_cards_that_carry_its_tag(self) -> None:
+        tags = self.card_tags()
+        self.assertTrue(tags, "the fixture drew no cards to count")
+        for f, _, n in self.tiles:
+            want = len(tags) if f == "all" else sum(1 for t in tags if f in t)
+            self.assertEqual(int(n), want, f"filter {f}: count {n} != the {want} cards carrying it")
+
+    def test_choosing_dims_the_cards_outside_it_and_marks_the_button_pressed(self) -> None:
+        script = self.html.split("<script>", 1)[1].split("</script>", 1)[0]
+        self.assertIn("aria-pressed", script, "the chosen filter's button is not marked pressed")
+        self.assertIn("columns-dim", script, "the script never dims the cards outside the filter")
+        self.assertIn("board-filter", script, "the chosen filter is not kept under a stable key")
+        self.assertIn("localStorage", script, "the chosen filter does not survive the page's own refresh")
+        css = self.html.split("<style>", 1)[1].split("</style>", 1)[0]
+        self.assertTrue(re.search(r"\.panels-tile\[aria-pressed=true\]", css), "no pressed style for the chosen filter")
+        self.assertTrue(re.search(r"\.columns-card\.columns-dim\{[^}]*opacity", css), "no dim style; cards outside the filter stay loud")
+
+    def test_with_scripts_off_no_card_dims(self) -> None:
+        markup = self.html.split("<body>", 1)[-1].split("<script>", 1)[0]  # the drawn page, without CSS or JS
+        self.assertNotIn("columns-dim", markup)
+        self.assertNotIn('aria-pressed="true"', markup)
+
+    def test_the_board_counts_what_is_ready_to_dispatch_in_its_tab(self) -> None:
+        import test_flow_board as tfb
+        html = rb.render(tfb.TRACKER, self.cfg, NOW, lanes=tfb.LANES, kanban=tfb.KANBAN, sources=tfb.SOURCES, dispatch=2)
+        self.assertIn('title="2 ready to dispatch"', html, "the Dispatch tab does not count ready tasks")
 
 
 class ShortNameTest(unittest.TestCase):
@@ -667,7 +727,7 @@ class CliTest(unittest.TestCase):
         self.assertIn('<a class="panels-name" href="/decisions/deploy-window">Decide deploy-window</a>', board)
         # #349: the artboard's label. Its six tiles have no DECISIONS; the pending count is the tab bar's badge.
         self.assertNotIn('<span class="panels-label">DECISIONS</span>', board)
-        self.assertIn('<span class="badge" title="1 pending">1</span>', board)
+        self.assertIn('<span class="badge badge-alarm" title="1 pending">1</span>', board)
         self.assertIn('decision-broken.json', board)
 
     def test_summary_line_counts_long_items(self) -> None:
