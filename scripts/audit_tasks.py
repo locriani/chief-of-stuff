@@ -307,8 +307,10 @@ def kanban_faults(tasks, home: Backlog | GitHubBacklog, config: Kanban, gh=None,
                   hold_failures: dict[str, str] | None = None) -> list[KanbanFault]:
     """Report label or Project Status drift; never move a card during an audit.
 
-    `hold_failures` maps task item -> the Log's last hold-failure reason (#566): a hold the launcher could
-    not apply stays visible here while the issue still has no hold label, and stops once the hold lands.
+    Rows sharing one issue are audited once against the furthest row by the board's stage order (#87):
+    an issue carries one stage label, and a closed issue is expected to carry none. `hold_failures`
+    maps task item -> the Log's last hold-failure reason (#566): a hold the launcher could not apply
+    stays visible here while the issue still has no hold label, and stops once the hold lands.
     """
     selected = []
     for task in tasks:
@@ -327,31 +329,49 @@ def kanban_faults(tasks, home: Backlog | GitHubBacklog, config: Kanban, gh=None,
     faults = []
     project_items = None
     project_error = ""
+    grouped: dict[tuple[str, str, int], list] = {}
     for task, ref in selected:
+        grouped.setdefault((ref.host, ref.repo, ref.number), []).append((task, ref))
+    for rows in grouped.values():
+        ref = rows[0][1]
         found = states[(ref.host, ref.repo)].get(ref.number)
         if found is None:
             continue  # issue_faults already reports a missing issue
-        failed = (hold_failures or {}).get(task.item.strip()) if config.human_review_label else None
-        if failed and config.human_review_label not in found.labels:
-            faults.append(KanbanFault(clip_name(task.label),
-                                      f"review hold failed: {failed}; the issue has no hold label"))
+        for task, _ in rows:
+            failed = (hold_failures or {}).get(task.item.strip()) if config.human_review_label else None
+            if failed and config.human_review_label not in found.labels:
+                faults.append(KanbanFault(clip_name(task.label),
+                                          f"review hold failed: {failed}; the issue has no hold label"))
+        if found.state == CLOSED:
+            # #87: a closed issue keeps no managed stage label, whatever the tracker rows still record.
+            managed = set(config.stages) | {config.human_review_label}
+            present = sorted(set(found.labels) & managed)
+            if present:
+                faults.append(KanbanFault(clip_name(rows[0][0].label),
+                                          f"expected no managed labels, found {', '.join(present)}"))
+            continue
+        # #87: one expected stage per issue — the furthest row by the board's stage order decides the label.
+        known = [(config.stage_map.get(task.stage.strip()), task) for task, _ in rows]
+        furthest = max((pair for pair in known if pair[0] is not None),
+                       key=lambda pair: pair[0], default=(None, rows[0][0]))[1]
         status = None
         if ref.host == GITHUB and config.github_project:
             if project_items is None:
                 project_items, project_error = kanban_tool._project_items(
                     gh or kanban_tool.backlog.run_gh, config.github_project)
             if project_error:
-                faults.append(KanbanFault(clip_name(task.label), project_error))
+                faults.append(KanbanFault(clip_name(furthest.label), project_error))
                 continue
             if ref.url not in project_items:
-                faults.append(KanbanFault(clip_name(task.label), "issue is absent from the configured GitHub Project"))
+                faults.append(KanbanFault(clip_name(furthest.label),
+                                          "issue is absent from the configured GitHub Project"))
                 continue
             status = project_items[ref.url]
         issue_config = config if ref.host == GITHUB else replace(config, github_project=None)
-        why = kanban_tool.drift(issue_config, found.labels, task.stage.strip(), project_status=status,
-                                allow_extra_hold=task.kind == "waiting")
+        why = kanban_tool.drift(issue_config, found.labels, furthest.stage.strip(), project_status=status,
+                                allow_extra_hold=furthest.kind == "waiting")
         if why:
-            faults.append(KanbanFault(clip_name(task.label), why))
+            faults.append(KanbanFault(clip_name(furthest.label), why))
     return faults
 
 
