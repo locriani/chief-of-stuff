@@ -14,7 +14,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import backlog
-import board_sources
 import dispatch_prompt
 import forge_review
 import git_trees
@@ -24,6 +23,7 @@ import ownership
 import runtimes
 import tracker_write
 from _vendor.toon_format import ToonDecodeError, decode as toon_decode, encode as toon_encode
+from backlog_ref import change_numbers
 from md import cells as _cells, is_separator as _is_separator
 from notify_service import atomic_write
 from one_shot_report import FIELD_MAX, UNREADABLE, read_report
@@ -354,7 +354,7 @@ def _mr_snapshot(root: Path, cfg, day: str, task: str) -> tuple[forge_review.Req
     try:
         rows = [row for row in parse_tracker((root / cfg.tracker_path(day)).read_text()).tasks
                 if row.item.strip() == task]
-        numbers = board_sources.change_numbers(rows[0], cfg.backlog) if len(rows) == 1 and cfg.backlog else set()
+        numbers = change_numbers(rows[0], cfg.backlog) if len(rows) == 1 and cfg.backlog else set()
         if len(numbers) != 1:
             return None, ""
         approver = load_settings(root, cfg.settings_path).workflow.approver or ""

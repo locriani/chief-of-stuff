@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from backlog_ref import file_with, issue_ref  # noqa: E402
+from backlog_ref import change_numbers, file_with, issue_ref  # noqa: E402
 from tracker import parse_tracker, short_name  # noqa: E402
 from workspace import ConfigError, read_config  # noqa: E402
 from settings import SettingsError, Workflow, load as load_settings  # noqa: E402
@@ -361,10 +361,7 @@ def compose(root: Path, day: str | None, task: str, worktree: Path | None = None
     if coordinator and not who:
         raise RefusedError(f"{coordinator!r} is not a session name; pass the name a listing shows")
     # A task naming a pull or merge request carries the no-history-rewrite rule (#64); no forge read, the cells say it.
-    # Imported here: board_sources pulls in process_status, which reads LINE_CAP back from this module.
-    import board_sources
-
-    named_change = bool(cfg.backlog and board_sources.change_numbers(rows[0], cfg.backlog))
+    named_change = bool(cfg.backlog and change_numbers(rows[0], cfg.backlog))
     # Preserve the assigned session name.
     if name is not None and not GIVEN_NAME.fullmatch(name):
         raise RefusedError(f"{name!r} is not a session name; a launch name is bare, like impl07")
