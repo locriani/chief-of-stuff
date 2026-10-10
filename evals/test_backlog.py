@@ -6,6 +6,7 @@ urllib would skip all four. The suite never touches the network and never reads 
 the Keychain lookup is injected, because a test that passes only on Zach's laptop proves nothing.
 """
 
+import contextlib
 import io
 import json
 import os
@@ -532,10 +533,13 @@ def gh_issue(number: int, title: str, state: str = "OPEN", labels=(), closed: st
 class FakeGh:
     """Answers `gh issue list` per --state from `rows`, `gh issue close` with `close_rc`. Records argv."""
 
-    def __init__(self, rows: dict | None = None, fail: dict | None = None, close_rc: int = 0):
+    def __init__(self, rows: dict | None = None, fail: dict | None = None, close_rc: int = 0,
+                 view: dict | None = None, comments: list | None = None):
         self.rows = rows or {}
         self.fail = fail or {}
         self.close_rc = close_rc
+        self.view = view
+        self.comments = comments or []
         self.calls: list[list[str]] = []
         self.inputs: list[str | None] = []
 
@@ -553,6 +557,12 @@ class FakeGh:
             return 0, f"https://github.com/{REPO}/issues/101\n", ""
         if args[:2] == ["issue", "comment"]:
             return 0, "", ""
+        if args[:2] == ["issue", "view"]:
+            if not self.view:
+                return 1, "", "could not resolve the issue number"
+            return 0, json.dumps(self.view), ""
+        if args[0] == "api":
+            return 0, json.dumps(self.comments), ""
         raise AssertionError(f"unexpected gh call: {args}")
 
 
@@ -888,6 +898,192 @@ class GitHubCliTest(unittest.TestCase):
             self.fail("argparse rejected the value; main() should return its own error")
         self.assertNotEqual(code, 0)
         self.assertEqual(self.gh.calls, [])
+
+
+class ReadOneTest(unittest.TestCase):
+    """#63: `--view` reads one issue's title, state, body and labels through the same port as the list."""
+
+    def test_view_reads_title_state_body_and_labels(self):
+        row = {**issue(12, "the design gate"), "body": "gate the design before build"}
+        row["labels"] = ["design-gate", "board"]
+        server, base = serve({("GET", f"{ISSUES}/12", "", "1"): (200, json.dumps(row), {})})
+        try:
+            got = bl.read_one(cfg(base), 12, token=TOKEN)
+        finally:
+            stop(server)
+        self.assertTrue(got.ok)
+        self.assertEqual(got.issue.iid, 12)
+        self.assertEqual(got.issue.title, "the design gate")
+        self.assertEqual(got.issue.state, "opened")
+        self.assertEqual(got.issue.body, "gate the design before build")
+        self.assertEqual(got.issue.labels, ("design-gate", "board"))
+
+    def test_a_missing_issue_is_an_error_not_an_exception(self):
+        server, base = serve({})  # every path 404s
+        try:
+            got = bl.read_one(cfg(base), 99, token=TOKEN)
+        finally:
+            stop(server)
+        self.assertFalse(got.ok)
+        self.assertTrue(got.error)
+        self.assertIsNone(got.issue)
+
+    def test_a_view_without_a_token_reports_the_absence(self):
+        got = bl.read_one(cfg("http://127.0.0.1:1"), 12, token="")
+        self.assertFalse(got.ok)
+        self.assertIn("token", got.error)
+
+
+class CommentsTest(unittest.TestCase):
+    """#63: `--comments` reads an issue's notes in order, each with author and time. GitLab's system
+    notes (label and state changes) are not a person speaking; they are not comments."""
+
+    def test_notes_read_in_order_with_author_time_and_body(self):
+        plan = {("GET", f"{ISSUES}/12/notes", "", "1"): (200, json.dumps([
+            {"body": "closed the duplicate", "author": {"username": "gitlab-bot"},
+             "created_at": "2026-09-25T10:00:00Z", "system": True},
+            {"body": "the design gate passes on the new layout", "author": {"username": "zach"},
+             "created_at": "2026-09-25T21:48:00Z", "system": False},
+            {"body": "one more question", "author": {"username": "robin"},
+             "created_at": "2026-09-26T08:15:00Z", "system": False},
+        ]), {})}
+        server, base = serve(plan)
+        try:
+            got = bl.comments(cfg(base), 12, token=TOKEN)
+        finally:
+            stop(server)
+        self.assertTrue(got.ok)
+        self.assertEqual([(n.author, n.time, n.body) for n in got.notes], [
+            ("zach", "2026-09-25T21:48:00Z", "the design gate passes on the new layout"),
+            ("robin", "2026-09-26T08:15:00Z", "one more question"),
+        ])
+
+    def test_notes_read_every_page_before_the_answer(self):
+        page_one = [{"body": f"note {i}", "author": {"username": "zach"},
+                     "created_at": f"2026-09-25T10:{i // 60:02d}:{i % 60:02d}Z", "system": False}
+                    for i in range(100)]
+        last = {"body": "the last note", "author": {"username": "robin"},
+                "created_at": "2026-09-26T08:15:00Z", "system": False}
+        plan = {
+            ("GET", f"{ISSUES}/12/notes", "", "1"): (200, json.dumps(page_one), {"X-Next-Page": "2"}),
+            ("GET", f"{ISSUES}/12/notes", "", "2"): (200, json.dumps([last]), {}),
+        }
+        server, base = serve(plan)
+        try:
+            got = bl.comments(cfg(base), 12, token=TOKEN)
+        finally:
+            stop(server)
+        self.assertTrue(got.ok)
+        self.assertEqual(len(got.notes), 101)
+        self.assertEqual(got.notes[-1].body, "the last note")
+
+    def test_a_failed_notes_read_is_an_error_not_an_exception(self):
+        server, base = serve({})
+        try:
+            got = bl.comments(cfg(base), 99, token=TOKEN)
+        finally:
+            stop(server)
+        self.assertFalse(got.ok)
+        self.assertTrue(got.error)
+
+
+class GitHubReadTest(unittest.TestCase):
+    """#63: the same read through GitHub's gh port, same shapes."""
+
+    def test_view_reads_the_body_through_gh(self):
+        fake = FakeGh(view={"number": 12, "title": "the design gate", "state": "OPEN",
+                            "labels": [{"name": "design-gate"}],
+                            "url": f"https://github.com/{REPO}/issues/12",
+                            "updatedAt": "2026-09-22T19:24:55Z", "closedAt": None,
+                            "body": "gate the design before build"})
+        got = bl.read_one(GH, 12, gh=fake)
+        self.assertTrue(got.ok)
+        self.assertEqual(got.issue.body, "gate the design before build")
+        self.assertEqual(got.issue.labels, ("design-gate",))
+        self.assertEqual(got.issue.state, "opened")
+        self.assertIn("view", fake.calls[0])
+
+    def test_comments_read_in_order_through_gh_api(self):
+        fake = FakeGh(comments=[{"user": {"login": "zach"}, "created_at": "2026-09-25T21:48:00Z",
+                                 "body": "the gate passes"},
+                                {"user": {"login": "robin"}, "created_at": "2026-09-26T08:15:00Z",
+                                 "body": "one more"}])
+        got = bl.comments(GH, 12, gh=fake)
+        self.assertTrue(got.ok)
+        self.assertEqual([(n.author, n.time, n.body) for n in got.notes], [
+            ("zach", "2026-09-25T21:48:00Z", "the gate passes"),
+            ("robin", "2026-09-26T08:15:00Z", "one more"),
+        ])
+
+    def test_a_failed_view_is_an_error_not_an_exception(self):
+        got = bl.read_one(GH, 404, gh=FakeGh())  # no view row: gh answers rc 1
+        self.assertFalse(got.ok)
+        self.assertTrue(got.error)
+
+
+class ViewTextTest(unittest.TestCase):
+    """#63: the text `--view` prints — the issue's own line, its state, body, then its comments in order."""
+
+    def test_view_text_names_the_issue_its_state_and_labels(self):
+        one = bl.Issue(iid=12, title="the design gate", state="opened", labels=("design-gate",), body="gate it")
+        text = bl.view_text(one)
+        self.assertIn("#12 the design gate [design-gate]", text)
+        self.assertIn("state: opened", text)
+        self.assertIn("gate it", text)
+
+    def test_comments_follow_in_order_with_author_and_time(self):
+        one = bl.Issue(iid=12, title="t", state="opened", body="")
+        text = bl.view_text(one, notes=(bl.Note("zach", "2026-09-25T21:48:00Z", "the gate passes"),
+                                        bl.Note("robin", "2026-09-26T08:15:00Z", "one more")))
+        self.assertEqual(text.splitlines()[-2:], [
+            "2026-09-25T21:48:00Z zach: the gate passes",
+            "2026-09-26T08:15:00Z robin: one more",
+        ])
+
+
+class ViewMainTest(unittest.TestCase):
+    """#63: the coordinator reads a design-gate comment through the entry point, not glab or gh by hand."""
+
+    def run_view(self, *extra: str, plan: dict | None = None) -> tuple[int, str, str, ThreadingHTTPServer]:
+        planned = plan if plan is not None else {
+            ("GET", f"{ISSUES}/12", "", "1"):
+                (200, json.dumps({**issue(12, "the design gate"), "body": "gate it"}), {}),
+        }
+        server, base = serve(planned)
+        self.addCleanup(stop, server)
+        path = written(config_text(
+            f"- Backlog: GitLab; host {base}; project zachgardner/openemr; token env CHIEF_OF_STUFF_GITLAB_TOKEN\n"
+        ))
+        out, err = io.StringIO(), io.StringIO()
+        with patch.dict(os.environ, {"CHIEF_OF_STUFF_GITLAB_TOKEN": TOKEN}):  # noqa: S607
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = bl.main(["--config", str(path), "--view", "12", *extra])
+        return code, out.getvalue(), err.getvalue(), server
+
+    def test_view_prints_the_issue_through_the_entry_point(self):
+        code, out, err, _server = self.run_view()
+        self.assertEqual(code, 0, err)
+        self.assertIn("the design gate", out)
+        self.assertIn("gate it", out)
+
+    def test_view_with_comments_prints_the_notes_in_order(self):
+        plan = {
+            ("GET", f"{ISSUES}/12", "", "1"):
+                (200, json.dumps({**issue(12, "the design gate"), "body": "gate it"}), {}),
+            ("GET", f"{ISSUES}/12/notes", "", "1"): (200, json.dumps([
+                {"body": "the design gate passes", "author": {"username": "zach"},
+                 "created_at": "2026-09-25T21:48:00Z", "system": False},
+            ]), {}),
+        }
+        code, out, err, _server = self.run_view("--comments", plan=plan)
+        self.assertEqual(code, 0, err)
+        self.assertIn("2026-09-25T21:48:00Z zach: the design gate passes", out)
+
+    def test_a_missing_issue_exits_1_saying_unknown(self):
+        code, out, err, _server = self.run_view(plan={})
+        self.assertEqual(code, 1)
+        self.assertIn("unknown", err)
+        self.assertEqual(out, "")
 
 
 if __name__ == "__main__":

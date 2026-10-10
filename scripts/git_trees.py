@@ -150,16 +150,22 @@ def sha_trees(root: Path, trees: str) -> list[tuple[str, Path]]:
 
 
 def fetch_base(tree: Path, timeout: int = 30) -> str:
-    """`""` once `origin/main` is fetched, else one line saying why: the first `fatal:` line, else the last, with the
+    return fetch_branch(tree, "main", timeout=timeout)
+
+
+def fetch_branch(tree: Path, branch: str, timeout: int = 30) -> str:
+    """`""` once `origin/<branch>` is fetched, else one line saying why: the first `fatal:` line, else the last, with the
     tree's path blanked and every non-printable character escaped (`clean`), since it is printed. The refspec is
-    explicit and forced, so the ref moves whatever `remote.origin.fetch` says and follows a rewritten main, and
+    explicit and forced, so the ref moves whatever `remote.origin.fetch` says and follows a rewritten branch, and
     `--no-tags` keeps it the only ref written. Not through `git()`: the fetch writes into a tree a worker can write, so
     it carries `GIT_WRITE_PINS` and runs on `write_env()` (#556) — the clone's own hooks and helpers pinned dark while
-    the caller's credentials ride along. A fetch that loses a race for the ref (`cannot lock ref`) runs once more."""
+    the caller's credentials ride along. A fetch that loses a race for the ref (`cannot lock ref`) runs once more.
+    `branch` names a branch the caller has checked (`check_branch`); it is an argv element, never a shell word."""
+    ref = f"refs/remotes/origin/{branch}"
     try:
         for _ in range(2):  # a concurrent fetch holding the ref has moved it by the second try
             out = subprocess.run(
-                ["git", *GIT_WRITE_PINS, "-C", str(tree), "fetch", "-q", "--no-tags", "origin", f"+refs/heads/main:{REF}"],
+                ["git", *GIT_WRITE_PINS, "-C", str(tree), "fetch", "-q", "--no-tags", "origin", f"+refs/heads/{branch}:{ref}"],
                 capture_output=True, text=True, errors="backslashreplace", timeout=timeout,  # stderr from ssh or a helper may hold any byte
                 env=write_env(),
             )

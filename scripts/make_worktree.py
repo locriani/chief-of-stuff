@@ -135,12 +135,19 @@ def clone_lock(clone: Path):
         os.close(fd)
 
 
-def build(root: Path, clone: Path, trees: str, name: str, branch: str, agent_type: str, from_local: bool = False) -> Made:
+def build(root: Path, clone: Path, trees: str, name: str, branch: str, agent_type: str, from_local: bool = False,
+          from_branch: str = "") -> Made:
     """Check everything that came out of a file, then make the tree. A refusal creates no worktree or branch (a fetch may
-    already have moved origin/main)."""
+    already have moved origin/main). `from_branch` (#62) checks an existing remote branch out into the tree instead of
+    cutting one: it fetches first, and a branch the remote lacks is refused."""
     check_type((root / "CLAUDE.md").read_text() if (root / "CLAUDE.md").is_file() else "", agent_type)
     if not clone.is_dir():
         raise RefusedError(f"{clone} is not a directory; --clone names a [repos] entry or the repository's path")
+    if from_branch:
+        if from_local:
+            raise RefusedError("--from-branch fetches the branch from origin, --from-local cuts local main: take one")
+        if branch != from_branch:
+            raise RefusedError(f"--from-branch checks out {from_branch}; drop --branch or name it {from_branch}")
     check_branch(branch)
     path = resolve(root, trees, name)
     with clone_lock(clone):
@@ -149,16 +156,28 @@ def build(root: Path, clone: Path, trees: str, name: str, branch: str, agent_typ
             raise RefusedError(f"cannot read {clone}: {local}")
         if from_local and no_main:
             raise RefusedError("no local main to cut from; drop --from-local")
-        try:
-            ref = base_ref("" if from_local else git_trees.fetch_base(clone), from_local)
-        except RefusedError as exc:
-            raise RefusedError(f"{exc}; no local main" if no_main else f"{exc}; --from-local cuts from local main ({local}) instead") from None
+        if from_branch:  # fetch, then the remote ref must exist: only the fetch can say the branch is there
+            error = git_trees.fetch_branch(clone, branch)
+            if not error:
+                code, _ = git(["rev-parse", "--verify", "-q", f"refs/remotes/origin/{branch}"], clone)
+                if code != 0:
+                    error = f"no branch {branch} on origin"
+            if error:
+                raise RefusedError(f"cannot cut from {branch}: {error}")
+            ref, base = branch, f"origin/{branch}"  # worktree add checks the branch out by name, at its fresh remote head
+        else:
+            try:
+                ref = base_ref("" if from_local else git_trees.fetch_base(clone), from_local)
+            except RefusedError as exc:
+                raise RefusedError(f"{exc}; no local main" if no_main else f"{exc}; --from-local cuts from local main ({local}) instead") from None
+            base = "local main" if from_local else "origin/main"
         path.parent.mkdir(parents=True, exist_ok=True)
-        code, detail = git_trusted(["worktree", "add", "--no-track", "-b", branch, "--", str(path), ref], clone)
+        add = ["worktree", "add", "--no-track"] + ([] if from_branch else ["-b", branch]) + ["--", str(path), ref]
+        code, detail = git_trusted(add, clone)
         if code != 0:
             raise RefusedError(f"git worktree add failed: {detail}")
         sha = r[1] if (r := git(["rev-parse", "--short", "HEAD"], path))[0] == 0 else "?"  # not git's error text
-    return Made(path, branch, agent_type, "local main" if from_local else "origin/main", sha)
+    return Made(path, branch, agent_type, base, sha)
 
 
 def line(made: Made) -> str:
@@ -179,8 +198,10 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--type", dest="agent_type", required=True, help="an agent type from the Coordinator block")
     ap.add_argument("--name", required=True, help="the worktree directory name, one path segment")
-    ap.add_argument("--branch", required=True, help="the new branch, cut from origin/main unless --from-local")
+    ap.add_argument("--branch", default="", help="the new branch, cut from origin/main unless --from-local or --from-branch")
     ap.add_argument("--from-local", action="store_true", help="cut from local main, skipping the fetch of origin/main")
+    ap.add_argument("--from-branch", default="", metavar="BRANCH",
+                    help="check an existing remote branch out into the new tree instead of cutting one (#62)")
     ap.add_argument("--root", default=".", help="workspace root holding CLAUDE.md")
     ap.add_argument("--clone", required=True, help="the repository the worktree belongs to: a name from [repos] in the workspace settings, or the repository's path")
     args = ap.parse_args(argv)
@@ -193,7 +214,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.clone == "":
             raise RefusedError("--clone is empty; name a [repos] entry or the repository's path")
         clone = pick_clone(root, args.clone)
-        made = build(root, clone, worktrees_dir((root / "CLAUDE.md").read_text()), args.name, args.branch, args.agent_type, args.from_local)
+        branch = args.branch or args.from_branch  # a --from-branch with its own --branch still reaches build's refusal
+        made = build(root, clone, worktrees_dir((root / "CLAUDE.md").read_text()), args.name, branch,
+                     args.agent_type, args.from_local, from_branch=args.from_branch)
     except RefusedError as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 1
