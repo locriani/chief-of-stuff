@@ -59,7 +59,7 @@ Exit (S1, S4): an eval that kills the engine mid-run and a fake quota hit, and t
 
 1. Declarative policy file: reviewer roles and models, what counts as an open finding, retry limits, when the architect is consulted. Content settled in M0.
 2. Engine enforces the gates (burn down to no open findings, architect consult) and merges when the policy is satisfied. Merging under policy is not an interrupt; this overturns the `merge_owner = "user"` default (D6).
-3. Triage rule (automatic fix versus ask; security always asked) is re-examined against the policy before it is carried.
+3. **Revisit the Triage rule in this phase** (Zach, 2026-10-09: "make a note to visit this during this phase"; no direction chosen yet). Today it asks about any non-trivial or security finding (`skills/review-pipeline/SKILL.md`, Triage), which conflicts with consulting Zach only on exceptions. Options raised: route every would-be ask through the trio gate; the same except security and Critical findings, which always go to Zach; or widen the automatic-fix rule and trio the rest. Decide with Zach during M4, before the rule is carried.
 
 Exit (S3): an eval where work meeting the policy merges with no human input, and one where a policy gate fails and it does not.
 
