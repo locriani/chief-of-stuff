@@ -407,6 +407,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--root", type=Path, required=True, help="workspace holding CLAUDE.md and the tracker")
     ap.add_argument("--date", help="tracker date, YYYY-MM-DD; defaults to today in the workspace timezone")
     ap.add_argument("--issue", help="one tracked issue reference, required with --commit")
+    ap.add_argument("--task", help="with --issue and several rows on it: the tracker row's name or item number (#69)")
     ap.add_argument("--from-stage", help="stage last observed on the issue or project")
     ap.add_argument("--initialize", action="store_true", help="start an unlabeled issue or project item")
     ap.add_argument("--commit", action="store_true", help="apply one verified move; default is preview")
@@ -419,6 +420,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.from_stage and args.initialize:
         print("kanban: choose --from-stage or --initialize", file=sys.stderr)
+        return 2
+    if args.task and not args.issue:
+        print("kanban: --task needs --issue; it names one row of that issue", file=sys.stderr)
         return 2
     try:
         cfg = read_config(args.root)
@@ -446,9 +450,25 @@ def main(argv: list[str] | None = None) -> int:
     if wanted and not selected:
         print(f"kanban: {args.issue} is not a tracked task with a lane", file=sys.stderr)
         return 2
-    if len({ref for _, ref in selected}) != len(selected):
-        print("kanban: multiple tracker tasks point to one issue", file=sys.stderr)
-        return 2
+    if args.task:
+        # #69: a --task names one row of the issue, by the row's name or its tracker item number.
+        picked = [(task, ref) for task, ref in selected
+                  if task.name.strip() == args.task
+                  or task.item.strip().lstrip("#") == args.task.strip().lstrip("#")]
+        if not picked:
+            print(f"kanban: no task named {args.task!r} on {args.issue}", file=sys.stderr)
+            return 2
+        selected = picked
+    elif len({ref for _, ref in selected}) != len(selected):
+        # #69: rows sharing an issue cannot be auto-picked; an issue carries one stage label.
+        seen = set()
+        for task, ref in selected:
+            if ref in seen:
+                names = ", ".join(f"{t.label!r} (item {t.item.strip()})" for t, r in selected if r == ref)
+                print(f"kanban: multiple tracker tasks point to {ref.label(cfg.backlog)}: {names}; "
+                      f"name one with --task", file=sys.stderr)
+                return 2
+            seen.add(ref)
     rows = []
     for task, ref in selected:
         stage = task.stage.strip()
