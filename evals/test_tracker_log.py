@@ -70,6 +70,13 @@ class RoundTripTest(unittest.TestCase):
                 self.assertEqual(tl.relaunch_line("10:20", "worker01", "Security audit", reason),
                                  f"- 10:20 one-shot worker01{marker}{reason}")
 
+    def test_a_timed_out_line(self):
+        # #110: the first timeout's marker names the worker and the wait that ran out.
+        line = tl.timed_out_line("10:20", "worker01", 30, "Security audit")
+        self.assertEqual(tl.TIMED_OUT.match(line).groups(), ("10", "20", "worker01", "30", "Security audit"))
+        self.assertIsNone(tl.ENDED.match(line))
+        self.assertIsNone(tl.RELAUNCH.match(line))
+
     def test_an_ended_line_does_not_double_a_reasons_final_period(self):
         for reason, tail in (("Resets in 3h46m46s.", "Resets in 3h46m46s."), ("fixed the cap", "fixed the cap."), ("", ".")):
             with self.subTest(reason=reason):

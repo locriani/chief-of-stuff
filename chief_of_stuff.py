@@ -30,6 +30,7 @@ COMMANDS = {
     "audit": "scripts/audit_tasks.py",
     "processes": "scripts/process_status.py",
     "result": "scripts/one_shot_result.py",
+    "adopt": "scripts/adopt_one_shots.py",
     "board": "scripts/render_board.py",
     "inbox": "scripts/inbox.py",
     "backlog": "scripts/backlog.py",
