@@ -65,6 +65,8 @@ Exit (S3): an eval where work meeting the policy merges with no human input, and
 
 ### M5. Decision gate and interrupts
 
+Zach, 2026-10-09: "we'll revisit at m5 time." This scope is provisional; reopen it before starting M5.
+
 1. Trio gate (D5a): before any ask, consult a topic-appropriate trio through the model adapter (three calls, structured verdicts). Unanimous → adopt their recommendation and record it. Any concern → escalate to Zach.
 2. Trio selection rule and verdict record (settled in M0).
 3. Interrupt set: real goal ambiguity after the trio, unrecoverable failure after retries, budget or quota about to exceed a limit.
