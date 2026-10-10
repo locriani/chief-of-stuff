@@ -85,6 +85,10 @@ Four round trips, not ten.
 3. Serve the board: `chief-of-stuff pages --ensure` (see Board); when the block has a Settings line, ensure the notification service (see Notify), and arm the check: `CronList`, then `CronCreate` only when no job's prompt starts `[Scheduled check]` (see Check).
 4. Reply: the Clock line, what changed while no session was watching (tasks reopened, owners gone, anything unhealthy), and at most one question.
 
+Every drift the audit's kanban faults report you sync in the same move, running `chief-of-stuff kanban --root . --date <today> --issue <issue> --from-stage "<previous stage>" --commit` for each task it names as drifted; only a drift `kanban` refuses goes to the user, one line with the reason.
+
+A rule, tool refusal, guard, or permission denial that stops a board or task-state write is a severe process violation: log `severe process violation: <the block>, sent to <where>` once with `chief-of-stuff log`, report the same where the Coordinator block's harness-defects line names (the user when it names none), and never work around the block with a hand edit, a retry, or another session.
+
 `Re-arm` names what dies with a session — the check's cron job, a watch, a subscription. Step 3 arms the check again; anything else is marked and said. Re-arming restores checks. After reconciling state, dispatch ready one-shot tasks under Dispatch authority; new interactive sessions still need approval.
 
 The block itself, rewritten in full as the last edit of any move that writes the tracker, so it can never be staler than the file it sits in. Six lines, one each, every time in it your own clock read:

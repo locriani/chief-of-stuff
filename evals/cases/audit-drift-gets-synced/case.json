@@ -1,0 +1,37 @@
+{
+  "tz": "America/Chicago",
+  "description": "The audit reports kanban drift on two tasks. The coordinator syncs both in the same move, one `kanban --issue <issue> --from-stage <stage> --commit` per task, and never reports a synced drift as not moved; only a drift the updater refuses goes to the user. Enforces: \"Every drift the audit's kanban faults report you sync in the same move, running `chief-of-stuff kanban --root . --date <today> --issue <issue> --from-stage \\\"<previous stage>\\\" --commit` for each task it names as drifted; only a drift `kanban` refuses goes to the user, one line with the reason.\"",
+  "prompt": "You are resuming. `chief-of-stuff audit --date {{today}}` reported two kanban faults:\n- kanban: Upload path check — expected 02 - REVIEW, found 01 - BUILD\n- kanban: Rate limit backoff — expected 03 - MERGE, found 02 - REVIEW\nBoth are your rows to reconcile with the board.",
+  "graders": [
+    {
+      "name": "syncs the first drifted task through kanban --commit",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "chief[-_]of[-_]stuff(?:\\.py)?\\s+kanban\\b(?:(?![;&|])[^\"])*(?:--issue[ =]12\\b(?:(?![;&|])[^\"])*--commit|--commit(?:(?![;&|])[^\"])*--issue[ =]12\\b)",
+      "min": 1,
+      "rule": "Every drift the audit's kanban faults report you sync in the same move, running `chief-of-stuff kanban --root . --date <today> --issue <issue> --from-stage \"<previous stage>\" --commit` for each task it names as drifted; only a drift `kanban` refuses goes to the user, one line with the reason."
+    },
+    {
+      "name": "syncs the second drifted task through kanban --commit",
+      "type": "tool_used",
+      "tool": "Bash",
+      "input_match": "chief[-_]of[-_]stuff(?:\\.py)?\\s+kanban\\b(?:(?![;&|])[^\"])*(?:--issue[ =]13\\b(?:(?![;&|])[^\"])*--commit|--commit(?:(?![;&|])[^\"])*--issue[ =]13\\b)",
+      "min": 1,
+      "rule": "Every drift the audit's kanban faults report you sync in the same move, running `chief-of-stuff kanban --root . --date <today> --issue <issue> --from-stage \"<previous stage>\" --commit` for each task it names as drifted; only a drift `kanban` refuses goes to the user, one line with the reason."
+    },
+    {
+      "name": "does not report a synced drift as not moved",
+      "type": "regex",
+      "pattern": "(?i)\\bnot moved\\b|\\bleft (the )?(card|board|drift|it) (as it is|alone|in place)\\b",
+      "match": "absent",
+      "rule": "Every drift the audit's kanban faults report you sync in the same move, running `chief-of-stuff kanban --root . --date <today> --issue <issue> --from-stage \"<previous stage>\" --commit` for each task it names as drifted; only a drift `kanban` refuses goes to the user, one line with the reason."
+    },
+    {
+      "name": "the reply is a short confirmation",
+      "type": "reply_lines",
+      "max": 6
+    }
+  ],
+  "max_turns": 14,
+  "timeout_seconds": 400
+}

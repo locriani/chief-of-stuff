@@ -38,6 +38,7 @@ STARTED_DETAIL = re.compile(r"^-\s+(\d{1,2}:\d{2}) one-shot (\S+) started: (.*?)
 # the user approved. Each names its task last, as a started line does, and matches no pattern above.
 HOLD_FAILED = re.compile(r"^- (\d{1,2}):(\d{2}) one-shot (\S+): review hold failed: (.*), task (.+?)\s*$")
 APPROVED_CLOSE = re.compile(r"^- (\d{1,2}):(\d{2}) forge closure approved by the user: (.*), task (.+?)\s*$")
+SEVERE = re.compile(r"^- (\d{1,2}):(\d{2}) severe process violation: (.*), sent to (.*)$")
 
 
 def stage_line(at: str, name: str, stage: str) -> str:
@@ -85,6 +86,12 @@ def approved_close_line(at: str, task: str, why: str) -> str:
     """The coordinator's record that the user approved `task` done because its issue closed on the forge (#547);
     the audit does not reopen a task this line names."""
     return f"- {at} forge closure approved by the user: {why}, task {task}"
+
+
+def severe_line(at: str, block: str, sent_to: str) -> str:
+    """The coordinator's record of a severe process violation (#92): the blocked board or task-state
+    write, and where the harness defect was reported."""
+    return f"- {at} severe process violation: {block}, sent to {sent_to}"
 
 
 @dataclass(frozen=True)

@@ -129,6 +129,26 @@ class RoundTripTest(unittest.TestCase):
         self.assertEqual(tl.approved_closes(text), {"Open branch work"})
         self.assertEqual(tl.moves(text, DAY, CT), [])
 
+    def test_a_severe_violation_line_reads_back_its_block_and_target(self):
+        # #92: the coordinator records a blocked board/task write; the line names the block and where it went.
+        line = tl.severe_line("10:05", "kanban: changed outside the tracker", "session hs-fixer")
+        self.assertEqual(tl.SEVERE.match(line).groups(),
+                         ("10", "05", "kanban: changed outside the tracker", "session hs-fixer"))
+        for pattern in (tl.STAGE, tl.STARTED, tl.ENDED, tl.RELAUNCH):
+            self.assertIsNone(pattern.match(line), line)
+        text = "\n".join(("# Tracker", "", "## Log", "", line, ""))
+        self.assertEqual(tl.moves(text, DAY, CT), [])
+
+    def test_two_severe_violation_lines_stay_distinct(self):
+        first = tl.severe_line("10:20", "kanban: changed outside the tracker", "session hs-fixer")
+        second = tl.severe_line("11:30", "tracker write refused by the lock", "repo o/harness-defects")
+        text = "\n".join(("# Tracker", "", "## Log", "", first, second, ""))
+        found = [m.groups() for line in text.splitlines() if (m := tl.SEVERE.match(line))]
+        self.assertEqual(found, [
+            ("10", "20", "kanban: changed outside the tracker", "session hs-fixer"),
+            ("11", "30", "tracker write refused by the lock", "repo o/harness-defects"),
+        ])
+
 
 class WordingTest(unittest.TestCase):
     """One line of each kind, byte for byte as `chief-of-stuff log --stage` and the one-shot launcher wrote it

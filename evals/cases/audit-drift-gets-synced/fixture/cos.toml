@@ -1,0 +1,12 @@
+[lanes]
+build = { stages = ["build", "review", "merge", "main"], gates = ["review", "main"] }
+
+[kanban]
+stages = ["01 - BUILD", "02 - REVIEW", "03 - MERGE"]
+human_review_label = "!! - HUMAN REVIEW REQUIRED"
+hold_stages = ["review"]
+
+[kanban.map]
+"build" = 0
+"review" = 1
+"merge" = 2
