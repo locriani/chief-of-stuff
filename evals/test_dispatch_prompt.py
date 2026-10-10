@@ -1320,7 +1320,8 @@ class OneShotResultInstructionTest(unittest.TestCase):
     def test_the_one_shot_result_line_says_the_path_is_git_ignored(self):
         tmp, root = workspace()
         self.addCleanup(tmp.cleanup)
-        self.assertIn("git-ignored", dp.compose(root, "2026-09-18", "Security audit", one_shot=True))
+        self.assertIn("git-ignored", dp.compose(root, "2026-09-18", "Security audit",
+                                                worktree=root / "tree", one_shot=True))
 
 
 class ReadOnlyAssignmentTest(unittest.TestCase):
