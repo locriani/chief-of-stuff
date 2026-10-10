@@ -1047,6 +1047,32 @@ ISSUE_TRACKER = """# Tracker 2026-09-18
 """
 
 
+MR_TRACKER = ISSUE_TRACKER.replace("#12 | Checklist: Security audit of the upload handler",
+                                   "#12 | Checklist: make PR #58 mergeable")
+
+
+class AutoMergeRuleTest(unittest.TestCase):
+    """A task naming a pull or merge request carries the no-history-rewrite rule (#64)."""
+
+    def test_a_task_naming_a_pull_request_carries_the_no_history_rewrite_rule(self):
+        tmp, root = workspace(MR_TRACKER, ISSUE_CLAUDE)
+        self.addCleanup(tmp.cleanup)
+        body = dp.compose(root, "2026-09-18", "Security audit", worktree=Path("/tmp/trees/wt-audit"), one_shot=True)
+        self.assertIn("auto-merge", body)
+        self.assertIn("no rebase, no force-push", body)
+
+    def test_an_interactive_assignment_carries_it_too(self):
+        tmp, root = workspace(MR_TRACKER, ISSUE_CLAUDE)
+        self.addCleanup(tmp.cleanup)
+        self.assertIn("no rebase, no force-push", dp.compose(root, "2026-09-18", "Security audit"))
+
+    def test_a_task_naming_no_pull_request_carries_no_such_rule(self):
+        tmp, root = workspace(ISSUE_TRACKER, ISSUE_CLAUDE)
+        self.addCleanup(tmp.cleanup)
+        body = dp.compose(root, "2026-09-18", "Security audit", worktree=Path("/tmp/trees/wt-audit"), one_shot=True)
+        self.assertNotIn("auto-merge", body)
+
+
 class IssueDispatchTest(unittest.TestCase):
     def test_the_assignment_names_its_issue(self):
         tmp, root = workspace(ISSUE_TRACKER, ISSUE_CLAUDE)

@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from backlog_ref import file_with, issue_ref  # noqa: E402
+from backlog_ref import change_numbers, file_with, issue_ref  # noqa: E402
 from tracker import parse_tracker, short_name  # noqa: E402
 from workspace import ConfigError, read_config  # noqa: E402
 from settings import SettingsError, Workflow, load as load_settings  # noqa: E402
@@ -219,6 +219,11 @@ COMMITS = ("Commits: Commit small and often on your own branch — uncommitted w
 # A read-only task is told so in place of its delivery rule; the launcher only checks afterwards that it left no commit or changed file (#57).
 READ_ONLY = "Do not edit, commit, push, merge or open a pull request: this task is read-only. Write what you found in your result or report, and nothing else."
 
+# #64: an armed auto-merge falls off when history is rewritten under it, and the worker is the one holding the push.
+MR_RULE = ("Pull request: this task names one. While it has auto-merge set, never rewrite its history — no rebase, "
+           "no force-push — unless the task says so; merge main in instead. If your run still clears its "
+           "auto-merge, say so plainly in your result.")
+
 
 def commit_rule(workflow: Workflow, root: Path) -> str:
     if workflow.delivery == "branch":
@@ -355,6 +360,8 @@ def compose(root: Path, day: str | None, task: str, worktree: Path | None = None
     who = SESSION_NAME.fullmatch(coordinator.strip()) if coordinator else None
     if coordinator and not who:
         raise RefusedError(f"{coordinator!r} is not a session name; pass the name a listing shows")
+    # A task naming a pull or merge request carries the no-history-rewrite rule (#64); no forge read, the cells say it.
+    named_change = bool(cfg.backlog and change_numbers(rows[0], cfg.backlog))
     # Preserve the assigned session name.
     if name is not None and not GIVEN_NAME.fullmatch(name):
         raise RefusedError(f"{name!r} is not a session name; a launch name is bare, like impl07")
@@ -376,6 +383,7 @@ def compose(root: Path, day: str | None, task: str, worktree: Path | None = None
             board_rule,
             WRITING_RULE,
             REVIEW_RULE,
+            *([MR_RULE] if named_change else []),
             f"Task: {item}",
         ]
         if rows[0].checklist.strip():
@@ -452,7 +460,8 @@ def compose(root: Path, day: str | None, task: str, worktree: Path | None = None
         report_text = report_text.replace("If direct messaging fails, send via mailbox:", "Send via mailbox:")
         header_text = header_text.replace("When direct messaging is unavailable, send your ask via:", "Send your ask via:")
 
-    lines = [header_text, board_rule, WRITING_RULE, REVIEW_RULE, f"Task: {item}"]
+    lines = [header_text, board_rule, WRITING_RULE, REVIEW_RULE, *([MR_RULE] if named_change else []),
+             f"Task: {item}"]
     if rows[0].checklist.strip():
         lines.append(f"Requirement: {_clean('the checklist cell', rows[0].checklist.strip())}")
     if issue:

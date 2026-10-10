@@ -149,6 +149,21 @@ def home_of(cfg: Backlog | GitHubBacklog) -> tuple[str, str]:
     return urlsplit(cfg.host).hostname or "", cfg.project
 
 
+GH_PR = re.compile(r"(?i)\bPR\s*#(\d+)\b")
+GL_MR = re.compile(r"(?<![\w&])!(\d+)\b")
+
+
+def change_numbers(task, home: Backlog | GitHubBacklog, then: str = "") -> set[int]:
+    """The pull or merge requests a task's row names: `!N` on GitLab, `PR #N` on GitHub, or the request's URL.
+    With `then`, only those a cell follows with it. Each cell is read alone, so nothing is read across two.
+    Lives here, not board_sources, so prompt and dispatch code can read a row's change names without reaching the forge client."""
+    github_home = isinstance(home, GitHubBacklog)
+    url = (rf"github\.com/{re.escape(home.repo)}/pull/(\d+)" if github_home
+           else rf"{re.escape(home_of(home)[0])}/{re.escape(home.project)}/-/merge_requests/(\d+)")
+    return {int(n) for cell in (task.name, task.item, task.issue, task.checklist)
+            for named in ((GH_PR if github_home else GL_MR).pattern, url) for n in re.findall(named + then, cell)}
+
+
 def file_with(cfg: Backlog | GitHubBacklog) -> str:
     """The command that files an issue in this backlog, for a fault line to name."""
     return "chief-of-stuff backlog --create"

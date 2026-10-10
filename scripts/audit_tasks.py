@@ -24,6 +24,7 @@ from tracker import Session, clip_name, parse_tracker  # noqa: E402
 from workspace import ConfigError, parse_coordinator, read_config, worktrees_dir  # noqa: E402
 from dispatch_prompt import PROMPT_DIR, STOP_FILE, task_keys  # noqa: E402
 from backlog import CLOSED, GITHUB, Backlog, BacklogError, GitHubBacklog, file_with, home_of, issue_ref, issue_states  # noqa: E402
+from backlog_ref import change_numbers  # noqa: E402
 import backlog  # noqa: E402
 from settings import Kanban, SettingsError, load as load_settings  # noqa: E402
 import board_sources  # noqa: E402
@@ -232,7 +233,7 @@ def _named(task, home: Backlog | GitHubBacklog) -> set[int]:
     elsewhere = ref is not None and (ref.host.lower(), ref.repo.lower()) != tuple(part.lower() for part in home_of(home))
     if task.standing or task.kind == DONE or elsewhere:
         return set()
-    return board_sources.change_numbers(task, home) - board_sources.change_numbers(task, home, ACKNOWLEDGED)
+    return change_numbers(task, home) - change_numbers(task, home, ACKNOWLEDGED)
 
 
 def merged_faults(tasks, changes: dict, home: Backlog | GitHubBacklog, answered: bool = True) -> list[MergedFault]:
