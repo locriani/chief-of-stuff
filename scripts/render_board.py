@@ -359,7 +359,9 @@ def render(tracker_text: str, cfg: Config, now: datetime, lanes: dict | None = N
                                     for s, r in flow_rows], now)
 
     pending = decisions or []
-    meta = [f"rendered {now:%H:%M} {now:%Z}", f"tracker {(tracker_at or now).astimezone(zone):%H:%M}",
+    # (#215) No render clock: pages re-render on every request, so it only ever said now. The meta keeps the
+    # sources' read times and the page's own counts; `data-rendered-at` stays for scripts.
+    meta = [f"tracker {(tracker_at or now).astimezone(zone):%H:%M}",
             *(f"{k} {sources.fetched[k].astimezone(zone):%H:%M}" for k in ("kanban", "merge requests", "workers") if k in sources.fetched),
             _tasks(len(tasks))]
     head = panels.Header(f"Board · {now.strftime('%a %d %b')}", tuple(meta), now, nearest.name, nearest.at,

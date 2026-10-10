@@ -188,6 +188,10 @@ class SourcePage(unittest.TestCase):
 
 
 class RenderTest(SourcePage):
+    def test_no_header_prints_a_rendered_clock(self) -> None:
+        # #215: the source crumb keeps the task and board links and the sources' read times, not a render clock.
+        self.assertNotRegex(self.page(), r"\brendered \d{1,2}:\d{2}")
+
     def test_an_issue_no_task_names_has_no_page(self):
         # Interface: "`render` returns None when no task in `trackers` names issue `number`".
         self.assertIsNone(self.render(110))

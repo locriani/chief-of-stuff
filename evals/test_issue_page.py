@@ -132,6 +132,10 @@ def section(html: str, heading: str) -> str:
 
 
 class RenderTest(unittest.TestCase):
+    def test_no_header_prints_a_rendered_clock(self) -> None:
+        # #215: the task header's eyebrow keeps the board link and the lane, not a render clock.
+        self.assertNotRegex(page(), r"\brendered \d{1,2}:\d{2}")
+
     def test_an_issue_no_task_names_has_no_page(self):
         # Route: /issues/<n> exists only for an issue a tracker task names.
         self.assertIsNone(page(110))

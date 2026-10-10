@@ -475,6 +475,12 @@ class HeldRefsTest(unittest.TestCase):
 class IndexTest(unittest.TestCase):
     """decisions.html is a list of pending and completed decisions (Decisions.dc.html)."""
 
+    def test_no_header_prints_a_rendered_clock(self) -> None:
+        # #215: the Decisions header keeps its pending, saved and completed counts, not a render clock.
+        page = self.render(dp.Context(NOW), **{"cache-warmup": decision()})
+        self.assertNotRegex(page, r"\brendered \d{1,2}:\d{2}")
+        self.assertIn("1 pending", page)
+
     def render(self, ctx: dp.Context, **decisions) -> str:
         return dp.index(pages_dir(**decisions), ctx, "2026-09-26")[0]
 
@@ -499,7 +505,7 @@ class IndexTest(unittest.TestCase):
                 self.assertIn(text, pending)
         self.assertNotIn("checked", pending)
         self.assertNotRegex(pending, r'class="[^"]*\brec\b')
-        self.assertIn("rendered 02:10 CDT · 1 pending · oldest 29m · holding 1 issue, 1 merge request · 0 completed today", page)
+        self.assertIn("1 pending · oldest 29m · holding 1 issue, 1 merge request · 0 completed today", page)  # (#215) no render clock
 
     def test_two_decisions_holding_one_issue_hold_it_once(self):
         page = self.render(dp.Context(NOW), a=decision(holds=["#111"], references=[]), b=decision(holds=["#111"], references=[]))
@@ -514,7 +520,7 @@ class IndexTest(unittest.TestCase):
         self.assertIn('<span class="words">“B, and log each retry”</span>', pending)
         self.assertIn('<span class="saved">answered, saved 02:08</span>', pending)
         self.assertEqual(pending.count("<form"), 1)
-        self.assertIn("· 2 pending · 1 saved ·", page)
+        self.assertIn("2 pending · 1 saved ·", page)  # (#215) no render clock before the counts
 
     def test_without_a_topic_there_is_no_chip(self):
         page = self.render(dp.Context(NOW), x=decision(topic=None))

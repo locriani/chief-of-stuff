@@ -752,7 +752,7 @@ def index(pages_dir: Path, ctx: Context, day: str, pending: list | None = None) 
     ready = [a for _, d, a, _ in pending if d is not None]
     mrs = sum(1 for r in held if ctx.is_change(r))
     unread = len(pending) - len(ready)
-    meta = [f"rendered {ctx.now:%H:%M} {ctx.now:%Z}".rstrip(), f"{len(ready)} pending"]
+    meta = [f"{len(ready)} pending"]  # (#215) no render clock: the sources' read times and counts stay
     if n_saved := sum(1 for _, d, _, _ in pending if d is not None and saved(d)):
         meta.append(f"{n_saved} saved")
     if any(ready):

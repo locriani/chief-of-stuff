@@ -94,7 +94,7 @@ def render(tracker_text: str, sources: board_sources.Sources, now: datetime, tre
     if cap:
         boxes.append(("slots free", f"{max(cap - shots, 0)} of {cap}", ""))
     boxes_html = "".join(f'<span class="box{hot}"><b>{v}</b><span class="cap">{k}</span></span>' for k, v, hot in boxes)
-    eyebrow = " · ".join([f"rendered {now:%H:%M %Z}", *(f"{escape(k)}: {escape(why)}" for k, why in sources.errors.items()),
+    eyebrow = " · ".join([*(f"{escape(k)}: {escape(why)}" for k, why in sources.errors.items()),  # (#215) no render clock
                           '<a href="/">board</a>'])
     return (f"<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n"
             f"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
