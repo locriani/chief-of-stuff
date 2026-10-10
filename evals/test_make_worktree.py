@@ -18,6 +18,7 @@ import tempfile
 import threading
 import time
 import unittest
+from uuid import uuid4
 from pathlib import Path
 from unittest import mock
 
@@ -1210,7 +1211,7 @@ class FromBranchTest(CloneCase):
             make_repo.git(["checkout", "-q", name], other)
         else:
             make_repo.git(["checkout", "-q", "-b", name, "origin/main"], other)
-        (other / "fix.txt").write_text("the fix\n")
+        (other / "fix.txt").write_text(f"the fix {uuid4().hex}\n")
         make_repo.git(["add", "-A"], other)
         make_repo.git(["commit", "-q", "-m", "the fix"], other)
         make_repo.git(["push", "-q", "origin", name], other)

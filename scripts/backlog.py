@@ -15,7 +15,7 @@ import subprocess
 import sys
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit
 
@@ -59,6 +59,40 @@ class Issue:
     web_url: str = ""
     updated_at: str = ""
     closed_at: str = ""
+    body: str = ""
+
+
+@dataclass(frozen=True)
+class Note:
+    """One issue comment: who said it, when, and what. System notes never become a Note."""
+
+    author: str
+    time: str = ""
+    body: str = ""
+
+
+@dataclass(frozen=True)
+class Read:
+    """One issue, or the reason there is none. `error` empty means the issue is the whole answer."""
+
+    issue: Issue | None = None
+    error: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return not self.error
+
+
+@dataclass(frozen=True)
+class Notes:
+    """A comment list, or the reason there is none. `error` empty means the list is the whole answer."""
+
+    notes: tuple[Note, ...] = ()
+    error: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return not self.error
 
 
 @dataclass(frozen=True)
@@ -225,6 +259,84 @@ def issue_states(cfg: Backlog | GitHubBacklog, gh=None) -> dict[int, Issue]:
     if not got.ok:
         raise BacklogError(got.error)
     return {i.iid: i for i in got.issues}
+
+
+def read_one(cfg: Backlog | GitHubBacklog, iid: int, token: str | None = None,
+             timeout: float = TIMEOUT, gh=None) -> Read:
+    """One issue with its body (#63), the shapes the list omits. A failed read says why; it never raises."""
+    if isinstance(cfg, GitHubBacklog):
+        rc, out, err = (gh or run_gh)(["issue", "view", str(iid), "-R", cfg.repo, "--json", f"{GH_FIELDS},body"])
+        if rc != 0:
+            return Read(error=f"gh: {(err.strip().splitlines() or [f'exit {rc}'])[-1]}")
+        try:
+            row = json.loads(out)
+        except ValueError:
+            return Read(error="GitHub did not answer with JSON")
+        if not isinstance(row, dict):
+            return Read(error="GitHub answered with something that is not an issue")
+        one = _gh_issue(row)
+        return Read(issue=replace(one, body=str(row.get("body") or "")))
+    secret = token if token is not None else globals()["token"](cfg)
+    if not secret:
+        return Read(error=cfg.missing_token)
+    body, _headers, error = _get(f"{cfg.issues_url}/{iid}", secret, timeout)
+    if error:
+        return Read(error=error)
+    if not isinstance(body, dict):
+        return Read(error="GitLab answered with something that is not an issue")
+    return Read(issue=replace(_issue(body), body=str(body.get("body") or "")))
+
+
+def comments(cfg: Backlog | GitHubBacklog, iid: int, token: str | None = None,
+             timeout: float = TIMEOUT, gh=None) -> Notes:
+    """An issue's comments in order, each with author and time (#63). GitLab's system notes record
+    label and state changes, not a person speaking, and are not comments. A failed read says why."""
+    if isinstance(cfg, GitHubBacklog):
+        rc, out, err = (gh or run_gh)(["api", "--paginate", f"repos/{cfg.repo}/issues/{iid}/comments?per_page={PER_PAGE}"])
+        if rc != 0:
+            return Notes(error=f"gh: {(err.strip().splitlines() or [f'exit {rc}'])[-1]}")
+        try:
+            rows = json.loads(out)
+        except ValueError:
+            return Notes(error="GitHub did not answer with JSON")
+        if not isinstance(rows, list):
+            return Notes(error="GitHub answered with something that is not a list of comments")
+        return Notes(notes=tuple(_note(r) for r in rows if isinstance(r, dict)))
+    secret = token if token is not None else globals()["token"](cfg)
+    if not secret:
+        return Notes(error=cfg.missing_token)
+    out_notes: list[Note] = []
+    page = "1"
+    for _ in range(MAX_PAGES):
+        query = {"per_page": PER_PAGE, "sort": "asc", "page": page}
+        body, headers, error = _get(f"{cfg.issues_url}/{iid}/notes?{urlencode(query)}", secret, timeout)
+        if error:
+            return Notes(error=error)
+        if not isinstance(body, list):
+            return Notes(error="GitLab answered with something that is not a list of comments")
+        out_notes += [n for n in (_note(row) for row in body if isinstance(row, dict)) if n.author]
+        page = (headers.get("x-next-page") or "").strip()
+        if not page:
+            return Notes(notes=tuple(out_notes))
+    return Notes(error=f"more than {MAX_PAGES} pages of comments; refusing to read a partial answer as whole")
+
+
+def _note(row: dict) -> Note:
+    """A forge comment row as a Note, or an empty one for a system note: its author is the forge itself."""
+    if row.get("system") is True or row.get("system") == "true":
+        return Note("", "", "")
+    return Note(
+        author=str(((row.get("user") or {}).get("login")) or ((row.get("author") or {}).get("username")) or ""),
+        time=str(row.get("created_at") or ""),
+        body=str(row.get("body") or ""),
+    )
+
+
+def view_text(one: Issue, notes: tuple[Note, ...] = ()) -> str:
+    """The text `--view` prints: the issue's own line, its state, its body, then its comments in order."""
+    lines = [issue_line(one), f"state: {one.state}", one.body]
+    lines += [f"{n.time} {n.author}: {n.body}" for n in notes]
+    return "\n".join(lines)
 
 
 def _total(cfg: Backlog, secret: str, state: str, timeout: float) -> tuple[int | None, str]:
@@ -492,6 +604,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="GitHub blocker issue number for --create; repeat for multiple blockers")
     parser.add_argument("--close", metavar="ISSUE", help="close one issue: N, #N, or a reference in the Backlog")
     parser.add_argument("--comment", type=int, metavar="IID", help="comment on one issue")
+    parser.add_argument("--view", type=int, metavar="N", help="print one issue's title, state, body and labels (#63)")
+    parser.add_argument("--comments", action="store_true", help="with --view, add the issue's comments in order")
     # No `--token`: argv is readable by `ps`, so the token comes from the environment or the
     # Keychain and from nowhere a shell history can keep it.
     parser.add_argument("--commit", action="store_true",
@@ -525,6 +639,24 @@ def main(argv: list[str] | None = None) -> int:
         writes.append(close(cfg, ref.number, commit=args.commit, timeout=args.timeout))
     if args.comment:
         writes.append(comment(cfg, args.comment, args.body, commit=args.commit, timeout=args.timeout))
+    if args.view is not None:
+        ref = parse_issue_arg(str(args.view), cfg)
+        if ref is None or (ref.host, ref.repo) != home_of(cfg):
+            print(f"backlog: --view {args.view!r} is not an issue in this Backlog", file=sys.stderr)
+            return 2
+        got = read_one(cfg, ref.number, timeout=args.timeout)
+        notes: tuple[Note, ...] = ()
+        if got.ok and args.comments:
+            found = comments(cfg, ref.number, timeout=args.timeout)
+            if not found.ok:
+                print(f"backlog: unknown — {found.error}", file=sys.stderr)
+                return 1
+            notes = found.notes
+        if not got.ok:
+            print(f"backlog: unknown — {got.error}", file=sys.stderr)
+            return 1
+        print(view_text(got.issue, notes))
+        return 0
     if writes:
         for one in writes:
             print(write_line(one))
