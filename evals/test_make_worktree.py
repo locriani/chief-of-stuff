@@ -11,6 +11,7 @@ import contextlib
 import fcntl
 import io
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1193,6 +1194,85 @@ class SettingsCloneTest(CloneCase):
         code, out, err = self.invoke("--clone", "")
         self.assert_refused_with_nothing_made(code, out, err)
         self.assertIn("empty", err)
+
+
+class FromBranchTest(CloneCase):
+    """#62: `--from-branch` checks out an existing remote branch into the new tree instead of
+    cutting a throwaway one off main. It fetches first, and refuses a branch the remote lacks."""
+
+    def mr_branch(self, name: str = "feat/mr") -> str:
+        """The branch on origin, one commit further than any earlier call left it; returns origin's head.
+        The workspace clone has never seen the branch: only a fetch in `build` can find it."""
+        other = self.root / "other"
+        shutil.rmtree(other, ignore_errors=True)
+        make_repo.git(["clone", "-q", str(self.root / "origin.git"), str(other)], self.root)
+        if make_repo.git(["ls-remote", "--heads", "origin", name], other):
+            make_repo.git(["checkout", "-q", name], other)
+        else:
+            make_repo.git(["checkout", "-q", "-b", name, "origin/main"], other)
+        (other / "fix.txt").write_text("the fix\n")
+        make_repo.git(["add", "-A"], other)
+        make_repo.git(["commit", "-q", "-m", "the fix"], other)
+        make_repo.git(["push", "-q", "origin", name], other)
+        return rev(other)
+
+    def local_branches(self) -> set[str]:
+        return set(make_repo.git(["for-each-ref", "--format=%(refname:short)", "refs/heads"], self.clone).splitlines())
+
+    def test_a_from_branch_tree_is_on_the_remote_branchs_head(self):
+        head = self.mr_branch()
+        made = self.build(branch="feat/mr", from_branch="feat/mr")
+        self.assertTrue((made.path / ".git").exists())
+        self.assertEqual(rev(made.path), head, "the tree starts at the remote branch's head, not main's")
+        self.assertEqual(make_repo.git(["rev-parse", "--abbrev-ref", "HEAD"], made.path), "feat/mr")
+
+    def test_a_from_branch_tree_starts_at_the_branchs_newest_remote_head(self):
+        self.mr_branch()
+        head = self.mr_branch()  # a second push the clone has not seen: the build must fetch first
+        made = self.build(branch="feat/mr", from_branch="feat/mr")
+        self.assertEqual(rev(made.path), head)
+
+    def test_a_from_branch_tree_creates_no_branch_beyond_the_named_one(self):
+        self.mr_branch()
+        before = self.local_branches()
+        self.build(branch="feat/mr", from_branch="feat/mr")
+        self.assertEqual(self.local_branches() - before, {"feat/mr"},
+                         "the clone gains only the branch it checked out, never a throwaway")
+
+    def test_a_branch_missing_on_the_remote_is_refused_and_creates_nothing(self):
+        with self.assertRaises(mw.RefusedError) as raised:
+            self.build(branch="ghost", from_branch="ghost")
+        self.assertFalse(self.tree.exists())
+        self.assertIn("ghost", str(raised.exception))
+
+    def test_from_branch_and_from_local_are_refused_together(self):
+        self.mr_branch()
+        with self.assertRaises(mw.RefusedError):
+            self.build(branch="feat/mr", from_branch="feat/mr", from_local=True)
+        self.assertFalse(self.tree.exists())
+
+    def test_a_from_branch_with_a_different_branch_name_is_refused(self):
+        self.mr_branch()
+        with self.assertRaises(mw.RefusedError):
+            self.build(branch="feat/new", from_branch="feat/mr")
+        self.assertFalse(self.tree.exists())
+
+    def test_the_report_names_the_remote_branch_as_the_base(self):
+        self.mr_branch()
+        made = self.build(branch="feat/mr", from_branch="feat/mr")
+        self.assertEqual(made.base, "origin/feat/mr")
+        self.assertIn("origin/feat/mr", mw.line(made))
+
+    def test_main_takes_from_branch_alone_and_reports_the_branch_it_made(self):
+        self.mr_branch()
+        argv = ["--type", "implementer", "--name", "wt-new", "--root", str(self.root),
+                "--clone", str(self.clone), "--from-branch", "feat/mr"]
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = mw.main(argv)
+        self.assertEqual(code, 0, err.getvalue())
+        self.assertIn(str(self.tree), out.getvalue())
+        self.assertIn("origin/feat/mr", out.getvalue())
 
 
 if __name__ == "__main__":
