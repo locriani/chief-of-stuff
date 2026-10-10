@@ -1225,7 +1225,7 @@ class FromBranchTest(CloneCase):
         made = self.build(branch="feat/mr", from_branch="feat/mr")
         self.assertTrue((made.path / ".git").exists())
         self.assertEqual(rev(made.path), head, "the tree starts at the remote branch's head, not main's")
-        self.assertEqual(make_repo.git(["rev-parse", "--abbrev-ref", "HEAD"], made.path), "feat/mr")
+        self.assertEqual(make_repo.git(["rev-parse", "--abbrev-ref", "HEAD"], made.path), "HEAD")
 
     def test_a_from_branch_tree_starts_at_the_branchs_newest_remote_head(self):
         self.mr_branch()
@@ -1233,12 +1233,12 @@ class FromBranchTest(CloneCase):
         made = self.build(branch="feat/mr", from_branch="feat/mr")
         self.assertEqual(rev(made.path), head)
 
-    def test_a_from_branch_tree_creates_no_branch_beyond_the_named_one(self):
+    def test_a_from_branch_tree_creates_no_branch(self):
         self.mr_branch()
         before = self.local_branches()
         self.build(branch="feat/mr", from_branch="feat/mr")
-        self.assertEqual(self.local_branches() - before, {"feat/mr"},
-                         "the clone gains only the branch it checked out, never a throwaway")
+        self.assertEqual(self.local_branches() - before, set(),
+                         "the clone creates no branch at all: the tree is detached at the remote head")
 
     def test_a_from_branch_tree_never_claims_the_branch_another_tree_holds(self):
         """#115: a stale tree still holding the MR's branch must not refuse a fixer's tree; the
@@ -1247,13 +1247,14 @@ class FromBranchTest(CloneCase):
         make_repo.git(["fetch", "-q", "origin"], self.clone)
         stale = self.root / "stale"
         make_repo.git(["worktree", "add", "-q", str(stale), "feat/mr"], self.clone)
+        before = self.local_branches()
         made = self.build(branch="feat/mr", from_branch="feat/mr")
         self.assertEqual(rev(made.path), head, "the fixer's tree starts at the remote branch's head")
         self.assertEqual(make_repo.git(["rev-parse", "--abbrev-ref", "HEAD"], made.path), "HEAD",
                          "the fixer's tree is detached: it took no branch claim")
         self.assertEqual(make_repo.git(["rev-parse", "--abbrev-ref", "HEAD"], stale), "feat/mr",
                          "the stale tree keeps the branch it holds")
-        self.assertEqual(self.local_branches() - {"feat/mr"}, set(), "no branch was cut for the fixer")
+        self.assertEqual(self.local_branches() - before, set(), "no branch was cut for the fixer")
 
     def test_a_branch_missing_on_the_remote_is_refused_and_creates_nothing(self):
         with self.assertRaises(mw.RefusedError) as raised:
