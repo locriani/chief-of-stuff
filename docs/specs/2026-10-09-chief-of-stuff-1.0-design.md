@@ -57,6 +57,9 @@ A 1.0 that works but still needs prodding along has failed (Decided). So has a 1
 7. **Claude only for 1.0** (Decided; supersedes an earlier pick of all four hosts). Codex, Cursor and Antigravity are out of 1.0. Call: keep the core host-neutral where it costs nothing, so a second host is an adapter later, but build and test only Claude. Codex, Cursor and Antigravity adapters in the current repo (`start_coordinator.py` and the watcher) are not carried over unless examined and kept.
 7a. **The only way Zach talks to it is the board** (Decided). There is no persistent chat coordinator session. The model side is a backing coordinator session that is driven by the engine and speaks JSON only, via an API, not an interactive CLI chat. The surface is `claude -p --output-format json` (Decided), the CLI that is already installed, so no new SDK or library is needed. Every model call, including the trio gate and anything else Zach's decisions rely on, goes through a single model adapter (a port with a `claude -p` implementation behind it), so nothing else in the system spawns `claude` or parses its JSON (Decided).
 8. **Board** (Decided): adjust it where the model needs it; no redesign. Call: rework and review show as segments on the issue's single line.
+9. **Workers launch under a small guard plugin** (Decided, 2026-10-10). The engine starts each worker with a purpose-built plugin of Python command hooks, not the user's full plugin set: gates on forge writes and merges outside the policy, `AskUserQuestion` and permission relays routed to the engine (and from there to the trio gate), and a Stop record gate that stops a worker finishing before it has reported to the engine. Hooks fail open (a hook that errors or times out is skipped), so they are guard rails, not the authority: the engine independently verifies state before every merge. Judgement calls through the model adapter use `--safe-mode`, which disables hooks, plugins and CLAUDE.md.
+10. **Typed report/ask channel** (Decided, 2026-10-10). The engine owns a Python MCP server that gives workers `report` and `ask` tools, replacing the file mailbox and TOON files. Reports and asks land in the store through the same adapters as everything else.
+11. **Session-start state injection** (Decided, 2026-10-10). Each worker starts with its issue's state injected by a session-start hook, so a restart or resume needs no catch-up prompt.
 
 ## Build approach (Decided)
 
@@ -67,6 +70,8 @@ Mostly clean-slate ("3 ish"). The old specs, old golden evals, old Python code a
 - Any new library, package or external tool needs Zach's approval before it is installed, vendored or depended on: the ORM, the store, anything else. Name it, say where it comes from and why, and wait for his yes. Researching candidates is fine.
 - The existing test suite is the main safety net (about 49k lines of tests, 110 eval cases). Whatever the build approach, the behaviour it encodes must be carried over or consciously dropped.
 - The plugin repo protects `main`; every change lands through a PR and bumps the version.
+
+A mod (TypeScript function hooks, in-terminal status line, native notify) is allowed: the repo rule is "Python (or another real language)", so TypeScript needs no exemption. Whether the guard plugin in decisions 9-11 is Python command hooks plus an MCP server or a TypeScript mod is Open. The in-terminal UI part of a mod is deferred on merit (the board is the interface), not on language.
 
 ## Left to the builder
 
@@ -84,5 +89,6 @@ Mostly clean-slate ("3 ish"). The old specs, old golden evals, old Python code a
 - **Gantt segments**: what a segment is keyed on when rework yields several PRs or workers for one issue. Call: key segments by (issue, stage, attempt).
 - **Forge coverage for "create the issue first"**: GitHub and GitLab, and workspaces with no `Backlog:` line. Decided: a workspace with no `Backlog:` line is not run. The engine refuses the work and instead helps Zach set up or configure the backlog. Setup help is part of 1.0.
 
+- **Form of the worker guard plugin (decisions 9-11)**: Zach, 2026-10-10: "leave it all in the design for later." Candidates: a TypeScript mod (gates that can fail closed through `.catch`, plus `$.tool.register` for `report`/`ask`, plus session-start injection), Python command hooks plus a Python MCP server (gates fail open), or a mod for the gates with the MCP server for the channel. Unverified: that a `claude -p` worker loaded with `--plugin-dir` runs function hooks and honours `.catch`. Decide after a spike.
 - **How the engine supervises and restarts** the `claude -p` calls and carries session state between them (see 7a).
 - **Choosing the trio**: how the topic-appropriate three reviewers are picked, and what record of their verdict is kept.

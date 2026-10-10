@@ -25,6 +25,7 @@ No product code. Produces decisions.
 
 1. **Store and ORM proposal for Zach's approval.** Present candidates with source and reason (a Python ORM over SQLite is the likely shape; candidates and trade-offs to be researched, none adopted). Block M1 on his yes.
 2. **`claude -p --output-format json` spike.** This also fixes the shape of the model port the adapter implements (request, structured response, session handle, error/quota result). Prove: structured judgement calls (a review verdict, a trio vote), session continuity across calls, behaviour at quota or outage, cost accounting. Output: a short note and a throwaway script in `_scratch`, not shipped.
+   Add to this spike (deferred by Zach, 2026-10-10, to run later): does a `claude -p` worker loaded with `--plugin-dir` run TypeScript function hooks, and does a `.catch` make a gate fail closed? The answer picks the guard plugin's form (design Open items).
 3. **Carry/drop ledger.** One row per current behaviour or module (tick, kanban, notify, PARA filing, launchers, `claude_profile`, mailbox, decision pages, the 110 eval cases), each marked carry, rewrite, or drop, with the reason. Zach reviews the ledger once.
 4. **Behaviour spec extraction.** From the golden evals and the architecture doc, list the behaviours 1.0 must reproduce. Resolve the design's remaining Open items that block M1-M3: policy content for code review, trio selection rule, default limits.
 
@@ -56,8 +57,9 @@ Exit: eval cases for work-without-issue (issue created, then one row) and no-bac
 
 1. State-driven reconcile (replaces mailbox-driven ticks): each pass computes what the state calls for. Free worker slots with dispatchable work → dispatch. Approved, policy-satisfied work → merge. Missing review → launch it. Reviews run in parallel.
 2. Model adapter: the `claude -p --output-format json` implementation of the model port, with fakes for tests so engine evals never call a real model. Workers launched in git worktrees. Decide in M0 whether workers also run through the adapter.
-3. Supervisor: runs as a long-lived process (launchd or equivalent), restarts itself, and resumes after quota reset or outage by waiting, not by asking.
-4. Cleanup: worktree and resource hygiene is a carried behaviour (stale worktrees once used 185 GB).
+3. Worker launch profile (D9-D11): a guard plugin of Python command hooks (forge-write and merge gates, ask and permission relay to the engine, Stop record gate, session-start state injection) and the engine's Python MCP server with `report` and `ask` tools. Tests first: each gate has a red case that a worker cannot get past, and the engine's own merge-time check passes when a hook is skipped. Replaces the mailbox and TOON files (ledger: riskiest drop 1).
+4. Supervisor: runs as a long-lived process (launchd or equivalent), restarts itself, and resumes after quota reset or outage by waiting, not by asking.
+5. Cleanup: worktree and resource hygiene is a carried behaviour (stale worktrees once used 185 GB).
 
 Exit (S1, S4): an eval that kills the engine mid-run and a fake quota hit, and the run resumes with no prompt and no state loss.
 
