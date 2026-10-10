@@ -30,6 +30,12 @@ No product code. Produces decisions.
 
 Exit: store approved, spike note, ledger approved, open items resolved or deferred explicitly.
 
+**M0 status (2026-10-10):**
+- Store and ORM: **approved** by Zach: SQLAlchemy pinned to the 2.0.x line (2.0.54) with Alembic 1.20.0 on SQLite via stdlib `sqlite3` (adds `mako`, `markupsafe`, `typing-extensions`). Nothing is installed until M1 starts. Runner-up was Peewee.
+- Spike: done; see [`2026-10-09-chief-of-stuff-1.0-spike-claude-p.md`](2026-10-09-chief-of-stuff-1.0-spike-claude-p.md). Quota and outage behaviour is unverified and must be treated as retryable-unknown.
+- Ledger: drafted, awaiting Zach's one review; see [`2026-10-09-chief-of-stuff-1.0-ledger.md`](2026-10-09-chief-of-stuff-1.0-ledger.md).
+- Still open: code-review policy content, trio selection rule, default limits, whether workers run through the model adapter.
+
 ### M1. Core model and store
 
 1. Schema for work items keyed by forge issue, stage segments keyed (issue, stage, attempt), decisions, file ownership, log, resume state. Unique constraint on the issue key.
