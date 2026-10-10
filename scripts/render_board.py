@@ -12,6 +12,7 @@ import hashlib
 import html
 import re
 import sys
+from collections import Counter
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time
 from pathlib import Path
@@ -155,6 +156,16 @@ def merged_today(sources: board_sources.Sources, now: datetime) -> list[board_so
                    and c.merged_at.astimezone(now.tzinfo).date() == now.date()), key=lambda c: c.merged_at, reverse=True)
 
 
+def card_cats(task: Task, held: bool, changes: tuple[board_sources.Change, ...] | list, drifted: bool) -> tuple[str, ...]:
+    """#207: the filter tags a card carries, keyed as the tiles name them, so a tile's count is the cards carrying
+    its tag and the dimmed board always agrees. Kinds with no tile (open, waiting, done) tag nothing and only ALL
+    keeps them lit; a held card tags `hold` instead of its kind."""
+    kind = "hold" if held else (task.kind if task.kind in ("running", "orphaned") else "")
+    return tuple(c for c in (*([kind] if kind else []),
+                             "approved" if any(c.state == "open" and c.approved for c in changes) else "",
+                             "drift" if drifted else "") if c)
+
+
 def build_columns(tasks: list[Task], lanes: dict | None, kanban: Kanban | None = None,
                   sources: board_sources.Sources = board_sources.EMPTY, now: datetime | None = None,
                   held: dict[Task, str] | None = None) -> list[columns.Column]:
@@ -185,12 +196,14 @@ def build_columns(tasks: list[Task], lanes: dict | None, kanban: Kanban | None =
         url = issue_url(issue_key(task.issue, sources.home), task.issue)
         issue = issue_key(task.issue, sources.home) if changes or url else task.issue.strip()
         refs = ((issue, page(issue, url)),) * bool(issue) + tuple((c.ref, change_href(c)) for c in changes)
-        marks = change_marks(changes) + ((columns.Mark("drift", "drift"),) if drifts(task, kanban, sources, stage) else ())
+        drifted = bool(drifts(task, kanban, sources, stage))
+        marks = change_marks(changes) + ((columns.Mark("drift", "drift"),) if drifted else ())
         owner = task.shown_owner
         return columns.Card(task.label, task.kind, refs, owner, task.state, marks,
                             flag=columns.Mark("NEEDS INPUT", "hold") if task in held else None,
                             href=page(task.issue, next((c.url for c in changes if c.state == "open"), url)),
-                            owner_href="/workers" if owner in workers else "")
+                            owner_href="/workers" if owner in workers else "",
+                            cats=card_cats(task, task in held, changes, drifted))
 
     laned = [t for t in tasks if t.lane.strip() and t.stage.strip()]
     at = {t: effective_stage(t, sources, lanes) for t in laned}
@@ -220,7 +233,7 @@ def _plural(n: int, word: str) -> str:
 # The panels' and the new marks' colours are the board's own tokens, so the dark scheme reaches them.
 PANEL_TOKENS = {"ink": "var(--fg)", "muted": "var(--muted)", "card": "var(--surface)", "rule": "var(--line)",
                 "edge": "var(--brass)", "link": "var(--brass)", "hot": "var(--dl)", "hot-ink": "var(--surface)"}
-PANEL_COLOURS = {"all": "var(--fg)", "blocked": "var(--dl)", "decisions": "var(--brass)", "approved": "var(--stage-review)",
+PANEL_COLOURS = {"all": "var(--fg)", "blocked": "var(--dl)", "hold": "var(--dl)", "decisions": "var(--brass)", "approved": "var(--stage-review)",
                  "running": "var(--stage-implement)", "drift": "var(--dl)", "orphaned": "var(--muted)",
                  "merge": "var(--stage-review)", "workers": "var(--stage-implement)"}
 CARD_COLOURS = {**columns.PALETTE, "merged today": columns.PALETTE["done"],
@@ -283,14 +296,14 @@ def worker_panel(sources: board_sources.Sources, now: datetime) -> panels.Panel:
     return panels.Panel("workers", "WORKERS", "workers", len(rows), rows, note, href="/workers")  # (#195)
 
 
-def flow_tiles(total: int, held: int, sources: board_sources.Sources, running: int, drift: int, orphaned: int) -> list[panels.Tile]:
-    """Six counts in the artboard's order and words, each linking to where its items are listed. ALL counts every
-    task; NEEDS INPUT the held cards; RUNNING workers, or running tasks when no worker source is read."""
-    approved = sum(c.state == "open" and c.approved for c in sources.changes.values())
-    return [panels.Tile("ALL", total, "flow", "all"), panels.Tile("NEEDS INPUT", held, "flow", "blocked"),
-            panels.Tile("RUNNING", len(sources.workers) or running, "workers", "running"),
-            panels.Tile("APPROVED", approved, "merge", "approved"),
-            panels.Tile("ORPHANED", orphaned, "flow", "orphaned"), panels.Tile("DRIFT", drift, "flow", "drift")]
+def flow_tiles(cats: dict[str, int], sources: board_sources.Sources) -> list[panels.Tile]:
+    """Six filters in the artboard's order and words (#207). A count is the cards carrying the filter's tag, so a
+    count and its dimmed board agree: ALL every card, NEEDS INPUT the held ones, RUNNING the running-task cards,
+    APPROVED cards with an approved change. Workers still list themselves in the WORKERS panel."""
+    return [panels.Tile("ALL", cats.get("all", 0), "all"), panels.Tile("NEEDS INPUT", cats.get("hold", 0), "hold"),
+            panels.Tile("RUNNING", cats.get("running", 0), "running"),
+            panels.Tile("APPROVED", cats.get("approved", 0), "approved"),
+            panels.Tile("ORPHANED", cats.get("orphaned", 0), "orphaned"), panels.Tile("DRIFT", cats.get("drift", 0), "drift")]
 
 
 def render(tracker_text: str, cfg: Config, now: datetime, lanes: dict | None = None,
@@ -298,12 +311,13 @@ def render(tracker_text: str, cfg: Config, now: datetime, lanes: dict | None = N
            kanban: Kanban | None = None, sources: board_sources.Sources = board_sources.EMPTY, answered: int = 0,
            tracker_at: datetime | None = None, stage_log: list[tuple[date, str]] | None = None, slots: int = 1,
            pending_refs: dict[str, datetime | None] | None = None, looked: datetime | None = None,
-           look_log: list[tuple[date, str]] | None = None) -> str:
+           look_log: list[tuple[date, str]] | None = None, dispatch: int | None = None) -> str:
     """The board page, the Flow artboard's sections: header, tiles, BUILD (the stage columns), the MERGE ORDER,
     DECISIONS and WORKERS panels, and the Flow charts. `stage_log` is (day, tracker text) for the earlier days the
     Flow charts reach back over; `slots` is how many queued tasks run at once, `[workers] max_concurrency`.
     `pending_refs` is decision_page.held_refs; `looked`, the look before the latest (workspace.looked_before), and
-    `look_log` the earlier days back to it that `stage_log` does not reach, read only for when a hold began."""
+    `look_log` the earlier days back to it that `stage_log` does not reach, read only for when a hold began.
+    `dispatch` is how many tasks are ready to dispatch (#224), counted by the caller for the Dispatch tab badge."""
     cfg = with_decision_deadlines(cfg, tracker_text, tracker_day or now.date())
     sha = hashlib.sha256(tracker_text.encode()).hexdigest()
     tracker = parse_tracker(tracker_text)
@@ -314,9 +328,6 @@ def render(tracker_text: str, cfg: Config, now: datetime, lanes: dict | None = N
     nearest = nearest_deadline(cfg, now)
     hist = history(tasks, cfg, now)
     est = estimates(active, cfg, now, hist)
-
-    unowned = [task for task in active if task.kind == "orphaned"]
-    running = [task for task in active if task.kind == "running"]
 
     issues = sum(1 for t in tasks if t.issue.strip() and not t.workflow)
     changes = sum(1 for c in sources.changes.values() if c.state == "open")
@@ -366,9 +377,10 @@ def render(tracker_text: str, cfg: Config, now: datetime, lanes: dict | None = N
             _tasks(len(tasks))]
     head = panels.Header(f"Board · {now.strftime('%a %d %b')}", tuple(meta), now, nearest.name, nearest.at,
                          tuple(f"{k}: {why}" for k, why in sources.errors.items()))
-    # NEEDS INPUT counts the held tasks, as the BUILD cards are flagged; ALL counts every task (#349).
-    tiles = flow_tiles(len(tasks), len(held),
-                       sources, len(running), sum(drifts(t, kanban, sources, stages[t]) for t in tasks), len(unowned))
+    # (#207) A tile's count is the cards carrying its filter's tag, so a count and its dimmed board agree.
+    cats = Counter(cat for col in build_cols for c in col.cards for cat in c.cats)
+    cats["all"] = sum(len(col.cards) for col in build_cols)
+    tiles = flow_tiles(cats, sources)
     panels_html = panels.panels([merge_order(sources), decision_panel(pending, answered, now), worker_panel(sources, now)])
 
     return f"""<meta charset="utf-8">
@@ -391,6 +403,8 @@ h2+.meta{{display:inline-block}}
 .meta{{color:var(--muted);font-size:12px}}
 {TAB_CSS}.board>nav.tabs{{margin-bottom:12px}}
 {flow_chart.css() if flow_html else ""}{panels.css(PANEL_COLOURS, PANEL_TOKENS)}{columns.css(CARD_COLOURS)}.columns{{--columns-ink:var(--fg);--columns-muted:var(--muted);--columns-card:var(--surface);--columns-rule:var(--line);--columns-gate-ink:var(--brass);--columns-link:var(--brass);--columns-edge:var(--brass);--columns-bg:color-mix(in srgb,var(--brass) 10%,var(--bg));--columns-gate:color-mix(in srgb,var(--brass) 14%,var(--surface))}}
+/* (#207) The tiles are filters: cards outside the chosen one dim, the pressed tile carries an outline. */
+.columns-card.columns-dim{{opacity:.25}}.columns-card.columns-dim:hover{{opacity:1}}
 /* The canonical theme sits above the marker in this block (fragment.theme); these restate what its base rules would
    otherwise change: the board keeps its own box sizing, scrolling, spacing and figures. */
 *{{box-sizing:content-box}}
@@ -401,7 +415,7 @@ figure{{margin:0;padding:0;background:none;border:0}}
 </style>
 <body>
 <div class="board" data-rendered-at="{_iso(now)}" data-tz="{_esc(cfg.tz)}" data-deadline="{_iso(nearest.at)}" data-deadline-name="{_esc(nearest.name)}">
-{tab_bar("Board", sum(d is not None for _, d, _, _ in pending), since=went, epics=epics)}<div class="header">{panels.header(head)}</div>
+{tab_bar("Board", sum(d is not None for _, d, _, _ in pending), since=went, epics=epics, dispatch=dispatch)}<div class="header">{panels.header(head)}</div>
 {panels.tiles(tiles)}
 {build_html}{panels_html}
 {flow_html}</div>
@@ -416,6 +430,14 @@ figure{{margin:0;padding:0;background:none;border:0}}
     root.querySelector('.panels-left').textContent=sign+Math.floor(s/3600)+'h'+pad(Math.floor(s/60)%60)+'m'+pad(s%60)+'s';
   }}
   tick();setInterval(tick,1000);
+  var tiles=document.querySelectorAll('.panels-tile'),cards=document.querySelectorAll('.columns-card'),key='board-filter';
+  function apply(f){{
+    var all=f==='all'||!f;
+    tiles.forEach(function(t){{t.setAttribute('aria-pressed',t.dataset.filter===f?'true':'false');}});
+    cards.forEach(function(c){{c.classList.toggle('columns-dim',!all&&(!c.dataset.cats||(' '+c.dataset.cats+' ').indexOf(' '+f+' ')<0));}});
+  }}
+  tiles.forEach(function(t){{t.addEventListener('click',function(){{localStorage.setItem(key,t.dataset.filter);apply(t.dataset.filter);}});}});
+  apply(localStorage.getItem(key)||'all');
 }})();
 </script>
 </body>
@@ -452,6 +474,8 @@ def write(root: Path, day: str | None = None) -> tuple[Path, Config, datetime, s
         raise ConfigError(str(e)) from None
     ctx = decision_page.decision_context(root, tracker_day, now)
     pending = decision_page.write_all(out.parent, ctx, day, root)
+    import flow  # local: only the board's Dispatch badge needs the dispatcher's ready count here (#224)
+    dispatch = len(flow.ready_one_shot_tasks(root, tracker_text, settings))
     reach = (now - flow_chart.WINDOWS[-1][1]).date()
     looked = looked_before(out.parent)
     since_day = looked.astimezone(cfg.zone).date() if looked else reach

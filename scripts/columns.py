@@ -41,6 +41,7 @@ class Card:
     flag: Mark | None = None  # the card's whole condition: an outline and a bar across its foot, in its colour
     href: str = ""  # links the name
     owner_href: str = ""  # a worker owner's `/workers` link; blank keeps a person or `unassigned` plain (#209)
+    cats: tuple[str, ...] = ()  # the filter tags the card carries (#207); the tiles' counts read these
 
 
 @dataclass(frozen=True)
@@ -63,7 +64,9 @@ def _link(text: str, url: str, cls: str = "", tag: str = "span") -> str:
 def _card(c: Card) -> str:
     chip = _tag("chip", c.kind, c.state) if c.state else ""
     marks = f'<div class="columns-marks">{"".join(_tag("mark", m.category, m.text) for m in c.marks)}</div>' if c.marks else ""
-    head = f'<div class="columns-card columns-flagged" data-cat="{_esc(c.flag.category)}">' if c.flag else '<div class="columns-card">'
+    cats = f' data-cats="{_esc(" ".join(c.cats))}"' if c.cats else ""
+    head = f'<div class="columns-card columns-flagged" data-cat="{_esc(c.flag.category)}"{cats}>' if c.flag \
+        else f'<div class="columns-card"{cats}>'
     flag = f'<div class="columns-tag columns-flag" data-cat="{_esc(c.flag.category)}">{_esc(c.flag.text)}</div>' if c.flag else ""
     return (f'{head}{_link(c.name, c.href, "columns-card-name", "div")}'
             + (f'<div class="columns-refs">{"".join(_link(t, u) for t, u in c.refs)}</div>' if c.refs else "")
