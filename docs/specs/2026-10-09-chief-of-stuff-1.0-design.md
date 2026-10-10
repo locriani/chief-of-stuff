@@ -71,7 +71,7 @@ Mostly clean-slate ("3 ish"). The old specs, old golden evals, old Python code a
 - The existing test suite is the main safety net (about 49k lines of tests, 110 eval cases). Whatever the build approach, the behaviour it encodes must be carried over or consciously dropped.
 - The plugin repo protects `main`; every change lands through a PR and bumps the version.
 
-No in-terminal mod (status line, pane, native notify) in 1.0: it would add TypeScript to a Python repo and the board is the interface. All hooks are Python command hooks.
+A mod (TypeScript function hooks, in-terminal status line, native notify) is allowed: the repo rule is "Python (or another real language)", so TypeScript needs no exemption. Whether the guard plugin in decisions 9-11 is Python command hooks plus an MCP server or a TypeScript mod is Open. The in-terminal UI part of a mod is deferred on merit (the board is the interface), not on language.
 
 ## Left to the builder
 
