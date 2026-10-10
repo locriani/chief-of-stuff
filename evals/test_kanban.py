@@ -7,7 +7,7 @@ import io
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -386,6 +386,58 @@ class CliTest(unittest.TestCase):
         self.assertFalse(sync.call_args.kwargs["commit"])
         self.assertIn("would update", output.getvalue())
 
+    def _two_rows_on_issue_7(self):
+        """Two lane rows sharing issue #7 (#69): the feature row and an MR-fix row at a further stage."""
+        folder = self.root / "daily"
+        (folder / "2026-09-25-tracker.md").write_text(
+            "## Tasks\n| name | item | owner | state | since | due | size | lane | stage | issue | checklist |\n"
+            "|---|---|---|---|---|---|---|---|---|---|---|\n"
+            "| Feature | 12 | worker | running 09:00 | 09:00 | | M | build | plan | #7 | |\n"
+            "| Fix pipeline | 13 | worker | waiting 09:10 | 09:10 | | M | build | plan review | #7 | |\n")
+
+    def test_two_rows_on_one_issue_are_refused_with_their_names(self):
+        """#69: the refusal names the rows sharing the issue and suggests --task."""
+        self._two_rows_on_issue_7()
+        err = io.StringIO()
+        with redirect_stderr(err):
+            code = kanban.main(["--root", str(self.root), "--date", "2026-09-25", "--issue", "#7"])
+        self.assertEqual(code, 2)
+        self.assertIn("Feature", err.getvalue())
+        self.assertIn("Fix pipeline", err.getvalue())
+        self.assertIn("--task", err.getvalue())
+
+    def test_a_task_name_picks_one_row_on_a_shared_issue(self):
+        result = kanban.Sync(backlog.IssueRef("team/app", 7, "labs.example.test"), "plan review",
+                             kanban.Delta(("01 - PLAN REVIEW",), ("00 - PLAN",)))
+        self._two_rows_on_issue_7()
+        with mock.patch.object(kanban, "sync_gitlab", return_value=result) as sync, \
+                redirect_stdout(io.StringIO()):
+            self.assertEqual(kanban.main(
+                ["--root", str(self.root), "--date", "2026-09-25", "--issue", "#7", "--task", "Fix pipeline"]), 0)
+        self.assertEqual(sync.call_count, 1)
+        self.assertEqual(sync.call_args.args[3], "plan review")
+
+    def test_a_task_item_number_picks_one_row_on_a_shared_issue(self):
+        """#69: --task names a row by its tracker item number or its name."""
+        result = kanban.Sync(backlog.IssueRef("team/app", 7, "labs.example.test"), "plan",
+                             kanban.Delta(("00 - PLAN",), ("01 - PLAN REVIEW",)))
+        self._two_rows_on_issue_7()
+        with mock.patch.object(kanban, "sync_gitlab", return_value=result) as sync, \
+                redirect_stdout(io.StringIO()):
+            self.assertEqual(kanban.main(
+                ["--root", str(self.root), "--date", "2026-09-25", "--issue", "#7", "--task", "12"]), 0)
+        self.assertEqual(sync.call_count, 1)
+        self.assertEqual(sync.call_args.args[3], "plan")
+
+    def test_a_task_that_names_no_row_on_the_issue_exits_2(self):
+        self._two_rows_on_issue_7()
+        err = io.StringIO()
+        with redirect_stderr(err):
+            code = kanban.main(
+                ["--root", str(self.root), "--date", "2026-09-25", "--issue", "#7", "--task", "Nobody"])
+        self.assertEqual(code, 2)
+        self.assertIn("Nobody", err.getvalue())
+
     def test_issue_takes_a_bare_number_or_a_hash_number(self):
         """#44: `--issue 7` and `--issue '#7'` select the same task."""
         result = kanban.Sync(backlog.IssueRef("team/app", 7, "labs.example.test"), "plan review",
@@ -478,6 +530,52 @@ class AuditTest(unittest.TestCase):
              mock.patch.object(kanban, "_project_items", return_value=(project_items, "")) as items:
             self.assertEqual(audit_tasks.kanban_faults(tasks, cfg, mixed), [])
         items.assert_called_once()
+
+    def test_rows_sharing_an_issue_expect_the_furthest_stage_only(self):
+        """#87: one expected stage per issue — a further-stage row makes the earlier row's stage clean."""
+        feature = SimpleNamespace(standing=False, lane="build", stage="plan", issue="#7",
+                                  label="Feature", kind="open", item="12")
+        fix = SimpleNamespace(standing=False, lane="build", stage="implement", issue="#7",
+                              label="Fix pipeline", kind="open", item="13")
+        cfg = backlog.Backlog("https://labs.example.test", "team/app")
+        issue = backlog.Issue(7, "Build it", "opened", ("03 - BUILD",))
+        with mock.patch.object(audit_tasks, "issue_states", return_value={7: issue}):
+            self.assertEqual(audit_tasks.kanban_faults([feature, fix], cfg, FLOW), [])
+
+    def test_rows_sharing_an_issue_drift_against_the_furthest_stage(self):
+        """#87: one drift fault per issue, naming the furthest row — never one per row."""
+        feature = SimpleNamespace(standing=False, lane="build", stage="plan", issue="#7",
+                                  label="Feature", kind="open", item="12")
+        fix = SimpleNamespace(standing=False, lane="build", stage="implement", issue="#7",
+                              label="Fix pipeline", kind="open", item="13")
+        cfg = backlog.Backlog("https://labs.example.test", "team/app")
+        issue = backlog.Issue(7, "Build it", "opened", ("04 - REVIEW",))
+        with mock.patch.object(audit_tasks, "issue_states", return_value={7: issue}):
+            faults = audit_tasks.kanban_faults([feature, fix], cfg, FLOW)
+        self.assertEqual(len(faults), 1, [str(f) for f in faults])
+        self.assertIn("expected 03 - BUILD", str(faults[0]))
+        self.assertIn("Fix pipeline", str(faults[0]))
+        self.assertNotIn("Feature", str(faults[0]))
+
+    def test_a_closed_issue_with_a_stage_label_expects_no_managed_labels(self):
+        """#87: a closed issue keeps no managed stage label; the audit says so instead of expecting the row's stage."""
+        task = SimpleNamespace(standing=False, lane="build", stage="implement", issue="#7",
+                               label="Build it", kind="open", item="Build it")
+        cfg = backlog.Backlog("https://labs.example.test", "team/app")
+        issue = backlog.Issue(7, "Build it", "closed", ("03 - BUILD",))
+        with mock.patch.object(audit_tasks, "issue_states", return_value={7: issue}):
+            faults = audit_tasks.kanban_faults([task], cfg, FLOW)
+        self.assertEqual(len(faults), 1, [str(f) for f in faults])
+        self.assertIn("expected no managed labels, found 03 - BUILD", str(faults[0]))
+
+    def test_a_closed_issue_without_managed_labels_is_clean(self):
+        task = SimpleNamespace(standing=False, lane="build", stage="implement", issue="#7",
+                               label="Build it", kind="open", item="Build it")
+        cfg = backlog.Backlog("https://labs.example.test", "team/app")
+        issue = backlog.Issue(7, "Build it", "closed", ("kind::code",))
+        with mock.patch.object(audit_tasks, "issue_states", return_value={7: issue}):
+            self.assertEqual(audit_tasks.kanban_faults([task], cfg, FLOW), [])
+
 
 if __name__ == "__main__":
     unittest.main()
