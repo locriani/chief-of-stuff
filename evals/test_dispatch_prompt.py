@@ -1314,6 +1314,16 @@ class ReviewerRoutingTest(unittest.TestCase):
         self.assertNotIn("--reply", dp.compose(root, "2026-09-18", "Security audit"))
 
 
+class OneShotResultInstructionTest(unittest.TestCase):
+    """#125: the result path is git-ignored, and a worker that respects .gitignore refuses to write it."""
+
+    def test_the_one_shot_result_line_says_the_path_is_git_ignored(self):
+        tmp, root = workspace()
+        self.addCleanup(tmp.cleanup)
+        self.assertIn("git-ignored", dp.compose(root, "2026-09-18", "Security audit",
+                                                worktree=root / "tree", one_shot=True))
+
+
 class ReadOnlyAssignmentTest(unittest.TestCase):
     """#57: a task whose File ownership cell starts with `none` is read-only; a worker told to commit did, and opened a PR."""
 

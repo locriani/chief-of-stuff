@@ -392,6 +392,7 @@ def compose(root: Path, day: str | None, task: str, worktree: Path | None = None
             f"Before exiting, write a TOON object to {result} with exactly three string fields:",
             'status: done', 'reason: "what was completed, or why human review is required"',
             'changes: "files changed, tests run, commit or PR if any"',
+            "Write the result even though the path is git-ignored.",
             "Use status: human_review if unfinished, including when you made partial changes. State the blocker and the partial changes plainly.",
             ("Use status: relaunch only when the task's premise moved under you before you changed anything, such as its "
              "base or target PR merged or was replaced, and a fresh run from current main would do the task as written. "

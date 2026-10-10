@@ -149,6 +149,8 @@ class Settings:
     pages: Pages = field(default_factory=Pages)
     # #111: task class -> rotation; the first entry is the suggested model, the rest the fallback order.
     models: dict[str, tuple[ModelEntry, ...]] = field(default_factory=dict)
+    # #152: runtime -> the hosts its sandbox may reach; only codex's network proxy consumes it today.
+    permissions: dict[str, tuple[str, ...]] = field(default_factory=dict)
     graph: Graph | None = None
     # #54: repository name -> path (relative to the workspace root) that `chief-of-stuff worktree --clone <name>` cuts from.
     repos: dict[str, str] = field(default_factory=dict)
@@ -362,6 +364,29 @@ def _notify(table: dict, root: Path) -> Notify:
     return Notify(adapter=adapter, queue=queue, warnings=tuple((w, _offset(w)) for w in labels), **times)
 
 
+def _permissions(table) -> dict[str, tuple[str, ...]]:
+    """[permissions.<runtime>.network] domains: the hosts a sandboxed runtime may reach (#152)."""
+    if not isinstance(table, dict):
+        raise SettingsError("[permissions] must be a table of runtimes")
+    out: dict[str, tuple[str, ...]] = {}
+    for runtime, section in table.items():
+        if runtime not in RUNTIMES:
+            raise SettingsError(f"[permissions] {runtime!r} is not a runtime (one of {', '.join(RUNTIMES)})")
+        if not isinstance(section, dict) or set(section) != {"network"} or not isinstance(section.get("network"), dict):
+            raise SettingsError(f"[permissions.{runtime}] is a [permissions.{runtime}.network] table")
+        network = section["network"]
+        if set(network) - {"domains"}:
+            raise SettingsError(f"[permissions.{runtime}.network] takes only domains")
+        domains = network.get("domains", [])
+        if not isinstance(domains, list) or not domains or not all(isinstance(d, str) for d in domains):
+            raise SettingsError(f"[permissions.{runtime}.network] domains is a non-empty list of hostnames")
+        for domain in domains:
+            if domain.strip() != domain or not domain or any(c in domain for c in ":/\\ \t") or domain.startswith("."):
+                raise SettingsError(f"[permissions.{runtime}.network] {domain!r} is not a bare hostname")
+        out[runtime] = tuple(domains)
+    return out
+
+
 def load(root: Path, settings_path: str | None) -> Settings:
     """`settings_path` is the `Settings:` line's value, relative to `root`, or None when there is none."""
     if not settings_path:
@@ -384,14 +409,15 @@ def load(root: Path, settings_path: str | None) -> Settings:
     graph = _graph(data["graph"]) if "graph" in data else None
     pages = _pages(data["pages"]) if "pages" in data else Pages()
     repos = _repos(data["repos"]) if "repos" in data else {}
+    permissions = _permissions(data["permissions"]) if "permissions" in data else {}
     budgets = data.get("budgets", {})
     if not isinstance(budgets, dict) or not set(budgets) <= {"S", "M", "L", "XL"}:
         raise SettingsError(f"{settings_path}: [budgets] is a table of S, M, L, XL")
     budgets = {size: _offset(v, f"[budgets] {size}") for size, v in budgets.items()}
     table = data.get("notify")
     if table is None:
-        return Settings(lanes=lanes, budgets=budgets, kanban=kanban, workflow=workflow, workers=workers, pages=pages, models=models, graph=graph, repos=repos)
+        return Settings(lanes=lanes, budgets=budgets, kanban=kanban, workflow=workflow, workers=workers, pages=pages, models=models, graph=graph, repos=repos, permissions=permissions)
     if not isinstance(table, dict):
         raise SettingsError(f"{settings_path}: [notify] is not a table")
     return Settings(notify=_notify(table, Path(root)), lanes=lanes, budgets=budgets,
-                    kanban=kanban, workflow=workflow, workers=workers, pages=pages, models=models, graph=graph, repos=repos)
+                    kanban=kanban, workflow=workflow, workers=workers, pages=pages, models=models, graph=graph, repos=repos, permissions=permissions)

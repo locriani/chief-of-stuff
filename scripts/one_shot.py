@@ -40,7 +40,8 @@ BOOTSTRAP = ("Read {dispatch} first. It is your entire one-shot assignment. Work
 
 
 def command(runtime: str, binary: str, cwd: Path, dispatch: Path, *, agent_type: str | None,
-            model: str, effort: str, lead: list[str] = ()) -> list[str]:
+            model: str, effort: str, lead: list[str] = (),
+            domains: tuple[str, ...] | None = None) -> list[str]:
     """A single foreground CLI invocation, without interactive plan or mailbox modes."""
     prompt = BOOTSTRAP.format(dispatch=dispatch, cwd=cwd)
     tail: list[str] = []
@@ -51,9 +52,15 @@ def command(runtime: str, binary: str, cwd: Path, dispatch: Path, *, agent_type:
             argv += ["--agent", agent_type]
     elif runtime == "codex":
         # `never` returns blocked operations to the model instead of waiting for a human.
+        if domains:
+            # #152: the workspace's named hosts replace the blanket grant — codex routes their
+            # traffic through its network proxy; git over ssh does not traverse it (https remotes).
+            network = f'permissions.codex.network.domains=[{", ".join(json.dumps(d) for d in domains)}]'
+        else:
+            # Network for fetch, push, and forge APIs; file writes stay confined.
+            network = "sandbox_workspace_write.network_access=true"
         argv = [binary, "-a", "never", "exec", "-C", str(cwd), "--sandbox", "workspace-write",
-                # Network for fetch, push, and forge APIs; file writes stay confined.
-                "-c", "sandbox_workspace_write.network_access=true", "--ephemeral"]
+                "-c", network, "--ephemeral"]
         argv += git_trees.codex_add_dir_args(cwd)
     elif runtime == "cursor":
         argv = [binary, "--print", "--force", "--trust", "--workspace", str(cwd)]
@@ -346,6 +353,19 @@ def reconcile(root: Path, day: str, task: str, name: str, cwd: Path, exit_code: 
     status, reason, changes = worker_result(cwd / RESULT, exit_code)
     actual = changed_files(cwd)
     commits = committed_changes(cwd, before_head)
+    if status == "human_review" and not (cwd / RESULT).exists() and (actual or commits != NO_COMMITS):
+        # #125: a run that never wrote a result — an agy run that pushed, say — reports what the
+        # launcher can see instead of a bare missing-file error; someone still looks at it.
+        evidence = [f"commits: {commits}"] if commits != NO_COMMITS else []
+        if actual:
+            evidence.append(f"working tree: {actual}")
+        reason = f"worker did not write a valid TOON result; exit {exit_code}; the tree holds {'; '.join(evidence)}"
+        try:
+            tail = (cwd / dispatch_prompt.PROMPT_DIR / "worker-stderr.log").read_text()
+        except OSError:
+            tail = ""
+        if tail.strip():
+            reason += f"; stderr: {_brief(tail)}"
     # The result lands on the day the run ends, falling back to the launch day's (#93).
     path = root / cfg.tracker_path(day)
     launch = path
@@ -481,13 +501,14 @@ def run(*, root: Path, day: str | None, task: str, cwd: Path, name: str,
     chosen_day = day or datetime.now(cfg.zone).date().isoformat()
     body = dispatch_prompt.compose(root, chosen_day, task, worktree=cwd, name=name,
                                    runtime=runtime, one_shot=True)
-    workers = load_settings(root, cfg.settings_path).workers
-    program, lead = runtimes.program(runtime, workers.claude_profile)
+    settings = load_settings(root, cfg.settings_path)
+    program, lead = runtimes.program(runtime, settings.workers.claude_profile)
     binary = resolve(program)
     if not binary:
         raise ValueError(f"{program} is unavailable in the configured interactive login shell")
     dispatch = cwd / dispatch_prompt.DISPATCH_FILE
-    argv = command(runtime, binary, cwd, dispatch, agent_type=agent_type, model=model, effort=effort, lead=lead)
+    argv = command(runtime, binary, cwd, dispatch, agent_type=agent_type, model=model, effort=effort, lead=lead,
+                   domains=settings.permissions.get(runtime))
     if dry_run:
         print("would run one-shot: " + " ".join(shlex.quote(x) for x in argv))
         print(f"would write: {dispatch}")
@@ -496,7 +517,7 @@ def run(*, root: Path, day: str | None, task: str, cwd: Path, name: str,
         raise ValueError(f"no worktree at {cwd}")
     trees = root / worktrees_dir((root / "CLAUDE.md").read_text())
     _clear_stale_dispatch(cwd, task)
-    with slot(trees, cwd, task, workers.max_concurrency):
+    with slot(trees, cwd, task, settings.workers.max_concurrency):
         return _launch(root, cfg, chosen_day, task, cwd, name, runtime, model, effort, body, argv, timeout_minutes)
 
 
