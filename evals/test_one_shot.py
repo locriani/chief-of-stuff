@@ -1906,6 +1906,11 @@ class RunTest(unittest.TestCase):
         while not (self.tree / one_shot.RESULT).exists():
             self.assertLess(time.monotonic(), deadline, "the worker did not outlive the restart")
             time.sleep(0.05)
+        worker_pid = int((self.tree / one_shot.PIDFILE).read_text().split()[0])
+        deadline = time.monotonic() + 30
+        while Path(f"/proc/{worker_pid}").exists():
+            self.assertLess(time.monotonic(), deadline, "the finished worker never exited")
+            time.sleep(0.05)
         self.assertTrue((self.tree / one_shot.PIDFILE).exists(), "the dead launcher left no pid file")
         self.assertIn("| Security audit | worker01 | running", self.tracker.read_text())
         reports = one_shot.adopt(self.root, day="2026-09-18")
