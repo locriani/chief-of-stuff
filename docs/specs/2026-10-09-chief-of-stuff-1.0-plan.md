@@ -10,6 +10,7 @@ From the repo's `CLAUDE.md` and the design's Constraints. They bind every milest
 - **No shell scripts.** Everything is Python.
 - **Fixtures are templates and generic.** No workspace data.
 - **Clean Architecture is the target** (D: architecture answer): every new module sits in a circle, `evals/test_architecture.py` enforces it, and rows C1-C8 in `architecture/compliance.md` are closed as part of 1.0.
+- **Every model call goes through one model adapter.** The trio gate, the review verdicts, the backing coordinator session, and anything else that talks to Claude via `claude -p --output-format json` use a single model port with a `claude -p` adapter behind it. No module outside that adapter spawns `claude` or parses its JSON. The same rule is how a second host stays an adapter later (design D7).
 - **Examine before importing.** Old specs, golden evals, code and tests are references. Each item brought across gets an entry in a carry/drop ledger (M0) with a reason.
 - **No new dependency without Zach's yes.** Name it, say where it comes from and why, wait. The ORM and store are the first such request.
 - **Every change lands through a PR on a branch and bumps the plugin version.** `main` is protected.
@@ -23,7 +24,7 @@ Each milestone ends with exit criteria that are runnable checks. The four succes
 No product code. Produces decisions.
 
 1. **Store and ORM proposal for Zach's approval.** Present candidates with source and reason (a Python ORM over SQLite is the likely shape; candidates and trade-offs to be researched, none adopted). Block M1 on his yes.
-2. **`claude -p --output-format json` spike.** Prove: structured judgement calls (a review verdict, a trio vote), session continuity across calls, behaviour at quota or outage, cost accounting. Output: a short note and a throwaway script in `_scratch`, not shipped.
+2. **`claude -p --output-format json` spike.** This also fixes the shape of the model port the adapter implements (request, structured response, session handle, error/quota result). Prove: structured judgement calls (a review verdict, a trio vote), session continuity across calls, behaviour at quota or outage, cost accounting. Output: a short note and a throwaway script in `_scratch`, not shipped.
 3. **Carry/drop ledger.** One row per current behaviour or module (tick, kanban, notify, PARA filing, launchers, `claude_profile`, mailbox, decision pages, the 110 eval cases), each marked carry, rewrite, or drop, with the reason. Zach reviews the ledger once.
 4. **Behaviour spec extraction.** From the golden evals and the architecture doc, list the behaviours 1.0 must reproduce. Resolve the design's remaining Open items that block M1-M3: policy content for code review, trio selection rule, default limits.
 
@@ -48,7 +49,7 @@ Exit: eval cases for work-without-issue (issue created, then one row) and no-bac
 ### M3. The engine loop
 
 1. State-driven reconcile (replaces mailbox-driven ticks): each pass computes what the state calls for. Free worker slots with dispatchable work → dispatch. Approved, policy-satisfied work → merge. Missing review → launch it. Reviews run in parallel.
-2. Workers launched in git worktrees. Decide in M0 whether workers also run via `claude -p`.
+2. Model adapter: the `claude -p --output-format json` implementation of the model port, with fakes for tests so engine evals never call a real model. Workers launched in git worktrees. Decide in M0 whether workers also run through the adapter.
 3. Supervisor: runs as a long-lived process (launchd or equivalent), restarts itself, and resumes after quota reset or outage by waiting, not by asking.
 4. Cleanup: worktree and resource hygiene is a carried behaviour (stale worktrees once used 185 GB).
 
@@ -64,7 +65,7 @@ Exit (S3): an eval where work meeting the policy merges with no human input, and
 
 ### M5. Decision gate and interrupts
 
-1. Trio gate (D5a): before any ask, consult a topic-appropriate trio via `claude -p` JSON. Unanimous → adopt their recommendation and record it. Any concern → escalate to Zach.
+1. Trio gate (D5a): before any ask, consult a topic-appropriate trio through the model adapter (three calls, structured verdicts). Unanimous → adopt their recommendation and record it. Any concern → escalate to Zach.
 2. Trio selection rule and verdict record (settled in M0).
 3. Interrupt set: real goal ambiguity after the trio, unrecoverable failure after retries, budget or quota about to exceed a limit.
 4. Engine config holds spend, quota and time limits, with workspace override.
