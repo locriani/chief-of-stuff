@@ -76,6 +76,8 @@ Exit (S1): evals showing a routine question resolved by a unanimous trio with no
 
 ### M6. Board and pings
 
+Zach, 2026-10-09: revisit at M6 time. This scope is provisional; reopen it before starting M6.
+
 1. Board reads from the store. Gantt shows one line per issue with segments by (issue, stage, attempt). Adjust the existing UI only where the model needs it (D8).
 2. Decisions that pass the gate are board items, answered on the board. No separate decision pages.
 3. Notify sends exception pings only, linking to the board item.
