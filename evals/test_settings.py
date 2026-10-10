@@ -42,6 +42,22 @@ class SettingsTest(unittest.TestCase):
     def test_no_notify_section_is_off(self):
         self.assertEqual(st.load(self.root, self.write("[other]\nx = 1\n")).notify.adapter, "off")
 
+    def test_a_permissions_table_names_its_runtimes_domains(self):
+        got = st.load(self.root, self.write('[permissions.codex.network]\ndomains = ["github.com", "api.github.com"]\n')).permissions
+        self.assertEqual(got, {"codex": ("github.com", "api.github.com")})
+
+    def test_permissions_refuse_an_unknown_runtime(self):
+        with self.assertRaises(st.SettingsError):
+            st.load(self.root, self.write('[permissions.gemini.network]\ndomains = ["x.test"]\n'))
+
+    def test_permissions_refuse_a_domain_that_is_not_a_bare_hostname(self):
+        with self.assertRaises(st.SettingsError):
+            st.load(self.root, self.write('[permissions.codex.network]\ndomains = ["https://github.com"]\n'))
+
+    def test_permissions_refuse_an_empty_domain_list(self):
+        with self.assertRaises(st.SettingsError):
+            st.load(self.root, self.write('[permissions.codex.network]\ndomains = []\n'))
+
     def test_defaults_per_missing_key(self):
         got = st.load(self.root, self.write("[notify]\n")).notify
         self.assertEqual((got.adapter, got.queue, got.day_open, got.day_close),

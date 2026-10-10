@@ -356,6 +356,16 @@ class CommandTest(unittest.TestCase):
                                             agent_type=None, model="", effort="")
                     self.assertNotIn("--add-dir", args)
 
+    def test_a_codex_one_shot_allowlists_its_network_domains(self):
+        # #152: a workspace that names hosts routes codex through its network-proxy allowlist
+        # instead of the blanket grant; file writes stay confined either way.
+        args = one_shot.command("codex", "/bin/fake", Path("/tmp/one-shot-tree"), Path("/tmp/d.md"),
+                                agent_type=None, model="", effort="",
+                                domains=("github.com", "api.github.com"))
+        pairs = list(zip(args, args[1:]))
+        self.assertIn(("-c", 'permissions.codex.network.domains=["github.com", "api.github.com"]'), pairs)
+        self.assertFalse([a for a in args if "network_access" in a])
+
     def test_codex_reaches_the_network_inside_workspace_write(self):
         # Remote-facing one-shots fetch, push, and call forge APIs; file writes stay confined.
         args = one_shot.command("codex", "/bin/fake", Path("/tmp/one-shot-tree"), Path("/tmp/d.md"),
@@ -1552,6 +1562,26 @@ class RunTest(unittest.TestCase):
         self.assertIn("did not write", report["reason"])
         self.assertIn("partial.txt", report["changes"])
         self.assertIn("partial", report["changes"])
+
+    def test_an_agy_run_that_pushed_without_a_result_still_reports_its_commits(self):
+        # #125: an agy run exits 3 without writing its result; the launcher reports what it can
+        # see — the commit, the changed files, the stderr tail — instead of a bare missing-file error.
+        self.tracker.write_text(TRACKER.replace("| unassigned | open |", "| worker01 | running 09:00 |"))
+        before = one_shot.git_head(self.tree)
+        (self.tree / ".chief-of-stuff").mkdir(exist_ok=True)
+        (self.tree / ".chief-of-stuff" / ".gitignore").write_text("*\n")
+        (self.tree / ".chief-of-stuff" / "worker-stderr.log").write_text("tests ran, 3 green\n")
+        (self.tree / "partial.txt").write_text("partial work")
+        subprocess.run(["git", "-C", str(self.tree), "add", "partial.txt"], check=True)
+        subprocess.run(["git", "-C", str(self.tree), "-c", "user.name=Test", "-c", "user.email=test@example.test",
+                        "commit", "-qm", "partial"], check=True)
+        report = one_shot.reconcile(self.root, "2026-09-18", "Security audit", "worker01", self.tree, 3, before)
+        self.assertEqual(report["status"], "human_review")
+        self.assertTrue(report["reason"].startswith("worker did not write a valid TOON result"), report["reason"])
+        self.assertIn("the tree holds", report["reason"])
+        self.assertIn("partial", report["reason"])
+        self.assertIn("3 green", report["reason"])
+        self.assertNotIn("[Errno 2]", report["reason"])
 
     # The run launches on 2026-09-18 and ends at 00:30 on 2026-09-19 (#93).
     END_TRACKER = "daily/2026-09-19-tracker.md"
