@@ -164,7 +164,7 @@ def build(root: Path, clone: Path, trees: str, name: str, branch: str, agent_typ
                     error = f"no branch {branch} on origin"
             if error:
                 raise RefusedError(f"cannot cut from {branch}: {error}")
-            ref, base = branch, f"origin/{branch}"  # worktree add checks the branch out by name, at its fresh remote head
+            ref, base = f"refs/remotes/origin/{branch}", f"origin/{branch}"  # detached at the fresh remote head: the claim stays with the tree that holds it (#115)
         else:
             try:
                 ref = base_ref("" if from_local else git_trees.fetch_base(clone), from_local)
@@ -172,7 +172,7 @@ def build(root: Path, clone: Path, trees: str, name: str, branch: str, agent_typ
                 raise RefusedError(f"{exc}; no local main" if no_main else f"{exc}; --from-local cuts from local main ({local}) instead") from None
             base = "local main" if from_local else "origin/main"
         path.parent.mkdir(parents=True, exist_ok=True)
-        add = ["worktree", "add", "--no-track"] + ([] if from_branch else ["-b", branch]) + ["--", str(path), ref]
+        add = ["worktree", "add"] + (["--detach"] if from_branch else ["--no-track", "-b", branch]) + ["--", str(path), ref]
         code, detail = git_trusted(add, clone)
         if code != 0:
             raise RefusedError(f"git worktree add failed: {detail}")

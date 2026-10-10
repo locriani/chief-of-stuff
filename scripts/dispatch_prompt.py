@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import re
 import shlex
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -309,6 +310,19 @@ def refuse_overlap(text: str, item: str) -> None:
             raise RefusedError(f"File ownership overlaps the running task {(row.name.strip() or row.item.strip())!r}; leave this task open and launch it when that one returns")
 
 
+def _detached(worktree: Path | None) -> bool:
+    """Whether the worktree is checked out with no branch of its own (#115): a from-branch fixer's
+    tree, whose MR branch a stale tree may still hold. Anything unreadable reads as not detached."""
+    if worktree is None or not (worktree / ".git").exists():
+        return False
+    try:
+        head = subprocess.run(["git", "-C", str(worktree), "rev-parse", "--abbrev-ref", "HEAD"],
+                              capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return head.returncode == 0 and head.stdout.strip() == "HEAD"
+
+
 def compose(root: Path, day: str | None, task: str, worktree: Path | None = None,
             coordinator: str | None = None, name: str | None = None, runtime: str = "claude",
             one_shot: bool = False) -> str:
@@ -365,9 +379,16 @@ def compose(root: Path, day: str | None, task: str, worktree: Path | None = None
             raise RefusedError("one-shot dispatch needs an open, non-standing task")
         refuse_overlap(text, item)
         result = worktree / RESULT_FILE
-        delivery = ("Commit the finished change on this worktree's branch and open a pull request when tests pass; do not merge."
-                    if workflow.delivery == "pull-request" else
-                    "Commit the finished change on this worktree's branch; do not push or merge without existing authorization.")
+        if _detached(worktree):  # a from-branch fixer's tree holds no branch: it pushes HEAD to the task's (#115)
+            delivery = ("Commit the finished change, then run `git push origin HEAD:<branch>` for the branch your task names, "
+                        "and open a pull request for it when tests pass; do not merge."
+                        if workflow.delivery == "pull-request" else
+                        "Commit the finished change, then run `git push origin HEAD:<branch>` for the branch your task names; "
+                        "push nothing else, and merge nothing.")
+        else:
+            delivery = ("Commit the finished change on this worktree's branch and open a pull request when tests pass; do not merge."
+                        if workflow.delivery == "pull-request" else
+                        "Commit the finished change on this worktree's branch; do not push or merge without existing authorization.")
         lines = [
             "# One-shot assignment",
             f"You are {name or 'a worker'} in a single, noninteractive {runtime} run. Complete only this task, then exit.",
