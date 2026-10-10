@@ -1549,3 +1549,17 @@ Live, from the branch, on a scratch copy of the workspace on port 8788:
 Agent arm: `board-on-open-the-day`, `board-republish-on-task-change`, `board-publish-unavailable` and `resume-reads-the-block` were GREEN on sonnet (20260924-150643) and on opus (20260924-150758).
 
 A sonnet and an opus run started in the same second share one results directory (`20260924-150032`), and the second overwrote the first. Run the models one after the other until the directory name carries the model.
+
+## C41 — the hand-written decision pages carry the canonical theme (page-theme plan, stage 4; #596)
+
+The last stage of the four-stage page-theme plan (approved by Zach, 2026-10-07), which carries frank-lloyd-aight's canonical theme (`docs/page-theme.css`, pinned, vendored here at `assets/page-theme.css`, drift-checked by `scripts/sync_page_theme.py`) across this repo's page surfaces. Stage 1 vendored the asset; stage 2 (#591) put the theme on the board and the server-rendered decision pages and gave serving digest freshness; stage 4 (this entry) is the surface written by hand: a decision page authored as JSON from the decision-page skill, the one template the coordinator copies.
+
+- **Skill:** `skills/decision-page/SKILL.md` gains one paragraph naming the theme: the page carries the canonical page theme and none of the JSON does — the server reads it from `${CLAUDE_PLUGIN_ROOT}/assets/page-theme.css`, the vendored copy the sync script keeps byte-identical to the pinned source; never style a page from the JSON (no CSS, no colours of your own: the timeline's `kind`s and the node and edge `state`s are the theme's tokens), and a page that looks different reads as a different kind of document. The path form resolves in the checkout and in a standalone release alike (`start_coordinator.py` copies `skills/`, `scripts/` and `assets/` side by side).
+- **Red first** (`DecisionPageSkillThemeTest` in `evals/test_page_theme.py`): at base `56f20f9` two of the four new tests failed — the skill named no theme asset, and nothing in a standalone release tree provided the asset the skill names (the release copy is the pinned bytes and `sync_page_theme.py --check` passes inside it). Green guards: the skill instructs no inline CSS (no `<style>`, no css fence, no hex colour), and a decision JSON holding every part of the skill's schema renders, through `decision_page.write`, into a page carrying the whole theme.
+- **Budget:** the skill grows 2,315 → 2,766 B; ceiling 2,350 → 2,800 (measured, rounded up to 50 B) and `SKILLS_TOTAL` 45,050 → 45,500, with the accounting comment.
+- **Reported, not fixed:** `scripts/issue_page.py`, `scripts/source_page.py` and `scripts/workers_page.py` (`issue-<n>.html`, `issue-<n>-source.html`, `workers.html`; routes `/issues/<n>`, `/issues/<n>/source`, `/workers`) still render the themeless `HEAD` block. No stage of the approved plan names them; left for a ruling.
+- **House rule 11:** no grader or eval case pins the decision pages' or the skill's styling; the one pinned skill sentence ("Never publish a decision page as an artifact, and never open it.") is unchanged.
+- Suite at close: 3,288 tests in 270.7 s — the 10 known environment-dependent failures, name-for-name, 4 skipped, nothing new.
+
+**The plan is complete for this repo**: every chief-of-stuff surface the plan names carries the canonical theme, referenced from the vendored asset, never inlined. Stage 3's surface — branch-graph's standalone pages — proceeds in that repo on its own task.
+
