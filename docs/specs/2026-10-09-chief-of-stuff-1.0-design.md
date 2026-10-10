@@ -35,6 +35,7 @@ Pattern (inference, not verified): the coordinator leans on the model to notice 
 
 - Migrating old daily logs. Past trackers stay as archived files; the new store starts fresh and does not import the five legacy layouts.
 - Multi-user or team use.
+- Codex, Cursor and Antigravity support (Decided: Claude only for 1.0).
 - New agent types or features. 1.0 reproduces current behaviour plus the goals above.
 
 Not a non-goal: the board UI may be adjusted where the new data model needs it (see Board).
@@ -49,10 +50,16 @@ A 1.0 that works but still needs prodding along has failed (Decided). So has a 1
 2. **The issue is the identity** (Decided). One forge issue is one gantt line and the primary key of its work. Agents write by upsert on that key, so a second line for the same issue is impossible, not merely discouraged.
 3. **No work without an issue** (Decided). If work starts with no forge issue, the coordinator creates the issue first.
 4. **The engine drives; the model advises** (Decided). A long-running deterministic engine reconciles state against git and the forge on its own schedule: dispatches ready work into free slots, launches reviews, merges when policy is met, resumes after quota or outage, re-renders the board. It calls a model only for judgement (reviewing, real ambiguity). The engine, not the model, decides whether to ask Zach.
-5. **The review-and-merge route is a declarative policy the engine runs** (Decided). The route as Zach describes it: a trio of reviewers, burn down to no open findings, consult the architect. The model does the reviewing; the engine enforces the gates and merges when the policy is satisfied. Merging under the policy is not an interrupt. Note: this route is not written down in the repo or in the Gauntlet workspace config. The repo has a single `reviewer_session` or an `extras:code-review` worker plus an optional `architecture_reviewer` that receives only filed findings (`skills/review-pipeline/SKILL.md`, `architecture/ARCHITECTURE.md` §6). Its concrete content is Open.
-6. **Exceptions that interrupt Zach** (Decided): real ambiguity in the goal that nothing in the repo, issue or earlier decisions settles; a failure the coordinator cannot recover from after its own retries; budget or quota about to exceed a limit he set. Everything else it decides alone. Merging under the policy is explicitly not on this list. This overturns the default `[workflow] merge_owner = "user"` and the human-only-actions section of `agents/chief-of-stuff.md` (lines 119-120, 146); the Gauntlet workspace currently runs `merge_owner = "worker"` as a temporary waiver from 2026-10-02.
-7. **All four hosts stay** (Decided): Claude, Codex, Cursor, Antigravity. The core is host-neutral and each host gets a thin adapter. Call: Codex already has a session-scoped Python watcher (README); its real gap is that it cannot wake an idle conversation. With the engine owning scheduling and waking, that gap stops being the host's problem.
+5. **Review and merge run as a declarative policy the engine enforces** (Decided). The route as Zach describes it for normal cases: burn down to no open findings, consult the architect. The model does the reviewing; the engine enforces the gates and merges when the policy is satisfied. Merging under the policy is not an interrupt. The repo today has a single `reviewer_session` or an `extras:code-review` worker plus an optional `architecture_reviewer` that receives only filed findings (`skills/review-pipeline/SKILL.md`, `architecture/ARCHITECTURE.md` §6); the concrete policy content (reviewer roles and models, what counts as an "open finding", retry limits, when the architect is consulted) is Open.
+5a. **Decision review gate: a trio before any ask** (Decided). Before the system asks Zach for a decision, it must first consult a trio of reviewers appropriate to the topic. If all three are unanimous, the system adopts their recommendation. If any one has concerns, the decision goes to Zach. This is separate from code review above and is the mechanism that keeps routine decisions from reaching him. Not written down in the repo or the Gauntlet config today. How the topic-appropriate trio is chosen, and what the decision record keeps, are Open.
+6. **Exceptions that interrupt Zach** (Decided): real ambiguity in the goal (after the trio gate in 5a) that nothing in the repo, issue or earlier decisions settles; a failure the coordinator cannot recover from after its own retries; budget or quota about to exceed a limit he set. Everything else it decides alone. Merging under the policy is explicitly not on this list. This overturns the default `[workflow] merge_owner = "user"` and the human-only-actions section of `agents/chief-of-stuff.md` (lines 119-120, 146); the Gauntlet workspace currently runs `merge_owner = "worker"` as a temporary waiver from 2026-10-02.
+7. **Claude only for 1.0** (Decided; supersedes an earlier pick of all four hosts). Codex, Cursor and Antigravity are out of 1.0. Call: keep the core host-neutral where it costs nothing, so a second host is an adapter later, but build and test only Claude. Codex, Cursor and Antigravity adapters in the current repo (`start_coordinator.py` and the watcher) are not carried over unless examined and kept.
+7a. **The only way Zach talks to it is the board** (Decided). There is no persistent chat coordinator session. The model side is a backing coordinator session that is driven by the engine and speaks JSON only, via an API, not an interactive CLI chat. Which API surface (Anthropic API directly, the Agent SDK, or `claude -p --output-format json`) is Open; any new SDK or library needs Zach's approval first.
 8. **Board** (Decided): adjust it where the model needs it; no redesign. Call: rework and review show as segments on the issue's single line.
+
+## Build approach (Decided)
+
+Mostly clean-slate ("3 ish"). The old specs, old golden evals, old Python code and old tests are references, and each item brought across is examined critically first rather than ported on trust. Nothing is carried over by default. The Clean Architecture contract (`architecture/ARCHITECTURE.md`, enforced by `evals/test_architecture.py`) is the target: new modules sit in circles, and closing the open compliance rows C1-C8 is part of 1.0.
 
 ## Constraints
 
@@ -70,13 +77,11 @@ A 1.0 that works but still needs prodding along has failed (Decided). So has a 1
 
 ## Open
 
-- **The review policy's content**: reviewer roles and models, what counts as an "open finding", retry limits, when the architect is consulted, and whether the existing Triage rule (automatic fix versus ask; security always asked, `skills/review-pipeline/SKILL.md`) survives as the engine's rule for a finding that is neither a clear fix nor ambiguous.
-- **Whether the Clean Architecture contract** (`architecture/ARCHITECTURE.md`, enforced by `evals/test_architecture.py`, every script placed in a circle) still binds new code, and whether the open compliance rows C1-C8 are in scope.
-- **Which current behaviours carry over versus are dropped**: tick, kanban, notify, PARA filing, the herdr/tmux/ghostty launchers, `claude_profile`, the mailbox, decision pages.
+- **The code-review policy's content**: reviewer roles and models, what counts as an "open finding", retry limits, when the architect is consulted, and whether the existing Triage rule (automatic fix versus ask; security always asked, `skills/review-pipeline/SKILL.md`) survives as the engine's rule for a finding that is neither a clear fix nor ambiguous.
+- **Which current behaviours carry over versus are dropped**: tick, kanban, notify, PARA filing, the herdr/tmux/ghostty launchers, `claude_profile`, the mailbox, decision pages. With no chat session and a board-only interface, the decision pages and notify service need an explicit decision.
 - **Budget and quota limits**: where Zach sets the limit that triggers an interrupt. No repo setting for it was found.
 - **Gantt segments**: what a segment is keyed on when rework yields several PRs or workers for one issue. Call: key segments by (issue, stage, attempt).
 - **Forge coverage for "create the issue first"**: GitHub and GitLab, and workspaces with no `Backlog:` line. Call: a workspace with no backlog gets no engine-created issues and the engine says so once.
 
-- **Build approach** (parked by Zach): new core with the old tests as spec, strangler replacement, or clean-slate. Decide before the plan.
-- **What the engine does while a host session is closed**, and which host sessions are persistent coordinators versus launched on demand.
-- **Whether Zach wants a persistent coordinator session to talk to at all** or only the engine, the board and exception pings.
+- **The model API surface** for the backing coordinator session (see 7a), and how the engine supervises and restarts it.
+- **Choosing the trio**: how the topic-appropriate three reviewers are picked, and what record of their verdict is kept.
