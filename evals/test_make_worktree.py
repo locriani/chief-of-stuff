@@ -1240,6 +1240,21 @@ class FromBranchTest(CloneCase):
         self.assertEqual(self.local_branches() - before, {"feat/mr"},
                          "the clone gains only the branch it checked out, never a throwaway")
 
+    def test_a_from_branch_tree_never_claims_the_branch_another_tree_holds(self):
+        """#115: a stale tree still holding the MR's branch must not refuse a fixer's tree; the
+        from-branch materialisation is detached, so the claim stays with the tree that holds it."""
+        head = self.mr_branch()
+        make_repo.git(["fetch", "-q", "origin"], self.clone)
+        stale = self.root / "stale"
+        make_repo.git(["worktree", "add", "-q", str(stale), "feat/mr"], self.clone)
+        made = self.build(branch="feat/mr", from_branch="feat/mr")
+        self.assertEqual(rev(made.path), head, "the fixer's tree starts at the remote branch's head")
+        self.assertEqual(make_repo.git(["rev-parse", "--abbrev-ref", "HEAD"], made.path), "HEAD",
+                         "the fixer's tree is detached: it took no branch claim")
+        self.assertEqual(make_repo.git(["rev-parse", "--abbrev-ref", "HEAD"], stale), "feat/mr",
+                         "the stale tree keeps the branch it holds")
+        self.assertEqual(self.local_branches() - {"feat/mr"}, set(), "no branch was cut for the fixer")
+
     def test_a_branch_missing_on_the_remote_is_refused_and_creates_nothing(self):
         with self.assertRaises(mw.RefusedError) as raised:
             self.build(branch="ghost", from_branch="ghost")

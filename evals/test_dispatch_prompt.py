@@ -16,8 +16,10 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import dispatch_prompt as dp  # noqa: E402
 import inbox  # noqa: E402
+import make_repo  # noqa: E402
 from evals.rules_text import one_shot_paragraph, rules_text, sections, skill_body  # noqa: E402
 
 CLAUDE = """# Workspace
@@ -1312,6 +1314,25 @@ class ReviewerRoutingTest(unittest.TestCase):
         self.assertIn("never resolve", body)
         (root / "cos.toml").write_text('[workflow]\ndelivery = "branch"\n')
         self.assertNotIn("--reply", dp.compose(root, "2026-09-18", "Security audit"))
+
+
+class DetachedWorktreeTest(unittest.TestCase):
+    """#115: a one-shot dispatched into a detached (from-branch) tree — a fixer whose MR branch a
+    stale tree may hold — is told to push `HEAD:<branch>` instead of committing on a branch."""
+
+    def test_a_detached_one_shot_pushes_head_to_the_branch_its_task_names(self):
+        tmp, root = workspace(claude_md=CLAUDE + "- Settings: `cos.toml`\n")
+        self.addCleanup(tmp.cleanup)
+        (root / "cos.toml").write_text('[workflow]\ndelivery = "pull-request"\n')
+        repo = root / "repo"
+        make_repo.build(root, {"trees": "trees", "worktrees": []})
+        detached = root / "detached"
+        make_repo.git(["worktree", "add", "-q", "--detach", str(detached), "main"], repo)
+        body = dp.compose(root, "2026-09-18", "Security audit", worktree=detached, one_shot=True)
+        self.assertIn("git push origin HEAD:<branch>", body)
+        self.assertNotIn("Commit the finished change on this worktree's branch", body)
+        on_branch = dp.compose(root, "2026-09-18", "Security audit", worktree=repo, one_shot=True)
+        self.assertIn("Commit the finished change on this worktree's branch", on_branch)
 
 
 class ReadOnlyAssignmentTest(unittest.TestCase):
