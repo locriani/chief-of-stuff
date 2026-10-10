@@ -27,9 +27,10 @@ Pattern (inference, not verified): the coordinator leans on the model to notice 
 
 ## Goals
 
-1. **Autonomous by default.** No routine nudges. Success signs, all four picked by Zach: zero routine nudges; one gantt line per issue; merges land unprompted; survives a restart with no catch-up prompting.
+1. **Autonomous by default.** No routine nudges. Zach's four success signs: zero routine nudges (this goal), one gantt line per issue (goal 2), survives a restart with no catch-up prompting (goal 3), and merges land unprompted (goal 4).
 2. **One gantt line per forge issue.** Everything done for an issue (dispatch, review, rework, merge) appears as segments on that one line. Duplicates cannot be created.
 3. **Survives restarts, compaction, quota and outages** and resumes on its own.
+4. **Merges land unprompted.** Work that satisfies the review policy (decision 5) merges with no human input, and Zach sees it done.
 
 ## Non-goals (Decided)
 
