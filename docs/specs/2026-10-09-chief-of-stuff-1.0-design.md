@@ -81,7 +81,7 @@ Mostly clean-slate ("3 ish"). The old specs, old golden evals, old Python code a
 - **Which current behaviours carry over versus are dropped**: tick, kanban, notify, PARA filing, the herdr/tmux/ghostty launchers, `claude_profile`, the mailbox, decision pages. With no chat session and a board-only interface, the decision pages and notify service need an explicit decision.
 - **Budget and quota limits**: where Zach sets the limit that triggers an interrupt. No repo setting for it was found.
 - **Gantt segments**: what a segment is keyed on when rework yields several PRs or workers for one issue. Call: key segments by (issue, stage, attempt).
-- **Forge coverage for "create the issue first"**: GitHub and GitLab, and workspaces with no `Backlog:` line. Call: a workspace with no backlog gets no engine-created issues and the engine says so once.
+- **Forge coverage for "create the issue first"**: GitHub and GitLab, and workspaces with no `Backlog:` line. Decided: a workspace with no `Backlog:` line is not run. The engine refuses the work and instead helps Zach set up or configure the backlog. Setup help is part of 1.0.
 
 - **How the engine supervises and restarts** the `claude -p` calls and carries session state between them (see 7a).
 - **Choosing the trio**: how the topic-appropriate three reviewers are picked, and what record of their verdict is kept.
