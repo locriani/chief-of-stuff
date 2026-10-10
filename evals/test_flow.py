@@ -326,6 +326,15 @@ class FlowEngineTests(unittest.TestCase):
         code = flow.main(["--root", str(empty_dir)])
         self.assertEqual(code, 0)
 
+    def test_main_exits_zero_cleanly_when_claude_md_has_no_coordinator_block(self):
+        plain = self.root / "plain"
+        plain.mkdir()
+        (plain / "CLAUDE.md").write_text("# Some other project\n\nNo coordinator here.\n")
+        with mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+            code = flow.main(["--root", str(plain)])
+        self.assertEqual(code, 0)
+        self.assertEqual(err.getvalue(), "")
+
     def test_reconcile_dead_workers_selects_latest_report(self):
         tracker_text = """## Tasks
 
