@@ -3,6 +3,7 @@ import contextlib
 import io
 import json
 import plistlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -20,7 +21,7 @@ class SupervisorTest(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        base = Path(tmp.name)
+        base = Path(tmp.name).resolve()
         self.release, self.data, self.jobs, self.root = (base / n for n in ("release", "data", "agents", "ws"))
         (self.release / ".claude-plugin").mkdir(parents=True)
         self.root.mkdir()
@@ -78,7 +79,117 @@ class SupervisorTest(unittest.TestCase):
         return [call.args[0] for call in self.launchctl_mock.call_args_list]
 
 
+class CurrentReleaseTest(SupervisorTest):
+    def test_the_installed_pointer_names_the_release_to_run(self):
+        install = self.release.parent / "install"
+        old, new = install / "versions/1.0.0-aaa", install / "versions/1.0.1-bbb"
+        old.mkdir(parents=True), new.mkdir(parents=True)
+        (old / "chief_of_stuff.py").touch()
+        (new / "chief_of_stuff.py").touch()
+        (install / "current").symlink_to(old.relative_to(install))
+        with mock.patch.object(supervisor, "RELEASE", old.resolve()):
+            self.assertEqual(supervisor.current_release(), old.resolve())
+            (install / "current").unlink()
+            (install / "current").symlink_to(new.relative_to(install))
+            self.assertEqual(supervisor.current_release(), new.resolve())
+
+    def test_a_release_run_from_a_checkout_is_its_own_current(self):
+        self.assertEqual(supervisor.current_release(), supervisor.RELEASE)
+
+    def test_invalid_install_pointers_keep_the_working_release_and_report_the_problem(self):
+        install = self.release.parent / "install"
+        old = install / "versions/old"
+        old.mkdir(parents=True)
+        pointer = install / "current"
+        for target in (install / "missing", install / "incomplete", pointer):
+            with self.subTest(target=target):
+                if target.name == "incomplete":
+                    target.mkdir()
+                pointer.symlink_to(target)
+                self.addCleanup(pointer.unlink, missing_ok=True)
+                errors = io.StringIO()
+                with mock.patch.object(supervisor, "RELEASE", old), contextlib.redirect_stderr(errors):
+                    actual = supervisor.current_release()
+                pointer.unlink()
+                self.assertEqual(actual, old)
+                if target.name == "incomplete":
+                    self.assertIn(f"missing entry file: {target / 'chief_of_stuff.py'}", errors.getvalue())
+                elif target.name == "missing":
+                    self.assertIn(f"No such file or directory: '{target}'", errors.getvalue())
+                else:
+                    self.assertRegex(errors.getvalue(), rf"(?:[Ll]oop|Too many levels of symbolic links).*{re.escape(str(pointer))}")
+
+
 class VenvTest(SupervisorTest):
+    def test_prepares_selected_release_pins_without_changing_the_running_release(self):
+        old_python = supervisor.ensure_venv(self.data)
+        current = self.release.parent / "next"
+        current.mkdir()
+        (current / "requirements.txt").write_text("SQLAlchemy==2.0.55\n")
+        self.pip_fails = True
+        with self.assertRaisesRegex(supervisor.ServiceError, "No matching distribution"):
+            supervisor.ensure_venv(self.data, release=current)
+        self.assertTrue(old_python.is_file())
+        self.assertEqual(supervisor.RELEASE, self.release)
+        self.pip_fails = False
+        new_python = supervisor.ensure_venv(self.data, release=current)
+        self.assertNotEqual(old_python, new_python)
+        self.assertIn([str(new_python), "-m", "pip", "install", "--disable-pip-version-check",
+                       "-r", str(current / "requirements.txt")], self.calls)
+        self.assertEqual(supervisor.ensure_venv(self.data, release=current), new_python)
+        self.assertEqual(supervisor.ensure_venv(self.data), old_python)
+
+    def test_same_pins_update_never_rebuilds_the_running_interpreters_venv(self):
+        python = supervisor.ensure_venv(self.data)
+        marker = python.parent.parent / ".installed"
+        current = self.release.parent / "next"
+        current.mkdir()
+        (current / "requirements.txt").write_bytes((self.release / "requirements.txt").read_bytes())
+        self.pip_fails = True
+        for failure, executable, prefix in (("probe timeout", str(python), sys.prefix),
+                                             ("prefix alias", "/unrelated/python", str(python.parent.parent)),
+                                             ("missing marker", str(python), sys.prefix)):
+            with self.subTest(failure=failure):
+                if failure == "missing marker":
+                    marker.unlink(missing_ok=True)
+                self.calls.clear()
+                with mock.patch.object(supervisor.sys, "executable", executable), \
+                     mock.patch.object(supervisor.sys, "prefix", prefix), \
+                     mock.patch.object(supervisor, "_venv_python_runs", return_value=False), \
+                     self.assertRaisesRegex(supervisor.ServiceError, "running interpreter"):
+                    supervisor.ensure_venv(self.data, release=current)
+                self.assertTrue(python.is_file(), "the launchd interpreter must survive failed preflight")
+                self.assertFalse(any("pip" in call or call[1:3] == ["-m", "venv"] for call in self.calls))
+
+    def test_failed_repair_preserves_another_workspaces_interpreter_and_marker(self):
+        python = supervisor.ensure_venv(self.data)
+        marker = python.parent.parent / ".installed"
+        self.pip_fails = True
+        with mock.patch.object(supervisor, "_venv_python_runs", return_value=False), \
+             self.assertRaises(supervisor.ServiceError):
+            supervisor.ensure_venv(self.data)
+        self.assertTrue(python.is_file(), "another workspace still executes this interpreter")
+        self.assertTrue(marker.is_file(), "failed preparation must not modify the published venv")
+        self.pip_fails = False
+        self.assertEqual(supervisor.ensure_venv(self.data), python)
+
+    def test_preflight_shares_one_sixty_second_budget_across_build_steps(self):
+        elapsed = [0]
+        run = self.fake_run
+
+        def slow(argv, **kwargs):
+            self.assertLessEqual(kwargs["timeout"], 60 - elapsed[0])
+            if elapsed[0] + 25 > 60:
+                raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+            elapsed[0] += 25
+            return run(argv, **kwargs)
+
+        with mock.patch.object(supervisor.time, "monotonic", side_effect=lambda: elapsed[0]), \
+             mock.patch.object(supervisor.subprocess, "run", side_effect=slow), \
+             self.assertRaises(subprocess.TimeoutExpired):
+            supervisor.ensure_venv(self.data, timeout=60)
+        self.assertLessEqual(elapsed[0], 60)
+
     def test_changed_base_python_identity_builds_a_new_venv_beside_the_old(self):
         old = supervisor.ensure_venv(self.data)
         for version, tag in (("3.13.1", "cpython-313"), ("3.13.1", "cpython-314")):
@@ -124,17 +235,28 @@ class VenvTest(SupervisorTest):
              self.assertRaisesRegex(supervisor.ServiceError, "python3"):
             supervisor.ensure_venv(self.data)
 
-    def test_a_missing_or_dangling_venv_python_is_rebuilt(self):
+    def test_a_missing_or_dangling_venv_python_gets_a_new_published_generation(self):
         python = supervisor.ensure_venv(self.data)
-        python.unlink()
-        self.assertEqual(supervisor.ensure_venv(self.data), python)
-        self.assertTrue(python.is_file())
-        self.assertEqual(len(self.calls), 6, "marker alone must not reuse a missing interpreter")
-        python.unlink()
-        python.symlink_to("/nonexistent/chief-of-stuff-venv-python")
-        self.assertEqual(supervisor.ensure_venv(self.data), python)
-        self.assertTrue(python.is_file() and not python.is_symlink())
-        self.assertEqual(len(self.calls), 9)
+        for failure in ("missing", "dangling"):
+            with self.subTest(failure=failure):
+                python.unlink()
+                if failure == "dangling":
+                    python.symlink_to("/nonexistent/chief-of-stuff-venv-python")
+                repaired = supervisor.ensure_venv(self.data)
+                self.assertNotEqual(repaired, python)
+                self.assertTrue(repaired.is_file() and not repaired.is_symlink())
+                self.assertTrue((python.parent.parent / ".installed").exists())
+                self.assertEqual(supervisor.ensure_venv(self.data), repaired)
+                python = repaired
+
+    def test_successful_repair_keeps_the_previous_generation_at_its_original_path(self):
+        old = supervisor.ensure_venv(self.data)
+        with mock.patch.object(supervisor, "_venv_python_runs", return_value=False):
+            new = supervisor.ensure_venv(self.data)
+        self.assertNotEqual(old, new)
+        self.assertTrue(old.is_file())
+        self.assertTrue((old.parent.parent / ".installed").is_file())
+        self.assertEqual(supervisor.ensure_venv(self.data), new)
 
     def test_data_dir_falls_back_to_the_plugin_data_dir_when_unset(self):
         with mock.patch.dict(supervisor.os.environ, {"CLAUDE_PLUGIN_DATA": ""}):
@@ -216,6 +338,51 @@ class AgentTest(SupervisorTest):
         with mock.patch.object(supervisor.sys, "platform", "linux"), \
              self.assertRaisesRegex(supervisor.ServiceError, "macOS"):
             supervisor.install(self.root, ENGINE, self.jobs)
+
+    def test_install_defaults_to_the_release_engine_and_restarts_on_version_path_or_pins_update(self):
+        self.assertEqual(supervisor.install(self.root, jobs_dir=self.jobs), "engine: started")
+        first_venv = supervisor.ensure_venv(self.data)
+        self.assertEqual(self.job()["ProgramArguments"],
+                         [str(first_venv), str(self.release / "scripts/engine.py")])
+        self.assertEqual(supervisor.install(self.root, jobs_dir=self.jobs), "engine: serving")
+
+        # 1. Plugin version update restarts the engine LaunchAgent.
+        self.publish("1.0.1", "SQLAlchemy==2.0.54\n")
+        self.assertEqual(supervisor.install(self.root, jobs_dir=self.jobs), "engine: restarted")
+        self.assertEqual(self.job()["EnvironmentVariables"]["CHIEF_OF_STUFF_VERSION"], "1.0.1")
+
+        # 2. Dependency pins update builds a new venv and restarts the engine LaunchAgent.
+        self.publish("1.0.1", "SQLAlchemy==2.0.55\n")
+        self.assertEqual(supervisor.install(self.root, jobs_dir=self.jobs), "engine: restarted")
+        second_venv = supervisor.ensure_venv(self.data)
+        self.assertNotEqual(second_venv, first_venv)
+        self.assertEqual(self.job()["ProgramArguments"],
+                         [str(second_venv), str(self.release / "scripts/engine.py")])
+
+        # 3. Release path update restarts the engine LaunchAgent on the new release's engine.py.
+        next_release = self.release.parent / "release-1.0.2"
+        (next_release / ".claude-plugin").mkdir(parents=True)
+        (next_release / ".claude-plugin/plugin.json").write_text(json.dumps({"version": "1.0.2"}))
+        (next_release / "requirements.txt").write_text("SQLAlchemy==2.0.55\n")
+        with mock.patch.object(supervisor, "RELEASE", next_release):
+            self.assertEqual(supervisor.install(self.root, jobs_dir=self.jobs), "engine: restarted")
+            self.assertEqual(self.job()["ProgramArguments"],
+                             [str(second_venv), str(next_release / "scripts/engine.py")])
+            self.assertEqual(self.job()["EnvironmentVariables"]["CHIEF_OF_STUFF_VERSION"], "1.0.2")
+
+    def test_cli_install_status_and_uninstall_manage_the_default_engine(self):
+        with mock.patch.object(supervisor, "job_path",
+                               side_effect=lambda name, jobs_dir=None: (jobs_dir or self.jobs) / f"{name}.plist"):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(supervisor.main(["--root", str(self.root), "install"]), 0)
+                self.assertEqual(supervisor.main(["--root", str(self.root), "status"]), 0)
+                self.assertEqual(supervisor.main(["--root", str(self.root), "uninstall"]), 0)
+        lines = out.getvalue().splitlines()
+        self.assertEqual(lines[0], "engine: started")
+        self.assertIn("installed: true", out.getvalue())
+        self.assertIn("loaded: true", out.getvalue())
+        self.assertEqual(lines[-1], "engine: stopped")
 
     def test_cli_reports_errors_without_a_traceback(self):
         errors = io.StringIO()

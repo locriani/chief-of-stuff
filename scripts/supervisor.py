@@ -19,6 +19,8 @@ import shell_setup
 
 RELEASE = Path(__file__).resolve().parent.parent
 
+ACTIONS = ("install", "uninstall", "status")
+
 # Run after the venv python, with the workspace as working directory (engine --root defaults to ".").
 ENGINE: tuple[str, ...] = (str(RELEASE / "scripts/engine.py"),)
 
@@ -132,43 +134,86 @@ def version() -> str:
     return json.loads((RELEASE / ".claude-plugin/plugin.json").read_text())["version"]
 
 
-def _venv_python_runs(python: Path) -> bool:
+def current_release() -> Path:
+    """Follow `current` only when it is a symlink beside `versions/`; otherwise return RELEASE."""
+    pointer = RELEASE.parent.parent / "current"
+    try:
+        if RELEASE.parent.name == "versions" and pointer.is_symlink():
+            selected = pointer.resolve(strict=True)
+            if not (selected / "chief_of_stuff.py").is_file():
+                raise ServiceError(f"missing entry file: {selected / 'chief_of_stuff.py'}")
+            return selected
+    except (OSError, RuntimeError, ServiceError) as exc:
+        print(f"engine: cannot follow current release {pointer}: {exc}; keeping {RELEASE}", file=sys.stderr, flush=True)
+    return RELEASE
+
+
+def _venv_python_runs(python: Path, *, timeout: float = 30) -> bool:
     try:
         return python.is_file() and subprocess.run(
-            [str(python), "-c", ""], capture_output=True, timeout=30).returncode == 0
+            [str(python), "-c", ""], capture_output=True, timeout=timeout).returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         return False
 
 
-def ensure_venv(data: Path) -> Path:
-    """The venv python for the pinned requirements.txt and the login shell's base Python identity."""
-    requirements = RELEASE / "requirements.txt"
+def ensure_venv(data: Path, *, release: Path | None = None, timeout: float = 900) -> Path:
+    """Return the selected release's venv, publishing a fresh generation only after installation succeeds.
+
+    Callers hold supervisor.lock. The total preparation budget includes shell lookup and all subprocesses.
+    Published generations stay at their original paths: other workspaces and launchd may still use them.
+    """
+    deadline = time.monotonic() + timeout
+
+    def remaining(cap: float = 900) -> float:
+        seconds = deadline - time.monotonic()
+        if seconds <= 0:
+            raise subprocess.TimeoutExpired("engine dependency preparation", timeout)
+        return min(seconds, cap)
+
+    requirements = (release or RELEASE) / "requirements.txt"
     base = shell_setup.resolve("python3")
     if base is None:
         raise ServiceError("no python3 on the login shell's PATH to build the engine venv")
     try:
         identity = subprocess.run(
             [base, "-c", "import json, sys; print(json.dumps([sys.version, sys.implementation.cache_tag]))"],
-            capture_output=True, text=True, timeout=30)
+            capture_output=True, text=True, timeout=remaining(30))
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise ServiceError(f"could not identify the engine's base Python: {exc}") from exc
     if identity.returncode:
         raise ServiceError(f"could not identify the engine's base Python: {(identity.stderr or identity.stdout).strip()[-2000:]}")
-    # Keyed by the pins and Python identity, so a rebuild never touches the venv a running engine uses.
+    # Changed pins or Python identity use a separate venv; repairs also get a new generation.
     # shortcut: superseded venvs are never removed, prune them once an engine per workspace is common.
     key = hashlib.sha256(requirements.read_bytes() + b"\0" + identity.stdout.encode()).hexdigest()[:16]
-    venv = data / f"venv-{key}"
+    pointer = data / f"venv-{key}.current"
+    try:
+        name = pointer.read_text()
+    except FileNotFoundError:
+        name = f"venv-{key}"  # reuse environments published before generation pointers
+    if Path(name).name != name or not name.startswith(f"venv-{key}"):
+        raise ServiceError(f"invalid venv generation: {pointer}")
+    venv = data / name
     python, done = venv / "bin/python", venv / ".installed"
-    if done.exists() and _venv_python_runs(python):
+    if done.exists() and _venv_python_runs(python, timeout=remaining(30)):
         return python
-    shutil.rmtree(venv, ignore_errors=True)
-    for argv in ([base, "-m", "venv", str(venv)],
-                 [str(python), "-m", "pip", "install", "--disable-pip-version-check", "-r", str(requirements)]):
-        result = subprocess.run(argv, capture_output=True, text=True, timeout=900)
-        if result.returncode:
-            raise ServiceError(f"engine dependencies failed to install, engine not started: "
-                               f"{(result.stderr or result.stdout).strip()[-2000:]}")
-    done.touch()
+    if Path(sys.executable).absolute().parent.parent == venv.absolute() or Path(sys.prefix).resolve() == venv.resolve():
+        raise ServiceError(f"cannot rebuild the running interpreter's venv: {venv}")
+    data.mkdir(parents=True, exist_ok=True)
+    building = Path(tempfile.mkdtemp(dir=data, prefix=f"venv-{key}-"))
+    python = building / "bin/python"
+    try:
+        for argv in ([base, "-m", "venv", str(building)],
+                     [str(python), "-m", "pip", "install", "--disable-pip-version-check", "-r", str(requirements)]):
+            result = subprocess.run(argv, capture_output=True, text=True, timeout=remaining())
+            if result.returncode:
+                raise ServiceError(f"engine dependencies failed to install: "
+                                   f"{(result.stderr or result.stdout).strip()[-2000:]}")
+        (building / ".installed").touch()
+    except BaseException:
+        shutil.rmtree(building, ignore_errors=True)
+        raise
+    # After publication, even cancellation must leave this generation available to other callers.
+    atomic_write(pointer, building.name.encode())
     return python
 
 
@@ -177,10 +222,12 @@ def require_macos():
         raise ServiceError("the engine supervisor requires macOS (launchd)")
 
 
-def install(root: Path, engine: tuple[str, ...] = ENGINE, jobs_dir: Path | None = None) -> str:
+def install(root: Path, engine: tuple[str, ...] | None = None, jobs_dir: Path | None = None) -> str:
     """Start the engine under launchd, or restart it when the plugin version, its path or its pins changed."""
+    if engine is None:
+        engine = (str(RELEASE / "scripts/engine.py"),)
     if not engine:
-        raise ServiceError("the engine entry command is not set yet (supervisor.ENGINE, M3 engine loop)")
+        raise ServiceError("the engine entry command is empty")
     require_macos()
     root, data = root.resolve(), data_dir()
     with lock(data / "supervisor.lock"):
@@ -222,7 +269,7 @@ def status(root: Path, jobs_dir: Path | None = None) -> dict:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--root", default=".", help="workspace root the engine serves")
-    ap.add_argument("cmd", choices=("install", "uninstall", "status"))
+    ap.add_argument("cmd", choices=ACTIONS)
     args = ap.parse_args(argv)
     root = Path(args.root).resolve()
     try:
