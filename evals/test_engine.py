@@ -97,6 +97,21 @@ class EngineTest(unittest.TestCase):
         identity.start()
         self.addCleanup(identity.stop)
 
+    def test_pass_delivers_exception_pings_after_store_updates(self):
+        observed = []
+        def ping(root, now):
+            observed.append((root, now, len(self.db.segments(KEY))))
+        with mock.patch("notify.sync_workspace", side_effect=ping) as sync:
+            self.run_pass()
+        sync.assert_called_once_with(self.root, NOW)
+        self.assertEqual(observed, [(self.root, NOW, 1)])
+
+    def test_ping_failure_does_not_abort_pass(self):
+        with mock.patch("notify.sync_workspace", side_effect=RuntimeError("queue unavailable")) as sync:
+            actions = self.run_pass()
+        self.assertTrue(actions)
+        sync.assert_called_once_with(self.root, NOW)
+
     def launch(self, key, stage, attempt, persona):
         self.launched.append((key, stage, attempt, persona))
         # A live fake worker must supply the run record the production Launch port now promises.
@@ -238,7 +253,7 @@ class EngineTest(unittest.TestCase):
         self.assertEqual([log.message for log in self.db.log(KEY)], ["wait: stage is outside the workflow"])
         self.db.set_human_review(KEY, True)
         self.run_pass()
-        self.assertEqual(self.db.log(KEY)[-1].message, "wait: human review")
+        self.assertEqual(self.db.log(KEY)[-1].message, "wait: needs input")
 
     def test_ask_and_escalate_are_recorded_once_and_preserve_resume_data(self):
         self.db.sync_from_forge(self.forge.snapshots())
@@ -351,10 +366,10 @@ class EngineTest(unittest.TestCase):
         self.finish("review")
         self.findings()
         self.assertEqual(self.forge.snapshots()[0]["merge_state"], "ready")
-        self.assertEqual(self.run_pass(), [reconcile.Wait(KEY, "human review")])
+        self.assertEqual(self.run_pass(), [reconcile.Wait(KEY, "needs input")])
         self.assertTrue(self.db.items()[0].human_review)
         self.findings(counts={"minor": 1})
-        self.assertEqual(self.run_pass(), [reconcile.Wait(KEY, "human review")])
+        self.assertEqual(self.run_pass(), [reconcile.Wait(KEY, "needs input")])
         self.assertEqual(len(self.launched), 2)
         gh.issues[1]["labels"] = [label for label in gh.issues[1]["labels"] if label["name"] != "needs human"]
         self.assertEqual(self.run_pass(), [reconcile.Dispatch(KEY, "implement", "builder", 2)])
@@ -376,7 +391,7 @@ class EngineTest(unittest.TestCase):
             merged.assert_not_called()
             self.assertEqual(self.db.items()[0].stage, "merge")
             self.assertIn("needs human", [label["name"] for label in gh.issues[1]["labels"]])
-            self.assertEqual(self.run_pass(), [reconcile.Wait(KEY, "human review")])
+            self.assertEqual(self.run_pass(), [reconcile.Wait(KEY, "needs input")])
             merged.assert_not_called()
             gh.issues[1]["labels"] = [label for label in gh.issues[1]["labels"] if label["name"] != "needs human"]
             self.assertEqual(self.run_pass(), [reconcile.Merge(KEY)])
@@ -424,7 +439,7 @@ class EngineTest(unittest.TestCase):
             self.assertEqual(self.run_pass(), [reconcile.Merge(KEY)])
         self.assertFalse(any(call[:2] == ["pr", "merge"] for call in gh.all_calls))
         self.assertEqual(self.db.resume(KEY)["pending_stage"], {"stage": "merge", "expected": "review"})
-        self.assertEqual(self.run_pass(), [reconcile.Wait(KEY, "human review")])
+        self.assertEqual(self.run_pass(), [reconcile.Wait(KEY, "needs input")])
         self.assertFalse(any(call[:2] == ["pr", "merge"] for call in gh.all_calls))
         self.assertEqual(self.db.items()[0].stage, "merge")
         self.assertTrue(self.db.items()[0].human_review)
@@ -467,6 +482,77 @@ class EngineTest(unittest.TestCase):
             self.run_pass()
         self.assertEqual(len(self.launched), 1)
 
+    def test_undeclared_agent_type_runs_default_agent(self):
+        # Section 9: undeclared persona agents use the default and record an empty agent type.
+        self.p = policy.parse({
+            "default_workflow": "standard",
+            "personas": {"builder": {"role": "implements", "model": "example", "agent_type": "nonexistent-agent"},
+                         "critic": {"role": "reviews", "model": "example"}},
+            "stages": {"implement": {"persona": "builder"}, "review": {"persona": "critic"}, "merge": {}},
+            "workflows": {"standard": {"start": "implement", "edges": [
+                {"from": "implement", "to": "review"}, {"from": "review", "to": "merge"},
+            ]}},
+        })
+        self.assertEqual(self.run_pass(), [reconcile.Dispatch(KEY, "implement", "builder", 1)])
+        self.assertEqual(self.launched, [(KEY, "implement", 1, "builder")])
+        self.assertEqual(self.db.segments(KEY)[0].agent_type, "")
+
+    def test_answered_decision_meeting_a_blocked_action_records_blocked_status(self):
+        # M6 item 2 & #288: engine calls decision_actions when a planned action meets an answered decision.
+        self.db.sync_from_forge(self.forge.snapshots())
+        dec = self.db.add_decision(KEY, "design", "Approve schema?")
+        self.db.answer_decision(dec.id, "Yes", decided_by="user")
+        with mock.patch.object(engine.reconcile, "plan", return_value=[reconcile.Wait(KEY, "merge conflicts")]):
+            self.run_pass()
+        updated = next(d for d in self.db.decisions(KEY) if d.id == dec.id)
+        self.assertEqual(updated.status, "blocked")
+        self.assertEqual(updated.blocked_reason, "merge conflicts")
+
+    def test_trio_consults_once_and_updates_one_row_for_consensus_and_split(self):
+        import model_port
+        for unanimous in (True, False):
+            with self.subTest(unanimous=unanimous):
+                gate = f"gate-{unanimous}"
+                self.p = policy.parse({
+                    "policy": {"trio": ["one", "two", "three"]},
+                    "personas": {n: {"role": "advises", "model": "example"} for n in ("one", "two", "three")},
+                    "stages": {"implement": {}},
+                    "default_workflow": "standard",
+                    "workflows": {"standard": {"start": "implement"}},
+                })
+                model = mock.Mock(return_value=model_port.Reply("", {
+                    "vote": "adopt" if unanimous else "concern", "choice": "adopt", "reasoning": "Evidence"
+                }, "", 0, 1))
+                with mock.patch.object(engine.reconcile, "plan", return_value=[reconcile.Ask(KEY, gate, "Split module?")]):
+                    self.run_pass(trio_port=model)
+                    self.run_pass(trio_port=model)
+                decs = [d for d in self.db.decisions(KEY) if d.topic == gate]
+                self.assertEqual(len(decs), 1)
+                self.assertEqual(model.call_count, 3)
+                self.assertEqual(decs[0].status, "answered" if unanimous else "open")
+                self.assertEqual(len(decs[0].record["verdicts"]), 3)
+
+    def test_an_ask_without_a_configured_trio_stays_open_and_unconsulted(self):
+        model = mock.Mock()
+        with mock.patch.object(engine.reconcile, "plan", return_value=[reconcile.Ask(KEY, "gate", "Split module?")]):
+            self.run_pass(trio_port=model)
+        model.assert_not_called()
+        self.assertEqual([d.status for d in self.db.decisions(KEY)], ["open"])
+        self.assertFalse([e for e in self.db.log(KEY) if "failed" in e.message])
+
+    def test_default_agent_has_no_declared_type(self):
+        self.run_pass()
+        self.assertEqual(self.db.segments(KEY)[0].agent_type, "")
+
+    def test_pending_redispatch_runs_even_after_completed_stage(self):
+        self.db.sync_from_forge(self.forge.snapshots())
+        self.db.record_segment(KEY, "implement", 1, (NOW - timedelta(hours=2)).isoformat(),
+                               (NOW - timedelta(hours=1)).isoformat(), "done")
+        self.db.set_resume(KEY, {"redispatch": {"stage": "implement", "persona": "builder", "attempt": 2}})
+        self.run_pass()
+        self.assertEqual(self.launched, [(KEY, "implement", 2, "builder")])
+        self.assertNotIn("redispatch", self.db.resume(KEY))
+
 
 class MainTest(unittest.TestCase):
     def setUp(self):
@@ -500,6 +586,15 @@ class MainTest(unittest.TestCase):
         self.assertIs(passed.call_args.kwargs["forge"], fake)
         self.assertEqual(passed.call_args.kwargs["trees"], self.root / "trees")
         sleep.assert_not_called()
+
+    def test_the_production_pass_consults_the_trio_through_the_claude_adapter(self):
+        with mock.patch.object(engine.forge, "for_workspace", return_value=FakeForge()), \
+             mock.patch.object(engine, "run_pass") as passed, \
+             mock.patch.object(engine.claude_adapter, "call") as call:
+            self.assertEqual(engine.main(["--root", str(self.root), "--once"]), 0)
+            request = object()
+            passed.call_args.kwargs["trio_port"](request)
+        self.assertEqual(call.call_args.args, (request,))
 
     def test_failed_pass_is_logged_and_the_loop_continues_at_the_interval(self):
         errors = io.StringIO()

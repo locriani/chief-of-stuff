@@ -47,6 +47,7 @@ from stat import S_ISREG
 from html import escape
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
+import forge
 import page_reload
 from workspace import LAST_LOOKED, LOOKED_BEFORE, ConfigError, daily_trackers, pages_address, read_config, record_look, unrecord_look
 
@@ -54,9 +55,9 @@ SERVER = "chief-of-stuff-pages"
 PID = ".pid"
 CACHE = ".sources.json"
 REFRESH = 60  # seconds between forge reads
-RENDERED = re.compile(r"\d{4}-\d{2}-\d{2}-board\.html|workers\.html|decisions\.html|decision-[a-z0-9]+(?:-[a-z0-9]+)*\.html|issue-\d+(?:-source)?\.html")
+RENDERED = re.compile(r"\d{4}-\d{2}-\d{2}-board\.html|workers\.html|decisions\.html|decision-[a-z0-9]+(?:-[a-z0-9]+)*\.html|issue-(?:\d+|k[0-9a-f]+)(?:-source)?\.html")
 ROUTE = re.compile(r"/decisions/([a-z0-9]+(?:-[a-z0-9]+)*)")
-ISSUE = re.compile(r"/issues/(\d+)(/source)?")
+ISSUE = re.compile(r"/issues/([a-z0-9_.-]+:[A-Za-z0-9_./-]+#\d+|\d+)(/source)?")
 MAX_BODY = 16 * 1024  # a write-in is a sentence or a paragraph
 MAX_PAGE = 1024 * 1024  # rendered pages are a few hundred KB; refuse larger rather than load them
 # ponytail: a lock per page (never freed; a workspace has tens of pages) under the server's `[pages] workers` slots.
@@ -105,7 +106,8 @@ class PagesError(RuntimeError):
 
 def _sources(root: Path, cfg, pages_dir: Path, day: str) -> list[Path]:
     return [root / "CLAUDE.md", *([root / cfg.settings_path] if cfg.settings_path else []), root / cfg.log_path(day),
-            *(path for _, path in daily_trackers(root, cfg)), *pages_dir.glob("decision-*.json"), pages_dir / CACHE]
+            root / "store.db", root / "store.db-wal", *(path for _, path in daily_trackers(root, cfg)), *pages_dir.glob("decision-*.json"),
+            pages_dir / CACHE]
 
 
 def _digest(sources: list[Path]) -> str:
@@ -119,10 +121,42 @@ def _digest(sources: list[Path]) -> str:
 
 
 def today_board(root: Path) -> str | None:
-    """Today's board name once today's tracker exists, else None."""
+    """Today's board name once today's tracker or store exists, else None."""
     cfg = read_config(root)
     day = datetime.now(cfg.zone).date().isoformat()
-    return f"{day}-board.html" if (root / cfg.tracker_path(day)).is_file() else None
+    return f"{day}-board.html" if (root / cfg.tracker_path(day)).is_file() or (root / "store.db").is_file() else None
+
+
+def _page_data(root: Path):
+    """The driver opens under the migrate lock; use cases hand detached rows to presenters."""
+    import store_access
+    import task_forge
+    if not (root / "store.db").is_file():
+        return None
+    db = store_access.migrated_store(root)
+    try:
+        with db.transaction(write=False):
+            return task_forge.page_data(db)
+    finally:
+        db.engine.dispose()
+
+
+def write_board(root: Path, day: str | None = None, *, now: datetime | None = None):
+    """The board command's driver, shared with request rendering."""
+    import render_board
+    return render_board.write(root, day, now=now, db=_page_data(root))
+
+
+def _navigation(root: Path, pages_dir: Path, data):
+    import decision_actions
+    if data is None:
+        return {}
+    return decision_actions.tab_counts(data.items(), data.decisions(), data.segments())
+
+
+def _issue_identity(name: str, source: bool = False):
+    token = name[len("issue-"):-len("-source.html") if source else -5]
+    return bytes.fromhex(token[1:]).decode() if token.startswith("k") else int(token)
 
 
 def fresh(root: Path, pages_dir: Path, name: str, slots=contextlib.nullcontext()) -> str:
@@ -160,7 +194,7 @@ def fresh(root: Path, pages_dir: Path, name: str, slots=contextlib.nullcontext()
             day = today if today in days or not days else days[-1]
         else:
             day = name[:10]
-            if not (root / cfg.tracker_path(day)).is_file():
+            if not (root / cfg.tracker_path(day)).is_file() and not (root / "store.db").is_file():
                 return ""
         with page_lock(key):  # checked under the lock: a request that waited finds the page already rendered
             sources = [*_sources(root, cfg, pages_dir, day),
@@ -181,16 +215,21 @@ def fresh(root: Path, pages_dir: Path, name: str, slots=contextlib.nullcontext()
                     return ""
             started = time.time_ns()
             with slots:
-                if name == "workers.html":
-                    workers_page.write(root, pages_dir)
-                elif name.startswith("decision-"):
+                if name.startswith("decision-"):
                     decision_page.write(root, pages_dir, name[len("decision-"):-5], day)
-                elif name.endswith("-source.html"):
-                    source_page.write(root, pages_dir, int(name[len("issue-"):-len("-source.html")]))
-                elif name.startswith("issue-"):
-                    issue_page.write(root, pages_dir, int(name[len("issue-"):-5]))
                 else:
-                    render_board.write(root, day)
+                    data = _page_data(root)
+                    if name == "workers.html" or name.startswith("issue-"):
+                        navigation = _navigation(root, pages_dir, data)
+                        if name == "workers.html":
+                            workers_page.write(root, pages_dir, db=data, navigation=navigation)
+                        elif name.endswith("-source.html"):
+                            source_page.write(root, pages_dir, _issue_identity(name, source=True),
+                                              db=data, navigation=navigation)
+                        else:
+                            issue_page.write(root, pages_dir, _issue_identity(name), db=data, navigation=navigation)
+                    else:
+                        render_board.write(root, day, db=data)
             RENDERED_AT[key] = started, target.stat().st_mtime_ns if target.is_file() else 0, digest  # only after a render that did not raise
         return ""
     except Exception as e:  # any renderer failure: the server keeps serving the last good page
@@ -264,12 +303,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.send_error(404, "no such decision")
                 return False
             self.path = f"/decision-{m[1]}.html"
-        elif path.startswith("/issues/"):
-            m = ISSUE.fullmatch(path)
+        elif decoded.startswith("/issues/"):
+            m = ISSUE.fullmatch(decoded)
             if not m:
                 self.send_error(404, "no such issue")
                 return False
-            self.path = f"/issue-{int(m[1])}{'-source' if m[2] else ''}.html"
+            self.path = "/" + fragment.issue_page_name(m[1], bool(m[2]))
         elif RENDERED.fullmatch(Path(self.translate_path(path)).name.casefold()):
             # A rendered page is a route only. casefold: long s and a case-insensitive disk reach it too (#335).
             self.send_error(404)
@@ -354,6 +393,112 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if self._allowed():
             self._send_html(True) if self._is_html() else super().do_GET()
 
+    def _post_store_decision(self, form: dict[str, list[str]]):
+        import decision_actions
+        import forge
+        import store_access
+
+        root = getattr(self.server, "root", None)
+        dec_id = form.get("decision_id", [""])[0].strip()
+        if root is None or not dec_id.isdigit():
+            return self.send_error(404, "no such decision")
+        action = form.get("action", ["answer"])[0].strip()
+        answer_val = form.get("answer", [""])[0].strip()
+        target_stage = form.get("target_stage", [""])[0].strip()
+        now_iso = datetime.now().astimezone().isoformat(timespec="seconds")
+        import sqlite3
+        from dataclasses import asdict
+        from sqlalchemy.exc import OperationalError
+        from supervisor import ServiceError
+        from settings import load_policy
+
+        db = None
+        try:
+            db = store_access.migrated_store(root)
+            # Reserve before checking state: a competing POST or engine write cannot interleave.
+            def apply():
+                dec = db.decision(int(dec_id))
+                if dec is None:
+                    return (404, "no such decision")
+                item = db.item(dec.issue_key)
+                if action == "answer" and not answer_val:
+                    return (400, "an answer must contain text")
+                policies = load_policy()
+                history = db.segments(dec.issue_key)
+                stage = target_stage if action in ("reroute", "re-route") else (item.stage if item else dec.gate)
+                if action == "reverse":
+                    affected = next((s.stage for s in reversed(history) if s.stage not in {"review", "merge"}), None)
+                    stage = dec.gate if dec.gate in policies.stages and dec.gate != "merge" else affected or stage
+                    if stage == "merge":
+                        stage = policies.workflow_for(None).start
+                if action != "answer" and stage not in policies.stages:
+                    return (400, "unknown target stage")
+                persona = policies.stages[stage].persona or "" if stage in policies.stages else ""
+                attempt = max((s.attempt for s in history if s.stage == stage), default=0) + 1
+                try:
+                    if action == "answer":
+                        tr = decision_actions.answer(dec, answer_val, decided_by="user", answered_at=now_iso)
+                    elif action == "reverse":
+                        tr = decision_actions.reverse(dec, answer_val, answered_at=now_iso,
+                                                      stage=stage, persona=persona, attempt=attempt)
+                    elif action in ("reroute", "re-route"):
+                        tr = decision_actions.reroute(dec, target_stage, answer_text=answer_val,
+                                                      answered_at=now_iso, current_stage=item.stage if item else "",
+                                                      persona=persona, attempt=attempt)
+                    else:
+                        return (400, "unknown decision action")
+                except ValueError as exc:
+                    return (409, str(exc))
+                fg = forge.for_workspace(root)
+                if fg is None:
+                    return (409, "no forge configured")
+                for fw in tr.actions:
+                    if isinstance(fw, decision_actions.ForgeStageWrite):
+                        number = int(fw.issue_key.rpartition("#")[2])
+                        try:
+                            result = fg.write_stage(number, fw.stage, expected=fw.previous_stage or None, commit=True)
+                        except Exception as exc:
+                            db.add_log(dec.issue_key, f"decision stage write failed: {exc}", now_iso)
+                            return (409, str(exc))
+                        if not result.ok or not result.done:
+                            error = result.error or "stage write was not committed"
+                            db.answer_decision(dec.id, tr.decision.answer, status="blocked", blocked_reason=error)
+                            return (409, error)
+                        db.upsert_item(fw.issue_key, stage=fw.stage)
+                data = db.resume(dec.issue_key) or {}
+                if tr.redispatch is not None:
+                    data["redispatch"] = asdict(tr.redispatch)
+                comments = list(data.get("decision_comments", []))
+                for fw in tr.actions:
+                    if isinstance(fw, decision_actions.ForgeComment):
+                        try:
+                            error = fg.comment(int(fw.issue_key.rpartition("#")[2]), fw.body, commit=True)
+                        except Exception as exc:
+                            error = str(exc)
+                        if error:
+                            comments.append(fw.body)
+                            db.add_log(dec.issue_key, f"decision comment failed: {error}", now_iso)
+                if comments:
+                    data["decision_comments"] = comments
+                db.set_resume(dec.issue_key, data)
+                db.update_decision(tr.store_write)
+            with db.transaction():
+                error = apply()
+            if error is not None:
+                return self.send_error(*error)
+        except (ServiceError, sqlite3.OperationalError, OperationalError) as exc:
+            return self.send_error(503, f"store unavailable: {exc}")
+        finally:
+            if db is not None:
+                db.engine.dispose()
+        for page in Path(self.directory).iterdir():
+            if RENDERED.fullmatch(page.name):
+                RENDERED_AT[str(page)] = 0, None, ""
+        self.send_response(303)
+        self.send_header("Location", "/")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def do_POST(self):
         """Save the user's answer beside the decision. Only this machine's own pages may post: the Host and, when a
         browser sends one, the Origin must be this server's."""
@@ -362,7 +507,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         origin = self.headers.get("Origin")
         if self.headers.get("Host", "") not in own or (origin is not None and origin not in [f"http://{h}" for h in own]):
             return self.send_error(403, "not a page of this server")
-        m = ROUTE.fullmatch(re.split(r"[?#]", self.path, maxsplit=1)[0])
+        route_path = re.split(r"[?#]", self.path, maxsplit=1)[0]
+        if route_path == "/":
+            try:
+                size = int(self.headers["Content-Length"])
+            except (TypeError, ValueError):
+                return self.send_error(411)
+            if size > MAX_BODY:
+                self.close_connection = True
+                return self.send_error(413, f"an answer is at most {MAX_BODY} bytes")
+            form = parse_qs(self.rfile.read(size).decode("utf-8", "replace"))
+            return self._post_store_decision(form)
+        m = ROUTE.fullmatch(route_path)
         source = Path(self.directory) / f"decision-{m[1]}.json" if m else None
         if source is None or not source.is_file():
             return self.send_error(404, "no such decision")
@@ -542,13 +698,18 @@ def from_config(root: Path) -> tuple[Path, int]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    args_list = list(sys.argv[1:] if argv is None else argv)
+    if args_list[:1] == ["--board"]:
+        import render_board
+        render_board.main(args_list[1:], writer=write_board)
+        return 0
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--ensure", action="store_true", help="start the server unless it is serving; print status only")
     ap.add_argument("--root", help="workspace root holding CLAUDE.md (default: the current directory)")
     ap.add_argument("command", nargs="?", choices=("serve",))
     ap.add_argument("--dir")
     ap.add_argument("--port", type=int)
-    args = ap.parse_args(argv)
+    args = ap.parse_args(args_list)
     if args.command == "serve":
         make_server(Path(args.dir), args.port, Path(args.root) if args.root else None).serve_forever()
         return 0

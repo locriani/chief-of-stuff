@@ -64,6 +64,13 @@ class ReconcileTest(unittest.TestCase):
         return reconcile.plan([item], {item.issue_key: history}, self.p, {}, slots, NOW,
                               {} if findings is None else {item.issue_key: findings}, **kwargs)
 
+    def test_merge_waits_for_answered_but_blocked_decision(self):
+        from types import SimpleNamespace
+        dec = SimpleNamespace(topic="scope", question="Choose", answer="Yes", status="blocked", blocked_reason="conflict")
+        actions = self.plan(replace(Item(), stage="merge", review_state="approved", merge_state="ready"),
+                            history=[Segment("review")], findings={}, decisions={KEY: [dec]})
+        self.assertEqual(actions, [reconcile.Wait(KEY, "decision pending")])
+
     def test_closed_items_and_any_running_segment_get_no_actions(self):
         self.assertEqual(self.plan(replace(Item(), forge_state="closed")), [])
         self.assertEqual(self.plan(history=[Segment("review", ended_at=None)]), [])
@@ -536,7 +543,7 @@ class ReconcileTest(unittest.TestCase):
         self.assertEqual(self.plan(item, findings={}), [reconcile.Dispatch(KEY, "implement", "builder", 1)])
 
     def test_human_review_items_wait_without_consuming_a_slot(self):
-        self.assertEqual(self.plan(replace(Item(), human_review=True)), [reconcile.Wait(KEY, "human review")])
+        self.assertEqual(self.plan(replace(Item(), human_review=True)), [reconcile.Wait(KEY, "needs input")])
 
     def test_dispatches_and_parallel_reviews_share_free_slots(self):
         items = [replace(Item(), issue_key=f"github:example/project#{n}", stage=stage)
