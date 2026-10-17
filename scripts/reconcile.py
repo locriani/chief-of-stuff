@@ -264,15 +264,14 @@ def plan(items: Sequence[WorkItem], segments: Mapping[str, Sequence[Segment]], p
         raise ValueError("free_slots must be a non-negative integer")
     actions = []
     for item in sorted(items, key=lambda item: _order(item, created_at or {})):
-        reset = (quota_resets or {}).get(item.issue_key)
-        if reset is not None and _time(reset) > now and item.forge_state != "closed":
-            actions.append(Wait(item.issue_key, "quota reset pending"))
-            continue
         action = _item(item, segments.get(item.issue_key, ()), policies, issue_types.get(item.issue_key),
                        (rooms or {}).get(item.issue_key), now, open_findings.get(item.issue_key),
                        (decisions or {}).get(item.issue_key, ()))
         if isinstance(action, (Dispatch, Review)):
-            if free_slots:
+            reset = (quota_resets or {}).get(item.issue_key)  # quota holds launches only; merges and gates go on
+            if reset is not None and _time(reset) > now:
+                action = Wait(item.issue_key, "quota reset pending")
+            elif free_slots:
                 free_slots -= 1
             else:
                 action = Wait(item.issue_key, "no free worker slots")
