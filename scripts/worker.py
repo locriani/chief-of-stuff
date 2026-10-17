@@ -6,6 +6,7 @@ import json
 import re
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +20,7 @@ import supervisor
 from settings import load as load_settings
 from workspace import settings_path
 from forge_port import ForgeError  # noqa: F401  (launch's documented failure)
-from model_port import Failure, Request, retry_at
+from model_port import Failure, Reply, Request, retry_at
 
 _runners: dict[str, Any] = {}
 
@@ -29,6 +30,45 @@ def _resume(store: Any, key: str) -> dict:
     return dict(data) if isinstance(data, dict) else {}
 
 
+def _num(value: Any) -> float:
+    if isinstance(value, bool):
+        return 0.0
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return num if 0 < num < float("inf") else 0.0
+
+
+def _record_usage(store: Any, key: str, stage: str, attempt: int,
+                  reply: Any, started: str, ended: datetime) -> None:
+    spend = _num(getattr(reply, "cost_usd", 0.0)) if isinstance(reply, (Reply, Failure)) else 0.0
+    minutes = 0.0
+    try:
+        begin = datetime.fromisoformat(started)
+        if begin.tzinfo is not None and ended.tzinfo is not None:
+            minutes = max(0.0, (ended - begin).total_seconds() / 60)
+    except (TypeError, ValueError):
+        minutes = 0.0
+    exhausted = isinstance(reply, Failure) and reply.kind == "quota"
+    if not spend and not minutes and not exhausted:
+        return
+    data = _resume(store, key)
+    recorded = set(data.get("usage_runs") or ()) if isinstance(data.get("usage_runs"), list) else set()
+    run_key = f"{stage}-{attempt}"
+    if run_key in recorded:
+        return
+    if spend:
+        data["spend_usd"] = _num(data.get("spend_usd")) + spend
+    if minutes:
+        data["time_minutes"] = _num(data.get("time_minutes")) + minutes
+    if exhausted:
+        # The host reported exhaustion; percentages before that point remain unknown.
+        data["quota_percent"] = 100.0
+    data["usage_runs"] = sorted(recorded | {run_key})
+    store.set_resume(key, data)
+
+
 def _run_dir(root: Path, key: str, stage: str, attempt: int) -> Path:
     number = key.rpartition("#")[2]
     if not number.isdecimal() or not re.fullmatch(r"[A-Za-z0-9_-]+", stage) or attempt < 1:
@@ -36,11 +76,21 @@ def _run_dir(root: Path, key: str, stage: str, attempt: int) -> Path:
     return supervisor.state_dir(root) / "runs" / f"{int(number)}-{stage}-{attempt}"
 
 
-def _exit_code(run_dir: Path) -> int:
-    code = json.loads((run_dir / "exit.json").read_text())["exit_code"]
+def _exit_record(run_dir: Path) -> tuple[int, datetime | None]:
+    payload = json.loads((run_dir / "exit.json").read_text())
+    code = payload["exit_code"]
     if type(code) is not int:
         raise ValueError("invalid adapter exit code")
-    return code
+    ended = payload.get("ended_at")
+    try:
+        when = datetime.fromisoformat(ended) if isinstance(ended, str) else None
+    except ValueError:
+        when = None
+    return code, (when if when is not None and when.tzinfo is not None else None)
+
+
+def _exit_code(run_dir: Path) -> int:
+    return _exit_record(run_dir)[0]
 
 
 def _existing_run(data: dict, run_dir: Path, stage: str, attempt: int,
@@ -234,7 +284,7 @@ def collect(store: Any, root: Path, clock: engine_clock.Clock = engine_clock.sys
         key = segment.issue_key
         data = _resume(store, key)
         now = clock()
-        outcome, reason = "failed", ""
+        outcome, reason, reply, exited_at = "failed", "", None, None
         try:
             runs = data.get("runs", {})
             if not isinstance(runs, dict):
@@ -278,7 +328,7 @@ def collect(store: Any, root: Path, clock: engine_clock.Clock = engine_clock.sys
                     store.add_log(key, f"worker identity unverified: {exc}", now.isoformat())
                     continue
                 raise ValueError("missing adapter exit record")
-            code = _exit_code(run_dir)
+            code, exited_at = _exit_record(run_dir)
             reply = claude_adapter.classify(code, (run_dir / "stdout").read_text(), (run_dir / "stderr").read_text())
             if isinstance(reply, Failure):
                 if reply.retryable:
@@ -306,6 +356,7 @@ def collect(store: Any, root: Path, clock: engine_clock.Clock = engine_clock.sys
                 store.set_resume(key, data)
         except (OSError, ValueError, KeyError, TypeError, RuntimeError, OverflowError) as exc:
             reason = f"unreadable worker run: {exc}"
-        store.end_segment(key, segment.stage, segment.attempt, now.isoformat(), outcome)
+        _record_usage(store, key, segment.stage, segment.attempt, reply, segment.started_at, exited_at or now)
+        store.end_segment(key, segment.stage, segment.attempt, (exited_at or now).isoformat(), outcome)
         store.add_log(key, f"worker {segment.stage} attempt {segment.attempt}: {outcome}" + (f": {reason}" if reason else ""),
                       now.isoformat())

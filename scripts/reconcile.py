@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Mapping, Protocol, Sequence
 
+import decision_actions
 from model_port import RETRYABLE
-from policy import Edge, Policies, Policy, SEVERITIES, Workflow
+from policy import Edge, Policies, Policy, SEVERITIES, Workflow, breach
 
 
 class WorkItem(Protocol):
@@ -73,6 +74,8 @@ class Ask:
     issue_key: str
     gate: str
     reason: str
+    source: str = field(default="", compare=False)
+    context: str = field(default="", compare=False)
 
 
 @dataclass(frozen=True)
@@ -82,12 +85,19 @@ class Escalate:
 
 
 @dataclass(frozen=True)
+class Limit:
+    issue_key: str
+    kind: str
+    reason: str
+
+
+@dataclass(frozen=True)
 class Wait:
     issue_key: str
     reason: str
 
 
-Action = Dispatch | Review | Merge | Ask | Escalate | Wait
+Action = Dispatch | Review | Merge | Ask | Escalate | Limit | Wait
 
 
 def _time(value: datetime | str) -> datetime:
@@ -108,11 +118,25 @@ def _policy(policies: Policies, stage: str, room: str | None) -> Policy:
     return policies.resolve(policies.stages[stage].persona, stage, room)
 
 
-def _gate(key: str, edge: Edge, policies: Policies, room: str | None, now: datetime) -> Ask | None:
+def _gate(key: str, edge: Edge, policies: Policies, room: str | None, now: datetime,
+          waived: Sequence[str] = (), decisions: Sequence[Decision] = (),
+          latest: Segment | None = None) -> Ask | Wait | None:
+    if edge.gate in waived:
+        return None
     resolved = _policy(policies, edge.source, room)
     if (edge.gate in resolved.zach_gates
             and not any(a.gate == edge.gate and a.expires > now for a in resolved.approvals)):
-        return Ask(key, edge.gate, "gate requires Zach's approval")
+        context = f"{latest.stage}-{latest.attempt}" if latest is not None else ""
+        row = next((d for d in reversed(decisions)
+                    if d.topic == edge.gate and d.question == "gate requires Zach's approval"), None)
+        if row is not None and not decision_actions.is_reversed(row):
+            record = getattr(row, "record", None)
+            prior = record.get("decision") if isinstance(record, dict) and isinstance(record.get("decision"), dict) else None
+            if not decision_actions.retryable_failure(record) and not (isinstance(record, dict) and record.get("restarted")) and (
+                    prior is None or prior.get("context", "") == context):
+                if (getattr(row, "answer", None) or "").strip() != "approve":
+                    return Wait(key, "decision pending")
+        return Ask(key, edge.gate, "gate requires Zach's approval", edge.source, context)
     return None
 
 
@@ -142,12 +166,16 @@ def _work(key: str, stage: str, workflow: Workflow, history: Sequence[Segment], 
 
 def _merge(item: WorkItem, workflow: Workflow, history: Sequence[Segment], policies: Policies,
            room: str | None, now: datetime, counts: Mapping[str, int] | None, edges: Sequence[Edge],
-           decisions: Sequence[Decision]) -> Action:
+           decisions: Sequence[Decision], waived: Sequence[str] = (),
+           latest_segment: Segment | None = None) -> Action:
     key = item.issue_key
     stages = {workflow.start} | {e.target for e in workflow.edges}
     # Decision rows are append-only, oldest first: the latest row for a question is its state.
-    latest = {(d.topic, d.question): d for d in decisions}
-    if any(not d.answer or not d.answer.strip() for d in latest.values()):
+    latest = decision_actions.latest(decisions)
+    gate_topics = {e.gate for e in edges if e.gate}
+    if any((not d.answer or not d.answer.strip()) and not (
+            d.topic in gate_topics and (decision_actions.retryable_failure(getattr(d, "record", None))
+            or decision_actions.is_restarted(d, history, workflow.start))) for d in latest.values()):
         return Wait(key, "decision pending")
     if item.review_state == "changes_requested":
         return Wait(key, "changes requested on the forge")
@@ -182,7 +210,7 @@ def _merge(item: WorkItem, workflow: Workflow, history: Sequence[Segment], polic
         return Merge(key)
     if len(edges) != 1:
         return Wait(key, "no unique incoming merge edge")
-    return _gate(key, edges[0], policies, room, now) or Merge(key)
+    return _gate(key, edges[0], policies, room, now, waived, decisions, latest_segment) or Merge(key)
 
 
 def _next(workflow: Workflow, stage: str, blocking: bool) -> Edge | None:
@@ -194,7 +222,7 @@ def _next(workflow: Workflow, stage: str, blocking: bool) -> Edge | None:
 
 def _item(item: WorkItem, history: Sequence[Segment], policies: Policies, issue_type: str | None,
           room: str | None, now: datetime, counts: Mapping[str, int] | None,
-          decisions: Sequence[Decision]) -> Action | None:
+          decisions: Sequence[Decision], waived: Sequence[str] = ()) -> Action | None:
     key = item.issue_key
     if item.forge_state == "closed" or any(s.started_at and not s.ended_at for s in history):
         return None
@@ -205,6 +233,8 @@ def _item(item: WorkItem, history: Sequence[Segment], policies: Policies, issue_
     stages = {workflow.start} | {e.target for e in workflow.edges}
     if stage not in stages:
         return Wait(key, "stage is outside the workflow")
+    if decision_actions.open_reversal(decisions, history, workflow.start):
+        return _work(key, workflow.start, workflow, history, policies, room)
     # An architect segment is an out-of-band consultation unless the workflow names architect as a stage.
     completed = tuple(s for s in history if s.started_at and s.ended_at and (s.stage != "architect" or "architect" in stages)
                       and (stage != "merge" or s.stage != "merge"))
@@ -224,7 +254,7 @@ def _item(item: WorkItem, history: Sequence[Segment], policies: Policies, issue_
     if stage == "merge":
         incoming = ((return_edge,) if return_edge else
                     tuple(e for e in workflow.edges if e.target == stage and latest and e.source == latest.stage))
-        return _merge(item, workflow, history, policies, room, now, counts, incoming, decisions)
+        return _merge(item, workflow, history, policies, room, now, counts, incoming, decisions, waived, latest)
     # A segment from an earlier visit to this stage must not skip the next fix round.
     if latest is None or latest.stage != stage:
         return _work(key, stage, workflow, history, policies, room)
@@ -239,11 +269,11 @@ def _item(item: WorkItem, history: Sequence[Segment], policies: Policies, issue_
     if edge is None:
         return Wait(key, "no unique workflow edge")
     if edge.target == "merge":
-        return _merge(item, workflow, history, policies, room, now, counts, (edge,), decisions)
+        return _merge(item, workflow, history, policies, room, now, counts, (edge,), decisions, waived, latest)
     action = _work(key, edge.target, workflow, history, policies, room)
     if isinstance(action, Escalate):
         return action
-    return _gate(key, edge, policies, room, now) or action
+    return _gate(key, edge, policies, room, now, waived, decisions, latest) or action
 
 
 def plan(items: Sequence[WorkItem], segments: Mapping[str, Sequence[Segment]], policies: Policies,
@@ -251,7 +281,10 @@ def plan(items: Sequence[WorkItem], segments: Mapping[str, Sequence[Segment]], p
          open_findings: Mapping[str, Mapping[str, int]], *, created_at: Mapping[str, datetime] | None = None,
          rooms: Mapping[str, str] | None = None,
          decisions: Mapping[str, Sequence[Decision]] | None = None,
-         quota_resets: Mapping[str, datetime] | None = None) -> list[Action]:
+         quota_resets: Mapping[str, datetime] | None = None,
+         usage: Mapping[str, Mapping[str, float]] | None = None,
+         waived_gates: Mapping[str, Sequence[str]] | None = None,
+         pending_asks: Mapping[str, bool] | None = None) -> list[Action]:
     """One action per eligible issue, oldest first; dispatch and review each take one slot.
 
     Findings are complete severity counts from the latest review; an absent item is unknown.
@@ -265,17 +298,27 @@ def plan(items: Sequence[WorkItem], segments: Mapping[str, Sequence[Segment]], p
     actions = []
     for item in sorted(items, key=lambda item: _order(item, created_at or {})):
         reset = (quota_resets or {}).get(item.issue_key)
-        if reset is not None and _time(reset) > now and item.forge_state != "closed":
-            actions.append(Wait(item.issue_key, "quota reset pending"))
-            continue
+        room = (rooms or {}).get(item.issue_key)
         action = _item(item, segments.get(item.issue_key, ()), policies, issue_types.get(item.issue_key),
-                       (rooms or {}).get(item.issue_key), now, open_findings.get(item.issue_key),
-                       (decisions or {}).get(item.issue_key, ()))
-        if isinstance(action, (Dispatch, Review)):
-            if free_slots:
-                free_slots -= 1
-            else:
-                action = Wait(item.issue_key, "no free worker slots")
+                       room, now, open_findings.get(item.issue_key),
+                       (decisions or {}).get(item.issue_key, ()),
+                       tuple((waived_gates or {}).get(item.issue_key) or ()))
+        if isinstance(action, Merge) and (pending_asks or {}).get(item.issue_key):
+            action = Wait(item.issue_key, "decision pending")
+        if isinstance(action, (Dispatch, Review, Ask)):
+            target = action.source if isinstance(action, Ask) else action.stage if isinstance(action, Dispatch) else "review"
+            kind = breach(_policy(policies, target, room), (usage or {}).get(item.issue_key)) if target in policies.stages else None
+            if kind:
+                action = Limit(item.issue_key, kind, f"reached {kind} limit")
+            elif reset is not None and _time(reset) > now:
+                action = Wait(item.issue_key, "quota reset pending")
+            elif (pending_asks or {}).get(item.issue_key):
+                action = Wait(item.issue_key, "decision pending")
+            elif not isinstance(action, Ask):
+                if free_slots:
+                    free_slots -= 1
+                else:
+                    action = Wait(item.issue_key, "no free worker slots")
         if action is not None:
             actions.append(action)
     return actions

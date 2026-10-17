@@ -299,6 +299,18 @@ class Store:
     def asks(self, issue_key: str) -> list[Ask]:
         return self._all(select(Ask).where(Ask.issue_key == issue_key).order_by(Ask.id))
 
+    def answer_ask(self, ask_id: int, answer: str) -> None:
+        """Record the adopted choice on an unanswered ask. A second answer is refused."""
+        if not isinstance(answer, str) or not answer.strip():
+            raise ValueError("ask answer must be non-empty")
+        with self.session() as s:
+            row = s.get(Ask, ask_id)
+            if row is None or row.answer is not None:
+                raise KeyError(ask_id)
+            if row.options and answer not in row.options:
+                raise ValueError(f"ask answer {answer!r} is not in options")
+            row.answer = answer
+
     def _all(self, stmt: Any) -> list[Any]:
         with self.session() as s:
             rows = s.scalars(stmt).all()
