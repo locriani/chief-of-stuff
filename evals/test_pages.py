@@ -109,10 +109,10 @@ class ServeTest(unittest.TestCase):
         self.assertEqual(get(self.port, "/.pid").status, 404)
 
 
-def snippet() -> str:
+def snippet(last_modified: str = "Thu, 01 Jan 1970 00:00:00 GMT") -> str:
     """The shared reload check. Imported here, not at the top, so only the tests of it are red while it is missing."""
     import page_reload
-    return page_reload.SNIPPET
+    return page_reload.inject(b"", last_modified).decode()
 
 
 class ReloadSnippetTest(unittest.TestCase):
@@ -140,10 +140,11 @@ class ReloadSnippetTest(unittest.TestCase):
         self.addCleanup(self.server.shutdown)
 
     def test_every_page_kind_carries_the_snippet_once_before_the_last_body_end(self):
-        snip = snippet().encode()
         for path in self.ROUTES:
             with self.subTest(path=path):
-                body = get(self.port, path).body
+                got = get(self.port, path)
+                body = got.body
+                snip = snippet(got.getheader("Last-Modified")).encode()
                 self.assertEqual(body.count(snip), 1)
                 self.assertLess(body.index(snip), body.rindex(b"</body>"))
                 self.assertIn(f"<p>{self.ROUTES[path]}</p>".encode(), body)
@@ -157,14 +158,16 @@ class ReloadSnippetTest(unittest.TestCase):
                 self.assertEqual(head.body, b"")
                 self.assertEqual(head.getheader("Last-Modified"), got.getheader("Last-Modified"))
                 self.assertEqual(got.getheader("Last-Modified"), email.utils.formatdate(self.MTIME, usegmt=True))
+                self.assertIn(f"var seen={json.dumps(got.getheader('Last-Modified'))};".encode(), got.body)
 
     def test_a_page_without_a_body_end_gets_it_appended_and_the_last_one_is_where_it_goes(self):
-        snip = snippet().encode()
         (self.dir / "arch-review.html").write_text("<p>no body</p>")
-        body = get(self.port, "/arch-review.html").body
+        got = get(self.port, "/arch-review.html")
+        body, snip = got.body, snippet(got.getheader("Last-Modified")).encode()
         self.assertEqual((body.count(snip), body.startswith(b"<p>no body</p>"), body.endswith(snip)), (1, True, True))
         (self.dir / "arch-review.html").write_text('<body><script>var s="</body>"</script></body>')
-        body = get(self.port, "/arch-review.html").body
+        got = get(self.port, "/arch-review.html")
+        body, snip = got.body, snippet(got.getheader("Last-Modified")).encode()
         self.assertEqual((body.count(snip), body.index(snip) > body.index(b'"</body>"'), body.endswith(b"</body>")), (1, True, True))
 
     def test_a_file_that_is_not_html_is_served_unchanged(self):
@@ -178,9 +181,10 @@ class ReloadSnippetTest(unittest.TestCase):
         snip = snippet()
         self.assertTrue(snip.lstrip().startswith("<script") and snip.rstrip().endswith("</script>"))
         for needle in ("HEAD", "no-store", "location.pathname", "visibilitychange",
-                       "document.lastModified", "Last-Modified", "defaultValue", "activeElement", "page-changed", "location.reload"):
+                       "Last-Modified", "defaultValue", "activeElement", "page-changed", "location.reload"):
             with self.subTest(needle=needle):
                 self.assertIn(needle, "".join(snip.replace('"', "'").split()))  # quotes and spacing are the author's
+        self.assertNotIn("document.lastModified", snip)  # #332: compare Last-Modified header to header
         for blocking in ("alert(", "confirm(", "prompt("):
             self.assertNotIn(blocking, snip)
 
@@ -192,22 +196,25 @@ class ReloadSnippetTest(unittest.TestCase):
 
     def test_the_snippet_guards_every_kind_of_user_state_a_reload_would_lose(self):
         # A reload drops a picked radio or checkbox, a chosen option and edited rich text, as it drops typed text.
-        _, flat = self.code()
+        code, flat = self.code()
         self.assertRegex(flat, r"\.checked!==?\w+\.defaultChecked")
-        self.assertRegex(flat, r"\.selected!==?\w+\.defaultSelected")
         for word in ("defaultChecked", "defaultSelected", "defaultValue", "tagName", "INPUT", "TEXTAREA", "SELECT"):
             with self.subTest(word=word):
                 self.assertRegex(flat, rf"\b{word}\b")  # `SELECTX` is not SELECT
+        self.assertIn("selectDirty", code)  # #339: select default is first non-disabled / none if multiple
+        self.assertIn(".elements", flat)  # #388: form.elements includes form-attribute controls
         self.assertIn("isContentEditable", flat)  # in code, not only in a comment
         self.assertNotRegex(flat, r"false&&|&&false|\b0&&|&&0\b")  # a guard that can never be true guards nothing
 
     def test_the_snippet_counts_only_form_controls_as_unsaved_input(self):
         # R13: the source page's Unified/Split radios sit outside any form; picking Split is not input a reload loses.
+        # #388: form.elements (not a descendant query) so a control tied by the form attribute still counts.
         _, flat = self.code()
         selectors = re.findall(r"some\('([^']*)'", flat)
         self.assertTrue(selectors, "found no `some('selector', ...)` dirty check")
         scoped = all("form" in part for sel in selectors for part in sel.split(","))
         self.assertTrue(scoped or "closest('form')" in flat, f"dirty checks reach controls outside a form: {selectors}")
+        self.assertIn(".elements", flat)
 
     def test_the_source_pages_layout_radios_are_outside_any_form(self):
         # The premise of the test above: no form wraps them, so a form-scoped check never counts them.
@@ -216,11 +223,13 @@ class ReloadSnippetTest(unittest.TestCase):
         self.assertNotIn("<form", source_page.LAYOUT)
         self.assertNotIn("<form", Path(source_page.__file__).read_text())
 
-    def test_the_snippet_does_not_take_an_epoch_last_modified_for_an_absent_one(self):
-        # R16: Date.parse of a missing header is NaN; 0 is a real time, and a page stamped 0 must still reload.
-        _, flat = self.code()
-        self.assertIn("isNaN(", flat)
-        self.assertNotRegex(flat, r"\bt&&")
+    def test_the_snippet_compares_last_modified_headers_as_strings(self):
+        # #332: Date.parse(document.lastModified) vs the header disagrees in a DST fall-back's repeated hour.
+        code, flat = self.code()
+        self.assertNotIn("document.lastModified", code)
+        self.assertNotIn("Date.parse", code)
+        self.assertIn("Last-Modified", flat)
+        self.assertIn("t!=null&&t!==seen", flat)
 
     def test_the_snippet_listens_for_visibilitychange_without_replacing_the_pages_own_handler(self):
         flat = "".join(snippet().replace('"', "'").split())
@@ -229,16 +238,24 @@ class ReloadSnippetTest(unittest.TestCase):
     def test_inject_matches_the_body_end_in_any_case(self):
         import page_reload
         snip = page_reload.ENCODED  # the bytes inject() writes
-        self.assertEqual(snip, page_reload.SNIPPET.encode())
+        self.assertEqual(snip, snippet().encode())
         for end in (b"</BODY>", b"</Body>"):
             with self.subTest(end=end):
-                out = page_reload.inject(b"<BODY><p>x</p>" + end + b"</HTML>")
+                out = page_reload.inject(b"<BODY><p>x</p>" + end + b"</HTML>", "Thu, 01 Jan 1970 00:00:00 GMT")
                 self.assertEqual((out.count(snip), out.index(snip) < out.rindex(end), out.endswith(end + b"</HTML>")), (1, True, True))
 
+    def test_inject_escapes_the_baseline_as_a_script_safe_json_string(self):
+        stamp = '"\\\n</script>\u2028'
+        snip = snippet(stamp)
+        value = re.search(r"var seen=(.*);", snip)[1]
+        self.assertEqual(json.loads(value), stamp)
+        self.assertNotIn("<", value)
+        self.assertEqual(snip.count("</script>"), 1)
+
     def test_an_upper_case_html_suffix_is_injected_like_html(self):
-        snip = snippet().encode()
         (self.dir / "LOUD.HTML").write_text("<body><p>loud</p></body>")
-        body = get(self.port, "/LOUD.HTML").body
+        got = get(self.port, "/LOUD.HTML")
+        body, snip = got.body, snippet(got.getheader("Last-Modified")).encode()
         self.assertEqual((body.count(snip), b"<p>loud</p>" in body), (1, True))
 
     def test_an_html_that_does_not_exist_or_is_not_a_file_is_404_for_get_and_head(self):
@@ -281,6 +298,67 @@ class ReloadSnippetTest(unittest.TestCase):
         self.assertEqual(resp.status, 404)
         self.assertNotIn("1970", resp.getheader("Last-Modified") or "")
 
+    def test_odd_page_urls_are_404(self):
+        # #340: %00 closed with no response; /sub/ listed without the snippet; /dir.html/ was an empty 200.
+        (self.dir / "sub").mkdir()
+        (self.dir / "dir.html").mkdir()
+        for path in ("/%00", "/sub/", "/dir.html/", "/sub/%2F", "/dir.html%2F", "/%2F", "/sub/#x", "/dir.html/#x"):
+            for method in ("GET", "HEAD"):
+                with self.subTest(path=path, method=method):
+                    self.assertEqual(get(self.port, path, method=method).status, 404)
+
+    def test_a_case_folded_rendered_name_is_not_served_by_file_name(self):
+        # #335: workerſ.html (U+017F) case-folds to workers.html; the route-only rule must use casefold, not lower.
+        (self.dir / "workers.html").write_text("<!doctype html><body><p>workers</p></body>")
+        self.assertEqual(get(self.port, "/worker%C5%BF.html").status, 404)
+        self.assertEqual(get(self.port, "/workers").status, 200)
+
+    def test_head_of_html_does_not_read_the_file_and_a_huge_page_is_refused(self):
+        # #333: HEAD matched GET's length without reading; a page over the cap is 413 and never read.
+        reads = []
+        real = Path.read_bytes
+
+        def spy(path):
+            reads.append(path.name)
+            return real(path)
+
+        with mock.patch.object(Path, "read_bytes", spy):
+            head = get(self.port, "/arch-review.html", method="HEAD")
+        self.assertEqual(head.status, 200)
+        self.assertNotIn("arch-review.html", reads)
+        self.assertEqual(head.getheader("Content-Length"), str(len(get(self.port, "/arch-review.html").body)))
+        with mock.patch.object(pg, "MAX_PAGE", 64):
+            (self.dir / "big.html").write_bytes(b"x" * 128)
+            reads.clear()
+            with mock.patch.object(Path, "read_bytes", spy):
+                for method in ("GET", "HEAD"):
+                    with self.subTest(method=method):
+                        self.assertEqual(get(self.port, "/big.html", method=method).status, 413)
+            self.assertEqual(reads, [])
+        if os.geteuid() == 0:
+            return  # root reads a mode-0 file
+        locked = self.dir / "locked.html"
+        locked.write_text("<!doctype html><body>x</body>")
+        locked.chmod(0)
+        self.addCleanup(locked.chmod, 0o600)
+        for method in ("GET", "HEAD"):
+            with self.subTest(unreadable=method):
+                self.assertEqual(get(self.port, "/locked.html", method=method).status, 404)
+
+
+class BannerPerRequestTest(unittest.TestCase):
+    """#334: banner is per request, not a side effect left on a reused handler."""
+
+    def test_allowed_clears_banner_before_each_request(self):
+        h = pg.Handler.__new__(pg.Handler)
+        h.banner = "stale from the request before"
+        h.server = mock.Mock(server_address=("127.0.0.1", 9), root=None, refresher=None)
+        h.headers = {"Host": "evil.test"}
+        h.path, h.command, h.directory = "/", "GET", str(Path(tempfile.mkdtemp()))
+        h.send_error = mock.Mock()
+        self.assertFalse(h._allowed())
+        self.assertEqual(h.banner, "")
+
 
 class EnsureTest(unittest.TestCase):
     def setUp(self):
@@ -318,6 +396,26 @@ class EnsureTest(unittest.TestCase):
         with mock.patch.object(pg.subprocess, "Popen", return_value=dead):
             with self.assertRaisesRegex(pg.PagesError, "did not come up"):
                 pg.ensure(self.dir, self.port, self.log)
+        self.assertFalse((self.dir / ".pid").exists())
+
+    def test_a_server_that_never_came_up_is_terminated(self):
+        """#493: ensure must kill the detached child before raising, or nothing can stop it."""
+        started: list[subprocess.Popen] = []
+        real_popen = subprocess.Popen
+
+        def popen(*_a, **_k):
+            proc = real_popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                              start_new_session=True)
+            started.append(proc)
+            return proc
+
+        with mock.patch.object(pg.subprocess, "Popen", side_effect=popen), \
+                mock.patch.object(pg, "_who", return_value=None), \
+                mock.patch.object(pg.time, "sleep"):
+            with self.assertRaisesRegex(pg.PagesError, "did not come up"):
+                pg.ensure(self.dir, self.port, self.log)
+        self.assertEqual(len(started), 1)
+        self.assertIsNotNone(started[0].poll(), "failed ensure left its detached server running")
         self.assertFalse((self.dir / ".pid").exists())
 
     def test_a_foreign_server_on_the_port_is_an_error(self):
@@ -396,7 +494,12 @@ class RenderOnRequestTest(unittest.TestCase):
     make the page render automatically using scripts and stuff instead of the agent pulling in data each time")."""
 
     def setUp(self):
-        self.root = Path(tempfile.mkdtemp())
+        # A private parent, removed after the test: FreshRefusesAForeignNameTest snapshots root.parent, which must
+        # never be the shared temp dir (#357: reading every file there hung the suite locally).
+        parent = tempfile.TemporaryDirectory()
+        self.addCleanup(parent.cleanup)
+        self.root = Path(parent.name) / "ws"
+        self.root.mkdir()
         self.day = datetime.now(ZoneInfo(ZONE)).date().isoformat()
         (self.root / "CLAUDE.md").write_text(
             "## Coordinator\n- User: Robin\n- Daily log dir: `daily/`\n- Tracker: `daily/<date>-tracker.md`\n"
@@ -454,11 +557,11 @@ class RenderOnRequestTest(unittest.TestCase):
         (self.pages / "decision-cache-ttl.json").write_text(
             '{"headline": "Cache TTL", "ask": "Keep 5 minutes?", "options": [{"key": "A", "title": "Keep", '
             '"text": "no change"}, {"key": "B", "title": "Drop", "text": "slower"}], "recommended": "A", "why": "fine", "default": "A at 17:00"}')
-        snip = snippet()
         for path, name in (("/", f"{self.day}-board.html"), ("/decisions", "decisions.html"),
                            ("/decisions/cache-ttl", "decision-cache-ttl.html")):
             with self.subTest(path=path):
-                page = get(self.port, path).body.decode()
+                got = get(self.port, path)
+                page, snip = got.body.decode(), snippet(got.getheader("Last-Modified"))
                 self.assertEqual(page.count(snip), 1)
                 self.assertEqual(page.count("fetch(location.pathname"), 1)
                 on_disk = (self.pages / name).read_text()
@@ -468,8 +571,8 @@ class RenderOnRequestTest(unittest.TestCase):
     def test_the_banner_variant_carries_the_snippet_once(self):
         get(self.port, "/")
         (self.root / "cos.toml").write_text("[lanes\n")
-        snip = snippet()
         got, head = get(self.port, "/"), get(self.port, "/", method="HEAD")
+        snip = snippet(got.getheader("Last-Modified"))
         self.assertIn(b"not re-rendered", got.body)
         body = got.body.decode()
         self.assertEqual(body.count(snip), 1)
@@ -719,7 +822,12 @@ class _PagesFixture:
              "/issues/7/source": "issue-7-source.html"}
 
     def setUp(self):
-        self.root = Path(tempfile.mkdtemp())
+        # A private parent, removed after the test: FreshRefusesAForeignNameTest snapshots root.parent, which must
+        # never be the shared temp dir (#357: reading every file there hung the suite locally).
+        parent = tempfile.TemporaryDirectory()
+        self.addCleanup(parent.cleanup)
+        self.root = Path(parent.name) / "ws"
+        self.root.mkdir()
         self.day = datetime.now(ZoneInfo(ZONE)).date().isoformat()
         (self.root / "CLAUDE.md").write_text(
             "## Coordinator\n- User: Robin\n- Daily log dir: `daily/`\n- Tracker: `daily/<date>-tracker.md`\n"
@@ -897,7 +1005,7 @@ class RenderStampTest(_PagesFixture, unittest.TestCase):
             got, head = get(self.port, "/issues/7"), get(self.port, "/issues/7", method="HEAD")
         self.assertEqual((got.status, head.status), (200, 200))
         self.assertIn(b"not re-rendered: RuntimeError: boom", got.body)
-        self.assertEqual(got.body.count(page_reload_bytes()), 1)
+        self.assertEqual(got.body.count(snippet(got.getheader("Last-Modified")).encode()), 1)
         self.assertEqual(head.getheader("Content-Length"), str(len(got.body)))
 
     def test_a_page_file_that_is_not_utf8_is_rewritten_not_wedged(self):
@@ -929,11 +1037,6 @@ class RenderStampTest(_PagesFixture, unittest.TestCase):
         self.assertTrue([r for r in replaced if r[1].name == target.name and r[0] != r[1] and r[0].parent == r[1].parent],
                         f"workers.html was not replaced from a temp file beside it: {replaced}")
         self.assertEqual(set(os.listdir(self.pages)), before, "a temp file was left behind")
-
-
-def page_reload_bytes() -> bytes:
-    import page_reload
-    return page_reload.ENCODED
 
 
 class UnfrozenBoardTest(_PagesFixture, unittest.TestCase):

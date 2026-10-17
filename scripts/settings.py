@@ -3,7 +3,7 @@
 
 Zach, 2026-09-22 22:20, on the day open and close times: "Configurable. We're going to need to pull
 settings into a config file. Default to 6 and 22". Notification, lane, budget, and Kanban settings
-live here, and so do the suggested models and their rotations (#111).
+live here, along with suggested models and their rotations (#111), stage launch defaults (#121), and [limits].
 
 No `Settings:` line, no file, or no `[notify]` section is notify off, and nothing else changes. A value
 that is there and cannot be read is refused: a guessed day-open time is a notification at the wrong hour.
@@ -12,11 +12,14 @@ that is there and cannot be read is refused: a guessed day-open time is a notifi
 from __future__ import annotations
 
 import re
+import math
 import tomllib
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
 
+import policy
 import runtimes
 from runtimes import NAMES as RUNTIMES
 
@@ -25,8 +28,11 @@ HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 OFFSET = re.compile(r"^(\d+)([hm])$")
 WORKER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 HERDR_NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
-CLAUDE_PROFILE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_-]*")  # claude-as's valid_profile_name
+RULES_MAX = 64  # rules; the rendered assignment budget is checked by dispatch_prompt.validate_worker_rules at engine start
+RULES_TOTAL_CAP = 6000  # sum of len(rule)
+CLAUDE_AS_PROFILE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_-]*")  # claude-as's valid_profile_name
 DEFAULT_WARNINGS = ("24h", "3h", "1h")
+POLICY = Path(__file__).resolve().parent.parent / "assets" / "policy.toml"  # the shipped policy and workflow
 EFFORTS = ("high", "medium", "low")
 
 
@@ -63,6 +69,13 @@ class Lane:
 
 
 @dataclass(frozen=True)
+class Stage:
+    """Launch defaults for a tracker stage; an explicit worker choice takes precedence."""
+    agent: str | None = None
+    skills: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class GitHubProject:
     owner: str
     number: int
@@ -81,12 +94,17 @@ class Workflow:
 
 @dataclass(frozen=True)
 class Workers:
+    """Worker launch configuration and standing instructions for one-shot and engine tasks."""
     launcher: str = "ghostty"
     mode: str = "interactive"
     # #100: one-shots running at once across every session in the workspace; None is no cap.
     max_concurrency: int | None = None
     herdr_session: str = "chief-of-stuff"
-    claude_profile: str = ""  # a claude-as profile Claude workers run under; empty is a bare `claude`
+    claude_as_profile: str = ""  # a claude-as profile Claude workers run under; empty is a bare `claude`
+    require_green_tests: bool = False  # one-shot and engine done require known counts with passed > 0 and no failures, skips or xfails
+    rules: tuple[str, ...] = ()  # standing rules carried before every one-shot and engine task
+    teardown: str = ""  # engine-only cleanup command; one-shot launchers do not run it
+    teardown_list: str = ""  # optional command emitting JSON [{"stack": name, "worktree": path}]
 
 
 @dataclass(frozen=True)
@@ -106,9 +124,38 @@ class Kanban:
     github_project: GitHubProject | None = None
 
     def label_for(self, stage: str) -> str | None:
+        # Terminal stages leave a mark named like the stage so a rebuild can round-trip (#627).
         if stage in self.terminal_stages:
-            return None
+            return stage
         return self.stages[self.stage_map[stage]]
+
+    def status_for(self, stage: str) -> str | None:
+        """GitHub Project Status option for a tracker stage; None when no project is configured."""
+        if self.github_project is None:
+            return None
+        if stage in self.terminal_stages:
+            return stage
+        return self.github_project.options[self.stage_map[stage]]
+
+    def stage_for_label(self, labels: tuple[str, ...]) -> str:
+        """The tracker stage those labels encode. A mark shared by stages reads as the first of them; the engine keeps its
+        stored stage when it shares that mark (#651). Marks for two different columns are refused."""
+        names = {label.casefold() for label in labels}
+        hits = [s for s in (*self.stage_map, *self.terminal_stages) if self.label_for(s).casefold() in names]
+        if not hits:
+            return ""
+        if len({self.label_for(s).casefold() for s in hits}) > 1:
+            raise ValueError(f"labels map to more than one stage: {', '.join(hits)}")
+        return hits[0]
+
+    def stage_for_status(self, option: str | None) -> str:
+        """The tracker stage a Status option encodes; an unknown option is refused."""
+        if not option:
+            return ""
+        hits = [s for s in (*self.stage_map, *self.terminal_stages) if self.status_for(s) == option]
+        if not hits:
+            raise ValueError(f"unknown project Status option: {option}")
+        return hits[0]  # a shared option reads as its first stage, as stage_for_label does
 
     def holds(self, stage: str) -> bool:
         return stage in self.hold_stages
@@ -138,6 +185,20 @@ class Graph:
 
 
 @dataclass(frozen=True)
+class Limits:
+    warn_at: float = 0.8
+
+
+def _limits(table) -> Limits:
+    if not isinstance(table, dict):
+        raise SettingsError("[limits] is not a table")
+    value = table.get("warn_at", .8)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 <= value <= 1:
+        raise SettingsError("[limits] warn_at must be a fraction between 0 and 1")
+    return Limits(float(value))
+
+
+@dataclass(frozen=True)
 class Settings:
     notify: Notify = field(default_factory=Notify)
     lanes: dict[str, Lane] = field(default_factory=dict)
@@ -152,6 +213,36 @@ class Settings:
     graph: Graph | None = None
     # #54: repository name -> path (relative to the workspace root) that `chief-of-stuff worktree --clone <name>` cuts from.
     repos: dict[str, str] = field(default_factory=dict)
+    stages: dict[str, Stage] = field(default_factory=dict)
+    limits: Limits = field(default_factory=Limits)
+
+
+def _stages(table, lanes: dict[str, Lane], kanban: Kanban | None) -> dict[str, Stage]:
+    if not isinstance(table, dict):
+        raise SettingsError("[stages] must be a table of stage launch defaults")
+    known = {stage for lane in lanes.values() for stage in lane.stages}
+    if kanban is not None:
+        known.update(kanban.stage_map)
+        known.update(kanban.terminal_stages)
+    stages = {}
+    for name, entry in table.items():
+        where = f"[stages.{name}]"
+        if name not in known:
+            raise SettingsError(f"{where}: no lane or kanban map names this stage")
+        if not isinstance(entry, dict) or set(entry) - {"agent", "skills"}:
+            raise SettingsError(f"{where}: a table with only agent and/or skills")
+        agent = entry.get("agent")
+        if "agent" in entry and not (isinstance(agent, str) and WORKER_NAME.fullmatch(agent)):
+            raise SettingsError(f"{where}: agent must be an agent profile name")
+        skills = entry.get("skills", [])
+        if (not isinstance(skills, list)
+                or any(not isinstance(s, str) or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.:/-]*", s)
+                       for s in skills)):
+            raise SettingsError(f"{where}: skills must be a list of skill names")
+        if len(set(skills)) != len(skills):
+            raise SettingsError(f"{where}: a skill appears twice")
+        stages[name] = Stage(agent, tuple(skills))
+    return stages
 
 
 def _entry(where: str, text) -> ModelEntry:
@@ -216,12 +307,36 @@ def _workers(table) -> Workers:
     cap = table.get("max_concurrency")
     if cap is not None and (type(cap) is not int or cap < 1):
         raise SettingsError("[workers] max_concurrency must be a positive whole number")
-    profile = table.get("claude_profile", "")
-    if "claude_profile" in table and not (isinstance(profile, str) and CLAUDE_PROFILE.fullmatch(profile)):
-        raise SettingsError("[workers] claude_profile must be a claude-as profile name: letters, digits, '_' and '-', "
+    green = table.get("require_green_tests", False)
+    if type(green) is not bool:
+        raise SettingsError("[workers] require_green_tests must be a boolean")
+    if "claude_profile" in table:
+        raise SettingsError("[workers] claude_profile is renamed claude_as_profile")
+    profile = table.get("claude_as_profile", "")
+    if "claude_as_profile" in table and not (isinstance(profile, str) and CLAUDE_AS_PROFILE.fullmatch(profile)):
+        raise SettingsError("[workers] claude_as_profile must be a claude-as profile name: letters, digits, '_' and '-', "
                             "not starting with '-'")
+    rules = table.get("rules", [])
+    # Reject controls, invisible formatting (including bidi), and separators that can conceal instructions.
+    if not isinstance(rules, list) or not all(
+        isinstance(rule, str) and rule.strip() and len(rule.splitlines()) == 1
+        and "(via " not in rule and len(rule) <= 2400
+        and not any(unicodedata.category(c) in {"Cc", "Cf", "Zl", "Zp"} for c in rule) for rule in rules
+    ):
+        raise SettingsError('[workers] rules must be a list of non-blank, single-line strings without control or Unicode format characters '
+                            'or "(via " markers, each at most 2400 characters')
+    if len(rules) > RULES_MAX or sum(map(len, rules)) > RULES_TOTAL_CAP:
+        raise SettingsError(f"[workers] rules must be at most {RULES_MAX} rules and {RULES_TOTAL_CAP} characters in all")
+    # Preserve the user's wording, including surrounding spaces.
+    commands = {}
+    for key in ("teardown", "teardown_list"):
+        value = table.get(key, "")
+        if key in table and (not isinstance(value, str) or not value.strip()
+                             or re.search(r"[\x00-\x1f\x7f-\x9f]", value)):
+            raise SettingsError(f"[workers] {key} must be a nonempty, single-line command without control characters")
+        commands[key] = value
     return Workers(launcher=launcher, mode=mode, max_concurrency=cap, herdr_session=session,
-                   claude_profile=profile)
+                   claude_as_profile=profile, require_green_tests=green, rules=tuple(rules), **commands)
 
 
 def _repos(table) -> dict[str, str]:
@@ -300,16 +415,50 @@ def _lane(name: str, table) -> Lane:
     return Lane(tuple(stages), tuple(gates))
 
 
+def _github_project(table, stages: list[str], terminal: list[str]) -> GitHubProject:
+    if not isinstance(table, dict):
+        raise SettingsError("[kanban.github_project] must be a table")
+    owner, number, field_name = table.get("owner"), table.get("number"), table.get("field", "Status")
+    options = table.get("options", stages)
+    if not isinstance(owner, str) or not owner.strip() or type(number) is not int or number <= 0:
+        raise SettingsError("[kanban.github_project] needs an owner and positive project number")
+    if not isinstance(field_name, str) or not field_name.strip():
+        raise SettingsError("[kanban.github_project] field must be a name")
+    if (not isinstance(options, list) or len(options) != len(stages)
+            or any(not isinstance(x, str) or not x.strip() for x in options)
+            or len(set(options)) != len(options)):
+        raise SettingsError("[kanban.github_project] options must match stages in order and be unique")
+    if set(terminal) & set(options):
+        raise SettingsError("[kanban.github_project] options must not collide with terminal_stages")
+    return GitHubProject(owner, number, field_name, tuple(options))
+
+
+def _project_ref(value) -> dict:
+    """`owner/number` shorthand for [kanban.github_project]."""
+    if not isinstance(value, str) or "/" not in value:
+        raise SettingsError('[kanban] project must be "owner/number"')
+    owner, _, number = value.partition("/")
+    if not owner.strip() or not number.isdigit() or int(number) <= 0:
+        raise SettingsError('[kanban] project must be "owner/number"')
+    return {"owner": owner.strip(), "number": int(number)}
+
+
+def kanban_from_table(table) -> Kanban:
+    """Build a Kanban from a `[kanban]` TOML table (workspace settings or init)."""
+    return _kanban(table)
+
+
 def _kanban(table) -> Kanban:
     if not isinstance(table, dict):
         raise SettingsError("[kanban] must be a table")
     stages = table.get("stages")
     if not isinstance(stages, list) or not stages or any(not isinstance(x, str) or not x.strip() for x in stages):
         raise SettingsError("[kanban] stages must be a non-empty list of labels")
-    if len(stages) != len(set(stages)) or any("," in label for label in stages):
+    fold = {label.casefold() for label in stages}  # forges compare label names case-insensitively
+    if len(stages) != len(fold) or any("," in label for label in stages):
         raise SettingsError("[kanban] stages must be unique")
     human = table.get("human_review_label")
-    if not isinstance(human, str) or not human.strip() or human in stages or "," in human:
+    if not isinstance(human, str) or not human.strip() or human.casefold() in fold or "," in human:
         raise SettingsError("[kanban] human_review_label must be distinct from stage labels")
     mapping = table.get("map")
     if not isinstance(mapping, dict) or not mapping:
@@ -320,22 +469,21 @@ def _kanban(table) -> Kanban:
     holds, terminal = table.get("hold_stages", []), table.get("terminal_stages", [])
     if not isinstance(holds, list) or not all(isinstance(x, str) for x in holds) or not set(holds) <= set(mapping):
         raise SettingsError("[kanban] hold_stages must be mapped stages")
-    if not isinstance(terminal, list) or not all(isinstance(x, str) and x.strip() for x in terminal) or set(terminal) & set(mapping):
-        raise SettingsError("[kanban] terminal_stages must be distinct from mapped stages")
+    if (not isinstance(terminal, list) or not all(isinstance(x, str) and x.strip() for x in terminal)
+            or len(terminal) != len({x.casefold() for x in terminal}) or any("," in x for x in terminal)
+            or human.casefold() in {x.casefold() for x in terminal} or set(terminal) & set(mapping)
+            or {x.casefold() for x in terminal} & fold):
+        raise SettingsError("[kanban] terminal_stages must be unique, comma-free labels distinct from "
+                            "human_review_label, mapped stages and board labels")
+    if any(x != x.strip() for x in (*stages, human, *terminal)):  # forges trim names; sync needs the exact one
+        raise SettingsError("[kanban] stage, hold and terminal labels must not have leading or trailing whitespace")
     project = None
+    if "github_project" in table and "project" in table:
+        raise SettingsError("[kanban] set github_project or project, not both")
     if "github_project" in table:
-        github = table["github_project"]
-        if not isinstance(github, dict):
-            raise SettingsError("[kanban.github_project] must be a table")
-        owner, number, field_name = github.get("owner"), github.get("number"), github.get("field", "Status")
-        options = github.get("options", stages)
-        if not isinstance(owner, str) or not owner.strip() or type(number) is not int or number <= 0:
-            raise SettingsError("[kanban.github_project] needs an owner and positive project number")
-        if not isinstance(field_name, str) or not field_name.strip():
-            raise SettingsError("[kanban.github_project] field must be a name")
-        if not isinstance(options, list) or len(options) != len(stages) or any(not isinstance(x, str) or not x.strip() for x in options):
-            raise SettingsError("[kanban.github_project] options must match stages in order")
-        project = GitHubProject(owner, number, field_name, tuple(options))
+        project = _github_project(table["github_project"], stages, terminal)
+    elif "project" in table:
+        project = _github_project(_project_ref(table["project"]), stages, terminal)
     return Kanban(tuple(stages), human, mapping, tuple(holds), tuple(terminal), project)
 
 
@@ -363,35 +511,69 @@ def _notify(table: dict, root: Path) -> Notify:
 
 
 def load(root: Path, settings_path: str | None) -> Settings:
-    """`settings_path` is the `Settings:` line's value, relative to `root`, or None when there is none."""
+    """`settings_path` is the `Settings:` line's value, relative to `root`, or None when there is none.
+
+    An absent file is the defaults. A path that is there but not a readable UTF-8 file (a directory,
+    unreadable, not UTF-8) is a refusal — never silent defaults (#347, #285).
+    """
     if not settings_path:
         return Settings()
     path = Path(root) / settings_path
-    if not path.is_file():
+    try:
+        path.stat()
+    except (FileNotFoundError, NotADirectoryError):
         return Settings()
+    except OSError as e:
+        raise SettingsError(f"{settings_path}: {e.strerror or e}") from None
+    if not path.is_file():
+        raise SettingsError(f"{settings_path}: not a file")
     try:
         data = tomllib.loads(path.read_text())
     except (tomllib.TOMLDecodeError, UnicodeDecodeError) as e:
         raise SettingsError(f"{settings_path}: {e}") from None
+    except OSError as e:
+        raise SettingsError(f"{settings_path}: {e.strerror or e}") from None
     lanes = data.get("lanes", {})
     if not isinstance(lanes, dict):
         raise SettingsError(f"{settings_path}: [lanes] is not a table")
     lanes = {name: _lane(name, t) for name, t in lanes.items()}
     kanban = _kanban(data["kanban"]) if "kanban" in data else None
+    stages = _stages(data["stages"], lanes, kanban) if "stages" in data else {}
     workflow = _workflow(data["workflow"]) if "workflow" in data else Workflow()
     workers = _workers(data["workers"]) if "workers" in data else Workers()
     models = _models(data["models"]) if "models" in data else {}
     graph = _graph(data["graph"]) if "graph" in data else None
     pages = _pages(data["pages"]) if "pages" in data else Pages()
     repos = _repos(data["repos"]) if "repos" in data else {}
+    limits = _limits(data["limits"]) if "limits" in data else Limits()
     budgets = data.get("budgets", {})
     if not isinstance(budgets, dict) or not set(budgets) <= {"S", "M", "L", "XL"}:
         raise SettingsError(f"{settings_path}: [budgets] is a table of S, M, L, XL")
     budgets = {size: _offset(v, f"[budgets] {size}") for size, v in budgets.items()}
     table = data.get("notify")
     if table is None:
-        return Settings(lanes=lanes, budgets=budgets, kanban=kanban, workflow=workflow, workers=workers, pages=pages, models=models, graph=graph, repos=repos)
+        return Settings(lanes=lanes, budgets=budgets, kanban=kanban, workflow=workflow, workers=workers, pages=pages, models=models, graph=graph, repos=repos, stages=stages, limits=limits)
     if not isinstance(table, dict):
         raise SettingsError(f"{settings_path}: [notify] is not a table")
     return Settings(notify=_notify(table, Path(root)), lanes=lanes, budgets=budgets,
-                    kanban=kanban, workflow=workflow, workers=workers, pages=pages, models=models, graph=graph, repos=repos)
+                    kanban=kanban, workflow=workflow, workers=workers, pages=pages, models=models, graph=graph, repos=repos, stages=stages, limits=limits)
+
+
+def load_policy(path: Path = POLICY) -> policy.Policies:
+    """The policy and workflow file (design decisions 12 and 13), the shipped one by default."""
+    try:
+        return policy.parse(tomllib.loads(Path(path).read_text()))
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as e:
+        raise policy.PolicyError(f"{path}: {e}") from None
+
+
+def workflow_stages(policies: policy.Policies) -> list[str]:
+    """Every stage a shipped workflow can visit; init and the engine share this set."""
+    stages = {s for w in policies.workflows.values() for e in w.edges for s in (e.source, e.target)}
+    stages |= {w.start for w in policies.workflows.values()}
+    return sorted(stages)
+
+
+def unmapped_stages(kanban: Kanban, policies: policy.Policies) -> list[str]:
+    """Workflow stages with no `[kanban.map]` entry and no terminal mark; engine and init share this check."""
+    return sorted(set(workflow_stages(policies)) - set(kanban.stage_map) - set(kanban.terminal_stages))

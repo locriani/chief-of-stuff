@@ -5,8 +5,10 @@ settings into a config file. Default to 6 and 22". A value that cannot be read i
 guessed at.
 """
 
+import json
 import sys
 import tempfile
+import os
 import unittest
 from datetime import timedelta
 from pathlib import Path
@@ -36,8 +38,60 @@ class SettingsTest(unittest.TestCase):
     def test_no_settings_line_is_off(self):
         self.assertEqual(st.load(self.root, None).notify.adapter, "off")
 
+    def test_stage_profiles_and_skills_are_optional(self):
+        text = ('[lanes.code]\nstages = ["implement", "review", "pr"]\n'
+                '[stages.review]\nagent = "reviewer"\nskills = ["security-review", "extras:code-review"]\n'
+                '[stages.implement]\nagent = "builder"\n[stages.pr]\nskills = ["delivery"]\n')
+        for notify in ("", '[notify]\nadapter = "off"\n'):
+            with self.subTest(notify=notify):
+                got = st.load(self.root, self.write(text + notify)).stages
+                self.assertEqual(got["review"].agent, "reviewer")
+                self.assertEqual(got["review"].skills, ("security-review", "extras:code-review"))
+                self.assertEqual(got["implement"].skills, ())
+                self.assertIsNone(got["pr"].agent)
+        self.assertEqual(st.load(self.root, None).stages, {})
+
+    def test_stages_accept_kanban_map_and_terminal_names(self):
+        text = ('[kanban]\nstages = ["Review"]\nhuman_review_label = "Held"\n'
+                'terminal_stages = ["done"]\n[kanban.map]\nreview = 0\n'
+                '[stages.review]\nagent = "reviewer"\n[stages.done]\nskills = ["summary"]\n')
+        self.assertEqual(set(st.load(self.root, self.write(text)).stages), {"review", "done"})
+
+    def test_invalid_stage_configuration_is_refused(self):
+        prefix = '[lanes.code]\nstages = ["review"]\n'
+        for text in ('[stages]\nreview = "reviewer"',
+                     '[stages.missing]\nagent = "reviewer"',
+                     '[stages.review]\nagent = 3', '[stages.review]\nagent = ""',
+                     '[stages.review]\nagent = "--reviewer"',
+                     '[stages.review]\nskills = "security-review"',
+                     '[stages.review]\nskills = [3]', '[stages.review]\nskills = [""]',
+                     '[stages.review]\nskills = ["security\\nreview"]',
+                     '[stages.review]\nskills = ["security", "security"]',
+                     '[stages.review]\nunknown = "ignored"'):
+            with self.subTest(text=text), self.assertRaises(st.SettingsError):
+                st.load(self.root, self.write(prefix + text))
+        with self.assertRaises(st.SettingsError):
+            st.load(self.root, self.write('stages = []\n' + prefix))
+
     def test_a_named_file_that_is_absent_is_off(self):
         self.assertEqual(st.load(self.root, "chief-of-stuff.toml").notify.adapter, "off")
+
+    def test_a_directory_at_the_settings_path_is_refused(self):
+        """#347: a Settings path that is a directory is a refusal, never silent defaults."""
+        (self.root / "chief-of-stuff.toml").mkdir()
+        with self.assertRaises(st.SettingsError) as raised:
+            st.load(self.root, "chief-of-stuff.toml")
+        self.assertIn("not a file", str(raised.exception))
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root reads a mode-0 file")
+    def test_an_unreadable_settings_file_is_refused(self):
+        """#285: a settings file the loader cannot read is an error, not defaults."""
+        path = self.root / "chief-of-stuff.toml"
+        path.write_text("[notify]\n")
+        path.chmod(0)
+        self.addCleanup(path.chmod, 0o644)
+        with self.assertRaises(st.SettingsError):
+            st.load(self.root, "chief-of-stuff.toml")
 
     def test_no_notify_section_is_off(self):
         self.assertEqual(st.load(self.root, self.write("[other]\nx = 1\n")).notify.adapter, "off")
@@ -107,14 +161,89 @@ class SettingsTest(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(st.SettingsError):
                 st.load(self.root, self.write(f"[workers]\nmax_concurrency = {bad}\n"))
 
-    def test_claude_profile_is_absent_or_a_claude_as_profile_name(self):
+    def test_green_test_requirement_is_opt_in_and_strictly_boolean(self):
+        self.assertFalse(st.load(self.root, None).workers.require_green_tests)
+        for value, expected in (("true", True), ("false", False)):
+            self.assertEqual(st.load(self.root, self.write(
+                f"[workers]\nrequire_green_tests = {value}\n")).workers.require_green_tests, expected)
+        for bad in ('"true"', "1", "0", "[]"):
+            with self.subTest(bad=bad), self.assertRaisesRegex(st.SettingsError, "require_green_tests"):
+                st.load(self.root, self.write(f"[workers]\nrequire_green_tests = {bad}\n"))
+
+    def test_worker_rules_default_to_empty(self):
+        self.assertEqual(st.load(self.root, None).workers.rules, ())
+        for text in ("", "[workers]\n", "[workers]\nrules = []\n"):
+            with self.subTest(text=text):
+                self.assertEqual(st.load(self.root, self.write(text)).workers.rules, ())
+
+    def test_worker_rules_preserve_wording_and_order(self):
+        for prefix in ("", '[notify]\nadapter = "off"\n'):
+            with self.subTest(prefix=prefix):
+                got = st.load(self.root, self.write(prefix + '[workers]\nrules = ["Keep tests.", "  Verify changes.  "]\n'))
+                self.assertEqual(got.workers.rules, ("Keep tests.", "  Verify changes.  "))
+
+    def test_invalid_worker_rules_are_refused(self):
+        for value in ('"Keep tests."', "true", "17", "{}", '["Keep tests.", 1]', '[""]', '["  "]'):
+            with self.subTest(value=value), self.assertRaisesRegex(st.SettingsError, r"\[workers\] rules"):
+                st.load(self.root, self.write(f"[workers]\nrules = {value}\n"))
+
+    def test_worker_rules_reject_line_breaks_and_control_characters(self):
+        for escape in (r"\n", r"\r", r"\t", r"\u0000", r"\u001b", r"\u007f", r"\u0085", r"\u2028"):
+            for suffix in ("Injected", ""):
+                with self.subTest(escape=escape, suffix=suffix), self.assertRaisesRegex(st.SettingsError, r"\[workers\] rules"):
+                    st.load(self.root, self.write('[workers]\nrules = ["Keep tests.' + escape + suffix + '"]\n'))
+
+    def test_worker_rules_reject_bidirectional_formatting_controls(self):
+        for escape in (r"\u061c", r"\u200e", r"\u200f", r"\u202a", r"\u202b", r"\u202c", r"\u202d", r"\u202e",
+                       r"\u2066", r"\u2067", r"\u2068", r"\u2069"):
+            with self.subTest(escape=escape), self.assertRaisesRegex(st.SettingsError, r"\[workers\] rules"):
+                st.load(self.root, self.write('[workers]\nrules = ["approve abc' + escape + 'txt"]\n'))
+
+    def test_worker_rules_reject_invisible_unicode_format_characters(self):
+        for escape in (r"\u200b", r"\ufeff", r"\U000e0001", r"\U000e0061", r"\U000e007f"):
+            with self.subTest(escape=escape), self.assertRaisesRegex(st.SettingsError, r"\[workers\] rules"):
+                st.load(self.root, self.write('[workers]\nrules = ["approve abc' + escape + 'txt"]\n'))
+
+    def test_worker_rules_total_length_is_capped_at_load(self):
+        # The raw sum of len(rule) is the settings boundary; the rendered budget belongs to dispatch_prompt.
+        def load(rules):
+            return st.load(self.root, self.write("[workers]\nrules = " + json.dumps(rules) + "\n"))
+        self.assertEqual(load(["x" * 2000] * 3).workers.rules, ("x" * 2000,) * 3)
+        with self.assertRaisesRegex(st.SettingsError, r"\[workers\] rules.*6000"):
+            load(["x" * 2000] * 3 + ["x"])
+
+    def test_worker_rules_count_is_capped_at_load(self):
+        def load(count):
+            return st.load(self.root, self.write("[workers]\nrules = " + json.dumps(["x"] * count) + "\n"))
+        self.assertEqual(len(load(st.RULES_MAX).workers.rules), st.RULES_MAX)
+        with self.assertRaisesRegex(st.SettingsError, r"\[workers\] rules.*at most"):
+            load(st.RULES_MAX + 1)
+
+    def test_settings_does_not_render_assignments(self):
+        self.assertFalse(hasattr(st, "standing_rules"))
+
+    def test_worker_rules_reject_peer_markers_and_excessive_length_at_load(self):
+        for prefix in ("", '[notify]\nadapter = "off"\n'):
+            for rule in ("Keep tests. (via peer)", "x" * 2401):
+                with self.subTest(prefix=prefix, rule=rule[:30]), self.assertRaisesRegex(st.SettingsError, r"\[workers\] rules"):
+                    st.load(self.root, self.write(prefix + '[workers]\nrules = ["' + rule + '"]\n'))
+            rule = "x" * 2400
+            got = st.load(self.root, self.write(prefix + '[workers]\nrules = ["' + rule + '"]\n'))
+            self.assertEqual(got.workers.rules, (rule,))
+
+    def test_claude_as_profile_is_absent_or_a_claude_as_profile_name(self):
         # Zach, 2026-10-08 20:50: Claude subagents "need to use "cl secondary" (aka claude-as)".
-        self.assertEqual(st.load(self.root, None).workers.claude_profile, "")
-        got = st.load(self.root, self.write('[workers]\nclaude_profile = "secondary"\n')).workers
-        self.assertEqual(got.claude_profile, "secondary")
+        self.assertEqual(st.load(self.root, None).workers.claude_as_profile, "")
+        got = st.load(self.root, self.write('[workers]\nclaude_as_profile = "secondary"\n')).workers
+        self.assertEqual(got.claude_as_profile, "secondary")
         for bad in ('""', '"-x"', '".x"', '"a/b"', '"a b"', "3"):
             with self.subTest(bad=bad), self.assertRaises(st.SettingsError):
-                st.load(self.root, self.write(f"[workers]\nclaude_profile = {bad}\n"))
+                st.load(self.root, self.write(f"[workers]\nclaude_as_profile = {bad}\n"))
+
+    def test_the_old_claude_profile_key_is_refused_by_its_new_name(self):
+        # Ledger E12: renamed to claude_as_profile. Ignored, the old key would launch a bare `claude` without a word.
+        with self.assertRaisesRegex(st.SettingsError, "claude_as_profile"):
+            st.load(self.root, self.write('[workers]\nclaude_profile = "secondary"\n'))
 
     def test_pages_workers_defaults_to_four_and_is_a_positive_whole_number(self):
         # The user, 2026-09-26: "allow the board server to have up to 4 workers", then "well, N workers. 4 default".
@@ -322,6 +451,13 @@ merge = 4
 
 
 class KanbanSettingsTest(unittest.TestCase):
+    def test_terminal_stages_are_unique_safe_managed_labels(self):
+        # Forges compare label names case-insensitively, so a case-only variant collides too.
+        for names in ('["main", "main"]', '["!! - HUMAN REVIEW REQUIRED"]', '["main,done"]', '["00 - PLAN"]',
+                      '["main", "Main"]', '["!! - human review required"]', '["00 - plan"]'):
+            with self.subTest(names=names), self.assertRaisesRegex(st.SettingsError, "terminal_stages"):
+                self.load(KANBAN.replace('terminal_stages = ["main"]', f'terminal_stages = {names}'))
+
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -334,13 +470,33 @@ class KanbanSettingsTest(unittest.TestCase):
     def test_absent_kanban_is_disabled(self):
         self.assertIsNone(self.load("").kanban)
 
+    def test_unmapped_stages_lists_workflow_stages_missing_from_the_map(self):
+        cfg = self.load(KANBAN).kanban
+        policies = st.load_policy()
+        self.assertEqual(st.unmapped_stages(cfg, policies), [])
+        thin = st.Kanban(stages=("only",), human_review_label="hold", stage_map={"implement": 0},
+                         terminal_stages=())
+        self.assertIn("review", st.unmapped_stages(thin, policies))
+
     def test_config_maps_fine_stages_and_hold_overlay(self):
         cfg = self.load(KANBAN).kanban
         self.assertEqual(cfg.label_for("implement"), "03 - BUILD")
         self.assertEqual(cfg.label_for("fix"), "05 - FIX")
         self.assertTrue(cfg.holds("triage"))
         self.assertFalse(cfg.holds("review"))
-        self.assertIsNone(cfg.label_for("main"))
+        # Terminal stages leave a forge mark named like the stage so a rebuild can round-trip (#627).
+        self.assertEqual(cfg.label_for("main"), "main")
+
+    def test_stage_labels_round_trip_case_insensitively(self):
+        cfg = self.load(KANBAN).kanban
+        for label, stage in (("Main", "main"), ("03 - build", "implement")):
+            with self.subTest(label=label):
+                self.assertEqual(cfg.stage_for_label((label, "kind::code")), stage)
+
+    def test_different_stage_labels_are_refused_regardless_of_case(self):
+        cfg = self.load(KANBAN).kanban
+        with self.assertRaisesRegex(ValueError, "more than one stage"):
+            cfg.stage_for_label(("Main", "03 - build"))
 
     def test_invalid_mapping_is_refused(self):
         for bad in (
@@ -351,6 +507,13 @@ class KanbanSettingsTest(unittest.TestCase):
             KANBAN.replace('terminal_stages = ["main"]', 'terminal_stages = ["review"]'),
         ):
             with self.subTest(bad=bad), self.assertRaises(st.SettingsError):
+                self.load(bad)
+
+    def test_padded_labels_are_refused_because_provisioning_and_sync_must_agree_on_the_name(self):
+        for bad in (KANBAN.replace('"00 - PLAN"', '" 00 - PLAN"'),
+                    KANBAN.replace('human_review_label = "', 'human_review_label = " '),
+                    KANBAN.replace('terminal_stages = ["main"]', 'terminal_stages = ["main "]')):
+            with self.subTest(bad=bad), self.assertRaisesRegex(st.SettingsError, "whitespace"):
                 self.load(bad)
 
     def test_github_project_options_can_use_different_status_names(self):
@@ -366,9 +529,17 @@ options = ["Plan", "Plan Review", "Test", "Build", "Review", "Fix"]
 
     def test_invalid_github_project_is_refused(self):
         for extra in ('owner = ""\nnumber = 7', 'owner = "org"\nnumber = 0',
-                      'owner = "org"\nnumber = 7\noptions = ["one"]'):
+                      'owner = "org"\nnumber = 7\noptions = ["one"]',
+                      'owner = "org"\nnumber = 7\noptions = ["Plan", "Plan", "Test", "Build", "Review", "Fix"]'):
             with self.subTest(extra=extra), self.assertRaises(st.SettingsError):
                 self.load(KANBAN + "\n[kanban.github_project]\n" + extra + "\n")
+
+    def test_project_shorthand_owner_number_is_accepted(self):
+        text = KANBAN.replace('terminal_stages = ["main"]',
+                              'terminal_stages = ["main"]\nproject = "example-org/7"')
+        cfg = self.load(text).kanban.github_project
+        self.assertEqual((cfg.owner, cfg.number, cfg.field), ("example-org", 7, "Status"))
+        self.assertEqual(cfg.options[0], "00 - PLAN")
 
 
 MODELS = '''[models.deep]
@@ -525,3 +696,9 @@ class GraphSettingsTest(unittest.TestCase):
                     'max_nodes = true\n'):
             with self.subTest(bad=bad), self.assertRaises(st.SettingsError):
                 self.load(base + bad)
+
+
+class WorkflowStagesTest(unittest.TestCase):
+    def test_shipped_policy_stages_are_sorted_and_complete(self):
+        self.assertEqual(st.workflow_stages(st.load_policy()),
+                         ["fix", "implement", "merge", "plan", "review"])

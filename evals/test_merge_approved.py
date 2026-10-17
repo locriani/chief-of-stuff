@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
@@ -54,6 +55,9 @@ class FakeGh:
             return 0, json.dumps(self.prs), ""
         if args[:2] == ["pr", "merge"]:
             return 0, "", ""
+        if args[:2] == ["pr", "view"]:
+            state = "MERGED" if any(c[2] == args[2] for c in self.merges) else "OPEN"
+            return 0, json.dumps({"state": state}), ""
         return 1, "", "unexpected"
 
     @property
@@ -91,7 +95,8 @@ class FakeGhGraphql(FakeGh):
                                         **(self.nodes.get(p["number"]) or graphql_node(p["number"], sha=p["headRefOid"]))}.items()
                       if k in ("number", "reviewThreads", "commits") or k in query}
                      for p in self.prs if p["number"] in self.nodes or not self.only_given]
-            return 0, json.dumps({"data": {"repository": {"pullRequests": {"nodes": nodes}}}}), ""
+            return 0, json.dumps({"data": {"repository": {"pullRequests": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": nodes}}}}), ""
         return super().__call__(args, input_text)
 
 
@@ -164,6 +169,43 @@ class MainTest(unittest.TestCase):
         self.assertEqual(gh.merges[0][gh.merges[0].index("--match-head-commit") + 1], HEAD)
         self.assertIn("merged", out)
 
+    def test_a_failed_merge_with_no_stderr_is_not_reported_as_merged(self):
+        base = FakeGh(PRS)
+
+        def silent_failure(args, input_text=None):
+            return (1, "", "") if args[:2] == ["pr", "merge"] else base(args, input_text)
+
+        code, out, err = self.run_main(self.workspace(self.OPT_IN), "--merge", "12", gh=silent_failure)
+        self.assertEqual(code, 1)
+        self.assertNotIn("merged", out)
+        self.assertIn("not merged", err)
+
+    def test_a_failed_state_read_after_a_successful_merge_prints_unknown_and_exits_zero(self):
+        base = FakeGh(PRS)
+
+        def failed_read(args, input_text=None):
+            return (1, "", "rate limited") if args[:2] == ["pr", "view"] else base(args, input_text)
+
+        code, out, err = self.run_main(self.workspace(self.OPT_IN), "--merge", "12", gh=failed_read)
+        self.assertEqual(code, 0)
+        self.assertEqual(out, f"#12 unknown at {HEAD[:12]} · https://github.com/o/app/pull/12: rate limited\n")
+        self.assertEqual(err, "")
+        self.assertEqual(len(base.merges), 1)
+
+    def test_gitlab_cli_keeps_its_head_pinned_merge_and_output(self):
+        root = self.workspace(self.OPT_IN)
+        config = root / "CLAUDE.md"
+        config.write_text(config.read_text().replace("GitHub issues; repo o/app",
+                                                   "GitLab; host https://labs.example.test; project team/app"))
+        call, calls = GitLabReadinessTest().fake([{"iid": 5, "approved_by": ["robin"]}])
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(ma.backlog, "token", return_value="t"), redirect_stdout(out), redirect_stderr(err):
+            code = ma.main(["--root", str(root), "--merge", "5"], call=call)
+        self.assertEqual(code, 0, err.getvalue())
+        self.assertEqual([c for c in calls if c[0] == "PUT"],
+                         [("PUT", "https://labs.example.test/api/v4/projects/team%2Fapp/merge_requests/5/merge", {"sha": HEAD})])
+        self.assertEqual(out.getvalue(), f"!5 merged at {HEAD[:12]} · u\n")
+
     def test_merge_refuses_a_peer_approval_and_says_why(self):
         gh = FakeGh(PRS)
         code, _, err = self.run_main(self.workspace(self.OPT_IN), "--merge", "13", gh=gh)
@@ -193,10 +235,22 @@ def request(**kw):
     return ma.Request(**{**base, **kw})
 
 
+class MergeHeadTest(unittest.TestCase):
+    def test_failed_or_unreadable_github_state_reads_after_a_successful_write_are_unknown(self):
+        for read, error in (((1, "", "rate limited"), "rate limited"),
+                            ((2, "", ""), "gh pr view exited 2"),
+                            ((0, "{}", ""), str(KeyError("state")))):
+            with self.subTest(read=read):
+                gh = mock.Mock(side_effect=[(0, "", ""), read])
+                self.assertEqual(ma.merge_head(request(), None, True, "o/app", gh=gh),
+                                 (0, f"unknown: {error}"))
+                self.assertEqual(gh.call_count, 2)
+
+
 class RequestVerdictTest(unittest.TestCase):
     """One place decides ready or not (#419: the coordinator wrote mergeable from the forge's own status, no pipeline read).
-    Precedence (#419 review): conflicts > draft > red > stale pipeline > running > no pipeline > unverified > blocked > findings
-    open > ready. A state that was not read is None, never "" or 0, and None is not ready."""
+    Precedence (#419 review, #430): conflicts > draft > red > stale pipeline > running > no pipeline > unverified >
+    findings open > blocked > ready. A state that was not read is None, never "" or 0, and None is not ready."""
 
     def test_the_request_carries_the_head_pipeline_and_the_thread_count_and_unread_is_none(self):
         r = ma.Request(1, "t", "u", HEAD, "approved", "passed", "yes", "robin")
@@ -252,14 +306,17 @@ class RequestVerdictTest(unittest.TestCase):
             ({"pipeline_sha": None, "pipeline": "failed"}, "red"),
             ({"threads": None, "merge_state": "BEHIND"}, "unverified"),
             ({"threads": None, "pipeline": "none", "pipeline_id": "", "pipeline_sha": ""}, "no pipeline"),
-            # blocked: GitHub's mergeStateStatus is anything but CLEAN; below unverified, above findings
+            # blocked: GitHub's mergeStateStatus is anything but CLEAN; below findings (#430)
             ({"merge_state": "BLOCKED"}, "blocked"),
             ({"merge_state": "BEHIND"}, "blocked"),
             ({"merge_state": "DIRTY"}, "blocked"),
             ({"merge_state": "UNSTABLE"}, "blocked"),
             ({"merge_state": "HAS_HOOKS"}, "blocked"),
             ({"merge_state": "UNKNOWN"}, "blocked"),
-            ({"merge_state": "BEHIND", "threads": 2}, "blocked"),
+            ({"merge_state": "BEHIND", "threads": 2}, "findings open"),
+            ({"merge_state": "BLOCKED", "threads": 2}, "findings open"),
+            ({"mergeable": "discussions_not_resolved"}, "blocked"),
+            ({"mergeable": "discussions_not_resolved", "threads": 2}, "findings open"),
             ({"merge_state": "BEHIND", "pipeline": "running"}, "running"),
             ({"merge_state": "BEHIND", "pipeline_sha": OLD}, "stale pipeline"),
             ({"merge_state": "CLEAN"}, "ready"),

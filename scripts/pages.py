@@ -58,6 +58,7 @@ RENDERED = re.compile(r"\d{4}-\d{2}-\d{2}-board\.html|workers\.html|decisions\.h
 ROUTE = re.compile(r"/decisions/([a-z0-9]+(?:-[a-z0-9]+)*)")
 ISSUE = re.compile(r"/issues/(\d+)(/source)?")
 MAX_BODY = 16 * 1024  # a write-in is a sentence or a paragraph
+MAX_PAGE = 1024 * 1024  # rendered pages are a few hundred KB; refuse larger rather than load them
 # ponytail: a lock per page (never freed; a workspace has tens of pages) under the server's `[pages] workers` slots.
 # An answer saved mid-render of another page (the board) can leave that page stale until the next forge refresh.
 PAGE_LOCKS: dict[str, threading.Lock] = {}
@@ -220,12 +221,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def _allowed(self) -> bool:
         """Refuse a foreign Host or a dotfile; map `/` to today's (else the newest) board, `/all` to the listing and
         `/workers`, `/decisions[/<slug>]` and `/issues/<n>` to its file; refuse a rendered page's file name; re-render a page its sources outdate."""
+        self.banner = ""  # per request: keep-alive reuses the handler (#334)
         port = self.server.server_address[1]
         if self.headers.get("Host", "") not in (f"127.0.0.1:{port}", f"localhost:{port}"):
             self.send_error(403, "Host is not this machine")
             return False
-        path = self.path.split("?")[0]
-        if any(part.startswith(".") for part in unquote(path).split("/")):  # `%2e` is a dot too
+        path = re.split(r"[?#]", self.path, maxsplit=1)[0]
+        decoded = unquote(path)
+        if "\0" in decoded or (decoded != "/" and decoded.endswith("/")):  # #340: null or a directory URL, `%2F` too
+            self.send_error(404)
+            return False
+        if any(part.startswith(".") for part in decoded.split("/")):  # `%2e` is a dot too
             self.send_error(404)
             return False
         root = getattr(self.server, "root", None)
@@ -264,11 +270,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.send_error(404, "no such issue")
                 return False
             self.path = f"/issue-{int(m[1])}{'-source' if m[2] else ''}.html"
-        elif RENDERED.fullmatch(Path(self.translate_path(path)).name.lower()):
-            # A rendered page is a route only. The resolved name, lowercased: `//x` and a case-insensitive disk reach it too.
+        elif RENDERED.fullmatch(Path(self.translate_path(path)).name.casefold()):
+            # A rendered page is a route only. casefold: long s and a case-insensitive disk reach it too (#335).
             self.send_error(404)
             return False
-        name = self.path.split("?")[0].lstrip("/")
+        name = re.split(r"[?#]", self.path, maxsplit=1)[0].lstrip("/")
         if root is not None and RENDERED.fullmatch(name):
             # A look is recorded before `fresh`, so the board counts from the look before, and taken back when the
             # board cannot render; one lock around it all, so two tabs loading at once cannot interleave it.
@@ -301,13 +307,27 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def _send_html(self, body: bool):
         """An HTML page with the shared reload check; with the banner set, the last good page plus one line saying the
-        render failed (never a blank 500). HEAD's length is GET's, and Last-Modified stays the file's own."""
+        render failed (never a blank 500). HEAD's length is GET's, and Last-Modified stays the file's own.
+        A page over MAX_PAGE is refused without reading; HEAD without a banner never reads (#333)."""
         path = Path(self.translate_path(self.path))
         try:
             stat = path.stat()
             if not S_ISREG(stat.st_mode):
                 raise OSError  # a directory, FIFO or device is not a page
-            page, stamp = path.read_bytes(), stat.st_mtime
+            if stat.st_size > MAX_PAGE:
+                return self.send_error(413, f"a page is at most {MAX_PAGE} bytes")
+            stamp = stat.st_mtime
+            if not body and not self.banner:
+                with path.open("rb"):  # GET would read it: an unreadable page is GET's 404, not a 200
+                    pass
+                # The injected HTTP date is fixed length; count the snippet without reading the file.
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(stat.st_size + len(page_reload.ENCODED)))
+                self.send_header("Last-Modified", self.date_time_string(stamp))
+                self.end_headers()
+                return
+            page = path.read_bytes()
         except OSError:
             if not self.banner:  # no page, or it vanished: a 404, never a blank 200 stamped 1970
                 return self.send_error(404)
@@ -317,11 +337,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             note = ('<p role="alert" style="margin:0;padding:6px 16px;background:#c9533a;color:#fff;'
                     f'font:14px/1.4 system-ui,sans-serif">not re-rendered: {escape(self.banner)}</p>').encode()
             page = re.sub(rb"<body[^>]*>", lambda m: m[0] + note, page, count=1) if b"<body" in page else note + page
-        page = page_reload.inject(page)
+        last_modified = self.date_time_string(stamp)
+        page = page_reload.inject(page, last_modified)
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(page)))
-        self.send_header("Last-Modified", self.date_time_string(stamp))
+        self.send_header("Last-Modified", last_modified)
         self.end_headers()
         if body:
             self.wfile.write(page)
@@ -341,7 +362,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         origin = self.headers.get("Origin")
         if self.headers.get("Host", "") not in own or (origin is not None and origin not in [f"http://{h}" for h in own]):
             return self.send_error(403, "not a page of this server")
-        m = ROUTE.fullmatch(self.path.split("?")[0])
+        m = ROUTE.fullmatch(re.split(r"[?#]", self.path, maxsplit=1)[0])
         source = Path(self.directory) / f"decision-{m[1]}.json" if m else None
         if source is None or not source.is_file():
             return self.send_error(404, "no such decision")
@@ -448,6 +469,17 @@ def _who(port: int) -> str | None:
         return None
 
 
+def is_pages_serve(pid: int, port: int | None = None) -> bool:
+    """True when `pid`'s command line is `pages.py serve`, and on `port` when given. A reused pid is someone else's."""
+    try:
+        command = subprocess.run(["ps", "-ww", "-p", str(pid), "-o", "command="], capture_output=True, text=True).stdout
+    except OSError:
+        return False  # cannot verify identity: do not signal
+    if "pages.py serve" not in command:
+        return False
+    return port is None or bool(re.search(rf"--port {port}(\s|$)", command))
+
+
 def _stop(pages_dir: Path, port: int) -> None:
     """Stop the older pages server on the port. Only the pid file's process, and only when it runs
     `pages.py serve` on this port: a reused pid is someone else's."""
@@ -455,8 +487,7 @@ def _stop(pages_dir: Path, port: int) -> None:
         pid = int((pages_dir / PID).read_text())
     except (OSError, ValueError):
         raise PagesError(f"an older pages server answers on port {port}, and no pid file names it; stop it by hand") from None
-    command = subprocess.run(["ps", "-ww", "-p", str(pid), "-o", "command="], capture_output=True, text=True).stdout
-    if "pages.py serve" not in command or not re.search(rf"--port {port}(\s|$)", command):
+    if not is_pages_serve(pid, port):
         raise PagesError(f"an older pages server answers on port {port}, but pid {pid} is not it; stop it by hand")
     os.kill(pid, signal.SIGTERM)
     for _ in range(30):
@@ -491,6 +522,14 @@ def ensure(pages_dir: Path, port: int, log: Path, root: Path | None = None) -> s
         if proc.poll() is not None:
             break
         time.sleep(0.1)
+    if proc.poll() is None:  # failed start must not leave a detached server with no pid file (#493)
+        with contextlib.suppress(OSError):
+            proc.terminate()
+        try:
+            proc.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(OSError):
+                proc.kill()
     raise PagesError(f"the pages server did not come up on port {port}; see {log}")
 
 

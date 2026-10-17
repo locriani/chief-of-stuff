@@ -27,6 +27,22 @@ class ConfigError(Exception):
 
 
 @dataclass(frozen=True)
+class WorkspaceFile:
+    """A file init leaves in a workspace and the command that adds it to one that lacks it; `command` takes `{root}`."""
+    name: str
+    command: str
+
+
+# Init's config and settings, also read by health for older workspaces. Init needs user/forge inputs;
+# --help explains those rather than suggesting an incomplete command that would fail.
+# Health only exercises `settings`: a missing config is a usage fault there. Model guidance stays out: the engine rotates models (ledger D10), so preflight does not advise installing it.
+WORKSPACE_FILES: dict[str, WorkspaceFile] = {
+    "config": WorkspaceFile("CLAUDE.md", "chief-of-stuff init --help"),
+    "settings": WorkspaceFile("chief-of-stuff.toml", "chief-of-stuff init --help"),
+}
+
+
+@dataclass(frozen=True)
 class Deadline:
     name: str
     at: datetime
@@ -95,6 +111,17 @@ def _bullets(body: list[str]) -> tuple[dict[str, str], dict[str, list[tuple[str,
 def settings_path(text: str) -> str | None:
     """The path the block's `Settings:` line names, or None. Asks the block for no other line, so `health` can run on a block `parse_coordinator` refuses."""
     return _first_path(_bullets(_section(text, "## Coordinator"))[0].get("Settings", ""))
+
+
+def architecture_document(root: Path) -> Path | None:
+    """The canonical document's first backticked path, resolved against the workspace root."""
+    try:
+        text = (root / "CLAUDE.md").read_text()
+    except FileNotFoundError:
+        return None
+    value = _bullets(_section(text, "## Architecture"))[0].get("Canonical document", "")
+    match = re.search(r"`([^`]+)`", value)
+    return (root / match[1].strip()).resolve() if match else None
 
 
 def parse_coordinator(text: str, today: date) -> Config:
